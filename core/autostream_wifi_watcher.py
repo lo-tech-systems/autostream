@@ -1,0 +1,1375 @@
+#!/usr/bin/env python3
+"""autostream_wifi_watcher.py
+
+Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+
+This module should be run continuously as root. It monitors (and logs) the network
+connection status of the device.
+
+== Access Point Mode ==
+
+If the WiFi is unconfigured or remains disconnected for 1 minute after boot, it is put into
+AP mode with a captive portal that enables the user to easily connect the Pi to the WiFi.
+This AP mode will remain active for up to 15 minutes. After that time, to re-enter AP mode,
+the user would need to power-cycle the device.
+
+If a wired ethernet connection is up, the AP mode is supressed.
+
+If there is a WiFi connection configured, but the wired connection is down, when the script
+closes AP mode after the allowed 15 minutes it will try to connect to that connection
+periodically. If there is no connection still after 24 hours, the device will be rebooted
+and the process will repeat.
+
+== Connection Reliability ==
+
+If the WiFi is configured and the wired connection is down, the script monitors the network
+health by monitoring the kernel's view of the default gateway. If this goes offline for more
+than 5 minutes, the script trys to reconnect to the network periodically.
+
+If the gateway remains unreachable for more than 30 minutes, the script will reboot the device.
+Whilst this seems aggressive, the WiFi chipset in the Pi-Zero range is not great in terms
+of long periods of uptime so this is a defensive strategy. Music can't play if the device
+isn't on the network anyway.
+
+Note that this script always serves the setup page. The associated NGINX configuration
+controls which web server (this or autostream_webui.py) services requests via the presence
+(or not) of /tmp/apmode.
+"""
+
+import os
+import time
+import threading
+import logging
+import sys
+import html
+import json
+from typing import Optional
+from flask import Flask, request, jsonify, redirect, url_for, make_response
+
+from autostream_sysutils import run_cmd, reboot_system, get_system_hostname
+
+from autostream_rpi import check_cpu
+
+from autostream_webui_assets import STYLE_CSS, BANNER_HTML
+
+# File locations
+LOG_FILE = "/var/log/autostream/wifi_setup.log"
+CONFIGURED_SSID = "/opt/autostream/ssid"
+AP_MODE_FLAG_PATH = "/tmp/apmode"
+
+# Timers (all in seconds)
+NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
+
+BOOT_AP_GRACE = 60                      # if still offline after boot grace -> enter AP mode
+AP_MAX_DURATION = 15 * 60               # AP mode lifetime (fixed, not extended by web activity)
+AP_POST_CLOSE_REBOOT_AFTER = 24 * 60 * 60  # if still offline 24h after closing AP -> reboot
+
+GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
+GW_DOWN_REBOOT_AFTER = 30 * 60          # gateway unreachable for this long -> reboot
+RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts
+
+WAIT_FOR_CONNECTION_TIMEOUT = 20        # Seconds to wait for connectivity after config
+WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for connectivity checks
+
+# Set up logging
+def _setup_logging() -> None:
+    """
+    Configure logging to a file if possible; fall back to stdout if the log path
+    is missing/unwritable. This script is intended to run continuously, so it
+    must not fail just because /var/log isn't ready yet.
+    """
+    try:
+        log_dir = os.path.dirname(LOG_FILE) or "."
+        os.makedirs(log_dir, exist_ok=True)
+        logging.basicConfig(
+            filename=LOG_FILE,
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+        )
+    except Exception as e:
+        # Last-resort fallback: log to stdout so the service still runs.
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+        )
+        logging.error("Failed to initialise file logging (%s); using stdout instead.", e)
+
+_setup_logging()
+
+# Global state flags (updated by the network monitor thread)
+wifistate = "unknown"
+wiredstate = "unknown"
+gateway_reachable = False
+
+# Setup / AP state
+SetupMode = False                     # True when we are in AP-based setup mode
+force_setup_mode: bool = False        # Manual override to stay in SetupMode
+
+# Timers (monotonic seconds) for boot/AP lifecycle and connectivity tracking
+boot_time: Optional[float] = None
+
+# AP lifecycle (AP mode can be entered only once per boot)
+ap_enter_time: Optional[float] = None
+ap_closed_time: Optional[float] = None
+ap_exhausted: bool = False
+
+# Connectivity degradation tracking (only relevant when WiFi is configured and ethernet is down)
+gw_down_start: Optional[float] = None
+last_reconnect_attempt: Optional[float] = None
+
+# Synchronisation primitive for shared state
+state_lock = threading.Lock()
+
+# Serialise AP start/stop transitions
+ap_mode_lock = threading.Lock()
+
+# WiFi Settings locks
+apply_in_progress = False
+apply_lock = threading.Lock()
+
+# Result of last apply attempt (for the wait page)
+last_apply_result = "idle"   # idle | applying | ok | failed
+last_apply_error = ""        # short message
+
+# AP / host configuration
+AP_IFNAME = "wlan0"
+AP_CONNECTION_NAME = "Hotspot"  # default/fixed name for our AP connection
+HOSTNAME = get_system_hostname()
+# NOTE: HOSTNAME can change at runtime; prefer get_system_hostname() when constructing
+# user-facing URLs. Keep this for legacy/logging only.
+HOST_SETUP_URL = f"http://{HOSTNAME}.local/setup"
+
+app = Flask(__name__)
+
+# ** LOGGING **
+
+_last_log_msg: str | None = None
+_last_log_time: float = 0.0
+_last_logged_values: dict[str, object] = {}
+
+def log(msg: str) -> None:
+    """Helper to log messages, suppressing identical repeats."""
+    global _last_log_msg, _last_log_time
+    now = time.monotonic()
+
+    # suppress identical messages if they occur back-to-back within 60s
+    if msg == _last_log_msg and (now - _last_log_time) < 60:
+        return
+
+    _last_log_msg = msg
+    _last_log_time = now
+    logging.info(msg)
+
+
+def log_on_change(key: str, value: object, msg: str) -> None:
+    """Log msg only when (key -> value) changes."""
+    prev = _last_logged_values.get(key, object())
+    if prev != value:
+        _last_logged_values[key] = value
+        log(msg)
+
+
+# ** SETUP/AP MODE **
+
+def update_apmode_flag(in_setup: bool) -> None:
+    """Create or remove the AP mode flag file at AP_MODE_FLAG_PATH."""
+    try:
+        if in_setup:
+            if not os.path.exists(AP_MODE_FLAG_PATH):
+                with open(AP_MODE_FLAG_PATH, "w", encoding="utf-8") as f:
+                    f.write("1\n")
+                log(f"Created AP mode flag file at {AP_MODE_FLAG_PATH}")
+        else:
+            if os.path.exists(AP_MODE_FLAG_PATH):
+                os.remove(AP_MODE_FLAG_PATH)
+                log(f"Removed AP mode flag file at {AP_MODE_FLAG_PATH}")
+    except Exception as e:
+        log(f"Error updating AP mode flag file {AP_MODE_FLAG_PATH}: {e}")
+
+
+def enter_setup_mode(reason: str = "") -> None:
+    """Transition into SetupMode and start AP mode, if permitted.
+
+    AP mode is only allowed once per boot cycle. Once AP_MAX_DURATION elapses and
+    AP mode is closed, it will not be re-entered until the device is power-cycled.
+    """
+    global SetupMode, ap_enter_time, force_setup_mode, ap_exhausted
+
+    with state_lock:
+        if SetupMode:
+            return
+        if ap_exhausted and not force_setup_mode:
+            # Don't automatically re-enter AP mode after the 15-minute window.
+            return
+        SetupMode = True
+        ap_enter_time = time.monotonic()
+
+    log(f"Entering SetupMode. Reason: {reason}")
+    start_ap_mode()
+    update_apmode_flag(True)
+
+def leave_setup_mode(reason: str = "") -> None:
+    """Transition out of SetupMode and stop AP mode, if currently active."""
+    global SetupMode, ap_enter_time, force_setup_mode
+
+    with state_lock:
+        if not SetupMode:
+            return
+        SetupMode = False
+        ap_enter_time = None
+        force_setup_mode = False
+
+    log(f"Leaving SetupMode. Reason: {reason}")
+    update_apmode_flag(False)
+    stop_ap_mode()
+
+def get_configured_wifi_connection_name() -> Optional[str]:
+    """Return the configured *client* WiFi connection name, if any.
+
+    The configuration UI stores the intended NetworkManager connection name in
+    CONFIGURED_SSID. If that file is missing or empty, we treat WiFi as
+    unconfigured.
+    """
+    try:
+        if not os.path.isfile(CONFIGURED_SSID):
+            return None
+        with open(CONFIGURED_SSID, "r", encoding="utf-8") as f:
+            name = f.read().strip()
+        return name or None
+    except Exception as e:
+        log(f"Error reading {CONFIGURED_SSID}: {e}")
+        return None
+
+
+def is_wifi_configured() -> bool:
+    """True if a WiFi client connection has been configured."""
+    return get_configured_wifi_connection_name() is not None
+
+
+def is_wifi_connected() -> bool:
+    """True if wlan0 is connected to a non-AP WiFi network."""
+    result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
+    if result.returncode != 0:
+        log(f"Error while checking WiFi connection state: {result.stderr.strip()}")
+        return False
+
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split(":", 3)
+        if len(parts) != 4:
+            continue
+        device, dev_type, state, conn = parts
+        if device != AP_IFNAME:
+            continue
+        if dev_type != "wifi":
+            continue
+        if state not in ("connected", "activated") or not conn:
+            return False
+
+        # Ensure we are not in AP mode
+        mode_result = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", conn])
+        if mode_result.returncode != 0:
+            log(f"Error checking mode for connection '{conn}': {mode_result.stderr.strip()}")
+            return False
+
+        mode_line = mode_result.stdout.strip()
+        _, _, mode = mode_line.partition(":")
+        mode = mode.strip().lower()
+
+        return mode != "ap"
+
+    return False
+
+import glob
+
+def is_wired_connected() -> bool:
+    """Return True if any wired (ethernet) interface has carrier."""
+    # Traditional + predictable ethernet names
+    patterns = (
+        "/sys/class/net/eth*/carrier",
+        "/sys/class/net/en*/carrier",
+    )
+
+    for pat in patterns:
+        for path in glob.glob(pat):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    if f.read().strip() == "1":
+                        return True
+            except OSError:
+                # Interface disappeared or permissions issue; ignore
+                continue
+
+    return False
+
+
+import ipaddress
+
+_OK_NEIGH_STATES = {"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"}
+
+def _run_ip_json(args: list[str]) -> list[dict]:
+    p = run_cmd(["ip", "-j", *args], timeout=2.0)
+    if p.returncode != 0:
+        raise RuntimeError(
+            f"`ip -j {' '.join(args)}` failed: rc={p.returncode}, stderr={p.stderr.strip()}"
+        )
+    out = p.stdout.strip()
+    return json.loads(out) if out else []
+
+def _stateset(state_field) -> set[str]:
+    # ip -j may return "state": "STALE" or "state": ["STALE"]
+    if isinstance(state_field, list):
+        return {str(s).upper() for s in state_field}
+    if isinstance(state_field, str):
+        return {state_field.upper()}
+    return set()
+
+def is_gateway_reachable() -> bool:
+    """
+    Kernel-based gateway reachability:
+    - Read default gateway IP (and default dev if available)
+    - Read all neighbor entries for that gateway (across all devs)
+    - Prefer an OK-state entry on the default dev, else any OK-state entry.
+    """
+    try:
+        routes = _run_ip_json(["route", "show", "default"])
+        if not routes:
+            return False
+
+        r0 = routes[0]
+        gw = r0.get("gateway")
+        default_dev = r0.get("dev")  # may be None
+
+        if not gw:
+            return False
+
+        try:
+            ipaddress.ip_address(gw)
+        except ValueError:
+            return False
+
+        neigh = _run_ip_json(["neigh", "show", "to", gw])  # NOTE: no dev filter
+        if not neigh:
+            return False
+
+        # 1) Prefer an OK-state neighbor on the default route's interface
+        if default_dev:
+            for n in neigh:
+                if n.get("dev") == default_dev and (_stateset(n.get("state")) & _OK_NEIGH_STATES):
+                    return True
+
+        # 2) Otherwise accept any OK-state neighbor entry
+        for n in neigh:
+            if _stateset(n.get("state")) & _OK_NEIGH_STATES:
+                return True
+
+        return False
+
+    except Exception as e:
+        log(f"Kernel gateway reachability check failed: {e}")
+        return False
+
+
+def get_ap_ssid(ifname: str) -> str:
+    """Generate an SSID for the AP based on the interface MAC address.
+
+    Format: autostream_XXXX where XXXX are the last four hex digits of the MAC.
+    """
+    result = run_cmd(["cat", f"/sys/class/net/{ifname}/address"])
+    if result.returncode != 0:
+        log(
+            f"Error reading MAC address for {ifname}: {result.stderr.strip()}; using default SSID"
+        )
+        return "autostream_SETUP"
+
+    mac = result.stdout.strip().replace(":", "")
+    suffix = mac[-4:].upper() if len(mac) >= 4 else "0000"
+    ssid = f"autostream_{suffix}"
+    log(f"Using AP SSID '{ssid}' for interface {ifname}")
+    return ssid
+
+
+# ** WIFI CONFIGURATION **
+
+def _get_active_wifi_connection_name(ifname: str = "wlan0") -> str:
+    """
+    Return the active connection profile name for a wifi device, or "" if unknown.
+    Uses device status, so it works even if profiles are named 'netplan-wlan0-<SSID>'.
+    """
+    r = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
+    if r.returncode != 0:
+        return ""
+    for line in r.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) != 4:
+            continue
+        dev, dev_type, state, conn = parts
+        if dev == ifname and dev_type == "wifi" and state in ("connected", "activated") and conn:
+            return conn
+    return ""
+
+def _get_active_wifi_ssid(ifname: str = "wlan0") -> str:
+    """
+    Return the SSID currently in use on the given wifi interface, or "" if unknown.
+    Uses `nmcli device wifi list ifname <ifname>` and looks for the in-use marker.
+    """
+    r = run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID", "device", "wifi", "list", "ifname", ifname])
+    if r.returncode != 0:
+        return ""
+    for line in r.stdout.splitlines():
+        # Format: "*:MySSID" or ":OtherSSID"
+        parts = line.split(":", 1)
+        if len(parts) != 2:
+            continue
+        in_use, ssid = parts
+        if in_use.strip() == "*" and ssid:
+            return ssid
+    return ""
+
+def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
+    """Configure WiFi using nmcli for the given SSID and password.
+
+    Returns True on apparent success, False otherwise.
+    """
+    # Remove any existing connection for this network
+    run_cmd(["nmcli", "connection", "delete", ssid])
+    # Rescan...
+    result = run_cmd(["nmcli", "dev", "wifi", "rescan"])
+    if result.returncode == 0:
+        log("nmcli rescan successful.")
+    else:
+        log("nmcli rescan failed. Unable to connect to WiFi at this time.")
+        return False
+    # Then attempt connection...
+    cmd = [
+        "nmcli",
+        "device",
+        "wifi",
+        "connect",
+        ssid,
+    ]
+
+    # Build a sanitised version for logging to avoid writing WiFi password into log
+    log_cmd = cmd.copy()
+
+    if password:
+        cmd.extend(["password", password])
+        log_cmd.extend(["password", "*" * len(password)])
+    else:
+        log("WiFi configuration requested with empty password (open network)")
+
+    log(f"Running WiFi connect command: {' '.join(log_cmd)}")
+
+    result = run_cmd(cmd)
+
+    if result.returncode == 0:
+        log("nmcli reported successful WiFi configuration")
+        # Store only if the device is truly connected; avoids saving on auth failure.
+        conn_name = _get_active_wifi_connection_name(AP_IFNAME)
+        if not conn_name:
+            log("nmcli connect returned success but device is not connected; not saving config")
+            return False
+        try:
+            with open(CONFIGURED_SSID, "w") as f:
+                f.write(f"{conn_name}\n")
+            log(f"WiFi connection name stored in {CONFIGURED_SSID}: '{conn_name}'")
+        except Exception as e:
+            log(f"Could not create or update {CONFIGURED_SSID}: {e}")
+        return True
+    else:
+        # nmcli can report failure even if NetworkManager ultimately connects
+        # (e.g., auto-activating an existing profile). Verify actual connectivity
+        # before declaring failure / returning to SetupMode.
+        log("nmcli failed to configure WiFi; see previous logs for details")
+
+        if wait_for_connection(timeout=10, interval=1):
+            active_ssid = _get_active_wifi_ssid(AP_IFNAME)
+            conn_name = _get_active_wifi_connection_name(AP_IFNAME)
+            if active_ssid == ssid and conn_name:
+                log(
+                    "WiFi appears connected despite nmcli rc!=0 "
+                    f"(active SSID='{active_ssid}', connection='{conn_name}'); treating as success"
+                )
+                try:
+                    with open(CONFIGURED_SSID, "w") as f:
+                        f.write(f"{conn_name}\n")
+                    log(f"WiFi connection name stored in {CONFIGURED_SSID}: '{conn_name}'")
+                except Exception as e:
+                    log(f"Could not create or update {CONFIGURED_SSID}: {e}")
+                return True
+
+        return False
+
+
+def wait_for_connection(timeout: int = 20, interval: int = 2) -> bool:
+    """Wait up to 'timeout' seconds for gateway connectivity.
+
+    Checks is_gateway_reachable() every 'interval' seconds.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if is_gateway_reachable():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def start_ap_mode() -> None:
+    """Put the WiFi adapter into open AP (hotspot) mode using nmcli.
+
+    The SSID is autostream_XXXX where XXXX are the last four hex digits of the
+    adapter's MAC address. The hotspot is open (no password). The Flask app
+    acts as the captive portal HTTP server; DNS/DHCP redirection is assumed to
+    be handled elsewhere.
+    """
+    with ap_mode_lock:
+        log("Enabling AP mode for SetupMode")
+
+        ssid = get_ap_ssid(AP_IFNAME)
+
+        # Try to bring down any existing hotspot connection first
+        # run_cmd(["nmcli", "connection", "down", AP_CONNECTION_NAME])
+
+        # Delete any existing connection with the same name
+        # this also takes it down, if running)
+        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+
+        # Create the connection
+        log(f"Creating AP connection '{AP_CONNECTION_NAME}' with SSID '{ssid}'")
+        run_cmd([
+            "nmcli", "connection", "add",
+            "type", "wifi",
+            "ifname", AP_IFNAME,
+            "con-name", AP_CONNECTION_NAME,
+            "autoconnect", "no",
+            "ssid", ssid,
+            "802-11-wireless.mode", "ap",
+            "ipv4.method", "manual",
+            "ipv4.addresses", "192.168.4.1/24",
+            "ipv4.never-default", "yes",
+            "ipv6.method", "ignore",
+        ])
+
+        # Bring up the AP connection
+        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME])
+        run_cmd(["systemctl", "start", "autostream_dnsmasq.service"])
+
+        # Hostname may change at runtime; construct the portal URL dynamically.
+        current_host = get_system_hostname()
+        log(f"Setup portal expected at http://{current_host}.local/setup while in AP mode")
+
+
+def stop_ap_mode() -> None:
+    """Tear down AP mode.
+
+    This is primarily used when leaving SetupMode via the monitor loop.
+    """
+    with ap_mode_lock:
+        log("Disabling AP mode after leaving SetupMode")
+        run_cmd(["systemctl", "stop", "autostream_dnsmasq.service"])
+        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+
+
+def scan_wifi_networks(ifname: str = AP_IFNAME):
+    """Scan for WiFi networks and return a list of dicts with ssid and signal.
+
+    - Deduplicates SSIDs
+    - Keeps the strongest signal per SSID
+    - Returns networks ordered by signal strength (highest first)
+    """
+    cmd = [
+        "nmcli",
+        "-t",
+        "-f",
+        "SSID,SIGNAL",
+        "device",
+        "wifi",
+        "list",
+        "ifname",
+        ifname,
+    ]
+
+    result = run_cmd(cmd)
+    if result.returncode != 0:
+        log(f"Error scanning WiFi networks: {result.stderr.strip()}")
+        return []
+
+    strongest_by_ssid: dict[str, int] = {}
+
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+
+        # nmcli -t uses ':' as field separator
+        ssid, _, signal = line.partition(":")
+        ssid = ssid.strip()
+
+        if not ssid:
+            continue
+
+        try:
+            signal_val = int(signal)
+        except ValueError:
+            continue
+
+        # Keep only the strongest signal per SSID
+        if signal_val > strongest_by_ssid.get(ssid, -1):
+            strongest_by_ssid[ssid] = signal_val
+
+    # Convert to list of dicts and sort by signal strength (descending)
+    return sorted(
+        (
+            {"ssid": ssid, "signal": signal}
+            for ssid, signal in strongest_by_ssid.items()
+        ),
+        key=lambda n: n["signal"],
+        reverse=True,
+    )
+
+
+def apply_wifi_async(ssid: str, pw: str) -> None:
+    global force_setup_mode, apply_in_progress, last_apply_result, last_apply_error
+
+    try:
+        last_apply_result = "applying"
+        last_apply_error = ""
+        log(f"Async apply starting for SSID '{ssid}'")
+
+        time.sleep(0.5)
+        stop_ap_mode()
+
+        success = configure_wifi_with_nmcli(ssid, pw)
+        if success:
+            connected = wait_for_connection(
+                timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+                interval=WAIT_FOR_CONNECTION_INTERVAL,
+            )
+            if connected:
+                last_apply_result = "ok"
+                last_apply_error = ""
+                log("WiFi configuration and connectivity verified; leaving SetupMode")
+                force_setup_mode = False
+                leave_setup_mode("WiFi configuration successful and connectivity verified")
+            else:
+                last_apply_result = "failed"
+                last_apply_error = "no-gateway"
+                log("Connectivity check failed after WiFi configuration; entering SetupMode")
+                force_setup_mode = True
+                enter_setup_mode("Connectivity check failed after WiFi configuration")
+        else:
+            last_apply_result = "failed"
+            last_apply_error = "nmcli-failed"
+            log("WiFi configuration failed; returning to SetupMode")
+            force_setup_mode = True
+            enter_setup_mode("nmcli failed to configure WiFi")
+    finally:
+        with apply_lock:
+            apply_in_progress = False
+
+
+# ** WEB APP **
+
+@app.before_request
+def touch_ap_timer():
+    """No-op placeholder.
+
+    AP mode lifetime is fixed (AP_MAX_DURATION) and is not extended by web activity.
+    Kept to avoid changing the Flask routing behaviour elsewhere.
+    """
+    return
+
+def render_setup_page(error_code: str = "") -> str:
+    """Return the HTML for the WiFi setup page (styled like autostream_webui.py),
+    while trying hard to avoid iOS credential-save prompts.
+    Includes iOS-friendly focus handling (avoid auto-focus in key field).
+    """
+
+    # Map internal error codes to a user-friendly message
+    msg = ""
+    if error_code:
+        if error_code == "no-gateway":
+            msg = "Unable to reach network gateway. Check network is operational or try another."
+        elif error_code == "nmcli-failed":
+            msg = "Unable to connect to that WiFi network. Check the key and try again."
+        else:
+            msg = "WiFi connection attempt failed. Please try again."
+
+    alert_html = ""
+    if msg:
+        alert_html = f"""
+        <div class="alert">
+          <strong>Connection failed.</strong><br>
+          {html.escape(msg)}
+        </div>
+        """
+
+    return f"""<!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <title>Network Setup</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+        <style>{STYLE_CSS}</style>
+        <style>
+          /* Mask text input like a password field without using type=password (iOS prompt heuristic) */
+          .masked {{
+            -webkit-text-security: disc; /* Safari/iOS */
+            text-security: disc;         /* non-standard fallback */
+          }}
+          /* Put key field + eye button on one line */
+          .row {{
+            display: flex;
+            align-items: stretch;
+            gap: 0.5rem;
+          }}
+          .row .grow {{
+            flex: 1 1 auto;
+            min-width: 0; /* important: allows the input to shrink instead of overflowing */
+          }}
+          .row input,
+          .row button {{
+            margin-top: 0.25rem; /* match the existing input top margin from STYLE_CSS */
+          }}
+          .status {{
+            font-size: 0.8rem;     /* smaller text */
+            text-align: center;   /* center horizontally */
+            color: #666;          /* optional: softer “status” look */
+            margin-top: 0.5rem;   /* optional spacing from controls */
+          }}
+          #toggle-mask svg {{
+            position: relative;
+            top: 1px;        /* nudges the eye icon down a bit */
+            display: block;  /* removes baseline alignment quirks */
+          }}
+        </style>
+        <script>
+            let _didInitialFocus = false;
+
+            async function fetchStatus() {{
+                try {{
+                    const resp = await fetch('/status', {{ cache: 'no-store' }});
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    const el = document.getElementById('status');
+                    if (!el) return;
+                    el.textContent =
+                        'WiFi: ' + data.wifistate + ', ' +
+                        'Wired: ' + data.wiredstate + ', ' +
+                        'Gateway reachable: ' + data.gateway_reachable + ', ' +
+                        'SetupMode: ' + data.SetupMode;
+                }} catch (e) {{}}
+            }}
+
+            function focusSsidSelectSoon() {{
+            if (_didInitialFocus) return;
+
+            const select = document.getElementById('ssid-select');
+            const key = document.getElementById('key-field');
+            if (!select) return;
+
+            // If the user has already interacted, don't steal focus.
+            const ae = document.activeElement;
+            const userIsTyping = (ae && (ae === key || ae === select));
+
+            if (!userIsTyping) {{
+                setTimeout(() => {{
+                try {{ select.focus(); }} catch (e) {{}}
+                }}, 250); // iOS captive portal is happier with a slight delay
+            }}
+
+            _didInitialFocus = true;
+            }}
+
+            async function fetchNetworks() {{
+            try {{
+                const resp = await fetch('/networks', {{ cache: 'no-store' }});
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const select = document.getElementById('ssid-select');
+                if (!select) return;
+
+                const current = select.value;
+                select.innerHTML = '';
+
+                const ph = document.createElement('option');
+                ph.value = '';
+                ph.textContent = 'Select a WiFi network…';
+                select.appendChild(ph);
+
+                for (const n of data) {{
+                const opt = document.createElement('option');
+                opt.value = n.ssid || '';
+                const sig = (typeof n.signal === 'number') ? (' (' + n.signal + '%)') : '';
+                opt.textContent = (n.ssid || '(hidden)') + sig;
+                select.appendChild(opt);
+                }}
+
+                if (current) select.value = current;
+
+                // After first successful population, guide focus to the SSID dropdown (iOS).
+                focusSsidSelectSoon();
+            }} catch (e) {{}}
+            }}
+
+            function armKeyField() {{
+            const key = document.getElementById('key-field');
+            if (!key) return;
+
+            // iOS often auto-focuses the first "fillable" input; readonly prevents that.
+            // Allow editing as soon as the user interacts.
+            const enable = () => key.removeAttribute('readonly');
+
+            key.addEventListener('pointerdown', enable, {{ once: true }});
+            key.addEventListener('focus', enable, {{ once: true }});
+
+            // Also enable when user selects an SSID (common flow)
+            const select = document.getElementById('ssid-select');
+            if (select) {{
+                select.addEventListener('change', () => {{
+                enable();
+                // Only nudge focus to key if they picked a real SSID
+                if (select.value) setTimeout(() => {{ try {{ key.focus(); }} catch (e) {{}} }}, 100);
+                }});
+            }}
+            }}
+
+            function installHandlers() {{
+            const form = document.getElementById('wifi-form');
+            if (!form) return;
+
+            // Optional: allow user to briefly reveal/mask the key
+            const toggle = document.getElementById('toggle-mask');
+            const key = document.getElementById('key-field');
+            const eyeOpen = document.getElementById('eye-open');
+            const eyeClosed = document.getElementById('eye-closed');
+            if (toggle && key) {{
+                toggle.addEventListener('click', () => {{
+                const masked = key.classList.toggle('masked');
+
+                // Keep icons in sync with mask state:
+                // masked=true  -> show "eye-open" (can reveal)
+                // masked=false -> show "eye-closed" (currently visible)
+                if (eyeOpen && eyeClosed) {{
+                    eyeOpen.style.display = masked ? 'inline' : 'none';
+                    eyeClosed.style.display = masked ? 'none' : 'inline';
+                }}
+
+                // Update a11y label
+                toggle.setAttribute('aria-label', masked ? 'Show password' : 'Hide password');
+                }});
+            }}
+
+            form.addEventListener('submit', async (ev) => {{
+                ev.preventDefault();
+
+                const btn = document.getElementById('connect-btn');
+                const status = document.getElementById('status');
+                if (btn) btn.disabled = true;
+                if (status) status.textContent = 'Submitting WiFi settings…';
+
+                const ssid = document.getElementById('ssid-select')?.value || '';
+                const k = document.getElementById('key-field')?.value || '';
+
+                try {{
+                // Send the server the expected parameter names without exposing them in the DOM.
+                const body = new URLSearchParams();
+                body.set('ssid', ssid);
+                body.set('password', k);
+
+                const resp = await fetch('/setup', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+                    body: body.toString(),
+                    cache: 'no-store',
+                    credentials: 'same-origin',
+                }});
+
+                const html = await resp.text();
+                document.open();
+                document.write(html);
+                document.close();
+                }} catch (e) {{
+                if (status) status.textContent = 'Submit failed. Please try again.';
+                if (btn) btn.disabled = false;
+                }}
+            }});
+            }}
+
+            window.addEventListener('load', () => {{
+            // Ensure key field won't be auto-focused by iOS, and only becomes editable on interaction.
+            armKeyField();
+
+            fetchNetworks();
+            fetchStatus();
+            installHandlers();
+            setInterval(fetchNetworks, 5000);
+            setInterval(fetchStatus, 2000);
+
+            // Extra nudge: if iOS still tries to focus something, move focus away from key.
+            // (No-op on most browsers.)
+            focusSsidSelectSoon();
+            }});
+        </script>
+        </head>
+
+        <body>
+        <div class="container">
+            <div class="banner">
+            {BANNER_HTML}
+            </div>
+
+            <h1>Connect to WiFi</h1>
+
+            {alert_html}
+
+            <p>Select your WiFi network and enter the key (leave blank for open networks).</p>
+
+            <!-- Use innocuous field names + non-password input to reduce iOS save-password heuristics -->
+            <form id="wifi-form" autocomplete="off" novalidate>
+            <label for="ssid-select">WiFi Network (SSID)</label>
+            <select id="ssid-select" name="s" autocomplete="off">
+                <option value="">Scanning…</option>
+            </select>
+
+            <label for="key-field">WiFi Passphrase/Password</label>
+            <div class="row">
+                <div class="grow">
+                <input
+                    id="key-field"
+                    type="text"
+                    name="k"
+                    class="masked"
+                    readonly
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    spellcheck="false"
+                    inputmode="text"
+                    placeholder="(leave blank for open networks)"
+                />
+                </div>
+                <button id="toggle-mask"
+                        class="pill-btn small"
+                        type="button"
+                        aria-label="Show password"
+                        title="Show / hide">
+                    <svg id="eye-open" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                        viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    <svg id="eye-closed" xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                        viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                        style="display:none;">
+                        <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8
+                                a21.82 21.82 0 0 1 5.06-6.94"/>
+                        <path d="M1 1l22 22"/>
+                        <path d="M9.53 9.53A3 3 0 0 0 12 15
+                                a3 3 0 0 0 2.47-5.47"/>
+                    </svg>
+                </button>
+            </div>
+            <br></br>
+            <div class="hint">
+                You may need to reconnect to your normal WiFi after pressing Connect.
+            </div>
+            <br></br>
+            <button id="connect-btn" class="pill-btn" type="submit">Connect</button>
+            </form>
+            <br></br>
+            <div class="status" id="status">Status: unknown</div>
+        </div>
+        </body>
+        </html>
+        """
+
+
+def render_wait_page(selected_ssid: str = "") -> str:
+    """Wait page shown immediately after submit."""
+    ua = (request.headers.get("User-Agent") or "").lower()
+
+    if "iphone" in ua or "ipad" in ua or "ipod" in ua:
+        browser_name = "Safari"
+    elif "android" in ua:
+        browser_name = "Chrome"
+    elif "windows" in ua:
+        browser_name = "Browser"
+    else:
+        browser_name = "Browser"
+
+    ssid_safe = html.escape(selected_ssid or "")
+    # Hostname may change at runtime (e.g. user renames device); re-read when rendering.
+    host_safe = html.escape(get_system_hostname())
+
+
+    return f"""<!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <title>Joining network…</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+        <style>{STYLE_CSS}</style>
+        <script>
+            async function poll() {{
+            try {{
+                const r = await fetch('/status', {{ cache: 'no-store' }});
+                if (!r.ok) return;
+                const s = await r.json();
+
+                // Once apply is finished:
+                if (!s.apply_in_progress) {{
+                // If we're back in SetupMode, the join failed -> go back to setup
+                if (s.SetupMode || s.last_apply_result === 'failed') {{
+                    const e = encodeURIComponent(s.last_apply_error || 'failed');
+                    window.location.replace('/setup?e=' + e + '&t=' + Date.now());
+                    return;
+                }}
+
+                // If not in SetupMode, assume success path; send them to the mDNS host
+                window.location.replace('http://{host_safe}.local/?t=' + Date.now());
+                return;
+                }}
+            }} catch (e) {{}}
+            }}
+
+            setInterval(poll, 1200);
+            window.addEventListener('load', poll);
+        </script>
+
+        </head>
+
+        <body>
+        <div class="container">
+            {BANNER_HTML}
+
+            <h1>Joining network…</h1>
+
+            <p>Attempting to join the network <code>{ssid_safe}</code>.</p>
+
+            <p>
+            Open {browser_name} and go to <code>{host_safe}.local</code> to continue setup.
+            </p>
+        </div>
+        </body>
+        </html>
+        """
+
+
+@app.route("/", methods=["GET"])
+def index():
+    """Redirect root to the /setup page."""
+    return redirect(url_for("setup"))
+
+@app.errorhandler(404)
+def page_not_found(_):
+    return _captive_response(CAPTIVE_LANDING)
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    global force_setup_mode, apply_in_progress
+
+    if request.method == "POST":
+        # Accept both the “real” names and your innocuous names
+        ssid = (request.form.get("ssid") or request.form.get("s") or "").strip()
+        pw = request.form.get("password") or request.form.get("k") or ""
+
+        if not ssid:
+            log("WiFi configuration POST received without SSID")
+            return _captive_response(render_setup_page())
+
+        with apply_lock:
+            if apply_in_progress:
+                log("Apply already in progress; showing wait page again")
+                return _captive_response(render_wait_page(ssid))
+                #return render_wait_page(ssid)
+            apply_in_progress = True
+
+        # IMPORTANT: return wait page first, then reconfigure in background
+        t = threading.Thread(target=apply_wifi_async, args=(ssid, pw), daemon=True)
+        t.start()
+        return _captive_response(render_wait_page(ssid))
+
+    # GET: show the setup form (include last failure, if any)
+    e = (request.args.get("e") or "").strip()
+    if not e and last_apply_result == "failed":
+        e = last_apply_error or "failed"
+
+    return _captive_response(render_setup_page(e))
+
+
+@app.route("/networks", methods=["GET"])
+def networks():
+    """Return a JSON list of available WiFi networks (SSID + signal)."""
+    nets = scan_wifi_networks()
+    return jsonify(nets)
+
+
+@app.route("/status", methods=["GET"])
+def status():
+    """Return a simple JSON status including SetupMode and link states."""
+    return jsonify(
+        {
+            "wifistate": wifistate,
+            "wiredstate": wiredstate,
+            "gateway_reachable": gateway_reachable,
+            "SetupMode": SetupMode,
+            "apply_in_progress": apply_in_progress,
+            "last_apply_result": last_apply_result,
+            "last_apply_error": last_apply_error,
+        }
+    )
+
+
+def _captive_response(html: str):
+    resp = make_response(html, 200)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+CAPTIVE_LANDING = """<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta http-equiv="refresh" content="0; url=/setup">
+    <title>Wi-Fi setup</title>
+  </head>
+  <body>
+    <p>Redirecting to setup…</p>
+    <p><a href="/setup">Open setup</a></p>
+  </body>
+</html>
+"""
+
+# iOS / Apple captive probes
+@app.route("/hotspot-detect.html", methods=["GET"])
+@app.route("/library/test/success.html", methods=["GET"])
+def apple_captive_probe():
+    return _captive_response(CAPTIVE_LANDING)
+
+# Android / Chrome probes
+@app.route("/generate_204", methods=["GET"])
+@app.route("/gen_204", methods=["GET"])
+def android_probe():
+    return _captive_response(CAPTIVE_LANDING)
+
+# Windows NCSI probe
+@app.route("/ncsi.txt", methods=["GET"])
+@app.route("/connecttest.txt", methods=["GET"])
+def windows_probe():
+    return _captive_response(CAPTIVE_LANDING)
+
+
+@app.route("/.well-known/captive-portal", methods=["GET"])
+def captive_portal_api():
+    """
+    RFC 8910 Captive Portal API endpoint (DHCP option 114 points here).
+    iOS/macOS expect application/captive+json and typically respect no-store.
+    """
+    # Use whatever host the client used (often 192.168.4.1 via DNS hijack / proxy)
+    base = (request.host_url or "http://192.168.4.1/").rstrip("/")
+
+    payload = {
+        "captive": True,
+        "user-portal-url": f"{base}/setup",
+    }
+
+    resp = make_response(json.dumps(payload), 200)
+    resp.headers["Content-Type"] = "application/captive+json; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+
+# ** MAIN NETWORK STATUS MONITORING LOOP **
+
+
+def network_monitor_loop():
+    """Background loop to check network state and enforce the narrative rules.
+
+    Summary of behaviour (ethernet always wins):
+      - If wired ethernet is up: never enter AP mode; if currently in AP mode, exit it.
+      - If WiFi is unconfigured OR still disconnected after BOOT_AP_GRACE seconds:
+            enter AP mode (once per boot) for up to AP_MAX_DURATION seconds.
+      - When AP mode closes after AP_MAX_DURATION:
+            if WiFi is configured (and ethernet is still down) periodically try to connect.
+            If still offline after AP_POST_CLOSE_REBOOT_AFTER, reboot.
+      - If WiFi is configured and ethernet is down:
+            use the kernel's view of the default gateway as a health check.
+            If unreachable for > GW_DOWN_RECONNECT_AFTER: periodically attempt reconnect.
+            If unreachable for > GW_DOWN_REBOOT_AFTER: reboot.
+    """
+    global wifistate, wiredstate, gateway_reachable
+    global boot_time, ap_enter_time, ap_closed_time, ap_exhausted
+    global gw_down_start, last_reconnect_attempt, force_setup_mode
+
+    log("Starting network monitor loop")
+
+    # Record boot time on first entry
+    if boot_time is None:
+        boot_time = time.monotonic()
+
+    while True:
+        now = time.monotonic()
+
+        wifi_cfg = is_wifi_configured()
+        wired_connected = is_wired_connected()
+        wifi_connected = is_wifi_connected()
+        gw_reach = is_gateway_reachable() if (wifi_connected or wifi_cfg) else False
+
+        wifistate = "configured" if wifi_cfg else "unconfigured"
+        wiredstate = "connected" if wired_connected else "disconnected"
+        gateway_reachable = gw_reach
+
+        log_on_change("wifistate", wifistate, f"WiFi state changed -> {wifistate}")
+        log_on_change("wiredstate", wiredstate, f"Wired state changed -> {wiredstate}")
+        log_on_change("gateway_reachable", gateway_reachable, f"Gateway reachable changed -> {gateway_reachable}")
+
+        # Ethernet suppresses AP mode entirely.
+        if wired_connected:
+            gw_down_start = None
+            last_reconnect_attempt = None
+            with state_lock:
+                in_setup = SetupMode
+            if in_setup:
+                leave_setup_mode("Wired ethernet is up; suppressing AP mode")
+            time.sleep(NETWORK_MONITOR_INTERVAL)
+            continue
+
+        # If we're currently in AP mode, enforce the fixed 15-minute lifetime.
+        with state_lock:
+            in_setup = SetupMode
+            ap_started = ap_enter_time
+
+        if in_setup and ap_started is not None:
+            ap_age = now - ap_started
+            if ap_age >= AP_MAX_DURATION:
+                # Close AP mode; do not allow re-entry this boot (unless forced).
+                with state_lock:
+                    ap_exhausted = True
+                    ap_closed_time = now
+                leave_setup_mode(f"AP mode lifetime expired after {ap_age:.0f}s")
+            time.sleep(NETWORK_MONITOR_INTERVAL)
+            continue
+
+        # Decide whether we should enter AP mode during the boot window.
+        # Note: AP mode is only allowed once per boot (ap_exhausted).
+        if not in_setup and not ap_exhausted and not force_setup_mode:
+            boot_age = now - (boot_time or now)
+            # Only enter AP mode if WiFi is unconfigured OR
+            # still disconnected AFTER the boot grace period.
+            # This avoids immediately switching to AP mode before NetworkManager /
+            # firmware has had a chance to come up.
+            should_enter_ap = (
+                boot_age >= BOOT_AP_GRACE
+                and ((not wifi_cfg) or (not wifi_connected))
+            )
+
+            if should_enter_ap:
+                enter_setup_mode(
+                    reason=f"boot_age={boot_age:.0f}s, wifi_cfg={wifi_cfg}, wifi_connected={wifi_connected}"
+                )
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
+
+        # If AP mode has closed and we're still offline, periodically try to connect,
+        # and reboot after AP_POST_CLOSE_REBOOT_AFTER.
+        if ap_exhausted and wifi_cfg and not wifi_connected:
+            if ap_closed_time is None:
+                ap_closed_time = now
+
+            offline_for = now - ap_closed_time
+
+            # Periodic reconnect attempts.
+            if (last_reconnect_attempt is None) or (now - last_reconnect_attempt >= RECONNECT_ATTEMPT_INTERVAL):
+                last_reconnect_attempt = now
+                log(f"Post-AP reconnect attempt (offline_for={offline_for:.0f}s)")
+                connect_to_configured_wifi()
+
+            if offline_for >= AP_POST_CLOSE_REBOOT_AFTER:
+                log(
+                    f"Still offline {offline_for:.0f}s after AP mode closed "
+                    f"(threshold {AP_POST_CLOSE_REBOOT_AFTER}s); rebooting"
+                )
+                reboot_system("NetworkDown")
+
+            time.sleep(NETWORK_MONITOR_INTERVAL)
+            continue
+
+        # Connection reliability monitoring: WiFi configured, ethernet down.
+        # Use kernel neighbor state for default gateway as a health indicator.
+        if wifi_cfg:
+            if not gw_reach:
+                if gw_down_start is None:
+                    gw_down_start = now
+
+                gw_down_for = now - gw_down_start
+
+                if gw_down_for >= GW_DOWN_REBOOT_AFTER:
+                    log(
+                        f"Gateway unreachable for {gw_down_for:.0f}s "
+                        f"(threshold {GW_DOWN_REBOOT_AFTER}s); rebooting"
+                    )
+                    reboot_system("NetworkDown")
+
+                if gw_down_for >= GW_DOWN_RECONNECT_AFTER:
+                    if (last_reconnect_attempt is None) or (now - last_reconnect_attempt >= RECONNECT_ATTEMPT_INTERVAL):
+                        last_reconnect_attempt = now
+                        log(
+                            f"Gateway unreachable for {gw_down_for:.0f}s; "
+                            "attempting reconnect"
+                        )
+                        connect_to_configured_wifi()
+            else:
+                gw_down_start = None
+                last_reconnect_attempt = None
+
+        time.sleep(NETWORK_MONITOR_INTERVAL)
+
+def connect_to_configured_wifi() -> bool:
+    """Attempt to bring up the configured WiFi client connection (if any).
+
+    Returns True if nmcli was invoked (best-effort), False if there is no configured
+    connection to try.
+    """
+    connection_name = get_configured_wifi_connection_name()
+    if not connection_name:
+        return False
+
+    log(f"Attempting to connect to configured WiFi connection '{connection_name}'")
+    run_cmd(["nmcli", "connection", "up", connection_name])
+    return True
+
+
+
+
+
+if __name__ == "__main__":
+    log(f"**************************************************************************")
+    log(f"autostream wifi monitor starting. Copyright (c) 2025, Lo-tech Systems Ltd.")
+
+    # Check CPU
+    check_cpu()
+
+    # First, remove any lingering Hotspot connections configured that would otherwise
+    # force the Pi to setup mode even though the WiFi is probably OK, and connect to
+    # whatever network is configured (if it is configured).
+    run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+    connect_to_configured_wifi()
+
+    # Start the network monitor in a background thread
+    monitor_thread = threading.Thread(target=network_monitor_loop, daemon=True)
+    monitor_thread.start()
+
+    # Ensure AP mode flag matches initial state
+    update_apmode_flag(False)
+
+    # Start the Flask app (HTTP server) on port 9080
+    app.run(host="127.0.0.1", port=9080)

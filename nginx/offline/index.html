@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>autostream</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 1rem;
+      background: #f5f5f5;
+      font-size: 18px;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      background: #fff;
+      padding: 1.25rem 1.5rem 1.5rem;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+      border-radius: 8px;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      margin: 0 0 0.75rem 0;
+    }
+
+    p { margin: 0.35rem 0 0.85rem 0; }
+
+    .btn-row {
+      margin-top: 1rem;
+      display: grid;
+      gap: 0.75rem;
+    }
+
+    .pill-btn {
+      display: inline-block;
+      padding: 0.8rem 1.6rem;
+      font-size: 1.05rem;
+      font-weight: 600;
+      background: #6c757d;
+      color: #fff;
+      border-radius: 999px;
+      border: none;
+      text-decoration: none;
+      cursor: pointer;
+      text-align: center;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+      box-sizing: border-box;
+      width: 100%;
+    }
+
+    @media (min-width: 600px) {
+      body { padding: 2rem; }
+      .btn-row { grid-template-columns: 1fr 1fr 1fr; }
+      .pill-btn { width: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div style="width:100%;text-align:center;margin-bottom:1rem;">
+      <img src="/autostream-badge.png"
+           alt="AutoStream"
+           style="max-width:100%;height:auto;display:block;margin:0 auto;">
+    </div>
+
+    <h1><strong>autostream</strong> has encountered a problem.</h1>
+    
+    <p>Please wait a few moments then retry, or reboot the device.</p>
+
+    <div class="btn-row">
+      <a class="pill-btn" href="http://__HOSTNAME__.local/">Retry</a>
+      <a class="pill-btn" href="/offline/download-logs">Download Logs</a>
+      <a class="pill-btn" href="/offline/reboot">Reboot</a>
+    </div>
+
+  </div>
+</body>
+</html>

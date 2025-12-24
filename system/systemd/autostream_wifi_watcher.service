@@ -1,0 +1,26 @@
+# /etc/systemd/system/autostream_wifi_watcher.service
+#
+# This file is part of autostream.
+# Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=WiFi Setup State Machine (AP Mode + Captive Portal based WiFi Config)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+UMask=022
+WorkingDirectory=/opt/autostream
+
+ExecStart=/opt/autostream/venv/bin/python3 /opt/autostream/autostream_wifi_watcher.py
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

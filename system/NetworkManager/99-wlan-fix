@@ -1,0 +1,11 @@
+#!/bin/bash
+
+IFACE="$1"
+STATUS="$2"
+
+if [ "$IFACE" = "wlan0" ] && [ "$STATUS" = "up" ]; then
+    logger -t wlan-fix "Applying txpower and power_save settings to $IFACE"
+    iwconfig "$IFACE" txpower 12
+    iw "$IFACE" set power_save off
+fi
+

@@ -1,0 +1,16 @@
+# This file is part of autostream.
+# Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+
+[Unit]
+Description=Reboots the system when requested via /tmp/rebootrequired
+DefaultDependencies=yes
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Group=autostream
+UMask=022
+
+# Configure the log file location here:
+Environment="LOG_FILE=/var/log/autostream/autostream_rebooter.log"
+ExecStart=/opt/autostream/autostream_rebooter.sh

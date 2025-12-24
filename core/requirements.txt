@@ -1,0 +1,7 @@
+requests
+numpy
+sounddevice
+flask
+Flask-SQLAlchemy
+PyYAML
+

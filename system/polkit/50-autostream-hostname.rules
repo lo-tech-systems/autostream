@@ -1,0 +1,9 @@
+polkit.addRule(function(action, subject) {
+    if (
+        (action.id == "org.freedesktop.hostname1.set-hostname" ||
+         action.id == "org.freedesktop.hostname1.set-static-hostname") &&
+        subject.user == "autostream"
+    ) {
+        return polkit.Result.YES;
+    }
+});

@@ -1,0 +1,32 @@
+[Unit]
+Description=Autostream Owntone bridge
+After=network-online.target sound.target systemd-udev-settle.service
+Wants=network-online.target systemd-udev-settle.service
+
+[Service]
+# Run as the autostream user
+User=autostream
+Group=autostream
+
+# Project directory
+WorkingDirectory=/opt/autostream
+
+# Adjust the Python path if needed
+ExecStart=/opt/autostream/venv/bin/python3 /opt/autostream/autostream_webui.py /opt/autostream/autostream.ini
+
+# Restart if it crashes
+Restart=on-failure
+RestartSec=5
+
+# Environment (optional – make sure arecord & python3 are in PATH)
+Environment=PYTHONUNBUFFERED=1
+
+# Let script handle its own logging, but also capture stdout/stderr in journal
+StandardOutput=journal
+StandardError=journal
+
+# Give it a bit of time to shut down cleanly
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

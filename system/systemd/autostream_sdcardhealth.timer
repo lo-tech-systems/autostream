@@ -1,0 +1,17 @@
+# /etc/systemd/system/autostream_sdcardhealth.timer
+#
+# This file is part of autostream.
+# Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=Run SD Card Health Check at Boot and Daily
+
+[Timer]
+OnBootSec=3min
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
