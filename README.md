@@ -3,7 +3,7 @@
 **Stream turntables and CD players to AirPlay speakers — automatically.**
 
 **autostream** makes it easy to play vinyl records and CDs through **AirPlay & AirPlay 2** speakers anywhere in your home.
-It connects your classic HiFi gear to wireless multi-room speakers, without complex setup or specialist knowledge.
+It connects your classic Hi-Fi gear to wireless multi-room speakers, without complex setup or specialist knowledge.
 
 **autostream** exists for people with real Hi-Fi gear who want it to behave like a modern source — without changing how they
 listen to music. No apps to install. No complex configuration. Just press play.
@@ -56,11 +56,11 @@ Everything runs locally on your network. There are no cloud services, logons, re
 
 ## Platform & Requirements
 
-* Raspberry Pi - Pi ZeroW is enough - with an 8GB micro-SD card
+* Raspberry Pi - Pi ZeroW is enough (Zero-2W recommended) - with an 8GB micro-SD card
 * USB audio input device (USB turntable, USB DAC such as the Behringer U-PHONE UFO202, SPDIF to USB dongle such as the Cubilux USB C Optical Audio Capture Adapter)
 * AirPlay or AirPlay 2 speakers on the same network
 
-Running on a Pi ZeroW, it consumes less than 2W.
+Running on a Pi ZeroW or Zero2W, it consumes less than 2 Watts.
 
 ---
 
