@@ -66,17 +66,21 @@ Running on a Pi ZeroW, it consumes less than 2W.
 
 ## Getting Started
 
-1. Clone the repository:
+1. Install Git
 ```sh
-# git clone https://github.com/lo-tech-systems/autostream.git
+sudo apt install git
 ```
-2. Run the install script:
+2. Clone the repository:
 ```sh
-# cd autostream && ./autostream_install.sh
+git clone https://github.com/lo-tech-systems/autostream.git
 ```
-3. Connect one or two audio sources
-4. Use an iPhone to browse with Safari to autostream.local/
-5. Run the one-time setup (two screens)
+3. Run the install script:
+```sh
+cd autostream && sudo ./autostream_install.sh
+```
+4. Connect one or two audio sources
+5. Reboot, then use an iPhone to browse with Safari to http://autostream.local/
+6. Run the one-time setup (two screens)
 
 Detailed setup instructions are provided in the docs folder.
 
