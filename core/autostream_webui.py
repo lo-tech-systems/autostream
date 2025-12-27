@@ -269,7 +269,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             self._start_update_apply()
 
         elif path == "/api/reboot":
-            # Body optional (this fixes your empty-body issue)
+            # Body optional
+            # Goes via autostream-admin (sudo) through autostream_sysutils.reboot_system()
             reboot_system("UserRequestNormal")
             pages.send_json(self, 200, {"ok": True})
 

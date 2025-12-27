@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 SDCARD_HEALTH_USED_FILE = Path("/opt/autostream/sdcardhealth")
 
+# Privileged helper (installed outside /opt/autostream)
+AUTOSTREAM_ADMIN_BIN = os.environ.get("AUTOSTREAM_ADMIN_BIN", "/usr/local/libexec/autostream/autostream_admin")
 
 # ---------------------------------------------------------------------------
 # Command helpers
@@ -73,25 +75,51 @@ def run_cmd(
 
 
 # ---------------------------------------------------------------------------
+# Privileged helper wrapper (sudo)
+# ---------------------------------------------------------------------------
+
+def run_admin_cmd(
+    args: list[str],
+    timeout: float | None = 10.0,
+) -> subprocess.CompletedProcess[str]:
+    """Run autostream_admin via sudo (non-interactive).
+
+    This assumes a tight sudoers rule for the web user, and that the helper is
+    installed at AUTOSTREAM_ADMIN_BIN (default /usr/local/sbin/autostream_admin).
+    """
+    cmd = ["sudo", "-n", AUTOSTREAM_ADMIN_BIN, *args]
+    # For logs, avoid leaking the full filesystem path if you prefer;
+    # but keep enough detail to diagnose failures.
+    log_cmd = ["sudo", "-n", "autostream_admin", *args]
+    return run_cmd(cmd, timeout=timeout, log_cmd=log_cmd)
+
+
+
+# ---------------------------------------------------------------------------
 # Reboot request helper
 # ---------------------------------------------------------------------------
 
 def reboot_system(reason: str = "UserRequestNormal") -> None:
     """
-    Signal that a reboot is required by writing a marker file.
+    Request a reboot via the privileged autostream_admin helper.
     Possible values for `reason`:
         AutostreamUpdate
         UserRequestNormal
         UserRequestSystemError
         NetworkDown
     """
-    path = "/tmp/rebootrequired"
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(reason)
-        logger.info("Reboot requested: %s", reason)
-    except Exception:
-        logger.exception("Failed to write reboot request file")
+    reason = (reason or "").strip()
+    if not reason:
+        reason = "UserRequestNormal"
+    p = run_admin_cmd(["reboot", reason], timeout=10.0)
+    if p.returncode == 0:
+        logger.info("Reboot requested via autostream_admin: %s", reason)
+        return
+    logger.error(
+        "Reboot request via autostream_admin failed (rc=%s, stderr=%s)",
+        p.returncode,
+        (p.stderr or "").strip(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -150,37 +178,11 @@ def get_system_hostname() -> str:
         return ""
 
 
-def _force_mdns_announce(new_hostname: str) -> None:
-    """Best-effort mDNS refresh for the new hostname, without reboot.
-
-    On typical Linux systems using Avahi:
-      - avahi-set-host-name broadcasts the new hostname over mDNS.
-      - As a fallback, we try to restart avahi-daemon.
-    All of this is best-effort and quietly ignored if not available.
-    """
-    try:
-        if shutil.which("avahi-set-host-name"):
-            subprocess.run(
-                ["avahi-set-host-name", new_hostname],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        elif shutil.which("systemctl"):
-            subprocess.run(
-                ["systemctl", "try-restart", "avahi-daemon.service"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    except Exception as e:  # noqa: BLE001
-        logging.warning("Failed to trigger mDNS announcement: %s", e)
-
 
 def set_system_hostname(new_hostname: str) -> None:
     """Set the system hostname and trigger mDNS announcements.
 
-    Assumes autostream_webui is running with sufficient privileges.
+    Uses the privileged autostream_admin helper via sudo.
     """
     new_hostname = new_hostname.strip()
     if not new_hostname:
@@ -194,24 +196,13 @@ def set_system_hostname(new_hostname: str) -> None:
     ):
         raise ValueError("Invalid hostname")
 
-    # Prefer systemd's hostnamectl if available
-    if shutil.which("hostnamectl"):
-        subprocess.run(
-            ["hostnamectl", "set-hostname", new_hostname],
-            check=True,
-        )
-    else:
-        # Fallback: write /etc/hostname and call `hostname`
-        try:
-            with open("/etc/hostname", "w", encoding="utf-8") as f:
-                f.write(new_hostname + "\n")
-            subprocess.run(["hostname", new_hostname], check=True)
-        except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"Failed to set hostname: {e}") from e
-
-    # Best effort: cause mDNS to re-announce the new hostname
-    _force_mdns_announce(new_hostname)
-
+    p = run_admin_cmd(["sethostname", new_hostname], timeout=15.0)
+    if p.returncode == 0:
+        logger.info("Hostname change requested via autostream_admin: %s", new_hostname)
+        return
+    raise RuntimeError(
+        f"Failed to set hostname via autostream_admin (rc={p.returncode}): {(p.stderr or '').strip()}"
+    )
 
 # ---------------------------------------------------------------------------
 # File handling functions.

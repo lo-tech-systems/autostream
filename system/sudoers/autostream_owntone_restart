@@ -1,2 +1,0 @@
-# Allow autostream web UI to restart owntone
-autostream ALL=(root) NOPASSWD: /usr/bin/systemctl restart owntone

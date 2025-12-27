@@ -14,6 +14,7 @@ import re
 import tempfile
 
 import requests # third-party (pip install requests)
+from autostream_sysutils import run_admin_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,23 @@ def owntone_set_output(base_url: str, output_id: int, volume_percent: int) -> bo
         return False
 
     return True
+
+
+def owntone_restart_service() -> bool:
+    """Restart the owntone service via the privileged autostream-admin helper.
+
+    This avoids calling systemctl directly from the web process.
+    """
+    p = run_admin_cmd(["restart-owntone"], timeout=20.0)
+    if p.returncode == 0:
+        logger.info("Owntone restart requested via autostream-admin")
+        return True
+    logger.error(
+        "Owntone restart via autostream-admin failed (rc=%s, stderr=%s)",
+        p.returncode,
+        (p.stderr or "").strip(),
+    )
+    return False
 
 
 def owntone_disable_all_outputs(base_url: str) -> None:

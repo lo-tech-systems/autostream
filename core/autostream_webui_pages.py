@@ -9,6 +9,7 @@ import subprocess
 import os
 import threading
 import time
+from pathlib import Path
 import json
 import html
 import textwrap
@@ -35,6 +36,7 @@ from autostream_sysutils import (
     tail_lines,
     get_system_hostname,
     set_system_hostname,
+    run_admin_cmd,
 )
 
 from autostream_rpi import (
@@ -62,6 +64,26 @@ from autostream_webui_assets import (
 )
 
 from autostream_webui_state import WebUIState
+
+
+#
+# Privileged helper / log allowlist hardening
+#
+AUTOSTREAM_ADMIN_BIN = os.environ.get("AUTOSTREAM_ADMIN_BIN", "/usr/local/libexec/autostream/autostream-admin")
+LOG_BASE_DIR = Path("/var/log/autostream").resolve()
+
+def _resolve_allowed_log_path(log_file_cfg: str) -> Path:
+    """Resolve and validate the configured log path, restricting it to /var/log/autostream/*."""
+    p = Path(log_file_cfg.strip())
+    if not p.is_absolute():
+        p = LOG_BASE_DIR / p
+    resolved = p.resolve(strict=True)
+    if LOG_BASE_DIR not in resolved.parents:
+        raise PermissionError("Log file path outside allowed directory")
+    if not resolved.is_file():
+       raise FileNotFoundError("Log file not found")
+    return resolved
+
 
 # -----------------------------------------------------------------------------
 # Thread-safety for ThreadingHTTPServer:
@@ -107,7 +129,11 @@ def _owntone_ready_quick(base_url: str, timeout_s: float = 0.6) -> tuple[bool, s
 def _restart_owntone_worker(state, token: int) -> None:
     """Background restart + wait loop. Updates OWNTONE_RESTART_STATE when done."""
     try:
-        run_cmd(["sudo", "systemctl", "restart", "owntone"])
+        p = run_admin_cmd(["restart-owntone"], timeout=20.0)
+        if p.returncode != 0:
+            raise RuntimeError(
+                f"autostream-admin restart-owntone failed (rc={p.returncode}): {(p.stderr or '').strip()}"
+            )
     except Exception as e:
         with OWNTONE_RESTART_LOCK:
             # Only update if this is the latest restart attempt
@@ -280,7 +306,7 @@ def send_json_(handler, code: int, payload: dict) -> None:
     handler.wfile.write(body)
 
 def run_updater(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
-    cmd = ["/usr/bin/sudo", "/opt/autostream/autostream_updater.py", *args]
+    cmd = ["/usr/bin/sudo", "-n", "/usr/local/libexec/autostream/autostream_updater.py", *args]
     p = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -351,13 +377,52 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
     try:
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
-    except Exception as e:
-        body = f"Error reading config: {e}".encode("utf-8")
-        handler.send_response(500)
-        handler.send_header("Content-Type", "text/plain; charset=utf-8")
-        handler.send_header("Content-Length", str(len(body)))
-        handler.end_headers()
-        handler.wfile.write(body)
+    except Exception:
+        # If we're here something bad happened - user should have been redirected to the setup page
+        # if the INI is missing. Hence, take the nuclear option and inform the user that something
+        # went wrong - then reboot the system. This code serves only inline code in case the file
+        # system is dead (which is likely). Reboot may therefore also fail.
+        body = textwrap.dedent(f"""\
+          <!DOCTYPE html><html><head><meta charset="utf-8"><title>Logs</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+          <style>{STYLE_CSS}
+          body {{ font-size: 14px !important; }}
+          </style></head>
+          <body>
+            <h1>System Error</h1>
+            <p>Unfortunately, an unrecoverable error has occurred:
+            autostream was unable to read the configuration file.</p>
+            <p><strong>autostream will now try to reboot.</strong></p>
+            <p>Please check back in a few minutes. If the system does not recover, 
+            please power-cycle autostream and try again. If the problem persists,
+            please replace the SD card and reinstall autostream.</p>
+          </body>
+        """)
+
+        # Best-effort response; never prevent reboot.
+        try:
+            handler.send_response(500)
+            handler.send_header("Content-Type", "text/html; charset=utf-8")
+            body_bytes = body.encode("utf-8")
+            handler.send_header("Content-Length", str(len(body_bytes)))
+            handler.end_headers()
+            handler.wfile.write(body_bytes)
+            try:
+                handler.wfile.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Best-effort log; never prevent reboot.
+        try:
+            logging.error(
+                "Config load error, rebooting system",
+                exc_info=True
+            )
+        except Exception:
+            pass
+        reboot_system(reason = "UserRequestSystemError")
         return
 
     owntone_base_url = parsed.owntone.base_url
@@ -492,8 +557,13 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
     try:
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
-    except Exception as e:
-        handler.send_error(500, f"Error: {e}")
+    except Exception:
+        try:
+            handler.send_response(302)
+            handler.send_header("Location", "/")
+            handler.end_headers()
+        except Exception:
+            pass
         return
 
     initial_setup = unconfigured(state.config_path)
@@ -712,8 +782,13 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
     try:
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
-    except Exception as e:
-        handler.send_error(500, f"Error: {e}")
+    except Exception:
+        try:
+            handler.send_response(302)
+            handler.send_header("Location", "/")
+            handler.end_headers()
+        except Exception:
+            pass
         return
 
     hidden_set = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
@@ -823,7 +898,7 @@ def send_about_page(handler, state: WebUIState) -> None:
       <title>About</title><style>{STYLE_CSS}</style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
       <p class="actions" style="margin:1rem 0;"><a href="/" class="pill-btn">← Back</a></p>
       <fieldset><legend>Overview</legend>
-          <p><strong>autostream</strong> turns almost any CD player, turntable, cassette deck, or analogue hi-fi device into a wireless AirPlay / AirPlay&nbsp;2 multi-room audio source — automatically, once set up.</p>
+          <p><strong>autostream</strong> turns almost any CD player, turntable, cassette deck, or analogue Hi-Fi device into a wireless AirPlay / AirPlay&nbsp;2 multi-room audio source — automatically, once set up.</p>
       </fieldset>
       <fieldset><legend>System (build {html.escape(version)})</legend>
         {storage_html}{sd_html}
@@ -848,11 +923,13 @@ def send_logs_page(handler, state: WebUIState) -> None:
     lic_html, lic_spacer = build_top_banner_html()
     try:
         cfg = locked_load_config(state.config_path)
-        log_file = parse_config(cfg).general.log_file
-        lines = tail_lines(log_file, 100)
+        log_file_cfg = parse_config(cfg).general.log_file
+        log_path = _resolve_allowed_log_path(log_file_cfg)
+        lines = tail_lines(str(log_path), 100)
         log_content = "\n".join(lines)
     except Exception as e:
-        log_content = f"Error reading logs: {e}"
+        logging.warning("Logs page: denied/failed reading configured log: %s", e)
+        log_content = "Error reading logs (access denied or unavailable)."
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8"><title>Logs</title>
@@ -919,16 +996,19 @@ def send_update_status_json(handler, state: WebUIState) -> None:
 def send_log_file(handler, state: WebUIState) -> None:
     try:
         cfg = locked_load_config(state.config_path)
-        log_file = parse_config(cfg).general.log_file
-        with open(log_file, "rb") as f: data = f.read()
+        log_file_cfg = parse_config(cfg).general.log_file
+        log_path = _resolve_allowed_log_path(log_file_cfg)
+        with log_path.open("rb") as f:
+            data = f.read()
         handler.send_response(200)
         handler.send_header("Content-Type", "text/plain; charset=utf-8")
         handler.send_header("Content-Length", str(len(data)))
-        handler.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(log_file)}"')
+        handler.send_header("Content-Disposition", f'attachment; filename="{log_path.name}"')
         handler.end_headers()
         handler.wfile.write(data)
     except Exception as e:
-        handler.send_error(500, str(e))
+        logging.warning("Log download denied/failed: %s", e)
+        handler.send_error(403, "Log file access denied")
 
 def handle_output_update(handler, state: WebUIState, body: str) -> None:
     try:
@@ -998,24 +1078,49 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 cfg.write(f)
             mark_configured(state.config_path)        
 
-        next_path = "/?msg=Settings saved" if was_initial_setup else "/setup?msg=Settings saved"
+        next_path = "/?msg=Settings saved" # if was_initial_setup else "/setup?msg=Settings saved"
 
         if hostname_changed:
             host_header = handler.headers.get("Host", "")
             port = host_header.rsplit(":", 1)[1] if ":" in host_header else None
             host_p = f"{nh}.local:{port}" if port else f"{nh}.local"
             redirect_url = f"{handler.headers.get('X-Forwarded-Proto', 'http')}://{host_p}{next_path}"
-            
+
+            # Render a redirect page
+            lic_html, lic_spacer = build_top_banner_html(flash_msg="Settings saved")
+            safe_url = html.escape(redirect_url)
+
             body = textwrap.dedent(f"""\
-              <html><head><meta http-equiv="refresh" content="5;url={html.escape(redirect_url)}"><style>{STYLE_CSS}</style></head>
-              <body><div class="card"><h1>Hostname changed</h1><p>Redirecting to <a href="{html.escape(redirect_url)}">{html.escape(redirect_url)}</a> in 5s.</p></div></body></html>
+              <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
+              <title>Hostname changed</title>
+              <meta http-equiv="refresh" content="5;url={safe_url}">
+              <style>{STYLE_CSS}</style></head>
+              <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}
+                <h1>Hostname changed</h1>
+                <div class="card">
+                  <p>Your device hostname is now <strong>{html.escape(nh)}.local</strong>.</p>
+                  <p>Redirecting you to {safe_url}</p>
+                  <p style="word-break:break-word;">
+                    <a class="pill-btn" href="{safe_url}">Tap here to continue</a>
+                  </p>
+                </div>
+              </div></body></html>
             """)
             body_bytes = body.encode("utf-8")
-            handler.send_response(200)
-            handler.send_header("Content-Type", "text/html; charset=utf-8")
-            handler.send_header("Content-Length", str(len(body_bytes)))
-            handler.end_headers()
-            handler.wfile.write(body_bytes)
+
+            # Best-effort response (don’t let a broken client prevent flow).
+            try:
+                handler.send_response(200)
+                handler.send_header("Content-Type", "text/html; charset=utf-8")
+                handler.send_header("Content-Length", str(len(body_bytes)))
+                handler.end_headers()
+                handler.wfile.write(body_bytes)
+                try:
+                    handler.wfile.flush()
+                except Exception:
+                    pass
+            except Exception:
+                pass
         else:
             handler.send_response(302)
             handler.send_header("Location",  next_path)
@@ -1080,7 +1185,7 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         if was_initial_setup:
             next_path = "/setup"
         else:
-            next_path = "/owntone-setup?msg=Settings saved"
+            next_path = "/setup?msg=Settings saved"
         loc = "/owntone-restarting?next=" + quote(next_path, safe="/?=&")
 
         handler.send_response(303)  # See Other (safe after POST)

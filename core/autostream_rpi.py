@@ -137,20 +137,27 @@ def get_cpu_serial() -> str:
     Returns "" if not found.
     """
     # Method 1: /proc/cpuinfo
-    p1 = run_cmd(["bash", "-lc", "cat /proc/cpuinfo | grep -m1 Serial"])
-    if p1.stdout:
-        # Expected format: "Serial\t\t: 00000000abcdef"
-        parts = p1.stdout.split(":")
-        if len(parts) > 1:
-            serial = parts[1].strip()
-            if serial:
-                return serial
+    try:
+        cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
+        for ln in cpuinfo.splitlines():
+            if ln.strip().lower().startswith("serial"):
+                # Expected format: "Serial\t\t: 00000000abcdef"
+                parts = ln.split(":", 1)
+                if len(parts) == 2:
+                    serial = parts[1].strip()
+                    if serial:
+                        return serial
+                break
+    except Exception:
+        pass
 
     # Method 2: device tree (common on Raspberry Pi)
-    p2 = run_cmd(["bash", "-lc", "cat /proc/device-tree/serial-number 2>/dev/null"])
-    if p2.stdout:
-        # device-tree strings may contain NUL bytes
-        return p2.stdout.replace("\x00", "").strip()
+    try:
+        raw = Path("/proc/device-tree/serial-number").read_bytes()
+        if raw:
+            return raw.replace(b"\x00", b"").decode("utf-8", errors="ignore").strip()
+    except Exception:
+        pass
 
     return ""
 

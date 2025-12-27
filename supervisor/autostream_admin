@@ -1,0 +1,404 @@
+#!/usr/bin/python3
+"""autostream-admin (privileged actions)
+
+Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+
+INSTALLATION LOCATION (IMPORTANT)
+--------------------------------
+This script must be installed OUTSIDE /opt/autostream so it cannot be replaced by the webapp
+self-update process.
+
+Recommended path:
+  /usr/local/libexec/autostream/autostream-admin
+
+Ownership/permissions (example):
+  chown root:root /usr/local/libexec/autostream/autostream-admin
+  chmod 0755 /usr/local/libexec/autostream/autostream-admin
+
+LOGGING
+-------
+This script logs ONLY to journald via stdout/stderr (systemd captures it).
+Do NOT read /opt/autostream/autostream.ini from here; treat /opt/autostream as
+untrusted because it is writable by the web server and update mechanism.
+
+COMMANDS
+--------
+Exactly one of:
+  reboot [reason]
+  restart-owntone
+  sethostname HOSTNAME
+
+REBOOT REASONS
+--------------
+Valid reasons:
+  AutostreamUpdate
+  UserRequestNormal
+  UserRequestSystemError
+  NetworkDown
+
+Rate limiting:
+  NetworkDown reboots are limited to once per hour using a persistent stamp file:
+    /var/lib/autostream/reboot_networkdown.stamp
+
+HOSTNAME
+--------
+Valid hostnames:
+  - Must be 1..63 characters
+  - Must be a valid hostname label (letters/digits/hyphen; not start/end hyphen; 1..63 chars)
+  - Must not contain leading/trailing whitespace
+
+NOTES
+-----
+- Must run as root.
+- Hostname changes update /etc/hostname and /etc/hosts and attempt an mDNS
+  re-announce by restarting avahi-daemon.
+"""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+import datetime as dt
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional, Tuple
+
+# Throw if not root
+if os.geteuid() != 0:
+    print("This program must be run as root", file=sys.stderr)
+    sys.exit(1)
+
+
+# Persistent stamp file for rate limiting NetworkDown reboots
+STAMP_DIR = Path("/var/lib/autostream")
+NETWORKDOWN_STAMP = STAMP_DIR / "reboot_networkdown.stamp"
+NETWORKDOWN_MIN_INTERVAL_SECONDS = 3600  # 1 hour
+
+VALID_REBOOT_REASONS = {
+    "AutostreamUpdate",
+    "UserRequestNormal",
+    "UserRequestSystemError",
+    "NetworkDown",
+}
+
+# RFC-ish hostname label validation: letters/digits/hyphen; not start/end hyphen; 1..63 chars
+HOSTNAME_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+
+# Systemctl candidates
+SYSTEMCTL_CANDIDATES = (
+    "/bin/systemctl",
+    "/usr/bin/systemctl",
+)
+
+def find_systemctl():
+    for path in SYSTEMCTL_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def log(level: str, msg: str) -> None:
+    """Log to stdout/stderr for journald capture."""
+    ts = dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="seconds")
+    line = f"{ts} {level} {msg}"
+    if level in ("ERROR", "WARN"):
+        print(line, file=sys.stderr, flush=True)
+    else:
+        print(line, file=sys.stdout, flush=True)
+
+
+def run_cmd(cmd: list[str]) -> Tuple[int, str, str]:
+    """Run a command returning (rc, stdout, stderr) with text decoding."""
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+
+
+HOSTNAMECTL_CANDIDATES = (
+    "/usr/bin/hostnamectl",
+    "/bin/hostnamectl",
+    "/usr/local/bin/hostnamectl",
+    "/usr/sbin/hostnamectl",
+    "/sbin/hostnamectl",
+)
+
+def find_hostnamectl():
+    """Return an absolute path to hostnamectl if available, else None."""
+    for path in HOSTNAMECTL_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    # As a last resort, try PATH lookup, but only accept an absolute result.
+    p = shutil.which("hostnamectl")
+    if p and os.path.isabs(p) and os.access(p, os.X_OK):
+        return p
+    return None
+
+
+def validate_hostname(hostname: str) -> Tuple[bool, str]:
+    """Validate hostname for Linux/DNS expectations."""
+    h = hostname.strip()
+    if not h:
+        return False, "hostname is empty"
+    if len(h) > 253:
+        return False, "hostname is too long (>253 chars)"
+
+    labels = h.split(".")
+    for label in labels:
+        if not (1 <= len(label) <= 63):
+            return False, f"label '{label}' length must be 1..63"
+        if not HOSTNAME_LABEL_RE.match(label):
+            return False, f"label '{label}' has invalid characters/format"
+    return True, ""
+
+
+def atomic_write_text(path: Path, text: str, mode: int = 0o644) -> None:
+    """Atomically write a file (write temp then replace)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.chmod(tmp, mode)
+    tmp.replace(path)
+
+
+def update_etc_hostname(hostname: str) -> None:
+    atomic_write_text(Path("/etc/hostname"), hostname.strip() + "\n", mode=0o644)
+
+
+def update_etc_hosts(hostname: str) -> None:
+    """Ensure /etc/hosts has a 127.0.1.1 mapping for the hostname (Debian/Pi OS style)."""
+    hosts_path = Path("/etc/hosts")
+    original = hosts_path.read_text(encoding="utf-8").splitlines()
+
+    new_lines: list[str] = []
+    replaced = False
+
+    for line in original:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+
+        m = re.match(r"^(\S+)(\s+)(.*)$", line)
+        if not m:
+            new_lines.append(line)
+            continue
+
+        ip = m.group(1)
+        if ip == "127.0.1.1":
+            remainder = m.group(3)
+            comment = ""
+            if "#" in remainder:
+                _, after = remainder.split("#", 1)
+                comment = " #" + after.strip()
+            new_lines.append(f"127.0.1.1\t{hostname}{comment}".rstrip())
+            replaced = True
+        else:
+            new_lines.append(line)
+
+    if not replaced:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append(f"127.0.1.1\t{hostname}")
+
+    atomic_write_text(hosts_path, "\n".join(new_lines) + "\n", mode=0o644)
+
+
+def rebroadcast_mdns() -> bool:
+    """Restart avahi-daemon to trigger an mDNS re-announce (best effort)."""
+    systemctl = find_systemctl()
+    if not systemctl:
+        log("WARN", "mdns: systemctl not found; cannot restart avahi-daemon")
+        return False
+
+    for unit in ("avahi-daemon.service", "avahi-daemon"):
+        rc, out, err = run_cmd([str(systemctl), "restart", unit])
+        if rc == 0:
+            log("INFO", f"mdns: restarted {unit} successfully")
+            return True
+        log("WARN", f"mdns: failed restarting {unit} rc={rc} stderr='{err}' stdout='{out}'")
+
+    return False
+
+
+def set_hostname(hostname: str) -> bool:
+    ok, why = validate_hostname(hostname)
+    if not ok:
+        log("ERROR", f"set-hostname: validation failed: {why}")
+        return False
+
+    log("INFO", f"set-hostname: received request hostname='{hostname}'")
+
+    try:
+        update_etc_hostname(hostname)
+        update_etc_hosts(hostname)
+        log("INFO", "set-hostname: updated /etc/hostname and /etc/hosts")
+    except Exception as e:
+        log("ERROR", f"set-hostname: failed updating /etc/hostname or /etc/hosts: {e!r}")
+        return False
+
+    # Keep systemd static hostname consistent (best effort).
+    # We do NOT import any /opt/autostream modules.
+    hostnamectl = find_hostnamectl()
+    if hostnamectl is not None:
+        rc, out, err = run_cmd([str(hostnamectl), "set-hostname", hostname])
+        if rc == 0:
+            log("INFO", "set-hostname: hostnamectl succeeded")
+        else:
+            log("WARN", f"set-hostname: hostnamectl failed rc={rc} stderr='{err}' stdout='{out}'")
+    else:
+        # Fallback runtime hostname
+        rc, out, err = run_cmd(["/bin/hostname", hostname])
+        if rc == 0:
+            log("INFO", "set-hostname: /bin/hostname succeeded")
+        else:
+            log("WARN", f"set-hostname: /bin/hostname failed rc={rc} stderr='{err}' stdout='{out}'")
+
+    mdns_ok = rebroadcast_mdns()
+    log("INFO", f"set-hostname: completed (mdns_rebroadcast={'ok' if mdns_ok else 'failed'})")
+    return True
+
+
+def restart_owntone() -> bool:
+    log("INFO", "restart-owntone: received request")
+    systemctl = find_systemctl()
+    if not systemctl:
+        log("ERROR", "restart-owntone: systemctl not found")
+        return False
+
+    rc, out, err = run_cmd([str(systemctl), "restart", "owntone"])
+    if rc == 0:
+        log("INFO", "restart-owntone: success")
+        return True
+
+    log("ERROR", f"restart-owntone: failed rc={rc} stderr='{err}' stdout='{out}'")
+    return False
+
+
+def should_rate_limit_networkdown() -> Tuple[bool, Optional[int]]:
+    """Return (rate_limited, seconds_remaining)."""
+    try:
+        STAMP_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log("WARN", f"reboot: cannot ensure stamp dir {STAMP_DIR} exists ({e!r}); skipping rate-limit")
+        return False, None
+
+    if not NETWORKDOWN_STAMP.exists():
+        return False, None
+
+    try:
+        last = dt.datetime.fromtimestamp(NETWORKDOWN_STAMP.stat().st_mtime, tz=dt.timezone.utc)
+        now = dt.datetime.now(dt.timezone.utc)
+        delta = (now - last).total_seconds()
+        if delta < NETWORKDOWN_MIN_INTERVAL_SECONDS:
+            return True, int(NETWORKDOWN_MIN_INTERVAL_SECONDS - delta)
+        return False, None
+    except Exception:
+        return False, None
+
+
+def touch_networkdown_stamp() -> None:
+    STAMP_DIR.mkdir(parents=True, exist_ok=True)
+    NETWORKDOWN_STAMP.touch()
+
+
+def reboot_host(reason: Optional[str]) -> bool:
+    r = (reason or "").strip()
+    if not r:
+        r = "(no reason provided)"
+
+    if r != "(no reason provided)" and r not in VALID_REBOOT_REASONS:
+        log("ERROR", f"reboot: invalid reason '{r}' (valid: {', '.join(sorted(VALID_REBOOT_REASONS))})")
+        return False
+
+    log("INFO", f"reboot: received request reason={r}")
+
+    if r == "NetworkDown":
+        limited, remaining = should_rate_limit_networkdown()
+        if limited:
+            log("WARN", f"reboot: rate-limited NetworkDown (try again in ~{remaining}s)")
+            return True  # handled without reboot
+        try:
+            touch_networkdown_stamp()
+        except Exception as e:
+            log("WARN", f"reboot: failed to write stamp file (continuing): {e!r}")
+
+    reboot_bin = Path("/sbin/reboot")
+    if not reboot_bin.exists():
+        log("ERROR", "reboot: /sbin/reboot not found")
+        return False
+
+    rc, out, err = run_cmd([str(reboot_bin)])
+    if rc == 0:
+        log("INFO", "reboot: /sbin/reboot executed successfully")
+        return True
+
+    log("ERROR", f"reboot: /sbin/reboot failed rc={rc} stderr='{err}' stdout='{out}'")
+    return False
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="AutoStream admin helper (run via sudo)."
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    p_reboot = subparsers.add_parser(
+        "reboot",
+        help="Reboot the system. Optionally provide a reason (e.g., NetworkDown).",
+    )
+    p_reboot.add_argument(
+        "reason",
+        nargs="?",
+        default="",
+        help="Optional reboot reason (e.g., NetworkDown).",
+    )
+
+    subparsers.add_parser(
+        "restart-owntone",
+        help="Restart the owntone service.",
+    )
+
+    p_sethostname = subparsers.add_parser(
+        "sethostname",
+        help="Set system hostname.",
+    )
+    p_sethostname.add_argument(
+        "hostname",
+        help="Hostname to set.",
+    )
+
+    args = parser.parse_args(argv)
+    return args
+
+
+def main(argv: list[str]) -> int:
+    if os.geteuid() != 0:
+        log("ERROR", "must run as root")
+        return 2
+
+    args = parse_args(argv)
+
+    try:
+        if args.command == "reboot":
+            ok = reboot_host(args.reason)
+            return 0 if ok else 1
+
+        if args.command == "restart-owntone":
+            ok = restart_owntone()
+            return 0 if ok else 1
+
+        if args.command == "sethostname":
+            ok = set_hostname(args.hostname)
+            return 0 if ok else 1
+
+        log("ERROR", "no action specified")
+        return 2
+    except Exception as e:
+        log("ERROR", f"fatal error: {e!r}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

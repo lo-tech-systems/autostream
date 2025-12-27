@@ -1,2 +1,2 @@
 # Allow autostream web UI to run the updater helper (no password)
-autostream ALL=(root) NOPASSWD: /opt/autostream/autostream_updater.py
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_updater

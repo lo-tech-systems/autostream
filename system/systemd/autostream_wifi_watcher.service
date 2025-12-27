@@ -14,7 +14,7 @@ Type=simple
 UMask=022
 WorkingDirectory=/opt/autostream
 
-ExecStart=/opt/autostream/venv/bin/python3 /opt/autostream/autostream_wifi_watcher.py
+ExecStart=/opt/autostream/autostream_wifi_watcher
 
 Restart=on-failure
 RestartSec=5

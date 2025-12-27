@@ -1,0 +1,33 @@
+# autostream_admin - sudoers ruleset
+#
+# Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+#
+# Allow the autostream web user to run ONLY the autostream_admin helper
+# in its intended modes, as root, without a password.
+
+User_Alias AUTOSTREAM_WEB = autostream
+
+Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_AU   = /usr/local/libexec/autostream/autostream_admin reboot AutostreamUpdate
+Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_URN  = /usr/local/libexec/autostream/autostream_admin reboot UserRequestNormal
+Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_URSE = /usr/local/libexec/autostream/autostream_admin reboot UserRequestSystemError
+Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_ND   = /usr/local/libexec/autostream/autostream_admin reboot NetworkDown
+# add other allowed reasons explicitly
+
+Cmnd_Alias AUTOSTREAM_ADMIN_OWNTONE     = /usr/local/libexec/autostream/autostream_admin restart-owntone
+
+# Hostname: restrict with a glob pattern, not *
+# Example: allow letters, digits, dots, hyphens only (no spaces)
+Cmnd_Alias AUTOSTREAM_ADMIN_HOST        = /usr/local/libexec/autostream/autostream_admin sethostname [A-Za-z0-9.-]*
+
+Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,   \
+                              AUTOSTREAM_ADMIN_REBOOT_URN,  \
+                              AUTOSTREAM_ADMIN_REBOOT_URSE, \
+                              AUTOSTREAM_ADMIN_REBOOT_ND,   \
+                              AUTOSTREAM_ADMIN_OWNTONE,     \
+                              AUTOSTREAM_ADMIN_HOST
+
+Defaults!AUTOSTREAM_ADMIN env_reset
+Defaults!AUTOSTREAM_ADMIN secure_path="/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults!AUTOSTREAM_ADMIN !requiretty
+
+AUTOSTREAM_WEB ALL=(root) NOPASSWD: AUTOSTREAM_ADMIN

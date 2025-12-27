@@ -10,5 +10,5 @@ After=local-fs.target
 [Service]
 Type=oneshot
 User=root
-ExecStart=/bin/sh -o pipefail -c '/opt/autostream/sdmon -q -a /dev/mmcblk0 | /usr/bin/jq -r ".healthStatusPercentUsed" > /opt/autostream/sdcardhealth'
+ExecStart=/bin/sh -o pipefail -c '/usr/local/sbin/sdmon -q -a /dev/mmcblk0 | /usr/bin/jq -r ".healthStatusPercentUsed" > /opt/autostream/sdcardhealth'
 

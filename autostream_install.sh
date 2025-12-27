@@ -14,8 +14,16 @@
 # - It will install packages, enable services, and modify system configuration.
 #
 # Options:
-# --yes
-# Skips Continue Y/N prompt. User must still enter the PIN.
+# --unattended PIN=1234
+# Skips Continue Y/N prompt and sets the PIN to the value specified.
+# Falls back to attended mode if PIN is not specified.
+#
+# --sdmon=[sandisk|adata|transcend|micron|swissbit|2step]
+# Enable sdmon (SD Card Monitoring) with the specified vendor.
+# IMPORTANT: This should only be used with supported cards, generally
+#            industrial-grade cards from those manufacturers, for example
+#            the Sandisk SDSDQAF3-008G-I. sdmon may cause consumer-grade
+#            cards to go offline.
 #
 # --fetch-autostream
 # Clone or update the Autostream repository from GitHub.
@@ -42,38 +50,75 @@ LOGFILE="${ORIG_HOME}/autostream_install.log"
 AUTOSTREAM_DIR="${ORIG_HOME}/autostream"
 INSTALL_DIR="/opt/autostream"
 APP_LOG_DIR="/var/log/autostream"
+STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin binaries
+LIBEXEC_DIR="/usr/local/libexec/autostream"  # root-owned helper scripts
 
 PIN_REGEX='^[A-Za-z0-9-]{4,20}$'
 
 # Installer flags
-AUTO_YES=0
+UNATTENDED=0
+PIN_VALUE=""
+
+SDMON_VENDOR=""                  # e.g. sandisk|adata|transcend|micron|swissbit|2step
+
 OWNTONE_APT_REF="refs/heads/master"  # Prefer pinning to a commit or tag for release builds
 OWNTONE_KEY_FPR=""                   # Optional: set expected Owntone repo key fingerprint to verify
 FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitly requested
 
 usage() {
   cat <<EOF
-Usage: sudo ./${SCRIPT_NAME} [--yes] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>]
+Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon=<vendor>] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--fetch-autostream]
 
-  --yes                  Run non-interactively (or skip confirmation prompts).
-  --owntone-apt-ref REF  GitHub ref/commit for Owntone APT metadata (default: ${OWNTONE_APT_REF}).
-  --owntone-key-fpr FPR  Expected Owntone repo key fingerprint (optional hardening).
-  --fetch-autostream     Clone/update the autostream GitHub repository.
-  --help, -h             Show this help.
+  --unattended PIN=1234      Run non-interactively (or skip confirmation prompts) and set the PIN.
+                             If PIN is omitted/invalid, the installer falls back to attended mode.
+
+  --sdmon=<vendor>           Enable sdmon (SD Card Monitoring) with vendor:
+                             sandisk | adata | transcend | micron | swissbit | 2step
+
+  --owntone-apt-ref REF      GitHub ref/commit for Owntone APT metadata (default: ${OWNTONE_APT_REF}).
+  --owntone-key-fpr FPR      Expected Owntone repo key fingerprint (optional hardening).
+  --fetch-autostream         Clone/update the autostream GitHub repository.
+  --help, -h                 Show this help.
 
 Examples:
   sudo ./${SCRIPT_NAME}
-  sudo ./${SCRIPT_NAME} --yes
+  sudo ./${SCRIPT_NAME} --unattended PIN=1234
+  sudo ./${SCRIPT_NAME} --unattended PIN=abcd-1234 --sdmon=sandisk
   sudo ./${SCRIPT_NAME} --owntone-apt-ref <commit-sha> --owntone-key-fpr "ABCD ..."
 
 EOF
 }
 
+is_valid_sdmon_vendor() {
+  case "$1" in
+    sandisk|adata|transcend|micron|swissbit|2step) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --yes)
-        AUTO_YES=1
+      --unattended)
+        UNATTENDED=1
+        # Expect a following arg like PIN=1234
+        if [[ $# -ge 2 && "$2" == PIN=* ]]; then
+          PIN_VALUE="${2#PIN=}"
+          shift 2
+        else
+          # Narrative says: fall back to attended mode if PIN not specified.
+          PIN_VALUE=""
+          UNATTENDED=0
+          shift
+        fi
+        ;;
+      --sdmon=*)
+        SDMON_VENDOR="${1#--sdmon=}"
+        if ! is_valid_sdmon_vendor "${SDMON_VENDOR}"; then
+          error "Invalid --sdmon vendor: ${SDMON_VENDOR}"
+          usage
+          exit 2
+        fi
         shift
         ;;
       --owntone-apt-ref)
@@ -101,6 +146,15 @@ parse_args() {
         ;;
     esac
   done
+
+  # If --unattended provided with a PIN, validate it here. If invalid, revert to attended.
+  if [[ ${UNATTENDED} -eq 1 ]]; then
+    if [[ -z "${PIN_VALUE}" || ! "${PIN_VALUE}" =~ ${PIN_REGEX} ]]; then
+      warn "--unattended supplied but PIN is missing/invalid; falling back to attended mode."
+      UNATTENDED=0
+      PIN_VALUE=""
+    fi
+  fi
 }
 
 #############################################
@@ -271,8 +325,8 @@ Note: the log is overwritten on each run.
 EOF
 
   if has_tty; then
-    if [[ ${AUTO_YES} -eq 1 ]]; then
-      info "--yes supplied; skipping interactive confirmation."
+    if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
+      info "--unattended supplied with PIN; skipping interactive confirmation."
       return 0
     fi
 
@@ -282,13 +336,29 @@ EOF
       *) error "Aborted by user."; exit 1 ;;
     esac
   else
-    if [[ ${AUTO_YES} -eq 1 ]]; then
-      info "Non-interactive session; --yes supplied, continuing."
+    if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
+      info "Non-interactive session; --unattended supplied, continuing."
     else
-      error "Non-interactive session detected. Refusing to proceed without --yes."
-      error "Re-run with: sudo ./${SCRIPT_NAME} --yes"
+      error "Non-interactive session detected. Refusing to proceed without a valid unattended PIN."
+      error "Re-run with: sudo ./${SCRIPT_NAME} --unattended PIN=<4-20 chars A-Z a-z 0-9 hyphen>"
       exit 1
     fi
+  fi
+}
+
+set_pin_file() {
+  local pin="$1"
+
+  if [[ -d /boot/firmware ]]; then
+    echo "${pin}" > /boot/firmware/pin.txt
+    chmod 0644 /boot/firmware/pin.txt || true
+    info "Wrote PIN to /boot/firmware/pin.txt"
+  elif [[ -d /boot ]]; then
+    echo "${pin}" > /boot/pin.txt
+    chmod 0644 /boot/pin.txt || true
+    info "Wrote PIN to /boot/pin.txt"
+  else
+    warn "Could not find /boot or /boot/firmware; PIN not saved."
   fi
 }
 
@@ -310,14 +380,7 @@ prompt_for_pin() {
     warn "Invalid PIN. Must match: ${PIN_REGEX}"
   done
 
-  # Save to /boot for first-run configuration
-  if [[ -d /boot/firmware ]]; then
-    echo "${pin}" > /boot/firmware/pin.txt
-  elif [[ -d /boot ]]; then
-    echo "${pin}" > /boot/pin.txt
-  else
-    warn "Could not find /boot or /boot/firmware; PIN not saved."
-  fi
+  set_pin_file "${pin}"
 }
 
 apt_install() {
@@ -342,15 +405,6 @@ apt_install() {
       return 1
     fi
   fi
-}
-
-apt_install_() {
-  local pkgs=("$@")
-  if [[ ${#pkgs[@]} -eq 0 ]]; then
-    return 0
-  fi
-  info "Installing packages: ${pkgs[*]}"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}"
 }
 
 ensure_group() {
@@ -384,13 +438,43 @@ ensure_user_in_group() {
     return 0
   fi
 
-  if id -nG "${user}" 2>/dev/null | tr ' ' '\n' | grep -qx "${group}"; then
+  if id -nG "${user}" 2>/dev/null | tr ' ' '
+' | grep -qx "${group}"; then
     info "User '${user}' is already a member of '${group}'."
     return 0
   fi
 
   info "Adding user '${user}' to group '${group}'"
   usermod -aG "${group}" "${user}"
+}
+
+install_text_linux() {
+  # Install a text file and normalize line endings to LF (strip CR).
+  # Usage: install_text_linux <src> <dest> <mode> [owner] [group]
+  local src="$1" dest="$2" mode="$3" owner="${4:-root}" group="${5:-root}"
+
+  if [[ ! -f "$src" ]]; then
+    error "Missing required file: $src"
+    return 1
+  fi
+
+  install -m "$mode" -o "$owner" -g "$group" "$src" "$dest"
+
+  # Convert CRLF -> LF in-place (remove trailing carriage return)
+  sed -i 's/\r$//' "$dest" || true
+}
+
+install_bin() {
+  # Install an executable file (binary or script). Does not modify contents.
+  # Usage: install_bin <src> <dest> <mode> [owner] [group]
+  local src="$1" dest="$2" mode="$3" owner="${4:-root}" group="${5:-root}"
+
+  if [[ ! -e "${src}" ]]; then
+    error "Missing required file: ${src}"
+    return 1
+  fi
+
+  install -m "${mode}" -o "${owner}" -g "${group}" "${src}" "${dest}"
 }
 
 git_clone_or_update() {
@@ -400,14 +484,13 @@ git_clone_or_update() {
   if [[ -d "${dest_dir}/.git" ]]; then
     info "Updating ${dest_dir}"
     git -C "${dest_dir}" fetch --all --prune
-    git -C "${dest_dir}" reset --hard origin/master
+    git -C "${dest_dir}" reset --hard origin/main
   else
     info "Cloning ${repo_url} into ${dest_dir}"
     rm -rf "${dest_dir}" || true
     git clone "${repo_url}" "${dest_dir}"
   fi
 }
-
 
 update_pi_firmware_config() {
   # updates /boot/firmware/config.txt to enable the hardware watchdog and disable Bluetooth
@@ -460,6 +543,31 @@ update_pi_firmware_config() {
   rm -f "${tmp}"
 }
 
+patch_sdmon_service_vendor() {
+  # Inject "-m <vendor>" into ExecStart for sdmon before the /dev node, if not present.
+  local vendor="$1"
+  local svc="/etc/systemd/system/autostream_sdcardhealth.service"
+
+  [[ -f "${svc}" ]] || { warn "sdmon service not found at ${svc}; cannot patch vendor"; return 0; }
+
+  if grep -qE "^ExecStart=.*\\bsdmon\\b.*\\s-m\\s+${vendor}\\b" "${svc}"; then
+    info "sdmon vendor already set in ${svc}"
+    return 0
+  fi
+
+  if grep -qE "^ExecStart=.*\\bsdmon\\b" "${svc}"; then
+    info "Patching ${svc} to set sdmon vendor: ${vendor}"
+    # Only modify ExecStart lines containing sdmon and a /dev path; avoid double-inserting.
+    # Example desired: /opt/autostream/sdmon -q -a -m sandisk /dev/mmcblk0
+    sed -i -E \
+      "/^ExecStart=.*\\bsdmon\\b/ {
+        /-m[[:space:]]+[A-Za-z0-9_-]+/! s#(\\bsdmon\\b[^\n]*)([[:space:]]+/dev/)#\\1 -m ${vendor}\\2#
+      }" \
+      "${svc}"
+  else
+    warn "No ExecStart line referencing sdmon found in ${svc}; cannot patch vendor"
+  fi
+}
 
 #############################################
 # Main
@@ -469,9 +577,38 @@ main() {
   require_sudo
   init_logging
 
+# --- NetworkManager / nmcli hard requirement ---
+if ! command -v nmcli >/dev/null 2>&1; then
+  echo "ERROR: nmcli not found."
+  echo "This application requires NetworkManager. Aborting."
+  exit 1
+fi
+
+# Ensure NetworkManager is running and managing networking
+if ! systemctl is-active --quiet NetworkManager; then
+  echo "ERROR: NetworkManager service is not active."
+  echo "This application requires NetworkManager to manage networking. Aborting."
+  exit 1
+fi
+
+# Ensure NetworkManager is actually in control (not ifupdown, dhcpcd, etc.)
+if ! nmcli -t -f RUNNING general status 2>/dev/null | grep -qx running; then
+  echo "ERROR: NetworkManager is installed but not managing networking."
+  echo "Please disable other network managers (e.g. dhcpcd, ifupdown)."
+  echo "Aborting."
+  exit 1
+fi
+# --- end NetworkManager guard ---
+
   show_warnings_and_prompt
   require_rpi_os_trixie
-  prompt_for_pin
+
+  if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
+    info "Unattended mode: setting PIN from command line"
+    set_pin_file "${PIN_VALUE}"
+  else
+    prompt_for_pin
+  fi
 
   info "Setting working directory to original user's home: ${ORIG_HOME}"
   cd "${ORIG_HOME}"
@@ -480,8 +617,18 @@ main() {
   mkdir -p "${AUTOSTREAM_DIR}" || true
   mkdir -p "${INSTALL_DIR}" "${APP_LOG_DIR}"
 
+  # Root-only stamps/admin directory
+  mkdir -p "${STAMP_DIR}"
+  chown root:root "${STAMP_DIR}"
+  chmod 0700 "${STAMP_DIR}"
+
+  # Root-owned libexec helpers
+  mkdir -p "${LIBEXEC_DIR}"
+  chown root:root "${LIBEXEC_DIR}"
+  chmod 0755 "${LIBEXEC_DIR}"
+
   info "Updating apt metadata"
-  DEBIAN_FRONTEND=noninteractive apt-get update -y
+  DEBIAN_FRONTEND=noninteractive apt-get update
 
   # Base prerequisites
   apt_install curl gpg ca-certificates
@@ -509,14 +656,15 @@ main() {
     -o /etc/apt/sources.list.d/owntone.list \
     "https://raw.githubusercontent.com/owntone/owntone-apt/${OWNTONE_APT_REF}/repo/rpi/owntone-trixie.list"
 
-  DEBIAN_FRONTEND=noninteractive apt-get update -y
+  DEBIAN_FRONTEND=noninteractive apt-get update
 
   # Platform libraries
+  # Note - flask is required for autostream_wifi_watcher so must be system level.
   apt_install git build-essential libffi-dev pkg-config jq fq acl \
-    libportaudio2 portaudio19-dev python3-dev python3-venv python3-pip
+    libportaudio2 portaudio19-dev python3-dev python3-venv python3-pip python3-flask
 
   # Platform services
-  apt_install watchdog dnsmasq fcgiwrap
+  apt_install watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
   # Application services
   apt_install nginx ffmpeg owntone
@@ -527,19 +675,22 @@ main() {
   # There doesn't seem to be a python3-sounddevice on trixie, so we install it via pip later.
   apt_install --soft python3-requests
   apt_install --soft python3-numpy
-  apt_install --soft python3-flask
   apt_install --soft python3-flask-sqlalchemy
   apt_install --soft python3-yaml
   apt_install --soft python3-cffi
 
-  # sdmon
-  info "Installing sdmon"
-  if [[ ! -x "${INSTALL_DIR}/sdmon" ]]; then
-    tmpdir="$(mktemp -d)"
-    git clone https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon"
-    make -C "${tmpdir}/sdmon/src"
-    install -m 0755 "${tmpdir}/sdmon/src/sdmon" "${INSTALL_DIR}/sdmon"
-    rm -rf "${tmpdir}"
+  # sdmon (only when enabled)
+  if [[ -n "${SDMON_VENDOR}" ]]; then
+    info "Installing sdmon (vendor: ${SDMON_VENDOR})"
+    if [[ ! -x "/usr/local/sbin/sdmon" ]]; then
+      tmpdir="$(mktemp -d)"
+      git clone https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon"
+      make -C "${tmpdir}/sdmon/src"
+      install -m 0755 "${tmpdir}/sdmon/src/sdmon" "/usr/local/sbin/sdmon"
+      rm -rf "${tmpdir}"
+    fi
+  else
+    info "sdmon not enabled (use --sdmon=<vendor> to enable)"
   fi
 
   # Create autostream user and groups
@@ -567,11 +718,8 @@ main() {
   ###########################################
   info "Configuring permissions and policy"
 
-  mkdir -p /etc/polkit-1/rules.d
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/polkit/50-autostream-hostname.rules" /etc/polkit-1/rules.d/50-autostream-hostname.rules
-
   install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
-  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_owntone_restart" /etc/sudoers.d/autostream_owntone_restart
+  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_admin" /etc/sudoers.d/autostream_admin
   validate_sudoers
 
   # Install directory ownership
@@ -605,6 +753,17 @@ main() {
   cp -a "${AUTOSTREAM_DIR}/license/." "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/version" "${INSTALL_DIR}/"
 
+  ###########################################
+  # Supervisor + helper binaries/scripts
+  ###########################################
+  info "Installing supervisor and helper scripts"
+
+  # 1) Create /var/lib/autostream (root 0700) for stamps
+  mkdir -p "${STAMP_DIR}"
+
+  # 2) Use /usr/local/libexec/autostream for helper scripts
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater" "${LIBEXEC_DIR}/autostream_updater" 0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin" "${LIBEXEC_DIR}/autostream_admin" 0755 root root
 
   # Record current WiFi connection (if any)
   info "Recording current network connection (if applicable)"
@@ -638,16 +797,24 @@ main() {
   # systemd services (install explicit units to avoid clobbering unrelated files)
   info "Installing systemd units"
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_rebooter.path" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_rebooter.service" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer" /etc/systemd/system/
+
+  if [[ -n "${SDMON_VENDOR}" ]]; then
+    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
+    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer" /etc/systemd/system/
+  else
+    info "Skipping sdmon systemd units (use --sdmon=<vendor> to enable)"
+  fi
+
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream.service" /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_wifi_watcher.service" /etc/systemd/system/
 
   systemctl daemon-reload
-  systemctl enable autostream_rebooter.path
-  systemctl enable autostream_sdcardhealth.timer
+
+  if [[ -n "${SDMON_VENDOR}" ]]; then
+    patch_sdmon_service_vendor "${SDMON_VENDOR}"
+    systemctl enable autostream_sdcardhealth.timer
+  fi
+
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
 
@@ -677,6 +844,38 @@ main() {
   cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/99-wlan-fix" /etc/NetworkManager/dispatcher.d/
   cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/mdns.conf" /etc/NetworkManager/conf.d/
   cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/wifi-powersave.conf" /etc/NetworkManager/conf.d/
+
+  ###########################################
+  # Cloud-init hostname / /etc/hosts control
+  ###########################################
+  info "Disabling cloud-init /etc/hosts management in user-data"
+
+  USER_DATA="/boot/firmware/user-data"
+
+  if [ -f "$USER_DATA" ]; then
+    # If manage_etc_hosts already exists, replace it
+    if grep -q '^manage_etc_hosts:' "$USER_DATA"; then
+      sed -i 's/^manage_etc_hosts:.*/manage_etc_hosts: false/' "$USER_DATA"
+    else
+      # Otherwise append it
+      printf "\nmanage_etc_hosts: false\n" >> "$USER_DATA"
+    fi
+
+    # Preserve hostnames (prevents cloud-init from overwriting /etc/hosts)
+    if grep -q '^preserve_hostname:' "$USER_DATA"; then
+      sed -i 's/^preserve_hostname:.*/preserve_hostname: true/' "$USER_DATA"
+    else
+      printf "preserve_hostname: true\n" >> "$USER_DATA"
+    fi
+  else
+    warn "cloud-init user-data not found at $USER_DATA"
+  fi
+
+  # Ensure cloud-init re-reads user-data even if it already ran
+  if command -v cloud-init >/dev/null 2>&1; then
+    info "Resetting cloud-init state to apply updated user-data"
+    cloud-init clean --logs || true
+  fi
 
   ###########################################
   # Watchdog and firmware settings
@@ -717,16 +916,14 @@ main() {
   chown -R autostream:autostream "${APP_LOG_DIR}"
 
   # 2) Base directory expectations
-  chown root:root "${INSTALL_DIR}"
   chmod 0755 "${INSTALL_DIR}"
 
   # 3) Log directory
-  chmod 0750 "${APP_LOG_DIR}"
+  chmod 0755 "${APP_LOG_DIR}"
 
   # 4) Executables / scripts
   # Top-level installer/runtime scripts shipped in INSTALL_DIR
   find "${INSTALL_DIR}" -maxdepth 1 -type f -name "*.sh" -exec chmod 0755 {} + 2>/dev/null || true
-  chown root:root "${INSTALL_DIR}/autostream_rebooter.sh"
 
   # Nginx CGI scripts should be executable
   chmod 0755 "${INSTALL_DIR}/nginx/cgi"/*.cgi 2>/dev/null || true
@@ -751,18 +948,6 @@ main() {
   if [[ -f "${INSTALL_DIR}/ssid" ]]; then
     chown root:root "${INSTALL_DIR}/ssid"
     chmod 0644 "${INSTALL_DIR}/ssid"
-  fi
-
-  # sdmon helper: keep root-owned + executable (if present)
-  if [[ -f "${INSTALL_DIR}/sdmon" ]]; then
-    chown root:root "${INSTALL_DIR}/sdmon"
-    chmod 0755 "${INSTALL_DIR}/sdmon"
-  fi
-
-  # Reboot script - prevent autostream from modifying this
-  if [[ -f "${INSTALL_DIR}/autostream_rebooter.sh" ]]; then
-    chown root:root "${INSTALL_DIR}/autostream_rebooter.sh"
-    chmod 0755 "${INSTALL_DIR}/autostream_rebooter.sh"
   fi
 
   # autostream directory owned by autostream

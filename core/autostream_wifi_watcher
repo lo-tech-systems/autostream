@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """autostream_wifi_watcher.py
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
@@ -11,7 +11,9 @@ connection status of the device.
 If the WiFi is unconfigured or remains disconnected for 1 minute after boot, it is put into
 AP mode with a captive portal that enables the user to easily connect the Pi to the WiFi.
 This AP mode will remain active for up to 15 minutes. After that time, to re-enter AP mode,
-the user would need to power-cycle the device.
+the user would need to power-cycle the device. As an exception to this, note that if the
+user provided WiFi connection details didn't work (e.g., wrong password), the AP mode will
+re-activated and the timer reset for up to another 15 minutes.
 
 If a wired ethernet connection is up, the AP mode is supressed.
 
@@ -638,7 +640,7 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
         log(f"Async apply starting for SSID '{ssid}'")
 
         time.sleep(0.5)
-        stop_ap_mode()
+        leave_setup_mode("Applying WiFi configuration")
 
         success = configure_wifi_with_nmcli(ssid, pw)
         if success:
@@ -836,29 +838,64 @@ def render_setup_page(error_code: str = "") -> str:
             }}
 
             function installHandlers() {{
-            const form = document.getElementById('wifi-form');
-            if (!form) return;
+                const form = document.getElementById('wifi-form');
+                if (!form) return;
 
-            // Optional: allow user to briefly reveal/mask the key
-            const toggle = document.getElementById('toggle-mask');
-            const key = document.getElementById('key-field');
-            const eyeOpen = document.getElementById('eye-open');
-            const eyeClosed = document.getElementById('eye-closed');
-            if (toggle && key) {{
-                toggle.addEventListener('click', () => {{
-                const masked = key.classList.toggle('masked');
+                // Optional: allow user to briefly reveal/mask the key
+                const toggle = document.getElementById('toggle-mask');
+                const key = document.getElementById('key-field');
+                const eyeOpen = document.getElementById('eye-open');
+                const eyeClosed = document.getElementById('eye-closed');
 
-                // Keep icons in sync with mask state:
-                // masked=true  -> show "eye-open" (can reveal)
-                // masked=false -> show "eye-closed" (currently visible)
-                if (eyeOpen && eyeClosed) {{
-                    eyeOpen.style.display = masked ? 'inline' : 'none';
-                    eyeClosed.style.display = masked ? 'none' : 'inline';
-                }}
+                const revealWrap = document.getElementById('key-reveal-wrap');
+                const reveal = document.getElementById('key-reveal');
 
-                // Update a11y label
-                toggle.setAttribute('aria-label', masked ? 'Show password' : 'Hide password');
+                if (toggle && key && revealWrap && reveal) {{
+                const setIcons = (revealing) => {{
+                    // revealing=true -> show "eye-closed" (tap to hide)
+                    // revealing=false -> show "eye-open" (tap to show)
+                    if (eyeOpen && eyeClosed) {{
+                    eyeOpen.style.display = revealing ? 'none' : 'inline';
+                    eyeClosed.style.display = revealing ? 'inline' : 'none';
+                    }}
+                    toggle.setAttribute(
+                    'aria-label',
+                    revealing ? 'Hide password' : 'Show password'
+                    );
+                }};
+
+                const syncReveal = () => {{
+                    // Mirror current input value into the reveal panel
+                    reveal.textContent = key.value || '';
+                }};
+
+                // keep it synced while user types
+                key.addEventListener('input', () => {{
+                    if (revealWrap.style.display !== 'none') syncReveal();
                 }});
+
+                // also catch programmatic / blur changes
+                key.addEventListener('change', () => {{
+                    if (revealWrap.style.display !== 'none') syncReveal();
+                }});
+
+                // initial icon state (hidden)
+                setIcons(false);
+
+                toggle.addEventListener('click', () => {{
+                    const currentlyVisible = (revealWrap.style.display !== 'none');
+                    const nextVisible = !currentlyVisible;
+
+                    if (nextVisible) {{
+                    syncReveal();
+                    revealWrap.style.display = 'block';
+                    }} else {{
+                    revealWrap.style.display = 'none';
+                    }}
+
+                    setIcons(nextVisible);
+                }});
+                }}
             }}
 
             form.addEventListener('submit', async (ev) => {{
@@ -972,6 +1009,9 @@ def render_setup_page(error_code: str = "") -> str:
                                 a3 3 0 0 0 2.47-5.47"/>
                     </svg>
                 </button>
+            </div>
+            <div id="key-reveal-wrap" class="key-reveal-wrap" style="display:none;">
+                <pre id="key-reveal" class="key-reveal"></pre>
             </div>
             <br></br>
             <div class="hint">

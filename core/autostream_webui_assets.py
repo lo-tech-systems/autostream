@@ -12,7 +12,7 @@ STYLE_CSS = """
   margin: 1rem auto;
   background: #fff;
   padding: 1.25rem 1.5rem 1.5rem;
-  box-shadow: 0 2px 6px rgba(0,0,0,.05);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
   border-radius: 8px;
 }
 
@@ -85,6 +85,25 @@ legend {
   font-weight: 600;
   padding: 0 0.25rem;
   font-size: 1.05rem;
+}
+
+.key-reveal-wrap {
+  margin-top: 0.5rem;
+}
+
+.key-reveal {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: #f3f4f6;   /* light grey */
+  border: 1px solid #d1d5db;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+               "Liberation Mono", "Courier New", monospace; /* courier-ish */
+  font-size: 0.95rem;
+  line-height: 1.25rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 1.25rem; /* so it doesn't collapse when empty */
 }
 
 .helptext {

@@ -44,6 +44,7 @@ from autostream_owntone import (
     owntone_set_output,
     owntone_disable_all_outputs,
     owntone_config_ok,
+    owntone_restart_service,
     OWNTONE_OK,
     OWNTONE_RESTART_REQUIRED,
     OWNTONE_NOT_OK,
@@ -609,15 +610,12 @@ def run_autostream(config_path: str, start_webui=None) -> None:
             "OwnTone config was updated (directories=/tmp, pipe_autostart enabled). "
             "OwnTone restart required for changes to take effect."
         )
-        # Best-effort restart if running as a systemd service (won't break dev usage)
+        # Best-effort restart (won't break dev usage)
         try:
-            subprocess.run(
-                ["sudo", "systemctl", "restart", "owntone"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            logging.info("Requested OwnTone restart via systemctl.")
+            if owntone_restart_service():
+                logging.info("Requested OwnTone restart via autostream-admin.")
+            else:
+                logging.warning("OwnTone restart request failed (autostream-admin).")
         except Exception as e:  # noqa: BLE001
             logging.warning("Could not restart OwnTone automatically: %s", e)
     else:
