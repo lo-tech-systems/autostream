@@ -127,6 +127,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 path.startswith("/auth")
                 or path.startswith("/api/auth/")
                 or path.startswith("/api/owntone/outputs")
+                or path.startswith("/api/owntone/outputs_state")
                 or path.startswith("/api/owntone/ready")
                 or path.startswith("/setup")
                 or path.startswith("/owntone-setup")
@@ -176,6 +177,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             pages.send_update_status_json(self, STATE)
         elif path == "/api/owntone/outputs":
             pages.send_owntone_outputs_json(self, STATE)
+        elif path == "/api/owntone/outputs_state":
+            pages.send_owntone_outputs_state_json(self, STATE)
         elif path == "/api/owntone/ready":
             pages.send_owntone_ready_json(self, STATE)
         elif path == "/owntone-restarting":

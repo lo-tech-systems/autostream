@@ -367,6 +367,57 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
         "selected": parsed.owntone.output_name,
     })
 
+def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
+    """Return Owntone outputs (id/name/selected/volume) for live refresh on '/'."""
+    try:
+        cfg = locked_load_config(state.config_path)
+        parsed = parse_config(cfg)
+    except Exception as e:
+        send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
+        return
+
+    outputs = []
+    try:
+        resp = requests.get(parsed.owntone.base_url.rstrip("/") + "/api/outputs", timeout=2)
+        if resp.status_code == 200:
+            outputs = resp.json().get("outputs", [])
+        else:
+            send_json(handler, 200, {"ok": False, "error": f"HTTP {resp.status_code}", "outputs": []})
+            return
+    except Exception as e:
+        send_json(handler, 200, {"ok": False, "error": str(e), "outputs": []})
+        return
+
+    default_output_name = parsed.owntone.output_name
+    hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
+
+    filtered = []
+    for out in outputs:
+        out_id = out.get("id")
+        name = (out.get("name") or "").strip()
+        if out_id is None or not name:
+            continue
+
+        selected = bool(out.get("selected", False))
+        # Mirror '/' page behaviour: hide hidden outputs unless selected or default
+        if name.casefold() in hidden and not selected and name != default_output_name:
+            continue
+
+        vol = max(0, min(100, int(out.get("volume", 25))))
+        filtered.append({
+            "id": str(out_id),
+            "name": name,
+            "selected": selected,
+            "volume": vol,
+            "is_default": (name == default_output_name),
+        })
+
+    # Sort: default first (matching '/' render)
+    if default_output_name:
+        filtered.sort(key=lambda o: (0 if o["is_default"] else 1, o["name"].casefold()))
+
+    send_json(handler, 200, {"ok": True, "outputs": filtered})
+
 
 # ----------------------------
 # Page Handlers
@@ -514,12 +565,47 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
             p.classList.add('status-'+d.status_class);
           }});
         }}
+        function isActiveControl(el) {{
+          return el && document.activeElement === el;
+        }}
+
+        async function refreshOutputsState() {{
+          let j = null;
+          try {{
+            const r = await fetch("/api/owntone/outputs_state", {{ cache: "no-store" }});
+            j = await r.json();
+          }} catch (e) {{
+            return;
+          }}
+          if (!j || !j.ok || !Array.isArray(j.outputs)) return;
+
+          for (const o of j.outputs) {{
+            const id = String(o.id);
+
+            const cb = document.getElementById("output_enabled_" + id);
+            const sl = document.getElementById("vol_slider_" + id);
+
+            // Avoid fighting the user while interacting
+            if (cb && !isActiveControl(cb)) {{
+              cb.checked = !!o.selected;
+            }}
+
+            if (sl && !isActiveControl(sl)) {{
+              const v = String(o.volume);
+              if (sl.value !== v) sl.value = v;
+              updateVolumeLabel(id, v);
+            }}
+          }}
+        }}
+
         window.addEventListener('DOMContentLoaded',function(){{
           document.querySelectorAll('[data-volume-label-for]').forEach(s=>{{
             var i=s.getAttribute('data-volume-label-for'), sl=document.getElementById('vol_slider_'+i);
             if(sl)s.textContent=sl.value+'%';
           }});
-          setInterval(refreshStatus,2000); refreshStatus();
+          setInterval(() => {{ refreshStatus(); refreshOutputsState(); }}, 2000);
+          refreshStatus();
+          refreshOutputsState();
         }});
       </script></head><body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}
       <div class="pill-row">

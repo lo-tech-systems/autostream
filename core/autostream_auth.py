@@ -75,8 +75,15 @@ MAX_FAILED_ATTEMPTS = 5
 BACKOFF_BASE_SECONDS = 5
 BACKOFF_MAX_SECONDS = 5 * 60
 
-# Routes
-ALLOWLIST_PATHS = {"/", "/about", "/auth", "/api/status", "/api/auth/verify"}
+# Routes not requiring authentication
+ALLOWLIST_PATHS = {
+    "/",
+    "/about",
+    "/auth",
+    "/api/status",
+    "/api/auth/verify",
+    "/api/owntone/outputs_state",
+}
 
 
 # ----------------------------
