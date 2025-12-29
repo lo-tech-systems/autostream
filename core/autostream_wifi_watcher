@@ -63,6 +63,7 @@ AP_MODE_FLAG_PATH = "/tmp/apmode"
 NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
 
 BOOT_AP_GRACE = 60                      # if still offline after boot grace -> enter AP mode
+BOOT_AP_CUTOFF = 15 * 60                # ONLY allow *automatic* entry into AP mode within this many seconds of boot
 AP_MAX_DURATION = 15 * 60               # AP mode lifetime (fixed, not extended by web activity)
 AP_POST_CLOSE_REBOOT_AFTER = 24 * 60 * 60  # if still offline 24h after closing AP -> reboot
 
@@ -133,6 +134,11 @@ apply_lock = threading.Lock()
 # Result of last apply attempt (for the wait page)
 last_apply_result = "idle"   # idle | applying | ok | failed
 last_apply_error = ""        # short message
+
+# Manual AP-mode request (from the normal WebUI via localhost)
+ap_request_event = threading.Event()
+ap_request_reason: str = ""
+manual_ap_active: bool = False  # True while AP mode was entered due to a manual request
 
 # AP / host configuration
 AP_IFNAME = "wlan0"
@@ -213,7 +219,7 @@ def enter_setup_mode(reason: str = "") -> None:
 
 def leave_setup_mode(reason: str = "") -> None:
     """Transition out of SetupMode and stop AP mode, if currently active."""
-    global SetupMode, ap_enter_time, force_setup_mode
+    global SetupMode, ap_enter_time, force_setup_mode, manual_ap_active
 
     with state_lock:
         if not SetupMode:
@@ -221,6 +227,7 @@ def leave_setup_mode(reason: str = "") -> None:
         SetupMode = False
         ap_enter_time = None
         force_setup_mode = False
+        manual_ap_active = False
 
     log(f"Leaving SetupMode. Reason: {reason}")
     update_apmode_flag(False)
@@ -850,7 +857,42 @@ def render_setup_page(error_code: str = "") -> str:
                 const revealWrap = document.getElementById('key-reveal-wrap');
                 const reveal = document.getElementById('key-reveal');
 
-                if (toggle && key && revealWrap && reveal) {{
+                form.addEventListener('submit', async (ev) => {{
+                    ev.preventDefault();
+
+                    const btn = document.getElementById('connect-btn');
+                    const status = document.getElementById('status');
+                    if (btn) btn.disabled = true;
+                    if (status) status.textContent = 'Submitting WiFi settings…';
+
+                    const ssid = document.getElementById('ssid-select')?.value || '';
+                    const k = document.getElementById('key-field')?.value || '';
+
+                    try {{
+                    // Send the server the expected parameter names without exposing them in the DOM.
+                    const body = new URLSearchParams();
+                    body.set('ssid', ssid);
+                    body.set('password', k);
+
+                    const resp = await fetch('/setup', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+                        body: body.toString(),
+                        cache: 'no-store',
+                        credentials: 'same-origin',
+                    }});
+
+                    const html = await resp.text();
+                    document.open();
+                    document.write(html);
+                    document.close();
+                    }} catch (e) {{
+                    if (status) status.textContent = 'Submit failed. Please try again.';
+                    if (btn) btn.disabled = false;
+                    }}
+                }});
+
+            if (toggle && key && revealWrap && reveal) {{
                 const setIcons = (revealing) => {{
                     // revealing=true -> show "eye-closed" (tap to hide)
                     // revealing=false -> show "eye-open" (tap to show)
@@ -898,42 +940,6 @@ def render_setup_page(error_code: str = "") -> str:
                 }}
             }}
 
-            form.addEventListener('submit', async (ev) => {{
-                ev.preventDefault();
-
-                const btn = document.getElementById('connect-btn');
-                const status = document.getElementById('status');
-                if (btn) btn.disabled = true;
-                if (status) status.textContent = 'Submitting WiFi settings…';
-
-                const ssid = document.getElementById('ssid-select')?.value || '';
-                const k = document.getElementById('key-field')?.value || '';
-
-                try {{
-                // Send the server the expected parameter names without exposing them in the DOM.
-                const body = new URLSearchParams();
-                body.set('ssid', ssid);
-                body.set('password', k);
-
-                const resp = await fetch('/setup', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
-                    body: body.toString(),
-                    cache: 'no-store',
-                    credentials: 'same-origin',
-                }});
-
-                const html = await resp.text();
-                document.open();
-                document.write(html);
-                document.close();
-                }} catch (e) {{
-                if (status) status.textContent = 'Submit failed. Please try again.';
-                if (btn) btn.disabled = false;
-                }}
-            }});
-            }}
-
             window.addEventListener('load', () => {{
             // Ensure key field won't be auto-focused by iOS, and only becomes editable on interaction.
             armKeyField();
@@ -964,7 +970,7 @@ def render_setup_page(error_code: str = "") -> str:
             <p>Select your WiFi network and enter the key (leave blank for open networks).</p>
 
             <!-- Use innocuous field names + non-password input to reduce iOS save-password heuristics -->
-            <form id="wifi-form" autocomplete="off" novalidate>
+            <form id="wifi-form" method="post" action="/setup" autocomplete="off" novalidate>
             <label for="ssid-select">WiFi Network (SSID)</label>
             <select id="ssid-select" name="s" autocomplete="off">
                 <option value="">Scanning…</option>
@@ -1013,14 +1019,14 @@ def render_setup_page(error_code: str = "") -> str:
             <div id="key-reveal-wrap" class="key-reveal-wrap" style="display:none;">
                 <pre id="key-reveal" class="key-reveal"></pre>
             </div>
-            <br></br>
+            <br>
             <div class="hint">
                 You may need to reconnect to your normal WiFi after pressing Connect.
             </div>
-            <br></br>
+            <br>
             <button id="connect-btn" class="pill-btn" type="submit">Connect</button>
             </form>
-            <br></br>
+            <br>
             <div class="status" id="status">Status: unknown</div>
         </div>
         </body>
@@ -1227,6 +1233,32 @@ def captive_portal_api():
     return resp
 
 
+@app.route("/request_ap_mode", methods=["POST"])
+def request_ap_mode():
+    """Allow the normal (non-setup) WebUI to request AP/setup mode.
+
+    This endpoint is intentionally only reachable from localhost.
+    The network monitor loop will action the request asynchronously.
+    """
+    remote = request.remote_addr or ""
+    if remote not in ("127.0.0.1", "127.0.1.1", "::1"):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    reason = ""
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        reason = str(payload.get("reason", "")).strip()
+    if not reason:
+        reason = (request.form.get("reason") or "").strip()
+
+    global ap_request_reason
+    with state_lock:
+        ap_request_reason = reason
+        ap_request_event.set()
+
+    return jsonify({"ok": True, "queued": True})
+
+
 
 # ** MAIN NETWORK STATUS MONITORING LOOP **
 
@@ -1246,9 +1278,10 @@ def network_monitor_loop():
             If unreachable for > GW_DOWN_RECONNECT_AFTER: periodically attempt reconnect.
             If unreachable for > GW_DOWN_REBOOT_AFTER: reboot.
     """
-    global wifistate, wiredstate, gateway_reachable
+    global wifistate, wiredstate, gateway_reachable, manual_ap_active
     global boot_time, ap_enter_time, ap_closed_time, ap_exhausted
     global gw_down_start, last_reconnect_attempt, force_setup_mode
+    
 
     log("Starting network monitor loop")
 
@@ -1258,6 +1291,23 @@ def network_monitor_loop():
 
     while True:
         now = time.monotonic()
+
+        # Handle manual request to enter AP mode (from the normal WebUI via localhost).
+        # This overrides the boot-time auto-AP cutoff.
+        if ap_request_event.is_set():
+            with state_lock:
+                reason = ap_request_reason
+                ap_request_event.clear()
+            # If we're not already in AP mode, enter it now.
+            with state_lock:
+                already_in_ap = SetupMode
+            if not already_in_ap:
+                manual_ap_active = True
+                enter_setup_mode(reason=f"manual_request: {reason or 'UserRequest'}")
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
+            else:
+                manual_ap_active = True
 
         wifi_cfg = is_wifi_configured()
         wired_connected = is_wired_connected()
@@ -1273,7 +1323,7 @@ def network_monitor_loop():
         log_on_change("gateway_reachable", gateway_reachable, f"Gateway reachable changed -> {gateway_reachable}")
 
         # Ethernet suppresses AP mode entirely.
-        if wired_connected:
+        if wired_connected and not manual_ap_active:
             gw_down_start = None
             last_reconnect_attempt = None
             with state_lock:
@@ -1282,6 +1332,12 @@ def network_monitor_loop():
                 leave_setup_mode("Wired ethernet is up; suppressing AP mode")
             time.sleep(NETWORK_MONITOR_INTERVAL)
             continue
+
+        if wired_connected and manual_ap_active:
+            # User explicitly requested AP mode; do not auto-suppress it just because
+            # ethernet happens to be connected.
+            gw_down_start = None
+            last_reconnect_attempt = None
 
         # If we're currently in AP mode, enforce the fixed 15-minute lifetime.
         with state_lock:
@@ -1295,6 +1351,7 @@ def network_monitor_loop():
                 with state_lock:
                     ap_exhausted = True
                     ap_closed_time = now
+                    manual_ap_active = False
                 leave_setup_mode(f"AP mode lifetime expired after {ap_age:.0f}s")
             time.sleep(NETWORK_MONITOR_INTERVAL)
             continue
@@ -1303,12 +1360,15 @@ def network_monitor_loop():
         # Note: AP mode is only allowed once per boot (ap_exhausted).
         if not in_setup and not ap_exhausted and not force_setup_mode:
             boot_age = now - (boot_time or now)
-            # Only enter AP mode if WiFi is unconfigured OR
-            # still disconnected AFTER the boot grace period.
+            # Auto-setup mode is only entered if:
+            #   - WiFi is not configured OR WiFi is not connected
+            #   - still offline AFTER the boot grace period.
+            #   - still offline BEFORE the boot cutoff period.
             # This avoids immediately switching to AP mode before NetworkManager /
             # firmware has had a chance to come up.
             should_enter_ap = (
                 boot_age >= BOOT_AP_GRACE
+                and boot_age <= BOOT_AP_CUTOFF
                 and ((not wifi_cfg) or (not wifi_connected))
             )
 
