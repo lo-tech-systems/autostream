@@ -102,6 +102,22 @@ def locked_load_config(path: str):
 VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">'
 
 
+# Shared PIN modal CSS (used by multiple pages)
+PIN_MODAL_CSS = """
+  #pinModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
+  #pinModal.show{display:flex;}
+  #pinModal .panel{width:min(22rem,100%);background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+  #pinModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid #eee;font-weight:700;}
+  #pinModal .bd{padding:1rem;}
+  #pinModal .bd p{margin:0 0 .75rem 0;}
+  #pinModal input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid #ccc;border-radius:12px;outline:none;}
+  #pinModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid #eee;}
+  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;}
+  #pinModal .btn.cancel{background:#f1f1f1;color:#111;}
+  #pinModal .btn.ok{background:#0d6efd;color:#fff;}
+"""
+
+
 # -----------------------------------------------------------------------------
 # Owntone restart async support
 # -----------------------------------------------------------------------------
@@ -536,12 +552,51 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>autostream</title><style>{STYLE_CSS}</style>{csrf_meta}
+      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}</style>{csrf_meta}
+
       <script>
         function updateVolumeLabel(id,v){{var s=document.getElementById('vol_label_'+id);if(s)s.textContent=v+'%';}}
-        function sendUpdate(id){{
-          var c=document.getElementById('output_enabled_'+id), s=document.getElementById('vol_slider_'+id);
-          fetch('/api/output',{{
+
+        function showPinModal(outputName){{
+          return new Promise((resolve) => {{
+            const m = document.getElementById('pinModal');
+            const title = document.getElementById('pinModalTitle');
+            const input = document.getElementById('pinModalInput');
+            const btnOk = document.getElementById('pinModalOk');
+            const btnCancel = document.getElementById('pinModalCancel');
+            if (!m || !input || !btnOk || !btnCancel) {{
+              // Fallback to native prompt if our modal is missing for any reason.
+              const v = window.prompt('Enter PIN shown on your device' + (outputName ? ' ('+outputName+')' : '') + ':', '');
+              resolve(v && String(v).trim() ? String(v).trim() : null);
+              return;
+            }}
+            title.textContent = outputName ? ('Enter PIN for ' + outputName) : 'Enter PIN';
+            input.value = '';
+            m.classList.add('show');
+            // iOS: defer focus slightly so the keyboard reliably appears.
+            setTimeout(() => {{ try {{ input.focus(); }} catch (e) {{}} }}, 60);
+
+            const cleanup = (val) => {{
+              m.classList.remove('show');
+              btnOk.onclick = null;
+              btnCancel.onclick = null;
+              input.onkeydown = null;
+              resolve(val);
+            }};
+            btnCancel.onclick = () => cleanup(null);
+            btnOk.onclick = () => {{
+              const v = (input.value || '').trim();
+              cleanup(v ? v : null);
+            }};
+            input.onkeydown = (ev) => {{
+              if (ev.key === 'Enter') {{ ev.preventDefault(); btnOk.click(); }}
+              else if (ev.key === 'Escape') {{ ev.preventDefault(); btnCancel.click(); }}
+            }};
+          }});
+        }}
+
+        async function postOutputUpdate(id, selected, volume){{
+          const r = await fetch('/api/output',{{
             method:'POST',
             credentials:'same-origin',
             headers:{{
@@ -550,12 +605,107 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
             }},
             body:JSON.stringify({{
               id:id,
-              selected:c?c.checked:false,
-              volume:s?parseInt(s.value,10):0,
+              selected:!!selected,
+              volume:parseInt(volume||0,10)||0,
               csrf_token: window.__CSRF||''
             }})
           }});
+          // Server replies JSON for this endpoint (including failures)
+          let j = null;
+          try {{ j = await r.json(); }} catch (e) {{ j = {{ ok: r.ok }}; }}
+          j._http = r.status;
+          return j;
         }}
+
+        async function postPinOnly(id, pin) {{
+          const r = await fetch('/api/output', {{
+            method:'POST',
+            credentials:'same-origin',
+            headers:{{
+              'Content-Type':'application/json',
+              'X-CSRF-Token':window.__CSRF||''
+            }},
+            body:JSON.stringify({{
+              op:'pin',
+              id:id,
+              pin: String(pin||'').trim(),
+              csrf_token: window.__CSRF||''
+            }})
+          }});
+          let j = null;
+          try {{ j = await r.json(); }} catch (e) {{ j = {{ ok: r.ok }}; }}
+          j._http = r.status;
+          return j;
+        }}
+
+        async function sendUpdate(id){{
+          const c=document.getElementById('output_enabled_'+id), s=document.getElementById('vol_slider_'+id);
+          const selected = c?c.checked:false;
+          const volume = s?parseInt(s.value,10):0;
+          let j = null;
+          try {{
+            j = await postOutputUpdate(id, selected, volume);
+          }} catch (e) {{
+            // Network error -> let periodic refresh reconcile UI.
+            return;
+          }}
+
+          // If OwnTone requires a PIN, prompt and do PIN-only verification.
+          // On wrong PIN (still 400), re-prompt; on success, retry the original enable.
+          if (selected && j && j.pin_required) {{
+            // Temporarily revert the toggle until fully enabled.
+            if (c) c.checked = false;
+
+            let nm = '';
+            try {{
+              const fs = c ? c.closest('fieldset') : null;
+              const lg = fs ? fs.querySelector('legend') : null;
+              nm = lg ? (lg.textContent || '').trim() : '';
+            }} catch (e) {{}}
+
+            while (true) {{
+              const pin = await showPinModal(nm || 'this speaker');
+              if (!pin) return; // user cancelled
+
+              let jpin = null;
+              try {{
+                jpin = await postPinOnly(id, pin);
+              }} catch (e) {{
+                // treat as failure; keep disabled
+                if (c) c.checked = false;
+                return;
+              }}
+
+              if (jpin && jpin.ok) {{
+                // PIN accepted -> retry the original enable request (without pin)
+                try {{
+                  const jen = await postOutputUpdate(id, true, volume);
+                  if (jen && jen.ok) {{
+                    if (c) c.checked = true;
+                    return;
+                  }}
+                  // If it still asks for PIN, loop again.
+                  if (jen && jen.pin_required) {{
+                    if (c) c.checked = false;
+                    continue;
+                  }}
+                }} catch (e) {{
+                  if (c) c.checked = false;
+                }}
+                return;
+              }}
+
+              // Wrong PIN -> re-prompt
+              if (jpin && jpin.pin_invalid) {{
+                continue;
+              }}
+
+              // Other error -> stop
+              return;
+            }}
+          }}
+        }}
+
         function onToggleOutput(id){{sendUpdate(id);}}
         function onVolumeChange(id,v){{updateVolumeLabel(id,v);sendUpdate(id);}}
         function refreshStatus(){{
@@ -607,7 +757,22 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           refreshStatus();
           refreshOutputsState();
         }});
-      </script></head><body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}
+      </script></head>
+      <body>{lic_html}{lic_spacer}
+      <div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
+        <div class="panel">
+          <div class="hdr" id="pinModalTitle">Enter PIN</div>
+          <div class="bd">
+            <p>Enter the PIN shown on your Apple TV (or other AirPlay device) to enable playback.</p>
+            <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" />
+          </div>
+          <div class="ft">
+            <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
+            <button type="button" class="btn ok" id="pinModalOk">OK</button>
+          </div>
+        </div>
+      </div>
+      <div class="container">{BANNER_HTML}
       <div class="pill-row">
         <button type="button"
                 class="pill-btn"
@@ -707,7 +872,7 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>autostream Setup</title><style>{STYLE_CSS}</style>{csrf_meta}
+      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}</style>{csrf_meta}
       </head>
       <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>{h1}</h1>
       <p class="actions" style="display:flex;justify-content:space-between;gap:0.75rem;">
@@ -1100,20 +1265,88 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body)
         out_id = payload.get("id")
+        op = (payload.get("op") or "").strip().lower()
         selected = bool(payload.get("selected", False))
         volume = max(0, min(100, int(payload.get("volume", 50))))
+
+        # PIN may arrive as string or number depending on client implementation.
+        pin_raw = payload.get("pin") if isinstance(payload, dict) else None
+        pin = (str(pin_raw).strip() if pin_raw is not None else "")
+
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
         url = parsed.owntone.base_url.rstrip("/") + f"/api/outputs/{out_id}"
-        requests.put(url, json={"selected": selected, "volume": volume}, timeout=3)
-        handler.send_response(204)
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
+
+        # Two modes:
+        #   (1) Normal output update: selected/volume ONLY (never send pin here)
+        #   (2) PIN verification: pin ONLY (no selected/volume)
+        if op == "pin":
+            if not pin:
+                send_json(handler, 200, {"ok": False, "error": "Missing PIN", "id": str(out_id)})
+                return
+            out_payload = {"pin": pin}
+        else:
+            out_payload = {"selected": selected, "volume": volume}
+
+        # Log the exact Owntone API call so we can debug PIN / selection issues.
+        # (Do not log headers/cookies; URL + JSON body are enough for tracing.)
+        logging.info("Owntone API call: PUT %s json=%s", url, out_payload)
+        resp = requests.put(url, json=out_payload, timeout=3)
+        logging.info("Owntone API response: status=%s body=%s",
+                     getattr(resp, "status_code", None),
+                     (getattr(resp, "text", "") or "").strip())
+
+        # Mode (2): PIN-only verification.
+        # OwnTone returns 400 if the PIN was wrong/failed; client should re-prompt.
+        if op == "pin":
+            if resp.status_code == 400:
+                send_json(handler, 200, {
+                    "ok": False,
+                    "id": str(out_id),
+                    "pin_invalid": True,
+                    "status": int(resp.status_code),
+                    "error": (resp.text or "").strip(),
+                })
+                return
+            if not resp.ok:
+                send_json(handler, 200, {
+                    "ok": False,
+                    "id": str(out_id),
+                    "status": int(resp.status_code),
+                    "error": (resp.text or "").strip(),
+                })
+                return
+            send_json(handler, 200, {"ok": True, "id": str(out_id)})
+            return
+
+        # Mode (1): normal enable/disable/volume.
+        # OwnTone returns HTTP 400 when an output enable requires device PIN verification.
+        # We surface this to the Web UI so it can prompt the user and then do PIN-only verification.
+        if selected and resp.status_code == 400:
+            send_json(handler, 200, {
+                "ok": False,
+                "pin_required": True,
+                "id": str(out_id),
+                "output_name": str(payload.get("name") or ""),
+                "status": int(resp.status_code),
+                "error": (resp.text or "").strip(),
+            })
+            return
+
+        if not resp.ok:
+            send_json(handler, 200, {
+                "ok": False,
+                "id": str(out_id),
+                "status": int(resp.status_code),
+                "error": (resp.text or "").strip(),
+                # pin_invalid is only meaningful for op=="pin" now
+                "pin_invalid": False,            })
+            return
+
+        send_json(handler, 200, {"ok": True, "id": str(out_id)})
     except Exception as e:
         logging.error("Update failed: %s", e)
-        handler.send_response(500)
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
+        send_json(handler, 200, {"ok": False, "error": str(e)})
 
 def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
     form = parse_qs(body)
