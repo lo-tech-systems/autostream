@@ -3,12 +3,12 @@
 # Resets autotune and reboots the system. It will drop to hotspot mode.
 
 # Stop services
-service stop autotune
-service stop owntone
+systemctl stop autotune
+systemctl stop owntone
 
 # Remove config files
 rm /opt/autostream/autostream.ini
-rm /opt/autostream/cpuid
+rm /opt/autostream/cpuinfo
 rm /opt/autostream/ssid
 
 # Get all saved Wi-Fi connection names and delete them
