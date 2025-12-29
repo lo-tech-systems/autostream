@@ -3,7 +3,7 @@
 # Resets autotune and reboots the system. It will drop to hotspot mode.
 
 # Stop services
-systemctl stop autotune
+systemctl stop autostream
 systemctl stop owntone
 
 # Remove config files
