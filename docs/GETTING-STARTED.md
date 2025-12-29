@@ -4,23 +4,25 @@ After installation, **autostream** only requires a short, one-time setup using a
 
 ## Initial Setup
 
-1. After installation, connect your input devices (turntable, SPDIF dongle, USB preamp, etc.) and then reboot the system.
+1. Run the installer (see README.md)
 
-2. Using **Safari** on your iPhone or iPad, navigate to:
+2. After installation, connect your input devices (turntable, SPDIF dongle, USB preamp, etc.) and then reboot the system.
+
+3. Using **Safari** on your iPhone or iPad, navigate to:
 
    ```
    http://autostream.local/
    ```
 
-3. The system prompt for your PIN and will then guide you through two simple setup pages.
+4. The system will prompt for your PIN and will then guide you through two simple setup pages.
 
 ---
 
-## Setup Page 1 — Speaker Selection
+### Setup Page 1 — Speaker Selection
 
 On the first setup page, all available **AirPlay / AirPlay 2** speakers on your network should appear.
 
-* Deselect any speakers you do not want to be available in this Autostream appliance.
+* Deselect any speakers you do not want to be available in this autostream appliance.
 * Tap **Continue** when finished.
 
 If your speakers do not appear:
@@ -32,7 +34,7 @@ If your speakers do not appear:
 
 ---
 
-## Setup Page 2 — Input & Defaults
+### Setup Page 2 — Input & Defaults
 
 On the second setup page:
 
@@ -49,17 +51,17 @@ Next, choose:
 When the system has been idle for some time, these default speakers will automatically start playing when music is detected. Any other previously selected speakers will be muted.
 
 Tap **Done** to complete setup.
-The system will then switch to the **Home Screen**
+The system will then show the autostream **Home Screen**
 
 ---
 
 ## Home Screen Web App Mode
 
-Autostream is designed to be used from your device’s home screen for an easy, app-like experience.
+autostream is designed to be used from your device’s home screen for an easy, app-like experience.
 
-### Add Autostream to the Home Screen
+### Add autostream to the Home Screen
 
-1. Open Autostream in **Safari**
+1. Open autostream in **Safari**
 2. Tap the **Share** button at the bottom of the screen
 
 ![Safari Share Button](safari-share.png)
@@ -69,4 +71,4 @@ Autostream is designed to be used from your device’s home screen for an easy, 
 ![Add to Home Screen](add-to-home-screen.png)
 ![IOS Add to Home Screen Prompt](add-to-home-screen-2.png)
 
-Once added, Autostream behaves like a regular app — providing quick access to volume controls and speaker selection without opening Safari manually.
+Once added, autostream behaves like a regular app — providing quick access to volume controls and speaker selection without opening Safari manually.
