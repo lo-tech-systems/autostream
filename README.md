@@ -56,9 +56,9 @@ Everything runs locally on your network. There are no cloud services, logons, re
 
 * Raspberry Pi - Pi ZeroW is enough (Zero-2W recommended) - with an 8GB micro-SD card
 * USB audio input device, for example:
-** USB Turntable (e.g. Audio-Technica AT-LP60XUSBGM)
-** USB DAC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
-** SPDIF to USB dongle for CD Players (e.g. Cubilux USB C Optical Audio Capture Adapter)
+  * USB Turntable (e.g. Audio-Technica AT-LP60XUSBGM)
+  * USB DAC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
+  * SPDIF to USB dongle for CD Players (e.g. Cubilux USB C Optical Audio Capture Adapter)
 * AirPlay or AirPlay 2 speakers on the same network (also supports Chromecast and Roku)
 
 Running on a Pi ZeroW or Zero2W, it consumes less than 2 Watts.
