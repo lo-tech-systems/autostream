@@ -65,6 +65,18 @@ Running on a Pi ZeroW or Zero2W, it consumes less than 2 Watts.
 
 ---
 
+## Dependencies
+
+autostream runs on Linux and orchestrates several external components:
+
+- **ffmpeg** – used for audio capture, processing, and encoding
+- **Owntone** – used for speaker discovery and streaming (AirPlay / AirPlay 2)
+
+These components are separate projects with their own licenses and are installed automatically
+by the autostream installation script.
+
+---
+
 ## Getting Started
 
 1. Install Git
