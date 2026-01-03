@@ -13,6 +13,7 @@ import socket
 import re
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,27 @@ def run_cmd(
         logger.exception("Exception while running command: %s", " ".join(safe_cmd))
         # Provide a consistent return type.
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+_last_prime: dict[str, float] = {}
+
+def prime_gateway(gw: str, min_interval: float = 5.0) -> None:
+    """
+    Generate minimal traffic to the gateway to populate/update the kernel neighbor table.
+    We do not treat ping success/failure as connectivity by itself; it only primes state.
+    """
+    if not gw:
+        return
+    try:
+        now = time.monotonic()
+        last = _last_prime.get(gw, 0.0)
+        if now - last < min_interval:
+            return
+        run_cmd(["ping", "-c", "1", "-W", "1", gw], timeout=2)
+        _last_prime[gw] = now
+    except Exception:
+        # Never fail hard due to priming; it's a best-effort nudge.
+        pass
+
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +230,7 @@ def set_system_hostname(new_hostname: str) -> None:
 # File handling functions.
 # ---------------------------------------------------------------------------
 
-def tail_lines(path: str, n: int = 100) -> str:
+def tail_lines(path: str, n: int = 100) -> list[str]:
     """Return the last n lines of a text file efficiently."""
     try:
         with open(path, "rb") as f:
