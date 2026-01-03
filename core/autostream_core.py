@@ -529,6 +529,8 @@ class AudioMonitor:
         if self._ffmpeg_proc is not None:
             return
 
+        was_idle = not any_monitor_capturing()
+
         self._ffmpeg_proc = start_ffmpeg(
             self.fifo_path,
             self.ffmpeg_in_rate,
@@ -537,7 +539,7 @@ class AudioMonitor:
 
         # If we're transitioning from idle -> playing, clear any previously
         # selected Owntone outputs so we start from a known state.
-        if self.owntone_base_url and not any_monitor_capturing():
+        if self.owntone_base_url and was_idle:
             owntone_disable_all_outputs(self.owntone_base_url)
             
         # Try to resolve Owntone output lazily if we don't have an id yet
