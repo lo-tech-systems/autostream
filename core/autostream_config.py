@@ -18,13 +18,13 @@ fifo_path = /tmp/autostream
 silence_seconds = 30           ; length of time of continuous silence before stopping
 
 [audio1]
-input_device = 0               ; sounddevice input device name or index (run "python3 -m sounddevice" to see list)
+capture_device = Cubilux SPDIF ; sounddevice input device name or index (run "python3 -m sounddevice" to see list)
 arecord_format = dat           ; ALSA sample format (e.g. cd, dat) (legacy/unused)
 silence_threshold = -66        ; dBFS threshold (e.g. -66 ~= 16/32767)
 
 [audio2]
 enabled = no                   ; set to yes to enable this channel
-input_device = 1               ; sounddevice input device name or index
+capture_device = Cubilux SPDIF ; sounddevice input device name or index (run "python3 -m sounddevice" to see list)
 arecord_format = dat           ; ALSA sample format (e.g. cd, dat) (legacy/unused)
 silence_threshold = -66        ; dBFS threshold (e.g. -66 ~= 16/32767)
 
@@ -184,7 +184,8 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     )
 
     # Audio #1
-    capture_device1 = cfg.get("audio1", "capture_device", fallback="default")
+    capture_device1 = cfg.get("audio1", "input_device", fallback="").strip() \
+                 or cfg.get("audio1", "capture_device", fallback="default")
     arecord_format1 = cfg.get("audio1", "arecord_format", fallback="dat")
     silence_threshold1 = cfg.getfloat("audio1", "silence_threshold", fallback=-66.0)
 
@@ -196,7 +197,8 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
 
     # Audio #2
     audio2_enabled = cfg.getboolean("audio2", "enabled", fallback=False)
-    capture_device2 = cfg.get("audio2", "capture_device", fallback="")
+    capture_device2 = cfg.get("audio2", "input_device", fallback="").strip() \
+                 or cfg.get("audio2", "capture_device", fallback="default")
     arecord_format2 = cfg.get("audio2", "arecord_format", fallback="dat")
     silence_threshold2 = cfg.getfloat("audio2", "silence_threshold", fallback=-66.0)
 
@@ -240,11 +242,6 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
 def load_and_parse(path: str) -> AutostreamConfig:
     return parse_config(load_config(path))
 
-
-# Cache state
-_cfg_lock = threading.Lock()
-_cfg_cache: dict[str, tuple[Optional[tuple[float, int]], bool]] = {}
-# maps path -> ((mtime, size) or None if missing/unstatable, unconfigured_bool)
 
 def mark_configured(path: str) -> None:
     """
