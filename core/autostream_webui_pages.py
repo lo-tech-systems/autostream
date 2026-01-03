@@ -65,7 +65,6 @@ from autostream_webui_assets import (
 
 from autostream_webui_state import WebUIState
 
-
 #
 # Privileged helper / log allowlist hardening
 #
@@ -358,11 +357,26 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
         return
 
     outputs = []
+
+    url = parsed.owntone.base_url.rstrip("/") + "/api/outputs"
+    logging.info("Owntone API request: GET %s", url)
+
     try:
-        resp = requests.get(parsed.owntone.base_url.rstrip("/") + "/api/outputs", timeout=2)
+        resp = requests.get(url, timeout=2)
+
+        logging.info(
+            "Owntone API response: status=%s body=%s",
+            resp.status_code,
+            (resp.text or "").strip(),
+        )
+
         if resp.status_code == 200:
             outputs = resp.json().get("outputs", [])
-    except Exception:
+        else:
+            outputs = []
+
+    except Exception as e:
+        logging.error("Owntone API request failed: %s", e)
         outputs = []
 
     hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
