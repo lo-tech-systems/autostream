@@ -55,6 +55,13 @@ try:
 except ImportError:  # sounddevice is optional
     sd = None
 
+# initial_setup values:
+# 0 - not in initial setup
+# 1 - initial setup needed and page 1 not complete
+# 2 - imitial setup needed and page 1 completed (so user on page 2)
+initial_setup = 0
+
+
 def restart_self_soon(delay: float = 1.0) -> None:
     """Restart this script in-place after a short delay."""
     def _do_restart() -> None:
@@ -119,26 +126,34 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):  # noqa: N802
+        global initial_setup
+        
         path = self._normalized_path()
 
         # If INI missing, force setup except for the setup/auth endpoints + auth verify API
-        if unconfigured(config_path):
+        if unconfigured(STATE.config_path):
+            if initial_setup == 0:
+                initial_setup = 1
             allowed = (
                 path.startswith("/auth")
                 or path.startswith("/api/auth/")
                 or path.startswith("/api/owntone/outputs")
                 or path.startswith("/api/owntone/outputs_state")
                 or path.startswith("/api/owntone/ready")
-                or path.startswith("/setup")
                 or path.startswith("/owntone-setup")
                 or path.startswith("/owntone-restarting")
                 or path.startswith("/logs")
             )
+            if initial_setup == 2:
+                allowed = allowed or path.startswith("/setup") 
             if not allowed:
                 self.send_response(302)
                 self.send_header("Location", "/owntone-setup")
                 self.end_headers()
                 return
+        else:
+            # Config exists, so we are not in initial setup anymore
+            initial_setup = 0
 
         # Serve auth page
         if path == "/auth":
@@ -190,6 +205,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
 
     def do_POST(self):  # noqa: N802
+        global initial_setup
+
         path = self._normalized_path()
 
         # --- 1) Special-case auth verify (kept close to your original) ---
@@ -260,12 +277,15 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             pages.handle_setup_post(self, STATE, AUTH, body_str)
+            initial_setup = 0
 
         elif path == "/owntone-setup":
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
             pages.handle_owntone_setup_post(self, STATE, AUTH, body_str)
+            if initial_setup == 1:
+                initial_setup = 2
 
         elif path == "/api/update/apply":
             # Body optional
