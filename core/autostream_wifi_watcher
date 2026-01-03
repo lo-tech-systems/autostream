@@ -47,8 +47,9 @@ import html
 import json
 from typing import Optional
 from flask import Flask, request, jsonify, redirect, url_for, make_response
+from dataclasses import dataclass
 
-from autostream_sysutils import run_cmd, reboot_system, get_system_hostname
+from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
 
 from autostream_rpi import check_cpu
 
@@ -71,8 +72,50 @@ GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> s
 GW_DOWN_REBOOT_AFTER = 30 * 60          # gateway unreachable for this long -> reboot
 RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts
 
-WAIT_FOR_CONNECTION_TIMEOUT = 20        # Seconds to wait for connectivity after config
-WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for connectivity checks
+# After applying WiFi config, this appliance only requires *local* IPv4
+# connectivity (it does not require Internet access):
+#   - NetworkManager reports wlan0 connected/activated
+#   - wlan0 has a non-link-local RFC1918 IPv4 address (i.e., not 169.254/16)
+WAIT_FOR_CONNECTION_TIMEOUT = 45        # Seconds to wait for local IPv4 after config
+WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for local IPv4 checks
+
+
+def _setup_logging() -> None:
+    """
+    Configure logging to stdout and (if possible) to a log file.
+    The service must keep running even if the log file cannot be created.
+    """
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # Avoid duplicate handlers if called more than once
+    if logger.handlers:
+        return
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s"
+    )
+
+    # Always log to stdout
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    # Try to add file logging
+    try:
+        log_dir = os.path.dirname(LOG_FILE) or "."
+        os.makedirs(log_dir, exist_ok=True)
+
+        file_handler = logging.FileHandler(LOG_FILE)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    except Exception as e:
+        logger.error(
+            "Failed to initialise file logging (%s); continuing with stdout only.",
+            e,
+        )
+
 
 # Set up logging
 def _setup_logging() -> None:
@@ -100,26 +143,40 @@ def _setup_logging() -> None:
 
 _setup_logging()
 
-# Global state flags (updated by the network monitor thread)
-wifistate = "unknown"
-wiredstate = "unknown"
-gateway_reachable = False
+@dataclass
+class NetworkMonitorState:
+    # Link state (reported via /status and UI)
+    wifistate: str = "unknown"        # "configured" / "unconfigured" / "unknown"
+    wiredstate: str = "unknown"       # "connected" / "disconnected" / "unknown"
+    connectivity_ok: bool = False     # "healthy" using the same validation logic as initial wifi checks
 
-# Setup / AP state
-SetupMode = False                     # True when we are in AP-based setup mode
-force_setup_mode: bool = False        # Manual override to stay in SetupMode
+    # Setup / AP state
+    setup_mode: bool = False
+    force_setup_mode: bool = False
+    manual_ap_active: bool = False
 
-# Timers (monotonic seconds) for boot/AP lifecycle and connectivity tracking
-boot_time: Optional[float] = None
+    # Timers (monotonic seconds)
+    boot_time: Optional[float] = None
+    ap_enter_time: Optional[float] = None
+    ap_closed_time: Optional[float] = None
+    ap_exhausted: bool = False
 
-# AP lifecycle (AP mode can be entered only once per boot)
-ap_enter_time: Optional[float] = None
-ap_closed_time: Optional[float] = None
-ap_exhausted: bool = False
+    # Degradation tracking for "healthy connectivity"
+    conn_down_start: Optional[float] = None
+    last_reconnect_attempt: Optional[float] = None
 
-# Connectivity degradation tracking (only relevant when WiFi is configured and ethernet is down)
-gw_down_start: Optional[float] = None
-last_reconnect_attempt: Optional[float] = None
+    # ---- WiFi apply workflow / wait-page status ----
+    apply_in_progress: bool = False
+    # idle | applying | ok | failed
+    last_apply_result: str = "idle"
+    # short error code/message (e.g. nmcli-failed, no-local-ip)
+    last_apply_error: str = ""
+
+    # ---- Manual AP-mode request (from WebUI via localhost) ----
+    ap_request_reason: str = ""
+
+
+STATE = NetworkMonitorState()
 
 # Synchronisation primitive for shared state
 state_lock = threading.Lock()
@@ -127,18 +184,8 @@ state_lock = threading.Lock()
 # Serialise AP start/stop transitions
 ap_mode_lock = threading.Lock()
 
-# WiFi Settings locks
-apply_in_progress = False
-apply_lock = threading.Lock()
-
-# Result of last apply attempt (for the wait page)
-last_apply_result = "idle"   # idle | applying | ok | failed
-last_apply_error = ""        # short message
-
 # Manual AP-mode request (from the normal WebUI via localhost)
 ap_request_event = threading.Event()
-ap_request_reason: str = ""
-manual_ap_active: bool = False  # True while AP mode was entered due to a manual request
 
 # AP / host configuration
 AP_IFNAME = "wlan0"
@@ -180,6 +227,15 @@ def log_on_change(key: str, value: object, msg: str) -> None:
 
 # ** SETUP/AP MODE **
 
+def clear_apmode_flag() -> None:
+    try:
+        if os.path.exists(AP_MODE_FLAG_PATH):
+            log(f"Removing stale AP flag at startup: {AP_MODE_FLAG_PATH}")
+            os.remove(AP_MODE_FLAG_PATH)
+    except Exception:
+        log(f"Failed to remove %s at startup {AP_MODE_FLAG_PATH}")
+
+
 def update_apmode_flag(in_setup: bool) -> None:
     """Create or remove the AP mode flag file at AP_MODE_FLAG_PATH."""
     try:
@@ -202,16 +258,14 @@ def enter_setup_mode(reason: str = "") -> None:
     AP mode is only allowed once per boot cycle. Once AP_MAX_DURATION elapses and
     AP mode is closed, it will not be re-entered until the device is power-cycled.
     """
-    global SetupMode, ap_enter_time, force_setup_mode, ap_exhausted
-
     with state_lock:
-        if SetupMode:
+        if STATE.setup_mode:
             return
-        if ap_exhausted and not force_setup_mode:
+        if STATE.ap_exhausted and not STATE.force_setup_mode:
             # Don't automatically re-enter AP mode after the 15-minute window.
             return
-        SetupMode = True
-        ap_enter_time = time.monotonic()
+        STATE.setup_mode = True
+        STATE.ap_enter_time = time.monotonic()
 
     log(f"Entering SetupMode. Reason: {reason}")
     start_ap_mode()
@@ -219,15 +273,14 @@ def enter_setup_mode(reason: str = "") -> None:
 
 def leave_setup_mode(reason: str = "") -> None:
     """Transition out of SetupMode and stop AP mode, if currently active."""
-    global SetupMode, ap_enter_time, force_setup_mode, manual_ap_active
-
     with state_lock:
-        if not SetupMode:
+        if not STATE.setup_mode:
             return
-        SetupMode = False
-        ap_enter_time = None
-        force_setup_mode = False
-        manual_ap_active = False
+        STATE.setup_mode = False
+        STATE.ap_enter_time = None
+        STATE.ap_closed_time = time.monotonic()
+        STATE.force_setup_mode = False
+        STATE.manual_ap_active = False
 
     log(f"Leaving SetupMode. Reason: {reason}")
     update_apmode_flag(False)
@@ -291,6 +344,26 @@ def is_wifi_connected() -> bool:
 
     return False
 
+def is_wifi_client_healthy(
+    ifname: str = AP_IFNAME,
+    wifi_connected: Optional[bool] = None,
+) -> bool:
+    """
+    WiFi "health" using the same logic as initial validation:
+    - must be connected to a non-AP WiFi profile (is_wifi_connected)
+    - must have a non-link-local RFC1918 IPv4 address (is_local_ipv4_ready)
+    - must have a reachable default gateway (is_gateway_reachable)
+    """
+    if wifi_connected is None:
+        wifi_connected = is_wifi_connected()
+
+    if not wifi_connected:
+        return False
+    if not is_local_ipv4_ready(ifname):
+        return False
+    return is_gateway_reachable()
+
+
 import glob
 
 def is_wired_connected() -> bool:
@@ -312,7 +385,6 @@ def is_wired_connected() -> bool:
                 continue
 
     return False
-
 
 import ipaddress
 
@@ -341,6 +413,7 @@ def is_gateway_reachable() -> bool:
     - Read default gateway IP (and default dev if available)
     - Read all neighbor entries for that gateway (across all devs)
     - Prefer an OK-state entry on the default dev, else any OK-state entry.
+    - Primes gateway (icmp echo) prior to testing if possible
     """
     try:
         routes = _run_ip_json(["route", "show", "default"])
@@ -358,6 +431,11 @@ def is_gateway_reachable() -> bool:
             ipaddress.ip_address(gw)
         except ValueError:
             return False
+
+        # Prime neighbor state before inspecting ip neigh if possibile
+        # This does not define reachability; it just causes the kernel to resolve/refresh.
+        if default_dev:
+            prime_gateway(gw)
 
         neigh = _run_ip_json(["neigh", "show", "to", gw])  # NOTE: no dev filter
         if not neigh:
@@ -378,6 +456,84 @@ def is_gateway_reachable() -> bool:
 
     except Exception as e:
         log(f"Kernel gateway reachability check failed: {e}")
+        return False
+
+
+_RFC1918_NETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+_LINK_LOCAL_NET = ipaddress.ip_network("169.254.0.0/16")
+
+def _is_rfc1918_ipv4(ip: ipaddress.IPv4Address) -> bool:
+    return any(ip in n for n in _RFC1918_NETS)
+
+def _nmcli_dev_show_fields(ifname: str, fields: list[str]) -> dict[str, list[str]]:
+    """Return selected `nmcli -t ... dev show <ifname>` fields.
+
+    Returns a dict mapping field-name to list of values (nmcli can emit multiple
+    keys like IP4.ADDRESS[1], IP4.ADDRESS[2], ...).
+    """
+    r = run_cmd(["nmcli", "-t", "-f", ",".join(fields), "device", "show", ifname])
+    if r.returncode != 0:
+        return {}
+    out: dict[str, list[str]] = {}
+    for line in r.stdout.splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        base = k.split("[", 1)[0]  # normalise e.g. IP4.ADDRESS[1] -> IP4.ADDRESS
+        out.setdefault(base, []).append(v)
+    return out
+
+def is_local_ipv4_ready(ifname: str = AP_IFNAME) -> bool:
+    """Local-only connectivity check.
+
+    True when NetworkManager reports the device connected/activated AND the
+    interface has a non-link-local RFC1918 IPv4 address.
+    """
+    try:
+        info = _nmcli_dev_show_fields(ifname, ["GENERAL.STATE", "IP4.ADDRESS"])
+        if not info:
+            return False
+
+        # GENERAL.STATE is like: "100 (connected)" or "30 (disconnected)"
+        state_vals = info.get("GENERAL.STATE", [])
+        if not state_vals:
+            return False
+        state_str = state_vals[0]
+        try:
+            state_code = int(state_str.split()[0])
+        except Exception:
+            state_code = -1
+        if state_code != 100:
+            return False
+
+        addrs = info.get("IP4.ADDRESS", [])
+        if not addrs:
+            return False
+
+        for a in addrs:
+            # nmcli returns "192.168.1.42/24"
+            try:
+                ip = ipaddress.ip_interface(a).ip
+            except Exception:
+                continue
+            if not isinstance(ip, ipaddress.IPv4Address):
+                continue
+            if ip in _LINK_LOCAL_NET:
+                continue
+            if _is_rfc1918_ipv4(ip):
+                return True
+
+        return False
+    except Exception as e:
+        log(f"Local IPv4 readiness check failed: {e}")
         return False
 
 
@@ -471,7 +627,8 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
 
     log(f"Running WiFi connect command: {' '.join(log_cmd)}")
 
-    result = run_cmd(cmd)
+    # Note: passing in log_cmd so run_cmd() warnings don't leak cleartext password
+    result = run_cmd(cmd, log_cmd=log_cmd)
 
     if result.returncode == 0:
         log("nmcli reported successful WiFi configuration")
@@ -493,6 +650,11 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
         # before declaring failure / returning to SetupMode.
         log("nmcli failed to configure WiFi; see previous logs for details")
 
+        # Fast-fail on obvious credential/auth problems to avoid ~10s delay.
+        err = (result.stderr or "").lower()
+        if "secrets were required" in err or "invalid secrets" in err or "wrong password" in err:
+            return False
+ 
         if wait_for_connection(timeout=10, interval=1):
             active_ssid = _get_active_wifi_ssid(AP_IFNAME)
             conn_name = _get_active_wifi_connection_name(AP_IFNAME)
@@ -513,13 +675,18 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
 
 
 def wait_for_connection(timeout: int = 20, interval: int = 2) -> bool:
-    """Wait up to 'timeout' seconds for gateway connectivity.
+    """Wait up to 'timeout' seconds for *local* IPv4 readiness.
 
-    Checks is_gateway_reachable() every 'interval' seconds.
+    This appliance is designed to operate local-only, so after applying WiFi
+    credentials we treat success as:
+      - NetworkManager reports wlan0 connected/activated
+      - wlan0 has a non-link-local RFC1918 IPv4 address
+
+    (The ongoing health monitor can still use the gateway heuristic separately.)
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if is_gateway_reachable():
+        if is_local_ipv4_ready(AP_IFNAME):
             return True
         time.sleep(interval)
     return False
@@ -579,6 +746,8 @@ def stop_ap_mode() -> None:
         log("Disabling AP mode after leaving SetupMode")
         run_cmd(["systemctl", "stop", "autostream_dnsmasq.service"])
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+        with state_lock:
+            STATE.ap_exhausted = True
 
 
 def scan_wifi_networks(ifname: str = AP_IFNAME):
@@ -639,11 +808,10 @@ def scan_wifi_networks(ifname: str = AP_IFNAME):
 
 
 def apply_wifi_async(ssid: str, pw: str) -> None:
-    global force_setup_mode, apply_in_progress, last_apply_result, last_apply_error
-
     try:
-        last_apply_result = "applying"
-        last_apply_error = ""
+        with state_lock:
+            STATE.last_apply_result = "applying"
+            STATE.last_apply_error = ""
         log(f"Async apply starting for SSID '{ssid}'")
 
         time.sleep(0.5)
@@ -656,27 +824,32 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
                 interval=WAIT_FOR_CONNECTION_INTERVAL,
             )
             if connected:
-                last_apply_result = "ok"
-                last_apply_error = ""
+                with state_lock:
+                    STATE.last_apply_result = "ok"
+                    STATE.last_apply_error = ""
                 log("WiFi configuration and connectivity verified; leaving SetupMode")
-                force_setup_mode = False
+                with state_lock:
+                    STATE.force_setup_mode = False
                 leave_setup_mode("WiFi configuration successful and connectivity verified")
             else:
-                last_apply_result = "failed"
-                last_apply_error = "no-gateway"
-                log("Connectivity check failed after WiFi configuration; entering SetupMode")
-                force_setup_mode = True
-                enter_setup_mode("Connectivity check failed after WiFi configuration")
+                with state_lock:
+                    STATE.last_apply_result = "failed"
+                    STATE.last_apply_error = "no-local-ip"
+                log("Local IPv4 check failed after WiFi configuration; entering SetupMode")
+                with state_lock:
+                    STATE.force_setup_mode = True
+                enter_setup_mode("Local IPv4 check failed after WiFi configuration")
         else:
-            last_apply_result = "failed"
-            last_apply_error = "nmcli-failed"
+            with state_lock:
+                STATE.last_apply_result = "failed"
+                STATE.last_apply_error = "nmcli-failed"
             log("WiFi configuration failed; returning to SetupMode")
-            force_setup_mode = True
+            with state_lock:
+                STATE.force_setup_mode = True
             enter_setup_mode("nmcli failed to configure WiFi")
     finally:
-        with apply_lock:
-            apply_in_progress = False
-
+        with state_lock:
+            STATE.apply_in_progress = False
 
 # ** WEB APP **
 
@@ -698,8 +871,11 @@ def render_setup_page(error_code: str = "") -> str:
     # Map internal error codes to a user-friendly message
     msg = ""
     if error_code:
-        if error_code == "no-gateway":
-            msg = "Unable to reach network gateway. Check network is operational or try another."
+        if error_code == "no-local-ip":
+            msg = (
+                "WiFi connected but no usable local IPv4 address was obtained. "
+                "Check DHCP is enabled on the network or try another."
+            )
         elif error_code == "nmcli-failed":
             msg = "Unable to connect to that WiFi network. Check the key and try again."
         else:
@@ -1117,8 +1293,6 @@ def page_not_found(_):
 
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
-    global force_setup_mode, apply_in_progress
-
     if request.method == "POST":
         # Accept both the “real” names and your innocuous names
         ssid = (request.form.get("ssid") or request.form.get("s") or "").strip()
@@ -1128,12 +1302,14 @@ def setup():
             log("WiFi configuration POST received without SSID")
             return _captive_response(render_setup_page())
 
-        with apply_lock:
-            if apply_in_progress:
+        with state_lock:
+            if STATE.apply_in_progress:
                 log("Apply already in progress; showing wait page again")
                 return _captive_response(render_wait_page(ssid))
                 #return render_wait_page(ssid)
-            apply_in_progress = True
+            STATE.apply_in_progress = True
+            STATE.last_apply_result = "applying"
+            STATE.last_apply_error = ""
 
         # IMPORTANT: return wait page first, then reconfigure in background
         t = threading.Thread(target=apply_wifi_async, args=(ssid, pw), daemon=True)
@@ -1141,9 +1317,12 @@ def setup():
         return _captive_response(render_wait_page(ssid))
 
     # GET: show the setup form (include last failure, if any)
-    e = (request.args.get("e") or "").strip()
-    if not e and last_apply_result == "failed":
-        e = last_apply_error or "failed"
+    with state_lock:
+        e = (request.args.get("e") or "").strip()
+        if not e and STATE.last_apply_result == "failed":
+            e = STATE.last_apply_error or "failed"
+
+    log(f"User requested /setup (error: {e})")
 
     return _captive_response(render_setup_page(e))
 
@@ -1158,15 +1337,24 @@ def networks():
 @app.route("/status", methods=["GET"])
 def status():
     """Return a simple JSON status including SetupMode and link states."""
+    with state_lock:
+        wifistate = STATE.wifistate
+        wiredstate = STATE.wiredstate
+        gateway_reachable = STATE.connectivity_ok
+        SetupMode = STATE.setup_mode
+        aip = STATE.apply_in_progress
+        lar = STATE.last_apply_result
+        lae = STATE.last_apply_error
+    
     return jsonify(
         {
             "wifistate": wifistate,
             "wiredstate": wiredstate,
             "gateway_reachable": gateway_reachable,
             "SetupMode": SetupMode,
-            "apply_in_progress": apply_in_progress,
-            "last_apply_result": last_apply_result,
-            "last_apply_error": last_apply_error,
+            "apply_in_progress": aip,
+            "last_apply_result": lar,
+            "last_apply_error": lae,
         }
     )
 
@@ -1251,9 +1439,8 @@ def request_ap_mode():
     if not reason:
         reason = (request.form.get("reason") or "").strip()
 
-    global ap_request_reason
     with state_lock:
-        ap_request_reason = reason
+        STATE.ap_request_reason = reason
         ap_request_event.set()
 
     return jsonify({"ok": True, "queued": True})
@@ -1278,88 +1465,108 @@ def network_monitor_loop():
             If unreachable for > GW_DOWN_RECONNECT_AFTER: periodically attempt reconnect.
             If unreachable for > GW_DOWN_REBOOT_AFTER: reboot.
     """
-    global wifistate, wiredstate, gateway_reachable, manual_ap_active
-    global boot_time, ap_enter_time, ap_closed_time, ap_exhausted
-    global gw_down_start, last_reconnect_attempt, force_setup_mode
-    
-
     log("Starting network monitor loop")
 
     # Record boot time on first entry
-    if boot_time is None:
-        boot_time = time.monotonic()
+    with state_lock:
+        if STATE.boot_time is None:
+            STATE.boot_time = time.monotonic()
 
     while True:
         now = time.monotonic()
+        with state_lock:
+            STATE.manual_ap_active = False
+
+        with state_lock:
+            boot_time = STATE.boot_time or now
 
         # Handle manual request to enter AP mode (from the normal WebUI via localhost).
         # This overrides the boot-time auto-AP cutoff.
         if ap_request_event.is_set():
             with state_lock:
-                reason = ap_request_reason
+                reason = STATE.ap_request_reason
+                # Clear stored reason once consumed (optional but keeps it tidy)
+                STATE.ap_request_reason = ""
                 ap_request_event.clear()
+                already_in_ap = STATE.setup_mode
             # If we're not already in AP mode, enter it now.
-            with state_lock:
-                already_in_ap = SetupMode
             if not already_in_ap:
-                manual_ap_active = True
+                with state_lock:
+                    STATE.manual_ap_active = True
                 enter_setup_mode(reason=f"manual_request: {reason or 'UserRequest'}")
                 time.sleep(NETWORK_MONITOR_INTERVAL)
                 continue
             else:
-                manual_ap_active = True
+                with state_lock:
+                    STATE.manual_ap_active = True
 
         wifi_cfg = is_wifi_configured()
         wired_connected = is_wired_connected()
-        wifi_connected = is_wifi_connected()
-        gw_reach = is_gateway_reachable() if (wifi_connected or wifi_cfg) else False
+        wifi_connected = is_wifi_connected() if wifi_cfg else False
 
-        wifistate = "configured" if wifi_cfg else "unconfigured"
-        wiredstate = "connected" if wired_connected else "disconnected"
-        gateway_reachable = gw_reach
+        # Requested health check change: reuse the same validation logic as initial wifi checks
+        # Connectivity determination:
+        # - Ethernet up => healthy
+        # - Else WiFi must be (a) nmcli connected/activated to non-AP, (b) have RFC1918 IPv4,
+        #   and (c) have reachable default gateway (kernel neighbor view)
+        client_ok = (
+            is_wifi_client_healthy(AP_IFNAME, wifi_connected=wifi_connected)
+            if wifi_cfg
+            else False
+        )
+        conn_ok = bool(wired_connected or client_ok)
 
-        log_on_change("wifistate", wifistate, f"WiFi state changed -> {wifistate}")
-        log_on_change("wiredstate", wiredstate, f"Wired state changed -> {wiredstate}")
-        log_on_change("gateway_reachable", gateway_reachable, f"Gateway reachable changed -> {gateway_reachable}")
+        with state_lock:
+            STATE.wifistate = "configured" if wifi_cfg else "unconfigured"
+            STATE.wiredstate = "connected" if wired_connected else "disconnected"
+            STATE.connectivity_ok = conn_ok
+            log_on_change("wifistate", STATE.wifistate, f"WiFi state changed -> {STATE.wifistate}")
+            log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
+            log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
 
         # Ethernet suppresses AP mode entirely.
-        if wired_connected and not manual_ap_active:
-            gw_down_start = None
-            last_reconnect_attempt = None
-            with state_lock:
-                in_setup = SetupMode
-            if in_setup:
-                leave_setup_mode("Wired ethernet is up; suppressing AP mode")
-            time.sleep(NETWORK_MONITOR_INTERVAL)
-            continue
+        with state_lock:
+            if wired_connected and not STATE.manual_ap_active:
+                STATE.conn_down_start = None
+                STATE.last_reconnect_attempt = None
+                in_setup = STATE.setup_mode
+                if in_setup:
+                    leave_setup_mode("Wired ethernet is up; suppressing AP mode")
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
 
-        if wired_connected and manual_ap_active:
-            # User explicitly requested AP mode; do not auto-suppress it just because
-            # ethernet happens to be connected.
-            gw_down_start = None
-            last_reconnect_attempt = None
+        with state_lock:
+            if wired_connected and STATE.manual_ap_active:
+                # User explicitly requested AP mode; do not auto-suppress it just because
+                # ethernet happens to be connected.
+                STATE.conn_down_start = None
+                STATE.last_reconnect_attempt = None
 
         # If we're currently in AP mode, enforce the fixed 15-minute lifetime.
         with state_lock:
-            in_setup = SetupMode
-            ap_started = ap_enter_time
+            in_setup = STATE.setup_mode
+            ap_started = STATE.ap_enter_time
 
         if in_setup and ap_started is not None:
             ap_age = now - ap_started
             if ap_age >= AP_MAX_DURATION:
                 # Close AP mode; do not allow re-entry this boot (unless forced).
                 with state_lock:
-                    ap_exhausted = True
-                    ap_closed_time = now
-                    manual_ap_active = False
+                    STATE.ap_exhausted = True
+                    STATE.ap_closed_time = now
+                    STATE.manual_ap_active = False
                 leave_setup_mode(f"AP mode lifetime expired after {ap_age:.0f}s")
             time.sleep(NETWORK_MONITOR_INTERVAL)
             continue
 
         # Decide whether we should enter AP mode during the boot window.
         # Note: AP mode is only allowed once per boot (ap_exhausted).
-        if not in_setup and not ap_exhausted and not force_setup_mode:
-            boot_age = now - (boot_time or now)
+        with state_lock:
+            ap_exhausted = STATE.ap_exhausted
+            forced = STATE.force_setup_mode
+
+        if (not in_setup) and (not ap_exhausted) and (not forced):
+            boot_age = now - boot_time
             # Auto-setup mode is only entered if:
             #   - WiFi is not configured OR WiFi is not connected
             #   - still offline AFTER the boot grace period.
@@ -1381,15 +1588,25 @@ def network_monitor_loop():
 
         # If AP mode has closed and we're still offline, periodically try to connect,
         # and reboot after AP_POST_CLOSE_REBOOT_AFTER.
-        if ap_exhausted and wifi_cfg and not wifi_connected:
-            if ap_closed_time is None:
-                ap_closed_time = now
+        with state_lock:
+            ap_exhausted = STATE.ap_exhausted
+            ap_closed_time = STATE.ap_closed_time
+            last_attempt = STATE.last_reconnect_attempt
 
-            offline_for = now - ap_closed_time
+        if ap_exhausted and wifi_cfg and (not wifi_connected):
+            # Ensure we have a close time
+            if ap_closed_time is None:
+                with state_lock:
+                    if STATE.ap_closed_time is None:
+                        STATE.ap_closed_time = now
+                    ap_closed_time = STATE.ap_closed_time
+
+            offline_for = now - (ap_closed_time or now)
 
             # Periodic reconnect attempts.
-            if (last_reconnect_attempt is None) or (now - last_reconnect_attempt >= RECONNECT_ATTEMPT_INTERVAL):
-                last_reconnect_attempt = now
+            if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
+                with state_lock:
+                    STATE.last_reconnect_attempt = now
                 log(f"Post-AP reconnect attempt (offline_for={offline_for:.0f}s)")
                 connect_to_configured_wifi()
 
@@ -1404,32 +1621,40 @@ def network_monitor_loop():
             continue
 
         # Connection reliability monitoring: WiFi configured, ethernet down.
-        # Use kernel neighbor state for default gateway as a health indicator.
+        # Use the same "local IPv4 readiness" health indicator (conn_ok) as used elsewhere.
         if wifi_cfg:
-            if not gw_reach:
-                if gw_down_start is None:
-                    gw_down_start = now
+            with state_lock:
+                down_start = STATE.conn_down_start
+                last_attempt = STATE.last_reconnect_attempt
 
-                gw_down_for = now - gw_down_start
+            if not conn_ok:
+                if down_start is None:
+                    with state_lock:
+                        STATE.conn_down_start = now
+                    down_start = now
 
-                if gw_down_for >= GW_DOWN_REBOOT_AFTER:
+                down_for = now - down_start
+
+                if down_for >= GW_DOWN_REBOOT_AFTER:
                     log(
-                        f"Gateway unreachable for {gw_down_for:.0f}s "
+                        f"Connectivity unhealthy for {down_for:.0f}s "
                         f"(threshold {GW_DOWN_REBOOT_AFTER}s); rebooting"
                     )
                     reboot_system("NetworkDown")
 
-                if gw_down_for >= GW_DOWN_RECONNECT_AFTER:
-                    if (last_reconnect_attempt is None) or (now - last_reconnect_attempt >= RECONNECT_ATTEMPT_INTERVAL):
-                        last_reconnect_attempt = now
+                if down_for >= GW_DOWN_RECONNECT_AFTER:
+                    if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
+                        with state_lock:
+                            STATE.last_reconnect_attempt = now
                         log(
-                            f"Gateway unreachable for {gw_down_for:.0f}s; "
+                            f"Connectivity unhealthy for {down_for:.0f}s; "
                             "attempting reconnect"
                         )
                         connect_to_configured_wifi()
             else:
-                gw_down_start = None
-                last_reconnect_attempt = None
+                with state_lock:
+                    STATE.conn_down_start = None
+                    STATE.last_reconnect_attempt = None
 
         time.sleep(NETWORK_MONITOR_INTERVAL)
 
@@ -1443,11 +1668,15 @@ def connect_to_configured_wifi() -> bool:
     if not connection_name:
         return False
 
+    # Step 1 (requested): try device disconnect/reconnect first
+    log(f"Attempting WiFi device bounce on {AP_IFNAME} (disconnect/reconnect) before bringing up '{connection_name}'")
+    run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
+    run_cmd(["nmcli", "device", "connect", AP_IFNAME])
+
+    # Step 2: bring up the configured connection profile as a fallback/assist
     log(f"Attempting to connect to configured WiFi connection '{connection_name}'")
     run_cmd(["nmcli", "connection", "up", connection_name])
     return True
-
-
 
 
 
@@ -1462,6 +1691,8 @@ if __name__ == "__main__":
     # force the Pi to setup mode even though the WiFi is probably OK, and connect to
     # whatever network is configured (if it is configured).
     run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+    # an any associated hotspot request markers
+    clear_apmode_flag()
     connect_to_configured_wifi()
 
     # Start the network monitor in a background thread
