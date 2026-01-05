@@ -1139,6 +1139,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         clr = "#dc3545" if sd_health<=10 else ("#f0ad4e" if sd_health<=30 else "#28a745")
         sd_html = f"<div class='bar-label'><strong>SD Health:</strong> {sd_health}%</div><div class='storage-bar'><div class='used' style='width:{sd_health}%;background:{clr};'></div></div>"
 
+    licence_text = ""
     licence_html = ""
     for fname in ("LICENCE", "LICENSE"):
         try:

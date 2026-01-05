@@ -750,6 +750,7 @@ fi
   ###########################################
   info "Deploying autostream files to ${INSTALL_DIR}"
   cp -a "${AUTOSTREAM_DIR}/core/." "${INSTALL_DIR}/"
+  cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/version" "${INSTALL_DIR}/"
 
   ###########################################
