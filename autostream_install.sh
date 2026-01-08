@@ -698,6 +698,8 @@ fi
   ensure_user autostream autostream
   ensure_user_in_group autostream netdev
   ensure_user_in_group autostream audio
+  # video group required to allow autostream to query PSU status via vcgencmd
+  ensure_user_in_group autostream video
 
   # Download/update autostream (optional)
   if [[ ${FETCH_AUTOSTREAM} -eq 1 ]]; then
