@@ -355,7 +355,7 @@ body {
   font-size: 18px;
 }
 
-#license-banner {
+#red-banner {
   position: fixed !important;
   top: 0 !important;
   left: 0 !important;
@@ -369,8 +369,15 @@ body {
   padding-top: calc(0.6rem + env(safe-area-inset-top)) !important;
   z-index: 10000;
 }
+#red-banner-spacer {
+  height: calc(3rem + constant(safe-area-inset-top));
+  height: calc(3rem + env(safe-area-inset-top));
+}
 #green-banner {
   position: fixed !important;
+  will-change: transform;
+  transform: translateY(0);
+  transition: transform 320ms ease;
   top: 0 !important;
   left: 0 !important;
   right: 0 !important;
@@ -383,9 +390,23 @@ body {
   padding-top: calc(0.6rem + env(safe-area-inset-top)) !important;
   z-index: 10000;
 }
-#license-banner-spacer {
+#green-banner-spacer {
   height: calc(3rem + constant(safe-area-inset-top));
   height: calc(3rem + env(safe-area-inset-top));
+  transition: height 320ms ease;
+  overflow: hidden;
+}
+/* Fade-out support for flash (green) banner */
+.flash-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.flash-spacer-hidden {
+  height: 0 !important;
+}
+.flash-rollup {
+  /* JS sets --flash-rollup-y to the banner height (px) */
+  transform: translateY(calc(-1 * var(--flash-rollup-y, 0px)));
 }
 """
 
@@ -395,6 +416,33 @@ BANNER_HTML = """
          alt="AutoStream"
          style="max-width:100%;height:auto;display:block;margin:0 auto;">
   </div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const banner = document.getElementById("green-banner");
+  if (!banner) return;
+
+  const spacer = document.getElementById("green-banner-spacer");
+
+  window.setTimeout(() => {
+    // Measure actual rendered height (includes iOS safe-area padding).
+    const h = Math.ceil(banner.getBoundingClientRect().height);
+
+    // Tell CSS how far to translate.
+    banner.style.setProperty("--flash-rollup-y", h + "px");
+
+    // Trigger animations
+    banner.classList.add("flash-rollup");
+    if (spacer) spacer.classList.add("flash-spacer-hidden");
+
+    // After animation completes, remove from layout completely.
+    window.setTimeout(() => {
+      banner.style.display = "none";
+      if (spacer) spacer.style.display = "none";
+    }, 400);
+  }, 5000);
+});
+</script>
 """
 
 

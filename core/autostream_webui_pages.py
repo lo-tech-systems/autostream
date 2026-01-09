@@ -4,6 +4,8 @@
 Page rendering and API handlers for the autostream Web UI.
 """
 
+from __future__ import annotations
+
 import logging
 import subprocess
 import os
@@ -16,6 +18,7 @@ import textwrap
 import requests
 from urllib.parse import quote, parse_qs, urlparse
 from typing import Optional
+from urllib.parse import quote as urlquote
 
 from autostream_core import (
     any_monitor_capturing,
@@ -96,12 +99,34 @@ def locked_load_config(path: str):
     with CONFIG_IO_LOCK:
         return load_config(path)
 
+# -----------------------------------------------------------------------------
+# status message cookie (produces e.g., settings saved banner)
+# -----------------------------------------------------------------------------
 
+FLASH_COOKIE_NAME = "autostream_flash"
+
+def _set_flash_cookie(handler, message: str, *, max_age: int = 30) -> None:
+    """
+    Set a short-lived flash cookie to be consumed (and cleared) on the next GET.
+    Stored URL-escaped to keep it cookie-safe.
+    """
+    val = urlquote(message, safe="")
+    cookie = (
+        f"{FLASH_COOKIE_NAME}={val}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax"
+    )
+    pending = getattr(handler, "_pending_set_cookies", None)
+    if pending is None:
+        handler._pending_set_cookies = [cookie]
+    else:
+        pending.append(cookie)
+
+
+# -----------------------------------------------------------------------------
+# Shared PIN modal CSS (used by multiple pages)
+# -----------------------------------------------------------------------------
 
 VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">'
 
-
-# Shared PIN modal CSS (used by multiple pages)
 PIN_MODAL_CSS = """
   #pinModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
   #pinModal.show{display:flex;}
@@ -213,7 +238,7 @@ def send_owntone_restarting_page(handler, state) -> None:
     """Simple 'restarting' page that polls /api/owntone/ready and redirects when ready."""
     # Allow a caller-provided next target, defaulting to owntone setup.
     qs = parse_qs(urlparse(handler.path).query)
-    next_path = (qs.get("next", []) or ["/owntone-setup?msg=Settings saved"])[0]
+    next_path = (qs.get("next", []) or ["/owntone-setup"])[0]
     next_path_js = html.escape(next_path, quote=True)
 
     body = f"""<!doctype html>
@@ -273,22 +298,28 @@ def send_owntone_restarting_page(handler, state) -> None:
 
 def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "success") -> tuple[str, str]:
     """Returns (banner_html, spacer_html). Handles persistent and flash messages."""
-    
-    # Priority 1: User-triggered flash messages (e.g. "Settings saved")
+
+    # Priority 1: User-triggered flash messages (e.g. "Settings saved" / errors)
     if flash_msg:
-        return (f"<div id='green-banner'>{html.escape(flash_msg)}</div>",
-                "<div id='license-banner-spacer'></div>")
+        banner_id = "green-banner"
+        banner_spacer = "green-banner-spacer"
+        if flash_type == "error":
+            banner_id = "red-banner"
+            banner_spacer = "red-banner-spacer"
+
+        return (f"<div id='{banner_id}'>{html.escape(flash_msg)}</div>",
+                f"<div id='{banner_spacer}'></div>")
 
     # Priority 2: System-level PSU warning
     warn = get_psu_warning_text()
     if warn:
-        return (f"<div id='license-banner'>{html.escape(warn)}</div>",
-                "<div id='license-banner-spacer'></div>")
+        return (f"<div id='red-banner'>{html.escape(warn)}</div>",
+                "<div id='red-banner-spacer'></div>")
 
     # Priority 3: Licensing
     if LICENSE_CHECK and (not cpu_is_licensed()):
-        return ("<div id='license-banner'>This system is unlicensed</div>",
-                "<div id='license-banner-spacer'></div>")
+        return ("<div id='red-banner'>This system is unlicensed</div>",
+                "<div id='red-banner-spacer'></div>")
 
     return ("", "")
 
@@ -1412,7 +1443,11 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 cfg.write(f)
             mark_configured(state.config_path)        
 
-        next_path = "/?msg=Settings saved" # if was_initial_setup else "/setup?msg=Settings saved"
+        # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
+        _set_flash_cookie(handler, "Settings saved", max_age=30)
+
+        # Redirect back to / on save
+        next_path = "/"
 
         if hostname_changed:
             host_header = handler.headers.get("Host", "")
@@ -1421,7 +1456,9 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             redirect_url = f"{handler.headers.get('X-Forwarded-Proto', 'http')}://{host_p}{next_path}"
 
             # Render a redirect page
-            lic_html, lic_spacer = build_top_banner_html(flash_msg="Settings saved")
+            # Note: Green "saved" banner will appear once on the destination page
+            # via the flash cookie set above.
+            lic_html, lic_spacer = build_top_banner_html(flash_msg=None)
             safe_url = html.escape(redirect_url)
 
             body = textwrap.dedent(f"""\
@@ -1515,11 +1552,11 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         # (important when running behind nginx on slower hardware like Pi Zero).
         start_owntone_restart_async(state)
 
-        # Redirect immediately to a restarting page which polls /api/owntone/ready.
-        if was_initial_setup:
-            next_path = "/setup"
-        else:
-            next_path = "/setup?msg=Settings saved"
+        # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
+        _set_flash_cookie(handler, "Settings saved", max_age=30)
+
+       # Redirect immediately to a restarting page which polls /api/owntone/ready.
+        next_path = "/setup"
         loc = "/owntone-restarting?next=" + quote(next_path, safe="/?=&")
 
         handler.send_response(303)  # See Other (safe after POST)

@@ -617,8 +617,8 @@ class AuthManager:
         err_banner = ""
         if error:
             err_banner = (
-                "<div id='license-banner'>Incorrect PIN</div>"
-                "<div id='license-banner-spacer'></div>"
+                "<div id='red-banner'>Incorrect PIN</div>"
+                "<div id='red-banner-spacer'></div>"
             )
 
         # Minimal page that matches the existing Autostream look by using injected CSS.

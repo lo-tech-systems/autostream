@@ -15,6 +15,8 @@ Usage:
 
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import sys
@@ -22,7 +24,7 @@ import threading
 import time
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, unquote
 import re
 import json
 
@@ -62,6 +64,28 @@ except ImportError:  # sounddevice is optional
 initial_setup = 0
 
 
+FLASH_COOKIE_NAME = "autostream_flash"
+
+def _parse_cookie_header(cookie_header: str | None) -> dict[str, str]:
+    """
+    Minimal cookie parser (avoids depending on AuthManager internals).
+    Returns {name: value} with surrounding whitespace stripped.
+    """
+    if not cookie_header:
+        return {}
+    out: dict[str, str] = {}
+    parts = cookie_header.split(";")
+    for part in parts:
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k:
+            out[k] = v
+    return out
+
+
 def restart_self_soon(delay: float = 1.0) -> None:
     """Restart this script in-place after a short delay."""
     def _do_restart() -> None:
@@ -70,6 +94,7 @@ def restart_self_soon(delay: float = 1.0) -> None:
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
     threading.Thread(target=_do_restart, daemon=True).start()
+
 
 class ConfigWebHandler(BaseHTTPRequestHandler):
     """Simple HTTP interface (port 8080) to view and edit autostream.ini."""
@@ -118,11 +143,23 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         logging.info("%s - - [%s] %s", self._get_client_ip(), self.log_date_time_string(), format % args)
 
     def end_headers(self) -> None:
-        """Flushes any pending cookies from the AuthManager."""
+        """
+        Flushes any pending cookies (AuthManager + other one-shot cookies).
+        Must be called after status line, before body.
+        """
+        # AuthManager uses a single pending cookie string.
         cookie = getattr(self, "_pending_auth_cookie", None)
         if cookie:
             self.send_header("Set-Cookie", cookie)
             self._pending_auth_cookie = None
+
+        # Generic support for multiple Set-Cookie headers.
+        pending = getattr(self, "_pending_set_cookies", None)
+        if pending:
+            for c in pending:
+                self.send_header("Set-Cookie", c)
+            self._pending_set_cookies = []
+
         super().end_headers()
 
     def do_GET(self):  # noqa: N802
@@ -173,6 +210,29 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         query = urlparse(self.path).query
         qs = parse_qs(query)
         msg = (qs.get("msg") or [""])[0]
+
+        # One-shot flash message (cookie-based). This avoids "sticky" URLs in iOS A2HS/PWA.
+        # Priority: explicit ?msg=... wins; otherwise consume the cookie once.
+        if not msg:
+            path = self._normalized_path()
+            # Don't consume the flash cookie on pages that don't render it
+            if path != "/owntone-restarting" and not path.startswith("/api/"):
+                cookies = _parse_cookie_header(self.headers.get("Cookie"))
+                raw = cookies.get(FLASH_COOKIE_NAME, "")
+                if raw:
+                    try:
+                        msg = unquote(raw)
+                    except Exception:
+                        msg = raw
+                    # Clear cookie so the flash is one-shot.
+                    clear_cookie = (
+                        f"{FLASH_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+                    )
+                    pending = getattr(self, "_pending_set_cookies", None)
+                    if pending is None:
+                        self._pending_set_cookies = [clear_cookie]
+                    else:
+                        pending.append(clear_cookie)
 
         if path == "/":
             pages.send_airplay_page(self, STATE, AUTH, flash_msg=msg)
