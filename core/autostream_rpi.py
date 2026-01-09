@@ -28,10 +28,23 @@ LICENSE_CHECK = False
 # Raspberry Pi PSU check related functions.
 # ---------------------------------------------------------------------------
 
+import threading
+_psu_seen_lock = threading.Lock()
+_seen_historic_undervolt = False
+
 # Cache state
 _GET_THROTTLED_CACHE_VALUE: Optional[int] = None
 _GET_THROTTLED_CACHE_TIME: float = 0.0
 _GET_THROTTLED_CACHE_TTL = 30.0  # seconds
+
+def _parse_throttled_mask(throttled: int):
+    # Current status bits (0..2)
+    current = throttled & 0x7
+
+    # “Has occurred” historic bits (16..18) mapped down to 0..2
+    historic = (throttled >> 16) & 0x7
+
+    return current, historic
 
 def _read_get_throttled_value() -> Optional[int]:
     """
@@ -80,41 +93,32 @@ def _read_get_throttled_value() -> Optional[int]:
 
     return value
 
-
 def get_psu_warning_text() -> Optional[str]:
-    """
-    Return a user-facing PSU warning message if the Pi reports power issues.
-    """
-    v = _read_get_throttled_value()
-    if v is None:
+    throttled = _read_get_throttled_value()
+    if throttled is None:
         return None
 
-    # Bits (commonly used mapping):
-    # 0  Under-voltage detected (now)
-    # 2  Currently throttled
-    # 16 Under-voltage has occurred since boot
-    # 18 Throttling has occurred since boot
-    # (others exist but these are the PSU-related ones most users care about)
-    undervolt_now = bool(v & (1 << 0))
-    throttled_now = bool(v & (1 << 2))
-    undervolt_past = bool(v & (1 << 16))
-    throttled_past = bool(v & (1 << 18))
+    current, historic = _parse_throttled_mask(throttled)
 
-    if not (undervolt_now or throttled_now or undervolt_past or throttled_past):
-        return None
+    # Test for undervoltage
+    current_uv = bool(current & 0x1)
+    historic_uv = bool(historic & 0x1)
 
-    parts = []
-    if undervolt_now:
-        parts.append("Under-voltage detected now")
-    if throttled_now:
-        parts.append("Performance is currently throttled")
-    if undervolt_past and not undervolt_now:
-        parts.append("Under-voltage has occurred since last reboot")
-    if throttled_past and not throttled_now:
-        parts.append("Throttling has occurred since last reboot")
+    # 2) Always show current failures (undervoltage happening now)
+    if current_uv:
+        return "⚠  PSU undervoltage detected. Replace PSU/cable."
 
-    # Keep it short: it’s a banner
-    return "Power supply issue: " + "; ".join(parts)
+    # 1) Show historic failure only once (undervoltage occurred previously)
+    if historic_uv:
+        global _seen_historic_undervolt
+        with _psu_seen_lock:
+            if _seen_historic_undervolt:
+                return None
+            _seen_historic_undervolt = True
+
+        return "⚠  PSU undervoltage has occurred since last boot. Check PSU/cable."
+
+    return None
 
 
 # ---------------------------------------------------------------------------
