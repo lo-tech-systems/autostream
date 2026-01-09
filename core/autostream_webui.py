@@ -179,6 +179,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 or path.startswith("/api/owntone/ready")
                 or path.startswith("/owntone-setup")
                 or path.startswith("/owntone-restarting")
+                or path.startswith("/rebooting")
                 or path.startswith("/logs")
             )
             if initial_setup == 2:
@@ -258,6 +259,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             pages.send_owntone_ready_json(self, STATE)
         elif path == "/owntone-restarting":
             pages.send_owntone_restarting_page(self, STATE)
+        elif path == "/rebooting":
+            pages.send_rebooting_page(self, STATE, AUTH)
         elif path == "/api/log_file":
             pages.send_log_file(self, STATE)
         else:
@@ -354,7 +357,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/reboot":
             # Body optional
             # Goes via autostream-admin (sudo) through autostream_sysutils.reboot_system()
-            reboot_system("UserRequestNormal")
+            # Use helper's delayed reboot so the rebooting page has time to render.
+            reboot_system("UserRequestNormal", delay_s=3)
             pages.send_json(self, 200, {"ok": True})
 
         else:

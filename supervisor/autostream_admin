@@ -24,9 +24,14 @@ untrusted because it is writable by the web server and update mechanism.
 COMMANDS
 --------
 Exactly one of:
-  reboot [reason]
+  reboot [--delay SECONDS] [reason]
   restart-owntone
   sethostname HOSTNAME
+
+Notes:
+  - [reason] is optional.
+  - With --delay, the reboot is scheduled using a transient systemd timer
+    (systemd-run) and this command returns immediately.
 
 REBOOT REASONS
 --------------
@@ -63,6 +68,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -93,12 +99,28 @@ SYSTEMCTL_CANDIDATES = (
     "/usr/bin/systemctl",
 )
 
+# systemd-run candidates (for transient timers)
+SYSTEMDRUN_CANDIDATES = (
+    "/bin/systemd-run",
+    "/usr/bin/systemd-run",
+)
+
 def find_systemctl():
     for path in SYSTEMCTL_CANDIDATES:
         if os.path.exists(path) and os.access(path, os.X_OK):
             return path
     return None
 
+def find_systemd_run():
+    """Return an absolute path to systemd-run if available, else None."""
+    for path in SYSTEMDRUN_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    # As a last resort, try PATH lookup, but only accept an absolute result.
+    p = shutil.which("systemd-run")
+    if p and os.path.isabs(p) and os.access(p, os.X_OK):
+        return p
+    return None
 
 def log(level: str, msg: str) -> None:
     """Log to stdout/stderr for journald capture."""
@@ -337,6 +359,56 @@ def reboot_host(reason: Optional[str]) -> bool:
     return False
 
 
+def schedule_delayed_reboot(delay_s: int, reason: Optional[str]) -> bool:
+    """Schedule a reboot after delay_s seconds and return immediately.
+
+    Uses a transient systemd timer via systemd-run. This avoids keeping a sleeping
+    child process around and integrates cleanly with journald.
+    """
+    if delay_s <= 0:
+        return reboot_host(reason)
+
+    if delay_s > 24 * 60 * 60:
+        log("ERROR", f"reboot: delay too large: {delay_s}s")
+        return False
+
+    # Schedule using a transient systemd timer.
+    systemd_run = find_systemd_run()
+    if systemd_run is not None:
+        # Use an instance-unique unit name so repeated requests don't collide.
+        # Unit names must be valid systemd identifiers; keep to [a-zA-Z0-9:-_.@].
+        unit_suffix = f"{int(time.time())}-{os.getpid()}"
+        unit_name = f"autostream-delayed-reboot-{unit_suffix}"
+
+        # Re-run this script without --delay so all validation/rate-limiting is
+        # performed at execution time (same behaviour as the previous fork/sleep).
+        script_path = os.path.realpath(sys.argv[0])
+        cmd = [
+            str(systemd_run),
+            "--quiet",
+            "--collect",
+            f"--unit={unit_name}",
+            f"--on-active={delay_s}",
+            "--property=Type=oneshot",
+            "--property=After=network-online.target",
+            "--property=Wants=network-online.target",
+            "--",
+            script_path,
+            "reboot",
+        ]
+        if (reason or "").strip():
+            cmd.append((reason or "").strip())
+
+        rc, out, err = run_cmd(cmd)
+        if rc == 0:
+            log("INFO", f"reboot: scheduled via systemd-run in ~{delay_s}s unit={unit_name} reason={reason or ''}")
+            return True
+
+        log("ERROR", f"reboot: systemd-run scheduling failed rc={rc} stderr='{err}' stdout='{out}'")
+        return False
+
+    return False
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AutoStream admin helper (run via sudo)."
@@ -347,6 +419,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p_reboot = subparsers.add_parser(
         "reboot",
         help="Reboot the system. Optionally provide a reason (e.g., NetworkDown).",
+        description=(
+            "Request a system reboot.\n\n"
+            "Syntax: reboot [--delay SECONDS] [REASON]\n"
+            "If --delay is provided, the reboot is scheduled in the background using a\n"
+            "systemd timer (systemd-run) and this command returns immediately."
+        ),
+    )
+    p_reboot.add_argument(
+        "--delay",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Delay reboot by SECONDS; returns immediately after scheduling.",
     )
     p_reboot.add_argument(
         "reason",
@@ -382,7 +467,7 @@ def main(argv: list[str]) -> int:
 
     try:
         if args.command == "reboot":
-            ok = reboot_host(args.reason)
+            ok = schedule_delayed_reboot(args.delay, args.reason)
             return 0 if ok else 1
 
         if args.command == "restart-owntone":

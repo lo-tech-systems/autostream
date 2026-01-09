@@ -121,7 +121,7 @@ def run_admin_cmd(
 # Reboot request helper
 # ---------------------------------------------------------------------------
 
-def reboot_system(reason: str = "UserRequestNormal") -> None:
+def reboot_system(reason: str = "UserRequestNormal", delay_s: int | None = None) -> None:
     """
     Request a reboot via the privileged autostream_admin helper.
     Possible values for `reason`:
@@ -129,14 +129,33 @@ def reboot_system(reason: str = "UserRequestNormal") -> None:
         UserRequestNormal
         UserRequestSystemError
         NetworkDown
+
+    If delay_s is a positive integer, request a delayed reboot using the helper's
+    `reboot --delay SECONDS [reason]` option.
     """
     reason = (reason or "").strip()
     if not reason:
         reason = "UserRequestNormal"
-    p = run_admin_cmd(["reboot", reason], timeout=10.0)
+
+    args: list[str] = ["reboot"]
+    if delay_s is not None:
+        try:
+            d = int(delay_s)
+        except Exception:
+            d = 0
+        if d > 0:
+            args += ["--delay", str(d)]
+
+    args.append(reason)
+
+    p = run_admin_cmd(args, timeout=10.0)
     if p.returncode == 0:
-        logger.info("Reboot requested via autostream_admin: %s", reason)
+        if delay_s and int(delay_s) > 0:
+            logger.info("Delayed reboot requested via autostream_admin: delay=%ss reason=%s", delay_s, reason)
+        else:
+            logger.info("Reboot requested via autostream_admin: %s", reason)
         return
+
     logger.error(
         "Reboot request via autostream_admin failed (rc=%s, stderr=%s)",
         p.returncode,

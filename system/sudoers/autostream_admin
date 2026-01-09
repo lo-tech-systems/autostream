@@ -11,6 +11,7 @@ User_Alias AUTOSTREAM_NGINX = www-data
 # add allowed reasons explicitly
 Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_AU         = /usr/local/libexec/autostream/autostream_admin reboot AutostreamUpdate
 Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_URN        = /usr/local/libexec/autostream/autostream_admin reboot UserRequestNormal
+Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_URN_DELAY  = /usr/local/libexec/autostream/autostream_admin reboot --delay 3 UserRequestNormal
 Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_URSE       = /usr/local/libexec/autostream/autostream_admin reboot UserRequestSystemError
 Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_URSE_DELAY = /usr/local/libexec/autostream/autostream_admin reboot --delay 3 UserRequestSystemError
 Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_ND         = /usr/local/libexec/autostream/autostream_admin reboot NetworkDown
@@ -24,6 +25,7 @@ Cmnd_Alias AUTOSTREAM_ADMIN_HOST        = /usr/local/libexec/autostream/autostre
 # Full list of allowed actions for autostream user:
 Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URN,        \
+                              AUTOSTREAM_ADMIN_REBOOT_URN_DELAY,  \
                               AUTOSTREAM_ADMIN_REBOOT_URSE,       \
                               AUTOSTREAM_ADMIN_REBOOT_URSE_DELAY, \
                               AUTOSTREAM_ADMIN_REBOOT_ND,         \

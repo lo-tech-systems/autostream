@@ -292,6 +292,119 @@ def send_owntone_restarting_page(handler, state) -> None:
     handler.end_headers()
     handler.wfile.write(body_bytes)
 
+def send_rebooting_page(handler, state: WebUIState, auth) -> None:
+    """
+    "Holding" page shown while a reboot is initiated.
+
+    Behaviour:
+      - On load, POSTs /api/reboot (CSRF protected) to schedule a reboot with delay.
+      - Waits a minimum time before trying to return to '/', to avoid bouncing
+        back to the UI before the reboot has actually started.
+      - Then polls '/' until reachable and redirects back.
+    """
+    # Minimum time (ms) before we even attempt to return to '/'. Must be > reboot delay.
+    # The reboot API schedules with 3s delay; but shutdown takes time especially on older Pi.
+    # Hence wait 30s before attempting to redirect user.
+    min_wait_ms = 30000
+
+    lic_html, lic_spacer = build_top_banner_html(flash_msg=None)
+    csrf_token = auth.get_csrf_token(handler.headers) or ""
+    csrf_meta = (
+        f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
+        f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>"
+    )
+
+    body = f"""<!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8">{VIEWPORT_META}
+        <title>Rebooting…</title>
+        <style>
+          {STYLE_CSS}
+          body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }}
+          .box {{ max-width: 42rem; margin: 2rem auto; padding: 1.25rem; border: 1px solid #ddd; border-radius: 12px; background:#fff; }}
+          .muted {{ color: #666; }}
+          .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }}
+        </style>
+        {csrf_meta}
+      </head>
+      <body>{lic_html}{lic_spacer}
+        <div class="box">
+          <h1>Rebooting…</h1>
+          <p class="muted">Your device is restarting. This page will return you to the app automatically when it’s ready.</p>
+          <p id="status" class="muted">Requesting reboot…</p>
+          <p class="muted">If you are not redirected, try <a href="/">opening the app</a> again in a moment.</p>
+        </div>
+
+        <script>
+          const minWaitMs = {int(min_wait_ms)};
+          const startedAt = Date.now();
+          const statusEl = document.getElementById("status");
+
+          function setStatus(t) {{
+            if (statusEl) statusEl.textContent = t;
+          }}
+
+          async function requestReboot() {{
+            try {{
+              // keepalive improves odds the POST is delivered even if the browser navigates/reloads
+              const r = await fetch("/api/reboot", {{
+                method: "POST",
+                headers: {{ "X-CSRF-Token": window.__CSRF || "" }},
+                cache: "no-store",
+                keepalive: true
+              }});
+              // Even if we can't parse JSON, the request may have been accepted.
+              try {{
+                const j = await r.json();
+                if (j && j.ok) {{
+                  setStatus("Reboot scheduled. Waiting for restart…");
+                  return;
+                }}
+              }} catch (e) {{}}
+              setStatus("Reboot requested. Waiting for restart…");
+            }} catch (e) {{
+              // If the reboot is already in progress, fetch may fail — that's fine.
+              setStatus("Waiting for restart…");
+            }}
+          }}
+
+          async function pollRoot() {{
+            const elapsed = Date.now() - startedAt;
+            if (elapsed < minWaitMs) {{
+              const s = Math.ceil((minWaitMs - elapsed) / 1000);
+              setStatus("Reboot scheduled. Restarting in ~" + s + "s…");
+              setTimeout(pollRoot, 700);
+              return;
+            }}
+
+            setStatus("Checking if the app is back…");
+            try {{
+              const r = await fetch("/", {{ cache: "no-store" }});
+              if (r && r.ok) {{
+                window.location.replace("/");
+                return;
+              }}
+            }} catch (e) {{
+              // Not up yet
+            }}
+            setTimeout(pollRoot, 1200);
+          }}
+
+          requestReboot();
+          pollRoot();
+        </script>
+      </body>
+      </html>
+    """
+    body_bytes = body.encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body_bytes)))
+    handler.end_headers()
+    handler.wfile.write(body_bytes)
+
+
 # ----------------------------
 # Internal Helpers
 # ----------------------------
@@ -984,7 +1097,10 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
         function syncThr(w,v){{var i=w==1?'audio_silence_threshold':'audio2_silence_threshold';document.getElementById(i).value=v;document.getElementById(i+'_val').textContent=v+' dB';}}
         function syncSil(v){{document.getElementById('sil_val').textContent=v+'s';}}
         function requestReboot(){{
-          if(confirm("Reboot system?")) fetch("/api/reboot",{{method:"POST",headers:{{"X-CSRF-Token":window.__CSRF||""}}}}).then(r=>r.json()).then(d=>alert(d.ok?"Rebooting...":"Failed"));
+          if(!confirm("Reboot system?")) return;
+          // Navigate to the holding page first so it can be served before the reboot begins.
+          // The holding page will POST /api/reboot and then auto-return to '/' when ready.
+          window.location.href = "/rebooting";
         }}
         (async function(){{
           const msg = (t) => {{ document.getElementById("updMsg").textContent = t; }};
