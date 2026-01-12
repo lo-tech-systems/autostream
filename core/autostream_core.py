@@ -33,6 +33,7 @@ import time
 import signal
 from typing import Optional
 import threading
+from dataclasses import dataclass
 import requests
 import numpy as np
 import sounddevice as sd
@@ -264,9 +265,21 @@ class AudioMonitor:
         self._last_above_threshold: Optional[float] = None
         self._output_id: Optional[int] = None
 
+        # --- Owntone retry state ---
+        # We want to keep trying to (re)connect/enable the desired output while
+        # capture is active, but do it gently (micro-SD friendly).
+        self._owntone_last_attempt: float = 0.0
+        self._owntone_last_log: float = 0.0
+        self._owntone_enabled_ok: bool = False
+
         # Register this monitor so hot-plug logic can see if any monitor is
         # currently capturing (i.e. playback is active).
         all_monitors.append(self)
+
+    # How often we retry talking to Owntone while capture is active.
+    # 10 seconds is a good compromise: responsive enough, and gentle on logs/IO.
+    OWNTONE_RETRY_SECONDS = 10.0
+    OWNTONE_LOG_THROTTLE_SECONDS = 60.0
 
     @property
     def is_capturing(self) -> bool:
@@ -442,6 +455,12 @@ class AudioMonitor:
 
                         # If ffmpeg is running, feed it the current block
                         if self._ffmpeg_proc is not None:
+                            # While capture is active, periodically retry enabling
+                            # the configured Owntone output. This helps with cases
+                            # where Owntone is restarting or AirPlay speakers appear
+                            # late. Throttled to be micro-SD/log friendly.
+                            self._maybe_retry_owntone(time.time())
+
                             if self._ffmpeg_proc.poll() is not None:
                                 logging.warning(
                                     "ffmpeg process exited unexpectedly, stopping capture."
@@ -524,10 +543,96 @@ class AudioMonitor:
             )
             time.sleep(RETRY_DELAY)
 
+
+    def _maybe_retry_owntone(self, now: float) -> None:
+        """Periodically retry (re)connecting to Owntone / enabling output.
+
+        This runs while capture is active. It is intentionally conservative:
+        - retries at most once every OWNTONE_RETRY_SECONDS
+        - throttles repetitive failure logs
+        """
+        if not self.owntone_base_url or not self.owntone_output_name:
+            return
+
+        # Already enabled successfully during this capture session.
+        if self._owntone_enabled_ok:
+            return
+
+        # Retry gate
+        if (now - self._owntone_last_attempt) < self.OWNTONE_RETRY_SECONDS:
+            return
+        self._owntone_last_attempt = now
+
+        # Try to resolve output ID if needed (or if we suspect it may have changed).
+        if self._output_id is None:
+            oid = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
+            if oid is None:
+                self._throttled_owntone_log(
+                    now,
+                    logging.INFO,
+                    "Owntone output %r not available (or Owntone unreachable); will retry.",
+                    self.owntone_output_name,
+                )
+                return
+            logging.info("Resolved Owntone output %r -> id %s (periodic retry)", self.owntone_output_name, oid)
+            self._output_id = oid
+
+        # Attempt to enable output / set volume.
+        ok = owntone_set_output(self.owntone_base_url, self._output_id, self.owntone_volume_percent)
+        if ok:
+            logging.info(
+                "Owntone output enabled successfully during capture (id=%s, vol=%d%%).",
+                self._output_id,
+                self.owntone_volume_percent,
+            )
+            self._owntone_enabled_ok = True
+            return
+
+        # If enable failed, the output id might be stale. Re-resolve once on this retry tick.
+        new_id = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
+        if new_id is not None and new_id != self._output_id:
+            logging.info(
+                "Owntone output id changed for %r: %s -> %s; retrying enable",
+                self.owntone_output_name,
+                self._output_id,
+                new_id,
+            )
+            self._output_id = new_id
+            ok2 = owntone_set_output(self.owntone_base_url, self._output_id, self.owntone_volume_percent)
+            if ok2:
+                logging.info(
+                    "Owntone output enabled successfully after id refresh (id=%s).",
+                    self._output_id,
+                )
+                self._owntone_enabled_ok = True
+                return
+
+        self._throttled_owntone_log(
+            now,
+            logging.INFO,
+            "Owntone enable failed for output %r (id=%s); will retry.",
+            self.owntone_output_name,
+            self._output_id,
+        )
+
+
+    def _throttled_owntone_log(self, now: float, level: int, msg: str, *args) -> None:
+        """Log Owntone-related failures with a long throttle to avoid SD churn."""
+        if (now - self._owntone_last_log) < self.OWNTONE_LOG_THROTTLE_SECONDS:
+            return
+        self._owntone_last_log = now
+        logging.log(level, msg, *args)
+
+
     def _start_capture(self) -> None:
         """Start ffmpeg and optionally enable Owntone output."""
         if self._ffmpeg_proc is not None:
             return
+
+        # Reset Owntone enable state for this capture session.
+        # We attempt immediately, and then keep retrying periodically while capture runs.
+        self._owntone_enabled_ok = False
+        self._owntone_last_attempt = 0.0  # force immediate attempt on start
 
         was_idle = not any_monitor_capturing()
 
@@ -541,43 +646,9 @@ class AudioMonitor:
         # selected Owntone outputs so we start from a known state.
         if self.owntone_base_url and was_idle:
             owntone_disable_all_outputs(self.owntone_base_url)
-            
-        # Try to resolve Owntone output lazily if we don't have an id yet
-        if self._output_id is None and self.owntone_output_name:
-            oid = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
-            if oid is not None:
-                logging.info(
-                    "Resolved Owntone output %r -> id %s on capture start",
-                    self.owntone_output_name,
-                    oid,
-                )
-                self._output_id = oid
-            else:
-                logging.warning(
-                    "Could not resolve Owntone output %r; auto-enable skipped.",
-                    self.owntone_output_name,
-                )
 
-        if self._output_id is not None:
-            ok = owntone_set_output(
-                self.owntone_base_url,
-                self._output_id,
-                self.owntone_volume_percent,
-            )
-            if not ok and self.owntone_output_name:
-                # ID might be stale – try to re-resolve once
-                new_id = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
-                if new_id and new_id != self._output_id:
-                    logging.info(
-                        "Owntone output id changed for %r: %s -> %s; retrying",
-                        self.owntone_output_name, self._output_id, new_id,
-                    )
-                    self._output_id = new_id
-                    owntone_set_output(
-                        self.owntone_base_url,
-                        self._output_id,
-                        self.owntone_volume_percent,
-                    )
+        # Attempt Owntone enable immediately; periodic retry will take over if it fails.
+        self._maybe_retry_owntone(time.time())
 
 
     def _stop_capture(self) -> None:
@@ -586,6 +657,9 @@ class AudioMonitor:
             return
         stop_ffmpeg(self._ffmpeg_proc)
         self._ffmpeg_proc = None
+
+        # Reset Owntone state so a future capture session will attempt again.
+        self._owntone_enabled_ok = False
 
         # Clear outputs, but only if this was the last active capture.
         # This avoids breaking playback if another monitor is still capturing.
