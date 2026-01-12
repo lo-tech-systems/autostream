@@ -116,31 +116,6 @@ def _setup_logging() -> None:
             e,
         )
 
-
-# Set up logging
-def _setup_logging() -> None:
-    """
-    Configure logging to a file if possible; fall back to stdout if the log path
-    is missing/unwritable. This script is intended to run continuously, so it
-    must not fail just because /var/log isn't ready yet.
-    """
-    try:
-        log_dir = os.path.dirname(LOG_FILE) or "."
-        os.makedirs(log_dir, exist_ok=True)
-        logging.basicConfig(
-            filename=LOG_FILE,
-            level=logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(message)s",
-        )
-    except Exception as e:
-        # Last-resort fallback: log to stdout so the service still runs.
-        logging.basicConfig(
-            stream=sys.stdout,
-            level=logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(message)s",
-        )
-        logging.error("Failed to initialise file logging (%s); using stdout instead.", e)
-
 _setup_logging()
 
 @dataclass
