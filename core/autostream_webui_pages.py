@@ -308,7 +308,7 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
     min_wait_ms = 30000
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=None)
-    csrf_token = auth.get_csrf_token(handler.headers) or ""
+    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     csrf_meta = (
         f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
         f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>"
@@ -705,7 +705,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
         """
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
-    csrf_token = auth.get_csrf_token(handler.headers) or ""
+    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
 
     html_body = textwrap.dedent(f"""\
@@ -1025,7 +1025,7 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
         pass
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
-    csrf_token = auth.get_csrf_token(handler.headers) or ""
+    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
 
     html_body = textwrap.dedent(f"""\
@@ -1236,7 +1236,7 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         """
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
-    csrf_token = auth.get_csrf_token(handler.headers) or ""
+    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
 
     initial_setup = unconfigured(state.config_path)
     h1 = "Initial Setup (1 of 2)" if initial_setup else "Owntone Setup"

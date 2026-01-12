@@ -205,7 +205,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             return
 
         # Ensure UI session / CSRF exists
-        AUTH.ensure_session(self)
+        self._csrf_token = AUTH.ensure_session(self)
 
         # page handlers
         query = urlparse(self.path).query
