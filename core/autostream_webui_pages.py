@@ -1302,13 +1302,17 @@ def send_about_page(handler, state: WebUIState) -> None:
     if licence_text:
         licence_html = f"""
           <fieldset><legend>Licence</legend>
-            <div class="licence-pane">{html.escape(licence_text)}</div>
+            <div class="licence-pane"><pre class="licence-text">{html.escape(licence_text)}</pre></div>
           </fieldset>
         """
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>About</title><style>{STYLE_CSS}</style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
+      <title>About</title><style>{STYLE_CSS}
+      /* About: render licence text directly in the pane (no scrollable black code box). */
+      .licence-pane {{ background: transparent !important; color: inherit !important; max-height: none !important; overflow: visible !important; }}
+      .licence-pane .licence-text {{ margin: 0; padding: 0; background: transparent; color: inherit; border: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }}
+      </style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
       <p class="actions" style="margin:1rem 0;"><a href="/" class="pill-btn">← Back</a></p>
       <fieldset><legend>Overview</legend>
           <p><strong>autostream</strong> turns almost any CD player, turntable, cassette deck, or analogue Hi-Fi device into a wireless AirPlay / AirPlay&nbsp;2 multi-room audio source — automatically, once set up.</p>
