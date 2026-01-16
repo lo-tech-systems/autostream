@@ -24,6 +24,8 @@ from autostream_core import (
     any_monitor_capturing,
 )
 
+from autostream_auth import FLASH_COOKIE_NAME
+
 from autostream_config import (
     load_config,
     parse_config,
@@ -102,8 +104,6 @@ def locked_load_config(path: str):
 # -----------------------------------------------------------------------------
 # status message cookie (produces e.g., settings saved banner)
 # -----------------------------------------------------------------------------
-
-FLASH_COOKIE_NAME = "autostream_flash"
 
 def _set_flash_cookie(handler, message: str, *, max_age: int = 30) -> None:
     """
@@ -1573,7 +1573,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             host_header = handler.headers.get("Host", "")
             port = host_header.rsplit(":", 1)[1] if ":" in host_header else None
             host_p = f"{nh}.local:{port}" if port else f"{nh}.local"
-            redirect_url = f"{handler.headers.get('X-Forwarded-Proto', 'http')}://{host_p}{next_path}"
+            redirect_url = f"http://{host_p}{next_path}"
 
             # Render a redirect page
             # Note: Green "saved" banner will appear once on the destination page

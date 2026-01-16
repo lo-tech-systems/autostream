@@ -42,7 +42,8 @@ from autostream_webui_assets import (
     BANNER_HTML,
 )
 
-from autostream_auth import AuthManager
+from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
+
 from autostream_webui_state import WebUIState
 import autostream_webui_pages as pages
 
@@ -62,28 +63,6 @@ except ImportError:  # sounddevice is optional
 # 1 - initial setup needed and page 1 not complete
 # 2 - imitial setup needed and page 1 completed (so user on page 2)
 initial_setup = 0
-
-
-FLASH_COOKIE_NAME = "autostream_flash"
-
-def _parse_cookie_header(cookie_header: str | None) -> dict[str, str]:
-    """
-    Minimal cookie parser (avoids depending on AuthManager internals).
-    Returns {name: value} with surrounding whitespace stripped.
-    """
-    if not cookie_header:
-        return {}
-    out: dict[str, str] = {}
-    parts = cookie_header.split(";")
-    for part in parts:
-        if "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        k = k.strip()
-        v = v.strip()
-        if k:
-            out[k] = v
-    return out
 
 
 def restart_self_soon(delay: float = 1.0) -> None:
@@ -218,7 +197,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             path = self._normalized_path()
             # Don't consume the flash cookie on pages that don't render it
             if path != "/owntone-restarting" and not path.startswith("/api/"):
-                cookies = _parse_cookie_header(self.headers.get("Cookie"))
+                cookies = parse_cookie_header(self.headers.get("Cookie"))
                 raw = cookies.get(FLASH_COOKIE_NAME, "")
                 if raw:
                     try:
