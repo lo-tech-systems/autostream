@@ -923,76 +923,76 @@ def render_setup_page(error_code: str = "") -> str:
             }}
 
             function focusSsidSelectSoon() {{
-            if (_didInitialFocus) return;
+                if (_didInitialFocus) return;
 
-            const select = document.getElementById('ssid-select');
-            const key = document.getElementById('key-field');
-            if (!select) return;
+                const select = document.getElementById('ssid-select');
+                const key = document.getElementById('key-field');
+                if (!select) return;
 
-            // If the user has already interacted, don't steal focus.
-            const ae = document.activeElement;
-            const userIsTyping = (ae && (ae === key || ae === select));
+                // If the user has already interacted, don't steal focus.
+                const ae = document.activeElement;
+                const userIsTyping = (ae && (ae === key || ae === select));
 
-            if (!userIsTyping) {{
-                setTimeout(() => {{
-                try {{ select.focus(); }} catch (e) {{}}
-                }}, 250); // iOS captive portal is happier with a slight delay
-            }}
+                if (!userIsTyping) {{
+                    setTimeout(() => {{
+                    try {{ select.focus(); }} catch (e) {{}}
+                    }}, 250); // iOS captive portal is happier with a slight delay
+                }}
 
-            _didInitialFocus = true;
+                _didInitialFocus = true;
             }}
 
             async function fetchNetworks() {{
-            try {{
-                const resp = await fetch('/networks', {{ cache: 'no-store' }});
-                if (!resp.ok) return;
-                const data = await resp.json();
-                const select = document.getElementById('ssid-select');
-                if (!select) return;
+                try {{
+                    const resp = await fetch('/networks', {{ cache: 'no-store' }});
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    const select = document.getElementById('ssid-select');
+                    if (!select) return;
 
-                const current = select.value;
-                select.innerHTML = '';
+                    const current = select.value;
+                    select.innerHTML = '';
 
-                const ph = document.createElement('option');
-                ph.value = '';
-                ph.textContent = 'Select a WiFi network…';
-                select.appendChild(ph);
+                    const ph = document.createElement('option');
+                    ph.value = '';
+                    ph.textContent = 'Select a WiFi network…';
+                    select.appendChild(ph);
 
-                for (const n of data) {{
-                const opt = document.createElement('option');
-                opt.value = n.ssid || '';
-                const sig = (typeof n.signal === 'number') ? (' (' + n.signal + '%)') : '';
-                opt.textContent = (n.ssid || '(hidden)') + sig;
-                select.appendChild(opt);
-                }}
+                    for (const n of data) {{
+                        const opt = document.createElement('option');
+                        opt.value = n.ssid || '';
+                        const sig = (typeof n.signal === 'number') ? (' (' + n.signal + '%)') : '';
+                        opt.textContent = (n.ssid || '(hidden)') + sig;
+                        select.appendChild(opt);
+                    }}
 
-                if (current) select.value = current;
+                    if (current) select.value = current;
 
-                // After first successful population, guide focus to the SSID dropdown (iOS).
-                focusSsidSelectSoon();
-            }} catch (e) {{}}
+                    // After first successful population, guide focus to the SSID dropdown (iOS).
+                    focusSsidSelectSoon();
+                }} catch (e) {{}}
             }}
 
             function armKeyField() {{
-            const key = document.getElementById('key-field');
-            if (!key) return;
+                const key = document.getElementById('key-field');
+                if (!key) return;
 
-            // iOS often auto-focuses the first "fillable" input; readonly prevents that.
-            // Allow editing as soon as the user interacts.
-            const enable = () => key.removeAttribute('readonly');
+                // iOS often auto-focuses the first "fillable" input; readonly prevents that.
+                // Allow editing as soon as the user interacts.
+                const enable = () => key.removeAttribute('readonly');
 
-            key.addEventListener('pointerdown', enable, {{ once: true }});
-            key.addEventListener('focus', enable, {{ once: true }});
+                key.addEventListener('pointerdown', enable, {{ once: true }});
+                key.addEventListener('focus', enable, {{ once: true }});
 
-            // Also enable when user selects an SSID (common flow)
-            const select = document.getElementById('ssid-select');
-            if (select) {{
-                select.addEventListener('change', () => {{
-                enable();
-                // Only nudge focus to key if they picked a real SSID
-                if (select.value) setTimeout(() => {{ try {{ key.focus(); }} catch (e) {{}} }}, 100);
-                }});
-            }}
+                // Also enable when user selects an SSID (common flow)
+                const select = document.getElementById('ssid-select');
+                if (select) {{
+                    select.addEventListener('change', () => {{
+                    enable();
+                    // Only nudge focus to key if they picked a real SSID
+                    if (select.value) setTimeout(() => {{ try {{ key.focus(); }} catch (e) {{}} }}, 100);
+                    }});
+                }}
             }}
 
             function installHandlers() {{
@@ -1004,9 +1004,6 @@ def render_setup_page(error_code: str = "") -> str:
                 const key = document.getElementById('key-field');
                 const eyeOpen = document.getElementById('eye-open');
                 const eyeClosed = document.getElementById('eye-closed');
-
-                const revealWrap = document.getElementById('key-reveal-wrap');
-                const reveal = document.getElementById('key-reveal');
 
                 form.addEventListener('submit', async (ev) => {{
                     ev.preventDefault();
@@ -1020,17 +1017,17 @@ def render_setup_page(error_code: str = "") -> str:
                     const k = document.getElementById('key-field')?.value || '';
 
                     try {{
-                    // Send the server the expected parameter names without exposing them in the DOM.
-                    const body = new URLSearchParams();
-                    body.set('ssid', ssid);
-                    body.set('password', k);
+                        // Send the server the expected parameter names without exposing them in the DOM.
+                        const body = new URLSearchParams();
+                        body.set('ssid', ssid);
+                        body.set('password', k);
 
-                    const resp = await fetch('/setup', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
-                        body: body.toString(),
-                        cache: 'no-store',
-                        credentials: 'same-origin',
+                        const resp = await fetch('/setup', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+                            body: body.toString(),
+                            cache: 'no-store',
+                            credentials: 'same-origin',
                     }});
 
                     const html = await resp.text();
@@ -1038,72 +1035,43 @@ def render_setup_page(error_code: str = "") -> str:
                     document.write(html);
                     document.close();
                     }} catch (e) {{
+
                     if (status) status.textContent = 'Submit failed. Please try again.';
                     if (btn) btn.disabled = false;
                     }}
                 }});
 
-            if (toggle && key && revealWrap && reveal) {{
-                const setIcons = (revealing) => {{
-                    // revealing=true -> show "eye-closed" (tap to hide)
-                    // revealing=false -> show "eye-open" (tap to show)
-                    if (eyeOpen && eyeClosed) {{
-                    eyeOpen.style.display = revealing ? 'none' : 'inline';
-                    eyeClosed.style.display = revealing ? 'inline' : 'none';
-                    }}
-                    toggle.setAttribute(
-                    'aria-label',
-                    revealing ? 'Hide password' : 'Show password'
-                    );
-                }};
+                if (toggle && key) {{
+                    toggle.addEventListener('click', () => {{
+                        const masked = key.classList.toggle('masked');
 
-                const syncReveal = () => {{
-                    // Mirror current input value into the reveal panel
-                    reveal.textContent = key.value || '';
-                }};
+                        // Keep icons in sync with mask state:
+                        // masked=true  -> show "eye-open" (can reveal)
+                        // masked=false -> show "eye-closed" (currently visible)
+                        if (eyeOpen && eyeClosed) {{
+                            eyeOpen.style.display = masked ? 'inline' : 'none';
+                            eyeClosed.style.display = masked ? 'none' : 'inline';
+                        }}
 
-                // keep it synced while user types
-                key.addEventListener('input', () => {{
-                    if (revealWrap.style.display !== 'none') syncReveal();
-                }});
-
-                // also catch programmatic / blur changes
-                key.addEventListener('change', () => {{
-                    if (revealWrap.style.display !== 'none') syncReveal();
-                }});
-
-                // initial icon state (hidden)
-                setIcons(false);
-
-                toggle.addEventListener('click', () => {{
-                    const currentlyVisible = (revealWrap.style.display !== 'none');
-                    const nextVisible = !currentlyVisible;
-
-                    if (nextVisible) {{
-                    syncReveal();
-                    revealWrap.style.display = 'block';
-                    }} else {{
-                    revealWrap.style.display = 'none';
-                    }}
-
-                    setIcons(nextVisible);
-                }});
+                        // Update a11y label
+                        toggle.setAttribute('aria-label', masked ? 'Show password' : 'Hide password');
+                    }});
                 }}
             }}
 
             window.addEventListener('load', () => {{
-            // Ensure key field won't be auto-focused by iOS, and only becomes editable on interaction.
-            armKeyField();
+                // Ensure key field won't be auto-focused by iOS, and only becomes editable on interaction.
+                armKeyField();
 
-            fetchNetworks();
-            fetchStatus();
-            installHandlers();
-            setInterval(fetchNetworks, 5000);
-            setInterval(fetchStatus, 2000);
+                fetchNetworks();
+                fetchStatus();
+                installHandlers();
+                setInterval(fetchNetworks, 5000);
+                setInterval(fetchStatus, 2000);
 
-            // Extra nudge: if iOS still tries to focus something, move focus away from key.
-            // (No-op on most browsers.)
-            focusSsidSelectSoon();
+                // Extra nudge: if iOS still tries to focus something, move focus away from key.
+                // (No-op on most browsers.)
+                focusSsidSelectSoon();
             }});
         </script>
         </head>
@@ -1166,9 +1134,6 @@ def render_setup_page(error_code: str = "") -> str:
                                 a3 3 0 0 0 2.47-5.47"/>
                     </svg>
                 </button>
-            </div>
-            <div id="key-reveal-wrap" class="key-reveal-wrap" style="display:none;">
-                <pre id="key-reveal" class="key-reveal"></pre>
             </div>
             <br>
             <div class="hint">
