@@ -46,7 +46,7 @@ def get_owntone_output_id(base_url: str, output_name: str) -> Optional[int]:
     return None
 
 
-def owntone_set_output(base_url: str, output_id: int, volume_percent: int) -> bool:
+def owntone_set_output(base_url: str, output_id: int, volume_percent: int, offset_ms: Optional[int] = None) -> bool:
     """Enable a specific output and set its volume via the Owntone JSON API.
 
     According to the API docs, /api/outputs/set only accepts a list of output
@@ -74,7 +74,17 @@ def owntone_set_output(base_url: str, output_id: int, volume_percent: int) -> bo
     out_url = base_url.rstrip("/") + f"/api/outputs/{output_id}"
     vol = max(0, min(100, volume_percent))
     out_payload = {"selected": True, "volume": vol}
-    logging.info("Owntone PUT /api/outputs/%s payload=%s", output_id, out_payload)
+
+    # Optional per-output playback offset (ms). API range is -2000..2000.
+    # Only include if provided, so we don't break outputs/versions that don't support it.
+    if offset_ms is not None:
+        try:
+            off = int(offset_ms)
+        except Exception:
+            off = 0
+        off = max(-2000, min(2000, off))
+        out_payload["offset_ms"] = off
+
     try:
         resp = requests.put(out_url, json=out_payload, timeout=3)
         logging.info("Owntone PUT /api/outputs/%s status=%s", output_id, resp.status_code)

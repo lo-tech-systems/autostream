@@ -235,6 +235,7 @@ class AudioMonitor:
         owntone_base_url: str,
         owntone_output_name: str,
         owntone_volume_percent: int,
+        owntone_output_offsets_ms: Optional[dict[str, int]] = None,
     ) -> None:
         self.input_device = input_device
         self.silence_threshold_dbfs = silence_threshold_dbfs
@@ -248,6 +249,7 @@ class AudioMonitor:
         self.owntone_base_url = owntone_base_url
         self.owntone_output_name = owntone_output_name
         self.owntone_volume_percent = owntone_volume_percent
+        self.owntone_output_offsets_ms = owntone_output_offsets_ms or {}
 
         # Exposed for other scripts in the same process: average absolute
         # sample value from the most recent audio block (0..32767).
@@ -577,35 +579,70 @@ class AudioMonitor:
             logging.info("Resolved Owntone output %r -> id %s (periodic retry)", self.owntone_output_name, oid)
             self._output_id = oid
 
-        # Attempt to enable output / set volume.
-        ok = owntone_set_output(self.owntone_base_url, self._output_id, self.owntone_volume_percent)
-        if ok:
-            logging.info(
-                "Owntone output enabled successfully during capture (id=%s, vol=%d%%).",
+        offset_to_send = None
+        if self._output_id is not None:
+            # Only send offset_ms if this output id has a saved value in the INI.
+            # This matches the UI behaviour (slider only shown when output has offset_ms),
+            # and avoids sending offset_ms to outputs/versions that don't support it.
+            try:
+                k = str(self._output_id)
+                if k in self.owntone_output_offsets_ms:
+                    offset_to_send = int(self.owntone_output_offsets_ms.get(k, 0))
+                    # Clamp to owntone range
+                    offset_to_send = max(-2000, min(2000, offset_to_send))
+            except Exception:
+                offset_to_send = None
+
+            # Attempt to enable output / set volume.
+            ok = owntone_set_output(
+                self.owntone_base_url,
                 self._output_id,
                 self.owntone_volume_percent,
+                offset_ms=offset_to_send
             )
-            self._owntone_enabled_ok = True
-            return
-
-        # If enable failed, the output id might be stale. Re-resolve once on this retry tick.
-        new_id = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
-        if new_id is not None and new_id != self._output_id:
-            logging.info(
-                "Owntone output id changed for %r: %s -> %s; retrying enable",
-                self.owntone_output_name,
-                self._output_id,
-                new_id,
-            )
-            self._output_id = new_id
-            ok2 = owntone_set_output(self.owntone_base_url, self._output_id, self.owntone_volume_percent)
-            if ok2:
+            if ok:
                 logging.info(
-                    "Owntone output enabled successfully after id refresh (id=%s).",
+                    "Owntone output enabled successfully during capture (id=%s, vol=%d%%).",
                     self._output_id,
+                    self.owntone_volume_percent,
                 )
                 self._owntone_enabled_ok = True
                 return
+
+            # If enable failed, the output id might be stale. Re-resolve once on this retry tick.
+            new_id = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
+            if new_id is not None and new_id != self._output_id:
+                logging.info(
+                    "Owntone output id changed for %r: %s -> %s; retrying enable",
+                    self.owntone_output_name,
+                    self._output_id,
+                    new_id,
+                )
+
+                self._output_id = new_id
+
+                # Recompute offset for the new id
+                offset_to_send = None
+                try:
+                    k = str(self._output_id)
+                    if k in self.owntone_output_offsets_ms:
+                        offset_to_send = int(self.owntone_output_offsets_ms.get(k, 0))
+                except Exception:
+                    offset_to_send = None
+
+                ok2 = owntone_set_output(
+                    self.owntone_base_url,
+                    self._output_id,
+                    self.owntone_volume_percent,
+                    offset_ms=offset_to_send
+                )
+                if ok2:
+                    logging.info(
+                        "Owntone output enabled successfully after id refresh (id=%s).",
+                        self._output_id,
+                    )
+                    self._owntone_enabled_ok = True
+                    return
 
         self._throttled_owntone_log(
             now,
@@ -728,6 +765,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     owntone_base = cfg.owntone.base_url
     owntone_output_name = cfg.owntone.output_name
     owntone_volume = cfg.owntone.volume_percent
+    owntone_offsets = cfg.owntone.output_offsets_ms
 
     # --- Create one or two AudioMonitor instances ---
     monitors: list[AudioMonitor] = []
@@ -744,6 +782,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
         owntone_base_url=owntone_base,
         owntone_output_name=owntone_output_name,
         owntone_volume_percent=owntone_volume,
+        owntone_output_offsets_ms=owntone_offsets,
     )
     monitors.append(monitor1)
 
@@ -764,6 +803,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
             owntone_base_url=owntone_base,
             owntone_output_name=owntone_output_name,
             owntone_volume_percent=owntone_volume,
+            owntone_output_offsets_ms=owntone_offsets,
         )
         monitors.append(monitor2)
 

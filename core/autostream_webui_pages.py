@@ -1213,6 +1213,7 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
 
     # Unified list of names: prefer Owntone's case, append others from hidden list
     output_names = {o.get("name", "").strip() for o in outputs if o.get("name")}
+    outputs_by_name = {str(o.get("name","")).strip().casefold(): o for o in outputs if o.get("name")}
     all_names_map = {n.casefold(): n for n in output_names}
     for h in (parsed.webui.hidden_outputs or ()):
         h_s = str(h).strip()
@@ -1227,11 +1228,41 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
     for i, spk in enumerate(all_names):
         show = spk.casefold() not in hidden_set
         ap2 = read_airplay2_for_speaker(spk, OWNTONE_CONF_PATH) or False
+
+        # Offset slider is only shown if the output object includes offset_ms.
+        # Saved value (default 0) is stored in autostream.ini [owntone_offsets] by output id.
+        offset_html = ""
+        out_obj = outputs_by_name.get(spk.casefold())
+        if out_obj and ("offset_ms" in out_obj):
+            out_id = str(out_obj.get("id", "")).strip()
+            if out_id:
+                try:
+                    cur_off = cfg.getint("owntone_offsets", out_id, fallback=0)
+                except Exception:
+                    cur_off = 0
+                cur_off = max(-2000, min(2000, int(cur_off)))
+                safe_outid = html.escape(out_id)
+                offset_html = f"""
+                  <input type="hidden" name="outid_{i}" value="{safe_outid}">
+                  <label style="display:block;margin-top:0.5rem;">
+                    <div class="slider-header">
+                      <span>Offset:</span>
+                      <span id="off_val_{i}">{cur_off} ms</span>
+                    </div>
+                    <input type="range"
+                           name="offset_{i}"
+                           min="-2000" max="2000" step="10"
+                           value="{cur_off}"
+                           oninput="document.getElementById('off_val_{i}').textContent=this.value+' ms';">
+                  </label>
+                """
+
         speakers_html += f"""
           <fieldset><legend>{html.escape(spk)}</legend>
           <input type="hidden" name="spk_{i}" value="{html.escape(spk)}">
           <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" name="show_{i}" {'checked' if show else ''}> Show in autostream</label>
           <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" name="ap2_{i}" {'checked' if ap2 else ''}> Use AirPlay2</label>
+          {offset_html}
           </fieldset>
         """
 
@@ -1632,12 +1663,25 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         
         # Build a list of speakers from the submitted form.
         speakers: list[tuple[str, bool, bool]] = []
+        offsets_by_id: dict[str, int] = {}
         i = 0
         while f"spk_{i}" in form:
             name = fld(f"spk_{i}")
             show = (f"show_{i}" in form)
             ap2 = (f"ap2_{i}" in form)
             speakers.append((name, show, ap2))
+
+            # Optional per-output offset (only present when UI rendered it)
+            out_id = fld(f"outid_{i}", "").strip()
+            if out_id:
+                raw_off = fld(f"offset_{i}", "0")
+                try:
+                    off = int(str(raw_off).strip())
+                except Exception:
+                    off = 0
+                off = max(-2000, min(2000, off))
+                offsets_by_id[out_id] = off
+
             i += 1
 
         # Deterministic order
@@ -1651,7 +1695,18 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             cfg.set("webui", "hidden_outputs", "\n    " + "\n    ".join(hidden))
         else:
             cfg.set("webui", "hidden_outputs", "")
-            
+
+        # Persist Owntone per-output offsets (default 0).
+        # Stored by output id as returned by GET /api/outputs.
+        if cfg.has_section("owntone_offsets"):
+            cfg.remove_section("owntone_offsets")
+        cfg.add_section("owntone_offsets")
+        for oid, off in sorted(offsets_by_id.items(), key=lambda kv: kv[0]):
+            try:
+                cfg.set("owntone_offsets", str(oid), str(int(off)))
+            except Exception:
+                cfg.set("owntone_offsets", str(oid), "0")
+
         # Keep config write + owntone.conf edits together under one lock, so two
         # concurrent saves can't interleave and produce inconsistent results.
         with CONFIG_IO_LOCK:

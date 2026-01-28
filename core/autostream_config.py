@@ -99,6 +99,7 @@ class OwntoneConfig:
     base_url: str
     output_name: str
     volume_percent: int
+    output_offsets_ms: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -216,11 +217,22 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         in_rate2=_infer_in_rate(arecord_format2),
     )
 
+    # Owntone per-output offsets (keyed by output id as string)
+    offsets: dict[str, int] = {}
+    if cfg.has_section("owntone_offsets"):
+        for k, v in cfg.items("owntone_offsets"):
+            # ConfigParser lowercases keys by default; that's fine for numeric IDs.
+            try:
+                offsets[str(k).strip()] = int(str(v).strip())
+            except Exception:
+                offsets[str(k).strip()] = 0
+
     # Owntone
     owntone = OwntoneConfig(
         base_url=cfg.get("owntone", "base_url", fallback="http://localhost:3689"),
         output_name=cfg.get("owntone", "output_name", fallback=""),
         volume_percent=cfg.getint("owntone", "volume_percent", fallback=20),
+        output_offsets_ms=offsets,
     )
 
     # Web UI
