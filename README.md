@@ -79,21 +79,22 @@ by the autostream installation script.
 
 ## Getting Started
 
-1. Install Git
+1. Create a Raspbian Lite microSD with Raspberry Pi imager, boot the Pi from it, and SSH to it.
+2. Install Git
 ```sh
 sudo apt install git
 ```
-2. Clone the repository:
+3. Clone the repository:
 ```sh
 git clone https://github.com/lo-tech-systems/autostream.git
 ```
-3. Run the install script:
+4. Run the install script:
 ```sh
 cd autostream && sudo ./autostream_install.sh
 ```
-4. Connect one or two audio sources
-5. Reboot, then use an iPhone to browse with Safari to http://autostream.local/
-6. Run the one-time setup (two screens)
+5. Connect one or two audio sources
+6. Reboot, then use an iPhone to browse with Safari to http://autostream.local/ (replace 'autostream' with the hostname of your Pi)
+7. Run the one-time setup (two screens)
 
 Detailed setup instructions are provided in the docs folder.
 
