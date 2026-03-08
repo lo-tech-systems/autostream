@@ -1355,7 +1355,13 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         if h_s and h_s.casefold() not in all_names_map:
             all_names_map[h_s.casefold()] = h_s
             
-    all_names = sorted(all_names_map.values(), key=lambda x: x.casefold())
+    all_names = sorted(
+        all_names_map.values(),
+        key=lambda name: (
+            0 if name.casefold() not in hidden_set else 1,
+            name.casefold(),
+        ),
+    )
     
     uncompressed = bool(read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH))
     
