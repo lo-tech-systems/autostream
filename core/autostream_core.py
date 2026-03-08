@@ -697,6 +697,28 @@ class AudioMonitor:
         except Exception:
             return False
 
+    def _refresh_selected_outputs(self) -> bool:
+        """Re-apply current selected output ids to nudge Owntone playback state."""
+        if not self.owntone_base_url:
+            return False
+        base = self.owntone_base_url.rstrip("/")
+        try:
+            resp = requests.get(base + "/api/outputs", timeout=3)
+            if not resp.ok:
+                return False
+            outputs = (resp.json() or {}).get("outputs", [])
+            selected_ids = [str(o.get("id")) for o in outputs if o.get("selected") and o.get("id") is not None]
+            if not selected_ids:
+                return False
+            set_payload = {"outputs": selected_ids}
+            set_resp = requests.put(base + "/api/outputs/set", json=set_payload, timeout=3)
+            if not set_resp.ok:
+                return False
+            logging.info("Refreshed selected Owntone outputs on capture start: %s", selected_ids)
+            return True
+        except Exception:
+            return False
+
 
     def _start_capture(self) -> None:
         """Start ffmpeg and optionally enable Owntone output."""
@@ -714,12 +736,13 @@ class AudioMonitor:
             self.ffmpeg_out_rate,
         )
 
-        # Respect any outputs manually selected in the Web UI while idle.
-        # Only force-enable the configured default output when nothing is selected.
-        if self._has_any_selected_outputs():
+        # If the user already selected outputs, re-apply that same selection to nudge
+        # Owntone out of suspended state without forcing the configured default output on.
+        if self._refresh_selected_outputs():
             self._owntone_enabled_ok = True
         else:
-            # Attempt Owntone enable immediately; periodic retry will take over if it fails.
+            # No selected outputs to refresh (or refresh failed): enable the configured
+            # default output, then let periodic retry handle transient Owntone errors.
             self._maybe_retry_owntone(time.time())
 
 
