@@ -26,6 +26,7 @@ This script:
 
 import configparser
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -60,6 +61,29 @@ all_monitors = []
 def any_monitor_capturing() -> bool:
     """Return True if any AudioMonitor currently has an active capture."""
     return any(getattr(m, 'is_capturing', False) for m in all_monitors)
+
+
+def _sample_to_dbfs(sample: int, floor_dbfs: float = -90.0) -> float:
+    """Convert a 16-bit average sample value (0..32767) to dBFS."""
+    if sample <= 0:
+        return floor_dbfs
+    ratio = min(1.0, max(0.0, float(sample) / 32767.0))
+    return max(floor_dbfs, 20.0 * math.log10(ratio))
+
+
+def get_monitor_levels_dbfs() -> list[dict]:
+    """Return current level data for each active monitor for the Web UI."""
+    levels: list[dict] = []
+    for idx, mon in enumerate(list(all_monitors), start=1):
+        sample = int(getattr(mon, "current_level_sample", 0) or 0)
+        threshold_sample = int(getattr(mon, "silence_threshold_sample", 1) or 1)
+        dbfs = _sample_to_dbfs(sample)
+        levels.append({
+            "label": f"In{idx}",
+            "dbfs": round(dbfs, 1),
+            "is_above_threshold": sample >= threshold_sample,
+        })
+    return levels
 
 def handle_signal(signum, frame):
     stop_flag.set()
@@ -660,6 +684,19 @@ class AudioMonitor:
         self._owntone_last_log = now
         logging.log(level, msg, *args)
 
+    def _has_any_selected_outputs(self) -> bool:
+        """Return True if Owntone currently has at least one selected output."""
+        if not self.owntone_base_url:
+            return False
+        try:
+            resp = requests.get(self.owntone_base_url.rstrip("/") + "/api/outputs", timeout=3)
+            if not resp.ok:
+                return False
+            outputs = (resp.json() or {}).get("outputs", [])
+            return any(bool(o.get("selected", False)) for o in outputs)
+        except Exception:
+            return False
+
 
     def _start_capture(self) -> None:
         """Start ffmpeg and optionally enable Owntone output."""
@@ -681,12 +718,14 @@ class AudioMonitor:
 
         # If we're transitioning from idle -> playing, clear any previously
         # selected Owntone outputs so we start from a known state.
+        # Whilst this might "reset" speakers enabled manually by the user since the last playback,
+        # the user can alter the silence detection to preserve settings (e.g. could be set to 5
+        # minutes or even longer if desired).
         if self.owntone_base_url and was_idle:
             owntone_disable_all_outputs(self.owntone_base_url)
 
         # Attempt Owntone enable immediately; periodic retry will take over if it fails.
         self._maybe_retry_owntone(time.time())
-
 
     def _stop_capture(self) -> None:
         """Stop ffmpeg."""
