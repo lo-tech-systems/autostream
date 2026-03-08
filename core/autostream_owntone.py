@@ -533,13 +533,16 @@ def write_airplay2_for_speaker(speaker_name: str, enabled: bool, conf_path: Path
 OWNTONE_OK = 0
 OWNTONE_RESTART_REQUIRED = 1
 OWNTONE_NOT_OK = -1
+OWNTONE_TARGET_PIPE_DIR = "/tmp/autostream-pipes"
+OWNTONE_TARGET_LOGLEVEL = "info"
 
 
 def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
     """
     Ensure owntone.conf has:
-      1) library.directories = { "/tmp" }
+      1) library.directories = { "/tmp/autostream-pipes" }
       2) pipe_autostart enabled (pipe_autostart = true) inside library block
+      3) general.loglevel = info
 
     Return codes:
       - OWNTONE_OK (=0) if already correct
@@ -552,82 +555,117 @@ def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
         return OWNTONE_NOT_OK
 
     lib_re = re.compile(r"(?m)^\s*library\s*\{\s*$")
-    span = _find_block_span(text, lib_re)
-    if not span:
+    lib_span = _find_block_span(text, lib_re)
+    if not lib_span:
         return OWNTONE_NOT_OK
+    lib_block = text[lib_span[0] : lib_span[1]]
 
-    block = text[span[0] : span[1]]
+    gen_re = re.compile(r"(?m)^\s*general\s*\{\s*$")
+    gen_span = _find_block_span(text, gen_re)
+    if not gen_span:
+        return OWNTONE_NOT_OK
+    gen_block = text[gen_span[0] : gen_span[1]]
 
     def _dirs_ok(b: str) -> bool:
-        # Accept whitespace variants, but require exactly one entry: "/tmp"
         m = re.search(r"(?m)^\s*directories\s*=\s*\{(?P<body>[^}]*)\}\s*$", b)
         if not m:
             return False
         dirs = re.findall(r'"([^"]*)"', m.group("body"))
-        return len(dirs) == 1 and dirs[0] == "/tmp"
+        return len(dirs) == 1 and dirs[0] == OWNTONE_TARGET_PIPE_DIR
 
     def _pipe_ok(b: str) -> bool:
-        # Must be enabled and uncommented
         m = re.search(r"(?m)^\s*pipe_autostart\s*=\s*(?P<v>[^\s#]+)", b)
         if not m:
             return False
         val = _parse_bool(m.group("v"))
         return val is True
 
-    dirs_ok = _dirs_ok(block)
-    pipe_ok = _pipe_ok(block)
+    def _loglevel_ok(b: str) -> bool:
+        m = re.search(r"(?m)^\s*loglevel\s*=\s*(?P<v>[^\s#]+)", b)
+        if not m:
+            return False
+        return m.group("v").strip().strip('"').lower() == OWNTONE_TARGET_LOGLEVEL
 
-    if dirs_ok and pipe_ok:
+    dirs_ok = _dirs_ok(lib_block)
+    pipe_ok = _pipe_ok(lib_block)
+    log_ok = _loglevel_ok(gen_block)
+
+    if dirs_ok and pipe_ok and log_ok:
         return OWNTONE_OK
 
-    # ---------------------------------------------------------------------
-    # Not OK -> attempt to update file
-    # ---------------------------------------------------------------------
-
-    # 1) Force directories = { "/tmp" }
+    # Update library.directories target
     dir_line_re = re.compile(r"(?m)^(?P<indent>\s*)directories\s*=\s*\{[^}]*\}\s*$")
-    m = dir_line_re.search(block)
+    m = dir_line_re.search(lib_block)
     if m:
         indent = m.group("indent")
-        new_line = f'{indent}directories = {{ "/tmp" }}'
-        block = block[: m.start()] + new_line + block[m.end() :]
+        new_line = f'{indent}directories = {{ "{OWNTONE_TARGET_PIPE_DIR}" }}'
+        lib_block = lib_block[: m.start()] + new_line + lib_block[m.end() :]
     else:
-        # Insert near top of library block
-        insert_at = block.find("{")
-        insert_at = block.find("\n", insert_at)
+        insert_at = lib_block.find("{")
+        insert_at = lib_block.find("\n", insert_at)
         if insert_at == -1:
             return OWNTONE_NOT_OK
         insert_at += 1
-        block = block[:insert_at] + '\tdirectories = { "/tmp" }\n' + block[insert_at:]
+        lib_block = (
+            lib_block[:insert_at]
+            + f'\tdirectories = {{ "{OWNTONE_TARGET_PIPE_DIR}" }}\n'
+            + lib_block[insert_at:]
+        )
 
-    # 2) Enable pipe_autostart
-    # Prefer uncommenting the canonical commented line if present
+    # Enable pipe_autostart
     pipe_commented_re = re.compile(
         r"(?m)^(?P<indent>\s*)#\s*pipe_autostart\s*=\s*(true|false)\s*$"
     )
-    m = pipe_commented_re.search(block)
+    m = pipe_commented_re.search(lib_block)
     if m:
         indent = m.group("indent")
         new_line = f"{indent}pipe_autostart = true"
-        block = block[: m.start()] + new_line + block[m.end() :]
+        lib_block = lib_block[: m.start()] + new_line + lib_block[m.end() :]
     else:
-        # If present but false, set to true
         pipe_live_re = re.compile(
             r"(?m)^(?P<indent>\s*)pipe_autostart\s*=\s*(true|false)\s*$"
         )
-        m2 = pipe_live_re.search(block)
+        m2 = pipe_live_re.search(lib_block)
         if m2:
             indent = m2.group("indent")
             new_line = f"{indent}pipe_autostart = true"
-            block = block[: m2.start()] + new_line + block[m2.end() :]
+            lib_block = lib_block[: m2.start()] + new_line + lib_block[m2.end() :]
         else:
-            # Insert before closing brace
-            close_idx = block.rfind("}")
+            close_idx = lib_block.rfind("}")
             if close_idx == -1:
                 return OWNTONE_NOT_OK
-            block = block[:close_idx] + "\tpipe_autostart = true\n" + block[close_idx:]
+            lib_block = lib_block[:close_idx] + "\tpipe_autostart = true\n" + lib_block[close_idx:]
 
-    new_text = text[: span[0]] + block + text[span[1] :]
+    # Set general.loglevel = info
+    log_live_re = re.compile(r"(?m)^(?P<indent>\s*)loglevel\s*=\s*[^\s#]+\s*$")
+    ml = log_live_re.search(gen_block)
+    if ml:
+        indent = ml.group("indent")
+        new_line = f"{indent}loglevel = {OWNTONE_TARGET_LOGLEVEL}"
+        gen_block = gen_block[: ml.start()] + new_line + gen_block[ml.end() :]
+    else:
+        log_commented_re = re.compile(r"(?m)^(?P<indent>\s*)#\s*loglevel\s*=\s*[^\s#]+\s*$")
+        mlc = log_commented_re.search(gen_block)
+        if mlc:
+            indent = mlc.group("indent")
+            new_line = f"{indent}loglevel = {OWNTONE_TARGET_LOGLEVEL}"
+            gen_block = gen_block[: mlc.start()] + new_line + gen_block[mlc.end() :]
+        else:
+            insert_at = gen_block.find("{")
+            insert_at = gen_block.find("\n", insert_at)
+            if insert_at == -1:
+                return OWNTONE_NOT_OK
+            insert_at += 1
+            gen_block = (
+                gen_block[:insert_at]
+                + f"\tloglevel = {OWNTONE_TARGET_LOGLEVEL}\n"
+                + gen_block[insert_at:]
+            )
+
+    # Replace blocks from end to start to keep offsets valid
+    new_text = text
+    for span, new_block in sorted([(lib_span, lib_block), (gen_span, gen_block)], key=lambda x: x[0][0], reverse=True):
+        new_text = new_text[: span[0]] + new_block + new_text[span[1] :]
 
     try:
         _atomic_write_text(path, new_text)
@@ -635,17 +673,19 @@ def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
         logger.exception("Failed writing %s", path)
         return OWNTONE_NOT_OK
 
-    # Verify the resulting content (best-effort)
     updated = _read_text(path)
     if not updated:
         return OWNTONE_NOT_OK
 
-    span2 = _find_block_span(updated, lib_re)
-    if not span2:
+    lib_span2 = _find_block_span(updated, lib_re)
+    gen_span2 = _find_block_span(updated, gen_re)
+    if not lib_span2 or not gen_span2:
         return OWNTONE_NOT_OK
-    block2 = updated[span2[0] : span2[1]]
 
-    if _dirs_ok(block2) and _pipe_ok(block2):
+    lib_block2 = updated[lib_span2[0] : lib_span2[1]]
+    gen_block2 = updated[gen_span2[0] : gen_span2[1]]
+
+    if _dirs_ok(lib_block2) and _pipe_ok(lib_block2) and _loglevel_ok(gen_block2):
         return OWNTONE_RESTART_REQUIRED
 
     return OWNTONE_NOT_OK

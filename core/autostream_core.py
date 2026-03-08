@@ -25,9 +25,11 @@ This script:
 """
 
 import configparser
+import errno
 import logging
 import math
 import os
+import select
 import subprocess
 import sys
 import time
@@ -117,6 +119,10 @@ def setup_logging(log_file: str) -> None:
 
 def ensure_fifo(path: str) -> None:
     """Create a FIFO at `path` if it does not exist."""
+    fifo_dir = os.path.dirname(path)
+    if fifo_dir:
+        os.makedirs(fifo_dir, exist_ok=True)
+
     if os.path.exists(path):
         if stat_is_fifo(path):
             return
@@ -756,10 +762,10 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     # --- Ensure OwnTone config is correct before doing anything else ---
     cfg_status = owntone_config_ok()
     if cfg_status == OWNTONE_OK:
-        logging.info("OwnTone config OK (directories=/tmp, pipe_autostart enabled).")
+        logging.info("OwnTone config OK (directories=/tmp/autostream-pipes, pipe_autostart enabled).")
     elif cfg_status == OWNTONE_RESTART_REQUIRED:
         logging.warning(
-            "OwnTone config was updated (directories=/tmp, pipe_autostart enabled). "
+            "OwnTone config was updated (directories=/tmp/autostream-pipes, pipe_autostart enabled). "
             "OwnTone restart required for changes to take effect."
         )
         # Best-effort restart (won't break dev usage)
