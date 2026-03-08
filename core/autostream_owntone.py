@@ -49,28 +49,9 @@ def get_owntone_output_id(base_url: str, output_name: str) -> Optional[int]:
 def owntone_set_output(base_url: str, output_id: int, volume_percent: int, offset_ms: Optional[int] = None) -> bool:
     """Enable a specific output and set its volume via the Owntone JSON API.
 
-    According to the API docs, /api/outputs/set only accepts a list of output
-    ids (strings). Volume and selection flags are changed via
-    PUT /api/outputs/{id}.
+    This endpoint updates a single output and does not reset the user's
+    currently selected speaker group.
     """
-    # 1) Enable the output (and implicitly disable all others unless they are included)
-    set_url = base_url.rstrip("/") + "/api/outputs/set"
-    set_payload = {"outputs": [str(output_id)]}
-    logging.info("Owntone PUT /api/outputs/set payload=%s", set_payload)
-    try:
-        resp = requests.put(set_url, json=set_payload, timeout=3)
-        logging.info("Owntone PUT /api/outputs/set status=%s", resp.status_code)
-        logging.info("Owntone PUT /api/outputs/set body=%s", resp.text)
-        if not resp.ok:
-            logging.error(
-                "Owntone PUT /api/outputs/set failed: %s %s", resp.status_code, resp.text
-            )
-            return False
-    except requests.RequestException as e:  # noqa: BLE001
-        logging.error("Error setting Owntone enabled outputs: %s", e)
-        return False
-
-    # 2) Set volume and ensure the output is marked selected
     out_url = base_url.rstrip("/") + f"/api/outputs/{output_id}"
     vol = max(0, min(100, volume_percent))
     out_payload = {"selected": True, "volume": vol}

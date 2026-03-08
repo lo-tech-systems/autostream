@@ -22,6 +22,7 @@ from urllib.parse import quote as urlquote
 
 from autostream_core import (
     any_monitor_capturing,
+    get_monitor_levels_dbfs,
 )
 
 from autostream_auth import FLASH_COOKIE_NAME
@@ -662,6 +663,20 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
     status_text = "Playing" if is_playing else "Waiting"
     status_class = "playing" if is_playing else "waiting"
 
+    try:
+        input_levels = get_monitor_levels_dbfs()
+    except Exception:
+        input_levels = []
+
+    input_levels_html = ""
+    for lv in input_levels:
+        label = html.escape(str(lv.get("label", "In")))
+        dbfs = float(lv.get("dbfs", -90.0))
+        extra_cls = " input-level-pill-active" if lv.get("is_above_threshold") else ""
+        input_levels_html += (
+            f'<span class="pill status-pill input-level-pill{extra_cls}">{label}: {dbfs:.1f} dB</span>'
+        )
+
     outputs = []
     try:
         resp = requests.get(owntone_base_url.rstrip("/") + "/api/outputs", timeout=3)
@@ -952,11 +967,34 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           updateVolumeLabel(id,v);
           sendUpdate(id);
         }}
+        function escapeHtml(s){{
+          return String(s||'').replace(/[&<>"']/g, function(ch){{
+            return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch] || ch;
+          }});
+        }}
+        function renderInputLevels(levels){{
+          var row = document.getElementById('input-level-row');
+          if(!row) return;
+          if(!Array.isArray(levels) || levels.length===0){{
+            row.hidden = true;
+            row.innerHTML = '';
+            return;
+          }}
+          row.hidden = false;
+          row.innerHTML = levels.map(function(lv){{
+            var label = escapeHtml(String((lv && lv.label) || 'In'));
+            var db = Number(lv && lv.dbfs);
+            var txt = Number.isFinite(db) ? db.toFixed(1) + ' dB' : '-- dB';
+            var cls = (lv && lv.is_above_threshold) ? ' input-level-pill-active' : '';
+            return '<span class="pill status-pill input-level-pill' + cls + '">' + label + ': ' + txt + '</span>';
+          }}).join('');
+        }}
         function refreshStatus(){{
           fetch('/api/status').then(r=>r.json()).then(d=>{{
             var p=document.getElementById('status-pill');if(!p)return;
             p.textContent=d.status_text; p.classList.remove('status-playing','status-waiting');
             p.classList.add('status-'+d.status_class);
+            renderInputLevels(d.input_levels || []);
           }});
         }}
         function isActiveControl(el) {{
@@ -1035,16 +1073,19 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           {html.escape(status_text)}
         </span>
       </div>
+      <div id="input-level-row" class="pill-row input-level-row" {'hidden' if not input_levels_html else ''}>
+        {input_levels_html}
+      </div>
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
-      {A2HS_PROMPT_HTML}<p>Toggle speakers on/off and adjust their volume.</p>
+      {A2HS_PROMPT_HTML}
       <div id="outputs-list">{outputs_html}</div>
-      <br /><br />
+      <br />
       <p class="actions" style="margin-top:1rem;display:flex;gap:0.75rem;">
         <a href="/about" class="pill-btn" style="flex:1;text-align:center;">About</a>
         <a href="/setup" class="pill-btn" style="flex:1;text-align:center;">Setup</a>
       </p>
       <p style="margin-top:0.25rem; text-align:center;">
-        <small>Copyright &copy; 2025 Lo-tech Systems Limited.<br><strong>lo-tech.co.uk/autostream</strong></small>
+        <small>Copyright &copy; 2025 Lo-tech Systems Limited.<br></small>
       </p></div>{A2HS_SCRIPT}</body></html>
     """)
     body_bytes = html_body.encode("utf-8")
@@ -1516,10 +1557,15 @@ def send_logs_page(handler, state: WebUIState) -> None:
 
 def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     is_playing = any_monitor_capturing()
+    try:
+        input_levels = get_monitor_levels_dbfs()
+    except Exception:
+        input_levels = []
     send_json(handler, 200, {
         "playing": is_playing,
         "status_text": "Playing" if is_playing else "Waiting",
-        "status_class": "playing" if is_playing else "waiting"
+        "status_class": "playing" if is_playing else "waiting",
+        "input_levels": input_levels,
     })
 
 def send_update_check_json(handler) -> None:
@@ -1566,7 +1612,8 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
-        url = parsed.owntone.base_url.rstrip("/") + f"/api/outputs/{out_id}"
+        base_url = parsed.owntone.base_url.rstrip("/")
+        url = base_url + f"/api/outputs/{out_id}"
 
         # Two modes:
         #   (1) Normal output update: selected/volume ONLY (never send pin here)
@@ -1576,20 +1623,15 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
                 send_json(handler, 200, {"ok": False, "error": "Missing PIN", "id": str(out_id)})
                 return
             out_payload = {"pin": pin}
-        else:
-            out_payload = {"selected": selected, "volume": volume}
 
-        # Log the exact Owntone API call so we can debug PIN / selection issues.
-        # (Do not log headers/cookies; URL + JSON body are enough for tracing.)
-        logging.info("Owntone API call: PUT %s json=%s", url, out_payload)
-        resp = requests.put(url, json=out_payload, timeout=3)
-        logging.info("Owntone API response: status=%s body=%s",
-                     getattr(resp, "status_code", None),
-                     (getattr(resp, "text", "") or "").strip())
+            logging.info("Owntone API call: PUT %s json=%s", url, out_payload)
+            resp = requests.put(url, json=out_payload, timeout=3)
+            logging.info("Owntone API response: status=%s body=%s",
+                         getattr(resp, "status_code", None),
+                         (getattr(resp, "text", "") or "").strip())
 
-        # Mode (2): PIN-only verification.
-        # OwnTone returns 400 if the PIN was wrong/failed; client should re-prompt.
-        if op == "pin":
+            # Mode (2): PIN-only verification.
+            # OwnTone returns 400 if the PIN was wrong/failed; client should re-prompt.
             if resp.status_code == 400:
                 send_json(handler, 200, {
                     "ok": False,
@@ -1610,28 +1652,69 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
             send_json(handler, 200, {"ok": True, "id": str(out_id)})
             return
 
-        # Mode (1): normal enable/disable/volume.
-        # OwnTone returns HTTP 400 when an output enable requires device PIN verification.
-        # We surface this to the Web UI so it can prompt the user and then do PIN-only verification.
-        if selected and resp.status_code == 400:
+        if selected:
+            out_payload = {"selected": True, "volume": volume}
+            logging.info("Owntone API call: PUT %s json=%s", url, out_payload)
+            resp = requests.put(url, json=out_payload, timeout=3)
+            logging.info("Owntone API response: status=%s body=%s",
+                         getattr(resp, "status_code", None),
+                         (getattr(resp, "text", "") or "").strip())
+
+            # OwnTone returns HTTP 400 when an output enable requires device PIN verification.
+            if resp.status_code == 400:
+                send_json(handler, 200, {
+                    "ok": False,
+                    "pin_required": True,
+                    "id": str(out_id),
+                    "output_name": str(payload.get("name") or ""),
+                    "status": int(resp.status_code),
+                    "error": (resp.text or "").strip(),
+                })
+                return
+
+            if not resp.ok:
+                send_json(handler, 200, {
+                    "ok": False,
+                    "id": str(out_id),
+                    "status": int(resp.status_code),
+                    "error": (resp.text or "").strip(),
+                    "pin_invalid": False,
+                })
+                return
+
+            send_json(handler, 200, {"ok": True, "id": str(out_id)})
+            return
+
+        # Disable path: preserve all other currently-selected outputs by using /api/outputs/set.
+        outputs_url = base_url + "/api/outputs"
+        set_url = base_url + "/api/outputs/set"
+        list_resp = requests.get(outputs_url, timeout=3)
+        if not list_resp.ok:
             send_json(handler, 200, {
                 "ok": False,
-                "pin_required": True,
                 "id": str(out_id),
-                "output_name": str(payload.get("name") or ""),
-                "status": int(resp.status_code),
-                "error": (resp.text or "").strip(),
+                "status": int(list_resp.status_code),
+                "error": (list_resp.text or "").strip(),
             })
             return
 
+        outputs = (list_resp.json() or {}).get("outputs", [])
+        remaining = [str(o.get("id")) for o in outputs if o.get("selected") and str(o.get("id")) != str(out_id)]
+
+        set_payload = {"outputs": remaining}
+        logging.info("Owntone API call: PUT %s json=%s", set_url, set_payload)
+        resp = requests.put(set_url, json=set_payload, timeout=3)
+        logging.info("Owntone API response: status=%s body=%s",
+                     getattr(resp, "status_code", None),
+                     (getattr(resp, "text", "") or "").strip())
         if not resp.ok:
             send_json(handler, 200, {
                 "ok": False,
                 "id": str(out_id),
                 "status": int(resp.status_code),
                 "error": (resp.text or "").strip(),
-                # pin_invalid is only meaningful for op=="pin" now
-                "pin_invalid": False,            })
+                "pin_invalid": False,
+            })
             return
 
         send_json(handler, 200, {"ok": True, "id": str(out_id)})

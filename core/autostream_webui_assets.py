@@ -380,6 +380,24 @@ button[type=submit]:active {
   margin-bottom: 0.75em;
 }
 
+.input-level-row {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: -0.2rem;
+}
+
+.input-level-pill {
+  background: #e9ecef;
+  color: #495057;
+  font-size: 0.82rem;
+}
+
+.input-level-pill-active {
+  background: #d1e7dd;
+  color: #0f5132;
+}
+
 /* iOS-style storage bar */
 .storage-bar {
   width: 100%;
