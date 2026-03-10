@@ -874,6 +874,17 @@ class AudioMonitor:
         if not self.owntone_base_url:
             return False
         base = self.owntone_base_url.rstrip("/")
+
+        # Honor "no outputs selected" and avoid waking default sinks implicitly.
+        if not self._has_any_selected_outputs():
+            self._throttled_owntone_log(
+                time.time(),
+                logging.INFO,
+                "Skipping Owntone play request (%s) because no outputs are selected.",
+                reason,
+            )
+            return False
+
         try:
             resp = requests.put(base + "/api/player/play", timeout=3)
             if resp.ok:
@@ -896,6 +907,27 @@ class AudioMonitor:
             return False
         except Exception as e:
             logging.warning("Owntone play request failed (%s): %s", reason, e)
+            return False
+
+    def _request_owntone_stop(self, reason: str) -> bool:
+        """Best-effort stop request to release active output sessions."""
+        if not self.owntone_base_url:
+            return False
+        base = self.owntone_base_url.rstrip("/")
+        try:
+            resp = requests.put(base + "/api/player/stop", timeout=3)
+            if resp.ok:
+                logging.info("Owntone stop requested (%s).", reason)
+                return True
+            logging.warning(
+                "Owntone stop request failed (%s): status=%s body=%s",
+                reason,
+                resp.status_code,
+                (resp.text or "")[:200],
+            )
+            return False
+        except Exception as e:
+            logging.warning("Owntone stop request failed (%s): %s", reason, e)
             return False
 
 
@@ -925,15 +957,25 @@ class AudioMonitor:
 
         # If the user already selected outputs, re-apply that same selection to nudge
         # Owntone out of suspended state without forcing the configured default output on.
-        if self._refresh_selected_outputs():
+        refreshed_selected = self._refresh_selected_outputs()
+        has_selected_outputs = refreshed_selected or self._has_any_selected_outputs()
+        if refreshed_selected:
             self._owntone_enabled_ok = True
-        else:
-            # No selected outputs to refresh (or refresh failed): enable the configured
-            # default output, then let periodic retry handle transient Owntone errors.
+        elif has_selected_outputs:
+            # We have selected outputs but refresh failed (Owntone transient issue), so
+            # keep normal retry behavior.
             self._maybe_retry_owntone(time.time())
+        else:
+            # Explicitly honor empty selection: do not auto-enable configured default.
+            self._owntone_enabled_ok = True
+            logging.info(
+                "No Owntone outputs selected; honoring empty selection (default output will not be auto-enabled)."
+            )
 
-        # Owntone can remain paused after long idle periods; nudge play on capture start.
-        self._request_owntone_play("capture start")
+        # Owntone can remain paused after long idle periods; nudge play only when at
+        # least one output is selected.
+        if has_selected_outputs:
+            self._request_owntone_play("capture start")
 
 
     def _stop_capture(self, disable_outputs: bool = False) -> None:
@@ -960,8 +1002,12 @@ class AudioMonitor:
         except Exception:
             pass
 
-        # Clear outputs, but only if this was the last active capture.
-        # This avoids breaking playback if another monitor is still capturing.
+        # If capture has ended and no monitor is active, request player stop so
+        # network targets release their active input/session cleanly.
+        if self.owntone_base_url and not any_monitor_capturing():
+            self._request_owntone_stop("capture stop")
+
+        # Clear outputs only when explicitly requested.
         if disable_outputs and self.owntone_base_url and not any_monitor_capturing():
             owntone_disable_all_outputs(self.owntone_base_url)
 
