@@ -380,6 +380,71 @@ button[type=submit]:active {
   margin-bottom: 0.75em;
 }
 
+.banner-logo-wrap {
+  width: 100%;
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.banner-logo {
+  max-width: 44%;
+  height: auto;
+  display: block;
+  margin: 0;
+}
+
+.airplay-masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.airplay-brand {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.airplay-brand .banner-logo-wrap {
+  margin-bottom: 0;
+  text-align: left;
+}
+
+.airplay-brand .banner-logo {
+  width: clamp(150px, 54vw, 340px);
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0;
+}
+
+.airplay-refresh-wrap {
+  flex: 0 0 auto;
+}
+
+.airplay-refresh-wrap .pill-btn {
+  padding: 0.45rem 1.1rem;
+  font-size: 0.85rem;
+}
+
+.airplay-status-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.airplay-status-strip .input-level-row {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.airplay-status-strip .status-pill {
+  flex: 0 0 auto;
+}
+
 .input-level-row {
   justify-content: flex-start;
   flex-wrap: wrap;
@@ -472,6 +537,16 @@ code {
   button[type=submit] { width: auto; }
 }
 
+@media (max-width: 520px) {
+  .airplay-masthead {
+    align-items: center;
+  }
+  .airplay-refresh-wrap .pill-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.83rem;
+  }
+}
+
 #a2hs-prompt {
   position: fixed;
   left: 0;
@@ -561,10 +636,8 @@ body {
 """
 
 BANNER_HTML = """
-  <div style="width:100%;text-align:center;margin-bottom:1rem;">
-    <img src="/autostream-badge.png"
-         alt="AutoStream"
-         style="max-width:100%;height:auto;display:block;margin:0 auto;">
+  <div class="banner-logo-wrap">
+    <img src="/autostream-badge.png" alt="AutoStream" class="banner-logo">
   </div>
 
 <script>

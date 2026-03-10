@@ -465,6 +465,45 @@ def send_json_(handler, code: int, payload: dict) -> None:
     handler.end_headers()
     handler.wfile.write(body)
 
+
+def send_owntone_artwork_proxy(handler, state: WebUIState) -> None:
+    """Proxy /artwork/... requests to OwnTone so authenticated Web UI sessions can fetch artwork."""
+    try:
+        cfg = locked_load_config(state.config_path)
+        parsed = parse_config(cfg)
+        target = parsed.owntone.base_url.rstrip("/") + handler.path
+    except Exception as e:
+        handler.send_error(500, f"Could not resolve OwnTone artwork URL: {e}")
+        return
+
+    try:
+        resp = requests.get(target, timeout=5, allow_redirects=False)
+    except Exception as e:
+        handler.send_error(502, f"Could not reach OwnTone: {e}")
+        return
+
+    body = resp.content or b""
+
+    try:
+        handler.send_response(resp.status_code)
+        content_type = (resp.headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0]
+        handler.send_header("Content-Type", content_type)
+        cache_control = resp.headers.get("Cache-Control")
+        if cache_control:
+            handler.send_header("Cache-Control", cache_control)
+        etag = resp.headers.get("ETag")
+        if etag:
+            handler.send_header("ETag", etag)
+        last_modified = resp.headers.get("Last-Modified")
+        if last_modified:
+            handler.send_header("Last-Modified", last_modified)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        if body:
+            handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        return
+
 def run_updater(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
     cmd = ["/usr/bin/sudo", "-n", "/usr/local/libexec/autostream/autostream_updater.py", *args]
     p = subprocess.run(
@@ -1060,21 +1099,26 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           </div>
         </div>
       </div>
-      <div class="container">{BANNER_HTML}
-      <div class="pill-row">
-        <button type="button"
-                class="pill-btn"
-                onclick="location.reload();"
-                title="Reload page to refresh speakers">
-          ↻ Refresh
-        </button>
+      <div class="container">
+      <div class="airplay-masthead">
+        <div class="airplay-brand">{BANNER_HTML}</div>
+        <div class="airplay-refresh-wrap">
+          <button type="button"
+                  class="pill-btn"
+                  onclick="location.reload();"
+                  title="Reload page to refresh speakers">
+            ↻ Refresh
+          </button>
+        </div>
+      </div>
+      <div class="airplay-status-strip">
+        <div id="input-level-row" class="pill-row input-level-row" {'hidden' if not input_levels_html else ''}>
+          {input_levels_html}
+        </div>
         <span id="status-pill"
               class="pill status-pill status-{status_class}">
           {html.escape(status_text)}
         </span>
-      </div>
-      <div id="input-level-row" class="pill-row input-level-row" {'hidden' if not input_levels_html else ''}>
-        {input_levels_html}
       </div>
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
       {A2HS_PROMPT_HTML}
@@ -1089,11 +1133,16 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
       </p></div>{A2HS_SCRIPT}</body></html>
     """)
     body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body_bytes)))
+        handler.end_headers()
+        handler.wfile.write(body_bytes)
+    except (BrokenPipeError, ConnectionResetError):
+        logging.info("Client disconnected before airplay page response completed.")
+    except Exception:
+        logging.exception("Failed sending airplay page response.")
 
 
 def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, error: Optional[str] = None, flash_msg: Optional[str] = None) -> None:

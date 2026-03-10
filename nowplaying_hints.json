@@ -1,0 +1,14 @@
+{
+  "default": {
+    "title": "Enjoy",
+    "artist": "Turntable",
+    "album": "Vinyl LP",
+    "artwork_path": "/opt/autostream/images/autostream-badge.png"
+  },
+  "USB AUDIO  CODEC: Audio": {
+    "title": "Enjoy",
+    "artist": "Turntable",
+    "album": "Vinyl LP",
+    "artwork_path": "/opt/autostream/images/autostream-badge.png"
+  }
+}
