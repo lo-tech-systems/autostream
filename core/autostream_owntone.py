@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 
 import requests # third-party (pip install requests)
 from autostream_sysutils import run_admin_cmd
@@ -44,6 +45,60 @@ def get_owntone_output_id(base_url: str, output_name: str) -> Optional[int]:
     except Exception as e:  # noqa: BLE001
         logging.error("Error fetching Owntone outputs: %s", e)
     return None
+
+
+def owntone_get_library_song_count(base_url: str) -> Optional[int]:
+    """Return OwnTone library song count, or None on API error."""
+    try:
+        resp = requests.get(base_url.rstrip("/") + "/api/library", timeout=3)
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {}
+        return int(payload.get("songs") or 0)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("Error fetching OwnTone library stats: %s", e)
+        return None
+
+
+def owntone_trigger_files_rescan(base_url: str) -> bool:
+    """Trigger OwnTone files rescan via JSON API."""
+    try:
+        resp = requests.put(
+            base_url.rstrip("/") + "/api/update",
+            params={"scan_kind": "files"},
+            timeout=4,
+        )
+        if resp.status_code not in (200, 202, 204):
+            logging.warning(
+                "OwnTone files rescan request failed: %s %s",
+                resp.status_code,
+                resp.text,
+            )
+            return False
+        logging.info("Requested OwnTone files rescan")
+        return True
+    except requests.RequestException as e:  # noqa: BLE001
+        logging.warning("Error requesting OwnTone files rescan: %s", e)
+        return False
+
+
+def owntone_ensure_pipe_indexed(base_url: str, timeout_s: float = 15.0) -> bool:
+    """Ensure OwnTone has indexed at least one library item (pipe source)."""
+    deadline = time.time() + max(1.0, float(timeout_s))
+    next_rescan_at = 0.0
+
+    while time.time() < deadline:
+        songs = owntone_get_library_song_count(base_url)
+        if songs is not None and songs > 0:
+            return True
+
+        now = time.time()
+        if now >= next_rescan_at:
+            owntone_trigger_files_rescan(base_url)
+            next_rescan_at = now + 2.0
+
+        time.sleep(0.5)
+
+    return False
 
 
 def owntone_set_output(base_url: str, output_id: int, volume_percent: int, offset_ms: Optional[int] = None) -> bool:

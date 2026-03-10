@@ -42,6 +42,11 @@ import numpy as np
 import sounddevice as sd
 
 from autostream_config import load_and_parse
+from autostream_nowplaying import (
+    NowPlayingMetadata,
+    OwntoneMetadataPipePublisher,
+    PersistentNowPlayingCache,
+)
 
 from autostream_owntone import (
     get_owntone_output_id,
@@ -49,6 +54,7 @@ from autostream_owntone import (
     owntone_disable_all_outputs,
     owntone_config_ok,
     owntone_restart_service,
+    owntone_ensure_pipe_indexed,
     OWNTONE_OK,
     OWNTONE_RESTART_REQUIRED,
     OWNTONE_NOT_OK,
@@ -289,6 +295,20 @@ class AudioMonitor:
         self.owntone_volume_percent = owntone_volume_percent
         self.owntone_output_offsets_ms = owntone_output_offsets_ms or {}
 
+        # --- Now-playing metadata / artwork helpers ---
+        self._nowplaying_cache = PersistentNowPlayingCache()
+        self._nowplaying_publisher = OwntoneMetadataPipePublisher(self.fifo_path)
+        self._current_nowplaying = (
+            self._nowplaying_cache.get_manual_hint(self.input_device)
+            or NowPlayingMetadata(
+                title=f"Autostream ({self.input_device})",
+                artist="Vinyl",
+                album="Unknown Album",
+            )
+        )
+
+        self._capture_started_at: Optional[float] = None
+
         # Exposed for other scripts in the same process: average absolute
         # sample value from the most recent audio block (0..32767).
         self.current_level_sample: int = 0
@@ -371,8 +391,12 @@ class AudioMonitor:
         if self._audio_thread and self._audio_thread.is_alive():
             self._audio_thread.join(timeout=5)
         if self._ffmpeg_proc:
-            stop_ffmpeg(self._ffmpeg_proc)
-            self._ffmpeg_proc = None
+            self._stop_capture(disable_outputs=False)
+
+        try:
+            self._nowplaying_publisher.close()
+        except Exception:
+            pass
 
 
     def _run(self) -> None:
@@ -855,6 +879,14 @@ class AudioMonitor:
             if resp.ok:
                 logging.info("Owntone play requested (%s).", reason)
                 return True
+            if resp.status_code == 500:
+                self._throttled_owntone_log(
+                    time.time(),
+                    logging.INFO,
+                    "Owntone play request returned 500 (%s); relying on pipe autostart.",
+                    reason,
+                )
+                return False
             logging.warning(
                 "Owntone play request failed (%s): status=%s body=%s",
                 reason,
@@ -885,6 +917,12 @@ class AudioMonitor:
         self._clear_ffmpeg_backpressure()
         self._ffmpeg_pending_bytes = bytearray()
 
+        self._capture_started_at = time.time()
+
+        # Publish best-known now-playing metadata (manual hint, cached hash hit,
+        # or default placeholder).
+        self._nowplaying_publisher.publish_start(self._current_nowplaying)
+
         # If the user already selected outputs, re-apply that same selection to nudge
         # Owntone out of suspended state without forcing the configured default output on.
         if self._refresh_selected_outputs():
@@ -907,13 +945,20 @@ class AudioMonitor:
         """
         if self._ffmpeg_proc is None:
             return
+
         stop_ffmpeg(self._ffmpeg_proc)
         self._ffmpeg_proc = None
         self._clear_ffmpeg_backpressure()
         self._ffmpeg_pending_bytes = bytearray()
+        self._capture_started_at = None
 
         # Reset Owntone state so a future capture session will attempt again.
         self._owntone_enabled_ok = False
+
+        try:
+            self._nowplaying_publisher.publish_end()
+        except Exception:
+            pass
 
         # Clear outputs, but only if this was the last active capture.
         # This avoids breaking playback if another monitor is still capturing.
@@ -983,6 +1028,18 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     owntone_output_name = cfg.owntone.output_name
     owntone_volume = cfg.owntone.volume_percent
     owntone_offsets = cfg.owntone.output_offsets_ms
+
+
+    # Ensure pipe path exists before monitoring, then make sure OwnTone has
+    # indexed the pipe source (important after reboot when /tmp is empty).
+    ensure_fifo(fifo_path)
+    if owntone_base:
+        if owntone_ensure_pipe_indexed(owntone_base, timeout_s=15.0):
+            logging.info("OwnTone pipe source is indexed and ready.")
+        else:
+            logging.warning(
+                "OwnTone pipe source is not indexed yet; playback start may fail until files rescan succeeds."
+            )
 
     # --- Create one or two AudioMonitor instances ---
     monitors: list[AudioMonitor] = []

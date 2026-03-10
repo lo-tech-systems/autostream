@@ -805,6 +805,9 @@ PYOWNTONE
   cp -a "${AUTOSTREAM_DIR}/core/." "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/version" "${INSTALL_DIR}/"
+  if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" ]]; then
+    cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
+  fi
 
   # Keep autostream FIFO in a dedicated subdirectory to avoid scanning unrelated
   # transient files under /tmp.
