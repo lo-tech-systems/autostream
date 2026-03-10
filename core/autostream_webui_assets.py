@@ -387,10 +387,10 @@ button[type=submit]:active {
 }
 
 .banner-logo {
-  max-width: 100%;
+  max-width: 44%;
   height: auto;
   display: block;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .airplay-masthead {
