@@ -25,8 +25,11 @@ This script:
 """
 
 import configparser
+import errno
 import logging
+import math
 import os
+import select
 import subprocess
 import sys
 import time
@@ -39,6 +42,11 @@ import numpy as np
 import sounddevice as sd
 
 from autostream_config import load_and_parse
+from autostream_nowplaying import (
+    NowPlayingMetadata,
+    OwntoneMetadataPipePublisher,
+    PersistentNowPlayingCache,
+)
 
 from autostream_owntone import (
     get_owntone_output_id,
@@ -46,6 +54,7 @@ from autostream_owntone import (
     owntone_disable_all_outputs,
     owntone_config_ok,
     owntone_restart_service,
+    owntone_ensure_pipe_indexed,
     OWNTONE_OK,
     OWNTONE_RESTART_REQUIRED,
     OWNTONE_NOT_OK,
@@ -60,6 +69,29 @@ all_monitors = []
 def any_monitor_capturing() -> bool:
     """Return True if any AudioMonitor currently has an active capture."""
     return any(getattr(m, 'is_capturing', False) for m in all_monitors)
+
+
+def _sample_to_dbfs(sample: int, floor_dbfs: float = -90.0) -> float:
+    """Convert a 16-bit average sample value (0..32767) to dBFS."""
+    if sample <= 0:
+        return floor_dbfs
+    ratio = min(1.0, max(0.0, float(sample) / 32767.0))
+    return max(floor_dbfs, 20.0 * math.log10(ratio))
+
+
+def get_monitor_levels_dbfs() -> list[dict]:
+    """Return current level data for each active monitor for the Web UI."""
+    levels: list[dict] = []
+    for idx, mon in enumerate(list(all_monitors), start=1):
+        sample = int(getattr(mon, "current_level_sample", 0) or 0)
+        threshold_sample = int(getattr(mon, "silence_threshold_sample", 1) or 1)
+        dbfs = _sample_to_dbfs(sample)
+        levels.append({
+            "label": f"In{idx}",
+            "dbfs": round(dbfs, 1),
+            "is_above_threshold": sample >= threshold_sample,
+        })
+    return levels
 
 def handle_signal(signum, frame):
     stop_flag.set()
@@ -93,6 +125,10 @@ def setup_logging(log_file: str) -> None:
 
 def ensure_fifo(path: str) -> None:
     """Create a FIFO at `path` if it does not exist."""
+    fifo_dir = os.path.dirname(path)
+    if fifo_dir:
+        os.makedirs(fifo_dir, exist_ok=True)
+
     if os.path.exists(path):
         if stat_is_fifo(path):
             return
@@ -159,6 +195,14 @@ def start_ffmpeg(
         stdin=subprocess.PIPE,
         stderr=None,
     )
+
+    # Non-blocking stdin lets us detect downstream backpressure and recover
+    # instead of potentially stalling the monitor loop forever on write().
+    try:
+        if ffmpeg_proc.stdin:
+            os.set_blocking(ffmpeg_proc.stdin.fileno(), False)
+    except Exception as e:
+        logging.warning("Could not set ffmpeg stdin non-blocking: %s", e)
 
     return ffmpeg_proc
 
@@ -251,6 +295,20 @@ class AudioMonitor:
         self.owntone_volume_percent = owntone_volume_percent
         self.owntone_output_offsets_ms = owntone_output_offsets_ms or {}
 
+        # --- Now-playing metadata / artwork helpers ---
+        self._nowplaying_cache = PersistentNowPlayingCache()
+        self._nowplaying_publisher = OwntoneMetadataPipePublisher(self.fifo_path)
+        self._current_nowplaying = (
+            self._nowplaying_cache.get_manual_hint(self.input_device)
+            or NowPlayingMetadata(
+                title=f"Autostream ({self.input_device})",
+                artist="Vinyl",
+                album="Unknown Album",
+            )
+        )
+
+        self._capture_started_at: Optional[float] = None
+
         # Exposed for other scripts in the same process: average absolute
         # sample value from the most recent audio block (0..32767).
         self.current_level_sample: int = 0
@@ -274,6 +332,14 @@ class AudioMonitor:
         self._owntone_last_log: float = 0.0
         self._owntone_enabled_ok: bool = False
 
+        # Track ffmpeg stdin backpressure so we can auto-recover from stalled
+        # pipe playback without requiring a manual Owntone restart.
+        self._ffmpeg_backpressure_since: Optional[float] = None
+        self._ffmpeg_last_backpressure_log: float = 0.0
+        self._ffmpeg_last_reassert_attempt: float = 0.0
+        self._ffmpeg_last_recovery_restart: float = 0.0
+        self._ffmpeg_pending_bytes = bytearray()
+
         # Register this monitor so hot-plug logic can see if any monitor is
         # currently capturing (i.e. playback is active).
         all_monitors.append(self)
@@ -282,6 +348,15 @@ class AudioMonitor:
     # 10 seconds is a good compromise: responsive enough, and gentle on logs/IO.
     OWNTONE_RETRY_SECONDS = 10.0
     OWNTONE_LOG_THROTTLE_SECONDS = 60.0
+
+    # Backpressure handling:
+    # - first, re-assert selected outputs (or retry configured output enable)
+    # - only restart ffmpeg if the stall persists significantly longer
+    FFMPEG_BACKPRESSURE_REASSERT_SECONDS = 3.0
+    FFMPEG_BACKPRESSURE_REASSERT_COOLDOWN_SECONDS = 10.0
+    FFMPEG_BACKPRESSURE_RECOVERY_SECONDS = 15.0
+    FFMPEG_BACKPRESSURE_RESTART_COOLDOWN_SECONDS = 30.0
+    FFMPEG_BACKPRESSURE_LOG_THROTTLE_SECONDS = 5.0
 
     @property
     def is_capturing(self) -> bool:
@@ -316,8 +391,12 @@ class AudioMonitor:
         if self._audio_thread and self._audio_thread.is_alive():
             self._audio_thread.join(timeout=5)
         if self._ffmpeg_proc:
-            stop_ffmpeg(self._ffmpeg_proc)
-            self._ffmpeg_proc = None
+            self._stop_capture(disable_outputs=False)
+
+        try:
+            self._nowplaying_publisher.close()
+        except Exception:
+            pass
 
 
     def _run(self) -> None:
@@ -453,7 +532,7 @@ class AudioMonitor:
                                     "Audio has been below threshold for %.1f s. Stopping capture.",
                                     elapsed_since_loud,
                                 )
-                            self._stop_capture()
+                            self._stop_capture(disable_outputs=False)
 
                         # If ffmpeg is running, feed it the current block
                         if self._ffmpeg_proc is not None:
@@ -467,19 +546,9 @@ class AudioMonitor:
                                 logging.warning(
                                     "ffmpeg process exited unexpectedly, stopping capture."
                                 )
-                                self._stop_capture()
+                                self._stop_capture(disable_outputs=False)
                             else:
-                                try:
-                                    if self._ffmpeg_proc.stdin:
-                                        self._ffmpeg_proc.stdin.write(data.tobytes())
-                                except BrokenPipeError:
-                                    logging.error(
-                                        "Broken pipe writing to ffmpeg stdin, stopping capture."
-                                    )
-                                    self._stop_capture()
-                                except Exception as e:  # noqa: BLE001
-                                    logging.error("Error writing to ffmpeg stdin: %s", e)
-                                    self._stop_capture()
+                                self._write_pcm_to_ffmpeg(data)
 
             except Exception as e:  # noqa: BLE001
                 logging.error(
@@ -533,7 +602,7 @@ class AudioMonitor:
 
             # Stream died or failed to open: ensure ffmpeg is stopped.
             if self._ffmpeg_proc is not None:
-                self._stop_capture()
+                self._stop_capture(disable_outputs=False)
 
             if not self._running:
                 break
@@ -660,6 +729,175 @@ class AudioMonitor:
         self._owntone_last_log = now
         logging.log(level, msg, *args)
 
+    def _clear_ffmpeg_backpressure(self) -> None:
+        self._ffmpeg_backpressure_since = None
+
+    def _handle_ffmpeg_backpressure(self, now: float) -> None:
+        """Handle stalled ffmpeg stdin with staged recovery."""
+        if self._ffmpeg_backpressure_since is None:
+            self._ffmpeg_backpressure_since = now
+        stalled_for = now - self._ffmpeg_backpressure_since
+
+        if (now - self._ffmpeg_last_backpressure_log) >= self.FFMPEG_BACKPRESSURE_LOG_THROTTLE_SECONDS:
+            self._ffmpeg_last_backpressure_log = now
+            logging.warning("ffmpeg stdin backpressure (stalled %.2fs)", stalled_for)
+
+        if (
+            stalled_for >= self.FFMPEG_BACKPRESSURE_REASSERT_SECONDS
+            and (now - self._ffmpeg_last_reassert_attempt) >= self.FFMPEG_BACKPRESSURE_REASSERT_COOLDOWN_SECONDS
+        ):
+            self._ffmpeg_last_reassert_attempt = now
+            if self._refresh_selected_outputs():
+                self._owntone_enabled_ok = True
+                logging.warning(
+                    "ffmpeg backpressure persisted for %.2fs; re-applied selected Owntone outputs.",
+                    stalled_for,
+                )
+            else:
+                # Force _maybe_retry_owntone() to perform an attempt now.
+                self._owntone_enabled_ok = False
+                self._owntone_last_attempt = 0.0
+                self._maybe_retry_owntone(now)
+                logging.warning(
+                    "ffmpeg backpressure persisted for %.2fs; retried Owntone output enable.",
+                    stalled_for,
+                )
+
+            # Ensure Owntone isn't stuck in paused state while input is active.
+            self._request_owntone_play("backpressure recovery")
+
+        if stalled_for >= self.FFMPEG_BACKPRESSURE_RECOVERY_SECONDS:
+            if (now - self._ffmpeg_last_recovery_restart) < self.FFMPEG_BACKPRESSURE_RESTART_COOLDOWN_SECONDS:
+                return
+            self._ffmpeg_last_recovery_restart = now
+            logging.error(
+                "ffmpeg stdin stalled for %.2fs; restarting ffmpeg capture without disabling outputs.",
+                stalled_for,
+            )
+            self._stop_capture(disable_outputs=False)
+            self._start_capture()
+            self._clear_ffmpeg_backpressure()
+
+    def _write_pcm_to_ffmpeg(self, data: np.ndarray) -> None:
+        """Write one PCM block to ffmpeg stdin with non-blocking stall detection."""
+        proc = self._ffmpeg_proc
+        if proc is None or proc.stdin is None:
+            return
+
+        fd = proc.stdin.fileno()
+        now = time.time()
+
+        try:
+            # Queue the newest PCM block; drain as much as possible each cycle.
+            # This avoids treating partial writes as hard stalls.
+            if data.size:
+                self._ffmpeg_pending_bytes.extend(data.tobytes())
+
+            if not self._ffmpeg_pending_bytes:
+                self._clear_ffmpeg_backpressure()
+                return
+
+            progress_made = False
+            while self._ffmpeg_pending_bytes:
+                # Fast non-blocking readiness check; avoids hanging on pipe writes.
+                _, writable, _ = select.select([], [fd], [], 0.0)
+                if not writable:
+                    break
+
+                written = os.write(fd, self._ffmpeg_pending_bytes)
+                if written <= 0:
+                    break
+
+                del self._ffmpeg_pending_bytes[:written]
+                progress_made = True
+
+            if progress_made:
+                self._clear_ffmpeg_backpressure()
+            else:
+                self._handle_ffmpeg_backpressure(now)
+
+        except BlockingIOError:
+            self._handle_ffmpeg_backpressure(now)
+        except BrokenPipeError:
+            logging.error("Broken pipe writing to ffmpeg stdin, stopping capture.")
+            self._stop_capture(disable_outputs=False)
+            self._clear_ffmpeg_backpressure()
+        except OSError as e:
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                self._handle_ffmpeg_backpressure(now)
+            else:
+                logging.error("OS error writing to ffmpeg stdin: %s", e)
+                self._stop_capture(disable_outputs=False)
+                self._clear_ffmpeg_backpressure()
+        except Exception as e:  # noqa: BLE001
+            logging.error("Error writing to ffmpeg stdin: %s", e)
+            self._stop_capture(disable_outputs=False)
+            self._clear_ffmpeg_backpressure()
+
+    def _has_any_selected_outputs(self) -> bool:
+        """Return True if Owntone currently has at least one selected output."""
+        if not self.owntone_base_url:
+            return False
+        try:
+            resp = requests.get(self.owntone_base_url.rstrip("/") + "/api/outputs", timeout=3)
+            if not resp.ok:
+                return False
+            outputs = (resp.json() or {}).get("outputs", [])
+            return any(bool(o.get("selected", False)) for o in outputs)
+        except Exception:
+            return False
+
+    def _refresh_selected_outputs(self) -> bool:
+        """Re-apply current selected output ids to nudge Owntone playback state."""
+        if not self.owntone_base_url:
+            return False
+        base = self.owntone_base_url.rstrip("/")
+        try:
+            resp = requests.get(base + "/api/outputs", timeout=3)
+            if not resp.ok:
+                return False
+            outputs = (resp.json() or {}).get("outputs", [])
+            selected_ids = [str(o.get("id")) for o in outputs if o.get("selected") and o.get("id") is not None]
+            if not selected_ids:
+                return False
+            set_payload = {"outputs": selected_ids}
+            set_resp = requests.put(base + "/api/outputs/set", json=set_payload, timeout=3)
+            if not set_resp.ok:
+                return False
+            logging.info("Refreshed selected Owntone outputs: %s", selected_ids)
+            return True
+        except Exception:
+            return False
+
+    def _request_owntone_play(self, reason: str) -> bool:
+        """Best-effort request to ensure Owntone player is in play state."""
+        if not self.owntone_base_url:
+            return False
+        base = self.owntone_base_url.rstrip("/")
+        try:
+            resp = requests.put(base + "/api/player/play", timeout=3)
+            if resp.ok:
+                logging.info("Owntone play requested (%s).", reason)
+                return True
+            if resp.status_code == 500:
+                self._throttled_owntone_log(
+                    time.time(),
+                    logging.INFO,
+                    "Owntone play request returned 500 (%s); relying on pipe autostart.",
+                    reason,
+                )
+                return False
+            logging.warning(
+                "Owntone play request failed (%s): status=%s body=%s",
+                reason,
+                resp.status_code,
+                (resp.text or "")[:200],
+            )
+            return False
+        except Exception as e:
+            logging.warning("Owntone play request failed (%s): %s", reason, e)
+            return False
+
 
     def _start_capture(self) -> None:
         """Start ffmpeg and optionally enable Owntone output."""
@@ -671,36 +909,60 @@ class AudioMonitor:
         self._owntone_enabled_ok = False
         self._owntone_last_attempt = 0.0  # force immediate attempt on start
 
-        was_idle = not any_monitor_capturing()
-
         self._ffmpeg_proc = start_ffmpeg(
             self.fifo_path,
             self.ffmpeg_in_rate,
             self.ffmpeg_out_rate,
         )
+        self._clear_ffmpeg_backpressure()
+        self._ffmpeg_pending_bytes = bytearray()
 
-        # If we're transitioning from idle -> playing, clear any previously
-        # selected Owntone outputs so we start from a known state.
-        if self.owntone_base_url and was_idle:
-            owntone_disable_all_outputs(self.owntone_base_url)
+        self._capture_started_at = time.time()
 
-        # Attempt Owntone enable immediately; periodic retry will take over if it fails.
-        self._maybe_retry_owntone(time.time())
+        # Publish best-known now-playing metadata (manual hint, cached hash hit,
+        # or default placeholder).
+        self._nowplaying_publisher.publish_start(self._current_nowplaying)
+
+        # If the user already selected outputs, re-apply that same selection to nudge
+        # Owntone out of suspended state without forcing the configured default output on.
+        if self._refresh_selected_outputs():
+            self._owntone_enabled_ok = True
+        else:
+            # No selected outputs to refresh (or refresh failed): enable the configured
+            # default output, then let periodic retry handle transient Owntone errors.
+            self._maybe_retry_owntone(time.time())
+
+        # Owntone can remain paused after long idle periods; nudge play on capture start.
+        self._request_owntone_play("capture start")
 
 
-    def _stop_capture(self) -> None:
-        """Stop ffmpeg."""
+    def _stop_capture(self, disable_outputs: bool = False) -> None:
+        """Stop ffmpeg.
+
+        By default, this preserves the current OwnTone output selection and
+        per-output volumes so playback routing survives long idle gaps.
+        Set disable_outputs=True only for explicit teardown behavior.
+        """
         if self._ffmpeg_proc is None:
             return
+
         stop_ffmpeg(self._ffmpeg_proc)
         self._ffmpeg_proc = None
+        self._clear_ffmpeg_backpressure()
+        self._ffmpeg_pending_bytes = bytearray()
+        self._capture_started_at = None
 
         # Reset Owntone state so a future capture session will attempt again.
         self._owntone_enabled_ok = False
 
+        try:
+            self._nowplaying_publisher.publish_end()
+        except Exception:
+            pass
+
         # Clear outputs, but only if this was the last active capture.
         # This avoids breaking playback if another monitor is still capturing.
-        if self.owntone_base_url and not any_monitor_capturing():
+        if disable_outputs and self.owntone_base_url and not any_monitor_capturing():
             owntone_disable_all_outputs(self.owntone_base_url)
 
 
@@ -717,10 +979,10 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     # --- Ensure OwnTone config is correct before doing anything else ---
     cfg_status = owntone_config_ok()
     if cfg_status == OWNTONE_OK:
-        logging.info("OwnTone config OK (directories=/tmp, pipe_autostart enabled).")
+        logging.info("OwnTone config OK (directories=/tmp/autostream-pipes, pipe_autostart enabled).")
     elif cfg_status == OWNTONE_RESTART_REQUIRED:
         logging.warning(
-            "OwnTone config was updated (directories=/tmp, pipe_autostart enabled). "
+            "OwnTone config was updated (directories=/tmp/autostream-pipes, pipe_autostart enabled). "
             "OwnTone restart required for changes to take effect."
         )
         # Best-effort restart (won't break dev usage)
@@ -766,6 +1028,18 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     owntone_output_name = cfg.owntone.output_name
     owntone_volume = cfg.owntone.volume_percent
     owntone_offsets = cfg.owntone.output_offsets_ms
+
+
+    # Ensure pipe path exists before monitoring, then make sure OwnTone has
+    # indexed the pipe source (important after reboot when /tmp is empty).
+    ensure_fifo(fifo_path)
+    if owntone_base:
+        if owntone_ensure_pipe_indexed(owntone_base, timeout_s=15.0):
+            logging.info("OwnTone pipe source is indexed and ready.")
+        else:
+            logging.warning(
+                "OwnTone pipe source is not indexed yet; playback start may fail until files rescan succeeds."
+            )
 
     # --- Create one or two AudioMonitor instances ---
     monitors: list[AudioMonitor] = []

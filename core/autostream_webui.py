@@ -242,6 +242,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             pages.send_rebooting_page(self, STATE, AUTH)
         elif path == "/api/log_file":
             pages.send_log_file(self, STATE)
+        elif path.startswith("/artwork/"):
+            pages.send_owntone_artwork_proxy(self, STATE)
         else:
             self.send_error(404, "Not found")
 
