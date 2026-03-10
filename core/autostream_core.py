@@ -15,7 +15,7 @@ This script:
   * Starts an `ffmpeg` process, fed with RAW PCM from this script via stdin,
     writing to a FIFO pipe.
 
-  * Enables a configured output on a local `owntone` instance and sets its volume.
+  * Reuses the currently selected OwnTone outputs so routing follows UI choices.
 
 - When input has been below the threshold for a configured number of seconds, it:
 
@@ -47,10 +47,12 @@ from autostream_nowplaying import (
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
 )
+try:
+    from autostream_nowplaying import VinylRecognizer
+except ImportError:  # Optional recognizer; core should run without it.
+    VinylRecognizer = None  # type: ignore[assignment]
 
 from autostream_owntone import (
-    get_owntone_output_id,
-    owntone_set_output,
     owntone_disable_all_outputs,
     owntone_config_ok,
     owntone_restart_service,
@@ -298,6 +300,11 @@ class AudioMonitor:
         # --- Now-playing metadata / artwork helpers ---
         self._nowplaying_cache = PersistentNowPlayingCache()
         self._nowplaying_publisher = OwntoneMetadataPipePublisher(self.fifo_path)
+        self._vinyl_recognizer = (
+            VinylRecognizer(self._nowplaying_cache, self.input_device) if VinylRecognizer else None
+        )
+        if self._vinyl_recognizer is None:
+            logging.info("Vinyl recognizer unavailable; running with static now-playing metadata.")
         self._current_nowplaying = (
             self._nowplaying_cache.get_manual_hint(self.input_device)
             or NowPlayingMetadata(
@@ -307,6 +314,55 @@ class AudioMonitor:
             )
         )
 
+        # Track-level recognition tuning:
+        # We collect full track audio and only fingerprint once a track boundary
+        # (silence gap) is detected, so AcoustID gets full-track context.
+        self._track_start_level_sample = max(
+            self.silence_threshold_sample * 3,
+            int((os.environ.get("AUTOSTREAM_TRACK_START_LEVEL_SAMPLE") or "120").strip() or "120"),
+        )
+        self._track_end_level_sample = max(
+            1,
+            int((os.environ.get("AUTOSTREAM_TRACK_END_LEVEL_SAMPLE") or str(self.silence_threshold_sample)).strip()
+                or str(self.silence_threshold_sample)),
+        )
+        end_ratio_raw = (os.environ.get("AUTOSTREAM_TRACK_END_RATIO") or "0.65").strip()
+        try:
+            self._track_end_ratio = float(end_ratio_raw)
+        except Exception:
+            self._track_end_ratio = 0.65
+        self._track_end_ratio = max(0.05, min(0.95, self._track_end_ratio))
+        self._track_min_seconds = max(
+            12.0,
+            float((os.environ.get("AUTOSTREAM_TRACK_MIN_SECONDS") or "25").strip() or "25"),
+        )
+        self._track_gap_seconds = max(
+            1.0,
+            float((os.environ.get("AUTOSTREAM_TRACK_GAP_SECONDS") or "3.0").strip() or "3.0"),
+        )
+        self._track_max_seconds = max(
+            self._track_min_seconds,
+            float((os.environ.get("AUTOSTREAM_TRACK_MAX_SECONDS") or "900").strip() or "900"),
+        )
+        self._track_preroll_seconds = max(
+            0.0,
+            float((os.environ.get("AUTOSTREAM_TRACK_PREROLL_SECONDS") or "1.5").strip() or "1.5"),
+        )
+        self._track_buffer = bytearray()
+        self._track_preroll_buffer = bytearray()
+        self._track_active = False
+        self._track_started_at: Optional[float] = None
+        self._track_silence_started_at: Optional[float] = None
+        self._track_status_log_seconds = max(
+            10.0,
+            float((os.environ.get("AUTOSTREAM_TRACK_STATUS_LOG_SECONDS") or "20").strip() or "20"),
+        )
+        self._track_last_status_log_at = 0.0
+        self._last_input_samplerate: int = self.ffmpeg_in_rate
+
+        self._recognition_inflight = False
+        self._recognition_attempt_count = 0
+        self._recognition_last_attempt_at = 0.0
         self._capture_started_at: Optional[float] = None
 
         # Exposed for other scripts in the same process: average absolute
@@ -323,14 +379,15 @@ class AudioMonitor:
         self._audio_thread: Optional[threading.Thread] = None
         self._ffmpeg_proc: Optional[subprocess.Popen] = None
         self._last_above_threshold: Optional[float] = None
-        self._output_id: Optional[int] = None
 
         # --- Owntone retry state ---
-        # We want to keep trying to (re)connect/enable the desired output while
-        # capture is active, but do it gently (micro-SD friendly).
+        # While capture is active, retry refreshing currently selected outputs
+        # to recover from transient OwnTone issues.
         self._owntone_last_attempt: float = 0.0
         self._owntone_last_log: float = 0.0
         self._owntone_enabled_ok: bool = False
+        self._capture_start_no_output_retry_at: float = 0.0
+        self._capture_start_no_output_log_at: float = 0.0
 
         # Track ffmpeg stdin backpressure so we can auto-recover from stalled
         # pipe playback without requiring a manual Owntone restart.
@@ -350,7 +407,7 @@ class AudioMonitor:
     OWNTONE_LOG_THROTTLE_SECONDS = 60.0
 
     # Backpressure handling:
-    # - first, re-assert selected outputs (or retry configured output enable)
+    # - first, re-assert selected outputs
     # - only restart ffmpeg if the stall persists significantly longer
     FFMPEG_BACKPRESSURE_REASSERT_SECONDS = 3.0
     FFMPEG_BACKPRESSURE_REASSERT_COOLDOWN_SECONDS = 10.0
@@ -420,19 +477,6 @@ class AudioMonitor:
             self.silence_threshold_sample,
             self.silence_seconds,
         )
-
-        # Pre-resolve Owntone output ID
-        if self.owntone_output_name:
-            self._output_id = get_owntone_output_id(
-                self.owntone_base_url,
-                self.owntone_output_name,
-            )
-            if self._output_id is None:
-                logging.warning(
-                    "Could not resolve Owntone output '%s'. Audio will still be captured, "
-                    "but the output won't be auto-enabled.",
-                    self.owntone_output_name,
-                )
 
         # Configure block size and samplerate for monitoring
         samplerate = self.ffmpeg_in_rate or 48000
@@ -513,13 +557,14 @@ class AudioMonitor:
                         # Decide whether to start/stop ffmpeg based on activity and
                         # the coordinator's allow_capture flag.
                         if is_active and self.allow_capture and self._ffmpeg_proc is None:
-                            logging.info(
-                                "Starting capture (avg_abs=%d, threshold=%d, elapsed_since_loud=%.2f)",
-                                avg_abs,
-                                self.silence_threshold_sample,
-                                elapsed_since_loud,
-                            )
                             self._start_capture()
+                            if self._ffmpeg_proc is not None:
+                                logging.info(
+                                    "Starting capture (avg_abs=%d, threshold=%d, elapsed_since_loud=%.2f)",
+                                    avg_abs,
+                                    self.silence_threshold_sample,
+                                    elapsed_since_loud,
+                                )
                         elif (not is_active or not self.allow_capture) and self._ffmpeg_proc is not None:
                             if not self.allow_capture:
                                 logging.info(
@@ -549,6 +594,7 @@ class AudioMonitor:
                                 self._stop_capture(disable_outputs=False)
                             else:
                                 self._write_pcm_to_ffmpeg(data)
+                                self._collect_recognition_audio(data, samplerate, avg_abs)
 
             except Exception as e:  # noqa: BLE001
                 logging.error(
@@ -615,17 +661,203 @@ class AudioMonitor:
             time.sleep(RETRY_DELAY)
 
 
-    def _maybe_retry_owntone(self, now: float) -> None:
-        """Periodically retry (re)connecting to Owntone / enabling output.
-
-        This runs while capture is active. It is intentionally conservative:
-        - retries at most once every OWNTONE_RETRY_SECONDS
-        - throttles repetitive failure logs
-        """
-        if not self.owntone_base_url or not self.owntone_output_name:
+    def _collect_recognition_audio(self, data: np.ndarray, samplerate: int, avg_abs: int) -> None:
+        """Collect full track audio and trigger recognition at track boundaries."""
+        if self._vinyl_recognizer is None:
+            return
+        if data.size == 0:
             return
 
-        # Already enabled successfully during this capture session.
+        self._last_input_samplerate = samplerate
+
+        try:
+            mono = np.mean(data.astype(np.int32), axis=1).astype(np.int16)
+            mono_bytes = mono.tobytes()
+            mono_level = int(np.mean(np.abs(mono.astype(np.int32))))
+            now = time.time()
+            dynamic_end_threshold = int(self._track_start_level_sample * self._track_end_ratio)
+            effective_end_threshold = max(self._track_end_level_sample, dynamic_end_threshold)
+
+            # Keep a short pre-roll so the attack at track start is included.
+            self._track_preroll_buffer.extend(mono_bytes)
+            preroll_max = max(0, int(samplerate * self._track_preroll_seconds * 2))
+            if preroll_max > 0 and len(self._track_preroll_buffer) > preroll_max:
+                del self._track_preroll_buffer[:-preroll_max]
+
+            if not self._track_active:
+                if mono_level >= self._track_start_level_sample:
+                    self._track_active = True
+                    self._track_started_at = now
+                    self._track_silence_started_at = None
+                    self._track_buffer = bytearray(self._track_preroll_buffer)
+                    self._track_last_status_log_at = now
+                    logging.info(
+                        "Track capture started for recognition (level=%d, start_threshold=%d, end_threshold=%d).",
+                        mono_level,
+                        self._track_start_level_sample,
+                        effective_end_threshold,
+                    )
+                else:
+                    return
+
+            self._track_buffer.extend(mono_bytes)
+            max_track_bytes = int(samplerate * self._track_max_seconds * 2)
+            if max_track_bytes > 0 and len(self._track_buffer) > max_track_bytes:
+                self._finalize_track_recognition(
+                    samplerate=samplerate,
+                    reason="max_track_seconds",
+                    force=True,
+                )
+                return
+
+            if mono_level < effective_end_threshold:
+                if self._track_silence_started_at is None:
+                    self._track_silence_started_at = now
+            else:
+                self._track_silence_started_at = None
+
+            if (now - self._track_last_status_log_at) >= self._track_status_log_seconds:
+                track_age = now - (self._track_started_at or now)
+                silent_for = 0.0 if self._track_silence_started_at is None else (now - self._track_silence_started_at)
+                logging.info(
+                    "Track capture active (age=%.1fs, level=%d, end_threshold=%d, silent_for=%.1fs).",
+                    track_age,
+                    mono_level,
+                    effective_end_threshold,
+                    silent_for,
+                )
+                self._track_last_status_log_at = now
+
+            if self._track_silence_started_at is None:
+                return
+
+            track_age = now - (self._track_started_at or now)
+            silent_for = now - self._track_silence_started_at
+            if track_age < self._track_min_seconds or silent_for < self._track_gap_seconds:
+                return
+
+            # Trim trailing inter-track silence from the fingerprint payload.
+            trim_bytes = int(samplerate * self._track_gap_seconds * 2)
+            if trim_bytes > 0 and len(self._track_buffer) > trim_bytes:
+                del self._track_buffer[-trim_bytes:]
+
+            self._finalize_track_recognition(
+                samplerate=samplerate,
+                reason="silence_gap",
+                force=False,
+                level=avg_abs,
+            )
+        except Exception as e:
+            logging.info("Now-playing sample collection failed: %s", e)
+
+
+    def _finalize_track_recognition(
+        self,
+        samplerate: int,
+        reason: str,
+        force: bool = False,
+        level: int = 0,
+    ) -> None:
+        """Queue background recognition for a completed track segment."""
+        if self._vinyl_recognizer is None:
+            self._track_buffer = bytearray()
+            self._track_active = False
+            self._track_started_at = None
+            self._track_silence_started_at = None
+            return
+        if not self._track_buffer:
+            self._track_active = False
+            self._track_started_at = None
+            self._track_silence_started_at = None
+            return
+
+        track_seconds = len(self._track_buffer) / max(1, samplerate * 2)
+        required_seconds = self._track_min_seconds
+        if force:
+            required_seconds = max(10.0, self._track_min_seconds * 0.5)
+        if track_seconds < required_seconds:
+            self._track_buffer = bytearray()
+            self._track_active = False
+            self._track_started_at = None
+            self._track_silence_started_at = None
+            return
+
+        if self._recognition_inflight:
+            logging.info(
+                "Skipping track recognition queue (reason=%s) because prior attempt is still running.",
+                reason,
+            )
+            self._track_buffer = bytearray()
+            self._track_active = False
+            self._track_started_at = None
+            self._track_silence_started_at = None
+            return
+
+        self._recognition_attempt_count += 1
+        attempt_no = self._recognition_attempt_count
+        self._recognition_inflight = True
+        self._recognition_last_attempt_at = time.time()
+        pcm16_mono = bytes(self._track_buffer)
+
+        logging.info(
+            "Now-playing recognition attempt %d queued (reason=%s, track_seconds=%.1f, level=%d).",
+            attempt_no,
+            reason,
+            track_seconds,
+            level,
+        )
+
+        self._track_buffer = bytearray()
+        self._track_active = False
+        self._track_started_at = None
+        self._track_silence_started_at = None
+
+        threading.Thread(
+            target=self._recognize_nowplaying_worker,
+            args=(pcm16_mono, samplerate, attempt_no),
+            daemon=True,
+        ).start()
+
+
+    def _recognize_nowplaying_worker(self, pcm16_mono: bytes, samplerate: int, attempt_no: int) -> None:
+        """Resolve metadata in the background and publish updates if found."""
+        try:
+            if self._vinyl_recognizer is None:
+                return
+            meta, source = self._vinyl_recognizer.resolve_with_source(pcm16_mono, samplerate)
+            if not meta:
+                logging.info("Now-playing recognition attempt %d found no metadata.", attempt_no)
+                return
+
+            changed = meta != self._current_nowplaying
+            self._current_nowplaying = meta
+            if changed:
+                self._nowplaying_publisher.publish_start(meta)
+                logging.info(
+                    "Now-playing updated (%s): artist=%s album=%s title=%s",
+                    source,
+                    meta.artist,
+                    meta.album,
+                    meta.title,
+                )
+            else:
+                logging.info(
+                    "Now-playing recognition attempt %d matched existing metadata (%s).",
+                    attempt_no,
+                    source,
+                )
+        except Exception as e:
+            logging.info("Now-playing recognition failed: %s", e)
+        finally:
+            self._recognition_inflight = False
+
+
+    def _maybe_retry_owntone(self, now: float) -> None:
+        """Periodically retry refreshing currently selected OwnTone outputs."""
+        if not self.owntone_base_url:
+            return
+
+        # Already refreshed successfully during this capture session.
         if self._owntone_enabled_ok:
             return
 
@@ -634,91 +866,35 @@ class AudioMonitor:
             return
         self._owntone_last_attempt = now
 
-        # Try to resolve output ID if needed (or if we suspect it may have changed).
-        if self._output_id is None:
-            oid = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
-            if oid is None:
+        outputs = self._get_owntone_outputs()
+        if outputs is None:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Skipping Owntone selected-output refresh because outputs API is unavailable.",
+            )
+            return
+
+        if not self._has_any_selected_outputs(outputs):
+            if not self._auto_select_default_output(now, outputs, reason="retry"):
                 self._throttled_owntone_log(
                     now,
                     logging.INFO,
-                    "Owntone output %r not available (or Owntone unreachable); will retry.",
-                    self.owntone_output_name,
+                    "No outputs selected during capture; default fallback not available yet.",
                 )
                 return
-            logging.info("Resolved Owntone output %r -> id %s (periodic retry)", self.owntone_output_name, oid)
-            self._output_id = oid
-
-        offset_to_send = None
-        if self._output_id is not None:
-            # Only send offset_ms if this output id has a saved value in the INI.
-            # This matches the UI behaviour (slider only shown when output has offset_ms),
-            # and avoids sending offset_ms to outputs/versions that don't support it.
-            try:
-                k = str(self._output_id)
-                if k in self.owntone_output_offsets_ms:
-                    offset_to_send = int(self.owntone_output_offsets_ms.get(k, 0))
-                    # Clamp to owntone range
-                    offset_to_send = max(-2000, min(2000, offset_to_send))
-            except Exception:
-                offset_to_send = None
-
-            # Attempt to enable output / set volume.
-            ok = owntone_set_output(
-                self.owntone_base_url,
-                self._output_id,
-                self.owntone_volume_percent,
-                offset_ms=offset_to_send
-            )
-            if ok:
-                logging.info(
-                    "Owntone output enabled successfully during capture (id=%s, vol=%d%%).",
-                    self._output_id,
-                    self.owntone_volume_percent,
-                )
-                self._owntone_enabled_ok = True
+            outputs = self._get_owntone_outputs()
+            if outputs is None or not self._has_any_selected_outputs(outputs):
                 return
 
-            # If enable failed, the output id might be stale. Re-resolve once on this retry tick.
-            new_id = get_owntone_output_id(self.owntone_base_url, self.owntone_output_name)
-            if new_id is not None and new_id != self._output_id:
-                logging.info(
-                    "Owntone output id changed for %r: %s -> %s; retrying enable",
-                    self.owntone_output_name,
-                    self._output_id,
-                    new_id,
-                )
-
-                self._output_id = new_id
-
-                # Recompute offset for the new id
-                offset_to_send = None
-                try:
-                    k = str(self._output_id)
-                    if k in self.owntone_output_offsets_ms:
-                        offset_to_send = int(self.owntone_output_offsets_ms.get(k, 0))
-                except Exception:
-                    offset_to_send = None
-
-                ok2 = owntone_set_output(
-                    self.owntone_base_url,
-                    self._output_id,
-                    self.owntone_volume_percent,
-                    offset_ms=offset_to_send
-                )
-                if ok2:
-                    logging.info(
-                        "Owntone output enabled successfully after id refresh (id=%s).",
-                        self._output_id,
-                    )
-                    self._owntone_enabled_ok = True
-                    return
+        if self._refresh_selected_outputs(outputs):
+            self._owntone_enabled_ok = True
+            return
 
         self._throttled_owntone_log(
             now,
-            logging.INFO,
-            "Owntone enable failed for output %r (id=%s); will retry.",
-            self.owntone_output_name,
-            self._output_id,
+            logging.WARNING,
+            "Owntone selected-output refresh failed during capture; will retry.",
         )
 
 
@@ -747,7 +923,18 @@ class AudioMonitor:
             and (now - self._ffmpeg_last_reassert_attempt) >= self.FFMPEG_BACKPRESSURE_REASSERT_COOLDOWN_SECONDS
         ):
             self._ffmpeg_last_reassert_attempt = now
-            if self._refresh_selected_outputs():
+            outputs = self._get_owntone_outputs()
+            if outputs is not None and not self._has_any_selected_outputs(outputs):
+                if not self._auto_select_default_output(now, outputs, reason="backpressure recovery"):
+                    logging.info(
+                        "ffmpeg backpressure with no selected outputs and default fallback unavailable; stopping capture."
+                    )
+                    self._stop_capture(disable_outputs=False)
+                    self._clear_ffmpeg_backpressure()
+                    return
+                outputs = self._get_owntone_outputs()
+
+            if self._refresh_selected_outputs(outputs):
                 self._owntone_enabled_ok = True
                 logging.warning(
                     "ffmpeg backpressure persisted for %.2fs; re-applied selected Owntone outputs.",
@@ -759,7 +946,7 @@ class AudioMonitor:
                 self._owntone_last_attempt = 0.0
                 self._maybe_retry_owntone(now)
                 logging.warning(
-                    "ffmpeg backpressure persisted for %.2fs; retried Owntone output enable.",
+                    "ffmpeg backpressure persisted for %.2fs; retried selected-output refresh.",
                     stalled_for,
                 )
 
@@ -834,30 +1021,131 @@ class AudioMonitor:
             self._stop_capture(disable_outputs=False)
             self._clear_ffmpeg_backpressure()
 
-    def _has_any_selected_outputs(self) -> bool:
-        """Return True if Owntone currently has at least one selected output."""
+    def _get_owntone_outputs(self) -> Optional[list[dict]]:
+        """Return OwnTone outputs list, or None if API is unavailable."""
         if not self.owntone_base_url:
-            return False
+            return None
         try:
             resp = requests.get(self.owntone_base_url.rstrip("/") + "/api/outputs", timeout=3)
             if not resp.ok:
-                return False
+                return None
             outputs = (resp.json() or {}).get("outputs", [])
-            return any(bool(o.get("selected", False)) for o in outputs)
+            return outputs if isinstance(outputs, list) else None
         except Exception:
+            return None
+
+    @staticmethod
+    def _selected_output_ids(outputs: list[dict]) -> list[str]:
+        return [str(o.get("id")) for o in outputs if o.get("selected") and o.get("id") is not None]
+
+    def _has_any_selected_outputs(self, outputs: Optional[list[dict]] = None) -> bool:
+        """Return True if Owntone currently has at least one selected output."""
+        if outputs is None:
+            outputs = self._get_owntone_outputs()
+            if outputs is None:
+                return False
+        return any(bool(o.get("selected", False)) for o in outputs)
+
+    def _auto_select_default_output(
+        self,
+        now: float,
+        outputs: Optional[list[dict]] = None,
+        reason: str = "auto-select",
+    ) -> bool:
+        """If nothing is selected, auto-enable the configured default output."""
+        if not self.owntone_base_url:
             return False
 
-    def _refresh_selected_outputs(self) -> bool:
+        if outputs is None:
+            outputs = self._get_owntone_outputs()
+        if outputs is None:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Could not fetch Owntone outputs while attempting default fallback (%s).",
+                reason,
+            )
+            return False
+        if self._has_any_selected_outputs(outputs):
+            return True
+
+        default_name = (self.owntone_output_name or "").strip()
+        if not default_name:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "No default output configured; cannot apply zero-target fallback (%s).",
+                reason,
+            )
+            return False
+
+        default_out = next((o for o in outputs if str(o.get("name") or "") == default_name), None)
+        if not default_out or default_out.get("id") is None:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Configured default output '%s' not found in Owntone; cannot apply fallback (%s).",
+                default_name,
+                reason,
+            )
+            return False
+
+        out_id = str(default_out.get("id"))
+        base = self.owntone_base_url.rstrip("/")
+        try:
+            out_volume = int(default_out.get("volume", self.owntone_volume_percent))
+        except Exception:
+            out_volume = int(self.owntone_volume_percent)
+        out_volume = max(0, min(100, out_volume))
+        payload: dict[str, object] = {"selected": True, "volume": out_volume}
+        offset_val = self.owntone_output_offsets_ms.get(out_id)
+        if offset_val is not None:
+            try:
+                payload["offset_ms"] = max(-2000, min(2000, int(offset_val)))
+            except Exception:
+                pass
+
+        try:
+            resp = requests.put(base + f"/api/outputs/{out_id}", json=payload, timeout=3)
+            if not resp.ok:
+                self._throttled_owntone_log(
+                    now,
+                    logging.WARNING,
+                    "Failed to auto-enable default output '%s' (%s): status=%s body=%s",
+                    default_name,
+                    reason,
+                    resp.status_code,
+                    (resp.text or "")[:200],
+                )
+                return False
+            logging.info(
+                "No outputs selected; auto-enabled default output '%s' (%s).",
+                default_name,
+                reason,
+            )
+            return True
+        except Exception as e:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Failed to auto-enable default output '%s' (%s): %s",
+                default_name,
+                reason,
+                e,
+            )
+            return False
+
+    def _refresh_selected_outputs(self, outputs: Optional[list[dict]] = None) -> bool:
         """Re-apply current selected output ids to nudge Owntone playback state."""
         if not self.owntone_base_url:
             return False
         base = self.owntone_base_url.rstrip("/")
         try:
-            resp = requests.get(base + "/api/outputs", timeout=3)
-            if not resp.ok:
+            if outputs is None:
+                outputs = self._get_owntone_outputs()
+            if outputs is None:
                 return False
-            outputs = (resp.json() or {}).get("outputs", [])
-            selected_ids = [str(o.get("id")) for o in outputs if o.get("selected") and o.get("id") is not None]
+            selected_ids = self._selected_output_ids(outputs)
             if not selected_ids:
                 return False
             set_payload = {"outputs": selected_ids}
@@ -874,6 +1162,27 @@ class AudioMonitor:
         if not self.owntone_base_url:
             return False
         base = self.owntone_base_url.rstrip("/")
+
+        now = time.time()
+        outputs = self._get_owntone_outputs()
+        if outputs is None:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Skipping Owntone play request (%s) because outputs API is unavailable.",
+                reason,
+            )
+            return False
+        if not self._has_any_selected_outputs(outputs):
+            if not self._auto_select_default_output(now, outputs, reason=f"play request ({reason})"):
+                self._throttled_owntone_log(
+                    now,
+                    logging.INFO,
+                    "Skipping Owntone play request (%s) because no outputs are selected.",
+                    reason,
+                )
+                return False
+
         try:
             resp = requests.put(base + "/api/player/play", timeout=3)
             if resp.ok:
@@ -899,10 +1208,53 @@ class AudioMonitor:
             return False
 
 
+    def _request_owntone_stop(self, reason: str) -> bool:
+        """Best-effort stop request to release active output sessions."""
+        if not self.owntone_base_url:
+            return False
+        base = self.owntone_base_url.rstrip("/")
+        try:
+            resp = requests.put(base + "/api/player/stop", timeout=3)
+            if resp.ok:
+                logging.info("Owntone stop requested (%s).", reason)
+                return True
+            logging.warning(
+                "Owntone stop request failed (%s): status=%s body=%s",
+                reason,
+                resp.status_code,
+                (resp.text or "")[:200],
+            )
+            return False
+        except Exception as e:
+            logging.warning("Owntone stop request failed (%s): %s", reason, e)
+            return False
+
+
     def _start_capture(self) -> None:
         """Start ffmpeg and optionally enable Owntone output."""
         if self._ffmpeg_proc is not None:
             return
+
+        now = time.time()
+        if self.owntone_base_url:
+            # Poll output state at a low frequency while waiting for OwnTone
+            # so active-input loops don't hammer the JSON API.
+            if now < self._capture_start_no_output_retry_at:
+                return
+            self._capture_start_no_output_retry_at = now + 2.0
+
+            outputs = self._get_owntone_outputs()
+            if outputs is None:
+                return
+            if not self._has_any_selected_outputs(outputs):
+                if not self._auto_select_default_output(now, outputs, reason="capture start"):
+                    if (now - self._capture_start_no_output_log_at) >= 15.0:
+                        self._capture_start_no_output_log_at = now
+                        logging.info(
+                            "Input is active with no selected outputs; waiting to auto-select default output."
+                        )
+                    return
+            self._capture_start_no_output_retry_at = 0.0
 
         # Reset Owntone enable state for this capture session.
         # We attempt immediately, and then keep retrying periodically while capture runs.
@@ -918,22 +1270,37 @@ class AudioMonitor:
         self._ffmpeg_pending_bytes = bytearray()
 
         self._capture_started_at = time.time()
+        self._track_buffer = bytearray()
+        self._track_preroll_buffer = bytearray()
+        self._track_active = False
+        self._track_started_at = None
+        self._track_silence_started_at = None
+        self._track_last_status_log_at = 0.0
+        self._recognition_inflight = False
+        self._recognition_attempt_count = 0
+        self._recognition_last_attempt_at = 0.0
 
         # Publish best-known now-playing metadata (manual hint, cached hash hit,
         # or default placeholder).
         self._nowplaying_publisher.publish_start(self._current_nowplaying)
 
-        # If the user already selected outputs, re-apply that same selection to nudge
-        # Owntone out of suspended state without forcing the configured default output on.
-        if self._refresh_selected_outputs():
+        # Re-apply currently selected outputs to nudge OwnTone out of suspended state.
+        refreshed_selected = self._refresh_selected_outputs()
+        has_selected_outputs = refreshed_selected or self._has_any_selected_outputs()
+        if refreshed_selected:
             self._owntone_enabled_ok = True
-        else:
-            # No selected outputs to refresh (or refresh failed): enable the configured
-            # default output, then let periodic retry handle transient Owntone errors.
+        elif has_selected_outputs:
+            # We have selected outputs but refresh failed (Owntone transient issue), so
+            # keep normal retry behavior.
             self._maybe_retry_owntone(time.time())
+        else:
+            # Keep retrying if OwnTone is still settling after startup/reconnect.
+            self._owntone_enabled_ok = False
 
-        # Owntone can remain paused after long idle periods; nudge play on capture start.
-        self._request_owntone_play("capture start")
+        # OwnTone can remain paused after long idle periods; nudge play once at
+        # least one output is selected.
+        if has_selected_outputs:
+            self._request_owntone_play("capture start")
 
 
     def _stop_capture(self, disable_outputs: bool = False) -> None:
@@ -945,6 +1312,14 @@ class AudioMonitor:
         """
         if self._ffmpeg_proc is None:
             return
+
+        # Flush any completed/partial track when capture is intentionally stopped.
+        self._finalize_track_recognition(
+            samplerate=max(1, int(self._last_input_samplerate or self.ffmpeg_in_rate)),
+            reason="capture_stop",
+            force=True,
+            level=self.current_level_sample,
+        )
 
         stop_ffmpeg(self._ffmpeg_proc)
         self._ffmpeg_proc = None
@@ -959,6 +1334,11 @@ class AudioMonitor:
             self._nowplaying_publisher.publish_end()
         except Exception:
             pass
+
+        # If capture has ended and no monitor is active, request player stop so
+        # network targets release their active input/session cleanly.
+        if self.owntone_base_url and not any_monitor_capturing():
+            self._request_owntone_stop("capture stop")
 
         # Clear outputs, but only if this was the last active capture.
         # This avoids breaking playback if another monitor is still capturing.

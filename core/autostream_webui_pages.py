@@ -1133,11 +1133,16 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
       </p></div>{A2HS_SCRIPT}</body></html>
     """)
     body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body_bytes)))
+        handler.end_headers()
+        handler.wfile.write(body_bytes)
+    except (BrokenPipeError, ConnectionResetError):
+        logging.info("Client disconnected before airplay page response completed.")
+    except Exception:
+        logging.exception("Failed sending airplay page response.")
 
 
 def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, error: Optional[str] = None, flash_msg: Optional[str] = None) -> None:
