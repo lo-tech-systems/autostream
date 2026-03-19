@@ -186,6 +186,138 @@ button[type=submit] {
   color: #333;
 }
 
+.output-card {
+  margin-bottom: 0.62rem;
+  padding: 0.52rem 0.72rem 0.5rem;
+  border-radius: 12px;
+  border: 1px solid #d9dee3;
+  background: #f8fafb;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.output-card-on {
+  border-color: #2b80d1;
+  background: #f1f6fc;
+}
+
+.output-card-off {
+  border-color: #d9dee3;
+  background: #f8fafb;
+}
+
+.output-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.52rem;
+}
+
+.output-card-meta {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  align-items: center;
+  gap: 0.22rem 0.4rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.output-card-name {
+  grid-column: 1 / -1;
+  font-size: 0.99rem;
+  font-weight: 700;
+  color: #121212;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.output-card-default {
+  display: inline-block;
+  padding: 0.06rem 0.4rem;
+  border-radius: 999px;
+  background: #eceff2;
+  color: #495057;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.output-state-chip {
+  display: inline-block;
+  padding: 0.06rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.output-state-chip.on {
+  background: #d1e7dd;
+  color: #0f5132;
+}
+
+.output-state-chip.off {
+  background: #e2e3e5;
+  color: #41464b;
+}
+
+.output-toggle {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.output-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.output-toggle .switch {
+  position: relative;
+  width: 48px;
+  height: 27px;
+  border-radius: 999px;
+  background: #adb5bd;
+  transition: background 140ms ease;
+}
+
+.output-toggle .switch::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 140ms ease;
+}
+
+.output-toggle input:checked + .switch {
+  background: #198754;
+}
+
+.output-toggle input:checked + .switch::after {
+  transform: translateX(21px);
+}
+
+.output-slider-wrap {
+  margin-top: 0.18rem;
+}
+
+.output-slider-wrap .slider-header {
+  margin-bottom: 0.08rem;
+  font-size: 0.9rem;
+}
+
+.output-slider-wrap input[type=range] {
+  margin-top: 0.1rem;
+  height: 20px;
+}
+
 /* Slider stands alone on its own row */
 input[type=range] {
   display: block;
