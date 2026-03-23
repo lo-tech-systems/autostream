@@ -14,7 +14,7 @@ Configuration file example (INI):
 
 [general]
 log_file = /var/log/autostream.log
-fifo_path = /tmp/autostream
+fifo_path = /tmp/autostream-pipes/autostream
 silence_seconds = 30           ; length of time of continuous silence before stopping
 
 [audio1]
@@ -176,7 +176,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         fallback="/var/log/autostream/autostream.log"
     )
     silence_seconds = cfg.getint("general", "silence_seconds", fallback=30)
-    fifo_path = cfg.get("general", "fifo_path", fallback="/tmp/autostream.fifo")
+    fifo_path = cfg.get("general", "fifo_path", fallback="/tmp/autostream-pipes/autostream.fifo")
 
     general = GeneralConfig(
         log_file=log_file,

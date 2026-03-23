@@ -47,7 +47,9 @@ ORIG_USER="${SUDO_USER:-$(id -un)}"
 ORIG_HOME="$(getent passwd "${ORIG_USER}" | cut -d: -f6)"
 LOGFILE="${ORIG_HOME}/autostream_install.log"
 
-AUTOSTREAM_DIR="${ORIG_HOME}/autostream"
+AUTOSTREAM_DIR="$(cd "$(dirname "$0")" && pwd)"
+#AUTOSTREAM_DIR="${ORIG_HOME}/autostream"
+
 INSTALL_DIR="/opt/autostream"
 APP_LOG_DIR="/var/log/autostream"
 STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin binaries
