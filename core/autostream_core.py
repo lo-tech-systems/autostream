@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """autostream_core.py
 
-Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 This script is the engine behind autostream, capturing input and routing to targets
 via OwnTone. It can be used standalone but is usually called by autostream_webui.py.

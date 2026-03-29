@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """autostream_webui.py
 
-Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Front-end for autostream. This script will start autostream_core.py and should be used to
 start autostream.

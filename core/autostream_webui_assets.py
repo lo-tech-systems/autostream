@@ -1,6 +1,6 @@
 """autostream_webui.py
 
-Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Web assets (e.g. CSS) to support web front-end for autostrea
 """

@@ -5,7 +5,7 @@
 # Deployment script for autostream on Raspberry Pi OS Lite (Trixie).
 # This installer is intentionally defensive and verbose.
 #
-# Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 # www.lo-tech.co.uk/autostream • GitHub.com/lo-tech-systems/autostream
 #
 # IMPORTANT

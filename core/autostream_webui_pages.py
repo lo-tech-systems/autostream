@@ -1129,7 +1129,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
         <a href="/setup" class="pill-btn" style="flex:1;text-align:center;">Setup</a>
       </p>
       <p style="margin-top:0.25rem; text-align:center;">
-        <small>Copyright &copy; 2025 Lo-tech Systems Limited.<br><strong>lo-tech.co.uk/autostream</strong></small>
+        <small>Copyright &copy; 2025-2026 Lo-tech Systems Limited.<br><strong>lo-tech.co.uk/autostream</strong></small>
       </p></div>{A2HS_SCRIPT}</body></html>
     """)
     body_bytes = html_body.encode("utf-8")
@@ -1542,7 +1542,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         {storage_html}{sd_html}
       </fieldset>
       <fieldset><legend>Copyright</legend>
-          <p><strong>autostream</strong> is Copyright &copy; 2025 Lo-tech Systems Limited.</p>
+          <p><strong>autostream</strong> is Copyright &copy; 2025-2026 Lo-tech Systems Limited.</p>
           <p><strong>autostream</strong> and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
           <p><strong>autostream</strong> depends on components provided by the Raspberry Pi OS distribution, including FFmpeg and OwnTone. These components are redistributed under the terms of their respective open-source licences, which are included with Raspberry Pi OS in <code>/usr/share/doc</code>.</p>
           <p>AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc., registered in the U.S. and other countries. Raspberry Pi is a trademark of Raspberry Pi Ltd. All other trademarks are the property of their respective owners.</p>
