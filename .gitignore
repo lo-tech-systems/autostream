@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+
+# Project-specific
+AGENTS.md
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Distribution / packaging
+*.egg-info/
+build/
+dist/
+
+# IDEs
+.vscode/
+.idea/
+

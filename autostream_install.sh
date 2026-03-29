@@ -5,7 +5,7 @@
 # Deployment script for autostream on Raspberry Pi OS Lite (Trixie).
 # This installer is intentionally defensive and verbose.
 #
-# Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 # www.lo-tech.co.uk/autostream • GitHub.com/lo-tech-systems/autostream
 #
 # IMPORTANT
@@ -47,7 +47,9 @@ ORIG_USER="${SUDO_USER:-$(id -un)}"
 ORIG_HOME="$(getent passwd "${ORIG_USER}" | cut -d: -f6)"
 LOGFILE="${ORIG_HOME}/autostream_install.log"
 
-AUTOSTREAM_DIR="${ORIG_HOME}/autostream"
+AUTOSTREAM_DIR="$(cd "$(dirname "$0")" && pwd)"
+#AUTOSTREAM_DIR="${ORIG_HOME}/autostream"
+
 INSTALL_DIR="/opt/autostream"
 APP_LOG_DIR="/var/log/autostream"
 STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin binaries
@@ -734,6 +736,57 @@ fi
   mkdir -p "${INSTALL_DIR}/owntone"
   if [[ -f /etc/owntone.conf ]]; then
     install /etc/owntone.conf "${INSTALL_DIR}/owntone/owntone.conf"
+
+    # Keep OwnTone focused on autostream pipe playback and increase logging
+    # verbosity for diagnostics.
+    python3 - "${INSTALL_DIR}/owntone/owntone.conf" <<'PYOWNTONE'
+from pathlib import Path
+import re
+import sys
+
+conf = Path(sys.argv[1])
+text = conf.read_text(encoding="utf-8")
+
+# Set general.loglevel = info
+gen = re.search(r'(?ms)^\s*general\s*\{.*?^\s*\}', text)
+if gen:
+    block = gen.group(0)
+    if re.search(r'(?m)^\s*loglevel\s*=\s*[^\s#]+', block):
+        block = re.sub(r'(?m)^(\s*)loglevel\s*=\s*[^\s#]+\s*$', r'\1loglevel = info', block, count=1)
+    elif re.search(r'(?m)^\s*#\s*loglevel\s*=\s*[^\s#]+', block):
+        block = re.sub(r'(?m)^(\s*)#\s*loglevel\s*=\s*[^\s#]+\s*$', r'\1loglevel = info', block, count=1)
+    else:
+        i = block.find('{')
+        j = block.find('\n', i)
+        if j != -1:
+            block = block[:j+1] + '\tloglevel = info\n' + block[j+1:]
+    text = text[:gen.start()] + block + text[gen.end():]
+
+# Set library.directories and pipe_autostart
+lib = re.search(r'(?ms)^\s*library\s*\{.*?^\s*\}', text)
+if lib:
+    block = lib.group(0)
+    if re.search(r'(?m)^\s*directories\s*=\s*\{[^}]*\}', block):
+        block = re.sub(r'(?m)^(\s*)directories\s*=\s*\{[^}]*\}\s*$', r'\1directories = { "/tmp/autostream-pipes" }', block, count=1)
+    else:
+        i = block.find('{')
+        j = block.find('\n', i)
+        if j != -1:
+            block = block[:j+1] + '\tdirectories = { "/tmp/autostream-pipes" }\n' + block[j+1:]
+
+    if re.search(r'(?m)^\s*pipe_autostart\s*=\s*(true|false)', block):
+        block = re.sub(r'(?m)^(\s*)pipe_autostart\s*=\s*(true|false)\s*$', r'\1pipe_autostart = true', block, count=1)
+    elif re.search(r'(?m)^\s*#\s*pipe_autostart\s*=\s*(true|false)', block):
+        block = re.sub(r'(?m)^(\s*)#\s*pipe_autostart\s*=\s*(true|false)\s*$', r'\1pipe_autostart = true', block, count=1)
+    else:
+        close = block.rfind('}')
+        if close != -1:
+            block = block[:close] + '\tpipe_autostart = true\n' + block[close:]
+
+    text = text[:lib.start()] + block + text[lib.end():]
+
+conf.write_text(text, encoding="utf-8")
+PYOWNTONE
   else
     warn "/etc/owntone.conf not found; owntone.conf was not staged"
   fi
@@ -754,6 +807,18 @@ fi
   cp -a "${AUTOSTREAM_DIR}/core/." "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/version" "${INSTALL_DIR}/"
+  if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" ]]; then
+    cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
+  fi
+
+  # Keep autostream FIFO in a dedicated subdirectory to avoid scanning unrelated
+  # transient files under /tmp.
+  if [[ -f "${INSTALL_DIR}/autostream.ini" ]]; then
+    sed -i -E 's|^[[:space:]]*fifo_path[[:space:]]*=.*$|fifo_path = /tmp/autostream-pipes/autostream.fifo|' "${INSTALL_DIR}/autostream.ini"
+  fi
+  # Ensure the FIFO directory remains writable by the autostream service user
+  # even when created during a root-run install.
+  install -d -m 1777 -o root -g root /tmp/autostream-pipes
 
   ###########################################
   # Supervisor + helper binaries/scripts

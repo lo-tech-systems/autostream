@@ -1,6 +1,6 @@
 """autostream_webui.py
 
-Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Web assets (e.g. CSS) to support web front-end for autostrea
 """
@@ -186,6 +186,138 @@ button[type=submit] {
   color: #333;
 }
 
+.output-card {
+  margin-bottom: 0.62rem;
+  padding: 0.52rem 0.72rem 0.5rem;
+  border-radius: 12px;
+  border: 1px solid #d9dee3;
+  background: #f8fafb;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.output-card-on {
+  border-color: #2b80d1;
+  background: #f1f6fc;
+}
+
+.output-card-off {
+  border-color: #d9dee3;
+  background: #f8fafb;
+}
+
+.output-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.52rem;
+}
+
+.output-card-meta {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  align-items: center;
+  gap: 0.22rem 0.4rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.output-card-name {
+  grid-column: 1 / -1;
+  font-size: 0.99rem;
+  font-weight: 700;
+  color: #121212;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.output-card-default {
+  display: inline-block;
+  padding: 0.06rem 0.4rem;
+  border-radius: 999px;
+  background: #eceff2;
+  color: #495057;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.output-state-chip {
+  display: inline-block;
+  padding: 0.06rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.output-state-chip.on {
+  background: #d1e7dd;
+  color: #0f5132;
+}
+
+.output-state-chip.off {
+  background: #e2e3e5;
+  color: #41464b;
+}
+
+.output-toggle {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.output-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.output-toggle .switch {
+  position: relative;
+  width: 48px;
+  height: 27px;
+  border-radius: 999px;
+  background: #adb5bd;
+  transition: background 140ms ease;
+}
+
+.output-toggle .switch::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 140ms ease;
+}
+
+.output-toggle input:checked + .switch {
+  background: #198754;
+}
+
+.output-toggle input:checked + .switch::after {
+  transform: translateX(21px);
+}
+
+.output-slider-wrap {
+  margin-top: 0.18rem;
+}
+
+.output-slider-wrap .slider-header {
+  margin-bottom: 0.08rem;
+  font-size: 0.9rem;
+}
+
+.output-slider-wrap input[type=range] {
+  margin-top: 0.1rem;
+  height: 20px;
+}
+
 /* Slider stands alone on its own row */
 input[type=range] {
   display: block;
@@ -246,6 +378,89 @@ button[type=submit]:active {
   justify-content: space-between;
   gap: 0.5em;
   margin-bottom: 0.75em;
+}
+
+.banner-logo-wrap {
+  width: 100%;
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.banner-logo {
+  max-width: 44%;
+  height: auto;
+  display: block;
+  margin: 0;
+}
+
+.airplay-masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.airplay-brand {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.airplay-brand .banner-logo-wrap {
+  margin-bottom: 0;
+  text-align: left;
+}
+
+.airplay-brand .banner-logo {
+  width: clamp(150px, 54vw, 340px);
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0;
+}
+
+.airplay-refresh-wrap {
+  flex: 0 0 auto;
+}
+
+.airplay-refresh-wrap .pill-btn {
+  padding: 0.45rem 1.1rem;
+  font-size: 0.85rem;
+}
+
+.airplay-status-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.airplay-status-strip .input-level-row {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.airplay-status-strip .status-pill {
+  flex: 0 0 auto;
+}
+
+.input-level-row {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: -0.2rem;
+}
+
+.input-level-pill {
+  background: #e9ecef;
+  color: #495057;
+  font-size: 0.82rem;
+}
+
+.input-level-pill-active {
+  background: #d1e7dd;
+  color: #0f5132;
 }
 
 /* iOS-style storage bar */
@@ -320,6 +535,16 @@ code {
 @media (min-width: 600px) {
   .container { margin: 2rem auto; }  /* keep the roomy desktop spacing */
   button[type=submit] { width: auto; }
+}
+
+@media (max-width: 520px) {
+  .airplay-masthead {
+    align-items: center;
+  }
+  .airplay-refresh-wrap .pill-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.83rem;
+  }
 }
 
 #a2hs-prompt {
@@ -411,10 +636,8 @@ body {
 """
 
 BANNER_HTML = """
-  <div style="width:100%;text-align:center;margin-bottom:1rem;">
-    <img src="/autostream-badge.png"
-         alt="AutoStream"
-         style="max-width:100%;height:auto;display:block;margin:0 auto;">
+  <div class="banner-logo-wrap">
+    <img src="/autostream-badge.png" alt="AutoStream" class="banner-logo">
   </div>
 
 <script>

@@ -116,4 +116,4 @@ See the `LICENSE` file for full terms.
 
 ---
 
-**autostream** is Copyright (c) 2025, **Lo-tech Systems Limited**. All rights reserved.
+**autostream** is Copyright (c) 2025-2026, **Lo-tech Systems Limited**. All rights reserved.

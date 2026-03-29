@@ -1,0 +1,14 @@
+# Text
+* text=auto
+
+# Bash
+*.sh eol=lf
+
+# Python
+*.py eol=lf
+
+# Config / scripts
+*.yml eol=lf
+*.yaml eol=lf
+*.json eol=lf
+*.ini eol=lf
