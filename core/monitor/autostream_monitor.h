@@ -692,7 +692,10 @@ private:
                                   std::vector<int16_t>* snapshot_out);
 
     // Idle clients that send no command within this many seconds are disconnected.
-    static constexpr int CLIENT_TIMEOUT_SECONDS = 30;
+    // Keeping this short ensures a dead Python client (e.g. mid-restart) is
+    // detected and cleaned up well within Python's own reconnect timeout (5 s),
+    // preventing accept_loop from stalling on _clients_mutex contention.
+    static constexpr int CLIENT_TIMEOUT_SECONDS = 5;
 
     AudioMonitor&     _monitor;
     int               _server_fd = -1;
