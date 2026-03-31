@@ -13,7 +13,7 @@ Single source of truth for:
 Configuration file example (INI):
 
 [general]
-log_file = /var/log/autostream.log
+log_file = /var/log/autostream/autostream.log
 fifo_path = /tmp/autostream-pipes/autostream
 silence_seconds = 30           ; length of time of continuous silence before stopping
 

@@ -22,8 +22,8 @@ ExecStart=/opt/autostream/monitor/autostream_monitor
 Restart=on-failure
 RestartSec=5
 
-StandardOutput=journal
-StandardError=journal
+StandardOutput=append:/var/log/autostream/autostream_monitor.log
+StandardError=append:/var/log/autostream/autostream_monitor.log
 
 TimeoutStopSec=10
 
