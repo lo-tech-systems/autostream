@@ -49,6 +49,7 @@ Everything runs locally on your network. There are no cloud services, logons, re
 * Mobile-friendly layout
 * PIN-protected setup screen
 * No cloud services required
+* Bass and Treble controls for each input
 
 ---
 
