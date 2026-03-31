@@ -587,6 +587,7 @@ RateEstimator::RateEstimator()
     , _window_start_time(0.0)
     , _window_frame_count(0)
     , _initialised(false)
+    , _adjustment_count(0)
     , _published_ratio(44100.0 / 48000.0)
     , _published_rate(48000.0)
 {
@@ -601,6 +602,7 @@ void RateEstimator::reset(int input_rate, int output_rate)
     _window_start_time  = 0.0;
     _window_frame_count = 0;
     _initialised        = false;
+    _adjustment_count   = 0;
 
     // Publish safe initial values so any thread that reads before the first
     // measurement window completes gets a sensible initial ratio.
@@ -627,8 +629,16 @@ void RateEstimator::feed(int n_frames, double wall_time)
 
     _window_frame_count += n_frames;
 
+    // Ramp the window duration from 1 s up to WINDOW_SECONDS over the first
+    // WINDOW_SECONDS completed windows (i.e. 1 s, 2 s, … 10 s).  This lets
+    // the first SRC ratio correction arrive after just one second rather than
+    // ten, while the longer steady-state windows keep ratio changes smooth.
+    double current_window = std::min(
+        static_cast<double>(_adjustment_count + 1),
+        WINDOW_SECONDS);
+
     double elapsed = wall_time - _window_start_time;
-    if (elapsed < WINDOW_SECONDS)
+    if (elapsed < current_window)
         return;
 
     // We have a full window of data.  Compute the measured rate and blend
@@ -644,6 +654,10 @@ void RateEstimator::feed(int n_frames, double wall_time)
     {
         _smoothed_rate = ALPHA * measured_rate + (1.0 - ALPHA) * _smoothed_rate;
     }
+
+    // Advance the ramp counter (saturates at WINDOW_SECONDS so the cast is safe).
+    if (_adjustment_count < static_cast<int>(WINDOW_SECONDS))
+        ++_adjustment_count;
 
     // Reset the window for the next measurement period.
     _window_start_time  = wall_time;
@@ -1491,6 +1505,13 @@ void InputChannel::process_thread_func()
     // Duration of the fade-in ramp in output frames (one second at 44100 Hz).
     const int RAMP_DURATION_FRAMES = AudioMonitor::output_rate_hz();
 
+    // Number of output frames to accumulate before the first FIFO write.
+    // 0.5 s at 44100 Hz = 22050 frames = ~172 KB of int16 stereo data.
+    // This gives OwnTone a full initial buffer so it can start streaming
+    // without the starvation-induced skips that occur when the pipe is
+    // cold and the first few writes are each only a single period (~1024 frames).
+    const int PREFILL_DURATION_FRAMES = AudioMonitor::output_rate_hz() / 2;
+
     std::vector<int16_t> pcm_in(MAX_FRAMES * 2);          // interleaved int16
     std::vector<float>   float_in(MAX_FRAMES * 2);        // interleaved float
     std::vector<float>   float_out(MAX_SRC_OUTPUT * 2);   // post-SRC float
@@ -1589,7 +1610,10 @@ void InputChannel::process_thread_func()
         {
             if (_src_state)
                 src_reset(_src_state);
-            _ramp_frames_remaining = RAMP_DURATION_FRAMES;
+            _ramp_frames_remaining    = RAMP_DURATION_FRAMES;
+            _prefill_frames_remaining = PREFILL_DURATION_FRAMES;
+            _prefill_buf.clear();
+            _prefill_buf.reserve(static_cast<size_t>(PREFILL_DURATION_FRAMES) * 2);
             _capturing.store(true);
             fprintf(stderr, "[input%d] Capture session started (peak=%d, threshold=%d)\n",
                     _index, peak_sample, silence_threshold_sample);
@@ -1771,7 +1795,7 @@ void InputChannel::process_thread_func()
                         _session_effective_peak_linear.store(eff_peak, std::memory_order_relaxed);
                 }
 
-                // Convert back to int16 and write to the shared FIFO.
+                // Convert back to int16.
                 src_float_to_short_array(float_out.data(), pcm_out.data(), out_frames * 2);
 
                 // Re-check _allow_capture under _fifo_mutex.  The outer check
@@ -1787,8 +1811,44 @@ void InputChannel::process_thread_func()
                 {
                     std::lock_guard<std::mutex> lock(_fifo_mutex);
                     if (_allow_capture.load(std::memory_order_relaxed))
-                        _shared_fifo.write(pcm_out.data(),
-                                           static_cast<size_t>(out_frames) * 2 * sizeof(int16_t));
+                    {
+                        if (_prefill_frames_remaining > 0)
+                        {
+                            // Accumulation phase: append to the pre-fill buffer.
+                            // Do not write to the FIFO yet.
+                            const int16_t* src_ptr = pcm_out.data();
+                            int to_add = std::min(out_frames, _prefill_frames_remaining);
+                            _prefill_buf.insert(_prefill_buf.end(),
+                                                src_ptr,
+                                                src_ptr + static_cast<size_t>(to_add) * 2);
+                            _prefill_frames_remaining -= to_add;
+
+                            if (_prefill_frames_remaining == 0)
+                            {
+                                // Pre-fill complete: flush the whole buffer in one
+                                // write, then write any frames from this block that
+                                // came after the pre-fill threshold.
+                                _shared_fifo.write(_prefill_buf.data(),
+                                                   _prefill_buf.size() * sizeof(int16_t));
+                                _prefill_buf.clear();
+                                _prefill_buf.shrink_to_fit();
+
+                                int remainder = out_frames - to_add;
+                                if (remainder > 0)
+                                    _shared_fifo.write(src_ptr + static_cast<size_t>(to_add) * 2,
+                                                       static_cast<size_t>(remainder) * 2 * sizeof(int16_t));
+
+                                fprintf(stderr, "[input%d] Pre-fill complete; first FIFO write done\n",
+                                        _index);
+                            }
+                        }
+                        else
+                        {
+                            // Normal phase: write directly to the FIFO.
+                            _shared_fifo.write(pcm_out.data(),
+                                               static_cast<size_t>(out_frames) * 2 * sizeof(int16_t));
+                        }
+                    }
                 }
             }   // gain/EQ/peak/FIFO block
 

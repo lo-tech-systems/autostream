@@ -266,6 +266,7 @@ private:
     double _window_start_time;
     long   _window_frame_count;
     bool   _initialised;
+    int    _adjustment_count;   // number of windows completed; used to ramp window duration
 
     // ── Published values (written by capture thread, read by any thread) ──────
     // After each completed measurement window, feed() atomically publishes the
@@ -275,9 +276,11 @@ private:
     std::atomic<double> _published_ratio;   // output_rate / smoothed_rate
     std::atomic<double> _published_rate;    // smoothed_rate (Hz)
 
-    // How long a window to measure over.  10 seconds is slow enough to avoid
-    // audible artefacts when the SRC ratio is updated, and fast enough to
-    // catch real drift within the first minute of playback.
+    // Maximum (steady-state) measurement window.  At startup the window is
+    // ramped from 1 second up to this value over the first WINDOW_SECONDS
+    // completed windows (i.e. windows of 1 s, 2 s, … 10 s).  This lets the
+    // SRC ratio converge quickly on the first capture session while avoiding
+    // audible artefacts from abrupt ratio changes during steady-state playback.
     static constexpr double WINDOW_SECONDS = 10.0;
 
     // IIR smoothing factor.  0.15 means each new measurement contributes 15%
@@ -582,6 +585,17 @@ private:
     // complete and full gain is applied.  The ramp is combined with _gain_linear
     // in a single per-frame multiply so no extra pass over the buffer is needed.
     int _ramp_frames_remaining{0};
+
+    // ── FIFO pre-fill buffer (process thread only) ────────────────────────────
+    // At the start of each capture session, PREFILL_DURATION_FRAMES of
+    // post-gain/EQ/ramp int16 samples are accumulated here before any data is
+    // written to the FIFO.  Once the threshold is reached the buffer is flushed
+    // in a single write (giving OwnTone a full pipe buffer to start from) and
+    // subsequent blocks are written directly.
+    // _prefill_frames_remaining counts down from PREFILL_DURATION_FRAMES to 0;
+    // while it is > 0 we are in the accumulation phase.
+    int                  _prefill_frames_remaining{0};
+    std::vector<int16_t> _prefill_buf;
 
     // ── Level metering ────────────────────────────────────────────────────────
     // Written by the process thread every block; read by get_status().
