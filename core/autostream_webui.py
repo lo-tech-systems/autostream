@@ -18,18 +18,18 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import threading
 import time
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, unquote
-import re
 import json
 
 from autostream_core import (
+    get_available_monitor_devices,
     run_autostream,
+    stop_flag,
 )
 
 from autostream_sysutils import (
@@ -53,26 +53,13 @@ from autostream_config import unconfigured
 STATE: Optional[WebUIState] = None
 AUTH: Optional[AuthManager] = None
 
-try:
-    import sounddevice as sd
-except ImportError:  # sounddevice is optional
-    sd = None
-
 # initial_setup values:
 # 0 - not in initial setup
 # 1 - initial setup needed and page 1 not complete
-# 2 - imitial setup needed and page 1 completed (so user on page 2)
+# 2 - initial setup needed and page 1 completed (so user on page 2)
 initial_setup = 0
+_setup_lock = threading.Lock()
 
-
-def restart_self_soon(delay: float = 1.0) -> None:
-    """Restart this script in-place after a short delay."""
-    def _do_restart() -> None:
-        time.sleep(delay)
-        logging.info("Restarting self...")
-        os.execv(sys.executable, [sys.executable, *sys.argv])
-
-    threading.Thread(target=_do_restart, daemon=True).start()
 
 
 class ConfigWebHandler(BaseHTTPRequestHandler):
@@ -143,13 +130,15 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         global initial_setup
-        
+
         path = self._normalized_path()
 
         # If INI missing, force setup except for the setup/auth endpoints + auth verify API
         if unconfigured(STATE.config_path):
-            if initial_setup == 0:
-                initial_setup = 1
+            with _setup_lock:
+                if initial_setup == 0:
+                    initial_setup = 1
+                setup_stage = initial_setup
             allowed = (
                 path.startswith("/auth")
                 or path.startswith("/api/auth/")
@@ -161,8 +150,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 or path.startswith("/rebooting")
                 or path.startswith("/logs")
             )
-            if initial_setup == 2:
-                allowed = allowed or path.startswith("/setup") 
+            if setup_stage == 2:
+                allowed = allowed or path.startswith("/setup")
             if not allowed:
                 self.send_response(302)
                 self.send_header("Location", "/owntone-setup")
@@ -170,7 +159,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 return
         else:
             # Config exists, so we are not in initial setup anymore
-            initial_setup = 0
+            with _setup_lock:
+                initial_setup = 0
 
         # Serve auth page
         if path == "/auth":
@@ -253,6 +243,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         path = self._normalized_path()
 
+
         # --- 1) Special-case auth verify (kept close to your original) ---
         if path == "/api/auth/verify":
             body = self._read_post_body_bytes()
@@ -310,26 +301,36 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
 
-            # Option A (minimal change): keep existing handler signature
             pages.handle_output_update(self, STATE, body_str)
 
-            # Option B (recommended, if you want): pass parsed JSON too
-            # pages.handle_output_update(self, STATE, body_str, json_obj=json_obj, form=form)
+        elif path == "/api/input_eq":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            pages.handle_live_input_eq_update(self, STATE, body_str)
+
+        elif path == "/api/input_gain":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            pages.handle_live_input_gain_update(self, STATE, body_str)
 
         elif path == "/setup":
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
             pages.handle_setup_post(self, STATE, AUTH, body_str)
-            initial_setup = 0
+            with _setup_lock:
+                initial_setup = 0
 
         elif path == "/owntone-setup":
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
             pages.handle_owntone_setup_post(self, STATE, AUTH, body_str)
-            if initial_setup == 1:
-                initial_setup = 2
+            with _setup_lock:
+                if initial_setup == 1:
+                    initial_setup = 2
 
         elif path == "/api/update/apply":
             # Body optional
@@ -346,10 +347,25 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not found")
 
 
+def _scan_monitor_devices_loop() -> None:
+    """Background loop: refresh the list of visible ALSA capture devices every 15 s."""
+    while not stop_flag.is_set():
+        try:
+            devices = get_available_monitor_devices()
+        except Exception as e:
+            logging.error(
+                "Web UI: error scanning autostream_monitor devices: %s", e,
+            )
+            devices = []
+
+        STATE.set_monitor_devices(devices)
+        time.sleep(15)
+
+
 def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int = 8080) -> None:
     """Start the configuration web UI on a background thread."""
     global STATE, AUTH
-    
+
     STATE = WebUIState(config_path)
     AUTH = AuthManager(
         style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
@@ -357,35 +373,13 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
         title="autostream",
     )
 
-    def canonical_name(dev: dict) -> str:
-        """Strip the volatile (hw:X,Y) suffix from PortAudio device names."""
-        return re.sub(r"\s*\(hw:\d+,\d+\)", "", dev.get("name", ""))
-
     def _serve() -> None:
         try:
-            def _scan_devices_loop() -> None:
-                while True:
-                    devices = []
-                    try:
-                        if sd:
-                            all_devs = sd.query_devices()
-                            for idx, dev in enumerate(all_devs):
-                                if dev.get("max_input_channels", 0) <= 0:
-                                    continue
-                                name = dev.get("name", f"Device {idx}")
-                                lname = name.lower()
-                                if "hw:" not in lname and "usb" not in lname:
-                                    continue
-                                devices.append(canonical_name(dev))
-                    except Exception as e:
-                        logging.error("Web UI: error scanning sounddevice devices: %s", e)
-
-                    STATE.set_pcm_devices(devices)
-                    time.sleep(15)
-
-            scanner_thread = threading.Thread(target=_scan_devices_loop, daemon=True)
+            scanner_thread = threading.Thread(
+                target=_scan_monitor_devices_loop, daemon=True,
+            )
             scanner_thread.start()
-            
+
             httpd = ThreadingHTTPServer((host, port), ConfigWebHandler)
             logging.info("Web UI available at http://%s:%d", host, port)
             httpd.serve_forever()

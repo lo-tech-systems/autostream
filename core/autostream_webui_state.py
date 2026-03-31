@@ -4,19 +4,24 @@
 Shared state and locks for the autostream Web UI.
 """
 
+from __future__ import annotations
+
 import threading
 import time
 
+
 class WebUIState:
     """Holds shared state and locks for the Web UI components."""
-    
+
     def __init__(self, config_path: str):
         self.config_path = config_path
-        
-        # Audio device list
-        self.pcm_devices = []
-        self.pcm_devices_lock = threading.Lock()
-        
+
+        # Audio device list as reported by autostream_monitor.
+        # Each entry is a dict containing at least:
+        #   hw, card, name, label
+        self.monitor_devices: list[dict[str, str]] = []
+        self.monitor_devices_lock = threading.Lock()
+
         # Updater state
         self.update_lock = threading.Lock()
         self.update_state = {
@@ -27,13 +32,28 @@ class WebUIState:
             "finished_at": None,   # float or None
         }
 
-    def set_pcm_devices(self, devices: list[str]):
-        with self.pcm_devices_lock:
-            self.pcm_devices = devices
+    def set_monitor_devices(self, devices: list[dict[str, str]]) -> None:
+        """Store normalized autostream_monitor devices for the Web UI."""
+        cleaned: list[dict[str, str]] = []
+        for dev in devices:
+            if not isinstance(dev, dict):
+                continue
+            hw = str(dev.get("hw") or "").strip()
+            if not hw:
+                continue
+            cleaned.append({
+                "hw": hw,
+                "card": str(dev.get("card") or "").strip(),
+                "name": str(dev.get("name") or "").strip(),
+                "label": str(dev.get("label") or hw).strip(),
+            })
 
-    def get_pcm_devices(self) -> list[str]:
-        with self.pcm_devices_lock:
-            return list(self.pcm_devices)
+        with self.monitor_devices_lock:
+            self.monitor_devices = cleaned
+
+    def get_monitor_devices(self) -> list[dict[str, str]]:
+        with self.monitor_devices_lock:
+            return [dict(dev) for dev in self.monitor_devices]
 
     def start_update(self):
         with self.update_lock:

@@ -18,11 +18,12 @@ import textwrap
 import requests
 from urllib.parse import quote, parse_qs, urlparse
 from typing import Optional
-from urllib.parse import quote as urlquote
 
 from autostream_core import (
     any_monitor_capturing,
     get_monitor_levels_dbfs,
+    set_live_input_eq,
+    set_live_input_gain,
 )
 
 from autostream_auth import FLASH_COOKIE_NAME
@@ -95,7 +96,7 @@ def _resolve_allowed_log_path(log_file_cfg: str) -> Path:
 # Protect config file I/O (and coupled owntone.conf edits) from interleaving
 # across concurrent requests.
 # -----------------------------------------------------------------------------
-CONFIG_IO_LOCK = threading.RLock()
+CONFIG_IO_LOCK = threading.Lock()
 
 def locked_load_config(path: str):
     """Load config under a global lock to avoid reading partial writes."""
@@ -111,7 +112,7 @@ def _set_flash_cookie(handler, message: str, *, max_age: int = 30) -> None:
     Set a short-lived flash cookie to be consumed (and cleared) on the next GET.
     Stored URL-escaped to keep it cookie-safe.
     """
-    val = urlquote(message, safe="")
+    val = quote(message, safe="")
     cookie = (
         f"{FLASH_COOKIE_NAME}={val}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax"
     )
@@ -711,9 +712,11 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
     for lv in input_levels:
         label = html.escape(str(lv.get("label", "In")))
         dbfs = float(lv.get("dbfs", -90.0))
+        detected_hz = float(lv.get("detected_hz", 0.0))
+        hz_txt = f" @ {detected_hz:.1f} Hz" if detected_hz > 0 else ""
         extra_cls = " input-level-pill-active" if lv.get("is_above_threshold") else ""
         input_levels_html += (
-            f'<span class="pill status-pill input-level-pill{extra_cls}">{label}: {dbfs:.1f} dB</span>'
+            f'<span class="pill status-pill input-level-pill{extra_cls}">{label}: {dbfs:.1f} dB{hz_txt}</span>'
         )
 
     outputs = []
@@ -1023,7 +1026,9 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           row.innerHTML = levels.map(function(lv){{
             var label = escapeHtml(String((lv && lv.label) || 'In'));
             var db = Number(lv && lv.dbfs);
+            var hz = Number(lv && lv.detected_hz);
             var txt = Number.isFinite(db) ? db.toFixed(1) + ' dB' : '-- dB';
+            if(Number.isFinite(hz) && hz > 0) txt += ' @ ' + hz.toFixed(1) + ' Hz';
             var cls = (lv && lv.is_above_threshold) ? ' input-level-pill-active' : '';
             return '<span class="pill status-pill input-level-pill' + cls + '">' + label + ': ' + txt + '</span>';
           }}).join('');
@@ -1145,7 +1150,15 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
         logging.exception("Failed sending airplay page response.")
 
 
-def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, error: Optional[str] = None, flash_msg: Optional[str] = None) -> None:
+def send_setup_page(
+    handler,
+    state: WebUIState,
+    auth,
+    saved_ok: bool = False,
+    error: Optional[str] = None,
+    flash_msg: Optional[str] = None,
+    flash_type: str = "success",
+) -> None:
     """Render the main setup page."""
     try:
         cfg = locked_load_config(state.config_path)
@@ -1181,17 +1194,60 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
           </label>
         """
     
-    pcm_devices = state.get_pcm_devices()
+    monitor_devices = state.get_monitor_devices()
     def build_opts(cur):
         opts = ""
         found = False
-        for d in pcm_devices:
-            sel = " selected" if str(d)==str(cur) else ""
-            if sel: found = True
-            opts += f"<option value='{html.escape(str(d))}'{sel}>{html.escape(str(d))}</option>"
+        cur_str = str(cur).strip()
+        for dev in monitor_devices:
+            hw = str(dev.get("hw") or "").strip()
+            if not hw:
+                continue
+            label = str(dev.get("label") or hw).strip()
+            sel = " selected" if hw == cur_str else ""
+            if sel:
+                found = True
+            opts += (
+                f"<option value='{html.escape(hw)}'{sel}>"
+                f"{html.escape(label)}</option>"
+            )
         if not found and cur:
-            opts = f"<option value='{html.escape(str(cur))}' selected>{html.escape(str(cur))} (not detected)</option>" + opts
+            missing = html.escape(cur_str)
+            opts = (
+                f"<option value='{missing}' selected>"
+                f"{missing} (not currently detected)</option>"
+            ) + opts
         return opts
+
+    def eq_controls(prefix: str, eq40: float, eq100: float, eq10k: float, input_index: int) -> str:
+        return f"""
+          <div class="slider-header" style="margin-top:.6rem;align-items:center;">
+            <span>Equaliser</span>
+            <button type="button"
+              class="pill-btn small"
+              style="margin-left:auto;padding:0.35rem 0.7rem;"
+              onclick="undoEq({input_index})">Reset</button>
+          </div>
+          <label><div class="slider-header"><span>40Hz:</span><span id="{prefix}_eq_40hz_db_val">{eq40:.0f} dB</span></div>
+          <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_40hz_db" name="{prefix}_eq_40hz_db" value="{eq40:.0f}" oninput="syncEq({input_index}, '40hz', this.value)"></label>
+          <label><div class="slider-header"><span>Bass:</span><span id="{prefix}_eq_100hz_db_val">{eq100:.0f} dB</span></div>
+          <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_100hz_db" name="{prefix}_eq_100hz_db" value="{eq100:.0f}" oninput="syncEq({input_index}, '100hz', this.value)"></label>
+          <label><div class="slider-header"><span>Treble:</span><span id="{prefix}_eq_10khz_db_val">{eq10k:.0f} dB</span></div>
+          <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_10khz_db" name="{prefix}_eq_10khz_db" value="{eq10k:.0f}" oninput="syncEq({input_index}, '10khz', this.value)"></label>
+        """
+
+    def gain_control(prefix: str, gain_db: float, input_index: int) -> str:
+        return f"""
+          <div class="slider-header" style="margin-top:.6rem;align-items:center;">
+            <span>Input Gain</span>
+            <button type="button"
+              class="pill-btn small"
+              style="margin-left:auto;padding:0.35rem 0.7rem;"
+              onclick="resetGain({input_index})">Reset</button>
+          </div>
+          <label><div class="slider-header"><span>Gain:</span><span id="{prefix}_gain_db_val">{gain_db:.0f} dB</span></div>
+          <input type="range" min="-10" max="10" step="1" id="{prefix}_gain_db" name="{prefix}_gain_db" value="{gain_db:.0f}" oninput="syncGain({input_index}, this.value)"></label>
+        """
 
     owntone_outputs_html = ""
     try:
@@ -1208,7 +1264,7 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
     except Exception:
         pass
 
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
+    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
 
@@ -1227,24 +1283,21 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
         <fieldset><legend>Audio input #1</legend>
           <label>Input device: <select name="audio_capture_device">{build_opts(parsed.audio1.capture_device)}</select></label>
-          <label>Format: <select name="audio_arecord_format">
-            <option value="dat"{' selected' if parsed.audio1.arecord_format=='dat' else ''}>DAT (48kHz)</option>
-            <option value="cd"{' selected' if parsed.audio1.arecord_format=='cd' else ''}>CD (44.1kHz)</option>
-          </select></label>
+          <div class="helptext">Devices are discovered from the autostream monitor daemon and saved using their ALSA hardware ids.</div>
           <label><div class="slider-header"><span>Threshold:</span><span id="audio_silence_threshold_val">{parsed.audio1.silence_threshold_dbfs} dB</span></div>
           <input type="range" min="-90" max="0" value="{parsed.audio1.silence_threshold_dbfs}" oninput="syncThr(1,this.value)">
           <input type="hidden" id="audio_silence_threshold" name="audio_silence_threshold" value="{parsed.audio1.silence_threshold_dbfs}"></label>
+          {gain_control("audio1", parsed.audio1.gain_db, 1) if not initial_setup else ""}
+          {eq_controls("audio1", parsed.audio1.eq_40hz_db, parsed.audio1.eq_100hz_db, parsed.audio1.eq_10khz_db, 1) if not initial_setup else ""}
         </fieldset>
         <fieldset><legend>Audio input #2 (optional)</legend>
           <label><input type="checkbox" name="audio2_enabled" {'checked' if parsed.audio2_enabled else ''}> Enable</label>
           <label>Input device: <select name="audio2_capture_device">{build_opts(parsed.audio2.capture_device)}</select></label>
-          <label>Format: <select name="audio2_arecord_format">
-            <option value="dat"{' selected' if parsed.audio2.arecord_format=='dat' else ''}>DAT (48kHz)</option>
-            <option value="cd"{' selected' if parsed.audio2.arecord_format=='cd' else ''}>CD (44.1kHz)</option>
-          </select></label>
           <label><div class="slider-header"><span>Threshold:</span><span id="audio2_silence_threshold_val">{parsed.audio2.silence_threshold_dbfs} dB</span></div>
           <input type="range" min="-90" max="0" value="{parsed.audio2.silence_threshold_dbfs}" oninput="syncThr(2,this.value)">
           <input type="hidden" id="audio2_silence_threshold" name="audio2_silence_threshold" value="{parsed.audio2.silence_threshold_dbfs}"></label>
+          {gain_control("audio2", parsed.audio2.gain_db, 2) if not initial_setup else ""}
+          {eq_controls("audio2", parsed.audio2.eq_40hz_db, parsed.audio2.eq_100hz_db, parsed.audio2.eq_10khz_db, 2) if not initial_setup else ""}
         </fieldset>
         <fieldset><legend>Playback</legend>
           <label>Default Speakers:
@@ -1260,10 +1313,6 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
           <input type="hidden" id="owntone_volume_percent" name="owntone_volume_percent" value="{parsed.owntone.volume_percent}"></label>
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
-          <label>FFmpeg Output Rate: <select name="ffmpeg_out_rate">
-            <option value="44100"{' selected' if str(parsed.ffmpeg.out_rate)=='44100' else ''}>44.1kHz</option>
-            <option value="48000"{' selected' if str(parsed.ffmpeg.out_rate)=='48000' else ''}>48.0kHz</option>
-          </select></label>
           {owntone_button_html}
         </fieldset>
         <fieldset><legend>System (build: {html.escape(get_app_version())})</legend>
@@ -1277,8 +1326,103 @@ def send_setup_page(handler, state: WebUIState, auth, saved_ok: bool = False, er
       {A2HS_SCRIPT}
       </body>
       <script>
+        const savedGain = {{
+          1: {parsed.audio1.gain_db:.0f},
+          2: {parsed.audio2.gain_db:.0f},
+        }};
+        const savedEq = {{
+          1: {{ eq_40hz_db: {parsed.audio1.eq_40hz_db:.0f}, eq_100hz_db: {parsed.audio1.eq_100hz_db:.0f}, eq_10khz_db: {parsed.audio1.eq_10khz_db:.0f} }},
+          2: {{ eq_40hz_db: {parsed.audio2.eq_40hz_db:.0f}, eq_100hz_db: {parsed.audio2.eq_100hz_db:.0f}, eq_10khz_db: {parsed.audio2.eq_10khz_db:.0f} }},
+        }};
+        const gainTimers = {{}};
+        const eqTimers = {{}};
+        const eqLiveEnabled = {str(not initial_setup).lower()};
         function syncVol(v){{document.getElementById('owntone_volume_percent').value=v;document.getElementById('vol_val').textContent=v+'%';}}
         function syncThr(w,v){{var i=w==1?'audio_silence_threshold':'audio2_silence_threshold';document.getElementById(i).value=v;document.getElementById(i+'_val').textContent=v+' dB';}}
+        function eqPrefix(inputIndex){{ return inputIndex===1 ? 'audio1' : 'audio2'; }}
+        function syncGain(inputIndex, value){{
+          const prefix = eqPrefix(inputIndex);
+          const inputEl = document.getElementById(prefix + '_gain_db');
+          const valueEl = document.getElementById(prefix + '_gain_db_val');
+          if (inputEl) inputEl.value = value;
+          if (valueEl) valueEl.textContent = value + ' dB';
+          if (eqLiveEnabled) queueGainUpdate(inputIndex);
+        }}
+        function gainPayload(inputIndex){{
+          const prefix = eqPrefix(inputIndex);
+          return {{
+            input: inputIndex,
+            gain_db: Number(document.getElementById(prefix + '_gain_db').value),
+          }};
+        }}
+        async function sendGainUpdate(inputIndex){{
+          if (!eqLiveEnabled) return;
+          const payload = gainPayload(inputIndex);
+          try {{
+            await fetch('/api/input_gain', {{
+              method: 'POST',
+              headers: {{
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': window.__CSRF || ''
+              }},
+              body: JSON.stringify(payload)
+            }});
+          }} catch (e) {{
+          }}
+        }}
+        function queueGainUpdate(inputIndex){{
+          if (gainTimers[inputIndex]) clearTimeout(gainTimers[inputIndex]);
+          gainTimers[inputIndex] = setTimeout(() => sendGainUpdate(inputIndex), 120);
+        }}
+        function resetGain(inputIndex){{
+          if (!eqLiveEnabled) return;
+          syncGain(inputIndex, String(savedGain[inputIndex]));
+        }}
+        function syncEq(inputIndex, band, value){{
+          const prefix = eqPrefix(inputIndex);
+          const valueEl = document.getElementById(prefix + '_eq_' + band + '_db_val');
+          if (valueEl) valueEl.textContent = value + ' dB';
+          if (eqLiveEnabled) queueEqUpdate(inputIndex);
+        }}
+        function eqPayload(inputIndex){{
+          const prefix = eqPrefix(inputIndex);
+          return {{
+            input: inputIndex,
+            eq_40hz_db: Number(document.getElementById(prefix + '_eq_40hz_db').value),
+            eq_100hz_db: Number(document.getElementById(prefix + '_eq_100hz_db').value),
+            eq_10khz_db: Number(document.getElementById(prefix + '_eq_10khz_db').value),
+          }};
+        }}
+        async function sendEqUpdate(inputIndex){{
+          if (!eqLiveEnabled) return;
+          const payload = eqPayload(inputIndex);
+          try {{
+            await fetch('/api/input_eq', {{
+              method: 'POST',
+              headers: {{
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': window.__CSRF || ''
+              }},
+              body: JSON.stringify(payload)
+            }});
+          }} catch (e) {{
+          }}
+        }}
+        function queueEqUpdate(inputIndex){{
+          if (eqTimers[inputIndex]) clearTimeout(eqTimers[inputIndex]);
+          eqTimers[inputIndex] = setTimeout(() => sendEqUpdate(inputIndex), 120);
+        }}
+        function undoEq(inputIndex){{
+          if (!eqLiveEnabled) return;
+          const prefix = eqPrefix(inputIndex);
+          const saved = savedEq[inputIndex];
+          document.getElementById(prefix + '_eq_40hz_db').value = String(saved.eq_40hz_db);
+          document.getElementById(prefix + '_eq_100hz_db').value = String(saved.eq_100hz_db);
+          document.getElementById(prefix + '_eq_10khz_db').value = String(saved.eq_10khz_db);
+          syncEq(inputIndex, '40hz', String(saved.eq_40hz_db));
+          syncEq(inputIndex, '100hz', String(saved.eq_100hz_db));
+          syncEq(inputIndex, '10khz', String(saved.eq_10khz_db));
+        }}
         function syncSil(v){{document.getElementById('sil_val').textContent=v+'s';}}
         function requestReboot(){{
           if(!confirm("Reboot system?")) return;
@@ -1544,7 +1688,7 @@ def send_about_page(handler, state: WebUIState) -> None:
       <fieldset><legend>Copyright</legend>
           <p><strong>autostream</strong> is Copyright &copy; 2025-2026 Lo-tech Systems Limited.</p>
           <p><strong>autostream</strong> and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
-          <p><strong>autostream</strong> depends on components provided by the Raspberry Pi OS distribution, including FFmpeg and OwnTone. These components are redistributed under the terms of their respective open-source licences, which are included with Raspberry Pi OS in <code>/usr/share/doc</code>.</p>
+          <p><strong>autostream</strong> depends on components provided by the Raspberry Pi OS distribution, including OwnTone and ALSA audio libraries. These components are redistributed under the terms of their respective open-source licences, which are included with Raspberry Pi OS in <code>/usr/share/doc</code>.</p>
           <p>AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc., registered in the U.S. and other countries. Raspberry Pi is a trademark of Raspberry Pi Ltd. All other trademarks are the property of their respective owners.</p>
       </fieldset>
       {licence_html}
@@ -1781,10 +1925,18 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
     form = parse_qs(body)
     def fld(n, d=""): return (form.get(n, []) or [d])[0]
     try:
-        was_initial_setup = unconfigured(state.config_path)
         cfg = locked_load_config(state.config_path)
         p = parse_config(cfg)
-        
+
+        # Snapshot daemon-relevant values before any changes so we can decide
+        # whether a full coordinator reload is needed after saving.
+        old_audio1_device    = p.audio1.capture_device
+        old_audio1_threshold = p.audio1.silence_threshold_dbfs
+        old_audio2_enabled   = p.audio2_enabled
+        old_audio2_device    = p.audio2.capture_device
+        old_audio2_threshold = p.audio2.silence_threshold_dbfs
+        old_silence_seconds  = p.general.silence_seconds
+
         # Hostname
         old_hn = get_system_hostname()
         nh = fld("system_hostname").strip()
@@ -1795,13 +1947,20 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         # Config updates
         if not cfg.has_section("audio1"): cfg.add_section("audio1")
         cfg.set("audio1", "capture_device", fld("audio_capture_device", p.audio1.capture_device))
-        cfg.set("audio1", "arecord_format", fld("audio_arecord_format", p.audio1.arecord_format))
         cfg.set("audio1", "silence_threshold", fld("audio_silence_threshold", str(p.audio1.silence_threshold_dbfs)))
+        cfg.set("audio1", "gain_db", fld("audio1_gain_db", str(p.audio1.gain_db)))
+        cfg.set("audio1", "eq_40hz_db", fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
+        cfg.set("audio1", "eq_100hz_db", fld("audio1_eq_100hz_db", str(p.audio1.eq_100hz_db)))
+        cfg.set("audio1", "eq_10khz_db", fld("audio1_eq_10khz_db", str(p.audio1.eq_10khz_db)))
 
         if not cfg.has_section("audio2"): cfg.add_section("audio2")
         cfg.set("audio2", "enabled", "yes" if "audio2_enabled" in form else "no")
         cfg.set("audio2", "capture_device", fld("audio2_capture_device", p.audio2.capture_device))
         cfg.set("audio2", "silence_threshold", fld("audio2_silence_threshold", str(p.audio2.silence_threshold_dbfs)))
+        cfg.set("audio2", "gain_db", fld("audio2_gain_db", str(p.audio2.gain_db)))
+        cfg.set("audio2", "eq_40hz_db", fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
+        cfg.set("audio2", "eq_100hz_db", fld("audio2_eq_100hz_db", str(p.audio2.eq_100hz_db)))
+        cfg.set("audio2", "eq_10khz_db", fld("audio2_eq_10khz_db", str(p.audio2.eq_10khz_db)))
 
         if not cfg.has_section("owntone"): cfg.add_section("owntone")
         cfg.set("owntone", "output_name", fld("owntone_output_name", p.owntone.output_name))
@@ -1817,14 +1976,11 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         if not cfg.get("general", "fifo_path", fallback="").strip():
             cfg.set("general", "fifo_path", p.general.fifo_path)
 
-        if not cfg.has_section("ffmpeg"): cfg.add_section("ffmpeg")
-        cfg.set("ffmpeg", "ffmpeg_out_rate", fld("ffmpeg_out_rate", str(p.ffmpeg.out_rate)))
-
         # Atomicity across concurrent requests/tabs:
         with CONFIG_IO_LOCK:
             with open(state.config_path, "w") as f:
                 cfg.write(f)
-            mark_configured(state.config_path)        
+            mark_configured(state.config_path)
 
         # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
         _set_flash_cookie(handler, "Settings saved", max_age=30)
@@ -1881,16 +2037,126 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             handler.send_header("Content-Length", "0")
             handler.end_headers()
         
-        from autostream_webui import restart_self_soon
-        restart_self_soon(1)
+        # Only restart the coordinator if a setting that requires daemon
+        # reconfiguration actually changed.  EQ, gain, output name, volume,
+        # and hostname changes take effect without disrupting playback.
+        new_audio2_enabled = "audio2_enabled" in form
+        try:
+            new_silence_seconds = int(fld("silence_seconds", str(old_silence_seconds)))
+        except ValueError:
+            new_silence_seconds = old_silence_seconds
+
+        try:
+            new_audio1_threshold = float(fld("audio_silence_threshold", str(old_audio1_threshold)))
+        except ValueError:
+            new_audio1_threshold = old_audio1_threshold
+
+        try:
+            new_audio2_threshold = float(fld("audio2_silence_threshold", str(old_audio2_threshold)))
+        except ValueError:
+            new_audio2_threshold = old_audio2_threshold
+
+        daemon_changed = (
+            fld("audio_capture_device", old_audio1_device) != old_audio1_device
+            or new_audio1_threshold != old_audio1_threshold
+            or new_audio2_enabled != old_audio2_enabled
+            or fld("audio2_capture_device", old_audio2_device) != old_audio2_device
+            or new_audio2_threshold != old_audio2_threshold
+            or new_silence_seconds != old_silence_seconds
+        )
+        if daemon_changed:
+            from autostream_core import request_config_reload
+            request_config_reload()
     except Exception as e:
         send_setup_page(handler, state, auth, flash_msg="Save failed", flash_type="error")
+
+
+def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
+    """Apply live per-input EQ changes to autostream_monitor."""
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    try:
+        input_index = int(payload.get("input", 0))
+        eq_40hz_db = float(payload.get("eq_40hz_db", 0.0))
+        eq_100hz_db = float(payload.get("eq_100hz_db", 0.0))
+        eq_10khz_db = float(payload.get("eq_10khz_db", 0.0))
+    except Exception:
+        send_json(handler, 400, {"ok": False, "error": "Invalid EQ payload"})
+        return
+
+    if input_index not in (1, 2):
+        send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
+        return
+
+    for val in (eq_40hz_db, eq_100hz_db, eq_10khz_db):
+        if val < -10.0 or val > 10.0:
+            send_json(handler, 400, {"ok": False, "error": "EQ gain must be between -10 and 10 dB"})
+            return
+
+    ok = set_live_input_eq(
+        input_index=input_index,
+        eq_40hz_db=eq_40hz_db,
+        eq_100hz_db=eq_100hz_db,
+        eq_10khz_db=eq_10khz_db,
+    )
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": "Could not update live EQ"})
+        return
+
+    send_json(handler, 200, {
+        "ok": True,
+        "input": input_index,
+        "eq_40hz_db": eq_40hz_db,
+        "eq_100hz_db": eq_100hz_db,
+        "eq_10khz_db": eq_10khz_db,
+    })
+
+
+def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None:
+    """Apply live per-input gain changes to autostream_monitor."""
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    try:
+        input_index = int(payload.get("input", 0))
+        gain_db = float(payload.get("gain_db", 0.0))
+    except Exception:
+        send_json(handler, 400, {"ok": False, "error": "Invalid gain payload"})
+        return
+
+    if input_index not in (1, 2):
+        send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
+        return
+
+    if gain_db < -10.0 or gain_db > 10.0:
+        send_json(handler, 400, {"ok": False, "error": "Gain must be between -10 and 10 dB"})
+        return
+
+    ok = set_live_input_gain(
+        input_index=input_index,
+        gain_db=gain_db,
+    )
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": "Could not update live gain"})
+        return
+
+    send_json(handler, 200, {
+        "ok": True,
+        "input": input_index,
+        "gain_db": gain_db,
+    })
 
 def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> None:
     form = parse_qs(body)
     def fld(n, d=""): return (form.get(n, []) or [d])[0]
     try:
-        was_initial_setup = unconfigured(state.config_path)
         cfg = locked_load_config(state.config_path)
         
         # Build a list of speakers from the submitted form.

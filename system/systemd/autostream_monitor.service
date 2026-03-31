@@ -1,0 +1,31 @@
+# /etc/systemd/system/autostream_monitor.service
+#
+# This file is part of autostream.
+# Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=Autostream audio monitor daemon
+After=sound.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=simple
+User=autostream
+Group=autostream
+UMask=022
+WorkingDirectory=/opt/autostream
+
+# Long-lived audio capture daemon used by autostream_core.py
+ExecStart=/opt/autostream/monitor/autostream_monitor
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

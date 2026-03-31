@@ -3,45 +3,31 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-This script is the engine behind autostream, capturing input and routing to targets
-via OwnTone. It can be used standalone but is usually called by autostream_webui.py.
+Engine behind autostream.  Connects to autostream_monitor (the C++ daemon)
+via a Unix domain socket to manage audio capture, resampling, silence
+detection, and FIFO writing.  Python retains responsibility for OwnTone
+HTTP control, now-playing metadata, and optional track recognition.
 
-This script:
-
-- Monitors one or two audio input devices for activity.
-
-- When audio exceeds a configured raw sample threshold, it:
-
-  * Starts an `ffmpeg` process, fed with RAW PCM from this script via stdin,
-    writing to a FIFO pipe.
-
-  * Reuses the currently selected OwnTone outputs so routing follows UI choices.
-
-- When input has been below the threshold for a configured number of seconds, it:
-
-  * Stops the `ffmpeg` process.
-
-- Owntone must be configured to watch the pipe, and with auto playback enabled.
+The daemon is expected to be running as a systemd service before this
+script starts.  The socket path defaults to /tmp/autostream_monitor.sock
+and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
+variable.
 """
 
-import configparser
-import errno
+import json
 import logging
-import math
 import os
-import select
-import subprocess
+import stat
+import socket
 import sys
 import time
 import signal
-from typing import Optional
 import threading
-from dataclasses import dataclass
-import requests
-import numpy as np
-import sounddevice as sd
+from typing import Optional
 
-from autostream_config import load_and_parse
+import requests
+
+from autostream_config import load_and_parse, unconfigured
 from autostream_nowplaying import (
     NowPlayingMetadata,
     OwntoneMetadataPipePublisher,
@@ -62,58 +48,50 @@ from autostream_owntone import (
     OWNTONE_NOT_OK,
 )
 
-''' Process termination control '''
-stop_flag = threading.Event()
 
-# Track all AudioMonitor instances so we can see if any is capturing.
-all_monitors = []
+# --------------------------------------------------------------------------- #
+# Process termination                                                          #
+# --------------------------------------------------------------------------- #
+
+stop_flag = threading.Event()
+reload_flag = threading.Event()
+
+
+def request_config_reload() -> None:
+    """Signal the coordinator loop to tear down and re-initialise all monitors.
+
+    Called by the Web UI after a successful settings save.  The coordinator
+    picks this up within one poll interval and re-reads the INI without
+    restarting the process.
+    """
+    reload_flag.set()
+
+
+# Track all AudioMonitor instances so coordination logic can inspect them.
+# _monitors_lock must be held when reading or mutating all_monitors or when
+# taking a snapshot of its elements for use on a different thread (Web UI).
+all_monitors: list["AudioMonitor"] = []
+_monitors_lock = threading.Lock()
+
 
 def any_monitor_capturing() -> bool:
     """Return True if any AudioMonitor currently has an active capture."""
-    return any(getattr(m, 'is_capturing', False) for m in all_monitors)
+    with _monitors_lock:
+        return any(m.is_capturing for m in all_monitors)
 
-
-def _sample_to_dbfs(sample: int, floor_dbfs: float = -90.0) -> float:
-    """Convert a 16-bit average sample value (0..32767) to dBFS."""
-    if sample <= 0:
-        return floor_dbfs
-    ratio = min(1.0, max(0.0, float(sample) / 32767.0))
-    return max(floor_dbfs, 20.0 * math.log10(ratio))
-
-
-def get_monitor_levels_dbfs() -> list[dict]:
-    """Return current level data for each active monitor for the Web UI."""
-    levels: list[dict] = []
-    for idx, mon in enumerate(list(all_monitors), start=1):
-        sample = int(getattr(mon, "current_level_sample", 0) or 0)
-        threshold_sample = int(getattr(mon, "silence_threshold_sample", 1) or 1)
-        dbfs = _sample_to_dbfs(sample)
-        levels.append({
-            "label": f"In{idx}",
-            "dbfs": round(dbfs, 1),
-            "is_above_threshold": sample >= threshold_sample,
-        })
-    return levels
 
 def handle_signal(signum, frame):
     stop_flag.set()
 
 
-signal.signal(signal.SIGINT, handle_signal)   # Ctrl+C
-signal.signal(signal.SIGTERM, handle_signal)  # terminate()
+signal.signal(signal.SIGINT,  handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
 
 
 def setup_logging(log_file: str) -> None:
-    """
-    Configure logging.
-
-    If `log_file` has no directory component (e.g. "autostream.log"),
-    log in the current working directory without trying to create "".
-    """
     log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s: %(message)s",
@@ -125,694 +103,675 @@ def setup_logging(log_file: str) -> None:
     )
 
 
-def ensure_fifo(path: str) -> None:
-    """Create a FIFO at `path` if it does not exist."""
-    fifo_dir = os.path.dirname(path)
-    if fifo_dir:
-        os.makedirs(fifo_dir, exist_ok=True)
+def get_monitor_levels_dbfs() -> list[dict]:
+    """Return current level data for each active monitor for the Web UI.
 
-    if os.path.exists(path):
-        if stat_is_fifo(path):
-            return
-        else:
-            logging.warning("Path %s exists but is not a FIFO. Playback will fail.", path)
-            return
-    logging.warning("Path %s not found; creating FIFO...", path)
-    os.mkfifo(path)
-
-
-def stat_is_fifo(path: str) -> bool:
-    import stat
-
-    st = os.stat(path)
-    return stat.S_ISFIFO(st.st_mode)
-
-
-def start_ffmpeg(
-    fifo_path: str,
-    ffmpeg_in_rate: int,
-    ffmpeg_out_rate: int,
-) -> subprocess.Popen:
-    """Start ffmpeg to consume raw PCM from stdin and write to the FIFO.
-    This replaces the usual arecord+ffmpeg pipeline. The AudioMonitor
-    will feed raw int16 PCM data into ffmpeg's stdin.
+    Data is sourced from the most recent get_status() poll cached in each
+    AudioMonitor instance, so it is at most one poll interval stale.
     """
-    ensure_fifo(fifo_path)
+    levels: list[dict] = []
+    with _monitors_lock:
+        snapshot = list(all_monitors)
+    for idx, mon in enumerate(snapshot, start=1):
+        levels.append({
+            "label": f"In{idx}",
+            "dbfs": round(mon.level_dbfs, 1),
+            "detected_hz": round(mon.detected_hz, 1),
+            "is_above_threshold": not mon.is_silent,
+        })
+    return levels
 
-    # We do:
-    #   (this script) -> raw PCM (stdin) -> ffmpeg -> FIFO
-    # Always use ffmpeg to asyncronously resample, to mask clock drift in the source
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-f",
-        "s16le",
-        "-ac",
-        "2",
-        "-ar",
-        str(ffmpeg_in_rate),
-        "-i",
-        "pipe:0",
-        "-af",
-        "aresample=async=1:first_pts=0",
-        "-f",
-        "s16le",
-        "-ac",
-        "2",
-        "-ar",
-        str(ffmpeg_out_rate),
-        fifo_path,
+
+def get_monitor_socket_path() -> str:
+    """Return the configured autostream_monitor socket path."""
+    return (
+        os.environ.get("AUTOSTREAM_MONITOR_SOCKET", "").strip()
+        or MonitorClient.DEFAULT_SOCKET_PATH
+    )
+
+
+def normalize_monitor_devices(devices: Optional[list[dict]]) -> list[dict]:
+    """Normalize list_devices() results into a stable Web UI-friendly shape.
+
+    Each returned dict contains:
+      - hw: ALSA hardware identifier such as "hw:1,0"
+      - card: ALSA card description (may be empty)
+      - name: ALSA device description (may be empty)
+      - label: user-facing text combining card/device/hw
+    """
+    normalized: list[dict] = []
+
+    for dev in devices or []:
+        hw = str(dev.get("hw") or "").strip()
+        if not hw:
+            continue
+
+        card = str(dev.get("card") or "").strip()
+        name = str(dev.get("name") or "").strip()
+
+        label_parts = [part for part in (card, name) if part]
+        label = " - ".join(label_parts) if label_parts else hw
+        if hw not in label:
+            label = f"{label} ({hw})"
+
+        normalized.append({
+            "hw": hw,
+            "card": card,
+            "name": name,
+            "label": label,
+        })
+
+    normalized.sort(key=lambda d: (d["label"].casefold(), d["hw"].casefold()))
+    return normalized
+
+
+def get_available_monitor_devices(
+    socket_path: Optional[str] = None,
+) -> list[dict]:
+    """Return currently visible monitor devices from autostream_monitor.
+
+    Uses a short-lived MonitorClient connection so callers outside the main
+    coordinator loop can safely query available ALSA capture devices.
+    Returns an empty list if the daemon is unavailable or the command fails.
+    """
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return []
+        return normalize_monitor_devices(client.list_devices())
+    except Exception as e:
+        logging.warning("Could not query autostream_monitor devices: %s", e)
+        return []
+    finally:
+        client.close()
+
+
+def ensure_audio_fifo(path: str) -> bool:
+    """Ensure the configured OwnTone audio FIFO exists and is a named pipe."""
+    try:
+        if not path or not os.path.isabs(path):
+            logging.error("Configured fifo_path must be an absolute path: %r", path)
+            return False
+
+        fifo_dir = os.path.dirname(path)
+        if fifo_dir:
+            os.makedirs(fifo_dir, mode=0o777, exist_ok=True)
+
+        if os.path.exists(path):
+            st = os.stat(path)
+            if not stat.S_ISFIFO(st.st_mode):
+                logging.error("Configured fifo_path exists but is not a FIFO: %r", path)
+                return False
+            return True
+
+        os.mkfifo(path, 0o666)
+        logging.info("Created audio FIFO at %s", path)
+        return True
+    except Exception as e:
+        logging.error("Could not create audio FIFO %r: %s", path, e)
+        return False
+
+
+def build_monitor_eq_bands(
+    eq_40hz_db: float,
+    eq_100hz_db: float,
+    eq_10khz_db: float,
+) -> list[dict]:
+    """Return the fixed three-band EQ definition expected by autostream_monitor.
+
+    For shelf filters, the monitor currently uses the RBJ cookbook shelf
+    formula wired through the generic ``q`` field. A value of ``q=0.707`` is
+    equivalent to a shelf slope of ``S=1.0``.
+    """
+    return [
+        {"type": "peak", "freq_hz": 40.0, "gain_db": float(eq_40hz_db), "q": 0.707},
+        {"type": "low_shelf", "freq_hz": 100.0, "gain_db": float(eq_100hz_db), "q": 0.707},
+        {"type": "high_shelf", "freq_hz": 10000.0, "gain_db": float(eq_10khz_db), "q": 0.707},
     ]
 
-    logging.info(
-        "Starting ffmpeg (%s) fed from monitor stdin",
-        " ".join(ffmpeg_cmd),
+
+def apply_input_eq(
+    client: "MonitorClient",
+    input_index: int,
+    eq_40hz_db: float,
+    eq_100hz_db: float,
+    eq_10khz_db: float,
+) -> bool:
+    """Push one input's EQ settings to autostream_monitor."""
+    return client.set_eq(
+        input_index,
+        build_monitor_eq_bands(eq_40hz_db, eq_100hz_db, eq_10khz_db),
     )
 
-    ffmpeg_proc = subprocess.Popen(
-        ffmpeg_cmd,
-        stdin=subprocess.PIPE,
-        stderr=None,
-    )
 
-    return ffmpeg_proc
-
-
-def stop_ffmpeg(proc: subprocess.Popen) -> None:
-    """Gracefully stop ffmpeg."""
-    if proc is None:
-        return
-
-    # Close stdin so ffmpeg can flush and exit cleanly
-    try:
-        if proc.stdin:
-            proc.stdin.close()
-    except Exception as e:  # noqa: BLE001
-        logging.error("Error closing ffmpeg stdin: %s", e)
-
-    try:
-        if proc.poll() is None:
-            logging.info("Terminating ffmpeg process PID %s", proc.pid)
-            proc.send_signal(signal.SIGTERM)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logging.warning("ffmpeg process PID %s did not exit, killing", proc.pid)
-                proc.kill()
-    except Exception as e:  # noqa: BLE001
-        logging.error("Error stopping ffmpeg process: %s", e)
+def apply_input_gain(
+    client: "MonitorClient",
+    input_index: int,
+    gain_db: float,
+) -> bool:
+    """Push one input's gain setting to autostream_monitor."""
+    return client.set_gain(input_index, float(gain_db))
 
 
-def dbfs_to_sample_threshold(dbfs: float, full_scale: int = 32767) -> int:
-    """Convert a dBFS value to a 16-bit sample amplitude threshold.
+def set_live_input_eq(
+    input_index: int,
+    eq_40hz_db: float,
+    eq_100hz_db: float,
+    eq_10khz_db: float,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply one input's EQ immediately to the running autostream_monitor.
 
-    ``dbfs`` is expected to be <= 0.0 (0 dBFS is full scale). The returned
-    value is clamped to the range 1..full_scale.
+    Uses a short-lived monitor connection so the Web UI can update EQ live
+    without depending on the coordinator loop's persistent client.
+    Also updates any matching in-process AudioMonitor cache so reconnect replay
+    continues to use the most recent live values until the INI is saved.
     """
-    dbfs = min(dbfs, 0.0)
-    threshold = full_scale * (10.0 ** (dbfs / 20.0))
-    return max(1, min(full_scale, int(threshold)))
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return False
+        ok = apply_input_eq(
+            client,
+            input_index,
+            eq_40hz_db,
+            eq_100hz_db,
+            eq_10khz_db,
+        )
+        if ok:
+            with _monitors_lock:
+                snapshot = list(all_monitors)
+            for mon in snapshot:
+                if mon.input_index == input_index:
+                    mon.eq_40hz_db = float(eq_40hz_db)
+                    mon.eq_100hz_db = float(eq_100hz_db)
+                    mon.eq_10khz_db = float(eq_10khz_db)
+        return ok
+    finally:
+        client.close()
 
+
+def set_live_input_gain(
+    input_index: int,
+    gain_db: float,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply one input's gain immediately to the running autostream_monitor."""
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return False
+        ok = apply_input_gain(client, input_index, gain_db)
+        if ok:
+            with _monitors_lock:
+                snapshot = list(all_monitors)
+            for mon in snapshot:
+                if mon.input_index == input_index:
+                    mon.gain_db = float(gain_db)
+        return ok
+    finally:
+        client.close()
+
+
+# --------------------------------------------------------------------------- #
+# MonitorClient                                                                #
+# --------------------------------------------------------------------------- #
+
+class MonitorClient:
+    """Thin wrapper around the autostream_monitor Unix domain socket.
+
+    All commands are synchronous and serialised by _lock so that callers
+    on different threads (e.g. the coordinator loop and a background
+    recognition thread) do not interleave their JSON lines.
+
+    The client holds a persistent connection.  If the socket is lost,
+    is_connected() returns False and the caller is responsible for calling
+    connect() again (the coordinator loop does this automatically).
+    """
+
+    DEFAULT_SOCKET_PATH = "/tmp/autostream_monitor.sock"
+    CONNECT_TIMEOUT = 5.0    # seconds
+    COMMAND_TIMEOUT = 15.0   # seconds; covers get_id_snapshot binary transfer
+
+    def __init__(self, socket_path: str = DEFAULT_SOCKET_PATH) -> None:
+        self._socket_path = socket_path
+        self._sock: Optional[socket.socket] = None
+        self._lock = threading.Lock()
+        self._recv_buf = b""
+
+    # ── Connection ───────────────────────────────────────────────────────────
+
+    def connect(self) -> bool:
+        """Open the socket; return True on success."""
+        self.close()
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(self.CONNECT_TIMEOUT)
+            s.connect(self._socket_path)
+            s.settimeout(self.COMMAND_TIMEOUT)
+            self._sock = s
+            self._recv_buf = b""
+            logging.info("MonitorClient: connected to %s", self._socket_path)
+            return True
+        except OSError as e:
+            logging.error("MonitorClient: connect failed: %s", e)
+            return False
+
+    def close(self) -> None:
+        if self._sock:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+        self._recv_buf = b""
+
+    def is_connected(self) -> bool:
+        return self._sock is not None
+
+    # ── Low-level I/O ────────────────────────────────────────────────────────
+
+    def _readline(self) -> Optional[bytes]:
+        """Read bytes from the socket up to and including the next newline."""
+        while b"\n" not in self._recv_buf:
+            try:
+                chunk = self._sock.recv(4096)
+            except OSError:
+                self.close()
+                return None
+            if not chunk:
+                self.close()
+                return None
+            self._recv_buf += chunk
+        idx = self._recv_buf.index(b"\n")
+        line = self._recv_buf[:idx]
+        self._recv_buf = self._recv_buf[idx + 1:]
+        return line
+
+    def _readbytes(self, n: int) -> Optional[bytes]:
+        """Read exactly n bytes from the socket (used for binary payloads)."""
+        while len(self._recv_buf) < n:
+            try:
+                chunk = self._sock.recv(65536)
+            except OSError:
+                self.close()
+                return None
+            if not chunk:
+                self.close()
+                return None
+            self._recv_buf += chunk
+        data = self._recv_buf[:n]
+        self._recv_buf = self._recv_buf[n:]
+        return data
+
+    def _command(self, cmd: dict) -> Optional[dict]:
+        """Send one JSON command and return the parsed response dict."""
+        if not self._sock:
+            return None
+        try:
+            self._sock.sendall((json.dumps(cmd) + "\n").encode())
+            line = self._readline()
+            if line is None:
+                return None
+            return json.loads(line)
+        except (OSError, json.JSONDecodeError) as e:
+            logging.warning("MonitorClient: command %r failed: %s", cmd.get("type"), e)
+            self.close()
+            return None
+
+    # ── Commands ─────────────────────────────────────────────────────────────
+
+    def list_devices(self) -> Optional[list[dict]]:
+        with self._lock:
+            resp = self._command({"type": "list_devices"})
+            return resp.get("devices") if resp and resp.get("ok") else None
+
+    def configure_input(
+        self,
+        index: int,
+        device: str,
+        silence_threshold_dbfs: float,
+        silence_seconds: int,
+    ) -> bool:
+        with self._lock:
+            resp = self._command({
+                "type": "configure_input",
+                "input": index,
+                "device": device,
+                "silence_threshold_dbfs": silence_threshold_dbfs,
+                "silence_seconds": silence_seconds,
+            })
+            ok = bool(resp and resp.get("ok"))
+            if not ok:
+                logging.error(
+                    "MonitorClient: configure_input(%d, %r) failed: %s",
+                    index, device, (resp or {}).get("error", "no response"),
+                )
+            return ok
+
+    def set_fifo(self, path: str) -> bool:
+        with self._lock:
+            resp = self._command({"type": "set_fifo", "path": path})
+            ok = bool(resp and resp.get("ok"))
+            if not ok:
+                logging.error(
+                    "MonitorClient: set_fifo(%r) failed: %s",
+                    path, (resp or {}).get("error", "no response"),
+                )
+            return ok
+
+    def start_input(self, index: int) -> bool:
+        with self._lock:
+            resp = self._command({"type": "start_input", "input": index})
+            ok = bool(resp and resp.get("ok"))
+            if not ok:
+                logging.error(
+                    "MonitorClient: start_input(%d) failed: %s",
+                    index, (resp or {}).get("error", "no response"),
+                )
+            return ok
+
+    def stop_input(self, index: int) -> bool:
+        with self._lock:
+            resp = self._command({"type": "stop_input", "input": index})
+            return bool(resp and resp.get("ok"))
+
+    def set_allow_capture(self, index: int, allow: bool) -> bool:
+        with self._lock:
+            resp = self._command({
+                "type": "set_allow_capture",
+                "input": index,
+                "allow": allow,
+            })
+            return bool(resp and resp.get("ok"))
+
+    def set_eq(self, index: int, bands: list[dict]) -> bool:
+        with self._lock:
+            resp = self._command({"type": "set_eq", "input": index, "bands": bands})
+            return bool(resp and resp.get("ok"))
+
+    def set_gain(self, index: int, gain_db: float) -> bool:
+        with self._lock:
+            resp = self._command({"type": "set_gain", "input": index, "gain_db": gain_db})
+            return bool(resp and resp.get("ok"))
+
+    def get_status(self) -> Optional[dict]:
+        """Return the parsed status dict, or None on failure."""
+        with self._lock:
+            return self._command({"type": "get_status"})
+
+    def get_id_snapshot(self, index: int, max_seconds: int = 20) -> Optional[bytes]:
+        """Return raw s16le mono 22050 Hz PCM bytes, or None on failure.
+
+        Reads the JSON ack line, then reads the binary payload of exactly
+        frames * 2 bytes as declared in the ack.  Returns an empty bytes
+        object if the monitor reports zero frames available.
+        """
+        with self._lock:
+            resp = self._command({
+                "type": "get_id_snapshot",
+                "input": index,
+                "max_seconds": max_seconds,
+            })
+            if not resp or not resp.get("ok"):
+                return None
+            frames = resp.get("frames", 0)
+            if frames <= 0:
+                return b""
+            return self._readbytes(frames * 2)
+
+
+# --------------------------------------------------------------------------- #
+# AudioMonitor                                                                 #
+# --------------------------------------------------------------------------- #
 
 class AudioMonitor:
-    """Monitors an audio input device for activity and controls ffmpeg/Owntone.
+    """Manages OwnTone control, now-playing metadata, and track recognition
+    for one input channel.
 
-    Audio activity detection is done on raw 16-bit PCM samples:
-    - User config specifies a silence threshold in dBFS.
-    - At startup we convert that to a 16-bit sample amplitude threshold.
-    - In the monitor loop we read short blocks from the input device, compute the
-      average absolute sample value, and compare it directly to that threshold.
+    This class no longer performs audio capture or FIFO writing; those are
+    handled by the C++ autostream_monitor daemon.  The coordinator loop
+    ingests each get_status() poll via _ingest_status() and then fires
+    OwnTone or recognition side-effects in a second pass once all monitor
+    states have been updated.
 
-    The most recent average absolute sample value (0..32767) is exposed as the
-    attribute ``current_level_sample`` so that other code in the same process
-    can inspect it. This enables display of average value in the associated web-UI.
-
-    When the stream is considered "active", the same raw PCM blocks are written
-    into an ffmpeg process stdin, which performs resampling and writes to the
-    configured FIFO pipe watched by Owntone.
-
-    When multiple AudioMonitor instances are used in the same process, an
-    external coordinator can control which one is allowed to own the ffmpeg
-    pipeline by toggling ``allow_capture``. In single-input setups this flag
-    defaults to True so behaviour is unchanged.
+    The allow_capture property is set by the coordinator to choose which
+    input owns the FIFO at any moment; apply_allow_capture() sends the
+    corresponding set_allow_capture command to the daemon when the value
+    changes.
     """
+
+    OWNTONE_RETRY_SECONDS = 10.0
+    OWNTONE_LOG_THROTTLE_SECONDS = 60.0
 
     def __init__(
         self,
+        input_index: int,
         input_device: str,
         silence_threshold_dbfs: float,
         silence_seconds: int,
-        capture_device: str,  # legacy/unused, kept for config compatibility
         fifo_path: str,
-        arecord_format: str,  # legacy/unused, kept for config compatibility
-        ffmpeg_in_rate: int,
-        ffmpeg_out_rate: int,
         owntone_base_url: str,
         owntone_output_name: str,
         owntone_volume_percent: int,
         owntone_output_offsets_ms: Optional[dict[str, int]] = None,
+        gain_db: float = 0.0,
+        eq_40hz_db: float = 0.0,
+        eq_100hz_db: float = 0.0,
+        eq_10khz_db: float = 0.0,
     ) -> None:
+        self.input_index = input_index
         self.input_device = input_device
         self.silence_threshold_dbfs = silence_threshold_dbfs
-        self.silence_threshold_sample = dbfs_to_sample_threshold(silence_threshold_dbfs)
         self.silence_seconds = silence_seconds
-        self.capture_device = capture_device
         self.fifo_path = fifo_path
-        self.arecord_format = arecord_format
-        self.ffmpeg_in_rate = ffmpeg_in_rate
-        self.ffmpeg_out_rate = ffmpeg_out_rate
         self.owntone_base_url = owntone_base_url
         self.owntone_output_name = owntone_output_name
         self.owntone_volume_percent = owntone_volume_percent
         self.owntone_output_offsets_ms = owntone_output_offsets_ms or {}
+        self.gain_db = gain_db
+        self.eq_40hz_db = eq_40hz_db
+        self.eq_100hz_db = eq_100hz_db
+        self.eq_10khz_db = eq_10khz_db
 
-        # --- Now-playing metadata / artwork helpers ---
+        # --- Now-playing metadata helpers ---
         self._nowplaying_cache = PersistentNowPlayingCache()
-        self._nowplaying_publisher = OwntoneMetadataPipePublisher(self.fifo_path)
+        self._nowplaying_publisher = OwntoneMetadataPipePublisher(fifo_path)
         self._vinyl_recognizer = (
-            VinylRecognizer(self._nowplaying_cache, self.input_device) if VinylRecognizer else None
+            VinylRecognizer(self._nowplaying_cache, input_device)
+            if VinylRecognizer else None
         )
         if self._vinyl_recognizer is None:
-            logging.info("Vinyl recognizer unavailable; running with static now-playing metadata.")
+            logging.info("Input %d: vinyl recognizer unavailable.", input_index)
         self._current_nowplaying = (
-            self._nowplaying_cache.get_manual_hint(self.input_device)
+            self._nowplaying_cache.get_manual_hint(input_device)
             or NowPlayingMetadata(
-                title=f"Autostream ({self.input_device})",
+                title=f"Autostream ({input_device})",
                 artist="Vinyl",
                 album="Unknown Album",
             )
         )
 
-        # Track-level recognition tuning:
-        # We collect full track audio and only fingerprint once a track boundary
-        # (silence gap) is detected, so AcoustID gets full-track context.
-        self._track_start_level_sample = max(
-            self.silence_threshold_sample * 3,
-            int((os.environ.get("AUTOSTREAM_TRACK_START_LEVEL_SAMPLE") or "120").strip() or "120"),
-        )
-        self._track_end_level_sample = max(
-            1,
-            int((os.environ.get("AUTOSTREAM_TRACK_END_LEVEL_SAMPLE") or str(self.silence_threshold_sample)).strip()
-                or str(self.silence_threshold_sample)),
-        )
-        end_ratio_raw = (os.environ.get("AUTOSTREAM_TRACK_END_RATIO") or "0.65").strip()
-        try:
-            self._track_end_ratio = float(end_ratio_raw)
-        except Exception:
-            self._track_end_ratio = 0.65
-        self._track_end_ratio = max(0.05, min(0.95, self._track_end_ratio))
-        self._track_min_seconds = max(
-            12.0,
-            float((os.environ.get("AUTOSTREAM_TRACK_MIN_SECONDS") or "25").strip() or "25"),
-        )
-        self._track_gap_seconds = max(
-            1.0,
-            float((os.environ.get("AUTOSTREAM_TRACK_GAP_SECONDS") or "3.0").strip() or "3.0"),
-        )
-        self._track_max_seconds = max(
-            self._track_min_seconds,
-            float((os.environ.get("AUTOSTREAM_TRACK_MAX_SECONDS") or "900").strip() or "900"),
-        )
-        self._track_preroll_seconds = max(
-            0.0,
-            float((os.environ.get("AUTOSTREAM_TRACK_PREROLL_SECONDS") or "1.5").strip() or "1.5"),
-        )
-        self._track_buffer = bytearray()
-        self._track_preroll_buffer = bytearray()
-        self._track_active = False
-        self._track_started_at: Optional[float] = None
-        self._track_silence_started_at: Optional[float] = None
-        self._track_status_log_seconds = max(
-            10.0,
-            float((os.environ.get("AUTOSTREAM_TRACK_STATUS_LOG_SECONDS") or "20").strip() or "20"),
-        )
-        self._track_last_status_log_at = 0.0
-        self._last_input_samplerate: int = self.ffmpeg_in_rate
-
+        # --- Recognition state ---
         self._recognition_inflight = False
         self._recognition_attempt_count = 0
-        self._recognition_last_attempt_at = 0.0
-        self._capture_started_at: Optional[float] = None
 
-        # Exposed for other scripts in the same process: average absolute
-        # sample value from the most recent audio block (0..32767).
-        self.current_level_sample: int = 0
+        # --- Status (updated by coordinator via _ingest_status) ---
+        self.level_dbfs: float = -90.0
+        self.detected_hz: float = 0.0
+        self.is_silent: bool = True
+        self.is_capturing: bool = False
+        self._last_active_time: Optional[float] = None
 
-        # Coordinator flag: when False, this monitor will *not* start or keep
-        # ffmpeg running even if audio is active, but it will continue to
-        # measure levels into ``current_level_sample``.
-        # Defaults to True so single-input behaviour is unchanged.
-        self.allow_capture: bool = True
+        # --- allow_capture: set by coordinator; synced to daemon lazily ---
+        self._allow_capture: bool = True
+        self._allow_capture_sent: Optional[bool] = None  # last value sent to daemon
 
-        self._running = False
-        self._audio_thread: Optional[threading.Thread] = None
-        self._ffmpeg_proc: Optional[subprocess.Popen] = None
-        self._last_above_threshold: Optional[float] = None
-
-        # --- Owntone retry state ---
-        # While capture is active, retry refreshing currently selected outputs
-        # to recover from transient OwnTone issues.
+        # --- OwnTone retry state ---
         self._owntone_last_attempt: float = 0.0
         self._owntone_last_log: float = 0.0
         self._owntone_enabled_ok: bool = False
         self._capture_start_no_output_retry_at: float = 0.0
         self._capture_start_no_output_log_at: float = 0.0
 
-        # Register this monitor so hot-plug logic can see if any monitor is
-        # currently capturing (i.e. playback is active).
-        all_monitors.append(self)
+        with _monitors_lock:
+            all_monitors.append(self)
 
-    # How often we retry talking to Owntone while capture is active.
-    # 10 seconds is a good compromise: responsive enough, and gentle on logs/IO.
-    OWNTONE_RETRY_SECONDS = 10.0
-    OWNTONE_LOG_THROTTLE_SECONDS = 60.0
+    # ── Public interface ─────────────────────────────────────────────────────
 
     @property
-    def is_capturing(self) -> bool:
-        """Return True while ffmpeg is running for this monitor."""
+    def allow_capture(self) -> bool:
+        return self._allow_capture
 
-        return self._ffmpeg_proc is not None
+    @allow_capture.setter
+    def allow_capture(self, value: bool) -> None:
+        self._allow_capture = value
+        # Actual socket send is deferred to apply_allow_capture().
 
     @property
     def seconds_since_last_activity(self) -> float:
         """Seconds since audio last exceeded the silence threshold.
 
-        Returns ``float('inf')`` if we've never seen a block above threshold.
-        Useful for external coordination logic that wants to know how long
-        this input has been effectively silent.
+        Returns float('inf') if activity has never been observed.
         """
-
-        if self._last_above_threshold is None:
+        if self._last_active_time is None:
             return float("inf")
-        return time.time() - self._last_above_threshold
+        return time.time() - self._last_active_time
 
-    def start(self) -> None:
-        """Start monitoring in a background thread."""
-        if self._running:
-            return
-        self._running = True
-        self._audio_thread = threading.Thread(target=self._run, daemon=True)
-        self._audio_thread.start()
+    def _ingest_status(self, status_entry: dict) -> str:
+        """Update fields from a get_status() entry without firing callbacks.
+
+        Returns 'started', 'stopped', or '' to indicate the capturing
+        transition so the coordinator can fire callbacks in a second pass,
+        after all monitors have been updated.
+        """
+        was_capturing = self.is_capturing
+
+        self.level_dbfs  = float(status_entry.get("level_dbfs", -90.0))
+        self.detected_hz = float(status_entry.get("detected_hz", 0.0))
+        self.is_silent   = bool(status_entry.get("silent", True))
+        self.is_capturing = bool(status_entry.get("capturing", False))
+
+        if not self.is_silent:
+            self._last_active_time = time.time()
+
+        if self.is_capturing and not was_capturing:
+            return "started"
+        if not self.is_capturing and was_capturing:
+            return "stopped"
+        return ""
+
+    def apply_allow_capture(self, client: "MonitorClient") -> None:
+        """Send set_allow_capture to the daemon if the value has changed."""
+        if self._allow_capture != self._allow_capture_sent:
+            if client.set_allow_capture(self.input_index, self._allow_capture):
+                self._allow_capture_sent = self._allow_capture
 
     def stop(self) -> None:
-        """Stop monitoring and stop any running ffmpeg."""
-        self._running = False
-        if self._audio_thread and self._audio_thread.is_alive():
-            self._audio_thread.join(timeout=5)
-        if self._ffmpeg_proc:
-            stop_ffmpeg(self._ffmpeg_proc)
-            self._ffmpeg_proc = None
-
+        """Release resources (call at shutdown)."""
         try:
             self._nowplaying_publisher.close()
         except Exception:
             pass
 
+    # ── Capture transitions ──────────────────────────────────────────────────
 
-    def _run(self) -> None:
-        """Main monitoring loop.
+    def _on_capture_started(self, was_idle: bool) -> None:
+        """Called when the daemon transitions this channel to capturing."""
+        self._owntone_enabled_ok = False
+        self._owntone_last_attempt = 0.0   # force immediate attempt
 
-        Uses sounddevice to capture short blocks of audio from ``input_device``.
-        For each block we compute the average absolute value of the int16
-        samples (0..32767) and:
-        - store it in ``self.current_level_sample`` for external inspection;
-        - treat the stream as "active" if that average is above the configured
-          sample threshold within the configured silence window.
+        # If transitioning from fully idle, clear previous output selection
+        # so we start from a known state.
+        if self.owntone_base_url and was_idle:
+            owntone_disable_all_outputs(self.owntone_base_url)
 
-        When active *and* ``allow_capture`` is True, the same blocks are
-        written into ffmpeg's stdin to be resampled and forwarded to the FIFO
-        pipe.
-        """
+        self._maybe_retry_owntone(time.time())
+
+        self._recognition_inflight = False
+        self._recognition_attempt_count = 0
+
+        self._nowplaying_publisher.publish_start(self._current_nowplaying)
+
         logging.info(
-            "Starting AudioMonitor on input=%s, silence_threshold=%.1f dBFS (~%d), silence_seconds=%d",
-            self.input_device,
-            self.silence_threshold_dbfs,
-            self.silence_threshold_sample,
-            self.silence_seconds,
+            "Input %d (%s): capture started.",
+            self.input_index, self.input_device,
         )
 
-        # Configure block size and samplerate for monitoring
-        samplerate = self.ffmpeg_in_rate or 48000
-        block_duration_sec = 0.05  # 50 ms blocks
-        block_size = int(samplerate * block_duration_sec)
-        if block_size <= 0:
-            block_size = 1024
+    def _on_capture_stopped(self, client: "MonitorClient") -> None:
+        """Called when the daemon transitions this channel out of capturing."""
+        self._owntone_enabled_ok = False
 
-        silence_window = self.silence_seconds
-
-        RETRY_DELAY = 5.0
-        EMPTY_SLEEP = 0.05
-        MAX_EMPTY_READS = 50  # ~2.5s at 50 ms blocks
-
-        while self._running:
-            self._last_above_threshold = None
-            empty_reads = 0
-
-            try:
-                with sd.InputStream(
-                    device=self.input_device,
-                    channels=2,  # match ffmpeg -ac 2
-                    samplerate=samplerate,
-                    dtype="int16",
-                ) as stream:
-                    logging.info(
-                        "Opened input device %r – entering monitor loop (samplerate=%d, block_size=%d).",
-                        self.input_device,
-                        samplerate,
-                        block_size,
-                    )
-
-                    while self._running:
-                        try:
-                            data, overflowed = stream.read(block_size)
-                        except sd.PortAudioError as e:
-                            logging.warning(
-                                "PortAudio error reading from %s: %s; restarting stream",
-                                self.input_device,
-                                e,
-                            )
-                            break  # leave the 'with' block so we can recreate the stream
-
-                        if overflowed:
-                            logging.debug("Audio input overflow detected")
-
-                        if data.size == 0:
-                            empty_reads += 1
-                            if empty_reads >= MAX_EMPTY_READS:
-                                logging.warning(
-                                    "No audio from %s for a while; treating as device lost",
-                                    self.input_device,
-                                )
-                                break  # force stream recreation
-                            time.sleep(EMPTY_SLEEP)
-                            continue
-
-                        empty_reads = 0
-
-                        # data shape: (frames, channels)
-                        samples = data[:, 0].astype(np.int32)
-                        avg_abs = int(np.mean(np.abs(samples)))  # 0..32767
-
-                        # Expose the current average level to other code
-                        self.current_level_sample = avg_abs
-
-                        now = time.time()
-                        if avg_abs >= self.silence_threshold_sample:
-                            self._last_above_threshold = now
-
-                        if self._last_above_threshold is not None:
-                            elapsed_since_loud = now - self._last_above_threshold
-                            is_active = elapsed_since_loud < silence_window
-                        else:
-                            elapsed_since_loud = float("inf")
-                            is_active = False
-
-                        # Decide whether to start/stop ffmpeg based on activity and
-                        # the coordinator's allow_capture flag.
-                        if is_active and self.allow_capture and self._ffmpeg_proc is None:
-                            self._start_capture()
-                            if self._ffmpeg_proc is not None:
-                                logging.info(
-                                    "Starting capture (avg_abs=%d, threshold=%d, elapsed_since_loud=%.2f)",
-                                    avg_abs,
-                                    self.silence_threshold_sample,
-                                    elapsed_since_loud,
-                                )
-                        elif (not is_active or not self.allow_capture) and self._ffmpeg_proc is not None:
-                            if not self.allow_capture:
-                                logging.info(
-                                    "Stopping capture because this input was deselected "
-                                    "(elapsed_since_loud=%.1f).",
-                                    elapsed_since_loud,
-                                )
-                            else:
-                                logging.info(
-                                    "Audio has been below threshold for %.1f s. Stopping capture.",
-                                    elapsed_since_loud,
-                                )
-                            self._stop_capture()
-
-                        # If ffmpeg is running, feed it the current block
-                        if self._ffmpeg_proc is not None:
-                            # While capture is active, periodically retry enabling
-                            # the configured Owntone output. This helps with cases
-                            # where Owntone is restarting or AirPlay speakers appear
-                            # late. Throttled to be micro-SD/log friendly.
-                            self._maybe_retry_owntone(time.time())
-
-                            if self._ffmpeg_proc.poll() is not None:
-                                logging.warning(
-                                    "ffmpeg process exited unexpectedly, stopping capture."
-                                )
-                                self._stop_capture()
-                            else:
-                                try:
-                                    if self._ffmpeg_proc.stdin:
-                                        self._ffmpeg_proc.stdin.write(data.tobytes())
-                                except BrokenPipeError:
-                                    logging.error(
-                                        "Broken pipe writing to ffmpeg stdin, stopping capture."
-                                    )
-                                    self._stop_capture()
-                                except Exception as e:  # noqa: BLE001
-                                    logging.error("Error writing to ffmpeg stdin: %s", e)
-                                    self._stop_capture()
-                                self._collect_recognition_audio(data, samplerate, avg_abs)
-
-            except Exception as e:  # noqa: BLE001
-                logging.error(
-                    "Error in audio monitor loop for %s: %s",
-                    self.input_device,
-                    e,
-                )
-
-                # Attempt to handle hot-plug situations and PortAudio shutdowns.
-                msg = str(e)
-
-                # If PortAudio isn't initialised, try to initialise it immediately.
-                if "PortAudio not initialized" in msg:
-                    try:
-                        logging.info(
-                            "PortAudio not initialized when using %r; calling sd._initialize()",
-                            self.input_device,
-                        )
-                        sd._initialize()
-                    except Exception as ie:  # noqa: BLE001
-                        logging.error("Error initialising PortAudio: %s", ie)
-
-                # If the configured device isn't found, and no monitor is currently
-                # capturing, force a full PortAudio re-initialisation so that newly
-                # hot-plugged devices are discovered.
-                device_missing = (
-                    "No input device" in msg
-                    or "No such device" in msg
-                    or "Invalid device" in msg
-                    or "Unanticipated host error" in msg
-                )
-
-                if device_missing:
-                    if not any_monitor_capturing():
-                        logging.info(
-                            "Input device %r not found and no playback is active; "
-                            "terminating and re-initialising sounddevice/PortAudio to force device rescan.",
-                            self.input_device,
-                        )
-                        try:
-                            sd._terminate()
-                            sd._initialize()
-                        except Exception as te:  # noqa: BLE001
-                            logging.error("Error re-initialising sounddevice/PortAudio: %s", te)
-                    else:
-                        logging.info(
-                            "Input device %r not found, but playback is active on another "
-                            "monitor; skipping PortAudio reset this time.",
-                            self.input_device,
-                        )
-
-            # Stream died or failed to open: ensure ffmpeg is stopped.
-            if self._ffmpeg_proc is not None:
-                self._stop_capture()
-
-            if not self._running:
-                break
-
-            logging.info(
-                "Retrying device %r in %.1f seconds",
-                self.input_device,
-                RETRY_DELAY,
-            )
-            time.sleep(RETRY_DELAY)
-
-
-    def _collect_recognition_audio(self, data: np.ndarray, samplerate: int, avg_abs: int) -> None:
-        """Collect full track audio and trigger recognition at track boundaries."""
-        if self._vinyl_recognizer is None:
-            return
-        if data.size == 0:
-            return
-
-        self._last_input_samplerate = samplerate
+        # Request a PCM snapshot for track recognition before signalling stop.
+        self._trigger_recognition(client)
 
         try:
-            mono = np.mean(data.astype(np.int32), axis=1).astype(np.int16)
-            mono_bytes = mono.tobytes()
-            mono_level = int(np.mean(np.abs(mono.astype(np.int32))))
-            now = time.time()
-            dynamic_end_threshold = int(self._track_start_level_sample * self._track_end_ratio)
-            effective_end_threshold = max(self._track_end_level_sample, dynamic_end_threshold)
+            self._nowplaying_publisher.publish_end()
+        except Exception:
+            pass
 
-            # Keep a short pre-roll so the attack at track start is included.
-            self._track_preroll_buffer.extend(mono_bytes)
-            preroll_max = max(0, int(samplerate * self._track_preroll_seconds * 2))
-            if preroll_max > 0 and len(self._track_preroll_buffer) > preroll_max:
-                del self._track_preroll_buffer[:-preroll_max]
+        if self.owntone_base_url and not any_monitor_capturing():
+            self._request_owntone_stop("capture stop")
+            owntone_disable_all_outputs(self.owntone_base_url)
 
-            if not self._track_active:
-                if mono_level >= self._track_start_level_sample:
-                    self._track_active = True
-                    self._track_started_at = now
-                    self._track_silence_started_at = None
-                    self._track_buffer = bytearray(self._track_preroll_buffer)
-                    self._track_last_status_log_at = now
-                    logging.info(
-                        "Track capture started for recognition (level=%d, start_threshold=%d, end_threshold=%d).",
-                        mono_level,
-                        self._track_start_level_sample,
-                        effective_end_threshold,
-                    )
-                else:
-                    return
+        logging.info(
+            "Input %d (%s): capture stopped.",
+            self.input_index, self.input_device,
+        )
 
-            self._track_buffer.extend(mono_bytes)
-            max_track_bytes = int(samplerate * self._track_max_seconds * 2)
-            if max_track_bytes > 0 and len(self._track_buffer) > max_track_bytes:
-                self._finalize_track_recognition(
-                    samplerate=samplerate,
-                    reason="max_track_seconds",
-                    force=True,
-                )
-                return
+    # ── Track recognition ────────────────────────────────────────────────────
 
-            if mono_level < effective_end_threshold:
-                if self._track_silence_started_at is None:
-                    self._track_silence_started_at = now
-            else:
-                self._track_silence_started_at = None
-
-            if (now - self._track_last_status_log_at) >= self._track_status_log_seconds:
-                track_age = now - (self._track_started_at or now)
-                silent_for = 0.0 if self._track_silence_started_at is None else (now - self._track_silence_started_at)
-                logging.info(
-                    "Track capture active (age=%.1fs, level=%d, end_threshold=%d, silent_for=%.1fs).",
-                    track_age,
-                    mono_level,
-                    effective_end_threshold,
-                    silent_for,
-                )
-                self._track_last_status_log_at = now
-
-            if self._track_silence_started_at is None:
-                return
-
-            track_age = now - (self._track_started_at or now)
-            silent_for = now - self._track_silence_started_at
-            if track_age < self._track_min_seconds or silent_for < self._track_gap_seconds:
-                return
-
-            # Trim trailing inter-track silence from the fingerprint payload.
-            trim_bytes = int(samplerate * self._track_gap_seconds * 2)
-            if trim_bytes > 0 and len(self._track_buffer) > trim_bytes:
-                del self._track_buffer[-trim_bytes:]
-
-            self._finalize_track_recognition(
-                samplerate=samplerate,
-                reason="silence_gap",
-                force=False,
-                level=avg_abs,
-            )
-        except Exception as e:
-            logging.info("Now-playing sample collection failed: %s", e)
-
-
-    def _finalize_track_recognition(
-        self,
-        samplerate: int,
-        reason: str,
-        force: bool = False,
-        level: int = 0,
-    ) -> None:
-        """Queue background recognition for a completed track segment."""
+    def _trigger_recognition(self, client: "MonitorClient") -> None:
+        """Fetch an ID snapshot from the daemon and queue recognition."""
         if self._vinyl_recognizer is None:
-            self._track_buffer = bytearray()
-            self._track_active = False
-            self._track_started_at = None
-            self._track_silence_started_at = None
             return
-        if not self._track_buffer:
-            self._track_active = False
-            self._track_started_at = None
-            self._track_silence_started_at = None
-            return
-
-        track_seconds = len(self._track_buffer) / max(1, samplerate * 2)
-        required_seconds = self._track_min_seconds
-        if force:
-            required_seconds = max(10.0, self._track_min_seconds * 0.5)
-        if track_seconds < required_seconds:
-            self._track_buffer = bytearray()
-            self._track_active = False
-            self._track_started_at = None
-            self._track_silence_started_at = None
-            return
-
         if self._recognition_inflight:
             logging.info(
-                "Skipping track recognition queue (reason=%s) because prior attempt is still running.",
-                reason,
+                "Input %d: skipping recognition (prior attempt still running).",
+                self.input_index,
             )
-            self._track_buffer = bytearray()
-            self._track_active = False
-            self._track_started_at = None
-            self._track_silence_started_at = None
+            return
+
+        pcm_bytes = client.get_id_snapshot(self.input_index, max_seconds=20)
+        if not pcm_bytes:
+            logging.info(
+                "Input %d: get_id_snapshot returned no audio; skipping recognition.",
+                self.input_index,
+            )
             return
 
         self._recognition_attempt_count += 1
         attempt_no = self._recognition_attempt_count
         self._recognition_inflight = True
-        self._recognition_last_attempt_at = time.time()
-        pcm16_mono = bytes(self._track_buffer)
 
+        duration_s = len(pcm_bytes) / (22050 * 2)
         logging.info(
-            "Now-playing recognition attempt %d queued (reason=%s, track_seconds=%.1f, level=%d).",
-            attempt_no,
-            reason,
-            track_seconds,
-            level,
+            "Input %d: recognition attempt %d queued (%.1f s of audio).",
+            self.input_index, attempt_no, duration_s,
         )
-
-        self._track_buffer = bytearray()
-        self._track_active = False
-        self._track_started_at = None
-        self._track_silence_started_at = None
 
         threading.Thread(
             target=self._recognize_nowplaying_worker,
-            args=(pcm16_mono, samplerate, attempt_no),
+            args=(bytes(pcm_bytes), 22050, attempt_no),
             daemon=True,
         ).start()
 
-
-    def _recognize_nowplaying_worker(self, pcm16_mono: bytes, samplerate: int, attempt_no: int) -> None:
+    def _recognize_nowplaying_worker(
+        self,
+        pcm16_mono: bytes,
+        samplerate: int,
+        attempt_no: int,
+    ) -> None:
         """Resolve metadata in the background and publish updates if found."""
         try:
             if self._vinyl_recognizer is None:
                 return
             meta, source = self._vinyl_recognizer.resolve_with_source(pcm16_mono, samplerate)
             if not meta:
-                logging.info("Now-playing recognition attempt %d found no metadata.", attempt_no)
+                logging.info(
+                    "Input %d: recognition attempt %d found no metadata.",
+                    self.input_index, attempt_no,
+                )
                 return
 
             changed = meta != self._current_nowplaying
@@ -820,34 +779,49 @@ class AudioMonitor:
             if changed:
                 self._nowplaying_publisher.publish_start(meta)
                 logging.info(
-                    "Now-playing updated (%s): artist=%s album=%s title=%s",
-                    source,
-                    meta.artist,
-                    meta.album,
-                    meta.title,
+                    "Input %d: now-playing updated (%s): artist=%s album=%s title=%s",
+                    self.input_index, source,
+                    meta.artist, meta.album, meta.title,
                 )
             else:
                 logging.info(
-                    "Now-playing recognition attempt %d matched existing metadata (%s).",
-                    attempt_no,
-                    source,
+                    "Input %d: recognition attempt %d matched existing metadata (%s).",
+                    self.input_index, attempt_no, source,
                 )
         except Exception as e:
-            logging.info("Now-playing recognition failed: %s", e)
+            logging.info("Input %d: recognition failed: %s", self.input_index, e)
         finally:
             self._recognition_inflight = False
 
+    # ── OwnTone helpers ──────────────────────────────────────────────────────
+
+    def _request_owntone_stop(self, reason: str) -> None:
+        """Send a player stop command to OwnTone."""
+        if not self.owntone_base_url:
+            return
+        try:
+            url = self.owntone_base_url.rstrip("/") + "/api/player/stop"
+            resp = requests.put(url, timeout=3)
+            if resp.ok:
+                logging.info("OwnTone player stopped (%s).", reason)
+            else:
+                logging.warning(
+                    "OwnTone player stop failed (%s): status=%s",
+                    reason, resp.status_code,
+                )
+        except Exception as e:
+            logging.warning(
+                "OwnTone player stop request failed (%s): %s", reason, e,
+            )
 
     def _maybe_retry_owntone(self, now: float) -> None:
         """Periodically retry refreshing currently selected OwnTone outputs."""
+        if not self.is_capturing:
+            return
         if not self.owntone_base_url:
             return
-
-        # Already refreshed successfully during this capture session.
         if self._owntone_enabled_ok:
             return
-
-        # Retry gate
         if (now - self._owntone_last_attempt) < self.OWNTONE_RETRY_SECONDS:
             return
         self._owntone_last_attempt = now
@@ -857,7 +831,7 @@ class AudioMonitor:
             self._throttled_owntone_log(
                 now,
                 logging.WARNING,
-                "Skipping Owntone selected-output refresh because outputs API is unavailable.",
+                "Skipping OwnTone selected-output refresh: outputs API unavailable.",
             )
             return
 
@@ -880,24 +854,24 @@ class AudioMonitor:
         self._throttled_owntone_log(
             now,
             logging.WARNING,
-            "Owntone selected-output refresh failed during capture; will retry.",
+            "OwnTone selected-output refresh failed during capture; will retry.",
         )
 
-
     def _throttled_owntone_log(self, now: float, level: int, msg: str, *args) -> None:
-        """Log Owntone-related failures with a long throttle to avoid SD churn."""
+        """Log OwnTone-related failures with a long throttle to avoid SD churn."""
         if (now - self._owntone_last_log) < self.OWNTONE_LOG_THROTTLE_SECONDS:
             return
         self._owntone_last_log = now
         logging.log(level, msg, *args)
-
 
     def _get_owntone_outputs(self) -> Optional[list[dict]]:
         """Return OwnTone outputs list, or None if API is unavailable."""
         if not self.owntone_base_url:
             return None
         try:
-            resp = requests.get(self.owntone_base_url.rstrip("/") + "/api/outputs", timeout=3)
+            resp = requests.get(
+                self.owntone_base_url.rstrip("/") + "/api/outputs", timeout=3,
+            )
             if not resp.ok:
                 return None
             outputs = (resp.json() or {}).get("outputs", [])
@@ -907,10 +881,14 @@ class AudioMonitor:
 
     @staticmethod
     def _selected_output_ids(outputs: list[dict]) -> list[str]:
-        return [str(o.get("id")) for o in outputs if o.get("selected") and o.get("id") is not None]
+        return [
+            str(o.get("id"))
+            for o in outputs
+            if o.get("selected") and o.get("id") is not None
+        ]
 
     def _has_any_selected_outputs(self, outputs: Optional[list[dict]] = None) -> bool:
-        """Return True if Owntone currently has at least one selected output."""
+        """Return True if OwnTone currently has at least one selected output."""
         if outputs is None:
             outputs = self._get_owntone_outputs()
             if outputs is None:
@@ -931,10 +909,8 @@ class AudioMonitor:
             outputs = self._get_owntone_outputs()
         if outputs is None:
             self._throttled_owntone_log(
-                now,
-                logging.WARNING,
-                "Could not fetch Owntone outputs while attempting default fallback (%s).",
-                reason,
+                now, logging.WARNING,
+                "Could not fetch OwnTone outputs for default fallback (%s).", reason,
             )
             return False
         if self._has_any_selected_outputs(outputs):
@@ -943,21 +919,21 @@ class AudioMonitor:
         default_name = (self.owntone_output_name or "").strip()
         if not default_name:
             self._throttled_owntone_log(
-                now,
-                logging.WARNING,
+                now, logging.WARNING,
                 "No default output configured; cannot apply zero-target fallback (%s).",
                 reason,
             )
             return False
 
-        default_out = next((o for o in outputs if str(o.get("name") or "") == default_name), None)
+        default_out = next(
+            (o for o in outputs if str(o.get("name") or "") == default_name),
+            None,
+        )
         if not default_out or default_out.get("id") is None:
             self._throttled_owntone_log(
-                now,
-                logging.WARNING,
-                "Configured default output '%s' not found in Owntone; cannot apply fallback (%s).",
-                default_name,
-                reason,
+                now, logging.WARNING,
+                "Default output '%s' not found in OwnTone; cannot apply fallback (%s).",
+                default_name, reason,
             )
             return False
 
@@ -977,37 +953,31 @@ class AudioMonitor:
                 pass
 
         try:
-            resp = requests.put(base + f"/api/outputs/{out_id}", json=payload, timeout=3)
+            resp = requests.put(
+                base + f"/api/outputs/{out_id}", json=payload, timeout=3,
+            )
             if not resp.ok:
                 self._throttled_owntone_log(
-                    now,
-                    logging.WARNING,
+                    now, logging.WARNING,
                     "Failed to auto-enable default output '%s' (%s): status=%s body=%s",
-                    default_name,
-                    reason,
-                    resp.status_code,
-                    (resp.text or "")[:200],
+                    default_name, reason, resp.status_code, (resp.text or "")[:200],
                 )
                 return False
             logging.info(
                 "No outputs selected; auto-enabled default output '%s' (%s).",
-                default_name,
-                reason,
+                default_name, reason,
             )
             return True
         except Exception as e:
             self._throttled_owntone_log(
-                now,
-                logging.WARNING,
+                now, logging.WARNING,
                 "Failed to auto-enable default output '%s' (%s): %s",
-                default_name,
-                reason,
-                e,
+                default_name, reason, e,
             )
             return False
 
     def _refresh_selected_outputs(self, outputs: Optional[list[dict]] = None) -> bool:
-        """Re-apply current selected output ids to nudge Owntone playback state."""
+        """Re-apply current selected output IDs to nudge OwnTone playback state."""
         if not self.owntone_base_url:
             return False
         base = self.owntone_base_url.rstrip("/")
@@ -1020,223 +990,331 @@ class AudioMonitor:
             if not selected_ids:
                 return False
             set_payload = {"outputs": selected_ids}
-            set_resp = requests.put(base + "/api/outputs/set", json=set_payload, timeout=3)
+            set_resp = requests.put(
+                base + "/api/outputs/set", json=set_payload, timeout=3,
+            )
             if not set_resp.ok:
                 return False
-            logging.info("Refreshed selected Owntone outputs: %s", selected_ids)
+            logging.info("Refreshed selected OwnTone outputs: %s", selected_ids)
             return True
         except Exception:
             return False
 
 
-    def _start_capture(self) -> None:
-        """Start ffmpeg and optionally enable Owntone output."""
-        if self._ffmpeg_proc is not None:
-            return
+# --------------------------------------------------------------------------- #
+# Top-level entry points                                                       #
+# --------------------------------------------------------------------------- #
 
-        # Reset Owntone enable state for this capture session.
-        # We attempt immediately, and then keep retrying periodically while capture runs.
-        self._owntone_enabled_ok = False
-        self._owntone_last_attempt = 0.0  # force immediate attempt on start
+def _resync_monitor_daemon(
+    client: MonitorClient,
+    monitors: list["AudioMonitor"],
+    fifo_path: str,
+) -> bool:
+    """Re-send the full daemon state after reconnect.
 
-        was_idle = not any_monitor_capturing()
+    This is transactional from Python's point of view: if any required step
+    fails for any configured monitor, the whole resync is treated as failed so
+    the coordinator does not continue with Python-side monitor objects that do
+    not exist in the daemon.
+    """
+    if not ensure_audio_fifo(fifo_path):
+        client.close()
+        return False
 
-        now = time.time()
-        self._ffmpeg_proc = start_ffmpeg(
-            self.fifo_path,
-            self.ffmpeg_in_rate,
-            self.ffmpeg_out_rate,
+    if not client.set_fifo(fifo_path):
+        logging.warning("set_fifo failed after reconnect; will retry.")
+        client.close()
+        return False
+
+    for m in monitors:
+        m._allow_capture_sent = None
+
+    for m in monitors:
+        if not client.configure_input(
+            m.input_index,
+            m.input_device,
+            m.silence_threshold_dbfs,
+            m.silence_seconds,
+        ):
+            logging.warning(
+                "configure_input(%d, %r) failed after reconnect; will retry full resync.",
+                m.input_index,
+                m.input_device,
+            )
+            client.close()
+            return False
+
+    for m in monitors:
+        if not client.start_input(m.input_index):
+            logging.warning(
+                "start_input(%d) failed after reconnect; will retry full resync.",
+                m.input_index,
+            )
+            client.close()
+            return False
+
+    for m in monitors:
+        if not apply_input_gain(client, m.input_index, m.gain_db):
+            logging.warning(
+                "set_gain(%d, %.1f) failed after reconnect; will retry full resync.",
+                m.input_index,
+                m.gain_db,
+            )
+            client.close()
+            return False
+
+    for m in monitors:
+        if not apply_input_eq(
+            client,
+            m.input_index,
+            m.eq_40hz_db,
+            m.eq_100hz_db,
+            m.eq_10khz_db,
+        ):
+            logging.warning(
+                "set_eq(%d) failed after reconnect; will retry full resync.",
+                m.input_index,
+            )
+            client.close()
+            return False
+
+    for m in monitors:
+        if not client.set_allow_capture(m.input_index, m._allow_capture):
+            logging.warning(
+                "set_allow_capture(%d, %r) failed after reconnect; will retry full resync.",
+                m.input_index,
+                m._allow_capture,
+            )
+            client.close()
+            return False
+        m._allow_capture_sent = m._allow_capture
+
+    return True
+
+
+def _configure_startup_monitors(
+    client: MonitorClient,
+    cfg,
+    fifo_path: str,
+) -> Optional[list["AudioMonitor"]]:
+    """Configure daemon inputs for initial startup and return monitor objects."""
+    if not client.configure_input(
+        1,
+        cfg.audio1.capture_device,
+        cfg.audio1.silence_threshold_dbfs,
+        cfg.general.silence_seconds,
+    ):
+        logging.warning(
+            "configure_input(1, %r) failed during startup; will retry.",
+            cfg.audio1.capture_device,
         )
+        return None
 
-        # If we're transitioning from idle -> playing, clear any previously
-        # selected Owntone outputs so we start from a known state.
-        # Whilst this might "reset" speakers enabled manually by the user since the last playback,
-        # the user can alter the silence detection to preserve settings (e.g. could be set to 5
-        # minutes or even longer if desired).
-        if self.owntone_base_url and was_idle:
-            owntone_disable_all_outputs(self.owntone_base_url)
+    if not client.start_input(1):
+        logging.warning("start_input(1) failed during startup; will retry.")
+        return None
 
-        # Attempt Owntone enable immediately; periodic retry will take over if it fails.
-        self._maybe_retry_owntone(time.time())
+    if not apply_input_gain(client, 1, cfg.audio1.gain_db):
+        logging.warning("set_gain(1) failed during startup; will retry.")
+        return None
 
-        # Seek out now-playing metadata (manual hint, cached hash hit, or default placeholder)
-        self._capture_started_at = time.time()
-        self._track_buffer = bytearray()
-        self._track_preroll_buffer = bytearray()
-        self._track_active = False
-        self._track_started_at = None
-        self._track_silence_started_at = None
-        self._track_last_status_log_at = 0.0
-        self._recognition_inflight = False
-        self._recognition_attempt_count = 0
-        self._recognition_last_attempt_at = 0.0
+    if not apply_input_eq(
+        client,
+        1,
+        cfg.audio1.eq_40hz_db,
+        cfg.audio1.eq_100hz_db,
+        cfg.audio1.eq_10khz_db,
+    ):
+        logging.warning("set_eq(1) failed during startup; will retry.")
+        return None
 
-        self._nowplaying_publisher.publish_start(self._current_nowplaying)
+    monitors: list[AudioMonitor] = [AudioMonitor(
+        input_index=1,
+        input_device=cfg.audio1.capture_device,
+        silence_threshold_dbfs=cfg.audio1.silence_threshold_dbfs,
+        silence_seconds=cfg.general.silence_seconds,
+        fifo_path=fifo_path,
+        owntone_base_url=cfg.owntone.base_url,
+        owntone_output_name=cfg.owntone.output_name,
+        owntone_volume_percent=cfg.owntone.volume_percent,
+        owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
+        gain_db=cfg.audio1.gain_db,
+        eq_40hz_db=cfg.audio1.eq_40hz_db,
+        eq_100hz_db=cfg.audio1.eq_100hz_db,
+        eq_10khz_db=cfg.audio1.eq_10khz_db,
+    )]
 
-    def _stop_capture(self) -> None:
-        """Stop ffmpeg."""
-        if self._ffmpeg_proc is None:
-            return
+    if (
+        cfg.audio2_enabled
+        and cfg.audio2.capture_device
+        and cfg.audio2.capture_device != cfg.audio1.capture_device
+    ):
+        audio2_ok = True
 
-        # Reset Owntone state so a future capture session will attempt again.
-        self._owntone_enabled_ok = False
+        if not client.configure_input(
+            2,
+            cfg.audio2.capture_device,
+            cfg.audio2.silence_threshold_dbfs,
+            cfg.general.silence_seconds,
+        ):
+            logging.error(
+                "configure_input(2, %r) failed; skipping second input.",
+                cfg.audio2.capture_device,
+            )
+            audio2_ok = False
 
-        # Flush any completed/partial track when capture is intentionally stopped.
-        self._finalize_track_recognition(
-            samplerate=max(1, int(self._last_input_samplerate or self.ffmpeg_in_rate)),
-            reason="capture_stop",
-            force=True,
-            level=self.current_level_sample,
-        )
+        if audio2_ok and not client.start_input(2):
+            logging.error("start_input(2) failed; skipping second input.")
+            audio2_ok = False
 
-        stop_ffmpeg(self._ffmpeg_proc)
-        self._ffmpeg_proc = None
+        if audio2_ok and not apply_input_gain(client, 2, cfg.audio2.gain_db):
+            logging.error("set_gain(2) failed; skipping second input.")
+            audio2_ok = False
 
-        self._capture_started_at = None
+        if audio2_ok and not apply_input_eq(
+            client,
+            2,
+            cfg.audio2.eq_40hz_db,
+            cfg.audio2.eq_100hz_db,
+            cfg.audio2.eq_10khz_db,
+        ):
+            logging.error("set_eq(2) failed; skipping second input.")
+            audio2_ok = False
 
-        try:
-            self._nowplaying_publisher.publish_end()
-        except Exception:
-            pass
+        if audio2_ok:
+            monitors.append(AudioMonitor(
+                input_index=2,
+                input_device=cfg.audio2.capture_device,
+                silence_threshold_dbfs=cfg.audio2.silence_threshold_dbfs,
+                silence_seconds=cfg.general.silence_seconds,
+                fifo_path=fifo_path,
+                owntone_base_url=cfg.owntone.base_url,
+                owntone_output_name=cfg.owntone.output_name,
+                owntone_volume_percent=cfg.owntone.volume_percent,
+                owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
+                gain_db=cfg.audio2.gain_db,
+                eq_40hz_db=cfg.audio2.eq_40hz_db,
+                eq_100hz_db=cfg.audio2.eq_100hz_db,
+                eq_10khz_db=cfg.audio2.eq_10khz_db,
+            ))
 
-        # If capture has ended and no monitor is active, request player stop so
-        # network targets release their active input/session cleanly.
-        if self.owntone_base_url and not any_monitor_capturing():
-            self._request_owntone_stop("capture stop")
+    if len(monitors) > 1:
+        for m in monitors:
+            m.allow_capture = False
 
-        # Clear outputs, but only if this was the last active capture.
-        # This avoids breaking playback if another monitor is still capturing.
-        if self.owntone_base_url and not any_monitor_capturing():
-            owntone_disable_all_outputs(self.owntone_base_url)
+    for m in monitors:
+        m.apply_allow_capture(client)
 
+    return monitors
 
 def run_autostream(config_path: str, start_webui=None) -> None:
-    """Run the autostream monitor using the given config file path.
+    """Run autostream using the given config file path.
 
-    If start_webui is provided, it will be called with the config_path
-    to start any optional web UI (typically in a background thread).
+    Connects to the autostream_monitor daemon, configures inputs, and runs
+    the coordinator loop until a stop signal is received.
+
+    If start_webui is provided it is called with config_path to start the
+    optional web UI in a background thread.
     """
     cfg = load_and_parse(config_path)
-
     setup_logging(cfg.general.log_file)
 
     # --- Ensure OwnTone config is correct before doing anything else ---
     cfg_status = owntone_config_ok()
     if cfg_status == OWNTONE_OK:
-        logging.info("OwnTone config OK (directories=/tmp/autostream-pipes, pipe_autostart enabled).")
+        logging.info(
+            "OwnTone config OK (directories=/tmp/autostream-pipes, pipe_autostart enabled).",
+        )
     elif cfg_status == OWNTONE_RESTART_REQUIRED:
         logging.warning(
-            "OwnTone config was updated (directories=/tmp/autostream-pipes, pipe_autostart enabled). "
-            "OwnTone restart required for changes to take effect."
+            "OwnTone config was updated; OwnTone restart required.",
         )
-        # Best-effort restart (won't break dev usage)
         try:
             if owntone_restart_service():
                 logging.info("Requested OwnTone restart via autostream-admin.")
             else:
                 logging.warning("OwnTone restart request failed (autostream-admin).")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logging.warning("Could not restart OwnTone automatically: %s", e)
     else:
         logging.error(
-            "OwnTone config NOT OK and could not be fixed. "
-            "Playback via pipe may fail."
+            "OwnTone config NOT OK and could not be fixed. Playback via pipe may fail.",
         )
 
-    # Optionally start the web UI
+    # Optionally start the web UI.
     if start_webui is not None:
         try:
             start_webui(config_path)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logging.error("Failed to start web UI: %s", e)
 
-    # --- Load configuration data ---
+    socket_path = get_monitor_socket_path()
+    POLL_INTERVAL = 0.5          # seconds between get_status() polls
+    SWITCH_SILENCE_SECONDS = 5.0 # how long current input must be silent before switching
 
-    silence_seconds = cfg.general.silence_seconds
-    fifo_path = cfg.general.fifo_path
+    # Outer loop: runs once normally; repeats after a config reload.
+    while not stop_flag.is_set():
+        client = MonitorClient(socket_path)
+        monitors: Optional[list[AudioMonitor]] = None
 
-    capture_device1 = cfg.audio1.capture_device
-    arecord_format1 = cfg.audio1.arecord_format
-    silence_threshold1 = cfg.audio1.silence_threshold_dbfs
+        # ── Startup / configuration phase ────────────────────────────────────
+        while not stop_flag.is_set():
+            if unconfigured(config_path):
+                if start_webui is None:
+                    logging.error("Configuration is incomplete; cannot start without a valid INI.")
+                    return
+                logging.info(
+                    "Configuration is incomplete or has an invalid device format; "
+                    "starting in setup mode and waiting for Web UI changes.",
+                )
+                while not stop_flag.is_set() and unconfigured(config_path):
+                    time.sleep(1.0)
+                if stop_flag.is_set():
+                    return
+                cfg = load_and_parse(config_path)
+                continue
 
-    audio2_enabled = cfg.audio2_enabled
-    capture_device2 = cfg.audio2.capture_device
-    arecord_format2 = cfg.audio2.arecord_format
-    silence_threshold2 = cfg.audio2.silence_threshold_dbfs
+            cfg = load_and_parse(config_path)
+            fifo_path = cfg.general.fifo_path
 
-    ffmpeg_out_rate = cfg.ffmpeg.out_rate
-    ffmpeg_in_rate1 = cfg.ffmpeg.in_rate1
-    ffmpeg_in_rate2 = cfg.ffmpeg.in_rate2
+            if not client.connect():
+                logging.warning(
+                    "Cannot connect to autostream_monitor at %s; retrying in 5 s.",
+                    socket_path,
+                )
+                time.sleep(5.0)
+                continue
 
-    owntone_base = cfg.owntone.base_url
-    owntone_output_name = cfg.owntone.output_name
-    owntone_volume = cfg.owntone.volume_percent
-    owntone_offsets = cfg.owntone.output_offsets_ms
+            if not ensure_audio_fifo(fifo_path):
+                client.close()
+                time.sleep(5.0)
+                continue
 
+            if not client.set_fifo(fifo_path):
+                logging.warning("set_fifo(%r) failed during startup; retrying in 5 s.", fifo_path)
+                client.close()
+                time.sleep(5.0)
+                continue
 
-    # Ensure pipe path exists before monitoring, then make sure OwnTone has
-    # indexed the pipe source (important after reboot when /tmp is empty).
-    ensure_fifo(fifo_path)
-    if owntone_base:
-        if owntone_ensure_pipe_indexed(owntone_base, timeout_s=15.0):
-            logging.info("OwnTone pipe source is indexed and ready.")
-        else:
-            logging.warning(
-                "OwnTone pipe source is not indexed yet; playback start may fail until files rescan succeeds."
-            )
+            if cfg.owntone.base_url:
+                if owntone_ensure_pipe_indexed(cfg.owntone.base_url, timeout_s=15.0):
+                    logging.info("OwnTone pipe source is indexed and ready.")
+                else:
+                    logging.warning(
+                        "OwnTone pipe source is not indexed yet; "
+                        "playback start may fail until files rescan succeeds.",
+                    )
 
-    # --- Create one or two AudioMonitor instances ---
-    monitors: list[AudioMonitor] = []
+            monitors = _configure_startup_monitors(client, cfg, fifo_path)
+            if monitors is not None:
+                break
 
-    monitor1 = AudioMonitor(
-        input_device=capture_device1,
-        silence_threshold_dbfs=silence_threshold1,
-        silence_seconds=silence_seconds,
-        capture_device=capture_device1,
-        fifo_path=fifo_path,
-        arecord_format=arecord_format1,
-        ffmpeg_in_rate=ffmpeg_in_rate1,
-        ffmpeg_out_rate=ffmpeg_out_rate,
-        owntone_base_url=owntone_base,
-        owntone_output_name=owntone_output_name,
-        owntone_volume_percent=owntone_volume,
-        owntone_output_offsets_ms=owntone_offsets,
-    )
-    monitors.append(monitor1)
+            client.close()
+            time.sleep(5.0)
 
-    if (
-        audio2_enabled
-        and capture_device2
-        and capture_device2 != capture_device1
-    ):
-        monitor2 = AudioMonitor(
-            input_device=capture_device2,
-            silence_threshold_dbfs=silence_threshold2,
-            silence_seconds=silence_seconds,
-            capture_device=capture_device2,
-            fifo_path=fifo_path,
-            arecord_format=arecord_format2,
-            ffmpeg_in_rate=ffmpeg_in_rate2,
-            ffmpeg_out_rate=ffmpeg_out_rate,
-            owntone_base_url=owntone_base,
-            owntone_output_name=owntone_output_name,
-            owntone_volume_percent=owntone_volume,
-            owntone_output_offsets_ms=owntone_offsets,
-        )
-        monitors.append(monitor2)
-
-    # If we have more than one monitor, let the coordinator choose who owns
-    # ffmpeg. Start with nobody capturing.
-    if len(monitors) > 1:
-        for m in monitors:
-            m.allow_capture = False
-
-    # How long the current input must be silent before we consider switching.
-    SWITCH_SILENCE_SECONDS = 5.0
-
-    try:
-        for m in monitors:
-            m.start()
+        if stop_flag.is_set() or monitors is None:
+            client.close()
+            return
 
         logging.info(
             "autostream_core is now running with %d input(s). Press Ctrl+C to exit.",
@@ -1244,77 +1322,148 @@ def run_autostream(config_path: str, start_webui=None) -> None:
         )
 
         current: Optional[AudioMonitor] = None
+        reconnect_at: float = 0.0
+        _reloading = False
 
-        while not stop_flag.is_set():
-            if len(monitors) == 1:
-                # Single-input mode: keep behaviour simple and identical to
-                # earlier versions. Just ensure it's allowed to capture.
-                monitors[0].allow_capture = True
-                current = monitors[0]
-                time.sleep(1)
-                continue
+        try:
+            while not stop_flag.is_set():
 
-            # Multi-input coordination.
-            # 1) Find all monitors currently above their own threshold.
-            loud_monitors = [
-                m
-                for m in monitors
-                if m.current_level_sample >= m.silence_threshold_sample
-            ]
-            loud_monitors.sort(
-                key=lambda m: m.current_level_sample,
-                reverse=True,
-            )
-            candidate = loud_monitors[0] if loud_monitors else None
+                # ── Config reload requested by Web UI ────────────────────────
+                if reload_flag.is_set():
+                    reload_flag.clear()
+                    _reloading = True
+                    logging.info("Config reload requested; tearing down monitors.")
+                    break
 
-            new_current = current
+                # ── Reconnect if the socket was lost ─────────────────────────
+                if not client.is_connected():
+                    now = time.time()
+                    if now < reconnect_at:
+                        time.sleep(min(1.0, reconnect_at - now))
+                        continue
 
-            if current is None or not current.is_capturing:
-                # Nothing is currently playing: choose any loud candidate.
-                if candidate is not None:
-                    new_current = candidate
-            else:
-                silent_for = current.seconds_since_last_activity
-                if (
-                    candidate is not None
-                    and candidate is not current
-                    and SWITCH_SILENCE_SECONDS <= silent_for < current.silence_seconds
-                ):
-                    # Current input has been silent for long enough, but not so
-                    # long that it has fully timed out. Switch to the other
-                    # input which is now active.
-                    new_current = candidate
+                    if not client.connect():
+                        logging.warning(
+                            "autostream_monitor unavailable; retrying in 5 s.",
+                        )
+                        reconnect_at = time.time() + 5.0
+                        continue
 
-            # Apply selection if it changed.
-            if new_current is not current:
+                    # Reconnected: re-send the full configuration because the
+                    # daemon may have restarted and lost its state.
+                    if not _resync_monitor_daemon(client, monitors, fifo_path):
+                        reconnect_at = time.time() + 5.0
+                        current = None
+                        continue
+
+                # ── Poll status ───────────────────────────────────────────────
+                status = client.get_status()
+                if status is None:
+                    logging.warning("get_status() failed; will reconnect.")
+                    reconnect_at = time.time() + 2.0
+                    continue
+
+                status_by_index = {
+                    e["index"]: e for e in status.get("inputs", [])
+                }
+
+                # Two-pass update so that callbacks see the final state of ALL
+                # monitors, not a partially-updated snapshot.  This prevents
+                # spurious OwnTone stop/disable when one input hands off to
+                # another in the same poll cycle.
+                was_any_capturing = any_monitor_capturing()
+                started: list[AudioMonitor] = []
+                stopped: list[AudioMonitor] = []
+
                 for m in monitors:
-                    m.allow_capture = m is new_current
-                current = new_current
-                if current is not None:
-                    logging.info("Switched active input to %s", current.input_device)
+                    if m.input_index in status_by_index:
+                        transition = m._ingest_status(status_by_index[m.input_index])
+                        if transition == "started":
+                            started.append(m)
+                        elif transition == "stopped":
+                            stopped.append(m)
+
+                # Fire stopped callbacks first so any_monitor_capturing() is
+                # already correct when started callbacks check it.
+                for m in stopped:
+                    m._on_capture_stopped(client)
+                was_idle = not was_any_capturing
+                for m in started:
+                    m._on_capture_started(was_idle)
+
+                # ── Multi-input coordination ──────────────────────────────────
+                if len(monitors) == 1:
+                    monitors[0].allow_capture = True
+                    current = monitors[0]
                 else:
-                    logging.info("No active input selected.")
+                    # Rank inputs that are currently above their silence threshold
+                    # by level, highest first.
+                    loud = sorted(
+                        [m for m in monitors if not m.is_silent],
+                        key=lambda m: m.level_dbfs,
+                        reverse=True,
+                    )
+                    candidate = loud[0] if loud else None
+                    new_current = current
 
-            time.sleep(0.5)
+                    if current is None or not current.is_capturing:
+                        # Nothing playing: pick any loud candidate.
+                        if candidate is not None:
+                            new_current = candidate
+                    else:
+                        silent_for = current.seconds_since_last_activity
+                        if (
+                            candidate is not None
+                            and candidate is not current
+                            and SWITCH_SILENCE_SECONDS <= silent_for < current.silence_seconds
+                        ):
+                            # Current has been silent long enough but not timed
+                            # out yet; hand off to the louder candidate.
+                            new_current = candidate
 
-    except Exception as e:  # noqa: BLE001
-        logging.error("Unexpected error: %s", e)
+                    if new_current is not current:
+                        for m in monitors:
+                            m.allow_capture = m is new_current
+                        current = new_current
+                        if current is not None:
+                            logging.info(
+                                "Switched active input to %s.", current.input_device,
+                            )
+                        else:
+                            logging.info("No active input selected.")
 
-    finally:
-        for m in monitors:
-            m.stop()
-        logging.info("Stopped cleanly.")
+                # ── Flush pending allow_capture changes and OwnTone retries ───
+                for m in monitors:
+                    m.apply_allow_capture(client)
+                    m._maybe_retry_owntone(time.time())
 
+                time.sleep(POLL_INTERVAL)
+
+        except Exception as e:
+            logging.error("Unexpected error: %s", e)
+
+        finally:
+            for m in monitors:
+                client.stop_input(m.input_index)
+                m.stop()
+            with _monitors_lock:
+                all_monitors.clear()
+            client.close()
+            if not _reloading:
+                logging.info("Stopped cleanly.")
+
+        if not _reloading:
+            break
+        # _reloading: continue outer loop → startup phase runs again with fresh config
 
 
 def main() -> None:
-    """CLI entrypoint for running autostream without the web UI."""
+    """CLI entry point for running autostream without the web UI."""
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} PATH_TO_CONFIG.ini")
         sys.exit(1)
 
-    config_path = sys.argv[1]
-    run_autostream(config_path)
+    run_autostream(sys.argv[1])
 
 
 if __name__ == "__main__":

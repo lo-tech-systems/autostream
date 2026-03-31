@@ -18,23 +18,26 @@ fifo_path = /tmp/autostream-pipes/autostream
 silence_seconds = 30           ; length of time of continuous silence before stopping
 
 [audio1]
-capture_device = Cubilux SPDIF ; sounddevice input device name or index (run "python3 -m sounddevice" to see list)
-arecord_format = dat           ; ALSA sample format (e.g. cd, dat) (legacy/unused)
+capture_device = hw:1,0        ; ALSA hw identifier reported by autostream_monitor
 silence_threshold = -66        ; dBFS threshold (e.g. -66 ~= 16/32767)
+gain_db = 0                    ; input gain before EQ
+eq_40hz_db = 0                 ; sub-bass bell at 40 Hz (Q=0.707)
+eq_100hz_db = 0                ; bass shelf at 100 Hz
+eq_10khz_db = 0                ; treble shelf at 10 kHz
 
 [audio2]
 enabled = no                   ; set to yes to enable this channel
-capture_device = Cubilux SPDIF ; sounddevice input device name or index (run "python3 -m sounddevice" to see list)
-arecord_format = dat           ; ALSA sample format (e.g. cd, dat) (legacy/unused)
+capture_device = hw:2,0        ; ALSA hw identifier reported by autostream_monitor
 silence_threshold = -66        ; dBFS threshold (e.g. -66 ~= 16/32767)
+gain_db = 0                    ; input gain before EQ
+eq_40hz_db = 0                 ; sub-bass bell at 40 Hz (Q=0.707)
+eq_100hz_db = 0                ; bass shelf at 100 Hz
+eq_10khz_db = 0                ; treble shelf at 10 kHz
 
 [owntone]
 base_url = http://localhost:3689
 output_name = Kitchen Speaker
 volume_percent = 20
-
-[ffmpeg]
-ffmpeg_out_rate = 44100        ; output rate for ffmpeg
 
 [webui]
                                ; hidden_outputs are not shown on the volume control screen
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 import stat
 import threading
 import configparser
@@ -83,15 +87,11 @@ def load_config(path: str) -> configparser.ConfigParser:
 @dataclass(frozen=True)
 class AudioInputConfig:
     capture_device: str
-    arecord_format: str
     silence_threshold_dbfs: float
-
-
-@dataclass(frozen=True)
-class FFmpegConfig:
-    out_rate: int
-    in_rate1: int
-    in_rate2: int
+    gain_db: float
+    eq_40hz_db: float
+    eq_100hz_db: float
+    eq_10khz_db: float
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,6 @@ class AutostreamConfig:
     audio1: AudioInputConfig
     audio2_enabled: bool
     audio2: AudioInputConfig
-    ffmpeg: FFmpegConfig
     owntone: OwntoneConfig
     webui: WebUIConfig
 
@@ -161,14 +160,6 @@ def _split_list(raw: str | None) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _infer_in_rate(arecord_format: str) -> int:
-    """
-    Infer input sample rate from arecord/PCM format.
-    Keep behavior identical to the previous core logic.
-    """
-    return 48000 if arecord_format == "dat" else 44100
-
-
 def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     # General
     log_file = cfg.get(
@@ -185,36 +176,40 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     )
 
     # Audio #1
-    capture_device1 = cfg.get("audio1", "input_device", fallback="").strip() \
-                 or cfg.get("audio1", "capture_device", fallback="default")
-    arecord_format1 = cfg.get("audio1", "arecord_format", fallback="dat")
+    capture_device1 = cfg.get("audio1", "capture_device", fallback="").strip() \
+                 or cfg.get("audio1", "input_device", fallback="").strip()
     silence_threshold1 = cfg.getfloat("audio1", "silence_threshold", fallback=-66.0)
+    gain_db1 = cfg.getfloat("audio1", "gain_db", fallback=0.0)
+    eq_40hz_db1 = cfg.getfloat("audio1", "eq_40hz_db", fallback=0.0)
+    eq_100hz_db1 = cfg.getfloat("audio1", "eq_100hz_db", fallback=0.0)
+    eq_10khz_db1 = cfg.getfloat("audio1", "eq_10khz_db", fallback=0.0)
 
     audio1 = AudioInputConfig(
         capture_device=capture_device1,
-        arecord_format=arecord_format1,
         silence_threshold_dbfs=silence_threshold1,
+        gain_db=gain_db1,
+        eq_40hz_db=eq_40hz_db1,
+        eq_100hz_db=eq_100hz_db1,
+        eq_10khz_db=eq_10khz_db1,
     )
 
     # Audio #2
     audio2_enabled = cfg.getboolean("audio2", "enabled", fallback=False)
-    capture_device2 = cfg.get("audio2", "input_device", fallback="").strip() \
-                 or cfg.get("audio2", "capture_device", fallback="default")
-    arecord_format2 = cfg.get("audio2", "arecord_format", fallback="dat")
+    capture_device2 = cfg.get("audio2", "capture_device", fallback="").strip() \
+                 or cfg.get("audio2", "input_device", fallback="").strip()
     silence_threshold2 = cfg.getfloat("audio2", "silence_threshold", fallback=-66.0)
+    gain_db2 = cfg.getfloat("audio2", "gain_db", fallback=0.0)
+    eq_40hz_db2 = cfg.getfloat("audio2", "eq_40hz_db", fallback=0.0)
+    eq_100hz_db2 = cfg.getfloat("audio2", "eq_100hz_db", fallback=0.0)
+    eq_10khz_db2 = cfg.getfloat("audio2", "eq_10khz_db", fallback=0.0)
 
     audio2 = AudioInputConfig(
         capture_device=capture_device2,
-        arecord_format=arecord_format2,
         silence_threshold_dbfs=silence_threshold2,
-    )
-
-    # ffmpeg
-    ffmpeg_out_rate = cfg.getint("ffmpeg", "ffmpeg_out_rate", fallback=44100)
-    ffmpeg = FFmpegConfig(
-        out_rate=ffmpeg_out_rate,
-        in_rate1=_infer_in_rate(arecord_format1),
-        in_rate2=_infer_in_rate(arecord_format2),
+        gain_db=gain_db2,
+        eq_40hz_db=eq_40hz_db2,
+        eq_100hz_db=eq_100hz_db2,
+        eq_10khz_db=eq_10khz_db2,
     )
 
     # Owntone per-output offsets (keyed by output id as string)
@@ -245,7 +240,6 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         audio1=audio1,
         audio2_enabled=audio2_enabled,
         audio2=audio2,
-        ffmpeg=ffmpeg,
         owntone=owntone,
         webui=webui,
     )
@@ -286,6 +280,10 @@ def _is_minimally_valid_ini(path: str) -> bool:
 # Cache: path -> ((mtime, size), unconfigured_bool)
 _unconfigured_lock = threading.Lock()
 _unconfigured_cache: dict[str, tuple[tuple[float, int], bool]] = {}
+_MONITOR_DEVICE_RE = re.compile(
+    r"^hw:(?:\d+,\d+|CARD=[^,]+,DEV=\d+)$",
+    re.IGNORECASE,
+)
 
 
 def _get_nonempty(cfg: configparser.ConfigParser, section: str, key: str) -> str:
@@ -296,13 +294,18 @@ def _get_nonempty(cfg: configparser.ConfigParser, section: str, key: str) -> str
         return ""
 
 
+def is_valid_monitor_device_id(device: str) -> bool:
+    """Return True if device is in an ALSA hw:* form accepted by autostream_monitor."""
+    return bool(_MONITOR_DEVICE_RE.fullmatch((device or "").strip()))
+
+
 def unconfigured(path: str) -> bool:
     """
     True if the system should be treated as unconfigured.
 
     Requires:
       - [general] fifo_path (non-empty)
-      - [audio1] input_device OR capture_device (non-empty)
+      - [audio1] capture_device OR legacy input_device in an ALSA hw:* format
       - [owntone] output_name (non-empty)
 
     Cached by (mtime, size) so we only re-parse when the INI changes.
@@ -335,17 +338,23 @@ def unconfigured(path: str) -> bool:
     else:
         fifo_path = _get_nonempty(cfg, "general", "fifo_path")
 
-        # Support both INI key names:
-        # - "input_device" (what you want)
-        # - "capture_device" (what parse_config currently reads) :contentReference[oaicite:1]{index=1}
+        # Support both INI key names during migration:
+        # - "capture_device" is the canonical key used by the current
+        #   monitor-based pipeline and Web UI.
+        # - "input_device" is accepted only for backward compatibility with
+        #   older INI files.
         audio1_dev = (
-            _get_nonempty(cfg, "audio1", "input_device")
-            or _get_nonempty(cfg, "audio1", "capture_device")
+            _get_nonempty(cfg, "audio1", "capture_device")
+            or _get_nonempty(cfg, "audio1", "input_device")
         )
 
         output_name = _get_nonempty(cfg, "owntone", "output_name")
 
-        is_unconfigured = not (fifo_path and audio1_dev and output_name)
+        is_unconfigured = not (
+            fifo_path
+            and is_valid_monitor_device_id(audio1_dev)
+            and output_name
+        )
 
     # Update cache
     with _unconfigured_lock:

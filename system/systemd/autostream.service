@@ -1,7 +1,8 @@
 [Unit]
 Description=Autostream Owntone bridge
-After=network-online.target sound.target systemd-udev-settle.service
-Wants=network-online.target systemd-udev-settle.service
+After=network-online.target sound.target systemd-udev-settle.service autostream_monitor.service
+Wants=network-online.target systemd-udev-settle.service autostream_monitor.service
+Requires=autostream_monitor.service
 
 [Service]
 # Run as the autostream user

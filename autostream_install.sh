@@ -310,7 +310,7 @@ show_warnings_and_prompt() {
 AUTOSTREAM INSTALLER
 =============================================================================
 This script will:
-- Install OS packages (nginx, ffmpeg, owntone, watchdog, dnsmasq, etc.)
+- Install OS packages (nginx, owntone, watchdog, dnsmasq, build tools, etc.)
 - Enable/disable systemd services
 - Create system users/groups and modify permissions
 - Modify /boot/firmware/config.txt to enable the hardware watchdog
@@ -663,23 +663,18 @@ fi
   # Platform libraries
   # Note - flask is required for autostream_wifi_watcher so must be system level.
   apt_install git build-essential libffi-dev pkg-config jq fq acl \
-    libportaudio2 portaudio19-dev python3-dev python3-venv python3-pip python3-flask
+    libasound2-dev libsamplerate0-dev python3-dev python3-venv python3-pip python3-flask
 
   # Platform services
   apt_install watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
   # Application services
-  apt_install nginx ffmpeg owntone
+  apt_install nginx owntone
   systemctl enable owntone
 
-  # Python libraries. Anything that fails will be installed by pip later hence can ignore
-  # failures. It just saves compiling e.g. numpy, which takes hours on a Pi Zero.
-  # There doesn't seem to be a python3-sounddevice on trixie, so we install it via pip later.
+  # Python libraries. Anything that fails will be installed by pip later, so
+  # failures here are non-fatal; this mainly speeds up the venv install.
   apt_install --soft python3-requests
-  apt_install --soft python3-numpy
-  apt_install --soft python3-flask-sqlalchemy
-  apt_install --soft python3-yaml
-  apt_install --soft python3-cffi
 
   # sdmon (only when enabled)
   if [[ -n "${SDMON_VENDOR}" ]]; then
@@ -804,12 +799,27 @@ PYOWNTONE
   # Copy in files
   ###########################################
   info "Deploying autostream files to ${INSTALL_DIR}"
+  # Remove stale dependency lockfiles from previous installs before copying the
+  # new tree.  Otherwise an old requirements.lock can survive repo upgrades and
+  # keep reinstalling packages that are no longer part of the project.
+  rm -f "${INSTALL_DIR}/requirements.lock"
   cp -a "${AUTOSTREAM_DIR}/core/." "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/version" "${INSTALL_DIR}/"
   if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" ]]; then
     cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
   fi
+
+  ###########################################
+  # Build autostream_monitor
+  ###########################################
+  info "Building autostream_monitor"
+  mkdir -p "${INSTALL_DIR}/monitor"
+  g++ -std=c++17 -O2 \
+    -o "${INSTALL_DIR}/monitor/autostream_monitor" \
+    "${INSTALL_DIR}/monitor/autostream_monitor.cpp" \
+    -lasound -lsamplerate -lpthread
+  chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 
   # Keep autostream FIFO in a dedicated subdirectory to avoid scanning unrelated
   # transient files under /tmp.
@@ -864,6 +874,7 @@ PYOWNTONE
   # systemd services (install explicit units to avoid clobbering unrelated files)
   info "Installing systemd units"
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service" /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service" /etc/systemd/system/
 
   if [[ -n "${SDMON_VENDOR}" ]]; then
     install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
@@ -881,7 +892,8 @@ PYOWNTONE
     patch_sdmon_service_vendor "${SDMON_VENDOR}"
     systemctl enable autostream_sdcardhealth.timer
   fi
-
+ 
+  systemctl enable autostream_monitor.service
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
 
