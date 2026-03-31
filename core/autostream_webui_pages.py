@@ -1100,6 +1100,8 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
       <div class="container">
       <div class="airplay-masthead">
         <div class="airplay-brand">{BANNER_HTML}</div>
+      </div>
+      <div class="airplay-top-controls">
         <div class="airplay-refresh-wrap">
           <button type="button"
                   class="pill-btn"
@@ -1107,11 +1109,6 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
                   title="Reload page to refresh speakers">
             ↻ Refresh
           </button>
-        </div>
-      </div>
-      <div class="airplay-status-strip">
-        <div id="input-level-row" class="pill-row input-level-row" {'hidden' if not input_levels_html else ''}>
-          {input_levels_html}
         </div>
         <span id="status-pill"
               class="pill status-pill status-{status_class}">
@@ -1121,6 +1118,11 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
       {A2HS_PROMPT_HTML}
       <div id="outputs-list">{outputs_html}</div>
+      <div class="home-input-level-wrap" id="home-input-level-wrap" {'hidden' if not input_levels_html else ''}>
+        <div id="input-level-row" class="pill-row input-level-row">
+          {input_levels_html}
+        </div>
+      </div>
       <br />
       <p class="actions" style="margin-top:1rem;display:flex;gap:0.75rem;">
         <a href="/about" class="pill-btn" style="flex:1;text-align:center;">About</a>

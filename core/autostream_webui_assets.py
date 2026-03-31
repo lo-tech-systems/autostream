@@ -387,7 +387,8 @@ button[type=submit]:active {
 }
 
 .banner-logo {
-  max-width: 44%;
+  width: 100%;
+  max-width: 100%;
   height: auto;
   display: block;
   margin: 0;
@@ -412,15 +413,11 @@ button[type=submit]:active {
 }
 
 .airplay-brand .banner-logo {
-  width: clamp(150px, 54vw, 340px);
+  width: 100%;
   max-width: 100%;
   height: auto;
   display: block;
   margin: 0;
-}
-
-.airplay-refresh-wrap {
-  flex: 0 0 auto;
 }
 
 .airplay-refresh-wrap .pill-btn {
@@ -428,7 +425,7 @@ button[type=submit]:active {
   font-size: 0.85rem;
 }
 
-.airplay-status-strip {
+.airplay-top-controls {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -436,12 +433,7 @@ button[type=submit]:active {
   margin-bottom: 0.75rem;
 }
 
-.airplay-status-strip .input-level-row {
-  margin: 0;
-  flex: 1 1 auto;
-}
-
-.airplay-status-strip .status-pill {
+.airplay-top-controls .status-pill {
   flex: 0 0 auto;
 }
 
@@ -456,6 +448,18 @@ button[type=submit]:active {
   background: #e9ecef;
   color: #495057;
   font-size: 0.82rem;
+}
+
+.home-input-level-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.home-input-level-wrap .input-level-row {
+  justify-content: center;
+  margin-top: 0;
 }
 
 .input-level-pill-active {
