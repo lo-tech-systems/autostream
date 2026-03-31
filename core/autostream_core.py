@@ -1029,6 +1029,15 @@ def _resync_monitor_daemon(
     for m in monitors:
         m._allow_capture_sent = None
 
+    # Stop all inputs before reconfiguring.  The daemon may not have restarted
+    # (the connection could have dropped due to a transient timeout while the
+    # coordinator was blocked in OwnTone callbacks), in which case the inputs
+    # are still running and configure_input / start_input would fail.
+    # api_stop_input is idempotent — it is a safe no-op if the input is not
+    # currently started.
+    for m in monitors:
+        client.stop_input(m.input_index)
+
     for m in monitors:
         if not client.configure_input(
             m.input_index,
@@ -1098,6 +1107,13 @@ def _configure_startup_monitors(
     fifo_path: str,
 ) -> Optional[list["AudioMonitor"]]:
     """Configure daemon inputs for initial startup and return monitor objects."""
+    # Defensively stop both inputs before configuring.  If a previous reload
+    # left the daemon with inputs still running (e.g. stop_input in the finally
+    # block failed silently due to a lost connection), configure_input and
+    # start_input would otherwise fail.  api_stop_input is idempotent.
+    client.stop_input(1)
+    client.stop_input(2)
+
     if not client.configure_input(
         1,
         cfg.audio1.capture_device,

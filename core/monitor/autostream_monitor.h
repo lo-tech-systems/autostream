@@ -706,10 +706,13 @@ private:
                                   std::vector<int16_t>* snapshot_out);
 
     // Idle clients that send no command within this many seconds are disconnected.
-    // Keeping this short ensures a dead Python client (e.g. mid-restart) is
-    // detected and cleaned up well within Python's own reconnect timeout (5 s),
-    // preventing accept_loop from stalling on _clients_mutex contention.
-    static constexpr int CLIENT_TIMEOUT_SECONDS = 5;
+    // Must be long enough to cover the coordinator's OwnTone HTTP callbacks
+    // (owntone_disable_all_outputs + output-selection retries, each up to 3 s,
+    // potentially chained for ~12 s when OwnTone is slow).  20 s gives adequate
+    // headroom while still being short enough that a dead Python client (e.g.
+    // mid-restart) is cleaned up well before Python's own 5 s connect timeout
+    // would fire on a second reconnect attempt.
+    static constexpr int CLIENT_TIMEOUT_SECONDS = 20;
 
     AudioMonitor&     _monitor;
     int               _server_fd = -1;
