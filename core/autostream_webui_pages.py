@@ -729,12 +729,12 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
     except Exception as e:
         error = error or f"Could not reach Owntone at {owntone_base_url}"
 
-    # Sort with default always first, then selected outputs, then name.
+    # Keep the configured default output at the top; otherwise use a stable
+    # alphabetical order regardless of whether an output is currently enabled.
     outputs = sorted(
         outputs,
         key=lambda o: (
             0 if (o.get("name") == default_output_name) else 1,
-            0 if bool(o.get("selected", False)) else 1,
             str(o.get("name") or "").casefold(),
         ),
     )
@@ -802,13 +802,6 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
             const da = a.getAttribute('data-is-default') === '1' ? 1 : 0;
             const db = b.getAttribute('data-is-default') === '1' ? 1 : 0;
             if (db !== da) return db - da;
-            const ida = a.getAttribute('data-output-id') || '';
-            const idb = b.getAttribute('data-output-id') || '';
-            const cba = document.getElementById('output_enabled_' + ida);
-            const cbb = document.getElementById('output_enabled_' + idb);
-            const ona = cba && cba.checked ? 1 : 0;
-            const onb = cbb && cbb.checked ? 1 : 0;
-            if (onb !== ona) return onb - ona;
             const la = a.querySelector('.output-card-name');
             const lb = b.querySelector('.output-card-name');
             const na = ((la && la.textContent) || '').trim().toLowerCase();
