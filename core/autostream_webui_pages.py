@@ -1284,13 +1284,21 @@ def send_setup_page(
           {eq_controls("audio1", parsed.audio1.eq_40hz_db, parsed.audio1.eq_100hz_db, parsed.audio1.eq_10khz_db, 1) if not initial_setup else ""}
         </fieldset>
         <fieldset><legend>Audio input #2 (optional)</legend>
-          <label><input type="checkbox" name="audio2_enabled" {'checked' if parsed.audio2_enabled else ''}> Enable</label>
-          <label>Input device: <select name="audio2_capture_device">{build_opts(parsed.audio2.capture_device)}</select></label>
-          <label><div class="slider-header"><span>Threshold:</span><span id="audio2_silence_threshold_val">{parsed.audio2.silence_threshold_dbfs} dB</span></div>
-          <input type="range" min="-90" max="0" value="{parsed.audio2.silence_threshold_dbfs}" oninput="syncThr(2,this.value)">
-          <input type="hidden" id="audio2_silence_threshold" name="audio2_silence_threshold" value="{parsed.audio2.silence_threshold_dbfs}"></label>
-          {gain_control("audio2", parsed.audio2.gain_db, 2) if not initial_setup else ""}
-          {eq_controls("audio2", parsed.audio2.eq_40hz_db, parsed.audio2.eq_100hz_db, parsed.audio2.eq_10khz_db, 2) if not initial_setup else ""}
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="audio2_enabled" {'checked' if parsed.audio2_enabled else ''} onchange="onAudio2Toggle(this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Enable</span>
+          </div>
+          <div id="audio2_settings" style="display:{'block' if parsed.audio2_enabled else 'none'};">
+            <label>Input device: <select name="audio2_capture_device">{build_opts(parsed.audio2.capture_device)}</select></label>
+            <label><div class="slider-header"><span>Threshold:</span><span id="audio2_silence_threshold_val">{parsed.audio2.silence_threshold_dbfs} dB</span></div>
+            <input type="range" min="-90" max="0" value="{parsed.audio2.silence_threshold_dbfs}" oninput="syncThr(2,this.value)">
+            <input type="hidden" id="audio2_silence_threshold" name="audio2_silence_threshold" value="{parsed.audio2.silence_threshold_dbfs}"></label>
+            {gain_control("audio2", parsed.audio2.gain_db, 2) if not initial_setup else ""}
+            {eq_controls("audio2", parsed.audio2.eq_40hz_db, parsed.audio2.eq_100hz_db, parsed.audio2.eq_10khz_db, 2) if not initial_setup else ""}
+          </div>
         </fieldset>
         <fieldset><legend>Playback</legend>
           <label>Default Speakers:
@@ -1330,6 +1338,7 @@ def send_setup_page(
         const gainTimers = {{}};
         const eqTimers = {{}};
         const eqLiveEnabled = {str(not initial_setup).lower()};
+        function onAudio2Toggle(checked){{document.getElementById('audio2_settings').style.display=checked?'block':'none';}}
         function syncVol(v){{document.getElementById('owntone_volume_percent').value=v;document.getElementById('vol_val').textContent=v+'%';}}
         function syncThr(w,v){{var i=w==1?'audio_silence_threshold':'audio2_silence_threshold';document.getElementById(i).value=v;document.getElementById(i+'_val').textContent=v+' dB';}}
         function eqPrefix(inputIndex){{ return inputIndex===1 ? 'audio1' : 'audio2'; }}
@@ -1587,9 +1596,23 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         speakers_html += f"""
           <fieldset><legend>{html.escape(spk)}</legend>
           <input type="hidden" name="spk_{i}" value="{html.escape(spk)}">
-          <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" name="show_{i}" {'checked' if show else ''}> Show in autostream</label>
-          <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" name="ap2_{i}" {'checked' if ap2 else ''}> Use AirPlay2</label>
-          {offset_html}
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="show_{i}" {'checked' if show else ''} onchange="onShowToggle({i}, this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Show in autostream</span>
+          </div>
+          <div id="spk_settings_{i}" style="display:{'block' if show else 'none'};">
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
+              <label class="output-toggle" style="margin:0;">
+                <input type="checkbox" name="ap2_{i}" {'checked' if ap2 else ''}>
+                <span class="switch"></span>
+              </label>
+              <span>Use AirPlay 2</span>
+            </div>
+            {offset_html}
+          </div>
           </fieldset>
         """
 
@@ -1615,10 +1638,22 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
         {speakers_html}
         <fieldset><legend>Audio</legend>
-          <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" name="uncompressed_alac" {'checked' if uncompressed else ''}> Use uncompressed audio</label>
+          <div style="display:flex;align-items:center;gap:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="uncompressed_alac" {'checked' if uncompressed else ''}>
+              <span class="switch"></span>
+            </label>
+            <span>Use uncompressed audio</span>
+          </div>
         </fieldset>
         <p class="actions"><button type="submit">{submit_label}</button></p>
-      </form></div></body></html>
+      </form></div>
+      <script>
+        function onShowToggle(i, checked){{
+          document.getElementById('spk_settings_' + i).style.display = checked ? 'block' : 'none';
+        }}
+      </script>
+      </body></html>
     """)
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)
