@@ -438,6 +438,24 @@ def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "su
 
     return ("", "")
 
+
+def _status_text_for_home(is_playing: bool, input_levels: list[dict]) -> str:
+    """Return home-page status text based on the currently active input."""
+    if not is_playing:
+        return "Waiting"
+
+    active_label = ""
+    for lv in input_levels:
+        if lv.get("is_above_threshold"):
+            active_label = str(lv.get("label") or "").strip()
+            break
+
+    if active_label.startswith("In") and active_label[2:].isdigit():
+        return f"Playing Input {active_label[2:]}"
+    if active_label:
+        return f"Playing {active_label}"
+    return "Playing"
+
 def get_app_version() -> str:
     """Return application version from ./version file."""
     try:
@@ -700,23 +718,24 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
     except Exception:
         is_playing = False
 
-    status_text = "Playing" if is_playing else "Waiting"
-    status_class = "playing" if is_playing else "waiting"
-
     try:
         input_levels = get_monitor_levels_dbfs()
     except Exception:
         input_levels = []
 
+    status_text = _status_text_for_home(is_playing, input_levels)
+    status_class = "playing" if is_playing else "waiting"
+
     input_levels_html = ""
     for lv in input_levels:
-        label = html.escape(str(lv.get("label", "In")))
+        label = html.escape(str(lv.get("label", "Input ")))
         dbfs = float(lv.get("dbfs", -90.0))
-        detected_hz = float(lv.get("detected_hz", 0.0))
-        hz_txt = f" @ {detected_hz:.1f} Hz" if detected_hz > 0 else ""
+        detected_hz = float(lv.get("detected_hz", 0.0)) / 1000.0
+        hz_txt = f" ({detected_hz:.3f} kHz)" if detected_hz > 0 else ""
         extra_cls = " input-level-pill-active" if lv.get("is_above_threshold") else ""
         input_levels_html += (
-            f'<span class="pill status-pill input-level-pill{extra_cls}">{label}: {dbfs:.1f} dB{hz_txt}</span>'
+            f'<span class="pill status-pill input-level-pill{extra_cls}">'
+            f'{label}{hz_txt}: {dbfs:.1f} dB</span>'
         )
 
     outputs = []
@@ -1009,21 +1028,25 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
         }}
         function renderInputLevels(levels){{
           var row = document.getElementById('input-level-row');
+          var wrap = document.getElementById('home-input-level-wrap');
           if(!row) return;
           if(!Array.isArray(levels) || levels.length===0){{
             row.hidden = true;
+            if (wrap) wrap.hidden = true;
             row.innerHTML = '';
             return;
           }}
           row.hidden = false;
+          if (wrap) wrap.hidden = false;
           row.innerHTML = levels.map(function(lv){{
-            var label = escapeHtml(String((lv && lv.label) || 'In'));
+            var label = escapeHtml(String((lv && lv.label) || 'Input '));
             var db = Number(lv && lv.dbfs);
             var hz = Number(lv && lv.detected_hz);
             var txt = Number.isFinite(db) ? db.toFixed(1) + ' dB' : '-- dB';
-            if(Number.isFinite(hz) && hz > 0) txt += ' @ ' + hz.toFixed(1) + ' Hz';
+            var hzTxt = '';
+            if (Number.isFinite(hz) && hz > 0) hzTxt = ' (' + (hz / 1000).toFixed(3) + ' kHz)';
             var cls = (lv && lv.is_above_threshold) ? ' input-level-pill-active' : '';
-            return '<span class="pill status-pill input-level-pill' + cls + '">' + label + ': ' + txt + '</span>';
+            return '<span class="pill status-pill input-level-pill' + cls + '">' + label + hzTxt + ': ' + txt + '</span>';
           }}).join('');
         }}
         function refreshStatus(){{
@@ -1129,7 +1152,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
         <a href="/setup" class="pill-btn" style="flex:1;text-align:center;">Setup</a>
       </p>
       <p style="margin-top:0.25rem; text-align:center;">
-        <small>Copyright &copy; 2025-2026 Lo-tech Systems Limited.<br><strong>lo-tech.co.uk/autostream</strong></small>
+        <small>Copyright &copy; Lo-tech Systems Limited.<br><strong>lo-tech.co.uk/autostream</strong></small>
       </p></div>{A2HS_SCRIPT}</body></html>
     """)
     body_bytes = html_body.encode("utf-8")
@@ -1276,16 +1299,15 @@ def send_setup_page(
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
       <form method="POST" action="/setup">
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
-        <fieldset><legend>Audio input #1</legend>
+        <fieldset><legend>Input 1</legend>
           <label>Input device: <select name="audio_capture_device">{build_opts(parsed.audio1.capture_device)}</select></label>
-          <div class="helptext">Devices are discovered from the autostream monitor daemon and saved using their ALSA hardware ids.</div>
           <label><div class="slider-header"><span>Threshold:</span><span id="audio_silence_threshold_val">{parsed.audio1.silence_threshold_dbfs} dB</span></div>
           <input type="range" min="-90" max="0" value="{parsed.audio1.silence_threshold_dbfs}" oninput="syncThr(1,this.value)">
           <input type="hidden" id="audio_silence_threshold" name="audio_silence_threshold" value="{parsed.audio1.silence_threshold_dbfs}"></label>
           {gain_control("audio1", parsed.audio1.gain_db, 1) if not initial_setup else ""}
           {eq_controls("audio1", parsed.audio1.eq_40hz_db, parsed.audio1.eq_100hz_db, parsed.audio1.eq_10khz_db, 1) if not initial_setup else ""}
         </fieldset>
-        <fieldset><legend>Audio input #2 (optional)</legend>
+        <fieldset><legend>Input 2</legend>
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
             <label class="output-toggle" style="margin:0;">
               <input type="checkbox" name="audio2_enabled" {'checked' if parsed.audio2_enabled else ''} onchange="onAudio2Toggle(this.checked)">
@@ -1792,7 +1814,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         input_levels = []
     send_json(handler, 200, {
         "playing": is_playing,
-        "status_text": "Playing" if is_playing else "Waiting",
+        "status_text": _status_text_for_home(is_playing, input_levels),
         "status_class": "playing" if is_playing else "waiting",
         "input_levels": input_levels,
     })

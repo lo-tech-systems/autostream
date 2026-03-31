@@ -114,7 +114,7 @@ def get_monitor_levels_dbfs() -> list[dict]:
         snapshot = list(all_monitors)
     for idx, mon in enumerate(snapshot, start=1):
         levels.append({
-            "label": f"In{idx}",
+            "label": f"Input {idx}",
             "dbfs": round(mon.level_dbfs, 1),
             "detected_hz": round(mon.detected_hz, 1),
             "is_above_threshold": not mon.is_silent,
