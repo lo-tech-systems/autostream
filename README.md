@@ -44,7 +44,7 @@ Everything runs locally on your network. There are no cloud services, logons, re
 
 **autostream** includes a lightweight web interface designed to feel like a native app on iPhone and iPad. Add it to your home screen for quick access to volume controls and speaker selection.
 
-![autostream playback control](docs/autostream-playback-control.png)
+![autostream playback control](docs/Autostream-RC6-Screenshots.png)
 
 * Mobile-friendly layout
 * PIN-protected setup screen
