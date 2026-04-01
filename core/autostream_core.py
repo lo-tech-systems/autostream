@@ -41,6 +41,7 @@ except ImportError:  # Optional recognizer; core should run without it.
 from autostream_owntone import (
     owntone_disable_all_outputs,
     owntone_config_ok,
+    owntone_check_api_settings,
     owntone_restart_service,
     owntone_ensure_pipe_indexed,
     OWNTONE_OK,
@@ -1239,7 +1240,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     cfg_status = owntone_config_ok()
     if cfg_status == OWNTONE_OK:
         logging.info(
-            "OwnTone config OK (directories=/tmp/autostream-pipes, pipe_autostart enabled).",
+            "OwnTone config OK (directories=/tmp/autostream-pipes).",
         )
     elif cfg_status == OWNTONE_RESTART_REQUIRED:
         logging.warning(
@@ -1320,6 +1321,30 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                         "OwnTone pipe source is not indexed yet; "
                         "playback start may fail until files rescan succeeds.",
                     )
+
+                # Check pipe_autostart and loglevel via the settings API.
+                # Falls back silently on older OwnTone builds that lack these endpoints.
+                api_needs_restart = owntone_check_api_settings(cfg.owntone.base_url)
+                if api_needs_restart:
+                    logging.warning(
+                        "OwnTone API settings were corrected; restarting OwnTone."
+                    )
+                    try:
+                        if owntone_restart_service():
+                            logging.info(
+                                "Requested OwnTone restart (API settings fix)."
+                            )
+                            owntone_ensure_pipe_indexed(
+                                cfg.owntone.base_url, timeout_s=15.0
+                            )
+                        else:
+                            logging.warning(
+                                "OwnTone restart request failed (API settings fix)."
+                            )
+                    except Exception as e:
+                        logging.warning(
+                            "Could not restart OwnTone after API settings fix: %s", e
+                        )
 
             monitors = _configure_startup_monitors(client, cfg, fifo_path)
             if monitors is not None:

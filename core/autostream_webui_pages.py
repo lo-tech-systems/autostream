@@ -59,6 +59,9 @@ from autostream_owntone import (
     write_and_set_global_uncompressed_audio,
     read_airplay2_for_speaker,
     write_airplay2_for_speaker,
+    _coerce_owntone_bool,
+    owntone_get_setting,
+    owntone_put_setting,
     OWNTONE_CONF_PATH,
 )
 
@@ -1582,7 +1585,16 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         ),
     )
     
-    uncompressed = bool(read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH))
+    # Try API first (requires OwnTone settings endpoint); fall back to conf file.
+    _uncompressed_api = owntone_get_setting(
+        parsed.owntone.base_url, "airplay", "uncompressed_alac"
+    )
+    _uncompressed_api_bool = _coerce_owntone_bool(_uncompressed_api.value)
+    uncompressed = (
+        bool(_uncompressed_api_bool)
+        if _uncompressed_api.available and _uncompressed_api.ok and _uncompressed_api_bool is not None
+        else bool(read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH))
+    )
     
     speakers_html = ""
     for i, spk in enumerate(all_names):
@@ -2257,32 +2269,59 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             except Exception:
                 cfg.set("owntone_offsets", str(oid), "0")
 
+        # uncompressed_alac: try API first (takes effect next AirPlay session,
+        # no restart needed); fall back to conf write if endpoint unavailable.
+        want_uncompressed_audio = ("uncompressed_alac" in form)
+        base_url = cfg.get("owntone", "base_url", fallback="http://localhost:3689")
+        api_set_uncompressed = owntone_put_setting(
+            base_url, "airplay", "uncompressed_alac", want_uncompressed_audio
+        )
+        if api_set_uncompressed.available and not api_set_uncompressed.ok:
+            raise RuntimeError("Could not update OwnTone uncompressed_alac via API")
+
+        restart_required = False
+
         # Keep config write + owntone.conf edits together under one lock, so two
         # concurrent saves can't interleave and produce inconsistent results.
         with CONFIG_IO_LOCK:
             with open(state.config_path, "w", encoding="utf-8") as f:
                 cfg.write(f)
 
-            # Update owntone.conf
+            # Update owntone.conf (airplay mode per speaker — conf write still
+            # required until Change 1 migrates this to PUT /api/outputs/{id}).
             for spk, _show, ap2 in speakers:
-                write_airplay2_for_speaker(spk, ap2, OWNTONE_CONF_PATH)
+                current_ap2 = read_airplay2_for_speaker(spk, OWNTONE_CONF_PATH)
+                if current_ap2 is None or bool(current_ap2) != bool(ap2):
+                    if not write_airplay2_for_speaker(spk, ap2, OWNTONE_CONF_PATH):
+                        raise RuntimeError(f"Could not update AirPlay mode for speaker {spk!r}")
+                    restart_required = True
 
-            want_uncompressed_audio = ("uncompressed_alac" in form)
-            write_and_set_global_uncompressed_audio(
-                enabled=want_uncompressed_audio,
-                conf_path=OWNTONE_CONF_PATH,
-            )
+            if not api_set_uncompressed.available:
+                current_uncompressed = bool(
+                    read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH)
+                )
+                if current_uncompressed != bool(want_uncompressed_audio):
+                    if not write_and_set_global_uncompressed_audio(
+                        enabled=want_uncompressed_audio,
+                        conf_path=OWNTONE_CONF_PATH,
+                    ):
+                        raise RuntimeError("Could not update OwnTone uncompressed_alac setting")
+                    restart_required = True
 
-        # Restart Owntone asynchronously so we don't hold the POST open during restart
-        # (important when running behind nginx on slower hardware like Pi Zero).
-        start_owntone_restart_async(state)
+        # Restart Owntone only when a conf-backed setting actually changed.
+        if restart_required:
+            # Important on slower hardware like Pi Zero: do restart asynchronously.
+            start_owntone_restart_async(state)
 
         # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
         _set_flash_cookie(handler, "Settings saved", max_age=30)
 
-       # Redirect immediately to a restarting page which polls /api/owntone/ready.
         next_path = "/setup"
-        loc = "/owntone-restarting?next=" + quote(next_path, safe="/?=&")
+        loc = (
+            "/owntone-restarting?next=" + quote(next_path, safe="/?=&")
+            if restart_required
+            else next_path
+        )
 
         handler.send_response(303)  # See Other (safe after POST)
         handler.send_header("Location", loc)

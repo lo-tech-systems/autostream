@@ -7,6 +7,7 @@ Provides access to OwnTone - both via it's API, and via it's configuration file
 
 from pathlib import Path
 from typing import Optional
+from dataclasses import dataclass
 
 import logging
 import os
@@ -26,11 +27,6 @@ OWNTONE_CONF_PATH = Path(
     os.environ.get("OWNTONE_CONF", "/opt/autostream/owntone/owntone.conf")
 ).expanduser().resolve()
 OWNTONE_CONF_DIR = OWNTONE_CONF_PATH.parent
-
-# owntone_config_ok() return values
-OWNTONE_OK = 0
-OWNTONE_RESTART_REQUIRED = 1
-OWNTONE_NOT_OK = -1
 
 def get_owntone_output_id(base_url: str, output_name: str) -> Optional[int]:
     """Return the Owntone output ID matching `output_name`, or None if not found."""
@@ -314,6 +310,95 @@ def _bool_to_conf(v: bool) -> str:
     return "true" if v else "false"
 
 
+def _coerce_owntone_bool(value: object) -> Optional[bool]:
+    """Parse a bool-like OwnTone setting value into True/False/None."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        return _parse_bool(value)
+    return None
+
+
+def _coerce_owntone_int(value: object) -> Optional[int]:
+    """Parse an int-like OwnTone setting value into int/None."""
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def read_pipe_autostart_from_conf(conf_path: Path | str = OWNTONE_CONF_PATH) -> Optional[bool]:
+    """Return library.pipe_autostart from owntone.conf, or None if unavailable."""
+    path = Path(conf_path)
+    text = _read_text(path)
+    if not text:
+        return None
+
+    span = _find_block_span(text, re.compile(r"(?m)^\s*library\s*\{\s*$"))
+    if not span:
+        return None
+
+    block = text[span[0]:span[1]]
+    m = re.search(r"(?m)^\s*pipe_autostart\s*=\s*(?P<v>[^\s#]+)", block)
+    if not m:
+        return None
+    return _parse_bool(m.group("v"))
+
+
+def write_pipe_autostart_to_conf(
+    enabled: bool,
+    conf_path: Path | str = OWNTONE_CONF_PATH,
+) -> bool:
+    """Write library.pipe_autostart in owntone.conf."""
+    path = Path(conf_path)
+    text = _read_text(path)
+    if not text:
+        return False
+
+    lib_re = re.compile(r"(?m)^\s*library\s*\{\s*$")
+    span = _find_block_span(text, lib_re)
+    if not span:
+        return False
+
+    block = text[span[0]:span[1]]
+    line_re = re.compile(
+        r"(?m)^(?P<indent>\s*)(?:#\s*)?pipe_autostart\s*=\s*(?:true|false)(?P<rest>\s*(?:#.*)?)$"
+    )
+    m = line_re.search(block)
+    if m:
+        indent = m.group("indent")
+        rest = m.group("rest") or ""
+        new_line = f"{indent}pipe_autostart = {_bool_to_conf(bool(enabled))}{rest}"
+        new_block = block[:m.start()] + new_line + block[m.end():]
+    else:
+        close_idx = block.rfind("}")
+        if close_idx == -1:
+            return False
+        indent = "\t"
+        for ln in block.splitlines()[1:]:
+            if ln.strip() and not ln.lstrip().startswith("#"):
+                indent = re.match(r"^\s*", ln).group(0)  # type: ignore[union-attr]
+                break
+        ins = f"{indent}pipe_autostart = {_bool_to_conf(bool(enabled))}\n"
+        new_block = block[:close_idx] + ins + block[close_idx:]
+
+    new_text = text[:span[0]] + new_block + text[span[1]:]
+    try:
+        _atomic_write_text(path, new_text)
+    except Exception:
+        logger.exception("Failed writing %s", path)
+        return False
+
+    return True
+
+
 def read_and_set_global_pipe_directory(conf_path: Path | str = OWNTONE_CONF_PATH) -> str:
     """Read OwnTone's library.directories and set the global pipe directory.
 
@@ -582,6 +667,177 @@ def write_airplay2_for_speaker(speaker_name: str, enabled: bool, conf_path: Path
 
 
 # ---------------------------------------------------------------------------
+# OwnTone settings API helpers
+# ---------------------------------------------------------------------------
+
+# Integer severity used by OwnTone's runtime logger (logger.h: E_INFO = 3).
+# Range is E_FATAL (0) .. E_SPAM (5).
+OWNTONE_LOGLEVEL_INFO = 3
+
+
+@dataclass(frozen=True)
+class OwntoneSettingGetResult:
+    available: bool
+    ok: bool
+    value: Optional[object] = None
+
+
+@dataclass(frozen=True)
+class OwntoneSettingPutResult:
+    available: bool
+    ok: bool
+
+
+def owntone_get_setting(base_url: str, category: str, option: str) -> OwntoneSettingGetResult:
+    """GET /api/settings/{category}/{option} and return its 'value' field.
+
+    Returns a structured result so callers can distinguish:
+      - endpoint unavailable on older OwnTone builds (404)
+      - endpoint available but request/parse failed
+      - success with a parsed JSON "value"
+    """
+    url = base_url.rstrip("/") + f"/api/settings/{category}/{option}"
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 404:
+            return OwntoneSettingGetResult(available=False, ok=False, value=None)
+        resp.raise_for_status()
+        return OwntoneSettingGetResult(
+            available=True,
+            ok=True,
+            value=resp.json().get("value"),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Error reading OwnTone setting %s/%s: %s", category, option, e)
+        return OwntoneSettingGetResult(available=True, ok=False, value=None)
+
+
+def owntone_put_setting(
+    base_url: str,
+    category: str,
+    option: str,
+    value,
+) -> OwntoneSettingPutResult:
+    """PUT /api/settings/{category}/{option} with {"value": value}.
+
+    Returns a structured result so callers can distinguish endpoint
+    unavailability (404) from ordinary request failures.
+    """
+    url = base_url.rstrip("/") + f"/api/settings/{category}/{option}"
+    try:
+        resp = requests.put(url, json={"value": value}, timeout=5)
+        if resp.status_code == 404:
+            logger.debug(
+                "OwnTone setting %s/%s endpoint not available (404).", category, option
+            )
+            return OwntoneSettingPutResult(available=False, ok=False)
+        if not resp.ok:
+            logger.warning(
+                "OwnTone PUT settings/%s/%s failed: %s %s",
+                category, option, resp.status_code, resp.text,
+            )
+            return OwntoneSettingPutResult(available=True, ok=False)
+        return OwntoneSettingPutResult(available=True, ok=True)
+    except requests.RequestException as e:  # noqa: BLE001
+        logger.warning("Error writing OwnTone setting %s/%s: %s", category, option, e)
+        return OwntoneSettingPutResult(available=True, ok=False)
+
+
+def owntone_check_api_settings(base_url: str) -> bool:
+    """Check and fix pipe_autostart and loglevel via the OwnTone settings API.
+
+    Requires the OwnTone PR that adds /api/settings endpoints.  Falls back
+    gracefully (logs a debug message, returns False) when those endpoints
+    return 404 so that older OwnTone installations continue to work.
+
+    loglevel is corrected immediately (no restart needed).
+    pipe_autostart is corrected via API and requires a restart to take effect.
+
+    Returns True if OwnTone must be restarted for the changes to take effect.
+    """
+    needs_restart = False
+
+    # --- loglevel (debug category, takes effect immediately) ---
+    try:
+        current_level_res = owntone_get_setting(base_url, "debug", "loglevel")
+        current_level = _coerce_owntone_int(current_level_res.value)
+        if not current_level_res.available:
+            logger.debug(
+                "OwnTone settings API: debug/loglevel not available; skipping."
+            )
+        elif not current_level_res.ok:
+            logger.warning("OwnTone settings API request failed for debug/loglevel.")
+        elif current_level is None:
+            logger.warning(
+                "OwnTone settings API returned an unparseable loglevel value: %r",
+                current_level_res.value,
+            )
+        elif current_level != OWNTONE_LOGLEVEL_INFO:
+            logger.info(
+                "OwnTone loglevel is %s (expected %s); correcting via API.",
+                current_level, OWNTONE_LOGLEVEL_INFO,
+            )
+            put_res = owntone_put_setting(
+                base_url, "debug", "loglevel", OWNTONE_LOGLEVEL_INFO
+            )
+            if put_res.ok:
+                logger.info(
+                    "OwnTone loglevel set to %s via API.", OWNTONE_LOGLEVEL_INFO
+                )
+            else:
+                logger.warning("Failed to set OwnTone loglevel via API.")
+        else:
+            logger.debug("OwnTone loglevel already correct (%s).", current_level)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Error checking OwnTone loglevel via API: %s", e)
+
+    # --- pipe_autostart (library category, restart required if changed) ---
+    try:
+        current_pipe_res = owntone_get_setting(base_url, "library", "pipe_autostart")
+        current_pipe = _coerce_owntone_bool(current_pipe_res.value)
+        if not current_pipe_res.available:
+            logger.debug(
+                "OwnTone settings API: library/pipe_autostart not available; "
+                "falling back to owntone.conf."
+            )
+            conf_pipe = read_pipe_autostart_from_conf()
+            if conf_pipe is not True:
+                logger.warning(
+                    "OwnTone pipe_autostart is missing/disabled in owntone.conf; "
+                    "enabling there (restart required)."
+                )
+                if write_pipe_autostart_to_conf(True):
+                    needs_restart = True
+                else:
+                    logger.warning("Failed to enable OwnTone pipe_autostart in owntone.conf.")
+        elif not current_pipe_res.ok:
+            logger.warning(
+                "OwnTone settings API request failed for library/pipe_autostart."
+            )
+        elif current_pipe is None:
+            logger.warning(
+                "OwnTone settings API returned an unparseable pipe_autostart value: %r",
+                current_pipe_res.value,
+            )
+        elif not current_pipe:
+            logger.warning(
+                "OwnTone pipe_autostart is disabled; enabling via API (restart required)."
+            )
+            put_res = owntone_put_setting(base_url, "library", "pipe_autostart", True)
+            if put_res.ok:
+                logger.info("OwnTone pipe_autostart enabled via API.")
+                needs_restart = True
+            else:
+                logger.warning("Failed to enable OwnTone pipe_autostart via API.")
+        else:
+            logger.debug("OwnTone pipe_autostart already enabled.")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Error checking OwnTone pipe_autostart via API: %s", e)
+
+    return needs_restart
+
+
+# ---------------------------------------------------------------------------
 # OwnTone config health check + auto-fix
 # ---------------------------------------------------------------------------
 
@@ -589,15 +845,15 @@ OWNTONE_OK = 0
 OWNTONE_RESTART_REQUIRED = 1
 OWNTONE_NOT_OK = -1
 OWNTONE_TARGET_PIPE_DIR = "/tmp/autostream-pipes"
-OWNTONE_TARGET_LOGLEVEL = "info"
 
 
 def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
     """
     Ensure owntone.conf has:
       1) library.directories = { "/tmp/autostream-pipes" }
-      2) pipe_autostart enabled (pipe_autostart = true) inside library block
-      3) general.loglevel = info
+
+    pipe_autostart and loglevel are checked/fixed at runtime via the OwnTone
+    settings API by owntone_check_api_settings(), called after OwnTone is up.
 
     Return codes:
       - OWNTONE_OK (=0) if already correct
@@ -615,12 +871,6 @@ def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
         return OWNTONE_NOT_OK
     lib_block = text[lib_span[0] : lib_span[1]]
 
-    gen_re = re.compile(r"(?m)^\s*general\s*\{\s*$")
-    gen_span = _find_block_span(text, gen_re)
-    if not gen_span:
-        return OWNTONE_NOT_OK
-    gen_block = text[gen_span[0] : gen_span[1]]
-
     def _dirs_ok(b: str) -> bool:
         m = re.search(r"(?m)^\s*directories\s*=\s*\{(?P<body>[^}]*)\}\s*$", b)
         if not m:
@@ -628,27 +878,10 @@ def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
         dirs = re.findall(r'"([^"]*)"', m.group("body"))
         return len(dirs) == 1 and dirs[0] == OWNTONE_TARGET_PIPE_DIR
 
-    def _pipe_ok(b: str) -> bool:
-        m = re.search(r"(?m)^\s*pipe_autostart\s*=\s*(?P<v>[^\s#]+)", b)
-        if not m:
-            return False
-        val = _parse_bool(m.group("v"))
-        return val is True
-
-    def _loglevel_ok(b: str) -> bool:
-        m = re.search(r"(?m)^\s*loglevel\s*=\s*(?P<v>[^\s#]+)", b)
-        if not m:
-            return False
-        return m.group("v").strip().strip('"').lower() == OWNTONE_TARGET_LOGLEVEL
-
-    dirs_ok = _dirs_ok(lib_block)
-    pipe_ok = _pipe_ok(lib_block)
-    log_ok = _loglevel_ok(gen_block)
-
-    if dirs_ok and pipe_ok and log_ok:
+    if _dirs_ok(lib_block):
         return OWNTONE_OK
 
-    # Update library.directories target
+    # Update library.directories
     dir_line_re = re.compile(r"(?m)^(?P<indent>\s*)directories\s*=\s*\{[^}]*\}\s*$")
     m = dir_line_re.search(lib_block)
     if m:
@@ -667,61 +900,7 @@ def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
             + lib_block[insert_at:]
         )
 
-    # Enable pipe_autostart
-    pipe_commented_re = re.compile(
-        r"(?m)^(?P<indent>\s*)#\s*pipe_autostart\s*=\s*(true|false)\s*$"
-    )
-    m = pipe_commented_re.search(lib_block)
-    if m:
-        indent = m.group("indent")
-        new_line = f"{indent}pipe_autostart = true"
-        lib_block = lib_block[: m.start()] + new_line + lib_block[m.end() :]
-    else:
-        pipe_live_re = re.compile(
-            r"(?m)^(?P<indent>\s*)pipe_autostart\s*=\s*(true|false)\s*$"
-        )
-        m2 = pipe_live_re.search(lib_block)
-        if m2:
-            indent = m2.group("indent")
-            new_line = f"{indent}pipe_autostart = true"
-            lib_block = lib_block[: m2.start()] + new_line + lib_block[m2.end() :]
-        else:
-            close_idx = lib_block.rfind("}")
-            if close_idx == -1:
-                return OWNTONE_NOT_OK
-            lib_block = lib_block[:close_idx] + "\tpipe_autostart = true\n" + lib_block[close_idx:]
-
-    # Set general.loglevel = info
-    log_live_re = re.compile(r"(?m)^(?P<indent>\s*)loglevel\s*=\s*[^\s#]+\s*$")
-    ml = log_live_re.search(gen_block)
-    if ml:
-        indent = ml.group("indent")
-        new_line = f"{indent}loglevel = {OWNTONE_TARGET_LOGLEVEL}"
-        gen_block = gen_block[: ml.start()] + new_line + gen_block[ml.end() :]
-    else:
-        log_commented_re = re.compile(r"(?m)^(?P<indent>\s*)#\s*loglevel\s*=\s*[^\s#]+\s*$")
-        mlc = log_commented_re.search(gen_block)
-        if mlc:
-            indent = mlc.group("indent")
-            new_line = f"{indent}loglevel = {OWNTONE_TARGET_LOGLEVEL}"
-            gen_block = gen_block[: mlc.start()] + new_line + gen_block[mlc.end() :]
-        else:
-            insert_at = gen_block.find("{")
-            insert_at = gen_block.find("\n", insert_at)
-            if insert_at == -1:
-                return OWNTONE_NOT_OK
-            insert_at += 1
-            gen_block = (
-                gen_block[:insert_at]
-                + f"\tloglevel = {OWNTONE_TARGET_LOGLEVEL}\n"
-                + gen_block[insert_at:]
-            )
-
-    # Replace blocks from end to start to keep offsets valid
-    new_text = text
-    for span, new_block in sorted([(lib_span, lib_block), (gen_span, gen_block)], key=lambda x: x[0][0], reverse=True):
-        new_text = new_text[: span[0]] + new_block + new_text[span[1] :]
-
+    new_text = text[: lib_span[0]] + lib_block + text[lib_span[1] :]
     try:
         _atomic_write_text(path, new_text)
     except Exception:
@@ -733,14 +912,11 @@ def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
         return OWNTONE_NOT_OK
 
     lib_span2 = _find_block_span(updated, lib_re)
-    gen_span2 = _find_block_span(updated, gen_re)
-    if not lib_span2 or not gen_span2:
+    if not lib_span2:
         return OWNTONE_NOT_OK
-
     lib_block2 = updated[lib_span2[0] : lib_span2[1]]
-    gen_block2 = updated[gen_span2[0] : gen_span2[1]]
 
-    if _dirs_ok(lib_block2) and _pipe_ok(lib_block2) and _loglevel_ok(gen_block2):
+    if _dirs_ok(lib_block2):
         return OWNTONE_RESTART_REQUIRED
 
     return OWNTONE_NOT_OK
