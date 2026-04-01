@@ -60,6 +60,7 @@ from autostream_owntone import (
     read_airplay2_for_speaker,
     write_airplay2_for_speaker,
     _coerce_owntone_bool,
+    _coerce_owntone_int,
     owntone_get_setting,
     owntone_put_setting,
     owntone_set_airplay_mode,
@@ -1596,6 +1597,20 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         if _uncompressed_api.available and _uncompressed_api.ok and _uncompressed_api_bool is not None
         else bool(read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH))
     )
+
+    _START_BUFFER_MIN = 300
+    _START_BUFFER_MAX = 3500
+    _START_BUFFER_STEP = 50
+    _START_BUFFER_DEFAULT = 2250
+    _buf_api = owntone_get_setting(parsed.owntone.base_url, "general", "start_buffer_ms")
+    _buf_raw = _coerce_owntone_int(_buf_api.value) if (_buf_api.available and _buf_api.ok) else None
+    if _buf_raw is not None:
+        # Snap to nearest step within slider range.
+        start_buffer_ms = max(_START_BUFFER_MIN, min(_START_BUFFER_MAX,
+            round(_buf_raw / _START_BUFFER_STEP) * _START_BUFFER_STEP))
+    else:
+        start_buffer_ms = _START_BUFFER_DEFAULT
+    start_buffer_available = _buf_api.available and _buf_api.ok
     
     valid_airplay_modes = {"auto", "raop", "airplay2"}
     speakers_html = ""
@@ -1718,6 +1733,7 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
             </label>
             <span>Use uncompressed audio</span>
           </div>
+          {'<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(_START_BUFFER_MIN) + '" max="' + str(_START_BUFFER_MAX) + '" step="' + str(_START_BUFFER_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else ''}
         </fieldset>
         <p class="actions"><button type="submit">{submit_label}</button></p>
       </form></div>
@@ -2321,6 +2337,32 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             raise RuntimeError("Could not update OwnTone uncompressed_alac via API")
 
         restart_required = False
+
+        # start_buffer_ms: restart-required setting; only present when API supports it
+        # (slider is hidden otherwise so the field will not be submitted).
+        _START_BUFFER_MIN = 300
+        _START_BUFFER_MAX = 3500
+        _START_BUFFER_STEP = 50
+        if "start_buffer_ms" in form:
+            try:
+                want_buffer = int(fld("start_buffer_ms", "2250").strip())
+            except (ValueError, TypeError):
+                want_buffer = 2250
+            want_buffer = (
+                max(_START_BUFFER_MIN, min(_START_BUFFER_MAX,
+                    round(want_buffer / _START_BUFFER_STEP) * _START_BUFFER_STEP))
+            )
+            # Only restart when the value actually changed; read current value first.
+            cur_buf_res = owntone_get_setting(base_url, "general", "start_buffer_ms")
+            cur_buf = _coerce_owntone_int(cur_buf_res.value) if (cur_buf_res.available and cur_buf_res.ok) else None
+            if cur_buf is None or want_buffer != cur_buf:
+                api_set_buffer = owntone_put_setting(
+                    base_url, "general", "start_buffer_ms", want_buffer
+                )
+                if api_set_buffer.available and not api_set_buffer.ok:
+                    raise RuntimeError("Could not update OwnTone start_buffer_ms via API")
+                if api_set_buffer.ok:
+                    restart_required = True
 
         # Set AirPlay mode per speaker.  Always try the API when an output ID is
         # known; owntone_set_airplay_mode returns available=False on 404 so older
