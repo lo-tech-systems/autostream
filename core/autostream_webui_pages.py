@@ -1301,7 +1301,7 @@ def send_setup_page(
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
         <fieldset><legend>Input 1</legend>
           <label>Input device: <select name="audio_capture_device">{build_opts(parsed.audio1.capture_device)}</select></label>
-          <label><div class="slider-header"><span>Threshold:</span><span id="audio_silence_threshold_val">{parsed.audio1.silence_threshold_dbfs} dB</span></div>
+          <label><div class="slider-header"><span>Detection Threshold:</span><span id="audio_silence_threshold_val">{parsed.audio1.silence_threshold_dbfs} dB</span></div>
           <input type="range" min="-90" max="0" value="{parsed.audio1.silence_threshold_dbfs}" oninput="syncThr(1,this.value)">
           <input type="hidden" id="audio_silence_threshold" name="audio_silence_threshold" value="{parsed.audio1.silence_threshold_dbfs}"></label>
           {gain_control("audio1", parsed.audio1.gain_db, 1) if not initial_setup else ""}
@@ -1317,7 +1317,7 @@ def send_setup_page(
           </div>
           <div id="audio2_settings" style="display:{'block' if parsed.audio2_enabled else 'none'};">
             <label>Input device: <select name="audio2_capture_device">{build_opts(parsed.audio2.capture_device)}</select></label>
-            <label><div class="slider-header"><span>Threshold:</span><span id="audio2_silence_threshold_val">{parsed.audio2.silence_threshold_dbfs} dB</span></div>
+            <label><div class="slider-header"><span>Detection Threshold:</span><span id="audio2_silence_threshold_val">{parsed.audio2.silence_threshold_dbfs} dB</span></div>
             <input type="range" min="-90" max="0" value="{parsed.audio2.silence_threshold_dbfs}" oninput="syncThr(2,this.value)">
             <input type="hidden" id="audio2_silence_threshold" name="audio2_silence_threshold" value="{parsed.audio2.silence_threshold_dbfs}"></label>
             {gain_control("audio2", parsed.audio2.gain_db, 2) if not initial_setup else ""}
