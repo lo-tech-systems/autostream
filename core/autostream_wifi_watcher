@@ -6,6 +6,12 @@ Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 This module should be run continuously as root. It monitors (and logs) the network
 connection status of the device.
 
+Runtime note:
+This service is intentionally executed directly via its shebang using the system
+Python interpreter, rather than the autostream application venv. That keeps the
+WiFi setup/recovery path available even if the venv is missing or broken, so
+Flask must be installed at the system level by the installer.
+
 == Access Point Mode ==
 
 If the WiFi is unconfigured or remains disconnected for 1 minute after boot, it is put into

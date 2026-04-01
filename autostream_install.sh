@@ -661,7 +661,9 @@ fi
   DEBIAN_FRONTEND=noninteractive apt-get update
 
   # Platform libraries
-  # Note - flask is required for autostream_wifi_watcher so must be system level.
+  # Note - Flask is intentionally installed at the system level because
+  # autostream_wifi_watcher runs directly via its shebang as a boot/recovery
+  # path and should not depend on the application venv being present/healthy.
   apt_install git build-essential libffi-dev pkg-config jq fq acl \
     libasound2-dev libsamplerate0-dev python3-dev python3-venv python3-pip python3-flask
 
