@@ -18,4 +18,4 @@ dist/
 # IDEs
 .vscode/
 .idea/
-
+.claude/
