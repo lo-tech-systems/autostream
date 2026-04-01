@@ -743,6 +743,63 @@ def owntone_put_setting(
         return OwntoneSettingPutResult(available=True, ok=False)
 
 
+def owntone_set_airplay_mode(
+    base_url: str, output_id: str, mode: str
+) -> OwntoneSettingPutResult:
+    """Set the AirPlay protocol mode for a single output via PUT /api/outputs/{id}.
+
+    mode must be one of: "auto", "raop", "airplay2"
+      auto     — server picks based on backend priority (OwnTone default)
+      raop     — force AirPlay 1
+      airplay2 — force AirPlay 2
+
+    Returns a structured result.  available=False means the field was rejected
+    (likely an older OwnTone build); the caller should fall back to conf-file
+    raop_disable for those installations.
+    """
+    valid_modes = {"auto", "raop", "airplay2"}
+    if mode not in valid_modes:
+        logger.warning(
+            "owntone_set_airplay_mode: invalid mode %r (must be one of %s); using 'auto'.",
+            mode, valid_modes,
+        )
+        mode = "auto"
+
+    url = base_url.rstrip("/") + f"/api/outputs/{output_id}"
+    try:
+        resp = requests.put(url, json={"airplay_mode": mode}, timeout=5)
+        if resp.status_code == 404:
+            logger.debug(
+                "OwnTone output %s: airplay_mode field not available (404).", output_id
+            )
+            return OwntoneSettingPutResult(available=False, ok=False)
+        if (
+            resp.status_code in (400, 422)
+            and "airplay_mode" in (resp.text or "").lower()
+        ):
+            logger.debug(
+                "OwnTone output %s: airplay_mode field rejected by this build (%s).",
+                output_id,
+                resp.status_code,
+            )
+            return OwntoneSettingPutResult(available=False, ok=False)
+        if not resp.ok:
+            logger.warning(
+                "OwnTone PUT /api/outputs/%s (airplay_mode=%r) failed: %s %s",
+                output_id, mode, resp.status_code, resp.text,
+            )
+            return OwntoneSettingPutResult(available=True, ok=False)
+        logger.info(
+            "OwnTone output %s airplay_mode set to %r.", output_id, mode
+        )
+        return OwntoneSettingPutResult(available=True, ok=True)
+    except requests.RequestException as e:  # noqa: BLE001
+        logger.warning(
+            "Error setting OwnTone output %s airplay_mode: %s", output_id, e
+        )
+        return OwntoneSettingPutResult(available=True, ok=False)
+
+
 def owntone_check_api_settings(base_url: str) -> bool:
     """Check and fix pipe_autostart and loglevel via the OwnTone settings API.
 

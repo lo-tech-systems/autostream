@@ -62,6 +62,7 @@ from autostream_owntone import (
     _coerce_owntone_bool,
     owntone_get_setting,
     owntone_put_setting,
+    owntone_set_airplay_mode,
     OWNTONE_CONF_PATH,
 )
 
@@ -1596,26 +1597,44 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         else bool(read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH))
     )
     
+    valid_airplay_modes = {"auto", "raop", "airplay2"}
     speakers_html = ""
     for i, spk in enumerate(all_names):
         show = spk.casefold() not in hidden_set
-        ap2 = read_airplay2_for_speaker(spk, OWNTONE_CONF_PATH) or False
+        out_obj = outputs_by_name.get(spk.casefold())
+        out_id = str(out_obj.get("id", "")).strip() if out_obj else ""
+
+        # Read airplay_mode from the API response when available (PR field).
+        # Fall back to conf-file raop_disable for older OwnTone builds.
+        if out_obj and "airplay_mode" in out_obj:
+            mode_value = str(out_obj.get("airplay_mode") or "").strip().lower()
+            current_mode = mode_value if mode_value in valid_airplay_modes else "auto"
+        else:
+            current_mode = (
+                "airplay2"
+                if (read_airplay2_for_speaker(spk, OWNTONE_CONF_PATH) or False)
+                else "auto"
+            )
+
+        # Capability flags — present on new OwnTone builds; absent (None) on older ones.
+        # None means unknown: show all options rather than hide valid choices.
+        supports_raop = out_obj.get("supports_raop") if out_obj else None
+        supports_ap2  = out_obj.get("supports_airplay2") if out_obj else None
+        # Treat explicit False as "known unsupported"; None/True as "available".
+        show_raop    = supports_raop    is not False
+        show_airplay2 = supports_ap2   is not False
+        is_airplay_output = show_raop or show_airplay2
 
         # Offset slider is only shown if the output object includes offset_ms.
         # Saved value (default 0) is stored in autostream.ini [owntone_offsets] by output id.
         offset_html = ""
-        out_obj = outputs_by_name.get(spk.casefold())
-        if out_obj and ("offset_ms" in out_obj):
-            out_id = str(out_obj.get("id", "")).strip()
-            if out_id:
-                try:
-                    cur_off = cfg.getint("owntone_offsets", out_id, fallback=0)
-                except Exception:
-                    cur_off = 0
-                cur_off = max(-2000, min(2000, int(cur_off)))
-                safe_outid = html.escape(out_id)
-                offset_html = f"""
-                  <input type="hidden" name="outid_{i}" value="{safe_outid}">
+        if out_obj and ("offset_ms" in out_obj) and out_id:
+            try:
+                cur_off = cfg.getint("owntone_offsets", out_id, fallback=0)
+            except Exception:
+                cur_off = 0
+            cur_off = max(-2000, min(2000, int(cur_off)))
+            offset_html = f"""
                   <label style="display:block;margin-top:0.5rem;">
                     <div class="slider-header">
                       <span>Offset:</span>
@@ -1629,24 +1648,42 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
                   </label>
                 """
 
+        # Build the protocol-mode select, filtered by capability flags.
+        # Hidden for non-AirPlay outputs (both flags explicitly False).
+        if is_airplay_output:
+            mode_options = f'<option value="auto"{" selected" if current_mode == "auto" else ""}>Auto</option>'
+            if show_raop:
+                mode_options += f'<option value="raop"{" selected" if current_mode == "raop" else ""}>AirPlay</option>'
+            if show_airplay2:
+                mode_options += f'<option value="airplay2"{" selected" if current_mode == "airplay2" else ""}>AirPlay 2</option>'
+            mode_html = f"""
+            <label style="display:block;margin-bottom:0.5rem;">
+              <span>Mode</span>
+              <select name="mode_{i}">{mode_options}</select>
+            </label>"""
+        else:
+            mode_html = f'<input type="hidden" name="mode_{i}" value="auto">'
+
+        # Emit the output id for every discovered speaker so the POST handler
+        # can call PUT /api/outputs/{id} regardless of which controls are shown.
+        outid_html = (
+            f'<input type="hidden" name="outid_{i}" value="{html.escape(out_id)}">'
+            if out_id else ""
+        )
+
         speakers_html += f"""
           <fieldset><legend>{html.escape(spk)}</legend>
           <input type="hidden" name="spk_{i}" value="{html.escape(spk)}">
+          {outid_html}
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
             <label class="output-toggle" style="margin:0;">
               <input type="checkbox" name="show_{i}" {'checked' if show else ''} onchange="onShowToggle({i}, this.checked)">
-              <span class="switch"></span>
+                <span class="switch"></span>
             </label>
             <span>Show in autostream</span>
           </div>
           <div id="spk_settings_{i}" style="display:{'block' if show else 'none'};">
-            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
-              <label class="output-toggle" style="margin:0;">
-                <input type="checkbox" name="ap2_{i}" {'checked' if ap2 else ''}>
-                <span class="switch"></span>
-              </label>
-              <span>Use AirPlay 2</span>
-            </div>
+            {mode_html}
             {offset_html}
           </div>
           </fieldset>
@@ -2224,18 +2261,22 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         cfg = locked_load_config(state.config_path)
         
         # Build a list of speakers from the submitted form.
-        speakers: list[tuple[str, bool, bool]] = []
+        # Tuple: (name, show, mode, out_id)  — out_id is "" when not discovered.
+        speakers: list[tuple[str, bool, str, str]] = []
         offsets_by_id: dict[str, int] = {}
+        valid_airplay_modes = {"auto", "raop", "airplay2"}
         i = 0
         while f"spk_{i}" in form:
             name = fld(f"spk_{i}")
             show = (f"show_{i}" in form)
-            ap2 = (f"ap2_{i}" in form)
-            speakers.append((name, show, ap2))
+            mode = fld(f"mode_{i}", "auto").strip().lower()
+            if mode not in valid_airplay_modes:
+                mode = "auto"
+            out_id = fld(f"outid_{i}", "").strip()
+            speakers.append((name, show, mode, out_id))
 
             # Optional per-output offset (only present when UI rendered it)
-            out_id = fld(f"outid_{i}", "").strip()
-            if out_id:
+            if out_id and f"offset_{i}" in form:
                 raw_off = fld(f"offset_{i}", "0")
                 try:
                     off = int(str(raw_off).strip())
@@ -2250,7 +2291,7 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         speakers.sort(key=lambda t: t[0].casefold())
 
         # Update INI denylist
-        hidden = [spk for (spk, show, _ap2) in speakers if not show]
+        hidden = [spk for (spk, show, _mode, _oid) in speakers if not show]
         
         if not cfg.has_section("webui"): cfg.add_section("webui")
         if hidden:
@@ -2281,19 +2322,39 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
 
         restart_required = False
 
+        # Set AirPlay mode per speaker.  Always try the API when an output ID is
+        # known; owntone_set_airplay_mode returns available=False on 404 so older
+        # builds fall through cleanly to the conf-file path (restart required).
+        # Older conf-file fallback can only represent:
+        #   airplay2 -> raop_disable=true
+        #   auto/raop -> raop_disable=false
+        conf_airplay_writes: list[tuple[str, bool]] = []
+        for spk, _show, mode, out_id in speakers:
+            if out_id:
+                result = owntone_set_airplay_mode(base_url, out_id, mode)
+                if result.available:
+                    if not result.ok:
+                        raise RuntimeError(
+                            f"Could not set AirPlay mode for speaker {spk!r} via API"
+                        )
+                    # API succeeded — no conf write, no restart needed for this speaker.
+                    continue
+            # No ID yet, or API returned 404 (older build) — queue conf write.
+            conf_airplay_writes.append((spk, mode == "airplay2"))
+
         # Keep config write + owntone.conf edits together under one lock, so two
         # concurrent saves can't interleave and produce inconsistent results.
         with CONFIG_IO_LOCK:
             with open(state.config_path, "w", encoding="utf-8") as f:
                 cfg.write(f)
 
-            # Update owntone.conf (airplay mode per speaker — conf write still
-            # required until Change 1 migrates this to PUT /api/outputs/{id}).
-            for spk, _show, ap2 in speakers:
+            for spk, ap2 in conf_airplay_writes:
                 current_ap2 = read_airplay2_for_speaker(spk, OWNTONE_CONF_PATH)
                 if current_ap2 is None or bool(current_ap2) != bool(ap2):
                     if not write_airplay2_for_speaker(spk, ap2, OWNTONE_CONF_PATH):
-                        raise RuntimeError(f"Could not update AirPlay mode for speaker {spk!r}")
+                        raise RuntimeError(
+                            f"Could not update AirPlay mode for speaker {spk!r}"
+                        )
                     restart_required = True
 
             if not api_set_uncompressed.available:
