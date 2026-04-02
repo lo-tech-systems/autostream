@@ -79,6 +79,7 @@ BACKOFF_MAX_SECONDS = 5 * 60
 ALLOWLIST_PATHS = {
     "/",
     "/about",
+    "/license",
     "/auth",
     "/api/status",
     "/api/auth/verify",
@@ -779,4 +780,3 @@ class AuthManager:
             </body>
             </html>
         """
-

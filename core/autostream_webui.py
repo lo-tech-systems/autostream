@@ -46,6 +46,7 @@ from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
 
 from autostream_webui_state import WebUIState
 import autostream_webui_pages as pages
+import autostream_webui_license as license_page
 
 from autostream_config import unconfigured
 
@@ -212,6 +213,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             pages.send_owntone_setup_page(self, STATE, AUTH, flash_msg=msg)
         elif path == "/about":
             pages.send_about_page(self, STATE)
+        elif path == "/license":
+            license_page.send_license_page(self, STATE)
         elif path == "/logs":
             pages.send_logs_page(self, STATE)
         elif path == "/api/status":

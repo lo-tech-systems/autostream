@@ -2035,26 +2035,6 @@ def send_about_page(handler, state: WebUIState) -> None:
         clr = "#dc3545" if sd_health<=10 else ("#f0ad4e" if sd_health<=30 else "#28a745")
         sd_html = f"<div class='bar-label'><strong>SD Health:</strong> {sd_health}%</div><div class='storage-bar'><div class='used' style='width:{sd_health}%;background:{clr};'></div></div>"
 
-    licence_text = ""
-    licence_html = ""
-    for fname in ("LICENCE", "LICENSE"):
-        try:
-            with open(fname, "r", encoding="utf-8") as f:
-                licence_text = f.read().strip()
-            if licence_text:
-                break
-        except FileNotFoundError:
-            continue
-        except Exception:
-            # Any other error: don't break About page
-            continue
-    if licence_text:
-        licence_html = f"""
-          <fieldset><legend>Licence</legend>
-            <div class="licence-pane"><pre class="licence-text">{html.escape(licence_text)}</pre></div>
-          </fieldset>
-        """
-
     stylus_html = ""
     if parsed is not None:
         stylus_rows: list[str] = []
@@ -2094,14 +2074,10 @@ def send_about_page(handler, state: WebUIState) -> None:
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>About</title><style>{STYLE_CSS}
-      /* About: render licence text directly in the pane (no scrollable black code box). */
-      .licence-pane {{ background: transparent !important; color: inherit !important; max-height: none !important; overflow: visible !important; }}
-      .licence-pane .licence-text {{ margin: 0; padding: 0; background: transparent; color: inherit; border: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }}
-      </style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
-      <p class="actions" style="margin:1rem 0;"><a href="/" class="pill-btn">← Back</a></p>
+      <title>About</title><style>{STYLE_CSS}</style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
+      <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;"><a href="/" class="pill-btn">← Back</a><a href="/license" class="pill-btn" style="background:#6c757d;color:#fff;border-color:#6c757d;">License</a></p>
       <fieldset><legend>Overview</legend>
-          <p><strong>autostream</strong> turns almost any CD player, turntable, cassette deck, or analogue Hi-Fi device into a wireless AirPlay / AirPlay&nbsp;2 multi-room audio source — automatically, once set up.</p>
+          <p><strong>autostream</strong> brings AirPlay compatibility to any turntable, CD player, or other analogue Hi-Fi device.</p>
       </fieldset>
       {stylus_html}
       <fieldset><legend>System (build {html.escape(version)})</legend>
@@ -2115,7 +2091,6 @@ def send_about_page(handler, state: WebUIState) -> None:
           <p><strong>autostream</strong> depends on components provided by the Raspberry Pi OS distribution, including OwnTone and ALSA audio libraries. These components are redistributed under the terms of their respective open-source licences, which are included with Raspberry Pi OS in <code>/usr/share/doc</code>.</p>
           <p>AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc., registered in the U.S. and other countries. Raspberry Pi is a trademark of Raspberry Pi Ltd. All other trademarks are the property of their respective owners.</p>
       </fieldset>
-      {licence_html}
       </div></body></html>
     """)
     body_bytes = html_body.encode("utf-8")
