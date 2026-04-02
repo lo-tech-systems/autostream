@@ -121,6 +121,36 @@ def get_psu_warning_text() -> Optional[str]:
     return None
 
 
+def get_cpu_temperature_c() -> Optional[float]:
+    """Return the current CPU temperature in Celsius, or None if unavailable."""
+    sysfs_path = "/sys/class/thermal/thermal_zone0/temp"
+    try:
+        if os.path.isfile(sysfs_path):
+            raw = Path(sysfs_path).read_text(encoding="utf-8").strip()
+            milli_c = int(raw)
+            return round(milli_c / 1000.0, 1)
+    except Exception:
+        pass
+
+    try:
+        p = subprocess.run(
+            ["vcgencmd", "measure_temp"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        s = (p.stdout or "").strip()
+        if "=" in s:
+            raw_temp = s.split("=", 1)[1].split("'", 1)[0].strip()
+            return round(float(raw_temp), 1)
+    except Exception:
+        pass
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # CPU serial number functions. Used to discourage copying the SD-Card.
 # ---------------------------------------------------------------------------
@@ -265,5 +295,4 @@ def _write_cpu_info(serial: str) -> None:
         CPU_INFO.write_text((serial + "\n") if serial else "", encoding="utf-8")
     except Exception:
         logger.exception("Failed writing %s", CPU_INFO)
-
 

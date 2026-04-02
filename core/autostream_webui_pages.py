@@ -53,6 +53,7 @@ from autostream_sysutils import (
 
 from autostream_rpi import (
     cpu_is_licensed,
+    get_cpu_temperature_c,
     get_psu_warning_text,
     LICENSE_CHECK,
 )
@@ -416,9 +417,39 @@ def _format_reset_timestamp(raw: Optional[str]) -> str:
         return "Never"
     try:
         dt = datetime.fromisoformat(str(raw))
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            return dt.astimezone().strftime("%x")
+        except Exception:
+            return dt.strftime("%x")
     except Exception:
         return str(raw)
+
+
+def _format_reset_date(raw: Optional[str]) -> str:
+    if not raw:
+        return "Never"
+    try:
+        dt = datetime.fromisoformat(str(raw))
+        try:
+            return dt.astimezone().strftime("%b-%y")
+        except Exception:
+            return dt.strftime("%b-%y")
+    except Exception:
+        raw_s = str(raw)
+        if "T" in raw_s:
+            raw_s = raw_s.split("T", 1)[0]
+        parts = raw_s.split("-")
+        if len(parts) >= 2:
+            year = parts[0][-2:] if len(parts[0]) >= 2 else parts[0]
+            month = parts[1]
+            month_map = {
+                "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr",
+                "05": "May", "06": "Jun", "07": "Jul", "08": "Aug",
+                "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec",
+            }
+            if month in month_map:
+                return f"{month_map[month]}-{year}"
+        return raw_s
 
 
 def _fallback_input_snapshot(
@@ -448,35 +479,107 @@ def _fallback_input_snapshot(
     )
 
 
-def _playback_summary_html(snapshot: InputPlaybackSnapshot) -> str:
-    total = format_hours(snapshot.total_playback_seconds)
-    rows = [f"<div><strong>Playback Hours:</strong> {html.escape(total)}</div>"]
+def _playback_summary_html(
+    snapshot: InputPlaybackSnapshot,
+    *,
+    reset_button_html: str = "",
+) -> str:
+    def summary_row(label: str, value_html: str) -> str:
+        return (
+            "<div style='display:flex;align-items:baseline;gap:0.75rem;"
+            "justify-content:space-between;'>"
+            f"<strong>{html.escape(label)}:</strong>"
+            f"<span style='margin-left:auto;text-align:right;'>{value_html}</span>"
+            "</div>"
+        )
+
+    rows: list[str] = []
 
     if snapshot.is_turntable:
         used = format_hours(snapshot.stylus_playback_seconds)
         remaining_txt = "Due now"
         if snapshot.stylus_remaining_seconds is not None and snapshot.stylus_remaining_seconds > 0:
             remaining_txt = format_hours(snapshot.stylus_remaining_seconds)
-        rows.append(
-            f"<div><strong>Stylus Used:</strong> {html.escape(used)} / {int(snapshot.stylus_life_hours)} h</div>"
-        )
-        rows.append(
-            f"<div><strong>Stylus Remaining:</strong> {html.escape(remaining_txt)}</div>"
-        )
-        rows.append(
-            f"<div><strong>Last Reset:</strong> {html.escape(_format_reset_timestamp(snapshot.last_stylus_reset_at))}</div>"
-        )
+        rows.append(summary_row("Stylus Hours", f"{html.escape(used)} / {int(snapshot.stylus_life_hours)} h"))
+        rows.append(summary_row("Stylus Remaining", html.escape(remaining_txt)))
+        if snapshot.last_stylus_reset_at:
+            rows.append(
+                summary_row(
+                    "Last Reset",
+                    (
+                        f"<span class='local-reset-date' data-reset-iso="
+                        f"'{html.escape(str(snapshot.last_stylus_reset_at))}'>"
+                        f"{html.escape(_format_reset_timestamp(snapshot.last_stylus_reset_at))}"
+                        "</span>"
+                    ),
+                )
+            )
+        else:
+            rows.append(summary_row("Last Reset", "Never"))
 
     if not snapshot.enabled:
-        rows.append("<div><strong>Status:</strong> Disabled</div>")
+        rows.append(summary_row("Status", "Disabled"))
     elif snapshot.active:
-        rows.append("<div><strong>Status:</strong> Active now</div>")
+        rows.append(summary_row("Status", "Active now"))
+
+    if reset_button_html:
+        rows.append(
+            "<div style='margin-top:0.7rem;display:flex;justify-content:flex-end;'>"
+            f"{reset_button_html}"
+            "</div>"
+        )
 
     return (
         "<div style='margin-top:0.75rem;padding:0.75rem 0.85rem;border:1px solid #e4e4e4;"
         "border-radius:8px;background:#fafafa;font-size:0.95rem;line-height:1.5;'>"
         + "".join(rows)
         + "</div>"
+    )
+
+
+def _stylus_box_html(
+    *,
+    title: str,
+    snapshot: InputPlaybackSnapshot,
+) -> str:
+    life_total_seconds = max(1, int(snapshot.stylus_life_hours) * 3600)
+    remaining_seconds = max(0, int(snapshot.stylus_remaining_seconds or 0))
+    remaining_hours = max(0.0, remaining_seconds / 3600.0)
+    remaining_pct = max(0.0, min(100.0, (remaining_seconds / life_total_seconds) * 100.0))
+    bar_color = "#dc3545" if remaining_pct <= 10.0 else ("#f0ad4e" if remaining_pct <= 20.0 else "#28a745")
+    meta_text = f"{remaining_hours:.1f} hours remaining"
+    return f"""
+      <fieldset><legend>{html.escape(title)}</legend>
+        <div class='bar-label'><strong>Life Remaining:</strong> {remaining_pct:.1f}%</div>
+        <div class='storage-bar'><div class='used' style='width:{remaining_pct}%;background:{bar_color};'></div></div>
+        <div class='storage-meta'>{html.escape(meta_text)}</div>
+      </fieldset>
+    """
+
+
+def _stylus_reset_flash_text(
+    input_index: int,
+    result,
+    *,
+    settings_saved: bool = False,
+) -> str:
+    if result is None:
+        return (
+            f"Settings saved, but Input {input_index} stylus reset failed"
+            if settings_saved
+            else f"Input {input_index} stylus reset failed"
+        )
+    if result.applied and result.persisted:
+        return f"Input {input_index} stylus reset"
+    if result.applied:
+        return (
+            f"Input {input_index} stylus reset, but it could not be saved "
+            "and may be lost after restart"
+        )
+    return (
+        f"Settings saved, but Input {input_index} stylus reset failed"
+        if settings_saved
+        else f"Input {input_index} stylus reset failed"
     )
 
 
@@ -721,6 +824,11 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
 
     playback_snapshot = get_playback_snapshot()
     stylus_banner_text = playback_snapshot.banner_text or ""
+    setup_button_style = (
+        "flex:1;text-align:center;background:#c00000;color:#fff;border-color:#c00000;"
+        if stylus_banner_text else
+        "flex:1;text-align:center;"
+    )
     status_text = _status_text_for_home(is_playing, input_levels)
     status_class = "playing" if is_playing else "waiting"
 
@@ -1054,10 +1162,22 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
             p.classList.add('status-'+d.status_class);
             renderInputLevels(d.input_levels || []);
             var warn=document.getElementById('stylus-warning-banner');
+            var setupBtn=document.getElementById('setup-pill-btn');
             if (warn) {{
               var txt = String((d && d.playback_banner_text) || '').trim();
               warn.hidden = !txt;
               warn.textContent = txt;
+              if (setupBtn) {{
+                if (txt) {{
+                  setupBtn.style.background = '#c00000';
+                  setupBtn.style.color = '#fff';
+                  setupBtn.style.borderColor = '#c00000';
+                }} else {{
+                  setupBtn.style.background = '';
+                  setupBtn.style.color = '';
+                  setupBtn.style.borderColor = '';
+                }}
+              }}
             }}
           }});
         }}
@@ -1156,7 +1276,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
       <br />
       <p class="actions" style="margin-top:1rem;display:flex;gap:0.75rem;">
         <a href="/about" class="pill-btn" style="flex:1;text-align:center;">About</a>
-        <a href="/setup" class="pill-btn" style="flex:1;text-align:center;">Setup</a>
+        <a href="/setup" id="setup-pill-btn" class="pill-btn" style="{setup_button_style}">Setup</a>
       </p>
       <p style="margin-top:0.25rem; text-align:center;">
         <small>Copyright &copy; Lo-tech Systems Limited.<br><strong>lo-tech.co.uk/autostream</strong></small>
@@ -1315,12 +1435,15 @@ def send_setup_page(
         if (not initial_setup) and is_turntable:
             reset_button_html = (
                 f"<button type='submit' name='stylus_reset_input' value='{input_index}' "
-                "class='pill-btn small' style='margin-top:0.65rem;width:100%;' "
+                "class='pill-btn small' style='padding:0.32rem 0.7rem;font-size:0.85rem;' "
                 f"onclick=\"return confirm('Mark {html.escape(title)} stylus as changed?');\">"
                 "Mark Stylus Changed</button>"
             )
 
-        playback_html = "" if initial_setup else (_playback_summary_html(snapshot) + reset_button_html)
+        playback_html = "" if initial_setup else _playback_summary_html(
+            snapshot,
+            reset_button_html=reset_button_html,
+        )
 
         enabled_html = ""
         wrap_style = "block" if enabled else "none"
@@ -1355,7 +1478,7 @@ def send_setup_page(
             </div>
             <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
             <div id="{stylus_wrap_id}" style="display:{'block' if is_turntable else 'none'};">
-              <label>Stylus Life:
+              <label>Stylus Rated Life:
                 <select name="{stylus_life_name}">
                   {stylus_options_html}
                 </select>
@@ -1561,11 +1684,25 @@ def send_setup_page(
           syncEq(inputIndex, '10khz', String(saved.eq_10khz_db));
         }}
         function syncSil(v){{document.getElementById('sil_val').textContent=v+'s';}}
+        function localizeResetDates(){{
+          document.querySelectorAll('.local-reset-date[data-reset-iso]').forEach((el) => {{
+            const raw = String(el.getAttribute('data-reset-iso') || '').trim();
+            if (!raw) return;
+            const dt = new Date(raw);
+            if (!Number.isNaN(dt.getTime())) {{
+              try {{
+                el.textContent = dt.toLocaleDateString();
+              }} catch (e) {{
+              }}
+            }}
+          }});
+        }}
         window.addEventListener('DOMContentLoaded', () => {{
           const tt1 = document.querySelector('input[name="audio_turntable"]');
           const tt2 = document.querySelector('input[name="audio2_turntable"]');
           if (tt1) syncTurntable(1, !!tt1.checked);
           if (tt2) syncTurntable(2, !!tt2.checked);
+          localizeResetDates();
         }});
         function requestReboot(){{
           if(!confirm("Reboot system?")) return;
@@ -1866,6 +2003,19 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
 def send_about_page(handler, state: WebUIState) -> None:
     version = get_app_version()
     lic_html, lic_spacer = build_top_banner_html()
+    playback_snapshot = get_playback_snapshot()
+    total_playback_seconds = sum(
+        int(snap.total_playback_seconds)
+        for idx, snap in playback_snapshot.inputs.items()
+        if int(idx) in (1, 2)
+    )
+    total_playback_hours = total_playback_seconds / 3600.0
+    cpu_temp_c = get_cpu_temperature_c()
+    cpu_temp_text = (
+        f"{cpu_temp_c:.1f}\N{DEGREE SIGN}C"
+        if cpu_temp_c is not None
+        else "Unavailable"
+    )
     parsed = None
     try:
         parsed = parse_config(locked_load_config(state.config_path))
@@ -1905,44 +2055,42 @@ def send_about_page(handler, state: WebUIState) -> None:
           </fieldset>
         """
 
-    usage_html = ""
+    stylus_html = ""
     if parsed is not None:
-        usage_rows: list[str] = []
-        playback_snapshot = get_playback_snapshot()
+        stylus_rows: list[str] = []
         input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
             parsed.audio1,
             1,
             enabled=True,
         )
-        usage_rows.append(
-            "<div style='margin-bottom:1rem;'>"
-            f"<strong>Input 1</strong><br>"
-            f"{'Turntable' if parsed.audio1.is_turntable else 'Line input'}"
-            f"{_playback_summary_html(input1_snapshot)}"
-            "</div>"
-        )
+        if parsed.audio1.is_turntable:
+            input1_title = "Input 1 Stylus"
+            if input1_snapshot.last_stylus_reset_at:
+                input1_title += f" (last changed {_format_reset_date(input1_snapshot.last_stylus_reset_at)})"
+            stylus_rows.append(
+                _stylus_box_html(
+                    title=input1_title,
+                    snapshot=input1_snapshot,
+                )
+            )
 
         input2_snapshot = playback_snapshot.inputs.get(2) or _fallback_input_snapshot(
             parsed.audio2,
             2,
             enabled=parsed.audio2_enabled,
         )
-        input2_kind = "Turntable" if parsed.audio2.is_turntable else "Line input"
-        if not parsed.audio2_enabled:
-            input2_kind += " (currently disabled)"
-        usage_rows.append(
-            "<div>"
-            f"<strong>Input 2</strong><br>"
-            f"{html.escape(input2_kind)}"
-            f"{_playback_summary_html(input2_snapshot)}"
-            "</div>"
-        )
+        if parsed.audio2.is_turntable:
+            input2_title = "Input 2 Stylus"
+            if input2_snapshot.last_stylus_reset_at:
+                input2_title += f" (last changed {_format_reset_date(input2_snapshot.last_stylus_reset_at)})"
+            stylus_rows.append(
+                _stylus_box_html(
+                    title=input2_title,
+                    snapshot=input2_snapshot,
+                )
+            )
 
-        usage_html = (
-            "<fieldset><legend>Usage</legend>"
-            + "".join(usage_rows)
-            + "</fieldset>"
-        )
+        stylus_html = "".join(stylus_rows)
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
@@ -1955,10 +2103,12 @@ def send_about_page(handler, state: WebUIState) -> None:
       <fieldset><legend>Overview</legend>
           <p><strong>autostream</strong> turns almost any CD player, turntable, cassette deck, or analogue Hi-Fi device into a wireless AirPlay / AirPlay&nbsp;2 multi-room audio source — automatically, once set up.</p>
       </fieldset>
+      {stylus_html}
       <fieldset><legend>System (build {html.escape(version)})</legend>
+        <div class='bar-label'><strong>Total Playback Time:</strong> {total_playback_hours:.1f} hours</div>
+        <div class='bar-label'><strong>CPU temperature:</strong> {html.escape(cpu_temp_text)}</div>
         {storage_html}{sd_html}
       </fieldset>
-      {usage_html}
       <fieldset><legend>Copyright</legend>
           <p><strong>autostream</strong> is Copyright &copy; 2025-2026 Lo-tech Systems Limited.</p>
           <p><strong>autostream</strong> and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
@@ -2311,17 +2461,11 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
         flash_text = "Settings saved"
         if reset_stylus_input is not None and reset_stylus_result is not None:
-            if reset_stylus_result.applied and reset_stylus_result.persisted:
-                flash_text = f"Input {reset_stylus_input} stylus reset"
-            elif reset_stylus_result.applied:
-                flash_text = (
-                    f"Input {reset_stylus_input} stylus reset, but it could not be saved "
-                    "and may be lost after restart"
-                )
-            else:
-                flash_text = (
-                    f"Settings saved, but Input {reset_stylus_input} stylus reset failed"
-                )
+            flash_text = _stylus_reset_flash_text(
+                reset_stylus_input,
+                reset_stylus_result,
+                settings_saved=True,
+            )
 
         # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
         _set_flash_cookie(handler, flash_text, max_age=30)
@@ -2399,7 +2543,6 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             request_config_reload()
     except Exception as e:
         send_setup_page(handler, state, auth, flash_msg="Save failed", flash_type="error")
-
 
 def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
     """Apply live per-input EQ changes to autostream_monitor."""
