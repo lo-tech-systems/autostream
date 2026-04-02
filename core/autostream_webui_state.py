@@ -22,6 +22,9 @@ class WebUIState:
         self.monitor_devices: list[dict[str, str]] = []
         self.monitor_devices_lock = threading.Lock()
 
+        # OwnTone restart state
+        self._init_owntone_restart()
+
         # Updater state
         self.update_lock = threading.Lock()
         self.update_state = {
@@ -78,3 +81,56 @@ class WebUIState:
     def get_update_status(self) -> dict:
         with self.update_lock:
             return dict(self.update_state)
+
+    # -------------------------------------------------------------------------
+    # OwnTone restart state
+    # -------------------------------------------------------------------------
+
+    def _init_owntone_restart(self) -> None:
+        self._owntone_restart_lock = threading.RLock()
+        self._owntone_restart_in_progress: bool = False
+        self._owntone_restart_started_at: float = 0.0
+        self._owntone_restart_finished_at: float = 0.0
+        self._owntone_restart_ok: bool = False
+        self._owntone_restart_message: str = ""
+        self._owntone_restart_token: int = 0
+
+    def begin_owntone_restart(self) -> int:
+        """Mark a restart as in-progress, increment the token, return the token.
+
+        The token is used by the background worker to detect whether it has
+        been superseded by a later restart request.
+        """
+        with self._owntone_restart_lock:
+            self._owntone_restart_in_progress = True
+            self._owntone_restart_started_at = time.time()
+            self._owntone_restart_finished_at = 0.0
+            self._owntone_restart_ok = False
+            self._owntone_restart_message = "Restarting Owntone…"
+            self._owntone_restart_token += 1
+            return self._owntone_restart_token
+
+    def finish_owntone_restart(self, token: int, ok: bool, message: str) -> None:
+        """Record the outcome of a restart attempt.
+
+        Ignored if ``token`` does not match the current token, meaning a newer
+        restart superseded this one.
+        """
+        with self._owntone_restart_lock:
+            if self._owntone_restart_token != token:
+                return
+            self._owntone_restart_in_progress = False
+            self._owntone_restart_finished_at = time.time()
+            self._owntone_restart_ok = bool(ok)
+            self._owntone_restart_message = message
+
+    def get_owntone_restart_state(self) -> dict:
+        """Return a snapshot of the current restart state."""
+        with self._owntone_restart_lock:
+            return {
+                "in_progress": self._owntone_restart_in_progress,
+                "started_at": self._owntone_restart_started_at,
+                "finished_at": self._owntone_restart_finished_at,
+                "ok": self._owntone_restart_ok,
+                "message": self._owntone_restart_message,
+            }

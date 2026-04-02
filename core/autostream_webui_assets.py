@@ -675,6 +675,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
 LICENSE_BANNER_CSS = ""
 
+VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">'
+
+PIN_MODAL_CSS = """
+  #pinModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
+  #pinModal.show{display:flex;}
+  #pinModal .panel{width:min(22rem,100%);background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+  #pinModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid #eee;font-weight:700;}
+  #pinModal .bd{padding:1rem;}
+  #pinModal .bd p{margin:0 0 .75rem 0;}
+  #pinModal input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid #ccc;border-radius:12px;outline:none;}
+  #pinModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid #eee;}
+  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;}
+  #pinModal .btn.cancel{background:#f1f1f1;color:#111;}
+  #pinModal .btn.ok{background:#0d6efd;color:#fff;}
+"""
+
 
 A2HS_PROMPT_HTML = """
   <div id="a2hs-prompt" style="display:none;">

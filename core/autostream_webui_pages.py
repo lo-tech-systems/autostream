@@ -85,6 +85,8 @@ from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
     A2HS_SCRIPT,
     BANNER_HTML,
+    VIEWPORT_META,
+    PIN_MODAL_CSS,
 )
 
 from autostream_webui_state import WebUIState
@@ -141,38 +143,8 @@ def _set_flash_cookie(handler, message: str, *, max_age: int = 30) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Shared PIN modal CSS (used by multiple pages)
-# -----------------------------------------------------------------------------
-
-VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">'
-
-PIN_MODAL_CSS = """
-  #pinModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
-  #pinModal.show{display:flex;}
-  #pinModal .panel{width:min(22rem,100%);background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
-  #pinModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid #eee;font-weight:700;}
-  #pinModal .bd{padding:1rem;}
-  #pinModal .bd p{margin:0 0 .75rem 0;}
-  #pinModal input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid #ccc;border-radius:12px;outline:none;}
-  #pinModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid #eee;}
-  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;}
-  #pinModal .btn.cancel{background:#f1f1f1;color:#111;}
-  #pinModal .btn.ok{background:#0d6efd;color:#fff;}
-"""
-
-
-# -----------------------------------------------------------------------------
 # Owntone restart async support
 # -----------------------------------------------------------------------------
-OWNTONE_RESTART_LOCK = threading.RLock()
-OWNTONE_RESTART_STATE = {
-    "in_progress": False,
-    "started_at": 0.0,
-    "finished_at": 0.0,
-    "ok": False,
-    "message": "",
-    "token": 0,  # increments each time we start a restart
-}
 
 def _owntone_ready_quick(base_url: str, timeout_s: float = 0.6) -> tuple[bool, str]:
     """Fast readiness probe used by /api/owntone/ready."""
@@ -186,7 +158,7 @@ def _owntone_ready_quick(base_url: str, timeout_s: float = 0.6) -> tuple[bool, s
         return False, str(e)
 
 def _restart_owntone_worker(state, token: int) -> None:
-    """Background restart + wait loop. Updates OWNTONE_RESTART_STATE when done."""
+    """Background restart + wait loop. Updates state when done."""
     try:
         p = run_admin_cmd(["restart-owntone"], timeout=20.0)
         if p.returncode != 0:
@@ -194,13 +166,7 @@ def _restart_owntone_worker(state, token: int) -> None:
                 f"autostream-admin restart-owntone failed (rc={p.returncode}): {(p.stderr or '').strip()}"
             )
     except Exception as e:
-        with OWNTONE_RESTART_LOCK:
-            # Only update if this is the latest restart attempt
-            if OWNTONE_RESTART_STATE.get("token") == token:
-                OWNTONE_RESTART_STATE["in_progress"] = False
-                OWNTONE_RESTART_STATE["finished_at"] = time.time()
-                OWNTONE_RESTART_STATE["ok"] = False
-                OWNTONE_RESTART_STATE["message"] = f"Restart command failed: {e}"
+        state.finish_owntone_restart(token, ok=False, message=f"Restart command failed: {e}")
         return
 
     # After restart command, wait for API to come back (more generous than the UI poll).
@@ -210,24 +176,13 @@ def _restart_owntone_worker(state, token: int) -> None:
     except Exception as e:
         ok, msg = False, str(e)
 
-    with OWNTONE_RESTART_LOCK:
-        if OWNTONE_RESTART_STATE.get("token") == token:
-            OWNTONE_RESTART_STATE["in_progress"] = False
-            OWNTONE_RESTART_STATE["finished_at"] = time.time()
-            OWNTONE_RESTART_STATE["ok"] = bool(ok)
-            OWNTONE_RESTART_STATE["message"] = msg if msg else ("Ready" if ok else "Not ready")
+    state.finish_owntone_restart(
+        token, ok=bool(ok), message=msg if msg else ("Ready" if ok else "Not ready")
+    )
 
 def start_owntone_restart_async(state) -> None:
     """Start a background restart if one isn't already running (or supersede it)."""
-    with OWNTONE_RESTART_LOCK:
-        OWNTONE_RESTART_STATE["in_progress"] = True
-        OWNTONE_RESTART_STATE["started_at"] = time.time()
-        OWNTONE_RESTART_STATE["finished_at"] = 0.0
-        OWNTONE_RESTART_STATE["ok"] = False
-        OWNTONE_RESTART_STATE["message"] = "Restarting Owntone…"
-        OWNTONE_RESTART_STATE["token"] = int(OWNTONE_RESTART_STATE.get("token", 0)) + 1
-        token = OWNTONE_RESTART_STATE["token"]
-
+    token = state.begin_owntone_restart()
     t = threading.Thread(target=_restart_owntone_worker, args=(state, token), daemon=True)
     t.start()
 
@@ -239,18 +194,18 @@ def send_owntone_ready_json(handler, state) -> None:
     except Exception as e:
         ready, ready_msg = False, str(e)
 
-    with OWNTONE_RESTART_LOCK:
-        payload = {
-            "ok": bool(ready),
-            "probe": ready_msg,
-            "restart": {
-                "in_progress": bool(OWNTONE_RESTART_STATE.get("in_progress")),
-                "started_at": float(OWNTONE_RESTART_STATE.get("started_at", 0.0)),
-                "finished_at": float(OWNTONE_RESTART_STATE.get("finished_at", 0.0)),
-                "ok": bool(OWNTONE_RESTART_STATE.get("ok")),
-                "message": str(OWNTONE_RESTART_STATE.get("message", "")),
-            },
-        }
+    restart = state.get_owntone_restart_state()
+    payload = {
+        "ok": bool(ready),
+        "probe": ready_msg,
+        "restart": {
+            "in_progress": bool(restart["in_progress"]),
+            "started_at": float(restart["started_at"]),
+            "finished_at": float(restart["finished_at"]),
+            "ok": bool(restart["ok"]),
+            "message": str(restart["message"]),
+        },
+    }
     send_json(handler, 200, payload)
 
 def send_owntone_restarting_page(handler, state) -> None:
@@ -562,14 +517,6 @@ def send_json(handler, code: int, payload: dict) -> None:
         # Client navigated away / refreshed / closed the tab mid-response.
         return
         
-def send_json_(handler, code: int, payload: dict) -> None:
-    body = json.dumps(payload).encode("utf-8")
-    handler.send_response(code)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
-
 
 def send_owntone_artwork_proxy(handler, state: WebUIState) -> None:
     """Proxy /artwork/... requests to OwnTone so authenticated Web UI sessions can fetch artwork."""
