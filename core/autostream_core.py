@@ -48,6 +48,15 @@ from autostream_owntone import (
     OWNTONE_RESTART_REQUIRED,
     OWNTONE_NOT_OK,
 )
+from autostream_playback import (
+    DEFAULT_STYLUS_LIFE_HOURS,
+    InputPlaybackSnapshot,
+    PlaybackInputConfig,
+    PlaybackSnapshot,
+    PlaybackTracker,
+    StylusResetResult,
+    input_label,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -73,6 +82,119 @@ def request_config_reload() -> None:
 # taking a snapshot of its elements for use on a different thread (Web UI).
 all_monitors: list["AudioMonitor"] = []
 _monitors_lock = threading.Lock()
+_playback_tracker: Optional[PlaybackTracker] = None
+
+
+def _empty_playback_snapshot() -> PlaybackSnapshot:
+    return PlaybackSnapshot(
+        inputs={},
+        warning_input_indices=(),
+        overdue_input_indices=(),
+        banner_text=None,
+    )
+
+
+def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
+    return {
+        1: PlaybackInputConfig.normalized(
+            enabled=True,
+            is_turntable=cfg.audio1.is_turntable,
+            stylus_life_hours=cfg.audio1.stylus_life_hours,
+        ),
+        2: PlaybackInputConfig.normalized(
+            enabled=cfg.audio2_enabled,
+            is_turntable=cfg.audio2.is_turntable,
+            stylus_life_hours=cfg.audio2.stylus_life_hours,
+        ),
+    }
+
+
+def _ensure_playback_tracker(cfg) -> Optional[PlaybackTracker]:
+    global _playback_tracker
+
+    try:
+        if _playback_tracker is None:
+            _playback_tracker = PlaybackTracker()
+        _playback_tracker.replace_input_configs(_playback_input_configs_from_config(cfg))
+    except Exception as e:
+        logging.warning("Playback tracker unavailable: %s", e)
+        _playback_tracker = None
+
+    return _playback_tracker
+
+
+def get_playback_snapshot() -> PlaybackSnapshot:
+    tracker = _playback_tracker
+    if tracker is None:
+        return _empty_playback_snapshot()
+    try:
+        return tracker.snapshot()
+    except Exception as e:
+        logging.warning("Could not read playback snapshot: %s", e)
+        return _empty_playback_snapshot()
+
+
+def get_input_playback_snapshot(input_index: int) -> InputPlaybackSnapshot:
+    idx = int(input_index)
+    snap = get_playback_snapshot().inputs.get(idx)
+    if snap is not None:
+        return snap
+
+    return InputPlaybackSnapshot(
+        input_index=idx,
+        label=input_label(idx),
+        active=False,
+        enabled=True,
+        is_turntable=False,
+        total_playback_seconds=0,
+        total_playback_hours=0.0,
+        stylus_playback_seconds=0,
+        stylus_playback_hours=0.0,
+        stylus_life_hours=DEFAULT_STYLUS_LIFE_HOURS,
+        stylus_remaining_seconds=None,
+        stylus_remaining_hours=None,
+        stylus_warning=False,
+        stylus_overdue=False,
+        last_stylus_reset_at=None,
+    )
+
+
+def reset_input_stylus(input_index: int) -> StylusResetResult:
+    tracker = _playback_tracker
+    if tracker is None:
+        return StylusResetResult(applied=False, persisted=False)
+    try:
+        return tracker.reset_stylus(int(input_index))
+    except Exception as e:
+        logging.warning("Could not reset stylus for input %s: %s", input_index, e)
+        return StylusResetResult(applied=False, persisted=False)
+
+
+def update_playback_input_config(
+    input_index: int,
+    *,
+    enabled: bool,
+    is_turntable: bool,
+    stylus_life_hours: int,
+) -> bool:
+    tracker = _playback_tracker
+    if tracker is None:
+        return False
+    try:
+        tracker.update_input_config(
+            int(input_index),
+            enabled=enabled,
+            is_turntable=is_turntable,
+            stylus_life_hours=stylus_life_hours,
+        )
+        return True
+    except Exception as e:
+        logging.warning(
+            "Could not update playback config for input %s: %s",
+            input_index,
+            e,
+        )
+        return False
 
 
 def any_monitor_capturing() -> bool:
@@ -679,6 +801,10 @@ class AudioMonitor:
 
     def _on_capture_started(self, was_idle: bool) -> None:
         """Called when the daemon transitions this channel to capturing."""
+        tracker = _playback_tracker
+        if tracker is not None:
+            tracker.on_capture_started(self.input_index)
+
         self._owntone_enabled_ok = False
         self._owntone_last_attempt = 0.0   # force immediate attempt
 
@@ -701,6 +827,10 @@ class AudioMonitor:
 
     def _on_capture_stopped(self, client: "MonitorClient") -> None:
         """Called when the daemon transitions this channel out of capturing."""
+        tracker = _playback_tracker
+        if tracker is not None:
+            tracker.on_capture_stopped(self.input_index)
+
         self._owntone_enabled_ok = False
 
         # Request a PCM snapshot for track recognition before signalling stop.
@@ -1235,6 +1365,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     """
     cfg = load_and_parse(config_path)
     setup_logging(cfg.general.log_file)
+    _ensure_playback_tracker(cfg)
 
     # --- Ensure OwnTone config is correct before doing anything else ---
     cfg_status = owntone_config_ok()
@@ -1293,6 +1424,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 
             cfg = load_and_parse(config_path)
             fifo_path = cfg.general.fifo_path
+            _ensure_playback_tracker(cfg)
 
             if not client.connect():
                 logging.warning(
@@ -1478,15 +1610,24 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                     m.apply_allow_capture(client)
                     m._maybe_retry_owntone(time.time())
 
+                tracker = _playback_tracker
+                if tracker is not None:
+                    tracker.maybe_flush()
+
                 time.sleep(POLL_INTERVAL)
 
         except Exception as e:
             logging.error("Unexpected error: %s", e)
 
         finally:
+            tracker = _playback_tracker
             for m in monitors:
+                if tracker is not None:
+                    tracker.on_capture_stopped(m.input_index)
                 client.stop_input(m.input_index)
                 m.stop()
+            if tracker is not None:
+                tracker.save()
             with _monitors_lock:
                 all_monitors.clear()
             client.close()

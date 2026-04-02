@@ -20,6 +20,8 @@ silence_seconds = 30           ; length of time of continuous silence before sto
 [audio1]
 capture_device = hw:1,0        ; ALSA hw identifier reported by autostream_monitor
 silence_threshold = -66        ; dBFS threshold (e.g. -66 ~= 16/32767)
+turntable = no                 ; set to yes to enable stylus-life tracking
+stylus_life_hours = 500        ; reminder threshold for stylus replacement
 gain_db = 0                    ; input gain before EQ
 eq_40hz_db = 0                 ; sub-bass bell at 40 Hz (Q=0.707)
 eq_100hz_db = 0                ; bass shelf at 100 Hz
@@ -29,6 +31,8 @@ eq_10khz_db = 0                ; treble shelf at 10 kHz
 enabled = no                   ; set to yes to enable this channel
 capture_device = hw:2,0        ; ALSA hw identifier reported by autostream_monitor
 silence_threshold = -66        ; dBFS threshold (e.g. -66 ~= 16/32767)
+turntable = no                 ; set to yes to enable stylus-life tracking
+stylus_life_hours = 500        ; reminder threshold for stylus replacement
 gain_db = 0                    ; input gain before EQ
 eq_40hz_db = 0                 ; sub-bass bell at 40 Hz (Q=0.707)
 eq_100hz_db = 0                ; bass shelf at 100 Hz
@@ -56,6 +60,8 @@ import stat
 import threading
 import configparser
 from typing import Iterable, Optional, Tuple
+
+from autostream_playback import DEFAULT_STYLUS_LIFE_HOURS, normalize_stylus_life_hours
 
 
 
@@ -88,6 +94,8 @@ def load_config(path: str) -> configparser.ConfigParser:
 class AudioInputConfig:
     capture_device: str
     silence_threshold_dbfs: float
+    is_turntable: bool
+    stylus_life_hours: int
     gain_db: float
     eq_40hz_db: float
     eq_100hz_db: float
@@ -179,6 +187,11 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     capture_device1 = cfg.get("audio1", "capture_device", fallback="").strip() \
                  or cfg.get("audio1", "input_device", fallback="").strip()
     silence_threshold1 = cfg.getfloat("audio1", "silence_threshold", fallback=-66.0)
+    turntable1 = cfg.getboolean("audio1", "turntable", fallback=False)
+    stylus_life_hours1 = normalize_stylus_life_hours(
+        cfg.get("audio1", "stylus_life_hours", fallback=str(DEFAULT_STYLUS_LIFE_HOURS)),
+        default=DEFAULT_STYLUS_LIFE_HOURS,
+    )
     gain_db1 = cfg.getfloat("audio1", "gain_db", fallback=0.0)
     eq_40hz_db1 = cfg.getfloat("audio1", "eq_40hz_db", fallback=0.0)
     eq_100hz_db1 = cfg.getfloat("audio1", "eq_100hz_db", fallback=0.0)
@@ -187,6 +200,8 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     audio1 = AudioInputConfig(
         capture_device=capture_device1,
         silence_threshold_dbfs=silence_threshold1,
+        is_turntable=turntable1,
+        stylus_life_hours=stylus_life_hours1,
         gain_db=gain_db1,
         eq_40hz_db=eq_40hz_db1,
         eq_100hz_db=eq_100hz_db1,
@@ -198,6 +213,11 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     capture_device2 = cfg.get("audio2", "capture_device", fallback="").strip() \
                  or cfg.get("audio2", "input_device", fallback="").strip()
     silence_threshold2 = cfg.getfloat("audio2", "silence_threshold", fallback=-66.0)
+    turntable2 = cfg.getboolean("audio2", "turntable", fallback=False)
+    stylus_life_hours2 = normalize_stylus_life_hours(
+        cfg.get("audio2", "stylus_life_hours", fallback=str(DEFAULT_STYLUS_LIFE_HOURS)),
+        default=DEFAULT_STYLUS_LIFE_HOURS,
+    )
     gain_db2 = cfg.getfloat("audio2", "gain_db", fallback=0.0)
     eq_40hz_db2 = cfg.getfloat("audio2", "eq_40hz_db", fallback=0.0)
     eq_100hz_db2 = cfg.getfloat("audio2", "eq_100hz_db", fallback=0.0)
@@ -206,6 +226,8 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     audio2 = AudioInputConfig(
         capture_device=capture_device2,
         silence_threshold_dbfs=silence_threshold2,
+        is_turntable=turntable2,
+        stylus_life_hours=stylus_life_hours2,
         gain_db=gain_db2,
         eq_40hz_db=eq_40hz_db2,
         eq_100hz_db=eq_100hz_db2,

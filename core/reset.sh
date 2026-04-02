@@ -7,9 +7,10 @@ systemctl stop autostream
 systemctl stop owntone
 
 # Remove config files
-rm /opt/autostream/autostream.ini
-rm /opt/autostream/cpuinfo
-rm /opt/autostream/ssid
+rm -f /opt/autostream/autostream.ini
+rm -f /opt/autostream/cpuinfo
+rm -f /opt/autostream/ssid
+rm -f /opt/autostream/playback_stats.json
 
 # Get all saved Wi-Fi connection names and delete them
 nmcli -t -f NAME,TYPE connection show \

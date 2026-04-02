@@ -15,6 +15,7 @@ from pathlib import Path
 import json
 import html
 import textwrap
+from datetime import datetime
 import requests
 from urllib.parse import quote, parse_qs, urlparse
 from typing import Optional
@@ -22,8 +23,11 @@ from typing import Optional
 from autostream_core import (
     any_monitor_capturing,
     get_monitor_levels_dbfs,
+    get_playback_snapshot,
+    reset_input_stylus,
     set_live_input_eq,
     set_live_input_gain,
+    update_playback_input_config,
 )
 
 from autostream_auth import FLASH_COOKIE_NAME
@@ -65,6 +69,13 @@ from autostream_owntone import (
     owntone_put_setting,
     owntone_set_airplay_mode,
     OWNTONE_CONF_PATH,
+)
+from autostream_playback import (
+    InputPlaybackSnapshot,
+    format_hours,
+    get_stylus_life_options,
+    normalize_stylus_life_hours,
+    suggested_silence_threshold_dbfs,
 )
 
 from autostream_webui_assets import (
@@ -444,6 +455,75 @@ def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "su
     return ("", "")
 
 
+def _format_reset_timestamp(raw: Optional[str]) -> str:
+    if not raw:
+        return "Never"
+    try:
+        dt = datetime.fromisoformat(str(raw))
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return str(raw)
+
+
+def _fallback_input_snapshot(
+    parsed_input,
+    input_index: int,
+    *,
+    enabled: bool = True,
+) -> InputPlaybackSnapshot:
+    is_turntable = bool(getattr(parsed_input, "is_turntable", False))
+    stylus_life_hours = int(getattr(parsed_input, "stylus_life_hours", 500))
+    return InputPlaybackSnapshot(
+        input_index=input_index,
+        label=f"Input {input_index}",
+        active=False,
+        enabled=bool(enabled),
+        is_turntable=is_turntable,
+        total_playback_seconds=0,
+        total_playback_hours=0.0,
+        stylus_playback_seconds=0,
+        stylus_playback_hours=0.0,
+        stylus_life_hours=stylus_life_hours,
+        stylus_remaining_seconds=(stylus_life_hours * 3600 if is_turntable else None),
+        stylus_remaining_hours=(float(stylus_life_hours) if is_turntable else None),
+        stylus_warning=False,
+        stylus_overdue=False,
+        last_stylus_reset_at=None,
+    )
+
+
+def _playback_summary_html(snapshot: InputPlaybackSnapshot) -> str:
+    total = format_hours(snapshot.total_playback_seconds)
+    rows = [f"<div><strong>Playback Hours:</strong> {html.escape(total)}</div>"]
+
+    if snapshot.is_turntable:
+        used = format_hours(snapshot.stylus_playback_seconds)
+        remaining_txt = "Due now"
+        if snapshot.stylus_remaining_seconds is not None and snapshot.stylus_remaining_seconds > 0:
+            remaining_txt = format_hours(snapshot.stylus_remaining_seconds)
+        rows.append(
+            f"<div><strong>Stylus Used:</strong> {html.escape(used)} / {int(snapshot.stylus_life_hours)} h</div>"
+        )
+        rows.append(
+            f"<div><strong>Stylus Remaining:</strong> {html.escape(remaining_txt)}</div>"
+        )
+        rows.append(
+            f"<div><strong>Last Reset:</strong> {html.escape(_format_reset_timestamp(snapshot.last_stylus_reset_at))}</div>"
+        )
+
+    if not snapshot.enabled:
+        rows.append("<div><strong>Status:</strong> Disabled</div>")
+    elif snapshot.active:
+        rows.append("<div><strong>Status:</strong> Active now</div>")
+
+    return (
+        "<div style='margin-top:0.75rem;padding:0.75rem 0.85rem;border:1px solid #e4e4e4;"
+        "border-radius:8px;background:#fafafa;font-size:0.95rem;line-height:1.5;'>"
+        + "".join(rows)
+        + "</div>"
+    )
+
+
 def _status_text_for_home(is_playing: bool, input_levels: list[dict]) -> str:
     """Return home-page status text based on the currently active input."""
     if not is_playing:
@@ -728,6 +808,8 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
     except Exception:
         input_levels = []
 
+    playback_snapshot = get_playback_snapshot()
+    stylus_banner_text = playback_snapshot.banner_text or ""
     status_text = _status_text_for_home(is_playing, input_levels)
     status_class = "playing" if is_playing else "waiting"
 
@@ -1060,6 +1142,12 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
             p.textContent=d.status_text; p.classList.remove('status-playing','status-waiting');
             p.classList.add('status-'+d.status_class);
             renderInputLevels(d.input_levels || []);
+            var warn=document.getElementById('stylus-warning-banner');
+            if (warn) {{
+              var txt = String((d && d.playback_banner_text) || '').trim();
+              warn.hidden = !txt;
+              warn.textContent = txt;
+            }}
           }});
         }}
         function isActiveControl(el) {{
@@ -1143,6 +1231,9 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           {html.escape(status_text)}
         </span>
       </div>
+      <div id="stylus-warning-banner" {'hidden' if not stylus_banner_text else ''} style="margin:0.85rem 0 0.35rem;padding:0.8rem 1rem;border-radius:8px;background:#c00000;color:#fff;font-weight:700;text-align:center;">
+        {html.escape(stylus_banner_text)}
+      </div>
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
       {A2HS_PROMPT_HTML}
       <div id="outputs-list">{outputs_html}</div>
@@ -1199,6 +1290,17 @@ def send_setup_page(
     h1 = "Initial Setup (2 of 2)" if initial_setup else "Setup"
     submit_label = "Finish" if initial_setup else "Save Settings"
     nav_html = "" if initial_setup else """<a href="/" class="pill-btn">← Done</a>"""
+    playback_snapshot = get_playback_snapshot()
+    input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
+        parsed.audio1,
+        1,
+        enabled=True,
+    )
+    input2_snapshot = playback_snapshot.inputs.get(2) or _fallback_input_snapshot(
+        parsed.audio2,
+        2,
+        enabled=parsed.audio2_enabled,
+    )
     owntone_button_html = "" if initial_setup else """
           <button type="button"
             onclick="window.location.href='/owntone-setup';"
@@ -1272,6 +1374,89 @@ def send_setup_page(
           <input type="range" min="-10" max="10" step="1" id="{prefix}_gain_db" name="{prefix}_gain_db" value="{gain_db:.0f}" oninput="syncGain({input_index}, this.value)"></label>
         """
 
+    def input_fieldset_html(
+        *,
+        input_index: int,
+        title: str,
+        parsed_input,
+        snapshot: InputPlaybackSnapshot,
+        capture_name: str,
+        threshold_name: str,
+        turntable_name: str,
+        stylus_life_name: str,
+        enabled: bool = True,
+        enabled_name: Optional[str] = None,
+    ) -> str:
+        prefix = "audio1" if input_index == 1 else "audio2"
+        threshold_id = "audio_silence_threshold" if input_index == 1 else "audio2_silence_threshold"
+        turntable_note_id = f"{prefix}_turntable_note"
+        stylus_wrap_id = f"{prefix}_stylus_wrap"
+        settings_wrap_id = f"{prefix}_settings"
+        is_turntable = bool(parsed_input.is_turntable)
+        threshold_preset = suggested_silence_threshold_dbfs(is_turntable)
+        stylus_life_hours = normalize_stylus_life_hours(parsed_input.stylus_life_hours)
+        stylus_options_html = "".join(
+            f"<option value='{hours}'{' selected' if hours == stylus_life_hours else ''}>{hours} hours</option>"
+            for hours in get_stylus_life_options()
+        )
+
+        reset_button_html = ""
+        if (not initial_setup) and is_turntable:
+            reset_button_html = (
+                f"<button type='submit' name='stylus_reset_input' value='{input_index}' "
+                "class='pill-btn small' style='margin-top:0.65rem;width:100%;' "
+                f"onclick=\"return confirm('Mark {html.escape(title)} stylus as changed?');\">"
+                "Mark Stylus Changed</button>"
+            )
+
+        playback_html = "" if initial_setup else (_playback_summary_html(snapshot) + reset_button_html)
+
+        enabled_html = ""
+        wrap_style = "block" if enabled else "none"
+        if enabled_name:
+            enabled_html = f"""
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="{enabled_name}" {'checked' if enabled else ''} onchange="onAudio2Toggle(this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Enable</span>
+          </div>
+            """
+
+        settings_open = "" if enabled_name is None else f"<div id=\"{settings_wrap_id}\" style=\"display:{wrap_style};\">"
+        settings_close = "" if enabled_name is None else "</div>"
+
+        return f"""
+        <fieldset><legend>{html.escape(title)}</legend>
+          {enabled_html}
+          {settings_open}
+            <label>Input device: <select name="{capture_name}">{build_opts(parsed_input.capture_device)}</select></label>
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
+              <label class="output-toggle" style="margin:0;">
+                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncTurntable({input_index}, this.checked)">
+                <span class="switch"></span>
+              </label>
+              <span>Turntable</span>
+            </div>
+            <div id="{turntable_note_id}" class="helptext" style="text-align:left;">
+              Detection threshold preset: {threshold_preset:.0f} dB
+            </div>
+            <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
+            <div id="{stylus_wrap_id}" style="display:{'block' if is_turntable else 'none'};">
+              <label>Stylus Life:
+                <select name="{stylus_life_name}">
+                  {stylus_options_html}
+                </select>
+              </label>
+            </div>
+            {playback_html}
+            {gain_control(prefix, parsed_input.gain_db, input_index) if not initial_setup else ""}
+            {eq_controls(prefix, parsed_input.eq_40hz_db, parsed_input.eq_100hz_db, parsed_input.eq_10khz_db, input_index) if not initial_setup else ""}
+          {settings_close}
+        </fieldset>
+        """
+
     owntone_outputs_html = ""
     try:
         resp = requests.get(parsed.owntone.base_url.rstrip("/") + "/api/outputs", timeout=3)
@@ -1290,6 +1475,28 @@ def send_setup_page(
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
+    input1_html = input_fieldset_html(
+        input_index=1,
+        title="Input 1",
+        parsed_input=parsed.audio1,
+        snapshot=input1_snapshot,
+        capture_name="audio_capture_device",
+        threshold_name="audio_silence_threshold",
+        turntable_name="audio_turntable",
+        stylus_life_name="audio_stylus_life_hours",
+    )
+    input2_html = input_fieldset_html(
+        input_index=2,
+        title="Input 2",
+        parsed_input=parsed.audio2,
+        snapshot=input2_snapshot,
+        capture_name="audio2_capture_device",
+        threshold_name="audio2_silence_threshold",
+        turntable_name="audio2_turntable",
+        stylus_life_name="audio2_stylus_life_hours",
+        enabled=parsed.audio2_enabled,
+        enabled_name="audio2_enabled",
+    )
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
@@ -1304,31 +1511,8 @@ def send_setup_page(
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
       <form method="POST" action="/setup">
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
-        <fieldset><legend>Input 1</legend>
-          <label>Input device: <select name="audio_capture_device">{build_opts(parsed.audio1.capture_device)}</select></label>
-          <label><div class="slider-header"><span>Detection Threshold:</span><span id="audio_silence_threshold_val">{parsed.audio1.silence_threshold_dbfs} dB</span></div>
-          <input type="range" min="-90" max="0" value="{parsed.audio1.silence_threshold_dbfs}" oninput="syncThr(1,this.value)">
-          <input type="hidden" id="audio_silence_threshold" name="audio_silence_threshold" value="{parsed.audio1.silence_threshold_dbfs}"></label>
-          {gain_control("audio1", parsed.audio1.gain_db, 1) if not initial_setup else ""}
-          {eq_controls("audio1", parsed.audio1.eq_40hz_db, parsed.audio1.eq_100hz_db, parsed.audio1.eq_10khz_db, 1) if not initial_setup else ""}
-        </fieldset>
-        <fieldset><legend>Input 2</legend>
-          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="audio2_enabled" {'checked' if parsed.audio2_enabled else ''} onchange="onAudio2Toggle(this.checked)">
-              <span class="switch"></span>
-            </label>
-            <span>Enable</span>
-          </div>
-          <div id="audio2_settings" style="display:{'block' if parsed.audio2_enabled else 'none'};">
-            <label>Input device: <select name="audio2_capture_device">{build_opts(parsed.audio2.capture_device)}</select></label>
-            <label><div class="slider-header"><span>Detection Threshold:</span><span id="audio2_silence_threshold_val">{parsed.audio2.silence_threshold_dbfs} dB</span></div>
-            <input type="range" min="-90" max="0" value="{parsed.audio2.silence_threshold_dbfs}" oninput="syncThr(2,this.value)">
-            <input type="hidden" id="audio2_silence_threshold" name="audio2_silence_threshold" value="{parsed.audio2.silence_threshold_dbfs}"></label>
-            {gain_control("audio2", parsed.audio2.gain_db, 2) if not initial_setup else ""}
-            {eq_controls("audio2", parsed.audio2.eq_40hz_db, parsed.audio2.eq_100hz_db, parsed.audio2.eq_10khz_db, 2) if not initial_setup else ""}
-          </div>
-        </fieldset>
+        {input1_html}
+        {input2_html}
         <fieldset><legend>Playback</legend>
           <label>Default Speakers:
             <select id="owntone_output_select" name="owntone_output_name">
@@ -1369,7 +1553,18 @@ def send_setup_page(
         const eqLiveEnabled = {str(not initial_setup).lower()};
         function onAudio2Toggle(checked){{document.getElementById('audio2_settings').style.display=checked?'block':'none';}}
         function syncVol(v){{document.getElementById('owntone_volume_percent').value=v;document.getElementById('vol_val').textContent=v+'%';}}
-        function syncThr(w,v){{var i=w==1?'audio_silence_threshold':'audio2_silence_threshold';document.getElementById(i).value=v;document.getElementById(i+'_val').textContent=v+' dB';}}
+        function thresholdPreset(checked){{ return checked ? -45 : -60; }}
+        function syncTurntable(inputIndex, checked){{
+          const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
+          const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
+          const note = document.getElementById(prefix + '_turntable_note');
+          const wrap = document.getElementById(prefix + '_stylus_wrap');
+          const threshold = thresholdPreset(!!checked);
+          const hidden = document.getElementById(thresholdId);
+          if (hidden) hidden.value = String(threshold);
+          if (note) note.textContent = 'Detection threshold preset: ' + String(threshold) + ' dB';
+          if (wrap) wrap.style.display = checked ? 'block' : 'none';
+        }}
         function eqPrefix(inputIndex){{ return inputIndex===1 ? 'audio1' : 'audio2'; }}
         function syncGain(inputIndex, value){{
           const prefix = eqPrefix(inputIndex);
@@ -1455,6 +1650,12 @@ def send_setup_page(
           syncEq(inputIndex, '10khz', String(saved.eq_10khz_db));
         }}
         function syncSil(v){{document.getElementById('sil_val').textContent=v+'s';}}
+        window.addEventListener('DOMContentLoaded', () => {{
+          const tt1 = document.querySelector('input[name="audio_turntable"]');
+          const tt2 = document.querySelector('input[name="audio2_turntable"]');
+          if (tt1) syncTurntable(1, !!tt1.checked);
+          if (tt2) syncTurntable(2, !!tt2.checked);
+        }});
         function requestReboot(){{
           if(!confirm("Reboot system?")) return;
           // Navigate to the holding page first so it can be served before the reboot begins.
@@ -1754,6 +1955,11 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
 def send_about_page(handler, state: WebUIState) -> None:
     version = get_app_version()
     lic_html, lic_spacer = build_top_banner_html()
+    parsed = None
+    try:
+        parsed = parse_config(locked_load_config(state.config_path))
+    except Exception:
+        parsed = None
     du = get_root_disk_usage()
     storage_html = ""
     if du:
@@ -1788,6 +1994,45 @@ def send_about_page(handler, state: WebUIState) -> None:
           </fieldset>
         """
 
+    usage_html = ""
+    if parsed is not None:
+        usage_rows: list[str] = []
+        playback_snapshot = get_playback_snapshot()
+        input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
+            parsed.audio1,
+            1,
+            enabled=True,
+        )
+        usage_rows.append(
+            "<div style='margin-bottom:1rem;'>"
+            f"<strong>Input 1</strong><br>"
+            f"{'Turntable' if parsed.audio1.is_turntable else 'Line input'}"
+            f"{_playback_summary_html(input1_snapshot)}"
+            "</div>"
+        )
+
+        input2_snapshot = playback_snapshot.inputs.get(2) or _fallback_input_snapshot(
+            parsed.audio2,
+            2,
+            enabled=parsed.audio2_enabled,
+        )
+        input2_kind = "Turntable" if parsed.audio2.is_turntable else "Line input"
+        if not parsed.audio2_enabled:
+            input2_kind += " (currently disabled)"
+        usage_rows.append(
+            "<div>"
+            f"<strong>Input 2</strong><br>"
+            f"{html.escape(input2_kind)}"
+            f"{_playback_summary_html(input2_snapshot)}"
+            "</div>"
+        )
+
+        usage_html = (
+            "<fieldset><legend>Usage</legend>"
+            + "".join(usage_rows)
+            + "</fieldset>"
+        )
+
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
       <title>About</title><style>{STYLE_CSS}
@@ -1802,6 +2047,7 @@ def send_about_page(handler, state: WebUIState) -> None:
       <fieldset><legend>System (build {html.escape(version)})</legend>
         {storage_html}{sd_html}
       </fieldset>
+      {usage_html}
       <fieldset><legend>Copyright</legend>
           <p><strong>autostream</strong> is Copyright &copy; 2025-2026 Lo-tech Systems Limited.</p>
           <p><strong>autostream</strong> and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
@@ -1877,11 +2123,14 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         input_levels = get_monitor_levels_dbfs()
     except Exception:
         input_levels = []
+    playback = get_playback_snapshot()
     send_json(handler, 200, {
         "playing": is_playing,
         "status_text": _status_text_for_home(is_playing, input_levels),
         "status_class": "playing" if is_playing else "waiting",
         "input_levels": input_levels,
+        "playback": playback.to_public_dict(),
+        "playback_banner_text": playback.banner_text,
     })
 
 def send_update_check_json(handler) -> None:
@@ -2053,6 +2302,18 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         old_audio2_device    = p.audio2.capture_device
         old_audio2_threshold = p.audio2.silence_threshold_dbfs
         old_silence_seconds  = p.general.silence_seconds
+        new_audio2_enabled   = "audio2_enabled" in form
+        new_audio1_turntable = "audio_turntable" in form
+        new_audio2_turntable = "audio2_turntable" in form
+        new_audio1_threshold = suggested_silence_threshold_dbfs(new_audio1_turntable)
+        new_audio2_threshold = suggested_silence_threshold_dbfs(new_audio2_turntable)
+        new_audio1_stylus_life = normalize_stylus_life_hours(
+            fld("audio_stylus_life_hours", str(p.audio1.stylus_life_hours))
+        )
+        new_audio2_stylus_life = normalize_stylus_life_hours(
+            fld("audio2_stylus_life_hours", str(p.audio2.stylus_life_hours))
+        )
+        reset_stylus_input_raw = fld("stylus_reset_input", "").strip()
 
         # Hostname
         old_hn = get_system_hostname()
@@ -2064,16 +2325,20 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         # Config updates
         if not cfg.has_section("audio1"): cfg.add_section("audio1")
         cfg.set("audio1", "capture_device", fld("audio_capture_device", p.audio1.capture_device))
-        cfg.set("audio1", "silence_threshold", fld("audio_silence_threshold", str(p.audio1.silence_threshold_dbfs)))
+        cfg.set("audio1", "silence_threshold", str(new_audio1_threshold))
+        cfg.set("audio1", "turntable", "yes" if new_audio1_turntable else "no")
+        cfg.set("audio1", "stylus_life_hours", str(new_audio1_stylus_life))
         cfg.set("audio1", "gain_db", fld("audio1_gain_db", str(p.audio1.gain_db)))
         cfg.set("audio1", "eq_40hz_db", fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
         cfg.set("audio1", "eq_100hz_db", fld("audio1_eq_100hz_db", str(p.audio1.eq_100hz_db)))
         cfg.set("audio1", "eq_10khz_db", fld("audio1_eq_10khz_db", str(p.audio1.eq_10khz_db)))
 
         if not cfg.has_section("audio2"): cfg.add_section("audio2")
-        cfg.set("audio2", "enabled", "yes" if "audio2_enabled" in form else "no")
+        cfg.set("audio2", "enabled", "yes" if new_audio2_enabled else "no")
         cfg.set("audio2", "capture_device", fld("audio2_capture_device", p.audio2.capture_device))
-        cfg.set("audio2", "silence_threshold", fld("audio2_silence_threshold", str(p.audio2.silence_threshold_dbfs)))
+        cfg.set("audio2", "silence_threshold", str(new_audio2_threshold))
+        cfg.set("audio2", "turntable", "yes" if new_audio2_turntable else "no")
+        cfg.set("audio2", "stylus_life_hours", str(new_audio2_stylus_life))
         cfg.set("audio2", "gain_db", fld("audio2_gain_db", str(p.audio2.gain_db)))
         cfg.set("audio2", "eq_40hz_db", fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
         cfg.set("audio2", "eq_100hz_db", fld("audio2_eq_100hz_db", str(p.audio2.eq_100hz_db)))
@@ -2099,8 +2364,45 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 cfg.write(f)
             mark_configured(state.config_path)
 
+        update_playback_input_config(
+            1,
+            enabled=True,
+            is_turntable=new_audio1_turntable,
+            stylus_life_hours=new_audio1_stylus_life,
+        )
+        update_playback_input_config(
+            2,
+            enabled=new_audio2_enabled,
+            is_turntable=new_audio2_turntable,
+            stylus_life_hours=new_audio2_stylus_life,
+        )
+
+        reset_stylus_result = None
+        reset_stylus_input: Optional[int] = None
+        if reset_stylus_input_raw:
+            try:
+                reset_stylus_input = int(reset_stylus_input_raw)
+            except ValueError:
+                reset_stylus_input = None
+            if reset_stylus_input in (1, 2):
+                reset_stylus_result = reset_input_stylus(reset_stylus_input)
+
+        flash_text = "Settings saved"
+        if reset_stylus_input is not None and reset_stylus_result is not None:
+            if reset_stylus_result.applied and reset_stylus_result.persisted:
+                flash_text = f"Input {reset_stylus_input} stylus reset"
+            elif reset_stylus_result.applied:
+                flash_text = (
+                    f"Input {reset_stylus_input} stylus reset, but it could not be saved "
+                    "and may be lost after restart"
+                )
+            else:
+                flash_text = (
+                    f"Settings saved, but Input {reset_stylus_input} stylus reset failed"
+                )
+
         # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
-        _set_flash_cookie(handler, "Settings saved", max_age=30)
+        _set_flash_cookie(handler, flash_text, max_age=30)
 
         # Redirect back to / on save
         next_path = "/"
@@ -2157,21 +2459,10 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         # Only restart the coordinator if a setting that requires daemon
         # reconfiguration actually changed.  EQ, gain, output name, volume,
         # and hostname changes take effect without disrupting playback.
-        new_audio2_enabled = "audio2_enabled" in form
         try:
             new_silence_seconds = int(fld("silence_seconds", str(old_silence_seconds)))
         except ValueError:
             new_silence_seconds = old_silence_seconds
-
-        try:
-            new_audio1_threshold = float(fld("audio_silence_threshold", str(old_audio1_threshold)))
-        except ValueError:
-            new_audio1_threshold = old_audio1_threshold
-
-        try:
-            new_audio2_threshold = float(fld("audio2_silence_threshold", str(old_audio2_threshold)))
-        except ValueError:
-            new_audio2_threshold = old_audio2_threshold
 
         daemon_changed = (
             fld("audio_capture_device", old_audio1_device) != old_audio1_device
