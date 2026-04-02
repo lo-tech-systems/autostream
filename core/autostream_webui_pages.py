@@ -2361,7 +2361,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
         # Atomicity across concurrent requests/tabs:
         with CONFIG_IO_LOCK:
-            with open(state.config_path, "w") as f:
+            with open(state.config_path, "w", encoding="utf-8") as f:
                 cfg.write(f)
             mark_configured(state.config_path)
 

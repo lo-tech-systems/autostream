@@ -597,7 +597,8 @@ def read_airplay2_for_speaker(speaker_name: str, conf_path: Path | str = OWNTONE
     if not text:
         return None
 
-    header = re.compile(rf'(?m)^\s*airplay\s+"{re.escape(speaker_name)}"\s*\{{\s*$')
+    conf_name = speaker_name.replace('"', '\\"')
+    header = re.compile(rf'(?m)^\s*airplay\s+"{re.escape(conf_name)}"\s*\{{\s*$')
     span = _find_block_span(text, header)
     if not span:
         return None
@@ -623,7 +624,8 @@ def write_airplay2_for_speaker(speaker_name: str, enabled: bool, conf_path: Path
     if not text:
         return False
 
-    header = re.compile(rf'(?m)^\s*airplay\s+"{re.escape(speaker_name)}"\s*\{{\s*$')
+    conf_name = speaker_name.replace('"', '\\"')
+    header = re.compile(rf'(?m)^\s*airplay\s+"{re.escape(conf_name)}"\s*\{{\s*$')
     span = _find_block_span(text, header)
 
     if span:
@@ -653,7 +655,7 @@ def write_airplay2_for_speaker(speaker_name: str, enabled: bool, conf_path: Path
         if not text.endswith("\n"):
             text += "\n"
         new_text = text + (
-            f"\nairplay \"{speaker_name}\" {{\n"
+            f"\nairplay \"{conf_name}\" {{\n"
             f"\traop_disable = {_bool_to_conf(bool(enabled))}\n"
             "}\n"
         )
