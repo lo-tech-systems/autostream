@@ -27,6 +27,7 @@ from autostream_core import (
     reset_input_stylus,
     set_live_input_eq,
     set_live_input_gain,
+    update_live_owntone_runtime,
     update_playback_input_config,
 )
 
@@ -2364,6 +2365,14 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 cfg.write(f)
             mark_configured(state.config_path)
 
+        update_live_owntone_runtime(
+            output_name=fld("owntone_output_name", p.owntone.output_name),
+            volume_percent=fld(
+                "owntone_volume_percent",
+                str(p.owntone.volume_percent),
+            ),
+            output_offsets_ms=p.owntone.output_offsets_ms,
+        )
         update_playback_input_config(
             1,
             enabled=True,
@@ -2701,6 +2710,12 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
                     ):
                         raise RuntimeError("Could not update OwnTone uncompressed_alac setting")
                     restart_required = True
+
+        update_live_owntone_runtime(
+            output_name=cfg.get("owntone", "output_name", fallback=""),
+            volume_percent=cfg.get("owntone", "volume_percent", fallback="20"),
+            output_offsets_ms=offsets_by_id,
+        )
 
         # Restart Owntone only when a conf-backed setting actually changed.
         if restart_required:

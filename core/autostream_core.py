@@ -197,6 +197,48 @@ def update_playback_input_config(
         return False
 
 
+def _normalize_owntone_output_offsets(
+    output_offsets_ms: Optional[dict[str, object]] = None,
+) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for raw_key, raw_val in (output_offsets_ms or {}).items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        try:
+            off = int(raw_val)
+        except Exception:
+            off = 0
+        normalized[key] = max(-2000, min(2000, off))
+    return normalized
+
+
+def update_live_owntone_runtime(
+    *,
+    output_name: str,
+    volume_percent: object,
+    output_offsets_ms: Optional[dict[str, object]] = None,
+) -> bool:
+    try:
+        live_output_name = str(output_name or "").strip()
+        try:
+            live_volume_percent = int(str(volume_percent).strip())
+        except Exception:
+            live_volume_percent = 20
+        live_volume_percent = max(0, min(100, live_volume_percent))
+        live_output_offsets_ms = _normalize_owntone_output_offsets(output_offsets_ms)
+
+        with _monitors_lock:
+            for monitor in all_monitors:
+                monitor.owntone_output_name = live_output_name
+                monitor.owntone_volume_percent = live_volume_percent
+                monitor.owntone_output_offsets_ms = dict(live_output_offsets_ms)
+        return True
+    except Exception as e:
+        logging.warning("Could not update live OwnTone runtime settings: %s", e)
+        return False
+
+
 def any_monitor_capturing() -> bool:
     """Return True if any AudioMonitor currently has an active capture."""
     with _monitors_lock:
