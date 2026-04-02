@@ -2220,6 +2220,9 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 
         if selected:
             out_payload = {"selected": True, "volume": volume}
+            offset_val = parsed.owntone.output_offsets_ms.get(str(out_id))
+            if offset_val is not None:
+                out_payload["offset_ms"] = max(-2000, min(2000, int(offset_val)))
             logging.info("Owntone API call: PUT %s json=%s", url, out_payload)
             resp = requests.put(url, json=out_payload, timeout=3)
             logging.info("Owntone API response: status=%s body=%s",

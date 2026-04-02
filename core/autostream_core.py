@@ -1113,9 +1113,9 @@ class AudioMonitor:
         out_id = str(default_out.get("id"))
         base = self.owntone_base_url.rstrip("/")
         try:
-            out_volume = int(default_out.get("volume", self.owntone_volume_percent))
-        except Exception:
             out_volume = int(self.owntone_volume_percent)
+        except Exception:
+            out_volume = 20
         out_volume = max(0, min(100, out_volume))
         payload: dict[str, object] = {"selected": True, "volume": out_volume}
         offset_val = self.owntone_output_offsets_ms.get(out_id)
