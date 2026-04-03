@@ -1102,11 +1102,21 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
               csrf_token: window.__CSRF||''
             }})
           }});
+          if (handleHomeSessionRejected(r)) return {{ ok:false, _http:r.status, session_rejected:true }};
           // Server replies JSON for this endpoint (including failures)
           let j = null;
           try {{ j = await r.json(); }} catch (e) {{ j = {{ ok: r.ok }}; }}
           j._http = r.status;
           return j;
+        }}
+
+        function handleHomeSessionRejected(response){{
+          const status = Number(response && response.status);
+          if (status !== 401 && status !== 403) return false;
+          if (window.__HOME_SESSION_REFRESHING) return true;
+          window.__HOME_SESSION_REFRESHING = true;
+          window.location.reload();
+          return true;
         }}
 
         async function postPinOnly(id, pin) {{
@@ -1124,6 +1134,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
               csrf_token: window.__CSRF||''
             }})
           }});
+          if (handleHomeSessionRejected(r)) return {{ ok:false, _http:r.status, session_rejected:true }};
           let j = null;
           try {{ j = await r.json(); }} catch (e) {{ j = {{ ok: r.ok }}; }}
           j._http = r.status;
