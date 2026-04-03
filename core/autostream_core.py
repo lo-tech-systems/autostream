@@ -848,6 +848,7 @@ class AudioMonitor:
         self.is_silent: bool = True
         self.is_capturing: bool = False
         self._last_active_time: Optional[float] = None
+        self._tracker_playback_active: bool = False
 
         # --- allow_capture: set by coordinator; synced to daemon lazily ---
         self._allow_capture: bool = True
@@ -915,19 +916,33 @@ class AudioMonitor:
 
     def stop(self) -> None:
         """Release resources (call at shutdown)."""
+        self._tracker_playback_active = False
         try:
             self._nowplaying_publisher.close()
         except Exception:
             pass
 
+    def _sync_playback_tracker_state(self) -> None:
+        """Keep playback-hour tracking aligned to audible activity."""
+        tracker = _playback_tracker
+        if tracker is None:
+            self._tracker_playback_active = False
+            return
+
+        playback_active = self.is_capturing and not self.is_silent
+        if playback_active == self._tracker_playback_active:
+            return
+
+        if playback_active:
+            tracker.on_playback_started(self.input_index)
+        else:
+            tracker.on_playback_stopped(self.input_index)
+        self._tracker_playback_active = playback_active
+
     # ── Capture transitions ──────────────────────────────────────────────────
 
     def _on_capture_started(self, was_idle: bool) -> None:
         """Called when the daemon transitions this channel to capturing."""
-        tracker = _playback_tracker
-        if tracker is not None:
-            tracker.on_capture_started(self.input_index)
-
         self._owntone_enabled_ok = False
         self._owntone_last_attempt = 0.0   # force immediate attempt
 
@@ -950,10 +965,6 @@ class AudioMonitor:
 
     def _on_capture_stopped(self, client: "MonitorClient") -> None:
         """Called when the daemon transitions this channel out of capturing."""
-        tracker = _playback_tracker
-        if tracker is not None:
-            tracker.on_capture_stopped(self.input_index)
-
         self._owntone_enabled_ok = False
 
         # Request a PCM snapshot for track recognition before signalling stop.
@@ -1663,6 +1674,12 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                         elif transition == "stopped":
                             stopped.append(m)
 
+                # Keep playback-hours tracking aligned to actual audible
+                # activity, rather than the broader capture window that
+                # includes the silence timeout used to detect playback end.
+                for m in monitors:
+                    m._sync_playback_tracker_state()
+
                 # Fire stopped callbacks first so any_monitor_capturing() is
                 # already correct when started callbacks check it.
                 for m in stopped:
@@ -1740,7 +1757,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                 )
             for m in monitors:
                 if tracker is not None:
-                    tracker.on_capture_stopped(m.input_index)
+                    tracker.on_playback_stopped(m.input_index)
                 client.stop_input(m.input_index)
                 m.stop()
             if tracker is not None:

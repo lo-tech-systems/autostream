@@ -6,7 +6,9 @@ Playback-hours tracking for autostream inputs.
 This module keeps runtime playback counters in a small JSON file, separate
 from autostream.ini. User-editable settings such as "turntable" and
 "stylus_life_hours" should remain in the INI and be supplied to the tracker
-at runtime.
+at runtime. Counters are driven by audible playback activity, not by the
+full capture window, so trailing silence used to detect end-of-playback is
+not counted.
 """
 
 from __future__ import annotations
@@ -413,8 +415,8 @@ class PlaybackTracker:
             if not cfg.enabled:
                 self._active_since.pop(idx, None)
 
-    def on_capture_started(self, input_index: int) -> None:
-        """Mark an input as actively capturing."""
+    def on_playback_started(self, input_index: int) -> None:
+        """Mark an input as actively playing audible audio."""
         idx = self._normalize_input_index(input_index)
         with self._lock:
             cfg = self._configs.get(idx, PlaybackInputConfig())
@@ -424,21 +426,21 @@ class PlaybackTracker:
             self._ensure_input_state_locked(idx)
             self._active_since.setdefault(idx, self._time_fn())
 
-    def on_capture_stopped(self, input_index: int) -> None:
-        """Mark an input as no longer capturing and checkpoint its counters."""
+    def on_playback_stopped(self, input_index: int) -> None:
+        """Mark an input as no longer playing audible audio."""
         idx = self._normalize_input_index(input_index)
         with self._lock:
             self._accrue_input_locked(idx, self._time_fn())
             self._active_since.pop(idx, None)
             if self._dirty:
-                self._save_best_effort_locked(force=True, context="capture stop")
+                self._save_best_effort_locked(force=True, context="playback stop")
 
-    def sync_capture_state(self, input_index: int, capturing: bool) -> None:
+    def sync_playback_state(self, input_index: int, active: bool) -> None:
         """Convenience wrapper for callers that already know the target state."""
-        if capturing:
-            self.on_capture_started(input_index)
+        if active:
+            self.on_playback_started(input_index)
         else:
-            self.on_capture_stopped(input_index)
+            self.on_playback_stopped(input_index)
 
     def reset_stylus(self, input_index: int) -> StylusResetResult:
         """Reset stylus usage for an input and persist immediately."""
