@@ -16,6 +16,7 @@ import tempfile
 import time
 
 import requests # third-party (pip install requests)
+from autostream_config import normalize_log_level, owntone_log_level_value
 from autostream_sysutils import run_admin_cmd
 
 logger = logging.getLogger(__name__)
@@ -399,6 +400,72 @@ def write_pipe_autostart_to_conf(
     return True
 
 
+def read_log_level_from_conf(conf_path: Path | str = OWNTONE_CONF_PATH) -> Optional[str]:
+    """Return general.loglevel from owntone.conf, or None if unavailable."""
+    path = Path(conf_path)
+    text = _read_text(path)
+    if not text:
+        return None
+
+    span = _find_block_span(text, re.compile(r"(?m)^\s*general\s*\{\s*$"))
+    if not span:
+        return None
+
+    block = text[span[0]:span[1]]
+    m = re.search(r"(?m)^\s*loglevel\s*=\s*(?P<v>[^\s#]+)", block)
+    if not m:
+        return None
+    value = normalize_log_level(m.group("v"))
+    return value
+
+
+def write_log_level_to_conf(
+    level_name: str,
+    conf_path: Path | str = OWNTONE_CONF_PATH,
+) -> bool:
+    """Write general.loglevel in owntone.conf."""
+    normalized = normalize_log_level(level_name)
+    path = Path(conf_path)
+    text = _read_text(path)
+    if not text:
+        return False
+
+    general_re = re.compile(r"(?m)^\s*general\s*\{\s*$")
+    span = _find_block_span(text, general_re)
+    if not span:
+        return False
+
+    block = text[span[0]:span[1]]
+    line_re = re.compile(
+        r"(?m)^(?P<indent>\s*)(?:#\s*)?loglevel\s*=\s*[^\s#]+(?P<rest>\s*(?:#.*)?)$"
+    )
+    m = line_re.search(block)
+    if m:
+        indent = m.group("indent")
+        rest = m.group("rest") or ""
+        new_line = f"{indent}loglevel = {normalized}{rest}"
+        new_block = block[:m.start()] + new_line + block[m.end():]
+    else:
+        close_idx = block.rfind("}")
+        if close_idx == -1:
+            return False
+        indent = "\t"
+        for ln in block.splitlines()[1:]:
+            if ln.strip() and not ln.lstrip().startswith("#"):
+                indent = re.match(r"^\s*", ln).group(0)  # type: ignore[union-attr]
+                break
+        ins = f"{indent}loglevel = {normalized}\n"
+        new_block = block[:close_idx] + ins + block[close_idx:]
+
+    new_text = text[:span[0]] + new_block + text[span[1]:]
+    try:
+        _atomic_write_text(path, new_text)
+    except Exception:
+        logger.exception("Failed writing %s", path)
+        return False
+    return True
+
+
 def read_and_set_global_pipe_directory(conf_path: Path | str = OWNTONE_CONF_PATH) -> str:
     """Read OwnTone's library.directories and set the global pipe directory.
 
@@ -672,11 +739,6 @@ def write_airplay2_for_speaker(speaker_name: str, enabled: bool, conf_path: Path
 # OwnTone settings API helpers
 # ---------------------------------------------------------------------------
 
-# Integer severity used by OwnTone's runtime logger (logger.h: E_INFO = 3).
-# Range is E_FATAL (0) .. E_SPAM (5).
-OWNTONE_LOGLEVEL_INFO = 3
-
-
 @dataclass(frozen=True)
 class OwntoneSettingGetResult:
     available: bool
@@ -802,15 +864,31 @@ def owntone_set_airplay_mode(
         return OwntoneSettingPutResult(available=True, ok=False)
 
 
-def owntone_check_api_settings(base_url: str) -> bool:
+def owntone_apply_log_level(
+    base_url: str,
+    desired_log_level: str,
+) -> OwntoneSettingPutResult:
+    """Apply the configured platform log level to OwnTone via its settings API."""
+    normalized = normalize_log_level(desired_log_level)
+    return owntone_put_setting(
+        base_url,
+        "debug",
+        "loglevel",
+        owntone_log_level_value(normalized),
+    )
+
+
+def owntone_check_api_settings(base_url: str, desired_log_level: str) -> bool:
     """Check and fix pipe_autostart and loglevel via the OwnTone settings API.
 
-    Requires the OwnTone PR that adds /api/settings endpoints.  Falls back
-    gracefully (logs a debug message, returns False) when those endpoints
-    return 404 so that older OwnTone installations continue to work.
+    Requires the OwnTone PR that adds /api/settings endpoints. On older
+    OwnTone builds that return 404, falls back to owntone.conf so existing
+    installations continue to work.
 
-    loglevel is corrected immediately (no restart needed).
-    pipe_autostart is corrected via API and requires a restart to take effect.
+    loglevel is corrected immediately via API when available; the conf-file
+    fallback requires a restart.
+    pipe_autostart is corrected via API and requires a restart to take effect;
+    the conf-file fallback also requires a restart.
 
     Returns True if OwnTone must be restarted for the changes to take effect.
     """
@@ -818,12 +896,27 @@ def owntone_check_api_settings(base_url: str) -> bool:
 
     # --- loglevel (debug category, takes effect immediately) ---
     try:
+        desired_level_name = normalize_log_level(desired_log_level)
+        desired_level = owntone_log_level_value(desired_level_name)
         current_level_res = owntone_get_setting(base_url, "debug", "loglevel")
         current_level = _coerce_owntone_int(current_level_res.value)
         if not current_level_res.available:
             logger.debug(
-                "OwnTone settings API: debug/loglevel not available; skipping."
+                "OwnTone settings API: debug/loglevel not available; "
+                "falling back to owntone.conf."
             )
+            conf_level = read_log_level_from_conf()
+            if conf_level != desired_level_name:
+                logger.info(
+                    "OwnTone loglevel in owntone.conf is %r (expected %r); "
+                    "correcting there (restart required).",
+                    conf_level,
+                    desired_level_name,
+                )
+                if write_log_level_to_conf(desired_level_name):
+                    needs_restart = True
+                else:
+                    logger.warning("Failed to set OwnTone loglevel in owntone.conf.")
         elif not current_level_res.ok:
             logger.warning("OwnTone settings API request failed for debug/loglevel.")
         elif current_level is None:
@@ -831,17 +924,15 @@ def owntone_check_api_settings(base_url: str) -> bool:
                 "OwnTone settings API returned an unparseable loglevel value: %r",
                 current_level_res.value,
             )
-        elif current_level != OWNTONE_LOGLEVEL_INFO:
+        elif current_level != desired_level:
             logger.info(
                 "OwnTone loglevel is %s (expected %s); correcting via API.",
-                current_level, OWNTONE_LOGLEVEL_INFO,
+                current_level, desired_level,
             )
-            put_res = owntone_put_setting(
-                base_url, "debug", "loglevel", OWNTONE_LOGLEVEL_INFO
-            )
+            put_res = owntone_apply_log_level(base_url, desired_level_name)
             if put_res.ok:
                 logger.info(
-                    "OwnTone loglevel set to %s via API.", OWNTONE_LOGLEVEL_INFO
+                    "OwnTone loglevel set to %s via API.", desired_level_name
                 )
             else:
                 logger.warning("Failed to set OwnTone loglevel via API.")

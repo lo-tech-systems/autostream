@@ -27,6 +27,7 @@ from autostream_core import (
     reset_input_stylus,
     set_live_input_eq,
     set_live_input_gain,
+    update_live_log_level,
     update_live_owntone_runtime,
     update_playback_input_config,
 )
@@ -34,7 +35,9 @@ from autostream_core import (
 from autostream_auth import FLASH_COOKIE_NAME
 
 from autostream_config import (
+    get_log_level_options,
     load_config,
+    normalize_log_level,
     parse_config,
     mark_configured,
     unconfigured,
@@ -63,12 +66,16 @@ from autostream_owntone import (
     write_and_set_global_pipe_directory,
     read_and_set_global_uncompressed_audio,
     write_and_set_global_uncompressed_audio,
+    read_log_level_from_conf,
     read_airplay2_for_speaker,
+    write_log_level_to_conf,
     write_airplay2_for_speaker,
     _coerce_owntone_bool,
     _coerce_owntone_int,
+    owntone_apply_log_level,
     owntone_get_setting,
     owntone_put_setting,
+    owntone_restart_service,
     owntone_set_airplay_mode,
     OWNTONE_CONF_PATH,
 )
@@ -2214,26 +2221,55 @@ def send_about_page(handler, state: WebUIState) -> None:
     handler.end_headers()
     handler.wfile.write(body_bytes)
 
-def send_logs_page(handler, state: WebUIState) -> None:
-    lic_html, lic_spacer = build_top_banner_html()
+def send_logs_page(
+    handler,
+    state: WebUIState,
+    flash_msg: Optional[str] = None,
+    flash_type: str = "success",
+) -> None:
+    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    current_log_level = "info"
     try:
         cfg = locked_load_config(state.config_path)
-        log_file_cfg = parse_config(cfg).general.log_file
-        log_path = _resolve_allowed_log_path(log_file_cfg)
+        parsed = parse_config(cfg)
+        current_log_level = parsed.general.log_level
+        log_path = _resolve_allowed_log_path(parsed.general.log_file)
         lines = tail_lines(str(log_path), 100)
         log_content = "\n".join(lines)
     except Exception as e:
         logging.warning("Logs page: denied/failed reading configured log: %s", e)
         log_content = "Error reading logs (access denied or unavailable)."
 
+    csrf_token = getattr(handler, "_csrf_token", "") or ""
+    log_level_options_html = "".join(
+        (
+            f"<option value=\"{html.escape(level)}\""
+            f"{' selected' if level == current_log_level else ''}>"
+            f"{html.escape(level)}</option>"
+        )
+        for level in get_log_level_options()
+    )
+
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8"><title>Logs</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
       <style>{STYLE_CSS}
       body {{ font-size: 14px !important; }}
+      .log-controls {{ display:flex; gap:0.6rem; align-items:flex-end; margin:0.8rem 0 1rem; flex-wrap:wrap; }}
+      .log-controls .field {{ flex:1 1 200px; }}
+      .log-controls label {{ display:block; margin-bottom:0.25rem; font-weight:600; }}
+      .log-controls select {{ width:100%; }}
       .log-wrapper {{ background:#111; color:#f5f5f5; padding:0.65rem; border-radius:6px; font-family:monospace; font-size:0.65rem; max-height:60vh; overflow:auto; white-space:pre-wrap; }}
       </style></head><body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>Logs</h1>
       <p class="actions" style="display:flex;justify-content:space-between;"><a href="/setup" class="pill-btn">← Back</a> <a href="/logs" class="pill-btn">↻ Refresh</a></p>
+      <form method="post" action="/logs" class="log-controls">
+        <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
+        <div class="field">
+          <label for="log_level">Log Level</label>
+          <select id="log_level" name="log_level">{log_level_options_html}</select>
+        </div>
+        <button type="submit" class="pill-btn">Save</button>
+      </form>
       <div class="log-wrapper" id="logWrapper"><pre>{html.escape(log_content)}</pre></div>
       <p class="actions"><a href="/api/log_file" class="pill-btn" id="logDlBtn" style="display:block;width:100%;text-align:center;box-sizing:border-box;">Download Log Bundle</a></p>
       <script>
@@ -2266,6 +2302,67 @@ def send_logs_page(handler, state: WebUIState) -> None:
     handler.send_header("Content-Length", str(len(body_bytes)))
     handler.end_headers()
     handler.wfile.write(body_bytes)
+
+
+def handle_logs_post(handler, state: WebUIState, body: str) -> None:
+    try:
+        form = parse_qs(body, keep_blank_values=True)
+        new_log_level = normalize_log_level((form.get("log_level") or [""])[0])
+
+        with CONFIG_IO_LOCK:
+            cfg = load_config(state.config_path)
+            parsed = parse_config(cfg)
+            if not cfg.has_section("general"):
+                cfg.add_section("general")
+            cfg.set("general", "log_level", new_log_level)
+            with open(state.config_path, "w", encoding="utf-8") as fh:
+                cfg.write(fh)
+
+        applied_log_level = update_live_log_level(new_log_level)
+        owntone_res = None
+        needs_owntone_restart = False
+        if parsed.owntone.base_url:
+            owntone_res = owntone_apply_log_level(
+                parsed.owntone.base_url,
+                applied_log_level,
+            )
+            if not owntone_res.available:
+                with CONFIG_IO_LOCK:
+                    conf_level = read_log_level_from_conf(OWNTONE_CONF_PATH)
+                    if conf_level != applied_log_level:
+                        if not write_log_level_to_conf(applied_log_level, OWNTONE_CONF_PATH):
+                            raise RuntimeError("Failed writing OwnTone loglevel to owntone.conf")
+                        needs_owntone_restart = True
+
+        if needs_owntone_restart and not owntone_restart_service():
+            flash_text = "Log level saved, but OwnTone restart failed"
+            _set_flash_cookie(handler, flash_text, max_age=30)
+            handler.send_response(302)
+            handler.send_header("Location", "/logs")
+            handler.end_headers()
+            return
+
+        flash_text = "Log level saved"
+        owntone_still_needs_attention = (
+            owntone_res is not None
+            and not owntone_res.ok
+            and not (owntone_res.available is False and not needs_owntone_restart)
+        )
+        if owntone_still_needs_attention:
+            flash_text = (
+                "Log level saved; OwnTone restarted"
+                if needs_owntone_restart
+                else "Log level saved, but OwnTone was not updated"
+            )
+
+        _set_flash_cookie(handler, flash_text, max_age=30)
+        handler.send_response(302)
+        handler.send_header("Location", "/logs")
+        handler.end_headers()
+    except Exception:
+        logging.exception("Failed saving log level from Logs page.")
+        send_logs_page(handler, state, flash_msg="Save failed", flash_type="error")
+
 
 def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     is_playing = any_monitor_capturing()

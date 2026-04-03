@@ -216,7 +216,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/license":
             license_page.send_license_page(self, STATE)
         elif path == "/logs":
-            pages.send_logs_page(self, STATE)
+            pages.send_logs_page(self, STATE, flash_msg=msg)
         elif path == "/api/status":
             pages.send_status_json(self)
         elif path == "/api/update/check":
@@ -250,6 +250,14 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             body = self._read_post_body_bytes()
             if body:
                 AUTH.handle_auth_verify(self, body)
+            return
+
+        if (
+            path == "/logs"
+            and AUTH.get_pin_if_enabled() is not None
+            and not AUTH.is_authenticated(self.headers)
+        ):
+            self.send_error(403, "Authentication required")
             return
 
         # --- 2) Read body once (may be empty) ---
@@ -332,6 +340,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             with _setup_lock:
                 if initial_setup == 1:
                     initial_setup = 2
+
+        elif path == "/logs":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            pages.handle_logs_post(self, STATE, body_str)
 
         elif path == "/api/update/apply":
             # Body optional

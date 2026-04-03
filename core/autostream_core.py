@@ -27,7 +27,12 @@ from typing import Optional
 
 import requests
 
-from autostream_config import load_and_parse, unconfigured
+from autostream_config import (
+    load_and_parse,
+    normalize_log_level,
+    python_log_level_value,
+    unconfigured,
+)
 from autostream_nowplaying import (
     NowPlayingMetadata,
     OwntoneMetadataPipePublisher,
@@ -334,12 +339,12 @@ signal.signal(signal.SIGINT,  handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
 
 
-def setup_logging(log_file: str) -> None:
+def setup_logging(log_file: str, log_level: str) -> None:
     log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
     logging.basicConfig(
-        level=logging.INFO,
+        level=python_log_level_value(log_level),
         format="%(asctime)s: %(message)s",
         datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
@@ -347,6 +352,20 @@ def setup_logging(log_file: str) -> None:
             logging.StreamHandler(sys.stdout),
         ],
     )
+
+
+def update_live_log_level(log_level: str) -> str:
+    """Apply the platform log level to the running Python process."""
+    normalized = normalize_log_level(log_level)
+    target_level = python_log_level_value(normalized)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(target_level)
+    for handler in root_logger.handlers:
+        try:
+            handler.setLevel(target_level)
+        except Exception:
+            pass
+    return normalized
 
 
 def get_monitor_levels_dbfs() -> list[dict]:
@@ -1482,7 +1501,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     optional web UI in a background thread.
     """
     cfg = load_and_parse(config_path)
-    setup_logging(cfg.general.log_file)
+    setup_logging(cfg.general.log_file, cfg.general.log_level)
     _ensure_playback_tracker(cfg)
 
     # --- Ensure OwnTone config is correct before doing anything else ---
@@ -1573,8 +1592,12 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                     )
 
                 # Check pipe_autostart and loglevel via the settings API.
-                # Falls back silently on older OwnTone builds that lack these endpoints.
-                api_needs_restart = owntone_check_api_settings(cfg.owntone.base_url)
+                # Older OwnTone builds fall back to owntone.conf and may then
+                # require a restart.
+                api_needs_restart = owntone_check_api_settings(
+                    cfg.owntone.base_url,
+                    cfg.general.log_level,
+                )
                 if api_needs_restart:
                     logging.warning(
                         "OwnTone API settings were corrected; restarting OwnTone."

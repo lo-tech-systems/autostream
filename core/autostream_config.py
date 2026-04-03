@@ -14,6 +14,7 @@ Configuration file example (INI):
 
 [general]
 log_file = /var/log/autostream/autostream.log
+log_level = info               ; fatal, log, warning, info, debug, spam
 fifo_path = /tmp/autostream-pipes/autostream
 silence_seconds = 30           ; length of time of continuous silence before stopping
 
@@ -54,6 +55,7 @@ hidden_outputs =
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 import re
 import stat
@@ -62,6 +64,52 @@ import configparser
 from typing import Iterable, Optional, Tuple
 
 from autostream_playback import DEFAULT_STYLUS_LIFE_HOURS, normalize_stylus_life_hours
+
+
+DEFAULT_LOG_LEVEL = "info"
+VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
+
+_PYTHON_LOG_LEVELS = {
+    "fatal": logging.CRITICAL,
+    "log": logging.ERROR,
+    "warning": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+    "spam": logging.DEBUG,
+}
+
+_OWNTONE_LOG_LEVELS = {
+    "fatal": 0,
+    "log": 1,
+    "warning": 2,
+    "info": 3,
+    "debug": 4,
+    "spam": 5,
+}
+
+
+def get_log_level_options() -> tuple[str, ...]:
+    """Return the supported platform log-level names."""
+    return VALID_LOG_LEVELS
+
+
+def normalize_log_level(value: object, default: str = DEFAULT_LOG_LEVEL) -> str:
+    """Return a supported platform log-level name."""
+    text = str(value or "").strip().lower()
+    if text in VALID_LOG_LEVELS:
+        return text
+    fallback = str(default or "").strip().lower()
+    return fallback if fallback in VALID_LOG_LEVELS else DEFAULT_LOG_LEVEL
+
+
+def python_log_level_value(level_name: object) -> int:
+    """Map a platform log-level name to Python's logging constants."""
+    return _PYTHON_LOG_LEVELS[normalize_log_level(level_name)]
+
+
+def owntone_log_level_value(level_name: object) -> int:
+    """Map a platform log-level name to OwnTone's integer runtime severity."""
+    return _OWNTONE_LOG_LEVELS[normalize_log_level(level_name)]
 
 
 
@@ -113,6 +161,7 @@ class OwntoneConfig:
 @dataclass(frozen=True)
 class GeneralConfig:
     log_file: str
+    log_level: str
     silence_seconds: int
     fifo_path: str
 
@@ -174,11 +223,16 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         "general", "log_file",
         fallback="/var/log/autostream/autostream.log"
     )
+    log_level = normalize_log_level(
+        cfg.get("general", "log_level", fallback=DEFAULT_LOG_LEVEL),
+        default=DEFAULT_LOG_LEVEL,
+    )
     silence_seconds = cfg.getint("general", "silence_seconds", fallback=30)
     fifo_path = cfg.get("general", "fifo_path", fallback="/tmp/autostream-pipes/autostream.fifo")
 
     general = GeneralConfig(
         log_file=log_file,
+        log_level=log_level,
         silence_seconds=silence_seconds,
         fifo_path=fifo_path,
     )
