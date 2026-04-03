@@ -14,10 +14,11 @@ import re
 import logging
 import os
 import time
+import json
 
 logger = logging.getLogger(__name__)
 
-SDCARD_HEALTH_USED_FILE = Path("/opt/autostream/sdcardhealth")
+SDCARD_HEALTH_JSON_FILE = Path("/opt/autostream/sdcardhealth.json")
 
 # Privileged helper (installed outside /opt/autostream)
 AUTOSTREAM_ADMIN_BIN = os.environ.get("AUTOSTREAM_ADMIN_BIN", "/usr/local/libexec/autostream/autostream_admin")
@@ -185,25 +186,67 @@ def fmt_bytes(n: int) -> str:
         return str(n)
 
 
+def _coerce_float(value) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _coerce_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "yes", "1"}:
+            return True
+        if v in {"false", "no", "0"}:
+            return False
+    return None
+
+
+def _parse_sdcard_health_percent(data: dict) -> int | None:
+    success = _coerce_bool(data.get("success"))
+    if success is not True:
+        return None
+
+    remaining: float | None = None
+
+    if "enduranceRemainLifePercent" in data:
+        remaining = _coerce_float(data.get("enduranceRemainLifePercent"))
+    elif "healthStatusPercentUsed" in data:
+        used = _coerce_float(data.get("healthStatusPercentUsed"))
+        if used is not None:
+            remaining = 100.0 - used
+
+    if remaining is None:
+        return None
+
+    if remaining < -0.5 or remaining > 100.5:
+        return None
+
+    return max(0, min(100, int(round(remaining))))
+
+
 def get_sdcard_health_percent() -> int | None:
     """
-    Return SD card health as a percent (100 - percent_used), or None if unavailable/invalid.
+    Return SD card remaining health as a rounded whole percent, or None if unavailable.
 
-    Input file is expected to contain ONLY an integer 0..100 representing percent used.
+    Input file is expected to contain the full sdmon JSON output.
     """
     try:
-        if not SDCARD_HEALTH_USED_FILE.is_file():
+        if not SDCARD_HEALTH_JSON_FILE.is_file():
             return None
 
-        raw = SDCARD_HEALTH_USED_FILE.read_text(encoding="utf-8").strip()
+        raw = SDCARD_HEALTH_JSON_FILE.read_text(encoding="utf-8").strip()
         if not raw:
             return None
 
-        used = int(raw, 10)
-        if used < 0 or used > 100:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
             return None
 
-        return 100 - used
+        return _parse_sdcard_health_percent(data)
     except Exception:
         return None
 
@@ -266,4 +309,3 @@ def tail_lines(path: str, n: int = 100) -> list[str]:
             return data.decode("utf-8", errors="replace").splitlines()[-n:]
     except Exception as e:
         return [f"[Error reading log file: {e}]"]
-

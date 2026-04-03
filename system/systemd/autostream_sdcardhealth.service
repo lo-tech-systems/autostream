@@ -4,11 +4,10 @@
 # Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
 [Unit]
-Description=Capture SD Card Health Percentage
+Description=Capture SD Card Health JSON
 After=local-fs.target
 
 [Service]
 Type=oneshot
 User=root
-ExecStart=/bin/sh -o pipefail -c '/usr/local/sbin/sdmon -q -a /dev/mmcblk0 | /usr/bin/jq -r ".healthStatusPercentUsed" > /opt/autostream/sdcardhealth'
-
+ExecStart=/bin/sh -c 'tmp=/opt/autostream/sdcardhealth.json.tmp; trap "rm -f \"$tmp\"" EXIT; /usr/local/sbin/sdmon -q /dev/mmcblk0 > "$tmp" && /bin/mv "$tmp" /opt/autostream/sdcardhealth.json'

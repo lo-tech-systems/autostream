@@ -18,8 +18,8 @@
 # Skips Continue Y/N prompt and sets the PIN to the value specified.
 # Falls back to attended mode if PIN is not specified.
 #
-# --sdmon=[sandisk|adata|transcend|micron|swissbit|2step]
-# Enable sdmon (SD Card Monitoring) with the specified vendor.
+# --sdmon=[auto|sandisk|adata|transcend|micron|swissbit|2step]
+# Enable sdmon (SD Card Monitoring) with the specified method.
 # IMPORTANT: This should only be used with supported cards, generally
 #            industrial-grade cards from those manufacturers, for example
 #            the Sandisk SDSDQAF3-008G-I. sdmon may cause consumer-grade
@@ -61,7 +61,7 @@ PIN_REGEX='^[A-Za-z0-9-]{4,20}$'
 UNATTENDED=0
 PIN_VALUE=""
 
-SDMON_VENDOR=""                  # e.g. sandisk|adata|transcend|micron|swissbit|2step
+SDMON_METHOD=""                  # e.g. auto|sandisk|adata|transcend|micron|swissbit|2step
 
 OWNTONE_APT_REF="refs/heads/master"  # Prefer pinning to a commit or tag for release builds
 OWNTONE_KEY_FPR=""                   # Optional: set expected Owntone repo key fingerprint to verify
@@ -69,13 +69,13 @@ FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitl
 
 usage() {
   cat <<EOF
-Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon=<vendor>] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--fetch-autostream]
+Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--fetch-autostream]
 
   --unattended PIN=1234      Run non-interactively (or skip confirmation prompts) and set the PIN.
                              If PIN is omitted/invalid, the installer falls back to attended mode.
 
-  --sdmon=<vendor>           Enable sdmon (SD Card Monitoring) with vendor:
-                             sandisk | adata | transcend | micron | swissbit | 2step
+  --sdmon[=<method>]         Enable sdmon (SD Card Monitoring); bare --sdmon uses auto.
+                             auto | sandisk | adata | transcend | micron | swissbit | 2step
 
   --owntone-apt-ref REF      GitHub ref/commit for Owntone APT metadata (default: ${OWNTONE_APT_REF}).
   --owntone-key-fpr FPR      Expected Owntone repo key fingerprint (optional hardening).
@@ -91,9 +91,9 @@ Examples:
 EOF
 }
 
-is_valid_sdmon_vendor() {
+is_valid_sdmon_method() {
   case "$1" in
-    sandisk|adata|transcend|micron|swissbit|2step) return 0 ;;
+    auto|sandisk|adata|transcend|micron|swissbit|2step) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -114,10 +114,14 @@ parse_args() {
           shift
         fi
         ;;
+      --sdmon)
+        SDMON_METHOD="auto"
+        shift
+        ;;
       --sdmon=*)
-        SDMON_VENDOR="${1#--sdmon=}"
-        if ! is_valid_sdmon_vendor "${SDMON_VENDOR}"; then
-          error "Invalid --sdmon vendor: ${SDMON_VENDOR}"
+        SDMON_METHOD="${1#--sdmon=}"
+        if ! is_valid_sdmon_method "${SDMON_METHOD}"; then
+          error "Invalid --sdmon method: ${SDMON_METHOD}"
           usage
           exit 2
         fi
@@ -545,29 +549,31 @@ update_pi_firmware_config() {
   rm -f "${tmp}"
 }
 
-patch_sdmon_service_vendor() {
-  # Inject "-m <vendor>" into ExecStart for sdmon before the /dev node, if not present.
-  local vendor="$1"
+patch_sdmon_service_method() {
+  # Inject the requested sdmon method into ExecStart before the /dev node.
+  # The -a flag is only valid for the 2step method.
+  local method="$1"
   local svc="/etc/systemd/system/autostream_sdcardhealth.service"
 
-  [[ -f "${svc}" ]] || { warn "sdmon service not found at ${svc}; cannot patch vendor"; return 0; }
+  [[ -f "${svc}" ]] || { warn "sdmon service not found at ${svc}; cannot patch method"; return 0; }
 
-  if grep -qE "^ExecStart=.*\\bsdmon\\b.*\\s-m\\s+${vendor}\\b" "${svc}"; then
-    info "sdmon vendor already set in ${svc}"
-    return 0
+  local method_args="-m ${method}"
+  if [[ "${method}" == "2step" ]]; then
+    method_args="${method_args} -a"
   fi
 
   if grep -qE "^ExecStart=.*\\bsdmon\\b" "${svc}"; then
-    info "Patching ${svc} to set sdmon vendor: ${vendor}"
-    # Only modify ExecStart lines containing sdmon and a /dev path; avoid double-inserting.
-    # Example desired: /opt/autostream/sdmon -q -a -m sandisk /dev/mmcblk0
+    info "Patching ${svc} to set sdmon method: ${method}"
+    # Remove any existing -m/-a flags and then insert the requested method before the /dev node.
     sed -i -E \
       "/^ExecStart=.*\\bsdmon\\b/ {
-        /-m[[:space:]]+[A-Za-z0-9_-]+/! s#(\\bsdmon\\b[^\n]*)([[:space:]]+/dev/)#\\1 -m ${vendor}\\2#
+        s/[[:space:]]-m[[:space:]]+[A-Za-z0-9_-]+//g
+        s/[[:space:]]-a//g
+        s#(\\bsdmon\\b[^\n]*)([[:space:]]+/dev/)#\\1 ${method_args}\\2#
       }" \
       "${svc}"
   else
-    warn "No ExecStart line referencing sdmon found in ${svc}; cannot patch vendor"
+    warn "No ExecStart line referencing sdmon found in ${svc}; cannot patch method"
   fi
 }
 
@@ -664,7 +670,7 @@ fi
   # Note - Flask is intentionally installed at the system level because
   # autostream_wifi_watcher runs directly via its shebang as a boot/recovery
   # path and should not depend on the application venv being present/healthy.
-  apt_install git build-essential libffi-dev pkg-config jq fq acl \
+  apt_install git build-essential libffi-dev pkg-config fq acl \
     libasound2-dev libsamplerate0-dev python3-dev python3-venv python3-pip python3-flask
 
   # Platform services
@@ -679,8 +685,8 @@ fi
   apt_install --soft python3-requests
 
   # sdmon (only when enabled)
-  if [[ -n "${SDMON_VENDOR}" ]]; then
-    info "Installing sdmon (vendor: ${SDMON_VENDOR})"
+  if [[ -n "${SDMON_METHOD}" ]]; then
+    info "Installing sdmon (method: ${SDMON_METHOD})"
     if [[ ! -x "/usr/local/sbin/sdmon" ]]; then
       tmpdir="$(mktemp -d)"
       git clone https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon"
@@ -689,7 +695,7 @@ fi
       rm -rf "${tmpdir}"
     fi
   else
-    info "sdmon not enabled (use --sdmon=<vendor> to enable)"
+    info "sdmon not enabled (use --sdmon=<method> to enable)"
   fi
 
   # Create autostream user and groups
@@ -878,11 +884,11 @@ PYOWNTONE
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service" /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service" /etc/systemd/system/
 
-  if [[ -n "${SDMON_VENDOR}" ]]; then
+  if [[ -n "${SDMON_METHOD}" ]]; then
     install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
     install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer" /etc/systemd/system/
   else
-    info "Skipping sdmon systemd units (use --sdmon=<vendor> to enable)"
+    info "Skipping sdmon systemd units (use --sdmon=<method> to enable)"
   fi
 
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream.service" /etc/systemd/system/
@@ -890,8 +896,8 @@ PYOWNTONE
 
   systemctl daemon-reload
 
-  if [[ -n "${SDMON_VENDOR}" ]]; then
-    patch_sdmon_service_vendor "${SDMON_VENDOR}"
+  if [[ -n "${SDMON_METHOD}" ]]; then
+    patch_sdmon_service_method "${SDMON_METHOD}"
     systemctl enable autostream_sdcardhealth.timer
   fi
  
