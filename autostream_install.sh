@@ -66,6 +66,7 @@ SDMON_METHOD=""                  # e.g. auto|sandisk|adata|transcend|micron|swis
 OWNTONE_APT_REF="refs/heads/master"  # Prefer pinning to a commit or tag for release builds
 OWNTONE_KEY_FPR=""                   # Optional: set expected Owntone repo key fingerprint to verify
 FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitly requested
+PROMPT_REBOOT_ON_EXIT=0              # Enabled only after a real install run starts
 
 usage() {
   cat <<EOF
@@ -228,6 +229,9 @@ trap on_error ERR
 
 on_exit() {
   local exit_code=$?
+  if [[ ${PROMPT_REBOOT_ON_EXIT} -ne 1 ]]; then
+    exit "${exit_code}"
+  fi
   if [[ ${exit_code} -eq 0 ]]; then
     info "Installer completed successfully."
     if has_tty; then
@@ -582,6 +586,7 @@ patch_sdmon_service_method() {
 #############################################
 main() {
   parse_args "$@"
+  PROMPT_REBOOT_ON_EXIT=1
   require_sudo
   init_logging
 
@@ -898,6 +903,7 @@ PYOWNTONE
 
   if [[ -n "${SDMON_METHOD}" ]]; then
     patch_sdmon_service_method "${SDMON_METHOD}"
+    systemctl daemon-reload
     systemctl enable autostream_sdcardhealth.timer
   fi
  
