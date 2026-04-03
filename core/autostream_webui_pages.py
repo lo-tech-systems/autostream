@@ -482,45 +482,112 @@ def _fallback_input_snapshot(
 def _playback_summary_html(
     snapshot: InputPlaybackSnapshot,
     *,
+    input_index: int,
     reset_button_html: str = "",
+    stylus_life_hours: Optional[int] = None,
 ) -> str:
-    def summary_row(label: str, value_html: str) -> str:
+    def summary_row(
+        label: str,
+        value_html: str,
+        *,
+        row_id: str = "",
+        value_id: str = "",
+        hidden: bool = False,
+        extra_attrs: str = "",
+    ) -> str:
+        row_attrs = ""
+        if row_id:
+            row_attrs += f" id='{html.escape(row_id)}'"
+        if extra_attrs:
+            row_attrs += f" {extra_attrs}"
+        if hidden:
+            row_attrs += " style='display:none;'"
+        value_attrs = f" id='{html.escape(value_id)}'" if value_id else ""
         return (
-            "<div style='display:flex;align-items:baseline;gap:0.75rem;"
+            f"<div{row_attrs}><div style='display:flex;align-items:baseline;gap:0.75rem;"
             "justify-content:space-between;'>"
             f"<strong>{html.escape(label)}:</strong>"
-            f"<span style='margin-left:auto;text-align:right;'>{value_html}</span>"
-            "</div>"
+            f"<span{value_attrs} style='margin-left:auto;text-align:right;'>{value_html}</span>"
+            "</div></div>"
         )
 
     rows: list[str] = []
+    prefix = f"audio{input_index}"
 
-    if snapshot.is_turntable:
-        used = format_hours(snapshot.stylus_playback_seconds)
-        remaining_txt = "Due now"
-        if snapshot.stylus_remaining_seconds is not None and snapshot.stylus_remaining_seconds > 0:
-            remaining_txt = format_hours(snapshot.stylus_remaining_seconds)
-        rows.append(summary_row("Stylus Hours", f"{html.escape(used)} / {int(snapshot.stylus_life_hours)} h"))
-        rows.append(summary_row("Stylus Remaining", html.escape(remaining_txt)))
-        if snapshot.last_stylus_reset_at:
-            rows.append(
-                summary_row(
-                    "Last Reset",
-                    (
-                        f"<span class='local-reset-date' data-reset-iso="
-                        f"'{html.escape(str(snapshot.last_stylus_reset_at))}'>"
-                        f"{html.escape(_format_reset_timestamp(snapshot.last_stylus_reset_at))}"
-                        "</span>"
-                    ),
-                )
+    life_hours = int(
+        stylus_life_hours
+        if stylus_life_hours is not None
+        else snapshot.stylus_life_hours
+    )
+    used = format_hours(snapshot.stylus_playback_seconds)
+    remaining_seconds = snapshot.stylus_remaining_seconds
+    if remaining_seconds is None:
+        remaining_seconds = (life_hours * 3600) - int(snapshot.stylus_playback_seconds)
+    remaining_txt = "Due now"
+    if remaining_seconds > 0:
+        remaining_txt = format_hours(remaining_seconds)
+    rows.append(
+        summary_row(
+            "Stylus Hours",
+            (
+                f"<span id='{prefix}_stylus_hours' data-used-seconds='{int(snapshot.stylus_playback_seconds)}'>"
+                f"{html.escape(used)} / {life_hours} h"
+                "</span>"
+            ),
+        )
+    )
+    rows.append(
+        summary_row(
+            "Stylus Life Remaining",
+            f"<span id='{prefix}_stylus_remaining'>{html.escape(remaining_txt)}</span>",
+        )
+    )
+    if snapshot.last_stylus_reset_at:
+        rows.append(
+            summary_row(
+                "Last Reset",
+                (
+                    f"<span class='local-reset-date' data-reset-iso="
+                    f"'{html.escape(str(snapshot.last_stylus_reset_at))}'>"
+                    f"{html.escape(_format_reset_timestamp(snapshot.last_stylus_reset_at))}"
+                    "</span>"
+                ),
             )
-        else:
-            rows.append(summary_row("Last Reset", "Never"))
+        )
+    else:
+        rows.append(summary_row("Last Reset", "Never"))
 
     if not snapshot.enabled:
-        rows.append(summary_row("Status", "Disabled"))
+        rows.append(
+            summary_row(
+                "Status",
+                "Disabled",
+                row_id=f"{prefix}_status_row",
+                value_id=f"{prefix}_status_value",
+                extra_attrs="data-active='0'",
+            )
+        )
     elif snapshot.active:
-        rows.append(summary_row("Status", "Active now"))
+        rows.append(
+            summary_row(
+                "Status",
+                "Active now",
+                row_id=f"{prefix}_status_row",
+                value_id=f"{prefix}_status_value",
+                extra_attrs="data-active='1'",
+            )
+        )
+    else:
+        rows.append(
+            summary_row(
+                "Status",
+                "",
+                row_id=f"{prefix}_status_row",
+                value_id=f"{prefix}_status_value",
+                extra_attrs="data-active='0'",
+                hidden=True,
+            )
+        )
 
     if reset_button_html:
         rows.append(
@@ -1422,6 +1489,7 @@ def send_setup_page(
         threshold_id = "audio_silence_threshold" if input_index == 1 else "audio2_silence_threshold"
         turntable_note_id = f"{prefix}_turntable_note"
         stylus_wrap_id = f"{prefix}_stylus_wrap"
+        playback_wrap_id = f"{prefix}_playback_wrap"
         settings_wrap_id = f"{prefix}_settings"
         is_turntable = bool(parsed_input.is_turntable)
         threshold_preset = suggested_silence_threshold_dbfs(is_turntable)
@@ -1432,7 +1500,7 @@ def send_setup_page(
         )
 
         reset_button_html = ""
-        if (not initial_setup) and is_turntable:
+        if not initial_setup:
             reset_button_html = (
                 f"<button type='submit' name='stylus_reset_input' value='{input_index}' "
                 "class='pill-btn small' style='padding:0.32rem 0.7rem;font-size:0.85rem;' "
@@ -1440,9 +1508,16 @@ def send_setup_page(
                 "Mark Stylus Changed</button>"
             )
 
-        playback_html = "" if initial_setup else _playback_summary_html(
-            snapshot,
-            reset_button_html=reset_button_html,
+        show_playback_card = not initial_setup
+        playback_html = (
+            _playback_summary_html(
+                snapshot,
+                input_index=input_index,
+                reset_button_html=reset_button_html,
+                stylus_life_hours=stylus_life_hours,
+            )
+            if show_playback_card
+            else ""
         )
 
         enabled_html = ""
@@ -1468,7 +1543,7 @@ def send_setup_page(
             <label>Input device: <select name="{capture_name}">{build_opts(parsed_input.capture_device)}</select></label>
             <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
               <label class="output-toggle" style="margin:0;">
-                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncTurntable({input_index}, this.checked)">
+                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncInputUi({input_index})">
                 <span class="switch"></span>
               </label>
               <span>Turntable</span>
@@ -1479,12 +1554,14 @@ def send_setup_page(
             <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
             <div id="{stylus_wrap_id}" style="display:{'block' if is_turntable else 'none'};">
               <label>Stylus Rated Life:
-                <select name="{stylus_life_name}">
+                <select name="{stylus_life_name}" onchange="syncInputUi({input_index})">
                   {stylus_options_html}
                 </select>
               </label>
             </div>
-            {playback_html}
+            <div id="{playback_wrap_id}" style="display:{'block' if show_playback_card and is_turntable else 'none'};">
+              {playback_html}
+            </div>
             {gain_control(prefix, parsed_input.gain_db, input_index) if not initial_setup else ""}
             {eq_controls(prefix, parsed_input.eq_40hz_db, parsed_input.eq_100hz_db, parsed_input.eq_10khz_db, input_index) if not initial_setup else ""}
           {settings_close}
@@ -1585,19 +1662,64 @@ def send_setup_page(
         const gainTimers = {{}};
         const eqTimers = {{}};
         const eqLiveEnabled = {str(not initial_setup).lower()};
-        function onAudio2Toggle(checked){{document.getElementById('audio2_settings').style.display=checked?'block':'none';}}
+        function onAudio2Toggle(checked){{
+          syncInputUi(2);
+        }}
         function syncVol(v){{document.getElementById('owntone_volume_percent').value=v;document.getElementById('vol_val').textContent=v+'%';}}
         function thresholdPreset(checked){{ return checked ? -45 : -60; }}
-        function syncTurntable(inputIndex, checked){{
+        function syncStylusLife(inputIndex, value){{
           const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
+          const hoursEl = document.getElementById(prefix + '_stylus_hours');
+          const remainingEl = document.getElementById(prefix + '_stylus_remaining');
+          if (!hoursEl || !remainingEl) return;
+          const lifeHours = Math.max(1, parseInt(value, 10) || 500);
+          const usedSeconds = parseInt(hoursEl.getAttribute('data-used-seconds') || '0', 10) || 0;
+          const usedHours = (Math.max(0, usedSeconds) / 3600).toFixed(1);
+          hoursEl.textContent = usedHours + ' h / ' + String(lifeHours) + ' h';
+          const remainingSeconds = (lifeHours * 3600) - Math.max(0, usedSeconds);
+          remainingEl.textContent = remainingSeconds > 0
+            ? ((remainingSeconds / 3600).toFixed(1) + ' h')
+            : 'Due now';
+        }}
+        function syncInputUi(inputIndex){{
+          const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
+          const turntableName = inputIndex === 1 ? 'audio_turntable' : 'audio2_turntable';
+          const stylusLifeName = inputIndex === 1 ? 'audio_stylus_life_hours' : 'audio2_stylus_life_hours';
+          const enabled = inputIndex === 1
+            ? true
+            : !!document.querySelector('input[name="audio2_enabled"]')?.checked;
+          const turntable = !!document.querySelector('input[name="' + turntableName + '"]')?.checked;
+          const settings = document.getElementById(prefix + '_settings');
           const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
           const note = document.getElementById(prefix + '_turntable_note');
           const wrap = document.getElementById(prefix + '_stylus_wrap');
-          const threshold = thresholdPreset(!!checked);
+          const playbackWrap = document.getElementById(prefix + '_playback_wrap');
+          const statusRow = document.getElementById(prefix + '_status_row');
+          const statusValue = document.getElementById(prefix + '_status_value');
+          const threshold = thresholdPreset(turntable);
           const hidden = document.getElementById(thresholdId);
+          if (settings) settings.style.display = enabled ? 'block' : 'none';
           if (hidden) hidden.value = String(threshold);
           if (note) note.textContent = 'Detection threshold preset: ' + String(threshold) + ' dB';
-          if (wrap) wrap.style.display = checked ? 'block' : 'none';
+          if (wrap) wrap.style.display = enabled && turntable ? 'block' : 'none';
+          if (playbackWrap) playbackWrap.style.display = enabled && turntable ? 'block' : 'none';
+          if (statusRow && statusValue) {{
+            const rowWasActive = statusRow.dataset.active === '1';
+            if (!enabled) {{
+              statusRow.style.display = '';
+              statusValue.textContent = 'Disabled';
+            }} else if (rowWasActive) {{
+              statusRow.style.display = '';
+              statusValue.textContent = 'Active now';
+            }} else {{
+              statusRow.style.display = 'none';
+              statusValue.textContent = '';
+            }}
+          }}
+          if (enabled && turntable) {{
+            const lifeSel = document.querySelector('select[name="' + stylusLifeName + '"]');
+            if (lifeSel) syncStylusLife(inputIndex, lifeSel.value);
+          }}
         }}
         function eqPrefix(inputIndex){{ return inputIndex===1 ? 'audio1' : 'audio2'; }}
         function syncGain(inputIndex, value){{
@@ -1698,10 +1820,8 @@ def send_setup_page(
           }});
         }}
         window.addEventListener('DOMContentLoaded', () => {{
-          const tt1 = document.querySelector('input[name="audio_turntable"]');
-          const tt2 = document.querySelector('input[name="audio2_turntable"]');
-          if (tt1) syncTurntable(1, !!tt1.checked);
-          if (tt2) syncTurntable(2, !!tt2.checked);
+          syncInputUi(1);
+          syncInputUi(2);
           localizeResetDates();
         }});
         function requestReboot(){{
