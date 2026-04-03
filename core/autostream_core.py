@@ -471,8 +471,8 @@ def build_monitor_eq_bands(
     """
     return [
         {"type": "peak", "freq_hz": 40.0, "gain_db": float(eq_40hz_db), "q": 0.707},
-        {"type": "low_shelf", "freq_hz": 100.0, "gain_db": float(eq_100hz_db), "q": 0.707},
-        {"type": "high_shelf", "freq_hz": 10000.0, "gain_db": float(eq_10khz_db), "q": 0.707},
+        {"type": "low_shelf", "freq_hz": 100.0, "gain_db": float(eq_100hz_db), "q": 0.5},
+        {"type": "high_shelf", "freq_hz": 8000.0, "gain_db": float(eq_10khz_db), "q": 0.5},
     ]
 
 
