@@ -239,6 +239,65 @@ def update_live_owntone_runtime(
         return False
 
 
+def update_live_silence_seconds(
+    silence_seconds: int,
+    *,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply a live silence timeout update to all configured running monitors.
+
+    The monitor daemon supports live updates of silence_seconds via
+    configure_input(), so this avoids a full coordinator reload for that single
+    setting. Returns True on success, False if the live update could not be
+    applied and the caller should fall back to a config reload.
+    """
+    try:
+        live_silence_seconds = max(1, min(3600, int(silence_seconds)))
+    except Exception:
+        logging.warning(
+            "Could not update live silence timeout: invalid value %r",
+            silence_seconds,
+        )
+        return False
+
+    with _monitors_lock:
+        snapshot = list(all_monitors)
+
+    if not snapshot:
+        return True
+
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            logging.warning(
+                "Could not connect to monitor daemon for live silence timeout update.",
+            )
+            return False
+
+        for monitor in snapshot:
+            if not client.configure_input(
+                monitor.input_index,
+                monitor.input_device,
+                monitor.silence_threshold_dbfs,
+                live_silence_seconds,
+            ):
+                logging.warning(
+                    "Live silence timeout update failed for input %d.",
+                    monitor.input_index,
+                )
+                return False
+
+        with _monitors_lock:
+            for monitor in all_monitors:
+                monitor.silence_seconds = live_silence_seconds
+        return True
+    except Exception as e:
+        logging.warning("Could not update live silence timeout: %s", e)
+        return False
+    finally:
+        client.close()
+
+
 def any_monitor_capturing() -> bool:
     """Return True if any AudioMonitor currently has an active capture."""
     with _monitors_lock:

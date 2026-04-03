@@ -2602,7 +2602,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         
         # Only restart the coordinator if a setting that requires daemon
         # reconfiguration actually changed.  EQ, gain, output name, volume,
-        # and hostname changes take effect without disrupting playback.
+        # hostname, and silence detection period changes should take effect
+        # without disrupting playback.
         try:
             new_silence_seconds = int(fld("silence_seconds", str(old_silence_seconds)))
         except ValueError:
@@ -2614,8 +2615,14 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             or new_audio2_enabled != old_audio2_enabled
             or fld("audio2_capture_device", old_audio2_device) != old_audio2_device
             or new_audio2_threshold != old_audio2_threshold
-            or new_silence_seconds != old_silence_seconds
         )
+        silence_seconds_changed = new_silence_seconds != old_silence_seconds
+
+        if silence_seconds_changed and not daemon_changed:
+            from autostream_core import update_live_silence_seconds
+            if not update_live_silence_seconds(new_silence_seconds):
+                daemon_changed = True
+
         if daemon_changed:
             from autostream_core import request_config_reload
             request_config_reload()
