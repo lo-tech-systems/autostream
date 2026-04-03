@@ -34,6 +34,11 @@
 # --owntone-key-fpr <fingerprint>
 # Expected GPG key fingerprint for the Owntone APT repository signing key.
 #
+# --use-lo-tech-owntone
+# Build and install OwnTone from the lo-tech-systems source repository
+# instead of using the packaged OwnTone install. The packaged install
+# remains the default.
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 set -Eeuo pipefail
@@ -67,10 +72,12 @@ OWNTONE_APT_REF="refs/heads/master"  # Prefer pinning to a commit or tag for rel
 OWNTONE_KEY_FPR=""                   # Optional: set expected Owntone repo key fingerprint to verify
 FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitly requested
 PROMPT_REBOOT_ON_EXIT=0              # Enabled only after a real install run starts
+USE_LO_TECH_OWNTONE=0                # Build OwnTone from lo-tech-systems source repo
+OWNTONE_APT_ARGS_SUPPLIED=0          # Track whether repo-specific OwnTone args were passed
 
 usage() {
   cat <<EOF
-Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--fetch-autostream]
+Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--use-lo-tech-owntone] [--fetch-autostream]
 
   --unattended PIN=1234      Run non-interactively (or skip confirmation prompts) and set the PIN.
                              If PIN is omitted/invalid, the installer falls back to attended mode.
@@ -80,6 +87,8 @@ Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--own
 
   --owntone-apt-ref REF      GitHub ref/commit for Owntone APT metadata (default: ${OWNTONE_APT_REF}).
   --owntone-key-fpr FPR      Expected Owntone repo key fingerprint (optional hardening).
+  --use-lo-tech-owntone      Build and install OwnTone from the lo-tech-systems repo.
+                             When this is set, --owntone-apt-ref and --owntone-key-fpr are ignored.
   --fetch-autostream         Clone/update the autostream GitHub repository.
   --help, -h                 Show this help.
 
@@ -87,6 +96,7 @@ Examples:
   sudo ./${SCRIPT_NAME}
   sudo ./${SCRIPT_NAME} --unattended PIN=1234
   sudo ./${SCRIPT_NAME} --unattended PIN=abcd-1234 --sdmon=sandisk
+  sudo ./${SCRIPT_NAME} --use-lo-tech-owntone
   sudo ./${SCRIPT_NAME} --owntone-apt-ref <commit-sha> --owntone-key-fpr "ABCD ..."
 
 EOF
@@ -131,15 +141,21 @@ parse_args() {
       --owntone-apt-ref)
         [[ $# -ge 2 ]] || { error "--owntone-apt-ref requires a value"; exit 2; }
         OWNTONE_APT_REF="$2"
+        OWNTONE_APT_ARGS_SUPPLIED=1
         shift 2
         ;;
       --owntone-key-fpr)
         [[ $# -ge 2 ]] || { error "--owntone-key-fpr requires a value"; exit 2; }
         OWNTONE_KEY_FPR="$2"
+        OWNTONE_APT_ARGS_SUPPLIED=1
         shift 2
         ;;
       --fetch-autostream)
         FETCH_AUTOSTREAM=1
+        shift
+        ;;
+      --use-lo-tech-owntone)
+        USE_LO_TECH_OWNTONE=1
         shift
         ;;
       --help|-h)
@@ -581,6 +597,70 @@ patch_sdmon_service_method() {
   fi
 }
 
+configure_owntone_apt_repo() {
+  info "Configuring Owntone APT repository"
+  curl -fsSL "https://raw.githubusercontent.com/owntone/owntone-apt/${OWNTONE_APT_REF}/repo/rpi/owntone.gpg" \
+    | gpg --dearmor \
+    | tee /usr/share/keyrings/owntone-archive-keyring.gpg >/dev/null
+
+  if [[ -n "${OWNTONE_KEY_FPR}" ]]; then
+    info "Verifying Owntone APT key fingerprint"
+    local_expected="$(echo "${OWNTONE_KEY_FPR}" | tr -d '[:space:]')"
+    local_actual="$(gpg --show-keys --with-colons /usr/share/keyrings/owntone-archive-keyring.gpg | awk -F: '$1=="fpr"{print $10; exit}')"
+    if [[ -z "${local_actual}" || "${local_actual}" != "${local_expected}" ]]; then
+      error "Owntone APT key fingerprint mismatch. Expected: ${local_expected}; got: ${local_actual:-<none>}"
+      exit 1
+    fi
+  else
+    warn "OWNTONE_KEY_FPR not set; skipping Owntone APT key fingerprint verification."
+  fi
+
+  curl -fsSL \
+    -o /etc/apt/sources.list.d/owntone.list \
+    "https://raw.githubusercontent.com/owntone/owntone-apt/${OWNTONE_APT_REF}/repo/rpi/owntone-trixie.list"
+
+  DEBIAN_FRONTEND=noninteractive apt-get update
+}
+
+install_packaged_owntone() {
+  configure_owntone_apt_repo
+  apt_install nginx owntone
+  systemctl enable owntone
+}
+
+install_lo_tech_owntone() {
+  info "Installing OwnTone from lo-tech-systems source repository"
+  apt_install nginx autotools-dev autoconf automake libtool gettext gawk \
+    gperf bison flex libconfuse-dev libunistring-dev libsqlite3-dev \
+    libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libavutil-dev \
+    libxml2-dev libgcrypt20-dev libavahi-client-dev zlib1g-dev \
+    libevent-dev libplist-dev libsodium-dev libjson-c-dev libwebsockets-dev \
+    libcurl4-openssl-dev libprotobuf-c-dev libgnutls28-dev
+
+  if dpkg -s owntone >/dev/null 2>&1; then
+    info "Removing packaged OwnTone before source install"
+    systemctl stop owntone || true
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y owntone
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  git clone https://github.com/lo-tech-systems/owntone-server.git "${tmpdir}/owntone-server"
+  (
+    cd "${tmpdir}/owntone-server"
+    autoreconf -i
+    ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --enable-install-user --enable-chromecast
+    make -j2
+    make install
+  )
+  rm -rf "${tmpdir}"
+
+  systemctl daemon-reload
+  systemctl enable avahi-daemon
+  systemctl enable owntone
+  systemctl start owntone
+}
+
 #############################################
 # Main
 #############################################
@@ -616,6 +696,10 @@ fi
   show_warnings_and_prompt
   require_rpi_os_trixie
 
+  if [[ ${USE_LO_TECH_OWNTONE} -eq 1 && ${OWNTONE_APT_ARGS_SUPPLIED} -eq 1 ]]; then
+    warn "--use-lo-tech-owntone is set; --owntone-apt-ref/--owntone-key-fpr will be ignored."
+  fi
+
   if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
     info "Unattended mode: setting PIN from command line"
     set_pin_file "${PIN_VALUE}"
@@ -646,31 +730,6 @@ fi
   # Base prerequisites
   apt_install curl gpg ca-certificates
 
-  # Add owntone apt repo (idempotent)
-  info "Configuring Owntone APT repository"
-  curl -fsSL "https://raw.githubusercontent.com/owntone/owntone-apt/${OWNTONE_APT_REF}/repo/rpi/owntone.gpg" \
-    | gpg --dearmor \
-    | tee /usr/share/keyrings/owntone-archive-keyring.gpg >/dev/null
-
-  if [[ -n "${OWNTONE_KEY_FPR}" ]]; then
-    info "Verifying Owntone APT key fingerprint"
-    # Normalize expected fingerprint: remove spaces
-    local_expected="$(echo "${OWNTONE_KEY_FPR}" | tr -d '[:space:]')"
-    local_actual="$(gpg --show-keys --with-colons /usr/share/keyrings/owntone-archive-keyring.gpg | awk -F: '$1=="fpr"{print $10; exit}')"
-    if [[ -z "${local_actual}" || "${local_actual}" != "${local_expected}" ]]; then
-      error "Owntone APT key fingerprint mismatch. Expected: ${local_expected}; got: ${local_actual:-<none>}"
-      exit 1
-    fi
-  else
-    warn "OWNTONE_KEY_FPR not set; skipping Owntone APT key fingerprint verification."
-  fi
-
-  curl -fsSL \
-    -o /etc/apt/sources.list.d/owntone.list \
-    "https://raw.githubusercontent.com/owntone/owntone-apt/${OWNTONE_APT_REF}/repo/rpi/owntone-trixie.list"
-
-  DEBIAN_FRONTEND=noninteractive apt-get update
-
   # Platform libraries
   # Note - Flask is intentionally installed at the system level because
   # autostream_wifi_watcher runs directly via its shebang as a boot/recovery
@@ -682,8 +741,11 @@ fi
   apt_install watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
   # Application services
-  apt_install nginx owntone
-  systemctl enable owntone
+  if [[ ${USE_LO_TECH_OWNTONE} -eq 1 ]]; then
+    install_lo_tech_owntone
+  else
+    install_packaged_owntone
+  fi
 
   # Python libraries. Anything that fails will be installed by pip later, so
   # failures here are non-fatal; this mainly speeds up the venv install.
