@@ -191,7 +191,7 @@ There are two ways to access the autostream logs:
    * If **autostream**’s main UI is down, the nginx “offline” page includes a **Download Logs** button that hits:
 
      * `/offline/download-logs`
-   * This runs `assets/cgi/download-logs.cgi` (via nginx + `fcgiwrap`) and returns a ZIP created from:
+   * This runs `nginx/cgi/download-logs.cgi` (via nginx + `fcgiwrap`) and returns a ZIP created from:
 
      * `/var/log/autostream/*.log`
 

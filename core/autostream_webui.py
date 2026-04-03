@@ -233,8 +233,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             pages.send_owntone_restarting_page(self, STATE)
         elif path == "/rebooting":
             pages.send_rebooting_page(self, STATE, AUTH)
-        elif path == "/api/log_file":
-            pages.send_log_file(self, STATE)
         else:
             self.send_error(404, "Not found")
 

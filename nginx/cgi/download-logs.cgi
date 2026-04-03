@@ -4,24 +4,51 @@
 
 set -euo pipefail
 
-LOG_GLOB="/var/log/autostream/"'*.log'
 TS="$(date +%Y%m%d%H%M%S)"
 FNAME="autostream-logs-${TS}.zip"
 ZIP_PATH="/tmp/${FNAME}"
+STAGE_DIR="$(mktemp -d /tmp/autostream-logs.XXXXXX)"
 
-# Create zip (quiet). If no logs, create an empty zip with a note.
+cleanup() {
+  rm -f "${ZIP_PATH}" 2>/dev/null || true
+  rm -rf "${STAGE_DIR}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+mkdir -p "${STAGE_DIR}/autostream" "${STAGE_DIR}/owntone"
+
+added_any=0
+
 shopt -s nullglob
-logs=(/var/log/autostream/*.log)
+for src in /var/log/autostream/*; do
+  if [ -f "${src}" ] && [ -r "${src}" ]; then
+    cp -f "${src}" "${STAGE_DIR}/autostream/$(basename "${src}")"
+    added_any=1
+  fi
+done
 shopt -u nullglob
 
-if [ "${#logs[@]}" -gt 0 ]; then
-  /usr/bin/zip -q -j "${ZIP_PATH}" "${logs[@]}"
-else
-  tmpnote="/tmp/autostream-logs-${TS}.txt"
-  echo "No log files found matching ${LOG_GLOB}" > "${tmpnote}"
-  /usr/bin/zip -q -j "${ZIP_PATH}" "${tmpnote}"
-  rm -f "${tmpnote}"
+if [ -f /var/log/owntone.log ] && [ -r /var/log/owntone.log ]; then
+  cp -f /var/log/owntone.log "${STAGE_DIR}/owntone/owntone.log"
+  added_any=1
 fi
+
+if [ "${added_any}" -eq 0 ]; then
+  cat > "${STAGE_DIR}/README.txt" <<'EOF'
+No readable log files were found for bundling.
+
+Checked:
+- /var/log/autostream/*
+- /var/log/owntone.log
+
+Some files may exist but be unreadable to the nginx/fcgiwrap user.
+EOF
+fi
+
+(
+  cd "${STAGE_DIR}"
+  /usr/bin/zip -q -r "${ZIP_PATH}" .
+)
 
 SIZE="$(stat -c%s "${ZIP_PATH}")"
 

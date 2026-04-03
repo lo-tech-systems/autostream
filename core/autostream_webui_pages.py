@@ -2271,7 +2271,7 @@ def send_logs_page(
         <button type="submit" class="pill-btn">Save</button>
       </form>
       <div class="log-wrapper" id="logWrapper"><pre>{html.escape(log_content)}</pre></div>
-      <p class="actions"><a href="/api/log_file" class="pill-btn" id="logDlBtn" style="display:block;width:100%;text-align:center;box-sizing:border-box;">Download Log Bundle</a></p>
+      <p class="actions"><a href="/offline/download-logs" class="pill-btn" id="logDlBtn" style="display:block;width:100%;text-align:center;box-sizing:border-box;">Download Log Bundle</a></p>
       <script>
         window.addEventListener('load', function() {{
           var w = document.getElementById('logWrapper');
@@ -2392,23 +2392,6 @@ def send_update_check_json(handler) -> None:
 
 def send_update_status_json(handler, state: WebUIState) -> None:
     send_json(handler, 200, state.get_update_status())
-
-def send_log_file(handler, state: WebUIState) -> None:
-    try:
-        cfg = locked_load_config(state.config_path)
-        log_file_cfg = parse_config(cfg).general.log_file
-        log_path = _resolve_allowed_log_path(log_file_cfg)
-        with log_path.open("rb") as f:
-            data = f.read()
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/plain; charset=utf-8")
-        handler.send_header("Content-Length", str(len(data)))
-        handler.send_header("Content-Disposition", f'attachment; filename="{log_path.name}"')
-        handler.end_headers()
-        handler.wfile.write(data)
-    except Exception as e:
-        logging.warning("Log download denied/failed: %s", e)
-        handler.send_error(403, "Log file access denied")
 
 def handle_output_update(handler, state: WebUIState, body: str) -> None:
     try:
