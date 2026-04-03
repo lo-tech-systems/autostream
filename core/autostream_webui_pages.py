@@ -2043,7 +2043,8 @@ def send_about_page(handler, state: WebUIState) -> None:
             1,
             enabled=True,
         )
-        if parsed.audio1.is_turntable:
+        show_input1_stylus = bool(parsed.audio1.is_turntable)
+        if show_input1_stylus:
             input1_title = "Input 1 Stylus"
             if input1_snapshot.last_stylus_reset_at:
                 input1_title += f" (last changed {_format_reset_date(input1_snapshot.last_stylus_reset_at)})"
@@ -2059,7 +2060,8 @@ def send_about_page(handler, state: WebUIState) -> None:
             2,
             enabled=parsed.audio2_enabled,
         )
-        if parsed.audio2.is_turntable:
+        show_input2_stylus = bool(parsed.audio2_enabled and parsed.audio2.is_turntable)
+        if show_input2_stylus:
             input2_title = "Input 2 Stylus"
             if input2_snapshot.last_stylus_reset_at:
                 input2_title += f" (last changed {_format_reset_date(input2_snapshot.last_stylus_reset_at)})"
