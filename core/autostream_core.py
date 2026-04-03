@@ -245,6 +245,28 @@ def any_monitor_capturing() -> bool:
         return any(m.is_capturing for m in all_monitors)
 
 
+def _stop_and_disable_owntone(base_url: str, reason: str) -> None:
+    """Best-effort stop of OwnTone playback and deselection of all outputs."""
+    if not base_url:
+        return
+    try:
+        url = base_url.rstrip("/") + "/api/player/stop"
+        resp = requests.put(url, timeout=3)
+        if resp.ok:
+            logging.info("OwnTone player stopped (%s).", reason)
+        else:
+            logging.warning(
+                "OwnTone player stop failed (%s): status=%s",
+                reason, resp.status_code,
+            )
+    except Exception as e:
+        logging.warning(
+            "OwnTone player stop request failed (%s): %s", reason, e,
+        )
+
+    owntone_disable_all_outputs(base_url)
+
+
 def handle_signal(signum, frame):
     stop_flag.set()
 
@@ -885,7 +907,6 @@ class AudioMonitor:
 
         if self.owntone_base_url and not any_monitor_capturing():
             self._request_owntone_stop("capture stop")
-            owntone_disable_all_outputs(self.owntone_base_url)
 
         logging.info(
             "Input %d (%s): capture stopped.",
@@ -970,22 +991,7 @@ class AudioMonitor:
 
     def _request_owntone_stop(self, reason: str) -> None:
         """Send a player stop command to OwnTone."""
-        if not self.owntone_base_url:
-            return
-        try:
-            url = self.owntone_base_url.rstrip("/") + "/api/player/stop"
-            resp = requests.put(url, timeout=3)
-            if resp.ok:
-                logging.info("OwnTone player stopped (%s).", reason)
-            else:
-                logging.warning(
-                    "OwnTone player stop failed (%s): status=%s",
-                    reason, resp.status_code,
-                )
-        except Exception as e:
-            logging.warning(
-                "OwnTone player stop request failed (%s): %s", reason, e,
-            )
+        _stop_and_disable_owntone(self.owntone_base_url, reason)
 
     def _maybe_retry_owntone(self, now: float) -> None:
         """Periodically retry refreshing currently selected OwnTone outputs."""
@@ -1663,6 +1669,16 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 
         finally:
             tracker = _playback_tracker
+            teardown_was_capturing = any(m.is_capturing for m in monitors)
+            teardown_owntone_base_url = next(
+                (m.owntone_base_url for m in monitors if m.owntone_base_url),
+                "",
+            )
+            if teardown_was_capturing and teardown_owntone_base_url:
+                _stop_and_disable_owntone(
+                    teardown_owntone_base_url,
+                    "coordinator teardown",
+                )
             for m in monitors:
                 if tracker is not None:
                     tracker.on_capture_stopped(m.input_index)
