@@ -596,12 +596,41 @@ def _playback_summary_html(
             "</div>"
         )
 
+    return _settings_card_html("".join(rows))
+
+
+def _settings_card_html(inner_html: str, *, margin_top: str = "0.75rem") -> str:
     return (
-        "<div style='margin-top:0.75rem;padding:0.75rem 0.85rem;border:1px solid #e4e4e4;"
+        f"<div style='margin-top:{margin_top};padding:0.75rem 0.85rem;border:1px solid #e4e4e4;"
         "border-radius:8px;background:#fafafa;font-size:0.95rem;line-height:1.5;'>"
-        + "".join(rows)
-        + "</div>"
+        f"{inner_html}"
+        "</div>"
     )
+
+
+def _audio_controls_card_html(
+    *,
+    input_index: int,
+    gain_db: float,
+    eq_40hz_db: float,
+    eq_100hz_db: float,
+    eq_10khz_db: float,
+) -> str:
+    prefix = f"audio{input_index}"
+    inner_html = f"""
+      <label><div class="slider-header"><span>Gain:</span><span id="{prefix}_gain_db_val">{gain_db:.0f} dB</span></div>
+      <input type="range" min="-10" max="10" step="1" id="{prefix}_gain_db" name="{prefix}_gain_db" value="{gain_db:.0f}" oninput="syncGain({input_index}, this.value)"></label>
+      <div class="slider-header" style="margin-top:.75rem;align-items:center;">
+        <strong>Equaliser</strong>
+      </div>
+      <label><div class="slider-header"><span>40Hz:</span><span id="{prefix}_eq_40hz_db_val">{eq_40hz_db:.0f} dB</span></div>
+      <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_40hz_db" name="{prefix}_eq_40hz_db" value="{eq_40hz_db:.0f}" oninput="syncEq({input_index}, '40hz', this.value)"></label>
+      <label><div class="slider-header"><span>Bass:</span><span id="{prefix}_eq_100hz_db_val">{eq_100hz_db:.0f} dB</span></div>
+      <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_100hz_db" name="{prefix}_eq_100hz_db" value="{eq_100hz_db:.0f}" oninput="syncEq({input_index}, '100hz', this.value)"></label>
+      <label><div class="slider-header"><span>Treble:</span><span id="{prefix}_eq_10khz_db_val">{eq_10khz_db:.0f} dB</span></div>
+      <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_10khz_db" name="{prefix}_eq_10khz_db" value="{eq_10khz_db:.0f}" oninput="syncEq({input_index}, '10khz', this.value)"></label>
+    """
+    return _settings_card_html(inner_html)
 
 
 def _stylus_box_html(
@@ -1442,36 +1471,6 @@ def send_setup_page(
             ) + opts
         return opts
 
-    def eq_controls(prefix: str, eq40: float, eq100: float, eq10k: float, input_index: int) -> str:
-        return f"""
-          <div class="slider-header" style="margin-top:.6rem;align-items:center;">
-            <span>Equaliser</span>
-            <button type="button"
-              class="pill-btn small"
-              style="margin-left:auto;padding:0.35rem 0.7rem;"
-              onclick="undoEq({input_index})">Reset</button>
-          </div>
-          <label><div class="slider-header"><span>40Hz:</span><span id="{prefix}_eq_40hz_db_val">{eq40:.0f} dB</span></div>
-          <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_40hz_db" name="{prefix}_eq_40hz_db" value="{eq40:.0f}" oninput="syncEq({input_index}, '40hz', this.value)"></label>
-          <label><div class="slider-header"><span>Bass:</span><span id="{prefix}_eq_100hz_db_val">{eq100:.0f} dB</span></div>
-          <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_100hz_db" name="{prefix}_eq_100hz_db" value="{eq100:.0f}" oninput="syncEq({input_index}, '100hz', this.value)"></label>
-          <label><div class="slider-header"><span>Treble:</span><span id="{prefix}_eq_10khz_db_val">{eq10k:.0f} dB</span></div>
-          <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_10khz_db" name="{prefix}_eq_10khz_db" value="{eq10k:.0f}" oninput="syncEq({input_index}, '10khz', this.value)"></label>
-        """
-
-    def gain_control(prefix: str, gain_db: float, input_index: int) -> str:
-        return f"""
-          <div class="slider-header" style="margin-top:.6rem;align-items:center;">
-            <span>Input Gain</span>
-            <button type="button"
-              class="pill-btn small"
-              style="margin-left:auto;padding:0.35rem 0.7rem;"
-              onclick="resetGain({input_index})">Reset</button>
-          </div>
-          <label><div class="slider-header"><span>Gain:</span><span id="{prefix}_gain_db_val">{gain_db:.0f} dB</span></div>
-          <input type="range" min="-10" max="10" step="1" id="{prefix}_gain_db" name="{prefix}_gain_db" value="{gain_db:.0f}" oninput="syncGain({input_index}, this.value)"></label>
-        """
-
     def input_fieldset_html(
         *,
         input_index: int,
@@ -1562,8 +1561,13 @@ def send_setup_page(
             <div id="{playback_wrap_id}" style="display:{'block' if show_playback_card and is_turntable else 'none'};">
               {playback_html}
             </div>
-            {gain_control(prefix, parsed_input.gain_db, input_index) if not initial_setup else ""}
-            {eq_controls(prefix, parsed_input.eq_40hz_db, parsed_input.eq_100hz_db, parsed_input.eq_10khz_db, input_index) if not initial_setup else ""}
+            {_audio_controls_card_html(
+                input_index=input_index,
+                gain_db=parsed_input.gain_db,
+                eq_40hz_db=parsed_input.eq_40hz_db,
+                eq_100hz_db=parsed_input.eq_100hz_db,
+                eq_10khz_db=parsed_input.eq_10khz_db,
+            ) if not initial_setup else ""}
           {settings_close}
         </fieldset>
         """
@@ -1651,14 +1655,6 @@ def send_setup_page(
       {A2HS_SCRIPT}
       </body>
       <script>
-        const savedGain = {{
-          1: {parsed.audio1.gain_db:.0f},
-          2: {parsed.audio2.gain_db:.0f},
-        }};
-        const savedEq = {{
-          1: {{ eq_40hz_db: {parsed.audio1.eq_40hz_db:.0f}, eq_100hz_db: {parsed.audio1.eq_100hz_db:.0f}, eq_10khz_db: {parsed.audio1.eq_10khz_db:.0f} }},
-          2: {{ eq_40hz_db: {parsed.audio2.eq_40hz_db:.0f}, eq_100hz_db: {parsed.audio2.eq_100hz_db:.0f}, eq_10khz_db: {parsed.audio2.eq_10khz_db:.0f} }},
-        }};
         const gainTimers = {{}};
         const eqTimers = {{}};
         const eqLiveEnabled = {str(not initial_setup).lower()};
@@ -1756,10 +1752,6 @@ def send_setup_page(
           if (gainTimers[inputIndex]) clearTimeout(gainTimers[inputIndex]);
           gainTimers[inputIndex] = setTimeout(() => sendGainUpdate(inputIndex), 120);
         }}
-        function resetGain(inputIndex){{
-          if (!eqLiveEnabled) return;
-          syncGain(inputIndex, String(savedGain[inputIndex]));
-        }}
         function syncEq(inputIndex, band, value){{
           const prefix = eqPrefix(inputIndex);
           const valueEl = document.getElementById(prefix + '_eq_' + band + '_db_val');
@@ -1793,17 +1785,6 @@ def send_setup_page(
         function queueEqUpdate(inputIndex){{
           if (eqTimers[inputIndex]) clearTimeout(eqTimers[inputIndex]);
           eqTimers[inputIndex] = setTimeout(() => sendEqUpdate(inputIndex), 120);
-        }}
-        function undoEq(inputIndex){{
-          if (!eqLiveEnabled) return;
-          const prefix = eqPrefix(inputIndex);
-          const saved = savedEq[inputIndex];
-          document.getElementById(prefix + '_eq_40hz_db').value = String(saved.eq_40hz_db);
-          document.getElementById(prefix + '_eq_100hz_db').value = String(saved.eq_100hz_db);
-          document.getElementById(prefix + '_eq_10khz_db').value = String(saved.eq_10khz_db);
-          syncEq(inputIndex, '40hz', String(saved.eq_40hz_db));
-          syncEq(inputIndex, '100hz', String(saved.eq_100hz_db));
-          syncEq(inputIndex, '10khz', String(saved.eq_10khz_db));
         }}
         function syncSil(v){{document.getElementById('sil_val').textContent=v+'s';}}
         function localizeResetDates(){{
