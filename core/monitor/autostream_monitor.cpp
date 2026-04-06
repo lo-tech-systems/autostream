@@ -19,8 +19,11 @@
 #include <cmath>
 #include <csignal>
 #include <cerrno>
+#include <cstdarg>
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <optional>
 #include <sstream>
 #include <iomanip>
@@ -68,6 +71,246 @@ static double get_monotonic_time()
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1.0e9;
 }
+
+
+// =============================================================================
+// Logging
+// =============================================================================
+
+enum class MonitorLogLevel
+{
+    Warn = 0,
+    Info = 1,
+    Debug = 2,
+    Spam = 3,
+};
+
+struct MonitorLoggerState
+{
+    std::mutex      mutex;
+    std::atomic<MonitorLogLevel> level{MonitorLogLevel::Warn};
+    std::string     last_key;
+    unsigned int    last_printed = 0;
+    unsigned int    suppressed = 0;
+};
+
+static MonitorLoggerState g_logger;
+static constexpr unsigned int DUPLICATE_LOG_LIMIT = 5;
+static const char* log_level_name(MonitorLogLevel level)
+{
+    switch (level)
+    {
+    case MonitorLogLevel::Warn:  return "WARN";
+    case MonitorLogLevel::Info:  return "INFO";
+    case MonitorLogLevel::Debug: return "DEBUG";
+    case MonitorLogLevel::Spam:  return "SPAM";
+    }
+    return "WARN";
+}
+
+static bool log_level_enabled(MonitorLogLevel level)
+{
+    return static_cast<int>(level)
+        <= static_cast<int>(g_logger.level.load(std::memory_order_relaxed));
+}
+
+static void logger_init(MonitorLogLevel level)
+{
+    std::lock_guard<std::mutex> lock(g_logger.mutex);
+    g_logger.level.store(level, std::memory_order_relaxed);
+    g_logger.last_key.clear();
+    g_logger.last_printed = 0;
+    g_logger.suppressed   = 0;
+}
+
+static std::string trim_copy(const std::string& text)
+{
+    size_t start = 0;
+    while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start])))
+        ++start;
+
+    size_t end = text.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(text[end - 1])))
+        --end;
+
+    return text.substr(start, end - start);
+}
+
+static std::string lowercase_copy(std::string text)
+{
+    for (char& ch : text)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return text;
+}
+
+static bool parse_monitor_log_level(const std::string& text, MonitorLogLevel* out_level)
+{
+    const std::string value = lowercase_copy(trim_copy(text));
+    if (value.empty())
+        return false;
+
+    if (value == "fatal" || value == "log" || value == "warning" || value == "warn")
+    {
+        *out_level = MonitorLogLevel::Warn;
+        return true;
+    }
+    if (value == "info")
+    {
+        *out_level = MonitorLogLevel::Info;
+        return true;
+    }
+    if (value == "debug")
+    {
+        *out_level = MonitorLogLevel::Debug;
+        return true;
+    }
+    if (value == "spam")
+    {
+        *out_level = MonitorLogLevel::Spam;
+        return true;
+    }
+    return false;
+}
+
+static std::string make_timestamp()
+{
+    std::time_t now = ::time(nullptr);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+
+    char buf[32];
+    if (::strftime(buf, sizeof(buf), "%d-%b-%y %H:%M:%S", &tm_now) == 0)
+        return "00-Jan-00 00:00:00";
+    return buf;
+}
+
+static void logger_emit_raw_line(const std::string& key)
+{
+    std::string line = make_timestamp();
+    line += ": ";
+    line += key;
+    line += '\n';
+    std::fwrite(line.data(), 1, line.size(), stderr);
+    std::fflush(stderr);
+}
+
+static void logger_emit_repeat_summary_locked()
+{
+    if (g_logger.suppressed == 0 || g_logger.last_key.empty())
+        return;
+
+    std::ostringstream oss;
+    oss << g_logger.last_key
+        << " (suppressed " << g_logger.suppressed << " duplicate entr"
+        << (g_logger.suppressed == 1 ? "y" : "ies") << ")";
+    logger_emit_raw_line(oss.str());
+    g_logger.suppressed = 0;
+}
+
+static void logger_flush_repeats()
+{
+    std::lock_guard<std::mutex> lock(g_logger.mutex);
+    logger_emit_repeat_summary_locked();
+}
+
+static MonitorLogLevel logger_get_level()
+{
+    return g_logger.level.load(std::memory_order_relaxed);
+}
+
+static MonitorLogLevel logger_set_level(MonitorLogLevel level)
+{
+    std::lock_guard<std::mutex> lock(g_logger.mutex);
+    logger_emit_repeat_summary_locked();
+    g_logger.last_key.clear();
+    g_logger.last_printed = 0;
+    g_logger.level.store(level, std::memory_order_relaxed);
+    return level;
+}
+
+static const char* protocol_log_level_name(MonitorLogLevel level)
+{
+    switch (level)
+    {
+    case MonitorLogLevel::Warn:  return "warning";
+    case MonitorLogLevel::Info:  return "info";
+    case MonitorLogLevel::Debug: return "debug";
+    case MonitorLogLevel::Spam:  return "spam";
+    }
+    return "warning";
+}
+
+static void logger_vlog(MonitorLogLevel level, const char* fmt, va_list args)
+{
+    if (!log_level_enabled(level))
+        return;
+
+    char stack_buf[1024];
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int needed = std::vsnprintf(stack_buf, sizeof(stack_buf), fmt, args_copy);
+    va_end(args_copy);
+
+    if (needed < 0)
+        return;
+
+    std::string message;
+    if (static_cast<size_t>(needed) < sizeof(stack_buf))
+    {
+        message.assign(stack_buf, static_cast<size_t>(needed));
+    }
+    else
+    {
+        std::vector<char> dynamic_buf(static_cast<size_t>(needed) + 1);
+        std::vsnprintf(dynamic_buf.data(), dynamic_buf.size(), fmt, args);
+        message.assign(dynamic_buf.data(), static_cast<size_t>(needed));
+    }
+
+    std::string key = "[";
+    key += log_level_name(level);
+    key += "] ";
+    key += message;
+
+    std::lock_guard<std::mutex> lock(g_logger.mutex);
+    if (key == g_logger.last_key)
+    {
+        ++g_logger.last_printed;
+        if (g_logger.last_printed <= DUPLICATE_LOG_LIMIT)
+        {
+            logger_emit_raw_line(key);
+            return;
+        }
+
+        ++g_logger.suppressed;
+        if (g_logger.last_printed == DUPLICATE_LOG_LIMIT + 1)
+        {
+            std::ostringstream oss;
+            oss << key
+                << " (suppressing further duplicates after "
+                << DUPLICATE_LOG_LIMIT << " identical entries)";
+            logger_emit_raw_line(oss.str());
+        }
+        return;
+    }
+
+    logger_emit_repeat_summary_locked();
+    g_logger.last_key = key;
+    g_logger.last_printed = 1;
+    logger_emit_raw_line(key);
+}
+
+static void logger_log(MonitorLogLevel level, const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    logger_vlog(level, fmt, args);
+    va_end(args);
+}
+
+#define LOG_WARN(...)  logger_log(MonitorLogLevel::Warn, __VA_ARGS__)
+#define LOG_INFO(...)  logger_log(MonitorLogLevel::Info, __VA_ARGS__)
+#define LOG_DEBUG(...) logger_log(MonitorLogLevel::Debug, __VA_ARGS__)
+#define LOG_SPAM(...)  logger_log(MonitorLogLevel::Spam, __VA_ARGS__)
 
 
 // =============================================================================
@@ -355,7 +598,7 @@ std::vector<AlsaDeviceInfo> list_alsa_capture_devices()
     void** hints = nullptr;
     if (snd_device_name_hint(-1, "pcm", &hints) < 0)
     {
-        fprintf(stderr, "[monitor] list_alsa_capture_devices: snd_device_name_hint failed\n");
+        LOG_WARN("[monitor] list_alsa_capture_devices: snd_device_name_hint failed");
         return result;
     }
 
@@ -407,6 +650,7 @@ std::vector<AlsaDeviceInfo> list_alsa_capture_devices()
     }
 
     snd_device_name_free_hint(hints);
+    LOG_DEBUG("[monitor] list_alsa_capture_devices found %zu capture device(s)", result.size());
     return result;
 }
 
@@ -701,7 +945,7 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
 {
     if (_pcm)
     {
-        fprintf(stderr, "[alsa] open() called while device already open — closing first\n");
+        LOG_WARN("[alsa] open() called while device already open; closing first");
         close();
     }
 
@@ -710,8 +954,8 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
     err = snd_pcm_open(&_pcm, hw_device.c_str(), SND_PCM_STREAM_CAPTURE, 0);
     if (err < 0)
     {
-        fprintf(stderr, "[alsa] Cannot open device '%s': %s\n",
-                hw_device.c_str(), snd_strerror(err));
+        LOG_WARN("[alsa] Cannot open device '%s': %s",
+                 hw_device.c_str(), snd_strerror(err));
         _pcm = nullptr;
         return false;
     }
@@ -725,24 +969,24 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
     err = snd_pcm_hw_params_any(_pcm, hw_params);
     if (err < 0)
     {
-        fprintf(stderr, "[alsa] Cannot initialise hw_params for '%s': %s\n",
-                hw_device.c_str(), snd_strerror(err));
+        LOG_WARN("[alsa] Cannot initialise hw_params for '%s': %s",
+                 hw_device.c_str(), snd_strerror(err));
         goto fail;
     }
 
     err = snd_pcm_hw_params_set_access(_pcm, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
     if (err < 0)
     {
-        fprintf(stderr, "[alsa] Cannot set interleaved access for '%s': %s\n",
-                hw_device.c_str(), snd_strerror(err));
+        LOG_WARN("[alsa] Cannot set interleaved access for '%s': %s",
+                 hw_device.c_str(), snd_strerror(err));
         goto fail;
     }
 
     err = snd_pcm_hw_params_set_format(_pcm, hw_params, SND_PCM_FORMAT_S16_LE);
     if (err < 0)
     {
-        fprintf(stderr, "[alsa] Cannot set S16_LE format for '%s': %s\n",
-                hw_device.c_str(), snd_strerror(err));
+        LOG_WARN("[alsa] Cannot set S16_LE format for '%s': %s",
+                 hw_device.c_str(), snd_strerror(err));
         goto fail;
     }
 
@@ -750,8 +994,8 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
                                           static_cast<unsigned int>(channels));
     if (err < 0)
     {
-        fprintf(stderr, "[alsa] Cannot set %d channels for '%s': %s\n",
-                channels, hw_device.c_str(), snd_strerror(err));
+        LOG_WARN("[alsa] Cannot set %d channels for '%s': %s",
+                 channels, hw_device.c_str(), snd_strerror(err));
         goto fail;
     }
 
@@ -764,8 +1008,8 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
         err = snd_pcm_hw_params_set_rate_max(_pcm, hw_params, &rate_max, &dir);
         if (err < 0)
         {
-            fprintf(stderr, "[alsa] No supported capture rate <= %u Hz for '%s'\n",
-                    AUTO_CAPTURE_RATE_MAX_HZ, hw_device.c_str());
+            LOG_WARN("[alsa] No supported capture rate <= %u Hz for '%s'",
+                     AUTO_CAPTURE_RATE_MAX_HZ, hw_device.c_str());
             goto fail;
         }
 
@@ -774,8 +1018,8 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
         err = snd_pcm_hw_params_set_rate_near(_pcm, hw_params, &selected_rate, &dir);
         if (err < 0)
         {
-            fprintf(stderr, "[alsa] Cannot select capture rate <= %u Hz for '%s': %s\n",
-                    AUTO_CAPTURE_RATE_MAX_HZ, hw_device.c_str(), snd_strerror(err));
+            LOG_WARN("[alsa] Cannot select capture rate <= %u Hz for '%s': %s",
+                     AUTO_CAPTURE_RATE_MAX_HZ, hw_device.c_str(), snd_strerror(err));
             goto fail;
         }
 
@@ -784,8 +1028,8 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
 
         if (_actual_rate <= 0 || _actual_rate > static_cast<int>(AUTO_CAPTURE_RATE_MAX_HZ))
         {
-            fprintf(stderr, "[alsa] Invalid selected capture rate %d Hz for '%s'\n",
-                    _actual_rate, hw_device.c_str());
+            LOG_WARN("[alsa] Invalid selected capture rate %d Hz for '%s'",
+                     _actual_rate, hw_device.c_str());
             goto fail;
         }
     }
@@ -797,8 +1041,8 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
         err = snd_pcm_hw_params_set_period_size_near(_pcm, hw_params, &period, nullptr);
         if (err < 0)
         {
-            fprintf(stderr, "[alsa] Cannot set period size for '%s': %s\n",
-                    hw_device.c_str(), snd_strerror(err));
+            LOG_WARN("[alsa] Cannot set period size for '%s': %s",
+                     hw_device.c_str(), snd_strerror(err));
             goto fail;
         }
         _period_frames = static_cast<int>(period);
@@ -807,22 +1051,21 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
     err = snd_pcm_hw_params(_pcm, hw_params);
     if (err < 0)
     {
-        fprintf(stderr, "[alsa] Cannot apply hw_params for '%s': %s\n",
-                hw_device.c_str(), snd_strerror(err));
+        LOG_WARN("[alsa] Cannot apply hw_params for '%s': %s",
+                 hw_device.c_str(), snd_strerror(err));
         goto fail;
     }
 
     err = snd_pcm_prepare(_pcm);
     if (err < 0)
     {
-        fprintf(stderr, "[alsa] Cannot prepare '%s': %s\n",
-                hw_device.c_str(), snd_strerror(err));
+        LOG_WARN("[alsa] Cannot prepare '%s': %s",
+                 hw_device.c_str(), snd_strerror(err));
         goto fail;
     }
 
-    fprintf(stderr,
-            "[alsa] Opened '%s': selected=%d Hz, negotiated=%d Hz, %d ch, period=%d frames\n",
-            hw_device.c_str(), selected_rate_hz, _actual_rate, channels, _period_frames);
+    LOG_INFO("[alsa] Opened '%s': selected=%d Hz, negotiated=%d Hz, %d ch, period=%d frames",
+             hw_device.c_str(), selected_rate_hz, _actual_rate, channels, _period_frames);
     return true;
 
 fail:
@@ -876,7 +1119,7 @@ int AlsaCapture::read(int16_t* buf, int n_frames)
         return 0;
     }
 
-    fprintf(stderr, "[alsa] Unrecoverable read error: %s\n", snd_strerror(err));
+    LOG_WARN("[alsa] Unrecoverable read error: %s", snd_strerror(err));
     return -1;
 }
 
@@ -931,8 +1174,8 @@ bool FifoWriter::try_open()
     {
         if (errno != ENXIO && errno != ENOENT)
         {
-            fprintf(stderr, "[fifo] Cannot open '%s': %s\n",
-                    _path.c_str(), strerror(errno));
+            LOG_WARN("[fifo] Cannot open '%s': %s",
+                     _path.c_str(), strerror(errno));
         }
         return false;
     }
@@ -943,14 +1186,13 @@ bool FifoWriter::try_open()
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode))
     {
-        fprintf(stderr, "[fifo] '%s' is not a named pipe — rejecting\n",
-                _path.c_str());
+        LOG_WARN("[fifo] '%s' is not a named pipe; rejecting", _path.c_str());
         ::close(fd);
         return false;
     }
 
     _fd = fd;
-    fprintf(stderr, "[fifo] Opened '%s' for writing\n", _path.c_str());
+    LOG_INFO("[fifo] Opened '%s' for writing", _path.c_str());
     return true;
 }
 
@@ -988,9 +1230,8 @@ bool FifoWriter::write(const void* data, size_t len)
                     // buffer filled.  The PCM frame boundary is now lost.
                     // Close the fd so the next write() call reopens it from
                     // the beginning, giving OwnTone a chance to re-sync.
-                    fprintf(stderr, "[fifo] Partial write on '%s' (%zu/%zu bytes)"
-                            " — closing to re-sync stream\n",
-                            _path.c_str(), written, len);
+                    LOG_WARN("[fifo] Partial write on '%s' (%zu/%zu bytes); closing to re-sync stream",
+                             _path.c_str(), written, len);
                     close();
                 }
                 else
@@ -1000,8 +1241,8 @@ bool FifoWriter::write(const void* data, size_t len)
                     double now = get_monotonic_time();
                     if (now - _stall_last_log_time >= 5.0)
                     {
-                        fprintf(stderr, "[fifo] Pipe buffer full on '%s'"
-                                " — dropping block\n", _path.c_str());
+                        LOG_WARN("[fifo] Pipe buffer full on '%s'; dropping block",
+                                 _path.c_str());
                         _stall_last_log_time = now;
                     }
                 }
@@ -1011,14 +1252,14 @@ bool FifoWriter::write(const void* data, size_t len)
             {
                 // OwnTone has closed its read end.  Close our fd so try_open()
                 // will reopen it on the next write attempt.
-                fprintf(stderr, "[fifo] Broken pipe on '%s' — will reopen on next write\n",
-                        _path.c_str());
+                LOG_WARN("[fifo] Broken pipe on '%s'; will reopen on next write",
+                         _path.c_str());
                 close();
             }
             else
             {
-                fprintf(stderr, "[fifo] Write error on '%s': %s\n",
-                        _path.c_str(), strerror(errno));
+                LOG_WARN("[fifo] Write error on '%s': %s",
+                         _path.c_str(), strerror(errno));
             }
             return false;
         }
@@ -1098,9 +1339,8 @@ bool InputChannel::configure(const InputConfig& cfg)
         // the call rather than silently ignoring part of it.
         if (cfg.alsa_device != _config.alsa_device)
         {
-            fprintf(stderr,
-                    "[input%d] configure() rejected: stop the input before changing "
-                    "device\n", _index);
+            LOG_WARN("[input%d] configure() rejected: stop the input before changing device",
+                     _index);
             return false;
         }
     }
@@ -1109,6 +1349,8 @@ bool InputChannel::configure(const InputConfig& cfg)
     _config_valid             = true;
     _silence_threshold_sample.store(dbfs_to_sample_threshold(cfg.silence_threshold_dbfs),
                                     std::memory_order_relaxed);
+    LOG_INFO("[input%d] Configured device='%s', silence_threshold=%.1f dBFS, silence_seconds=%d",
+             _index, cfg.alsa_device.c_str(), cfg.silence_threshold_dbfs, cfg.silence_seconds);
     return true;
 }
 
@@ -1117,21 +1359,23 @@ void InputChannel::set_eq(const std::vector<EqBand>& bands)
     // EQ operates on the resampled output, so the sample rate is always the
     // fixed output rate.  The process thread picks up the change lazily.
     _eq_chain.set_bands(bands, static_cast<float>(AudioMonitor::output_rate_hz()));
+    LOG_DEBUG("[input%d] Applied %zu EQ band(s)", _index, bands.size());
 }
 
 void InputChannel::set_gain(float gain_db)
 {
     // Convert once from dB to linear here so the process thread only needs
-    // a single multiply per sample — no pow() on the hot path.
+    // a single multiply per sample; no pow() on the hot path.
     float linear = std::pow(10.0f, gain_db / 20.0f);
     _gain_linear.store(linear, std::memory_order_relaxed);
+    LOG_DEBUG("[input%d] Gain set to %.2f dB", _index, gain_db);
 }
 
 bool InputChannel::start(std::string* error_out)
 {
     if (_running.load())
     {
-        fprintf(stderr, "[input%d] start() called while already running\n", _index);
+        LOG_WARN("[input%d] start() called while already running", _index);
         if (error_out)
             *error_out = "input is already running";
         return false;
@@ -1143,7 +1387,7 @@ bool InputChannel::start(std::string* error_out)
         std::lock_guard<std::mutex> lock(_config_mutex);
         if (!_config_valid)
         {
-            fprintf(stderr, "[input%d] start() called before configure()\n", _index);
+            LOG_WARN("[input%d] start() called before configure()", _index);
             if (error_out)
                 *error_out = "input is not configured";
             return false;
@@ -1154,8 +1398,8 @@ bool InputChannel::start(std::string* error_out)
     // Open the ALSA device.
     if (!_alsa.open(cfg.alsa_device, /*channels=*/2))
     {
-        fprintf(stderr, "[input%d] Failed to open ALSA device '%s'\n",
-                _index, cfg.alsa_device.c_str());
+        LOG_WARN("[input%d] Failed to open ALSA device '%s'",
+                 _index, cfg.alsa_device.c_str());
         if (error_out)
             *error_out = "failed to open ALSA device";
         return false;
@@ -1168,8 +1412,8 @@ bool InputChannel::start(std::string* error_out)
     _src_state = src_new(SRC_SINC_FASTEST, /*channels=*/2, &src_error);
     if (!_src_state)
     {
-        fprintf(stderr, "[input%d] src_new failed: %s\n",
-                _index, src_strerror(src_error));
+        LOG_WARN("[input%d] src_new failed: %s",
+                 _index, src_strerror(src_error));
         _alsa.close();
         if (error_out)
             *error_out = "failed to initialise sample-rate converter";
@@ -1244,14 +1488,14 @@ bool InputChannel::start(std::string* error_out)
             _src_state = nullptr;
         }
         _started.store(false);
-        fprintf(stderr, "[input%d] Thread creation failed: %s\n", _index, e.what());
+        LOG_WARN("[input%d] Thread creation failed: %s", _index, e.what());
         if (error_out)
             *error_out = std::string("thread creation failed: ") + e.what();
         return false;
     }
 
-    fprintf(stderr, "[input%d] Started on device '%s' at %d Hz (auto-selected <= %u Hz)\n",
-            _index, cfg.alsa_device.c_str(), _alsa.actual_rate(), AUTO_CAPTURE_RATE_MAX_HZ);
+    LOG_INFO("[input%d] Started on device '%s' at %d Hz (auto-selected <= %u Hz)",
+             _index, cfg.alsa_device.c_str(), _alsa.actual_rate(), AUTO_CAPTURE_RATE_MAX_HZ);
     return true;
 }
 
@@ -1306,12 +1550,13 @@ void InputChannel::stop()
     // immediately after stop() still returns valid data.  start() resets
     // both counters to 0 before the next capture session begins.
 
-    fprintf(stderr, "[input%d] Stopped\n", _index);
+    LOG_INFO("[input%d] Stopped", _index);
 }
 
 void InputChannel::set_allow_capture(bool allow)
 {
     _allow_capture.store(allow);
+    LOG_DEBUG("[input%d] allow_capture=%s", _index, allow ? "true" : "false");
 }
 
 InputChannelStatus InputChannel::get_status() const
@@ -1414,7 +1659,7 @@ void InputChannel::capture_thread_func()
         if (frames_read < 0)
         {
             // Unrecoverable ALSA error; stop the capture session.
-            fprintf(stderr, "[input%d] ALSA read error — stopping capture thread\n", _index);
+            LOG_WARN("[input%d] ALSA read error; stopping capture thread", _index);
             _running.store(false);
             break;
         }
@@ -1449,8 +1694,7 @@ void InputChannel::capture_thread_func()
                 double now = get_monotonic_time();
                 if (now - _ring_overflow_last_log_time >= 5.0)
                 {
-                    fprintf(stderr, "[input%d] Ring buffer full — dropping periods\n",
-                            _index);
+                    LOG_WARN("[input%d] Ring buffer full; dropping periods", _index);
                     _ring_overflow_last_log_time = now;
                 }
             }
@@ -1615,14 +1859,14 @@ void InputChannel::process_thread_func()
             _prefill_buf.clear();
             _prefill_buf.reserve(static_cast<size_t>(PREFILL_DURATION_FRAMES) * 2);
             _capturing.store(true);
-            fprintf(stderr, "[input%d] Capture session started (peak=%d, threshold=%d)\n",
-                    _index, peak_sample, silence_threshold_sample);
+            LOG_INFO("[input%d] Capture session started (peak=%d, threshold=%d)",
+                     _index, peak_sample, silence_threshold_sample);
         }
         else if (!should_capture && _capturing.load())
         {
             _capturing.store(false);
-            fprintf(stderr, "[input%d] Capture session stopped (silence=%.1f s)\n",
-                    _index, now - _last_above_threshold_time);
+            LOG_INFO("[input%d] Capture session stopped (silence=%.1f s)",
+                     _index, now - _last_above_threshold_time);
         }
 
         // ── Feed through SRC → EQ → FIFO when capturing ──────────────────────
@@ -1655,8 +1899,8 @@ void InputChannel::process_thread_func()
             int src_err = src_process(_src_state, &src_data);
             if (src_err != 0)
             {
-                fprintf(stderr, "[input%d] libsamplerate error: %s\n",
-                        _index, src_strerror(src_err));
+                LOG_WARN("[input%d] libsamplerate error: %s",
+                         _index, src_strerror(src_err));
                 break;
             }
 
@@ -1838,8 +2082,8 @@ void InputChannel::process_thread_func()
                                     _shared_fifo.write(src_ptr + static_cast<size_t>(to_add) * 2,
                                                        static_cast<size_t>(remainder) * 2 * sizeof(int16_t));
 
-                                fprintf(stderr, "[input%d] Pre-fill complete; first FIFO write done\n",
-                                        _index);
+                                LOG_DEBUG("[input%d] Pre-fill complete; first FIFO write done",
+                                          _index);
                             }
                         }
                         else
@@ -1889,8 +2133,8 @@ bool ControlServer::start(const std::string& socket_path)
     struct sockaddr_un addr_check;
     if (socket_path.size() >= sizeof(addr_check.sun_path))
     {
-        fprintf(stderr, "[control] Socket path too long (max %zu chars): '%s'\n",
-                sizeof(addr_check.sun_path) - 1, socket_path.c_str());
+        LOG_WARN("[control] Socket path too long (max %zu chars): '%s'",
+                 sizeof(addr_check.sun_path) - 1, socket_path.c_str());
         return false;
     }
 
@@ -1906,15 +2150,15 @@ bool ControlServer::start(const std::string& socket_path)
             if (S_ISSOCK(st.st_mode))
                 unlink(socket_path.c_str());
             else
-                fprintf(stderr, "[control] WARNING: path '%s' exists but is not a socket — not removing\n",
-                        socket_path.c_str());
+                LOG_WARN("[control] Path '%s' exists but is not a socket; not removing",
+                         socket_path.c_str());
         }
     }
 
     _server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (_server_fd < 0)
     {
-        fprintf(stderr, "[control] socket() failed: %s\n", strerror(errno));
+        LOG_WARN("[control] socket() failed: %s", strerror(errno));
         return false;
     }
 
@@ -1925,8 +2169,8 @@ bool ControlServer::start(const std::string& socket_path)
 
     if (bind(_server_fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0)
     {
-        fprintf(stderr, "[control] bind() on '%s' failed: %s\n",
-                socket_path.c_str(), strerror(errno));
+        LOG_WARN("[control] bind() on '%s' failed: %s",
+                 socket_path.c_str(), strerror(errno));
         ::close(_server_fd);
         _server_fd = -1;
         return false;
@@ -1934,7 +2178,7 @@ bool ControlServer::start(const std::string& socket_path)
 
     if (listen(_server_fd, /*backlog=*/4) < 0)
     {
-        fprintf(stderr, "[control] listen() failed: %s\n", strerror(errno));
+        LOG_WARN("[control] listen() failed: %s", strerror(errno));
         ::close(_server_fd);
         _server_fd = -1;
         return false;
@@ -1943,7 +2187,7 @@ bool ControlServer::start(const std::string& socket_path)
     _running.store(true);
     _accept_thread = std::thread(&ControlServer::accept_loop, this);
 
-    fprintf(stderr, "[control] Listening on '%s'\n", socket_path.c_str());
+    LOG_INFO("[control] Listening on '%s'", socket_path.c_str());
     return true;
 }
 
@@ -1992,7 +2236,7 @@ void ControlServer::accept_loop()
         if (client_fd < 0)
         {
             if (_running.load())
-                fprintf(stderr, "[control] accept() failed: %s\n", strerror(errno));
+                LOG_WARN("[control] accept() failed: %s", strerror(errno));
             break;
         }
 
@@ -2014,9 +2258,9 @@ void ControlServer::accept_loop()
         std::lock_guard<std::mutex> lock(_clients_mutex);
         _client_threads.emplace_back([this, client_fd]()
         {
-            fprintf(stderr, "[control] Client connected (fd=%d)\n", client_fd);
+            LOG_DEBUG("[control] Client connected (fd=%d)", client_fd);
             handle_client(client_fd);
-            fprintf(stderr, "[control] Client disconnected (fd=%d)\n", client_fd);
+            LOG_DEBUG("[control] Client disconnected (fd=%d)", client_fd);
 
             {
                 std::lock_guard<std::mutex> lock(_clients_mutex);
@@ -2061,7 +2305,7 @@ void ControlServer::handle_client(int client_fd)
         // least that often.
         if (command_deadline > 0.0 && get_monotonic_time() > command_deadline)
         {
-            fprintf(stderr, "[control] Command deadline exceeded — disconnecting\n");
+            LOG_WARN("[control] Command deadline exceeded; disconnecting");
             break;
         }
 
@@ -2077,8 +2321,8 @@ void ControlServer::handle_client(int client_fd)
             if (n < 0)
             {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    fprintf(stderr, "[control] Client timed out after %d s of inactivity\n",
-                            CLIENT_TIMEOUT_SECONDS);
+                    LOG_WARN("[control] Client timed out after %d s of inactivity",
+                             CLIENT_TIMEOUT_SECONDS);
                 // Timeout, shutdown() interrupt, or read error — stop serving.
                 break;
             }
@@ -2123,7 +2367,7 @@ void ControlServer::handle_client(int client_fd)
                 // rather than continuing to read further commands.
                 if (resp_left > 0)
                 {
-                    fprintf(stderr, "[control] Send incomplete — disconnecting unresponsive client\n");
+                    LOG_WARN("[control] Send incomplete; disconnecting unresponsive client");
                     break;
                 }
 
@@ -2145,7 +2389,7 @@ void ControlServer::handle_client(int client_fd)
 
                     if (bin_left > 0)
                     {
-                        fprintf(stderr, "[control] Binary send incomplete — disconnecting unresponsive client\n");
+                        LOG_WARN("[control] Binary send incomplete; disconnecting unresponsive client");
                         break;
                     }
                 }
@@ -2163,7 +2407,7 @@ void ControlServer::handle_client(int client_fd)
             // Guard against unexpectedly large command strings.
             if (line_buf.size() > 65536)
             {
-                fprintf(stderr, "[control] Command too long — dropping\n");
+                LOG_WARN("[control] Command too long; dropping");
                 line_buf.clear();
                 command_deadline = 0.0;
             }
@@ -2188,6 +2432,8 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
                                              std::vector<int16_t>* snapshot_out)
 {
     std::string type = json_get_top_level_string(json_command, "type");
+    LOG_SPAM("[control] Dispatching command type='%s'",
+             type.empty() ? "<unknown>" : type.c_str());
 
     if (type == "get_status")
     {
@@ -2238,8 +2484,11 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         int  idx   = json_get_int(json_command, "input", 0);
         auto bands = parse_eq_bands(json_command);
         if (!bands)
+        {
+            LOG_WARN("[control] set_eq rejected: unknown EQ band type");
             return "{\"type\":\"ack\",\"command\":\"set_eq\","
                    "\"ok\":false,\"error\":\"unknown EQ band type\"}";
+        }
         return _monitor.api_set_eq(idx, *bands);
     }
     else if (type == "set_gain")
@@ -2248,9 +2497,16 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         float gain_db = json_get_float(json_command, "gain_db", 0.0f);
         return _monitor.api_set_gain(idx, gain_db);
     }
+    else if (type == "set_log_level")
+    {
+        std::string level_text = json_get_string(json_command, "level");
+        return _monitor.api_set_log_level(level_text);
+    }
     else
     {
         std::string escaped = json_escape(type.empty() ? json_command : type);
+        LOG_WARN("[control] Unknown command received: %s",
+                 type.empty() ? "<unparseable>" : type.c_str());
         return "{\"type\":\"ack\",\"command\":\"unknown\","
                "\"ok\":false,\"error\":\"unknown command: " + escaped + "\"}";
     }
@@ -2288,11 +2544,11 @@ void AudioMonitor::run()
 
     if (!_control_server.start(_socket_path))
     {
-        fprintf(stderr, "[monitor] Failed to start control server — exiting\n");
+        LOG_WARN("[monitor] Failed to start control server; exiting");
         return;
     }
 
-    fprintf(stderr, "[monitor] Ready on socket '%s'\n", _socket_path.c_str());
+    LOG_INFO("[monitor] Ready on socket '%s'", _socket_path.c_str());
 
     // Main loop: poll for shutdown and auto-restart crashed inputs.
     while (_running.load() && !g_shutdown_requested)
@@ -2325,19 +2581,19 @@ void AudioMonitor::run()
             if (now < _restart_after[i])
                 continue;
 
-            fprintf(stderr, "[monitor] Input %d stopped unexpectedly — attempting auto-restart\n",
-                    i + 1);
+            LOG_WARN("[monitor] Input %d stopped unexpectedly; attempting auto-restart",
+                     i + 1);
             _inputs[i]->stop();   // join threads and release ALSA/SRC resources
 
             std::string err;
             if (_inputs[i]->start(&err))
             {
-                fprintf(stderr, "[monitor] Input %d restarted successfully\n", i + 1);
+                LOG_INFO("[monitor] Input %d restarted successfully", i + 1);
             }
             else
             {
-                fprintf(stderr, "[monitor] Input %d restart failed: %s — will retry in %.0f s\n",
-                        i + 1, err.c_str(), RESTART_BACKOFF_SECONDS);
+                LOG_WARN("[monitor] Input %d restart failed: %s; will retry in %.0f s",
+                         i + 1, err.c_str(), RESTART_BACKOFF_SECONDS);
                 _restart_after[i] = get_monotonic_time() + RESTART_BACKOFF_SECONDS;
             }
         }
@@ -2354,7 +2610,7 @@ void AudioMonitor::stop()
     // Wake run() immediately so it does not wait out the 100 ms poll interval.
     _run_cv.notify_all();
 
-    fprintf(stderr, "[monitor] Shutting down\n");
+    LOG_INFO("[monitor] Shutting down");
 
     // Stop all input channels.
     for (int i = 0; i < NUM_INPUTS; ++i)
@@ -2373,7 +2629,7 @@ void AudioMonitor::stop()
         _fifo_writer.close();
     }
 
-    fprintf(stderr, "[monitor] Shutdown complete\n");
+    LOG_INFO("[monitor] Shutdown complete");
 }
 
 InputChannel* AudioMonitor::get_input(int input_index)
@@ -2391,9 +2647,12 @@ InputChannel* AudioMonitor::get_input(int input_index)
 //
 std::string AudioMonitor::api_get_status()
 {
+    LOG_SPAM("[monitor] get_status requested");
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(1);
-    oss << "{\"type\":\"status\",\"inputs\":[";
+    oss << "{\"type\":\"status\",\"log_level\":\""
+        << protocol_log_level_name(logger_get_level())
+        << "\",\"inputs\":[";
 
     for (int i = 0; i < NUM_INPUTS; ++i)
     {
@@ -2515,6 +2774,7 @@ static std::string validate_eq_bands(const std::vector<EqBand>& bands)
 std::string AudioMonitor::api_list_devices()
 {
     std::vector<AlsaDeviceInfo> devices = list_alsa_capture_devices();
+    LOG_DEBUG("[monitor] list_devices returning %zu device(s)", devices.size());
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"list_devices\",\"ok\":true,\"devices\":[";
@@ -2538,6 +2798,7 @@ std::string AudioMonitor::api_configure_input(int input_index, const InputConfig
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
+        LOG_WARN("[monitor] configure_input rejected for invalid input index %d", input_index);
         return "{\"type\":\"ack\",\"command\":\"configure_input\","
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
@@ -2546,6 +2807,8 @@ std::string AudioMonitor::api_configure_input(int input_index, const InputConfig
     std::string validation_error = validate_input_config(cfg);
     if (!validation_error.empty())
     {
+        LOG_WARN("[monitor] configure_input(%d) rejected: %s",
+                 input_index, validation_error.c_str());
         std::ostringstream oss;
         oss << "{\"type\":\"ack\",\"command\":\"configure_input\","
             << "\"ok\":false,\"error\":\"" << json_escape(validation_error) << "\"}";
@@ -2555,9 +2818,13 @@ std::string AudioMonitor::api_configure_input(int input_index, const InputConfig
     // configure() enforces the startup-only / runtime-tunable distinction.
     if (!ch->configure(cfg))
     {
+        LOG_WARN("[monitor] configure_input(%d) rejected: stop input before changing device",
+                 input_index);
         return "{\"type\":\"ack\",\"command\":\"configure_input\","
                "\"ok\":false,\"error\":\"stop the input before changing device\"}";
     }
+
+    LOG_INFO("[monitor] configure_input(%d) applied", input_index);
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"configure_input\","
@@ -2571,6 +2838,7 @@ std::string AudioMonitor::api_set_fifo(const std::string& path)
     std::string validation_error = validate_fifo_path(path);
     if (!validation_error.empty())
     {
+        LOG_WARN("[monitor] set_fifo rejected: %s", validation_error.c_str());
         std::ostringstream oss;
         oss << "{\"type\":\"ack\",\"command\":\"set_fifo\","
             << "\"ok\":false,\"error\":\"" << json_escape(validation_error) << "\"}";
@@ -2584,7 +2852,7 @@ std::string AudioMonitor::api_set_fifo(const std::string& path)
         _fifo_writer.set_path(path);
     }
 
-    fprintf(stderr, "[monitor] FIFO path set to '%s'\n", path.c_str());
+    LOG_INFO("[monitor] FIFO path set to '%s'", path.c_str());
     return "{\"type\":\"ack\",\"command\":\"set_fifo\",\"ok\":true}";
 }
 
@@ -2593,6 +2861,7 @@ std::string AudioMonitor::api_start_input(int input_index)
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
+        LOG_WARN("[monitor] start_input rejected for invalid input index %d", input_index);
         return "{\"type\":\"ack\",\"command\":\"start_input\","
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
@@ -2605,6 +2874,7 @@ std::string AudioMonitor::api_start_input(int input_index)
     // in both cases and require the caller to issue stop_input first.
     if (ch->is_started())
     {
+        LOG_WARN("[monitor] start_input(%d) rejected: input already started", input_index);
         std::ostringstream oss;
         oss << "{\"type\":\"ack\",\"command\":\"start_input\","
             << "\"input\":" << input_index << ","
@@ -2618,6 +2888,11 @@ std::string AudioMonitor::api_start_input(int input_index)
 
     std::string start_error;
     bool started = ch->start(&start_error);
+    if (started)
+        LOG_INFO("[monitor] start_input(%d) succeeded", input_index);
+    else
+        LOG_WARN("[monitor] start_input(%d) failed: %s",
+                 input_index, start_error.empty() ? "failed to start input" : start_error.c_str());
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"start_input\","
@@ -2636,11 +2911,13 @@ std::string AudioMonitor::api_stop_input(int input_index)
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
+        LOG_WARN("[monitor] stop_input rejected for invalid input index %d", input_index);
         return "{\"type\":\"ack\",\"command\":\"stop_input\","
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
 
     ch->stop();
+    LOG_INFO("[monitor] stop_input(%d) completed", input_index);
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"stop_input\","
@@ -2654,6 +2931,7 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
+        LOG_WARN("[monitor] set_allow_capture rejected for invalid input index %d", input_index);
         return "{\"type\":\"ack\",\"command\":\"set_allow_capture\","
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
@@ -2693,6 +2971,9 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
         ch->set_allow_capture(false);
     }
 
+    LOG_DEBUG("[monitor] set_allow_capture(%d, %s) applied",
+              input_index, allow ? "true" : "false");
+
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"set_allow_capture\","
         << "\"input\":"  << input_index << ","
@@ -2706,6 +2987,7 @@ std::string AudioMonitor::api_set_eq(int input_index, const std::vector<EqBand>&
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
+        LOG_WARN("[monitor] set_eq rejected for invalid input index %d", input_index);
         return "{\"type\":\"ack\",\"command\":\"set_eq\","
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
@@ -2713,6 +2995,8 @@ std::string AudioMonitor::api_set_eq(int input_index, const std::vector<EqBand>&
     std::string validation_error = validate_eq_bands(bands);
     if (!validation_error.empty())
     {
+        LOG_WARN("[monitor] set_eq(%d) rejected: %s",
+                 input_index, validation_error.c_str());
         std::ostringstream oss;
         oss << "{\"type\":\"ack\",\"command\":\"set_eq\","
             << "\"ok\":false,\"error\":\"" << json_escape(validation_error) << "\"}";
@@ -2720,6 +3004,7 @@ std::string AudioMonitor::api_set_eq(int input_index, const std::vector<EqBand>&
     }
 
     ch->set_eq(bands);
+    LOG_DEBUG("[monitor] set_eq(%d) applied %zu band(s)", input_index, bands.size());
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"set_eq\","
@@ -2734,6 +3019,7 @@ std::string AudioMonitor::api_set_gain(int input_index, float gain_db)
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
+        LOG_WARN("[monitor] set_gain rejected for invalid input index %d", input_index);
         return "{\"type\":\"ack\",\"command\":\"set_gain\","
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
@@ -2741,6 +3027,8 @@ std::string AudioMonitor::api_set_gain(int input_index, float gain_db)
     std::string validation_error = validate_gain_db(gain_db);
     if (!validation_error.empty())
     {
+        LOG_WARN("[monitor] set_gain(%d) rejected: %s",
+                 input_index, validation_error.c_str());
         std::ostringstream oss;
         oss << "{\"type\":\"ack\",\"command\":\"set_gain\","
             << "\"ok\":false,\"error\":\"" << json_escape(validation_error) << "\"}";
@@ -2748,12 +3036,34 @@ std::string AudioMonitor::api_set_gain(int input_index, float gain_db)
     }
 
     ch->set_gain(gain_db);
+    LOG_DEBUG("[monitor] set_gain(%d) applied %.2f dB", input_index, gain_db);
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"set_gain\","
         << "\"input\":"   << input_index << ","
         << "\"gain_db\":" << gain_db     << ","
         << "\"ok\":true}";
+    return oss.str();
+}
+
+std::string AudioMonitor::api_set_log_level(const std::string& level_text)
+{
+    MonitorLogLevel level;
+    if (!parse_monitor_log_level(level_text, &level))
+    {
+        LOG_WARN("[monitor] set_log_level rejected: unsupported level %s",
+                 level_text.empty() ? "<empty>" : level_text.c_str());
+        return "{\"type\":\"ack\",\"command\":\"set_log_level\","
+               "\"ok\":false,\"error\":\"unsupported log level\"}";
+    }
+
+    MonitorLogLevel applied = logger_set_level(level);
+    LOG_INFO("[monitor] Log level changed to %s", protocol_log_level_name(applied));
+
+    std::ostringstream oss;
+    oss << "{\"type\":\"ack\",\"command\":\"set_log_level\","
+        << "\"ok\":true,"
+        << "\"level\":\"" << protocol_log_level_name(applied) << "\"}";
     return oss.str();
 }
 
@@ -2773,6 +3083,7 @@ std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
+        LOG_WARN("[monitor] get_id_snapshot rejected for invalid input index %d", input_index);
         return "{\"type\":\"ack\",\"command\":\"get_id_snapshot\","
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
@@ -2790,10 +3101,13 @@ std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
 
     if (frames == 0)
     {
+        LOG_DEBUG("[monitor] get_id_snapshot(%d) has no snapshot data", input_index);
         return "{\"type\":\"ack\",\"command\":\"get_id_snapshot\","
                "\"input\":"  + std::to_string(input_index) + ","
                "\"ok\":false,\"error\":\"no snapshot data available\"}";
     }
+
+    LOG_DEBUG("[monitor] get_id_snapshot(%d) returning %u frame(s)", input_index, frames);
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"get_id_snapshot\","
@@ -2814,8 +3128,9 @@ std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
 int main(int argc, char* argv[])
 {
     // Parse command-line arguments.
-    // Usage: autostream_monitor [--socket PATH]
+    // Usage: autostream_monitor [--socket PATH] [--log-level LEVEL]
     std::string socket_path = "/tmp/autostream_monitor.sock";
+    std::string log_level_arg;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -2823,12 +3138,17 @@ int main(int argc, char* argv[])
         {
             socket_path = argv[++i];
         }
+        else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
+        {
+            log_level_arg = argv[++i];
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
             fprintf(stdout,
-                    "Usage: autostream_monitor [--socket PATH]\n"
+                    "Usage: autostream_monitor [--socket PATH] [--log-level LEVEL]\n"
                     "\n"
                     "  --socket PATH   Unix domain socket path (default: %s)\n"
+                    "  --log-level L   Override log level: warn|warning|info|debug|spam\n"
                     "\n"
                     "The monitor starts with no audio device connected.\n"
                     "Configure it via the socket using JSON commands.\n"
@@ -2836,7 +3156,24 @@ int main(int argc, char* argv[])
                     socket_path.c_str());
             return 0;
         }
+        else
+        {
+            fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
+            return 1;
+        }
     }
+
+    MonitorLogLevel log_level = MonitorLogLevel::Warn;
+    if (!log_level_arg.empty())
+    {
+        if (!parse_monitor_log_level(log_level_arg, &log_level))
+        {
+            fprintf(stderr, "Invalid --log-level value: %s\n", log_level_arg.c_str());
+            return 1;
+        }
+    }
+
+    logger_init(log_level);
 
     // Install signal handlers so we shut down cleanly on Ctrl-C or systemd stop.
     // sigaction() is used instead of signal() for deterministic behaviour:
@@ -2863,11 +3200,15 @@ int main(int argc, char* argv[])
         sigaction(SIGPIPE, &sa_ign, nullptr);
     }
 
-    fprintf(stderr, "[monitor] autostream_monitor starting (socket: %s)\n",
-            socket_path.c_str());
+    LOG_INFO("[monitor] autostream_monitor starting (socket: %s)",
+             socket_path.c_str());
+    LOG_INFO("[monitor] Log level set to %s (%s)",
+             protocol_log_level_name(log_level),
+             log_level_arg.empty() ? "default" : "command line");
 
     AudioMonitor monitor(socket_path);
     monitor.run();
+    logger_flush_repeats();
 
     return 0;
 }

@@ -37,6 +37,7 @@
 //     {"type":"set_eq","input":1,"bands":[{"type":"peak","freq_hz":100.0,
 //                                          "gain_db":3.0,"q":0.707}]}
 //     {"type":"set_gain","input":1,"gain_db":3.0}
+//     {"type":"set_log_level","level":"warning"}
 //     {"type":"get_status"}
 //     {"type":"get_id_snapshot","input":1}               (max_seconds default 20)
 //     {"type":"get_id_snapshot","input":1,"max_seconds":10}
@@ -46,7 +47,7 @@
 //     {"type":"ack","command":"...", "ok":false,"error":"reason"}
 //
 //   get_status response:
-//     {"type":"status","inputs":[
+//     {"type":"status","log_level":"warning","inputs":[
 //       {"index":1,"level_dbfs":-42.1,"silent":false,
 //        "capturing":true,"detected_hz":44097.3,
 //        "raw_peak_dbfs":-12.3,"effective_peak_dbfs":-9.1,
@@ -772,6 +773,9 @@ public:
 
     // Set pre-amplifier gain for one input (1 or 2).  gain_db in [-24, +24].
     std::string api_set_gain(int input_index, float gain_db);
+
+    // Update the monitor's runtime log level.
+    std::string api_set_log_level(const std::string& level_text);
 
     // Return a status snapshot for all inputs.
     std::string api_get_status();
