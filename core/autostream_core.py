@@ -29,6 +29,7 @@ import requests
 
 from autostream_config import (
     load_and_parse,
+    normalize_airplay_mode,
     normalize_log_level,
     python_log_level_value,
     unconfigured,
@@ -44,11 +45,14 @@ except ImportError:  # Optional recognizer; core should run without it.
     VinylRecognizer = None  # type: ignore[assignment]
 
 from autostream_owntone import (
+    build_owntone_output_update_payload,
+    owntone_fetch_outputs,
     owntone_disable_all_outputs,
     owntone_config_ok,
     owntone_check_api_settings,
     owntone_restart_service,
     owntone_ensure_pipe_indexed,
+    resolve_owntone_output_airplay_mode,
     OWNTONE_OK,
     OWNTONE_RESTART_REQUIRED,
     OWNTONE_NOT_OK,
@@ -218,11 +222,24 @@ def _normalize_owntone_output_offsets(
     return normalized
 
 
+def _normalize_owntone_output_airplay_modes(
+    output_airplay_modes: Optional[dict[str, object]] = None,
+) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for raw_key, raw_val in (output_airplay_modes or {}).items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        normalized[key] = normalize_airplay_mode(raw_val)
+    return normalized
+
+
 def update_live_owntone_runtime(
     *,
     output_name: str,
     volume_percent: object,
     output_offsets_ms: Optional[dict[str, object]] = None,
+    output_airplay_modes: Optional[dict[str, object]] = None,
 ) -> bool:
     try:
         live_output_name = str(output_name or "").strip()
@@ -232,12 +249,16 @@ def update_live_owntone_runtime(
             live_volume_percent = 20
         live_volume_percent = max(0, min(100, live_volume_percent))
         live_output_offsets_ms = _normalize_owntone_output_offsets(output_offsets_ms)
+        live_output_airplay_modes = _normalize_owntone_output_airplay_modes(
+            output_airplay_modes
+        )
 
         with _monitors_lock:
             for monitor in all_monitors:
                 monitor.owntone_output_name = live_output_name
                 monitor.owntone_volume_percent = live_volume_percent
                 monitor.owntone_output_offsets_ms = dict(live_output_offsets_ms)
+                monitor.owntone_output_airplay_modes = dict(live_output_airplay_modes)
         return True
     except Exception as e:
         logging.warning("Could not update live OwnTone runtime settings: %s", e)
@@ -820,6 +841,7 @@ class AudioMonitor:
         owntone_output_name: str,
         owntone_volume_percent: int,
         owntone_output_offsets_ms: Optional[dict[str, int]] = None,
+        owntone_output_airplay_modes: Optional[dict[str, str]] = None,
         gain_db: float = 0.0,
         eq_40hz_db: float = 0.0,
         eq_100hz_db: float = 0.0,
@@ -834,6 +856,7 @@ class AudioMonitor:
         self.owntone_output_name = owntone_output_name
         self.owntone_volume_percent = owntone_volume_percent
         self.owntone_output_offsets_ms = owntone_output_offsets_ms or {}
+        self.owntone_output_airplay_modes = owntone_output_airplay_modes or {}
         self.gain_db = gain_db
         self.eq_40hz_db = eq_40hz_db
         self.eq_100hz_db = eq_100hz_db
@@ -1136,16 +1159,11 @@ class AudioMonitor:
         """Return OwnTone outputs list, or None if API is unavailable."""
         if not self.owntone_base_url:
             return None
-        try:
-            resp = requests.get(
-                self.owntone_base_url.rstrip("/") + "/api/outputs", timeout=3,
-            )
-            if not resp.ok:
-                return None
-            outputs = (resp.json() or {}).get("outputs", [])
-            return outputs if isinstance(outputs, list) else None
-        except Exception:
-            return None
+        return owntone_fetch_outputs(
+            self.owntone_base_url,
+            timeout=3,
+            log_errors=False,
+        )
 
     @staticmethod
     def _selected_output_ids(outputs: list[dict]) -> list[str]:
@@ -1212,13 +1230,34 @@ class AudioMonitor:
         except Exception:
             out_volume = 20
         out_volume = max(0, min(100, out_volume))
-        payload: dict[str, object] = {"selected": True, "volume": out_volume}
-        offset_val = self.owntone_output_offsets_ms.get(out_id)
-        if offset_val is not None:
-            try:
-                payload["offset_ms"] = max(-2000, min(2000, int(offset_val)))
-            except Exception:
-                pass
+        mode = resolve_owntone_output_airplay_mode(
+            out_id,
+            output_airplay_modes=self.owntone_output_airplay_modes,
+        )
+        payload_result = build_owntone_output_update_payload(
+            default_out,
+            selected=True,
+            volume=out_volume,
+            offset_ms=self.owntone_output_offsets_ms.get(out_id),
+            protocol_mode=mode,
+        )
+        payload = payload_result.payload
+        if payload_result.protocol_coerced:
+            logging.warning(
+                "OwnTone output %s does not support the configured runtime protocol; coercing to default.",
+                out_id,
+            )
+        if payload_result.protocol_requested and not payload_result.protocol_included:
+            if payload_result.output_known:
+                logging.info(
+                    "Skipping runtime protocol for OwnTone output %s because this build does not advertise protocol capability.",
+                    out_id,
+                )
+            else:
+                logging.warning(
+                    "Skipping runtime protocol for OwnTone output %s because output metadata was unavailable.",
+                    out_id,
+                )
 
         try:
             resp = requests.put(
@@ -1262,10 +1301,60 @@ class AudioMonitor:
                 base + "/api/outputs/set", json=set_payload, timeout=3,
             )
             if not set_resp.ok:
+                logging.warning(
+                    "Failed to refresh selected OwnTone outputs via /api/outputs/set: status=%s body=%s",
+                    set_resp.status_code,
+                    (set_resp.text or "")[:200],
+                )
                 return False
+            outputs_by_id = {str(o.get("id")): o for o in outputs if o.get("id") is not None}
+            for out_id in selected_ids:
+                out_key = str(out_id)
+                mode = resolve_owntone_output_airplay_mode(
+                    out_key,
+                    output_airplay_modes=self.owntone_output_airplay_modes,
+                )
+                payload_result = build_owntone_output_update_payload(
+                    outputs_by_id.get(out_key),
+                    selected=True,
+                    offset_ms=self.owntone_output_offsets_ms.get(out_key),
+                    protocol_mode=mode,
+                )
+                payload = payload_result.payload
+                if payload_result.protocol_coerced:
+                    logging.warning(
+                        "OwnTone output %s does not support the configured runtime protocol; coercing to default.",
+                        out_key,
+                    )
+                if payload_result.protocol_requested and not payload_result.protocol_included:
+                    if payload_result.output_known:
+                        logging.info(
+                            "Skipping runtime protocol refresh for OwnTone output %s because this build does not advertise protocol capability.",
+                            out_key,
+                        )
+                    else:
+                        logging.warning(
+                            "Skipping runtime protocol refresh for OwnTone output %s because output metadata was unavailable.",
+                            out_key,
+                        )
+                if len(payload) > 1:
+                    resp = requests.put(
+                        base + f"/api/outputs/{out_id}",
+                        json=payload,
+                        timeout=3,
+                    )
+                    if not resp.ok:
+                        logging.warning(
+                            "Failed to refresh OwnTone output %s: status=%s body=%s",
+                            out_id,
+                            resp.status_code,
+                            (resp.text or "")[:200],
+                        )
+                        return False
             logging.info("Refreshed selected OwnTone outputs: %s", selected_ids)
             return True
-        except Exception:
+        except Exception as e:
+            logging.warning("Error refreshing selected OwnTone outputs: %s", e)
             return False
 
 
@@ -1422,6 +1511,7 @@ def _configure_startup_monitors(
         owntone_output_name=cfg.owntone.output_name,
         owntone_volume_percent=cfg.owntone.volume_percent,
         owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
+        owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
         gain_db=cfg.audio1.gain_db,
         eq_40hz_db=cfg.audio1.eq_40hz_db,
         eq_100hz_db=cfg.audio1.eq_100hz_db,
@@ -1476,6 +1566,7 @@ def _configure_startup_monitors(
                 owntone_output_name=cfg.owntone.output_name,
                 owntone_volume_percent=cfg.owntone.volume_percent,
                 owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
+                owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
                 gain_db=cfg.audio2.gain_db,
                 eq_40hz_db=cfg.audio2.eq_40hz_db,
                 eq_100hz_db=cfg.audio2.eq_100hz_db,

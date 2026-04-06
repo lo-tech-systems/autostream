@@ -68,6 +68,10 @@ from autostream_playback import DEFAULT_STYLUS_LIFE_HOURS, normalize_stylus_life
 
 DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
+DEFAULT_AIRPLAY_MODE = "default"
+VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
+DEFAULT_OWNTONE_PROTOCOL_API_STATE = "unknown"
+VALID_OWNTONE_PROTOCOL_API_STATES = ("runtime", "legacy", "unknown")
 
 _PYTHON_LOG_LEVELS = {
     "fatal": logging.CRITICAL,
@@ -110,6 +114,32 @@ def python_log_level_value(level_name: object) -> int:
 def owntone_log_level_value(level_name: object) -> int:
     """Map a platform log-level name to OwnTone's integer runtime severity."""
     return _OWNTONE_LOG_LEVELS[normalize_log_level(level_name)]
+
+
+def normalize_airplay_mode(
+    value: object,
+    default: str = DEFAULT_AIRPLAY_MODE,
+) -> str:
+    """Return a supported per-speaker AirPlay mode."""
+    text = str(value or "").strip().lower()
+    if text in VALID_AIRPLAY_MODES:
+        return text
+    fallback = str(default or "").strip().lower()
+    return fallback if fallback in VALID_AIRPLAY_MODES else DEFAULT_AIRPLAY_MODE
+
+
+def normalize_owntone_protocol_api_state(
+    value: object,
+    default: str = DEFAULT_OWNTONE_PROTOCOL_API_STATE,
+) -> str:
+    """Return a supported OwnTone protocol-compatibility state."""
+    text = str(value or "").strip().lower()
+    if text in VALID_OWNTONE_PROTOCOL_API_STATES:
+        return text
+    fallback = str(default or "").strip().lower()
+    if fallback in VALID_OWNTONE_PROTOCOL_API_STATES:
+        return fallback
+    return DEFAULT_OWNTONE_PROTOCOL_API_STATE
 
 
 
@@ -155,7 +185,10 @@ class OwntoneConfig:
     base_url: str
     output_name: str
     volume_percent: int
+    protocol_api_state: str
     output_offsets_ms: dict[str, int]
+    output_airplay_modes: dict[str, str]
+    known_outputs: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -298,12 +331,44 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
             except Exception:
                 offsets[str(k).strip()] = 0
 
+    # Owntone per-output runtime protocol preferences for newer OwnTone builds.
+    # Store the full preference, including explicit "default", so runtime
+    # speaker activation can clear any previously forced protocol.
+    airplay_modes: dict[str, str] = {}
+    if cfg.has_section("owntone_airplay_modes"):
+        for k, v in cfg.items("owntone_airplay_modes"):
+            key = str(k).strip()
+            if not key:
+                continue
+            airplay_modes[key] = normalize_airplay_mode(v)
+
+    # Known outputs registry keyed by stable OwnTone output id. The value is
+    # the last known display name so the UI can still render offline speakers.
+    known_outputs: dict[str, str] = {}
+    if cfg.has_section("owntone_known_outputs"):
+        for k, v in cfg.items("owntone_known_outputs"):
+            key = str(k).strip()
+            if not key:
+                continue
+            name = str(v).strip()
+            if name:
+                known_outputs[key] = name
+
     # Owntone
     owntone = OwntoneConfig(
         base_url=cfg.get("owntone", "base_url", fallback="http://localhost:3689"),
         output_name=cfg.get("owntone", "output_name", fallback=""),
         volume_percent=cfg.getint("owntone", "volume_percent", fallback=20),
+        protocol_api_state=normalize_owntone_protocol_api_state(
+            cfg.get(
+                "owntone",
+                "protocol_api_state",
+                fallback=DEFAULT_OWNTONE_PROTOCOL_API_STATE,
+            ),
+        ),
         output_offsets_ms=offsets,
+        output_airplay_modes=airplay_modes,
+        known_outputs=known_outputs,
     )
 
     # Web UI

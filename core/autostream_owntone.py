@@ -16,10 +16,50 @@ import tempfile
 import time
 
 import requests # third-party (pip install requests)
-from autostream_config import normalize_log_level, owntone_log_level_value
+from autostream_config import (
+    normalize_airplay_mode,
+    normalize_log_level,
+    normalize_owntone_protocol_api_state,
+    owntone_log_level_value,
+)
 from autostream_sysutils import run_admin_cmd
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OwntoneOutputProtocolSupport:
+    supports_runtime_protocol: bool
+    supports_raop: bool
+    supports_airplay2: bool
+
+
+@dataclass(frozen=True)
+class OwntoneOutputUpdatePayloadResult:
+    payload: dict[str, object]
+    protocol_requested: Optional[str]
+    protocol_included: bool
+    protocol_coerced: bool
+    output_known: bool
+
+
+def owntone_fetch_outputs(
+    base_url: str,
+    timeout: float = 5.0,
+    *,
+    log_errors: bool = True,
+) -> Optional[list[dict]]:
+    """Return OwnTone outputs, or None on API error."""
+    try:
+        resp = requests.get(base_url.rstrip("/") + "/api/outputs", timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json() if resp.content else {}
+        outputs = data.get("outputs", [])
+        return outputs if isinstance(outputs, list) else []
+    except Exception as e:  # noqa: BLE001
+        if log_errors:
+            logging.warning("Error fetching OwnTone outputs: %s", e)
+        return None
 
 # Location for owntone.conf. Default in most distros is /etc/owntone.conf. In
 # autostream, we use our own copy at /opt/autostream/owntone/owntone.conf, which
@@ -29,18 +69,169 @@ OWNTONE_CONF_PATH = Path(
 ).expanduser().resolve()
 OWNTONE_CONF_DIR = OWNTONE_CONF_PATH.parent
 
+
+def owntone_get_outputs(base_url: str, timeout: float = 5.0) -> list[dict]:
+    """Return OwnTone outputs, or [] on API error."""
+    return owntone_fetch_outputs(base_url, timeout=timeout, log_errors=True) or []
+
+
+def owntone_get_output(
+    base_url: str,
+    output_id: object,
+    *,
+    outputs: Optional[list[dict]] = None,
+    timeout: float = 5.0,
+    log_errors: bool = True,
+) -> Optional[dict]:
+    """Return one OwnTone output object, falling back to GET /api/outputs/{id}."""
+    out_id = str(output_id).strip()
+    if not out_id:
+        return None
+
+    if outputs:
+        for output in outputs:
+            if str(output.get("id")) == out_id:
+                return output
+
+    try:
+        resp = requests.get(base_url.rstrip("/") + f"/api/outputs/{out_id}", timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json() if resp.content else {}
+        if isinstance(data, dict):
+            if "id" in data or "name" in data:
+                return data
+            output = data.get("output")
+            if isinstance(output, dict):
+                return output
+        return None
+    except Exception as e:  # noqa: BLE001
+        if log_errors:
+            logging.warning("Error fetching OwnTone output %s: %s", out_id, e)
+        return None
+
+
+def owntone_output_protocol_support(output: Optional[dict]) -> OwntoneOutputProtocolSupport:
+    """Return runtime protocol capability flags for an OwnTone output object."""
+    supports_runtime_protocol = bool(
+        output and ("supports_raop" in output or "supports_airplay2" in output)
+    )
+    if not supports_runtime_protocol:
+        return OwntoneOutputProtocolSupport(
+            supports_runtime_protocol=False,
+            supports_raop=False,
+            supports_airplay2=False,
+        )
+    return OwntoneOutputProtocolSupport(
+        supports_runtime_protocol=True,
+        supports_raop=bool(output.get("supports_raop")),
+        supports_airplay2=bool(output.get("supports_airplay2")),
+    )
+
+
+def owntone_has_runtime_protocol_api(outputs: list[dict]) -> bool:
+    """Return True if the current OwnTone outputs advertise runtime protocol support."""
+    return any(
+        owntone_output_protocol_support(output).supports_runtime_protocol
+        for output in outputs
+    )
+
+
+def resolve_owntone_protocol_api_state(
+    outputs: Optional[list[dict]],
+    persisted_state: object = "unknown",
+) -> str:
+    """Resolve OwnTone protocol support using live outputs and last-known state."""
+    normalized_persisted = normalize_owntone_protocol_api_state(persisted_state)
+    if outputs is None or not outputs:
+        return normalized_persisted
+    if owntone_has_runtime_protocol_api(outputs):
+        return "runtime"
+    # Do not downgrade a newer OwnTone build to legacy just because the current
+    # output list lacks protocol metadata (for example, if only non-AirPlay
+    # outputs are currently discovered). Once runtime support has been observed,
+    # keep using that compatibility model until a positive legacy determination
+    # is made from a clean newer-install state.
+    if normalized_persisted == "runtime":
+        return "runtime"
+    return "legacy"
+
+
+def resolve_owntone_output_airplay_mode(
+    output_id: object,
+    *,
+    output_airplay_modes: Optional[dict[str, str]] = None,
+) -> Optional[str]:
+    """Resolve the saved AirPlay mode for an output id."""
+    key = str(output_id).strip()
+    if not key:
+        return None
+
+    if output_airplay_modes:
+        if key in output_airplay_modes:
+            return normalize_airplay_mode(output_airplay_modes[key])
+
+    return None
+
+
+def build_owntone_output_update_payload(
+    output: Optional[dict],
+    *,
+    selected: Optional[bool] = None,
+    volume: Optional[object] = None,
+    offset_ms: Optional[object] = None,
+    protocol_mode: Optional[object] = None,
+) -> OwntoneOutputUpdatePayloadResult:
+    """Build a PUT /api/outputs/{id} payload, including protocol only when supported."""
+    payload: dict[str, object] = {}
+    if selected is not None:
+        payload["selected"] = bool(selected)
+    if volume is not None:
+        try:
+            vol = int(volume)
+        except Exception:
+            vol = 0
+        payload["volume"] = max(0, min(100, vol))
+    if offset_ms is not None:
+        try:
+            off = int(offset_ms)
+        except Exception:
+            off = 0
+        payload["offset_ms"] = max(-2000, min(2000, off))
+
+    protocol_requested: Optional[str] = None
+    protocol_included = False
+    support = owntone_output_protocol_support(output)
+    protocol_coerced = False
+    output_known = output is not None
+    if protocol_mode is not None and str(protocol_mode).strip():
+        protocol_requested = normalize_airplay_mode(protocol_mode)
+        if protocol_requested == "raop" and support.supports_runtime_protocol and not support.supports_raop:
+            protocol_requested = "default"
+            protocol_coerced = True
+        elif (
+            protocol_requested == "airplay2"
+            and support.supports_runtime_protocol
+            and not support.supports_airplay2
+        ):
+            protocol_requested = "default"
+            protocol_coerced = True
+        if support.supports_runtime_protocol:
+            payload["protocol"] = protocol_requested
+            protocol_included = True
+
+    return OwntoneOutputUpdatePayloadResult(
+        payload=payload,
+        protocol_requested=protocol_requested,
+        protocol_included=protocol_included,
+        protocol_coerced=protocol_coerced,
+        output_known=output_known,
+    )
+
 def get_owntone_output_id(base_url: str, output_name: str) -> Optional[int]:
     """Return the Owntone output ID matching `output_name`, or None if not found."""
-    try:
-        resp = requests.get(base_url.rstrip("/") + "/api/outputs", timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        outputs = data.get("outputs", [])
-        for out in outputs:
-            if out.get("name") == output_name:
-                return out.get("id")
-    except Exception as e:  # noqa: BLE001
-        logging.error("Error fetching Owntone outputs: %s", e)
+    for out in owntone_get_outputs(base_url, timeout=5):
+        if out.get("name") == output_name:
+            return out.get("id")
     return None
 
 
@@ -96,66 +287,6 @@ def owntone_ensure_pipe_indexed(base_url: str, timeout_s: float = 15.0) -> bool:
         time.sleep(0.5)
 
     return False
-
-
-def owntone_set_output(base_url: str, output_id: int, volume_percent: int, offset_ms: Optional[int] = None) -> bool:
-    """Enable a specific output and set its volume via the Owntone JSON API.
-
-    According to the API docs, /api/outputs/set only accepts a list of output
-    ids (strings). Volume and selection flags are changed via
-    PUT /api/outputs/{id}.
-    """
-    # 1) Enable the output (and implicitly disable all others unless they are included)
-    set_url = base_url.rstrip("/") + "/api/outputs/set"
-    set_payload = {"outputs": [str(output_id)]}
-    logging.info("Owntone PUT /api/outputs/set payload=%s", set_payload)
-    try:
-        resp = requests.put(set_url, json=set_payload, timeout=3)
-        logging.info("Owntone PUT /api/outputs/set status=%s", resp.status_code)
-        logging.info("Owntone PUT /api/outputs/set body=%s", resp.text)
-        if not resp.ok:
-            logging.error(
-                "Owntone PUT /api/outputs/set failed: %s %s", resp.status_code, resp.text
-            )
-            return False
-    except requests.RequestException as e:  # noqa: BLE001
-        logging.error("Error setting Owntone enabled outputs: %s", e)
-        return False
-
-    # 2) Set volume and ensure the output is marked selected
-    out_url = base_url.rstrip("/") + f"/api/outputs/{output_id}"
-    vol = max(0, min(100, volume_percent))
-    out_payload = {"selected": True, "volume": vol}
-
-    # Optional per-output playback offset (ms). API range is -2000..2000.
-    # Only include if provided, so we don't break outputs/versions that don't support it.
-    if offset_ms is not None:
-        try:
-            off = int(offset_ms)
-        except Exception:
-            off = 0
-        off = max(-2000, min(2000, off))
-        out_payload["offset_ms"] = off
-
-    try:
-        resp = requests.put(out_url, json=out_payload, timeout=3)
-        logging.info("Owntone PUT /api/outputs/%s status=%s", output_id, resp.status_code)
-        logging.info("Owntone PUT /api/outputs/%s body=%s", output_id, resp.text)
-        if not resp.ok:
-            logging.error(
-                "Owntone PUT /api/outputs/%s failed: %s %s",
-                output_id,
-                resp.status_code,
-                resp.text,
-            )
-            return False
-        else:
-            logging.info("Enabled Owntone output id %s at %d%% volume", output_id, vol)
-    except requests.RequestException as e:  # noqa: BLE001
-        logging.error("Error configuring Owntone output %s: %s", output_id, e)
-        return False
-
-    return True
 
 
 def owntone_restart_service() -> bool:
@@ -804,63 +935,6 @@ def owntone_put_setting(
         return OwntoneSettingPutResult(available=True, ok=True)
     except requests.RequestException as e:  # noqa: BLE001
         logger.warning("Error writing OwnTone setting %s/%s: %s", category, option, e)
-        return OwntoneSettingPutResult(available=True, ok=False)
-
-
-def owntone_set_airplay_mode(
-    base_url: str, output_id: str, mode: str
-) -> OwntoneSettingPutResult:
-    """Set the AirPlay protocol mode for a single output via PUT /api/outputs/{id}.
-
-    mode must be one of: "auto", "raop", "airplay2"
-      auto     — server picks based on backend priority (OwnTone default)
-      raop     — force AirPlay 1
-      airplay2 — force AirPlay 2
-
-    Returns a structured result.  available=False means the field was rejected
-    (likely an older OwnTone build); the caller should fall back to conf-file
-    raop_disable for those installations.
-    """
-    valid_modes = {"auto", "raop", "airplay2"}
-    if mode not in valid_modes:
-        logger.warning(
-            "owntone_set_airplay_mode: invalid mode %r (must be one of %s); using 'auto'.",
-            mode, valid_modes,
-        )
-        mode = "auto"
-
-    url = base_url.rstrip("/") + f"/api/outputs/{output_id}"
-    try:
-        resp = requests.put(url, json={"airplay_mode": mode}, timeout=5)
-        if resp.status_code == 404:
-            logger.debug(
-                "OwnTone output %s: airplay_mode field not available (404).", output_id
-            )
-            return OwntoneSettingPutResult(available=False, ok=False)
-        if (
-            resp.status_code in (400, 422)
-            and "airplay_mode" in (resp.text or "").lower()
-        ):
-            logger.debug(
-                "OwnTone output %s: airplay_mode field rejected by this build (%s).",
-                output_id,
-                resp.status_code,
-            )
-            return OwntoneSettingPutResult(available=False, ok=False)
-        if not resp.ok:
-            logger.warning(
-                "OwnTone PUT /api/outputs/%s (airplay_mode=%r) failed: %s %s",
-                output_id, mode, resp.status_code, resp.text,
-            )
-            return OwntoneSettingPutResult(available=True, ok=False)
-        logger.info(
-            "OwnTone output %s airplay_mode set to %r.", output_id, mode
-        )
-        return OwntoneSettingPutResult(available=True, ok=True)
-    except requests.RequestException as e:  # noqa: BLE001
-        logger.warning(
-            "Error setting OwnTone output %s airplay_mode: %s", output_id, e
-        )
         return OwntoneSettingPutResult(available=True, ok=False)
 
 
