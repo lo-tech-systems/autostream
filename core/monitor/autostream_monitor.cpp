@@ -2255,7 +2255,8 @@ void ControlServer::accept_loop()
             _client_fds.insert(client_fd);
         }
 
-        std::lock_guard<std::mutex> lock(_clients_mutex);
+        // _client_threads is only accessed from this thread (accept_loop) and
+        // from stop() after _accept_thread.join(), so no mutex is needed here.
         _client_threads.emplace_back([this, client_fd]()
         {
             LOG_DEBUG("[control] Client connected (fd=%d)", client_fd);
