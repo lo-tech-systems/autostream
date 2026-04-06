@@ -2553,7 +2553,7 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
                 return
             out_payload = {"pin": pin}
 
-            logging.info("Owntone API call: PUT %s json=%s", url, out_payload)
+            logging.info("Owntone API call: PUT %s json={\"pin\":\"***\"}", url)
             resp = requests.put(url, json=out_payload, timeout=3)
             logging.info("Owntone API response: status=%s body=%s",
                          getattr(resp, "status_code", None),
