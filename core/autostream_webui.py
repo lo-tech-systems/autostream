@@ -47,6 +47,7 @@ from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
 from autostream_webui_state import WebUIState
 import autostream_webui_pages as pages
 import autostream_webui_license as license_page
+import autostream_webui_logs as logs_page
 
 from autostream_config import unconfigured
 
@@ -216,7 +217,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/license":
             license_page.send_license_page(self, STATE)
         elif path == "/logs":
-            pages.send_logs_page(self, STATE, flash_msg=msg)
+            logs_page.send_logs_page(self, STATE, flash_msg=msg)
         elif path == "/api/status":
             pages.send_status_json(self)
         elif path == "/api/update/check":
@@ -343,7 +344,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
-            pages.handle_logs_post(self, STATE, body_str)
+            logs_page.handle_logs_post(self, STATE, body_str)
 
         elif path == "/api/update/apply":
             # Body optional
