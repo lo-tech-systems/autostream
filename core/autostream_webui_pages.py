@@ -1107,6 +1107,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           const r = await fetch('/api/output',{{
             method:'POST',
             credentials:'same-origin',
+            signal: AbortSignal.timeout(5000),
             headers:{{
               'Content-Type':'application/json',
               'X-CSRF-Token':window.__CSRF||''
@@ -1139,6 +1140,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           const r = await fetch('/api/output', {{
             method:'POST',
             credentials:'same-origin',
+            signal: AbortSignal.timeout(5000),
             headers:{{
               'Content-Type':'application/json',
               'X-CSRF-Token':window.__CSRF||''
@@ -1161,82 +1163,87 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           const c=document.getElementById('output_enabled_'+id), s=document.getElementById('vol_slider_'+id);
           const selected = c?c.checked:false;
           const volume = s?normalizeVolume(parseInt(s.value,10)):0;
-          let j = null;
+          window.__PENDING_OUTPUTS.add(String(id));
           try {{
-            j = await postOutputUpdate(id, selected, volume);
-          }} catch (e) {{
-            // Network error -> let periodic refresh reconcile UI.
-            return;
-          }}
-
-          // If OwnTone requires a PIN, prompt and do PIN-only verification.
-          // On wrong PIN (still 400), re-prompt; on success, retry the original enable.
-          if (selected && j && j.pin_required) {{
-            // Temporarily revert the toggle until fully enabled.
-            if (c) {{
-              c.checked = false;
-              updateOutputStateVisual(String(id), false);
+            let j = null;
+            try {{
+              j = await postOutputUpdate(id, selected, volume);
+            }} catch (e) {{
+              // Network error or 5 s abort -> let periodic refresh reconcile UI.
+              return;
             }}
 
-            let nm = '';
-            try {{
-              const card = c ? c.closest('.output-card') : null;
-              const label = card ? card.querySelector('.output-card-name') : null;
-              nm = label ? (label.textContent || '').trim() : '';
-            }} catch (e) {{}}
-
-            while (true) {{
-              const pin = await showPinModal(nm || 'this speaker');
-              if (!pin) return; // user cancelled
-
-              let jpin = null;
-              try {{
-                jpin = await postPinOnly(id, pin);
-              }} catch (e) {{
-                // treat as failure; keep disabled
-                if (c) {{
-                  c.checked = false;
-                  updateOutputStateVisual(String(id), false);
-                }}
-                return;
+            // If OwnTone requires a PIN, prompt and do PIN-only verification.
+            // On wrong PIN (still 400), re-prompt; on success, retry the original enable.
+            if (selected && j && j.pin_required) {{
+              // Temporarily revert the toggle until fully enabled.
+              if (c) {{
+                c.checked = false;
+                updateOutputStateVisual(String(id), false);
               }}
 
-              if (jpin && jpin.ok) {{
-                // PIN accepted -> retry the original enable request (without pin)
+              let nm = '';
+              try {{
+                const card = c ? c.closest('.output-card') : null;
+                const label = card ? card.querySelector('.output-card-name') : null;
+                nm = label ? (label.textContent || '').trim() : '';
+              }} catch (e) {{}}
+
+              while (true) {{
+                const pin = await showPinModal(nm || 'this speaker');
+                if (!pin) return; // user cancelled
+
+                let jpin = null;
                 try {{
-                  const jen = await postOutputUpdate(id, true, volume);
-                  if (jen && jen.ok) {{
-                    if (c) {{
-                      c.checked = true;
-                      updateOutputStateVisual(String(id), true);
-                    }}
-                    return;
-                  }}
-                  // If it still asks for PIN, loop again.
-                  if (jen && jen.pin_required) {{
-                    if (c) {{
-                      c.checked = false;
-                      updateOutputStateVisual(String(id), false);
-                    }}
-                    continue;
-                  }}
+                  jpin = await postPinOnly(id, pin);
                 }} catch (e) {{
+                  // treat as failure; keep disabled
                   if (c) {{
                     c.checked = false;
                     updateOutputStateVisual(String(id), false);
                   }}
+                  return;
                 }}
+
+                if (jpin && jpin.ok) {{
+                  // PIN accepted -> retry the original enable request (without pin)
+                  try {{
+                    const jen = await postOutputUpdate(id, true, volume);
+                    if (jen && jen.ok) {{
+                      if (c) {{
+                        c.checked = true;
+                        updateOutputStateVisual(String(id), true);
+                      }}
+                      return;
+                    }}
+                    // If it still asks for PIN, loop again.
+                    if (jen && jen.pin_required) {{
+                      if (c) {{
+                        c.checked = false;
+                        updateOutputStateVisual(String(id), false);
+                      }}
+                      continue;
+                    }}
+                  }} catch (e) {{
+                    if (c) {{
+                      c.checked = false;
+                      updateOutputStateVisual(String(id), false);
+                    }}
+                  }}
+                  return;
+                }}
+
+                // Wrong PIN -> re-prompt
+                if (jpin && jpin.pin_invalid) {{
+                  continue;
+                }}
+
+                // Other error -> stop
                 return;
               }}
-
-              // Wrong PIN -> re-prompt
-              if (jpin && jpin.pin_invalid) {{
-                continue;
-              }}
-
-              // Other error -> stop
-              return;
             }}
+          }} finally {{
+            window.__PENDING_OUTPUTS.delete(String(id));
           }}
         }}
 
@@ -1325,13 +1332,14 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
           for (const o of j.outputs) {{
             const id = String(o.id);
 
+            // Skip outputs with a request in flight; sendUpdate's finally block
+            // will remove the id once the request settles (or aborts after 5 s).
+            if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
+
             const cb = document.getElementById("output_enabled_" + id);
             const sl = document.getElementById("vol_slider_" + id);
 
-            // Avoid fighting the user while interacting
-            if (cb && !isActiveControl(cb)) {{
-              cb.checked = !!o.selected;
-            }}
+            if (cb) cb.checked = !!o.selected;
             updateOutputStateVisual(id, !!o.selected);
 
             if (sl && !isActiveControl(sl)) {{
@@ -1345,6 +1353,7 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
         }}
 
         window.addEventListener('DOMContentLoaded',function(){{
+          window.__PENDING_OUTPUTS = new Set();
           document.querySelectorAll('[data-volume-label-for]').forEach(s=>{{
             var i=s.getAttribute('data-volume-label-for'), sl=document.getElementById('vol_slider_'+i);
             if(sl)updateVolumeLabel(i, sl.value);
