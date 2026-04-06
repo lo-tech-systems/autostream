@@ -2378,24 +2378,32 @@ def send_logs_page(
       <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
       <style>{STYLE_CSS}
       body {{ font-size: 14px !important; }}
-      .log-controls {{ display:flex; gap:0.6rem; align-items:flex-end; margin:0.8rem 0 1rem; flex-wrap:wrap; }}
-      .log-controls .field {{ flex:1 1 200px; }}
-      .log-controls label {{ display:block; margin-bottom:0.25rem; font-weight:600; }}
-      .log-controls select {{ width:100%; }}
       .log-wrapper {{ background:#111; color:#f5f5f5; padding:0.65rem; border-radius:6px; font-family:monospace; font-size:0.65rem; max-height:60vh; overflow:auto; white-space:pre-wrap; }}
-      </style></head><body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>Logs</h1>
+      #applyingOverlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:9999; align-items:center; justify-content:center; }}
+      #applyingOverlay.visible {{ display:flex; }}
+      #applyingBox {{ background:#fff; color:#222; padding:1.4rem 2rem; border-radius:10px; font-size:1.1rem; font-weight:600; box-shadow:0 4px 24px rgba(0,0,0,0.25); }}
+      </style></head><body>{lic_html}{lic_spacer}
+      <div id="applyingOverlay" role="status" aria-live="polite">
+        <div id="applyingBox">Applying Change&#8230;</div>
+      </div>
+      <div class="container">{BANNER_HTML}<h1>Logs</h1>
       <p class="actions" style="display:flex;justify-content:space-between;"><a href="/setup" class="pill-btn">← Back</a> <a href="/logs" class="pill-btn">↻ Refresh</a></p>
-      <form method="post" action="/logs" class="log-controls">
+      <form method="post" action="/logs" id="logLevelForm" onsubmit="showApplying()">
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
-        <div class="field">
-          <label for="log_level">Log Level</label>
-          <select id="log_level" name="log_level">{log_level_options_html}</select>
-        </div>
-        <button type="submit" class="pill-btn">Save</button>
+        <fieldset><legend>Log Level</legend>
+          <label for="log_level">Log Level
+            <select id="log_level" name="log_level">{log_level_options_html}</select>
+          </label>
+          <button type="submit" class="pill-btn" style="margin-top:0.75rem;">Save</button>
+        </fieldset>
       </form>
       <div class="log-wrapper" id="logWrapper"><pre>{html.escape(log_content)}</pre></div>
       <p class="actions"><a href="/offline/download-logs" class="pill-btn" id="logDlBtn" style="display:block;width:100%;text-align:center;box-sizing:border-box;">Download Log Bundle</a></p>
       <script>
+        function showApplying() {{
+          var overlay = document.getElementById('applyingOverlay');
+          if (overlay) overlay.classList.add('visible');
+        }}
         window.addEventListener('load', function() {{
           var w = document.getElementById('logWrapper');
           var b = document.getElementById('logDlBtn');
