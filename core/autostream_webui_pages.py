@@ -1014,7 +1014,8 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
-    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
+    preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
+    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';window.__PRESET_VOLUME={preset_volume};</script>"
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
@@ -1242,6 +1243,10 @@ def send_airplay_page(handler, state: WebUIState, auth, error: Optional[str] = N
         function onToggleOutput(id){{
           const cb = document.getElementById('output_enabled_' + id);
           if (cb) updateOutputStateVisual(String(id), !!cb.checked);
+          if (cb && cb.checked) {{
+            const sl = document.getElementById('vol_slider_' + id);
+            if (sl) {{ sl.value = String(window.__PRESET_VOLUME || 20); updateVolumeLabel(id, sl.value); }}
+          }}
           reorderOutputCards();
           sendUpdate(id);
         }}
