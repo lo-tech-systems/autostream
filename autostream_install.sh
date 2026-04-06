@@ -39,6 +39,11 @@
 # instead of using the packaged OwnTone install. The packaged install
 # remains the default.
 #
+# --skip-owntone-install
+# Skip installing or building OwnTone. This is intended for systems where
+# OwnTone is already present, while still allowing autostream to stage its
+# own owntone.conf and apply the systemd override.
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 set -Eeuo pipefail
@@ -74,10 +79,11 @@ FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitl
 PROMPT_REBOOT_ON_EXIT=0              # Enabled only after a real install run starts
 USE_LO_TECH_OWNTONE=0                # Build OwnTone from lo-tech-systems source repo
 OWNTONE_APT_ARGS_SUPPLIED=0          # Track whether repo-specific OwnTone args were passed
+SKIP_OWNTONE_INSTALL=0               # Reuse an existing OwnTone install without reinstalling it
 
 usage() {
   cat <<EOF
-Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--use-lo-tech-owntone] [--fetch-autostream]
+Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--use-lo-tech-owntone] [--skip-owntone-install] [--fetch-autostream]
 
   --unattended PIN=1234      Run non-interactively (or skip confirmation prompts) and set the PIN.
                              If PIN is omitted/invalid, the installer falls back to attended mode.
@@ -89,6 +95,8 @@ Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--own
   --owntone-key-fpr FPR      Expected Owntone repo key fingerprint (optional hardening).
   --use-lo-tech-owntone      Build and install OwnTone from the lo-tech-systems repo.
                              When this is set, --owntone-apt-ref and --owntone-key-fpr are ignored.
+  --skip-owntone-install     Do not install or build OwnTone.
+                             Keeps the owntone.conf staging and systemd override steps.
   --fetch-autostream         Clone/update the autostream GitHub repository.
   --help, -h                 Show this help.
 
@@ -97,6 +105,7 @@ Examples:
   sudo ./${SCRIPT_NAME} --unattended PIN=1234
   sudo ./${SCRIPT_NAME} --unattended PIN=abcd-1234 --sdmon=sandisk
   sudo ./${SCRIPT_NAME} --use-lo-tech-owntone
+  sudo ./${SCRIPT_NAME} --skip-owntone-install
   sudo ./${SCRIPT_NAME} --owntone-apt-ref <commit-sha> --owntone-key-fpr "ABCD ..."
 
 EOF
@@ -156,6 +165,10 @@ parse_args() {
         ;;
       --use-lo-tech-owntone)
         USE_LO_TECH_OWNTONE=1
+        shift
+        ;;
+      --skip-owntone-install)
+        SKIP_OWNTONE_INSTALL=1
         shift
         ;;
       --help|-h)
@@ -700,6 +713,15 @@ fi
     warn "--use-lo-tech-owntone is set; --owntone-apt-ref/--owntone-key-fpr will be ignored."
   fi
 
+  if [[ ${SKIP_OWNTONE_INSTALL} -eq 1 ]]; then
+    if [[ ${USE_LO_TECH_OWNTONE} -eq 1 ]]; then
+      warn "--skip-owntone-install is set; --use-lo-tech-owntone will be ignored."
+    fi
+    if [[ ${OWNTONE_APT_ARGS_SUPPLIED} -eq 1 ]]; then
+      warn "--skip-owntone-install is set; --owntone-apt-ref/--owntone-key-fpr will be ignored."
+    fi
+  fi
+
   if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
     info "Unattended mode: setting PIN from command line"
     set_pin_file "${PIN_VALUE}"
@@ -741,7 +763,9 @@ fi
   apt_install watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
   # Application services
-  if [[ ${USE_LO_TECH_OWNTONE} -eq 1 ]]; then
+  if [[ ${SKIP_OWNTONE_INSTALL} -eq 1 ]]; then
+    info "Skipping OwnTone install/build; reusing existing system OwnTone"
+  elif [[ ${USE_LO_TECH_OWNTONE} -eq 1 ]]; then
     install_lo_tech_owntone
   else
     install_packaged_owntone
