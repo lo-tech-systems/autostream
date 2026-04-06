@@ -43,16 +43,9 @@ from autostream_config import (
 
 from autostream_sysutils import (
     run_cmd,
-    get_root_disk_usage,
-    fmt_bytes,
-    get_sdcard_health_percent,
     get_system_hostname,
     set_system_hostname,
     run_admin_cmd,
-)
-
-from autostream_rpi import (
-    get_cpu_temperature_c,
 )
 
 from autostream_owntone import (
@@ -95,9 +88,12 @@ from autostream_webui_assets import (
 
 from autostream_webui_common import (
     CONFIG_IO_LOCK,
-    locked_load_config,
+    _fallback_input_snapshot,
+    _format_reset_date,
     _set_flash_cookie,
     build_top_banner_html,
+    get_app_version,
+    locked_load_config,
 )
 
 from autostream_webui_state import WebUIState
@@ -356,60 +352,6 @@ def _format_reset_timestamp(raw: Optional[str]) -> str:
         return str(raw)
 
 
-def _format_reset_date(raw: Optional[str]) -> str:
-    if not raw:
-        return "Never"
-    try:
-        dt = datetime.fromisoformat(str(raw))
-        try:
-            return dt.astimezone().strftime("%b-%y")
-        except Exception:
-            return dt.strftime("%b-%y")
-    except Exception:
-        raw_s = str(raw)
-        if "T" in raw_s:
-            raw_s = raw_s.split("T", 1)[0]
-        parts = raw_s.split("-")
-        if len(parts) >= 2:
-            year = parts[0][-2:] if len(parts[0]) >= 2 else parts[0]
-            month = parts[1]
-            month_map = {
-                "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr",
-                "05": "May", "06": "Jun", "07": "Jul", "08": "Aug",
-                "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec",
-            }
-            if month in month_map:
-                return f"{month_map[month]}-{year}"
-        return raw_s
-
-
-def _fallback_input_snapshot(
-    parsed_input,
-    input_index: int,
-    *,
-    enabled: bool = True,
-) -> InputPlaybackSnapshot:
-    is_turntable = bool(getattr(parsed_input, "is_turntable", False))
-    stylus_life_hours = int(getattr(parsed_input, "stylus_life_hours", 500))
-    return InputPlaybackSnapshot(
-        input_index=input_index,
-        label=f"Input {input_index}",
-        active=False,
-        enabled=bool(enabled),
-        is_turntable=is_turntable,
-        total_playback_seconds=0,
-        total_playback_hours=0.0,
-        stylus_playback_seconds=0,
-        stylus_playback_hours=0.0,
-        stylus_life_hours=stylus_life_hours,
-        stylus_remaining_seconds=(stylus_life_hours * 3600 if is_turntable else None),
-        stylus_remaining_hours=(float(stylus_life_hours) if is_turntable else None),
-        stylus_warning=False,
-        stylus_overdue=False,
-        last_stylus_reset_at=None,
-    )
-
-
 def _playback_summary_html(
     snapshot: InputPlaybackSnapshot,
     *,
@@ -564,26 +506,6 @@ def _audio_controls_card_html(
     return _settings_card_html(inner_html)
 
 
-def _stylus_box_html(
-    *,
-    title: str,
-    snapshot: InputPlaybackSnapshot,
-) -> str:
-    life_total_seconds = max(1, int(snapshot.stylus_life_hours) * 3600)
-    remaining_seconds = max(0, int(snapshot.stylus_remaining_seconds or 0))
-    remaining_hours = max(0.0, remaining_seconds / 3600.0)
-    remaining_pct = max(0.0, min(100.0, (remaining_seconds / life_total_seconds) * 100.0))
-    bar_color = "#dc3545" if remaining_pct <= 10.0 else ("#f0ad4e" if remaining_pct <= 20.0 else "#28a745")
-    meta_text = f"{remaining_hours:.1f} hours remaining"
-    return f"""
-      <fieldset><legend>{html.escape(title)}</legend>
-        <div class='bar-label'><strong>Life Remaining:</strong> {remaining_pct:.1f}%</div>
-        <div class='storage-bar'><div class='used' style='width:{remaining_pct}%;background:{bar_color};'></div></div>
-        <div class='storage-meta'>{html.escape(meta_text)}</div>
-      </fieldset>
-    """
-
-
 def _stylus_reset_flash_text(
     input_index: int,
     result,
@@ -626,14 +548,6 @@ def _status_text_for_home(is_playing: bool, input_levels: list[dict]) -> str:
     if active_label:
         return f"Playing {active_label}"
     return "Playing"
-
-def get_app_version() -> str:
-    """Return application version from ./version file."""
-    try:
-        with open("version", "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except Exception:
-        return "unknown"
 
 def send_json(handler, code: int, payload: dict) -> None:
     body = json.dumps(payload).encode("utf-8")
@@ -2150,108 +2064,6 @@ def send_owntone_setup_page(handler, state: WebUIState, auth, saved_ok: bool = F
         }}
       </script>
       </body></html>
-    """)
-    body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
-
-def send_about_page(handler, state: WebUIState) -> None:
-    version = get_app_version()
-    lic_html, lic_spacer = build_top_banner_html()
-    playback_snapshot = get_playback_snapshot()
-    total_playback_seconds = sum(
-        int(snap.total_playback_seconds)
-        for idx, snap in playback_snapshot.inputs.items()
-        if int(idx) in (1, 2)
-    )
-    total_playback_hours = total_playback_seconds / 3600.0
-    cpu_temp_c = get_cpu_temperature_c()
-    cpu_temp_text = (
-        f"{cpu_temp_c:.1f}\N{DEGREE SIGN}C"
-        if cpu_temp_c is not None
-        else "Unavailable"
-    )
-    parsed = None
-    try:
-        parsed = parse_config(locked_load_config(state.config_path))
-    except Exception:
-        parsed = None
-    du = get_root_disk_usage()
-    storage_html = ""
-    if du:
-        tot, usd, fre = du
-        pct = (usd/tot)*100 if tot else 0
-        clr = "#28a745" if pct<60 else ("#f0ad4e" if pct<80 else "#dc3545")
-        storage_html = f"<div class='bar-label'><strong>Disk Usage:</strong> {pct:.1f}%</div><div class='storage-bar'><div class='used' style='width:{pct}%;background:{clr};'></div></div><div class='storage-meta'>Free: {fmt_bytes(fre)} / {fmt_bytes(tot)}</div>"
-    
-    sd_health = get_sdcard_health_percent()
-    sd_html = ""
-    if sd_health is not None:
-        clr = "#dc3545" if sd_health<=10 else ("#f0ad4e" if sd_health<=30 else "#28a745")
-        sd_html = f"<div class='bar-label'><strong>SD Health:</strong> {sd_health}%</div><div class='storage-bar'><div class='used' style='width:{sd_health}%;background:{clr};'></div></div>"
-
-    stylus_html = ""
-    if parsed is not None:
-        stylus_rows: list[str] = []
-        input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
-            parsed.audio1,
-            1,
-            enabled=True,
-        )
-        show_input1_stylus = bool(parsed.audio1.is_turntable)
-        if show_input1_stylus:
-            input1_title = "Input 1 Stylus"
-            if input1_snapshot.last_stylus_reset_at:
-                input1_title += f" (last changed {_format_reset_date(input1_snapshot.last_stylus_reset_at)})"
-            stylus_rows.append(
-                _stylus_box_html(
-                    title=input1_title,
-                    snapshot=input1_snapshot,
-                )
-            )
-
-        input2_snapshot = playback_snapshot.inputs.get(2) or _fallback_input_snapshot(
-            parsed.audio2,
-            2,
-            enabled=parsed.audio2_enabled,
-        )
-        show_input2_stylus = bool(parsed.audio2_enabled and parsed.audio2.is_turntable)
-        if show_input2_stylus:
-            input2_title = "Input 2 Stylus"
-            if input2_snapshot.last_stylus_reset_at:
-                input2_title += f" (last changed {_format_reset_date(input2_snapshot.last_stylus_reset_at)})"
-            stylus_rows.append(
-                _stylus_box_html(
-                    title=input2_title,
-                    snapshot=input2_snapshot,
-                )
-            )
-
-        stylus_html = "".join(stylus_rows)
-
-    html_body = textwrap.dedent(f"""\
-      <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>About</title><style>{STYLE_CSS}</style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
-      <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;"><a href="/" class="pill-btn">← Back</a><a href="/license" class="pill-btn" style="background:#6c757d;color:#fff;border-color:#6c757d;">License</a></p>
-      <fieldset><legend>Overview</legend>
-          <p><strong>autostream</strong> brings AirPlay compatibility to any turntable, CD player, or other analogue Hi-Fi device.</p>
-      </fieldset>
-      {stylus_html}
-      <fieldset><legend>System (build {html.escape(version)})</legend>
-        <div class='bar-label'><strong>Total Playback Time:</strong> {total_playback_hours:.1f} hours</div>
-        <div class='bar-label'><strong>CPU temperature:</strong> {html.escape(cpu_temp_text)}</div>
-        {storage_html}{sd_html}
-      </fieldset>
-      <fieldset><legend>Copyright</legend>
-          <p><strong>autostream</strong> is Copyright &copy; 2025-2026 Lo-tech Systems Limited.</p>
-          <p><strong>autostream</strong> and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
-          <p><strong>autostream</strong> depends on components provided by the Raspberry Pi OS distribution, including OwnTone and ALSA audio libraries. These components are redistributed under the terms of their respective open-source licences, which are included with Raspberry Pi OS in <code>/usr/share/doc</code>.</p>
-          <p>AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc., registered in the U.S. and other countries. Raspberry Pi is a trademark of Raspberry Pi Ltd. All other trademarks are the property of their respective owners.</p>
-      </fieldset>
-      </div></body></html>
     """)
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)
