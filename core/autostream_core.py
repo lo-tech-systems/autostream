@@ -28,6 +28,7 @@ from typing import Optional
 import requests
 
 from autostream_config import (
+    DEFAULT_LOG_LEVEL,
     load_and_parse,
     normalize_airplay_mode,
     normalize_log_level,
@@ -359,13 +360,17 @@ def handle_signal(signum, frame):
 signal.signal(signal.SIGINT,  handle_signal)
 signal.signal(signal.SIGTERM, handle_signal)
 
+_live_platform_log_level = normalize_log_level(DEFAULT_LOG_LEVEL)
+
 
 def setup_logging(log_file: str, log_level: str) -> None:
+    global _live_platform_log_level
+    normalized = normalize_log_level(log_level)
     log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
     logging.basicConfig(
-        level=python_log_level_value(log_level),
+        level=python_log_level_value(normalized),
         format="%(asctime)s: %(message)s",
         datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
@@ -373,10 +378,12 @@ def setup_logging(log_file: str, log_level: str) -> None:
             logging.StreamHandler(sys.stdout),
         ],
     )
+    _live_platform_log_level = normalized
 
 
 def update_live_log_level(log_level: str) -> str:
     """Apply the platform log level to the running Python process."""
+    global _live_platform_log_level
     normalized = normalize_log_level(log_level)
     target_level = python_log_level_value(normalized)
     root_logger = logging.getLogger()
@@ -386,7 +393,38 @@ def update_live_log_level(log_level: str) -> str:
             handler.setLevel(target_level)
         except Exception:
             pass
+    _live_platform_log_level = normalized
     return normalized
+
+
+def get_live_platform_log_level() -> str:
+    """Return the current runtime platform log-level name."""
+    return _live_platform_log_level
+
+
+def set_live_monitor_log_level(
+    log_level: str,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply the platform log level immediately to the running monitor daemon."""
+    normalized = normalize_log_level(log_level)
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return False
+        return client.set_log_level(normalized)
+    finally:
+        client.close()
+
+
+def update_live_platform_log_level(
+    log_level: str,
+    socket_path: Optional[str] = None,
+) -> tuple[str, bool]:
+    """Apply the platform log level to Python and the monitor daemon."""
+    normalized = update_live_log_level(log_level)
+    monitor_ok = set_live_monitor_log_level(normalized, socket_path=socket_path)
+    return normalized, monitor_ok
 
 
 def get_monitor_levels_dbfs() -> list[dict]:
@@ -780,6 +818,18 @@ class MonitorClient:
         with self._lock:
             resp = self._command({"type": "set_gain", "input": index, "gain_db": gain_db})
             return bool(resp and resp.get("ok"))
+
+    def set_log_level(self, log_level: str) -> bool:
+        with self._lock:
+            normalized = normalize_log_level(log_level)
+            resp = self._command({"type": "set_log_level", "level": normalized})
+            ok = bool(resp and resp.get("ok"))
+            if not ok:
+                logging.error(
+                    "MonitorClient: set_log_level(%r) failed: %s",
+                    normalized, (resp or {}).get("error", "no response"),
+                )
+            return ok
 
     def get_status(self) -> Optional[dict]:
         """Return the parsed status dict, or None on failure."""
@@ -1383,6 +1433,12 @@ def _resync_monitor_daemon(
         client.close()
         return False
 
+    live_log_level = get_live_platform_log_level()
+    if not client.set_log_level(live_log_level):
+        logging.warning("set_log_level(%r) failed after reconnect; will retry.", live_log_level)
+        client.close()
+        return False
+
     for m in monitors:
         m._allow_capture_sent = None
 
@@ -1464,6 +1520,11 @@ def _configure_startup_monitors(
     fifo_path: str,
 ) -> Optional[list["AudioMonitor"]]:
     """Configure daemon inputs for initial startup and return monitor objects."""
+    if not client.set_log_level(cfg.general.log_level):
+        logging.warning("set_log_level(%r) failed during startup; will retry.",
+                        cfg.general.log_level)
+        return None
+
     # Defensively stop both inputs before configuring.  If a previous reload
     # left the daemon with inputs still running (e.g. stop_input in the finally
     # block failed silently due to a lost connection), configure_input and

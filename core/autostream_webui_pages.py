@@ -27,7 +27,7 @@ from autostream_core import (
     reset_input_stylus,
     set_live_input_eq,
     set_live_input_gain,
-    update_live_log_level,
+    update_live_platform_log_level,
     update_live_owntone_runtime,
     update_playback_input_config,
 )
@@ -2427,7 +2427,7 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
             with open(state.config_path, "w", encoding="utf-8") as fh:
                 cfg.write(fh)
 
-        applied_log_level = update_live_log_level(new_log_level)
+        applied_log_level, monitor_updated = update_live_platform_log_level(new_log_level)
         owntone_res = None
         needs_owntone_restart = False
         if parsed.owntone.base_url:
@@ -2444,14 +2444,22 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
                         needs_owntone_restart = True
 
         if needs_owntone_restart and not owntone_restart_service():
-            flash_text = "Log level saved, but OwnTone restart failed"
+            flash_text = (
+                "Log level saved, but OwnTone restart failed"
+                if monitor_updated
+                else "Log level saved, but OwnTone restart failed and monitor runtime update failed"
+            )
             _set_flash_cookie(handler, flash_text, max_age=30)
             handler.send_response(302)
             handler.send_header("Location", "/logs")
             handler.end_headers()
             return
 
-        flash_text = "Log level saved"
+        flash_text = (
+            "Log level saved"
+            if monitor_updated
+            else "Log level saved, but monitor runtime log level was not updated"
+        )
         owntone_still_needs_attention = (
             owntone_res is not None
             and not owntone_res.ok
@@ -2463,6 +2471,8 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
                 if needs_owntone_restart
                 else "Log level saved, but OwnTone was not updated"
             )
+            if not monitor_updated:
+                flash_text += " and monitor runtime update failed"
 
         _set_flash_cookie(handler, flash_text, max_age=30)
         handler.send_response(302)
