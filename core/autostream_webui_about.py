@@ -182,7 +182,7 @@ def send_about_page(handler, state: WebUIState) -> None:
       <title>About</title><style>{STYLE_CSS}</style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
       <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;"><a href="/" class="pill-btn">← Back</a><a href="/license" class="pill-btn" style="background:#6c757d;color:#fff;border-color:#6c757d;">License</a></p>
       <fieldset><legend>Overview</legend>
-          <p><strong>autostream</strong> brings AirPlay compatibility to any turntable, CD player, or other analogue Hi-Fi device.</p>
+          <p><strong>autostream</strong> streams audio from turntables, CD players, and other analogue Hi-Fi sources to AirPlay&#8209;compatible speakers.</p>
       </fieldset>
       {stylus_html}
       <fieldset><legend>System (build {html.escape(version)})</legend>
@@ -191,10 +191,8 @@ def send_about_page(handler, state: WebUIState) -> None:
         {storage_html}{sd_html}
       </fieldset>
       <fieldset><legend>Copyright</legend>
-          <p><strong>autostream</strong> is Copyright &copy; 2025-2026 Lo-tech Systems Limited.</p>
-          <p><strong>autostream</strong> and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
-          <p><strong>autostream</strong> depends on components provided by the Raspberry Pi OS distribution, including OwnTone and ALSA audio libraries. These components are redistributed under the terms of their respective open-source licences, which are included with Raspberry Pi OS in <code>/usr/share/doc</code>.</p>
-          <p>AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc., registered in the U.S. and other countries. Raspberry Pi is a trademark of Raspberry Pi Ltd. All other trademarks are the property of their respective owners.</p>
+          <p><strong>autostream</strong> is Copyright &copy; 2025&#8211;2026 Lo-tech Systems Limited. autostream and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
+          <p>autostream uses OwnTone and ALSA, redistributed under the terms of their respective open-source licences. AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc. All other trademarks are the property of their respective owners.</p>
       </fieldset>
       </div></body></html>
     """)
