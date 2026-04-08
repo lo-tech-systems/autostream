@@ -1,34 +1,85 @@
-AUTOSTREAM SOURCE‑AVAILABLE LICENSE (PERSONAL USE)
+# AUTOSTREAM SOURCE-AVAILABLE LICENSE (NON-COMMERCIAL)
 
-Copyright (c) 2025 Lo‑tech Systems Limited
+Copyright (c) 2026 Lo-tech Systems Limited
 All rights reserved.
 
-1. GRANT OF RIGHTS (PERSONAL USE)
+---
 
-1.1 Subject to the terms of this License, Lo‑tech Systems Limited (the "Licensor") hereby grants you a non‑exclusive, non‑transferable, revocable license to use the software and associated documentation files (the "Software") solely for personal, non‑commercial purposes.
+### 1. Grant of Rights (Non-Commercial Use)
 
-1.2 Personal use includes private, home, educational, hobbyist, and other non‑revenue‑generating use.
+1.1 Subject to the terms of this License, Lo-tech Systems Limited (the "Licensor") grants you a non-exclusive, non-transferable, revocable license to use, copy, and modify the software and associated documentation files (the "Software") solely for non-commercial purposes.
 
-2. RESTRICTIONS
+1.2 Non-commercial use includes private, personal, educational, research, and hobbyist use, where no direct or indirect commercial advantage or monetary compensation is involved.
 
-2.1 You may not, without the prior written permission of the Licensor:
+---
 
-(i) use the Software for any commercial purpose, including but not limited to use in a paid product or service, use in a commercial environment, or any resale, licensing, or monetization of the Software or any derivative works;
+### 2. Redistribution (Non-Commercial)
 
-(ii) distribute the Software or any derivative works; or
+2.1 You may redistribute unmodified copies of the Software for non-commercial purposes, provided that:
 
-(iii) modify, adapt, or create derivative works of the Software for the purpose of distribution.
+* this License is included in full, and
+* all copyright notices are preserved.
 
-2.2 For the avoidance of doubt, this License does not grant permission to use the names, trademarks, service marks, or logos of Lo‑tech Systems Limited, including "Autostream".
+2.2 You may distribute modified versions of the Software for non-commercial purposes, provided that:
 
-5. NO WARRANTY
+* you clearly indicate that changes have been made,
+* you do not remove or alter the original copyright notice, and
+* you include this License in full.
+
+---
+
+### 3. Restrictions
+
+3.1 You may not, without prior written permission from the Licensor:
+
+(i) use the Software for any commercial purpose, including but not limited to:
+
+* use in a paid product or service,
+* use within a commercial organization,
+* providing the Software as part of a hosted or managed service, or
+* any activity intended for commercial advantage or monetary gain;
+
+(ii) sell, sublicense, or otherwise monetize the Software or any derivative works;
+
+(iii) remove or obscure any copyright, license, or attribution notices.
+
+---
+
+### 4. Ownership
+
+The Software is licensed, not sold. All rights not expressly granted are reserved by the Licensor.
+
+---
+
+### 5. Trademarks
+
+This License does not grant permission to use the names, trademarks, service marks, or logos of Lo-tech Systems Limited, including "Autostream", without prior written permission.
+
+---
+
+### 6. Termination
+
+This License is effective until terminated. It will terminate automatically if you fail to comply with its terms. Upon termination, you must cease all use and distribution of the Software.
+
+---
+
+### 7. No Warranty
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
 
+---
+
+### 8. Limitation of Liability
+
 IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-6. COMMERCIAL LICENSING
+---
 
-Commercial licenses are available for use in paid products, services, or distributions.
+### 9. Commercial Licensing
 
-For commercial licensing inquiries, please visit https://lo‑tech.co.uk/autostream
+Commercial licenses are available for use in commercial products, services, or distributions.
+
+For commercial licensing inquiries, please visit:
+https://lo-tech.co.uk/autostream
+
+---

@@ -504,15 +504,14 @@ button[type=submit]:active {
 }
 
 .licence-pane {
-  background: #111;
-  color: #f5f5f5;
+  background: #f4f5f6;
+  color: #1a1a1a;
   padding: 0.75rem;
   border-radius: 6px;
   font-size: 0.85rem;
   line-height: 1.4;
   max-height: 45vh;
   overflow: auto;
-  white-space: pre-wrap;   /* preserves line breaks, wraps long lines */
 }
 
 
