@@ -219,8 +219,8 @@ class AuthManager:
         pin, path, mtime, status = self._read_pin_file()
 
         LOG.debug(
-            "PIN read result: pin=%r path=%r mtime=%r status=%s",
-            pin,
+            "PIN read result: pin_len=%s path=%r mtime=%r status=%s",
+            len(pin) if pin else None,
             path,
             mtime,
             status,
@@ -265,8 +265,8 @@ class AuthManager:
             # status OK here means we read a non-empty line but regex failed
             self._pin_status = PIN_STATUS_INVALID
             LOG.warning(
-                "PIN file read OK but PIN is invalid (regex mismatch): %r from %s",
-                pin,
+                "PIN file read OK but PIN is invalid (regex mismatch): pin_len=%s from %s",
+                len(pin) if pin else None,
                 path,
             )
         else:
