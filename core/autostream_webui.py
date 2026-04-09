@@ -165,8 +165,14 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             with _setup_lock:
                 initial_setup = 0
 
-        # Serve auth page
+        # Serve auth page — if auth is disabled (no PIN), redirect to home.
         if path == "/auth":
+            if not AUTH.is_enabled():
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             query = urlparse(self.path).query
             AUTH.handle_auth_get(self, query)
             return
@@ -351,6 +357,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             # Body optional
             self._start_update_apply()
 
+        elif path == "/api/pin/change":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            AUTH.handle_pin_change(self, body_bytes)
+
         elif path == "/api/reboot":
             # Body optional
             # Goes via autostream-admin (sudo) through autostream_sysutils.reboot_system()
@@ -383,6 +395,7 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
 
     STATE = WebUIState(config_path)
     AUTH = AuthManager(
+        config_path=config_path,
         style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
         banner_html=BANNER_HTML,
         title="autostream",
@@ -413,6 +426,7 @@ if __name__ == "__main__":
     # Initialize globals for local execution
     STATE = WebUIState(config_path)
     AUTH = AuthManager(
+        config_path=config_path,
         style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
         banner_html=BANNER_HTML,
         title="autostream",

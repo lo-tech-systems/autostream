@@ -92,6 +92,9 @@ _OWNTONE_LOG_LEVELS = {
 }
 
 
+CONFIG_IO_LOCK = threading.Lock()
+
+
 def get_log_level_options() -> tuple[str, ...]:
     """Return the supported platform log-level names."""
     return VALID_LOG_LEVELS
@@ -163,6 +166,44 @@ def load_config(path: str) -> configparser.ConfigParser:
         raise FileNotFoundError(f"Config file not found or unreadable: {path}")
 
     return cfg
+
+
+def read_pin_override(path: str) -> tuple[Optional[str], bool]:
+    """Return (pin_override, present). Blank values are treated as absent."""
+    with CONFIG_IO_LOCK:
+        cfg = load_config(path)
+        if not cfg.has_section("auth"):
+            return None, False
+        raw = cfg.get("auth", "pin_override", fallback="")
+    pin = str(raw or "").strip()
+    if not pin:
+        return None, False
+    return pin, True
+
+
+def write_pin_override(path: str, pin: str) -> None:
+    """Persist a PIN override to the main INI."""
+    with CONFIG_IO_LOCK:
+        cfg = load_config(path)
+        if not cfg.has_section("auth"):
+            cfg.add_section("auth")
+        cfg.set("auth", "pin_override", str(pin).strip())
+        with open(path, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+
+def clear_pin_override(path: str) -> None:
+    """Remove any persisted PIN override from the main INI."""
+    with CONFIG_IO_LOCK:
+        cfg = load_config(path)
+        if not cfg.has_section("auth"):
+            return
+        if cfg.has_option("auth", "pin_override"):
+            cfg.remove_option("auth", "pin_override")
+        if not list(cfg.items("auth")):
+            cfg.remove_section("auth")
+        with open(path, "w", encoding="utf-8") as f:
+            cfg.write(f)
 
 
 # -----------------------------

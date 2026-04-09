@@ -406,13 +406,21 @@ prompt_for_pin() {
 
   if ! has_tty; then
     warn "Non-interactive session: cannot prompt for PIN."
-    warn "You can set the PIN later by creating /boot/pin.txt (or /boot/firmware/pin.txt)."
+    warn "The web UI will be accessible without authentication until a PIN is set."
+    warn "To set a PIN, create /boot/firmware/pin.txt (or /boot/pin.txt) containing"
+    warn "a 4-20 character string (A-Z a-z 0-9 and hyphens), then restart autostream."
+    warn "Or re-run the installer with: sudo ./${SCRIPT_NAME} --unattended PIN=<your-pin>"
     return 0
   fi
 
   while true; do
     echo
-    tty_read "Enter a setup PIN (4-20 chars; A-Z a-z 0-9 and hyphen only): " pin || true
+    tty_read "Enter a setup PIN (4-20 chars; A-Z a-z 0-9 and hyphen only, Enter to skip): " pin || true
+    if [[ -z "${pin}" ]]; then
+      warn "No PIN set. The web UI will be accessible without authentication."
+      warn "You can set a PIN later by creating /boot/firmware/pin.txt (or /boot/pin.txt)."
+      return 0
+    fi
     if [[ "${pin}" =~ ${PIN_REGEX} ]]; then
       break
     fi

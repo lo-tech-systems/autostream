@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import logging
+from autostream_config import read_pin_override, write_pin_override
 LOG = logging.getLogger(__name__)
 
 # ----------------------------
@@ -64,7 +65,6 @@ PIN_STATUS_UNREADABLE = "unreadable"
 
 # Cookie names
 SESSION_COOKIE_NAME = "autostream_session"
-NONCE_COOKIE_NAME = "autostream_nonce"  # short-lived helper; not strictly required
 
 # Lifetimes
 SESSION_TTL_SECONDS = 24 * 60 * 60
@@ -145,6 +145,7 @@ class Session:
     token: str
     expires_at: int
     csrf_token: str
+    authenticated: bool = True
 
 
 @dataclass
@@ -158,10 +159,12 @@ class AuthManager:
 
     def __init__(
         self,
+        config_path: str,
         style_css: str = "",
         banner_html: str = "",
         title: str = "Autostream",
     ) -> None:
+        self._config_path = config_path
         self.style_css = style_css
         self.banner_html = banner_html
         self.title = title
@@ -175,20 +178,22 @@ class AuthManager:
         self._pin_value: Optional[str] = None
         self._pin_mtime: Optional[float] = None
         self._pin_path: Optional[str] = None
-
-        self._pin_status: str = ""
+        self._pin_source: Optional[str] = None
+        self._pin_status: str = PIN_STATUS_MISSING
+        # Explicit flag so the cache sentinel is not conflated with the status value.
+        # Once True, the PIN is not re-read from disk (process restart required to
+        # pick up external PIN file changes).
+        self._pin_loaded: bool = False
 
     # ------------------------
     # PIN
     # ------------------------
 
     def get_pin_status(self) -> str:
-        return self._pin_status or PIN_STATUS_MISSING
+        return self._pin_status
 
     def _read_pin_file(self) -> Tuple[Optional[str], Optional[str], Optional[float], str]:
         """Return (pin, path, mtime, status). Pin is first non-empty line stripped."""
-        saw_any_candidate = False
-
         for path in PIN_PATH_CANDIDATES:
             try:
                 st = os.stat(path)
@@ -198,7 +203,6 @@ class AuthManager:
                 # Exists maybe, but can't stat reliably
                 return None, path, None, PIN_STATUS_UNREADABLE
 
-            saw_any_candidate = True
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
                     for line in f:
@@ -213,43 +217,94 @@ class AuthManager:
         # No candidate paths existed
         return None, None, None, PIN_STATUS_MISSING
 
+    def _read_pin_override(self) -> Tuple[Optional[str], Optional[str], Optional[float], str, bool]:
+        """Return (pin, path, mtime, status, present) for config override."""
+        try:
+            pin, present = read_pin_override(self._config_path)
+        except OSError:
+            return None, self._config_path, None, PIN_STATUS_UNREADABLE, True
+
+        if not present:
+            return None, self._config_path, None, PIN_STATUS_MISSING, False
+
+        try:
+            st = os.stat(self._config_path)
+            mtime = st.st_mtime
+        except OSError:
+            mtime = None
+
+        return pin, self._config_path, mtime, PIN_STATUS_OK, True
+
 
     def get_pin_if_enabled(self) -> Optional[str]:
-        """Return the configured PIN, or None if missing/invalid/unreadable."""
-        if self._pin_status:
+        """Return the configured PIN, or None if missing/invalid/unreadable.
+
+        The result is cached for the process lifetime. A process restart is
+        required to pick up external PIN file changes (e.g. adding/removing
+        pin.txt from the boot partition, or editing pin_override in the INI).
+        """
+        if self._pin_loaded:
             if self._pin_status == PIN_STATUS_OK:
                 LOG.debug(
-                    "PIN cache hit: using cached PIN from %s (mtime=%s)",
+                    "PIN cache hit: using cached PIN from %s source=%s (mtime=%s)",
                     self._pin_path,
+                    self._pin_source,
                     self._pin_mtime,
                 )
             else:
                 LOG.debug(
-                    "PIN cache hit: status=%s path=%r",
+                    "PIN cache hit: status=%s source=%s path=%r",
                     self._pin_status,
+                    self._pin_source,
                     self._pin_path,
                 )
             return self._pin_value
 
-        pin, path, mtime, status = self._read_pin_file()
-
-        LOG.debug(
-            "PIN read result: pin_len=%s path=%r mtime=%r status=%s",
-            len(pin) if pin else None,
-            path,
-            mtime,
-            status,
-        )
+        pin, path, mtime, status, present = self._read_pin_override()
+        source = "config"
+        if present:
+            LOG.debug(
+                "PIN read result: pin_len=%s path=%r mtime=%r status=%s source=%s",
+                len(pin) if pin else None,
+                path,
+                mtime,
+                status,
+                source,
+            )
+            if not pin or not PIN_REGEX.match(pin):
+                # Config override is present but invalid — boot-file PIN is not tried.
+                # Without this warning a bad INI edit silently locks out the boot-file PIN.
+                LOG.warning(
+                    "Config PIN override is present but invalid "
+                    "(boot-file PIN will not be tried). path=%r status=%s pin_len=%s",
+                    path,
+                    status,
+                    len(pin) if pin else None,
+                )
+        else:
+            pin, path, mtime, status = self._read_pin_file()
+            source = "boot"
+            LOG.debug(
+                "PIN read result: pin_len=%s path=%r mtime=%r status=%s source=%s",
+                len(pin) if pin else None,
+                path,
+                mtime,
+                status,
+                source,
+            )
 
         # Valid PIN
         if pin and PIN_REGEX.match(pin):
             self._pin_value = pin
             self._pin_path = path
             self._pin_mtime = mtime
+            self._pin_source = source
             self._pin_status = PIN_STATUS_OK
+            self._pin_loaded = True
             LOG.info(
-                "Valid PIN loaded from %s (mtime=%s)",
+                "Valid PIN loaded from %s source=%s (mtime=%s)",
                 path,
+                source,
                 mtime,
             )
             return pin
@@ -258,6 +313,8 @@ class AuthManager:
         self._pin_value = None
         self._pin_path = path
         self._pin_mtime = mtime
+        self._pin_source = source
+        self._pin_loaded = True
 
         # Distinguish invalid vs missing vs unreadable
         if status == PIN_STATUS_OK:
@@ -278,90 +335,53 @@ class AuthManager:
 
         return None
 
-    def set_pin(self, new_pin: str, old_pin: Optional[str] = None) -> tuple[int, dict]:
+    def set_pin(self, new_pin: str) -> tuple[int, dict]:
         """
         Set or replace the configured PIN.
 
         Rules:
           - new_pin must match PIN_REGEX
-          - if a PIN is currently configured, old_pin must be provided and correct
-          - writes the new PIN to the first writable candidate path
+          - writes the new PIN override to the main INI
           - updates in-memory cache on success
+          - invalidates all active sessions so a compromised session cannot
+            persist after a PIN change
 
         Returns:
           (status_code, payload_dict)
         """
         new_pin = (new_pin or "").strip()
-        old_pin = (old_pin or "").strip() if old_pin is not None else None
 
         if not PIN_REGEX.match(new_pin):
             return 400, {
                 "ok": False,
-                "error": "Invalid PIN format",
+                "error": "PIN must be 4-20 characters using letters, numbers, or hyphens",
                 "pin_status": self.get_pin_status(),
-            }
-
-        current_pin = self.get_pin_if_enabled()
-
-        if current_pin is not None:
-            if not old_pin:
-                return 401, {
-                    "ok": False,
-                    "error": "Current PIN required",
-                    "pin_status": self.get_pin_status(),
-                }
-            if not constant_time_eq(old_pin, current_pin):
-                return 403, {
-                    "ok": False,
-                    "error": "Current PIN incorrect",
-                    "pin_status": self.get_pin_status(),
-                }
-
-        target_path = None
-        last_error = None
-
-        candidate_paths = []
-        if self._pin_path:
-            candidate_paths.append(self._pin_path)
-        for path in PIN_PATH_CANDIDATES:
-            if path not in candidate_paths:
-                candidate_paths.append(path)
-
-        for path in candidate_paths:
-            try:
-                parent = os.path.dirname(path) or "."
-                if os.path.isdir(parent) and os.access(parent, os.W_OK):
-                    target_path = path
-                    break
-            except OSError as e:
-                last_error = e
-
-        if target_path is None:
-            return 500, {
-                "ok": False,
-                "error": "No writable PIN location available",
-                "pin_status": self.get_pin_status(),
-                "detail": str(last_error) if last_error else None,
             }
 
         try:
-            with open(target_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(new_pin + "\n")
+            write_pin_override(self._config_path, new_pin)
 
             try:
-                st = os.stat(target_path)
+                st = os.stat(self._config_path)
                 mtime = st.st_mtime
             except OSError:
                 mtime = None
 
             self._pin_value = new_pin
-            self._pin_path = target_path
+            self._pin_path = self._config_path
             self._pin_mtime = mtime
+            self._pin_source = "config"
             self._pin_status = PIN_STATUS_OK
+            self._pin_loaded = True
+
+            # Revoke all active sessions so that anyone who held a session
+            # under the old PIN must re-authenticate with the new one.
+            self._sessions.clear()
 
             LOG.info(
-                "PIN updated successfully at %s (pin_len=%s, mtime=%r)",
-                target_path,
+                "PIN updated at %s source=%s (pin_len=%s, mtime=%r); all sessions invalidated",
+                self._config_path,
+                self._pin_source,
                 len(new_pin),
                 mtime,
             )
@@ -369,15 +389,16 @@ class AuthManager:
             return 200, {
                 "ok": True,
                 "pin_status": self._pin_status,
-                "path": target_path,
+                "path": self._config_path,
+                "source": self._pin_source,
             }
 
         except OSError as e:
-            LOG.warning("Failed to update PIN at %s: %s", target_path, e)
+            LOG.warning("Failed to update PIN override at %s: %s", self._config_path, e)
             return 500, {
                 "ok": False,
                 "error": "Failed to write PIN",
-                "pin_status": PIN_STATUS_UNREADABLE,
+                "pin_status": self.get_pin_status(),
                 "detail": str(e),
             }
 
@@ -390,20 +411,10 @@ class AuthManager:
     # Auth decisions
     # ------------------------
 
-    def _reject_unconfigured(self, handler) -> None:
-        handler.send_response(403)
-        handler.send_header(PIN_REJECT_HEADER, "pin_unconfigured")
-        handler.send_header("Content-Type", "text/plain; charset=utf-8")
-        body = f"Authentication PIN is not configured ({self._pin_status}).\n".encode("utf-8")
-        handler.send_header("Content-Length", str(len(body)))
-        handler.end_headers()
-        handler.wfile.write(body)
-
-
     def requires_auth(self, path: str) -> bool:
-        # If PIN is not configured, reject/lockdown applies to everything.
+        # If no PIN is configured, auth is disabled — all paths are open.
         if self.get_pin_if_enabled() is None:
-            return True
+            return False
         if path in ALLOWLIST_PATHS:
             return False
         return True
@@ -422,13 +433,8 @@ class AuthManager:
         if sess.expires_at <= _now():
             self._sessions.pop(token, None)
             return False
-        
-        # If a PIN is required, we only count as authenticated if the session
-        # was created via a successful PIN verification. 
-        # For now, all sessions in self._sessions are 'authenticated' because 
-        # they are only created in handle_auth_verify.
-        # But we want to support 'unauthenticated' sessions for CSRF when PIN is off.
-        return getattr(sess, 'authenticated', True)
+
+        return sess.authenticated
 
     # ------------------------
     # CSRF & UI Sessions
@@ -438,7 +444,7 @@ class AuthManager:
         """Ensure a session exists. Returns the CSRF token."""
         cookie = parse_cookie_header(handler.headers.get("Cookie"))
         token = cookie.get(SESSION_COOKIE_NAME)
-        
+
         sess = None
         if token:
             sess = self._sessions.get(token)
@@ -447,12 +453,15 @@ class AuthManager:
                 sess = None
 
         if not sess:
-            # Create a new 'unauthenticated' session (still provides CSRF)
+            # Create a new unauthenticated session (still provides CSRF).
             token = _b64url(secrets.token_bytes(32))
             csrf = _b64url(secrets.token_bytes(32))
-            sess = Session(token=token, expires_at=_now() + SESSION_TTL_SECONDS, csrf_token=csrf)
-            # Tag it so is_authenticated knows it's just a UI session
-            setattr(sess, 'authenticated', False) 
+            sess = Session(
+                token=token,
+                expires_at=_now() + SESSION_TTL_SECONDS,
+                csrf_token=csrf,
+                authenticated=False,
+            )
             self._sessions[token] = sess
             self._set_session_cookie(handler, sess)
 
@@ -464,17 +473,17 @@ class AuthManager:
         token = cookie.get(SESSION_COOKIE_NAME)
         if not token:
             return False
-        
+
         sess = self._sessions.get(token)
         if not sess or sess.expires_at <= _now():
             return False
-        
+
         expected = sess.csrf_token
         # Check header first
         got = handler.headers.get("X-CSRF-Token")
         if not got and token_from_body:
             got = token_from_body
-            
+
         if got and constant_time_eq(got, expected):
             return True
         return False
@@ -523,7 +532,7 @@ class AuthManager:
     # ------------------------
 
     def _client_key(self, handler) -> str:
-        # Best-effort partitioning; avoids global nonce reuse.
+        # Best-effort partitioning for rate-limiting and nonce association.
         # Prefer proxy-provided client IP if present (e.g. nginx).
         xff = handler.headers.get("X-Forwarded-For", "")
         if xff:
@@ -532,8 +541,7 @@ class AuthManager:
             ip = (handler.headers.get("X-Real-IP", "") or "").strip()
         if not ip:
             ip = getattr(handler, "client_address", ("", 0))[0] or ""
-        ua = handler.headers.get("User-Agent", "")
-        return hashlib.sha256(f"{ip}|{ua}".encode("utf-8")).hexdigest()
+        return hashlib.sha256(ip.encode("utf-8")).hexdigest()
 
     def _issue_nonce(self, handler) -> str:
         key = self._client_key(handler)
@@ -592,9 +600,6 @@ class AuthManager:
     # ------------------------
 
     def redirect_to_auth(self, handler, next_path: str) -> None:
-        if self.get_pin_if_enabled() is None:
-            self._reject_unconfigured(handler)
-            return
         nxt = urllib.parse.quote(_safe_next_path(next_path), safe="/")
         handler.send_response(302)
         handler.send_header("Location", f"/auth?next={nxt}")
@@ -602,10 +607,6 @@ class AuthManager:
         handler.end_headers()
 
     def handle_auth_get(self, handler, query: str) -> None:
-        if self.get_pin_if_enabled() is None:
-            self._reject_unconfigured(handler)
-            return
-
         qs = urllib.parse.parse_qs(query or "", keep_blank_values=True)
         next_path = _safe_next_path((qs.get("next") or ["/"])[0])
         err = (qs.get("err") or [""])[0]
@@ -630,9 +631,9 @@ class AuthManager:
         if self.get_pin_if_enabled() is None:
             payload = {
                 "ok": False,
-                "error": "PIN not enabled",          # keep existing string
-                "error_code": "pin_unconfigured",    # new, optional
-                "pin_status": self._pin_status,      # new, optional
+                "error": "PIN not enabled",
+                "error_code": "pin_unconfigured",
+                "pin_status": self._pin_status,
             }
             # manual send so we can attach the header:
             data = json.dumps(payload).encode("utf-8")
@@ -643,7 +644,7 @@ class AuthManager:
             handler.end_headers()
             handler.wfile.write(data)
             return
-        
+
         try:
             data = json.loads(body_bytes.decode("utf-8", errors="strict"))
         except Exception:
@@ -668,13 +669,13 @@ class AuthManager:
             return
 
         pin = self.get_pin_if_enabled()
-        assert pin is not None
+        if pin is None:
+            self._send_json(handler, 500, {"ok": False, "error": "Internal error"})
+            return
         expected = self._compute_proof(nonce, pin)
 
         if not constant_time_eq(proof, expected):
             self._rate_limit_fail(handler)
-            # Do not set cookie; frontend will show error
-            # JP Note - this should probably be return 403
             self._send_json(handler, 401, {"ok": False, "error": "Incorrect PIN"})
             return
 
@@ -689,6 +690,70 @@ class AuthManager:
         handler.send_header("Content-Length", str(len(payload)))
         handler.end_headers()
         handler.wfile.write(payload)
+
+    def handle_pin_change(self, handler, body_bytes: bytes) -> None:
+        """POST /api/pin/change
+
+        Expected JSON:
+          {"new_pin": "...", "new_pin_check": "..."}
+
+        If a PIN already exists, this requires an authenticated session plus a
+        valid CSRF token (enforced by the router before this method is called).
+        If no PIN exists yet, this endpoint also serves as the initial PIN
+        creation flow from the setup page, using the CSRF-protected UI session.
+
+        The new PIN is sent in plaintext, which is acceptable given the
+        existing HTTP-only threat model: a passive on-LAN attacker can already
+        sniff session cookies.
+        """
+        current_pin = self.get_pin_if_enabled()
+
+        # When changing an existing PIN, require a fully authenticated session.
+        # CSRF alone is not sufficient because unauthenticated sessions also
+        # carry a CSRF token.
+        if current_pin is not None and not self.is_authenticated(handler.headers):
+            self._send_json(handler, 401, {"ok": False, "error": "Authentication required"})
+            return
+
+        try:
+            data = json.loads(body_bytes.decode("utf-8", errors="strict"))
+        except Exception:
+            self._send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+            return
+
+        new_pin = str(data.get("new_pin") or "").strip()
+        new_pin_check = str(data.get("new_pin_check") or "").strip()
+
+        if not new_pin or not new_pin_check:
+            self._send_json(handler, 400, {"ok": False, "error": "Missing fields"})
+            return
+
+        if not constant_time_eq(new_pin, new_pin_check):
+            self._send_json(handler, 400, {"ok": False, "error": "Values did not match"})
+            return
+
+        status, payload = self.set_pin(new_pin)
+        if status != 200:
+            self._send_json(handler, status, payload)
+            return
+
+        # The old authenticated session set was revoked by set_pin(). Mint a
+        # fresh authenticated session for this client so the UI can stay on the
+        # current page without bouncing through /auth, which in turn helps
+        # avoid iOS credential-save heuristics. This also upgrades the current
+        # setup-page flow from "no PIN" to "PIN enabled" seamlessly.
+        session = self._new_session()
+        self._sessions[session.token] = session
+
+        handler.send_response(200)
+        self._set_session_cookie(handler, session)
+        response_payload = dict(payload)
+        response_payload["reauthenticated"] = True
+        payload_bytes = json.dumps(response_payload).encode("utf-8")
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(payload_bytes)))
+        handler.end_headers()
+        handler.wfile.write(payload_bytes)
 
     # ------------------------
     # Internal utilities

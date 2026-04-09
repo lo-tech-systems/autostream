@@ -29,24 +29,14 @@ Contents:
 from __future__ import annotations
 
 import html
-import threading
 from datetime import datetime
 from urllib.parse import quote
 from typing import Optional
 
 from autostream_auth import FLASH_COOKIE_NAME
-from autostream_config import load_config
+from autostream_config import CONFIG_IO_LOCK, load_config
 from autostream_playback import InputPlaybackSnapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
-
-
-# -----------------------------------------------------------------------------
-# Thread-safety for ThreadingHTTPServer:
-# Protect config file I/O (and coupled owntone.conf edits) from interleaving
-# across concurrent requests.
-# -----------------------------------------------------------------------------
-
-CONFIG_IO_LOCK = threading.Lock()
 
 
 def locked_load_config(path: str):

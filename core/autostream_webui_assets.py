@@ -685,9 +685,9 @@ PIN_MODAL_CSS = """
   #pinModal .bd p{margin:0 0 .75rem 0;}
   #pinModal input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid #ccc;border-radius:12px;outline:none;}
   #pinModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid #eee;}
-  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;}
-  #pinModal .btn.cancel{background:#f1f1f1;color:#111;}
-  #pinModal .btn.ok{background:#0d6efd;color:#fff;}
+  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;background:#6c757d;color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
+  #pinModal .btn.cancel{background:#6c757d;color:#fff;}
+  #pinModal .btn.ok{background:#6c757d;color:#fff;}
 """
 
 
