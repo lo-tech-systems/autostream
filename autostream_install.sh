@@ -645,7 +645,7 @@ configure_owntone_apt_repo() {
 
 install_packaged_owntone() {
   configure_owntone_apt_repo
-  apt_install nginx owntone
+  apt_install owntone
   systemctl enable owntone
 }
 
@@ -768,7 +768,7 @@ fi
     libasound2-dev libsamplerate0-dev python3-dev python3-venv python3-pip python3-flask
 
   # Platform services
-  apt_install watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
+  apt_install nginx watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
   # Application services
   if [[ ${SKIP_OWNTONE_INSTALL} -eq 1 ]]; then
