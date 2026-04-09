@@ -176,14 +176,14 @@ class AuthManager:
         self._pin_mtime: Optional[float] = None
         self._pin_path: Optional[str] = None
 
-        self._pin_status: str = PIN_STATUS_MISSING
+        self._pin_status: str = ""
 
     # ------------------------
     # PIN
     # ------------------------
 
     def get_pin_status(self) -> str:
-        return self._pin_status
+        return self._pin_status or PIN_STATUS_MISSING
 
     def _read_pin_file(self) -> Tuple[Optional[str], Optional[str], Optional[float], str]:
         """Return (pin, path, mtime, status). Pin is first non-empty line stripped."""
@@ -216,6 +216,21 @@ class AuthManager:
 
     def get_pin_if_enabled(self) -> Optional[str]:
         """Return the configured PIN, or None if missing/invalid/unreadable."""
+        if self._pin_status:
+            if self._pin_status == PIN_STATUS_OK:
+                LOG.debug(
+                    "PIN cache hit: using cached PIN from %s (mtime=%s)",
+                    self._pin_path,
+                    self._pin_mtime,
+                )
+            else:
+                LOG.debug(
+                    "PIN cache hit: status=%s path=%r",
+                    self._pin_status,
+                    self._pin_path,
+                )
+            return self._pin_value
+
         pin, path, mtime, status = self._read_pin_file()
 
         LOG.debug(
@@ -225,22 +240,6 @@ class AuthManager:
             mtime,
             status,
         )
-
-        # Cache hit (only meaningful when we previously had a valid pin)
-        if (
-            path
-            and mtime
-            and self._pin_path == path
-            and self._pin_mtime == mtime
-            and self._pin_value is not None
-        ):
-            self._pin_status = PIN_STATUS_OK
-            LOG.debug(
-                "PIN cache hit: using cached PIN from %s (mtime=%s)",
-                path,
-                mtime,
-            )
-            return self._pin_value
 
         # Valid PIN
         if pin and PIN_REGEX.match(pin):
@@ -278,6 +277,109 @@ class AuthManager:
             )
 
         return None
+
+    def set_pin(self, new_pin: str, old_pin: Optional[str] = None) -> tuple[int, dict]:
+        """
+        Set or replace the configured PIN.
+
+        Rules:
+          - new_pin must match PIN_REGEX
+          - if a PIN is currently configured, old_pin must be provided and correct
+          - writes the new PIN to the first writable candidate path
+          - updates in-memory cache on success
+
+        Returns:
+          (status_code, payload_dict)
+        """
+        new_pin = (new_pin or "").strip()
+        old_pin = (old_pin or "").strip() if old_pin is not None else None
+
+        if not PIN_REGEX.match(new_pin):
+            return 400, {
+                "ok": False,
+                "error": "Invalid PIN format",
+                "pin_status": self.get_pin_status(),
+            }
+
+        current_pin = self.get_pin_if_enabled()
+
+        if current_pin is not None:
+            if not old_pin:
+                return 401, {
+                    "ok": False,
+                    "error": "Current PIN required",
+                    "pin_status": self.get_pin_status(),
+                }
+            if not constant_time_eq(old_pin, current_pin):
+                return 403, {
+                    "ok": False,
+                    "error": "Current PIN incorrect",
+                    "pin_status": self.get_pin_status(),
+                }
+
+        target_path = None
+        last_error = None
+
+        candidate_paths = []
+        if self._pin_path:
+            candidate_paths.append(self._pin_path)
+        for path in PIN_PATH_CANDIDATES:
+            if path not in candidate_paths:
+                candidate_paths.append(path)
+
+        for path in candidate_paths:
+            try:
+                parent = os.path.dirname(path) or "."
+                if os.path.isdir(parent) and os.access(parent, os.W_OK):
+                    target_path = path
+                    break
+            except OSError as e:
+                last_error = e
+
+        if target_path is None:
+            return 500, {
+                "ok": False,
+                "error": "No writable PIN location available",
+                "pin_status": self.get_pin_status(),
+                "detail": str(last_error) if last_error else None,
+            }
+
+        try:
+            with open(target_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(new_pin + "\n")
+
+            try:
+                st = os.stat(target_path)
+                mtime = st.st_mtime
+            except OSError:
+                mtime = None
+
+            self._pin_value = new_pin
+            self._pin_path = target_path
+            self._pin_mtime = mtime
+            self._pin_status = PIN_STATUS_OK
+
+            LOG.info(
+                "PIN updated successfully at %s (pin_len=%s, mtime=%r)",
+                target_path,
+                len(new_pin),
+                mtime,
+            )
+
+            return 200, {
+                "ok": True,
+                "pin_status": self._pin_status,
+                "path": target_path,
+            }
+
+        except OSError as e:
+            LOG.warning("Failed to update PIN at %s: %s", target_path, e)
+            return 500, {
+                "ok": False,
+                "error": "Failed to write PIN",
+                "pin_status": PIN_STATUS_UNREADABLE,
+                "detail": str(e),
+            }
 
 
     def is_enabled(self) -> bool:
