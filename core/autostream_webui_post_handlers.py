@@ -836,6 +836,5 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             handler,
             state,
             auth,
-            flash_msg="Save failed",
-            flash_type="error",
+            error="Save failed",
         )
