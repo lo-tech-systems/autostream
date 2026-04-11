@@ -1,1146 +1,243 @@
+#!/usr/bin/env python3
 """autostream_owntone.py
 
-Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
-
-Provides access to OwnTone - both via it's API, and via it's configuration file
+Player backend implementation for the official OwnTone JSON API.
 """
 
-from pathlib import Path
-from typing import Optional
-from dataclasses import dataclass
+from __future__ import annotations
 
 import logging
-import os
-import re
-import tempfile
-import time
+from typing import Any, Optional
 
-import requests # third-party (pip install requests)
-from autostream_config import (
-    normalize_airplay_mode,
-    normalize_log_level,
-    normalize_owntone_protocol_api_state,
-    owntone_log_level_value,
+from autostream_players import (
+    ActionResult,
+    BACKEND_OWNTONE,
+    BackendCapabilities,
+    BackendStatus,
+    DetectionResult,
+    GetOutputResult,
+    ListOutputsResult,
+    PlaybackMetadata,
+    OwnToneHttpBackendBase,
+    REGISTRY,
+    SaveSettingResult,
+    SettingDescriptor,
+    SettingValueResult,
 )
-from autostream_sysutils import run_admin_cmd
-
-logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class OwntoneOutputProtocolSupport:
-    supports_runtime_protocol: bool
-    supports_raop: bool
-    supports_airplay2: bool
+LOG = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class OwntoneOutputUpdatePayloadResult:
-    payload: dict[str, object]
-    protocol_requested: Optional[str]
-    protocol_included: bool
-    protocol_coerced: bool
-    output_known: bool
+class OwnToneBackend(OwnToneHttpBackendBase):
+    """Backend adapter for the official OwnTone JSON API.
 
+    Probe order note: owntone-mini should be probed before this backend because
+    this backend's detection relies on generic `/api/settings` support.
+    """
 
-def owntone_fetch_outputs(
-    base_url: str,
-    timeout: float = 5.0,
-    *,
-    log_errors: bool = True,
-) -> Optional[list[dict]]:
-    """Return OwnTone outputs, or None on API error."""
-    try:
-        resp = requests.get(base_url.rstrip("/") + "/api/outputs", timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json() if resp.content else {}
-        outputs = data.get("outputs", [])
-        return outputs if isinstance(outputs, list) else []
-    except Exception as e:  # noqa: BLE001
-        if log_errors:
-            logging.warning("Error fetching OwnTone outputs: %s", e)
-        return None
+    BACKEND_ID = BACKEND_OWNTONE
 
-# Location for owntone.conf. Default in most distros is /etc/owntone.conf. In
-# autostream, we use our own copy at /opt/autostream/owntone/owntone.conf, which
-# allevaites the need for autostream to have write access on /etc.
-OWNTONE_CONF_PATH = Path(
-    os.environ.get("OWNTONE_CONF", "/opt/autostream/owntone/owntone.conf")
-).expanduser().resolve()
-OWNTONE_CONF_DIR = OWNTONE_CONF_PATH.parent
+    @classmethod
+    def backend_id_cls(cls) -> str:
+        return cls.BACKEND_ID
 
-
-def owntone_get_outputs(base_url: str, timeout: float = 5.0) -> list[dict]:
-    """Return OwnTone outputs, or [] on API error."""
-    return owntone_fetch_outputs(base_url, timeout=timeout, log_errors=True) or []
-
-
-def owntone_get_output(
-    base_url: str,
-    output_id: object,
-    *,
-    outputs: Optional[list[dict]] = None,
-    timeout: float = 5.0,
-    log_errors: bool = True,
-) -> Optional[dict]:
-    """Return one OwnTone output object, falling back to GET /api/outputs/{id}."""
-    out_id = str(output_id).strip()
-    if not out_id:
-        return None
-
-    if outputs:
-        for output in outputs:
-            if str(output.get("id")) == out_id:
-                return output
-
-    try:
-        resp = requests.get(base_url.rstrip("/") + f"/api/outputs/{out_id}", timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json() if resp.content else {}
-        if isinstance(data, dict):
-            if "id" in data or "name" in data:
-                return data
-            output = data.get("output")
-            if isinstance(output, dict):
-                return output
-        return None
-    except Exception as e:  # noqa: BLE001
-        if log_errors:
-            logging.warning("Error fetching OwnTone output %s: %s", out_id, e)
-        return None
-
-
-def owntone_output_protocol_support(output: Optional[dict]) -> OwntoneOutputProtocolSupport:
-    """Return runtime protocol capability flags for an OwnTone output object."""
-    supports_runtime_protocol = bool(
-        output and ("supports_raop" in output or "supports_airplay2" in output)
-    )
-    if not supports_runtime_protocol:
-        return OwntoneOutputProtocolSupport(
-            supports_runtime_protocol=False,
-            supports_raop=False,
-            supports_airplay2=False,
-        )
-    return OwntoneOutputProtocolSupport(
-        supports_runtime_protocol=True,
-        supports_raop=bool(output.get("supports_raop")),
-        supports_airplay2=bool(output.get("supports_airplay2")),
-    )
-
-
-def owntone_has_runtime_protocol_api(outputs: list[dict]) -> bool:
-    """Return True if the current OwnTone outputs advertise runtime protocol support."""
-    return any(
-        owntone_output_protocol_support(output).supports_runtime_protocol
-        for output in outputs
-    )
-
-
-def resolve_owntone_protocol_api_state(
-    outputs: Optional[list[dict]],
-    persisted_state: object = "unknown",
-) -> str:
-    """Resolve OwnTone protocol support using live outputs and last-known state."""
-    normalized_persisted = normalize_owntone_protocol_api_state(persisted_state)
-    if outputs is None or not outputs:
-        return normalized_persisted
-    if owntone_has_runtime_protocol_api(outputs):
-        return "runtime"
-    # Do not downgrade a newer OwnTone build to legacy just because the current
-    # output list lacks protocol metadata (for example, if only non-AirPlay
-    # outputs are currently discovered). Once runtime support has been observed,
-    # keep using that compatibility model until a positive legacy determination
-    # is made from a clean newer-install state.
-    if normalized_persisted == "runtime":
-        return "runtime"
-    return "legacy"
-
-
-def resolve_owntone_output_airplay_mode(
-    output_id: object,
-    *,
-    output_airplay_modes: Optional[dict[str, str]] = None,
-) -> Optional[str]:
-    """Resolve the saved AirPlay mode for an output id."""
-    key = str(output_id).strip()
-    if not key:
-        return None
-
-    if output_airplay_modes:
-        if key in output_airplay_modes:
-            return normalize_airplay_mode(output_airplay_modes[key])
-
-    return None
-
-
-def build_owntone_output_update_payload(
-    output: Optional[dict],
-    *,
-    selected: Optional[bool] = None,
-    volume: Optional[object] = None,
-    offset_ms: Optional[object] = None,
-    protocol_mode: Optional[object] = None,
-) -> OwntoneOutputUpdatePayloadResult:
-    """Build a PUT /api/outputs/{id} payload, including protocol only when supported."""
-    payload: dict[str, object] = {}
-    if selected is not None:
-        payload["selected"] = bool(selected)
-    if volume is not None:
-        try:
-            vol = int(volume)
-        except Exception:
-            vol = 0
-        payload["volume"] = max(0, min(100, vol))
-    if offset_ms is not None:
-        try:
-            off = int(offset_ms)
-        except Exception:
-            off = 0
-        payload["offset_ms"] = max(-2000, min(2000, off))
-
-    protocol_requested: Optional[str] = None
-    protocol_included = False
-    support = owntone_output_protocol_support(output)
-    protocol_coerced = False
-    output_known = output is not None
-    if protocol_mode is not None and str(protocol_mode).strip():
-        protocol_requested = normalize_airplay_mode(protocol_mode)
-        if protocol_requested == "raop" and support.supports_runtime_protocol and not support.supports_raop:
-            protocol_requested = "default"
-            protocol_coerced = True
-        elif (
-            protocol_requested == "airplay2"
-            and support.supports_runtime_protocol
-            and not support.supports_airplay2
-        ):
-            protocol_requested = "default"
-            protocol_coerced = True
-        if support.supports_runtime_protocol:
-            payload["protocol"] = protocol_requested
-            protocol_included = True
-
-    return OwntoneOutputUpdatePayloadResult(
-        payload=payload,
-        protocol_requested=protocol_requested,
-        protocol_included=protocol_included,
-        protocol_coerced=protocol_coerced,
-        output_known=output_known,
-    )
-
-def get_owntone_output_id(base_url: str, output_name: str) -> Optional[int]:
-    """Return the Owntone output ID matching `output_name`, or None if not found."""
-    for out in owntone_get_outputs(base_url, timeout=5):
-        if out.get("name") == output_name:
-            return out.get("id")
-    return None
-
-
-def owntone_get_library_song_count(base_url: str) -> Optional[int]:
-    """Return OwnTone library song count, or None on API error."""
-    try:
-        resp = requests.get(base_url.rstrip("/") + "/api/library", timeout=3)
-        resp.raise_for_status()
-        payload = resp.json() if resp.content else {}
-        return int(payload.get("songs") or 0)
-    except Exception as e:  # noqa: BLE001
-        logging.warning("Error fetching OwnTone library stats: %s", e)
-        return None
-
-
-def owntone_trigger_files_rescan(base_url: str) -> bool:
-    """Trigger OwnTone files rescan via JSON API."""
-    try:
-        resp = requests.put(
-            base_url.rstrip("/") + "/api/update",
-            params={"scan_kind": "files"},
-            timeout=4,
-        )
-        if resp.status_code not in (200, 202, 204):
-            logging.warning(
-                "OwnTone files rescan request failed: %s %s",
-                resp.status_code,
-                resp.text,
+    def detect(self) -> DetectionResult:
+        config_payload, config_resp, config_err = self._get_json("/api/config")
+        if config_err or config_resp is None or not config_resp.ok:
+            return DetectionResult(
+                matched=False,
+                backend_id=self.backend_id,
+                detail=config_err or f"GET /api/config failed with status {getattr(config_resp, 'status_code', '?')}",
             )
-            return False
-        logging.info("Requested OwnTone files rescan")
-        return True
-    except requests.RequestException as e:  # noqa: BLE001
-        logging.warning("Error requesting OwnTone files rescan: %s", e)
-        return False
 
-
-def owntone_ensure_pipe_indexed(base_url: str, timeout_s: float = 15.0) -> bool:
-    """Ensure OwnTone has indexed at least one library item (pipe source)."""
-    deadline = time.time() + max(1.0, float(timeout_s))
-    next_rescan_at = 0.0
-
-    while time.time() < deadline:
-        songs = owntone_get_library_song_count(base_url)
-        if songs is not None and songs > 0:
-            return True
-
-        now = time.time()
-        if now >= next_rescan_at:
-            owntone_trigger_files_rescan(base_url)
-            next_rescan_at = now + 2.0
-
-        time.sleep(0.5)
-
-    return False
-
-
-def owntone_restart_service() -> bool:
-    """Restart the owntone service via the privileged autostream-admin helper.
-
-    This avoids calling systemctl directly from the web process.
-    """
-    p = run_admin_cmd(["restart-owntone"], timeout=20.0)
-    if p.returncode == 0:
-        logger.info("Owntone restart requested via autostream-admin")
-        return True
-    logger.error(
-        "Owntone restart via autostream-admin failed (rc=%s, stderr=%s)",
-        p.returncode,
-        (p.stderr or "").strip(),
-    )
-    return False
-
-
-def owntone_disable_all_outputs(base_url: str) -> None:
-    """Disable all outputs so that sinks (e.g., AirPlay devices) are released.
-
-    This is done by sending an empty list of outputs to /api/outputs/set.
-    """
-    url = base_url.rstrip("/") + "/api/outputs/set"
-    payload = {"outputs": []}
-    logging.info("Owntone PUT /api/outputs/set (disable all) payload=%s", payload)
-    try:
-        resp = requests.put(url, json=payload, timeout=3)
-        logging.info("Owntone PUT /api/outputs/set (disable all) status=%s", resp.status_code)
-        logging.info("Owntone PUT /api/outputs/set (disable all) body=%s", resp.text)
-        if not resp.ok:
-            logging.error(
-                "Owntone PUT /api/outputs/set (disable all) failed: %s %s",
-                resp.status_code,
-                resp.text,
+        settings_payload, settings_resp, settings_err = self._get_json("/api/settings")
+        if settings_err or settings_resp is None or not settings_resp.ok:
+            return DetectionResult(
+                matched=False,
+                backend_id=self.backend_id,
+                detail=settings_err or "official settings endpoint /api/settings not available",
             )
-        else:
-            logging.info("Owntone outputs disabled (empty outputs list sent)")
-    except requests.RequestException as e:  # noqa: BLE001
-        logging.error("Error disabling Owntone outputs: %s", e)
 
-
-# ---------------------------------------------------------------------------
-# OwnTone configuration helpers (owntone.conf)
-# ---------------------------------------------------------------------------
-
-# Globals populated by the "read_and_set_*" helpers below
-OWNTONE_PIPE_DIR: str = ""
-OWNTONE_UNCOMPRESSED_ALAC: bool = False
-
-
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-    except Exception:
-        logger.exception("Failed reading %s", path)
-        return ""
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Write file atomically, best-effort preserving mode/ownership."""
-    try:
-        st = path.stat()
-        mode = st.st_mode
-    except FileNotFoundError:
-        st = None
-        mode = None
-    except Exception:
-        st = None
-        mode = None
-
-    # Random, system-generated temp file in the same location as owntone.conf
-    # This is because we then switch out the full file. This ensures we can't
-    # be left with a half-written and broken file.
-    fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=OWNTONE_CONF_DIR)
-    tmp = Path(tmp_name)
-
-    try:
-        # Write via the returned fd to avoid reopening races
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-
-        try:
-            if mode is not None:
-                os.chmod(tmp, mode)
-            if st is not None:
-                try:
-                    os.chown(tmp, st.st_uid, st.st_gid)
-                except PermissionError:
-                    # Not fatal; e.g. when running unprivileged in dev/test.
-                    pass
-        except Exception:
-            logger.exception("Failed setting ownership/mode for %s", tmp)
-
-        os.replace(tmp, path)
-
-    finally:
-        # If os.replace() didn't run (or failed), clean up the temp file
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except Exception:
-            pass
-
-
-
-def _find_block_span(text: str, header_re: re.Pattern[str]) -> Optional[tuple[int, int]]:
-    """Return (start_index, end_index_exclusive) for the first matching block."""
-    m = header_re.search(text)
-    if not m:
-        return None
-
-    # Find the opening brace for this block.
-    # If the header regex already includes "{", prefer that brace; otherwise
-    # fall back to searching after the match.
-    brace_idx = text.find("{", m.start(), m.end())
-    if brace_idx == -1:
-        brace_idx = text.find("{", m.end())
-    if brace_idx == -1:
-        return None
-
-    depth = 0
-    i = brace_idx
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return (m.start(), i + 1)
-        i += 1
-
-    return None
-
-
-def _parse_bool(raw: str) -> Optional[bool]:
-    s = (raw or "").strip().strip('"').lower()
-    if s in {"1", "true", "yes", "on"}:
-        return True
-    if s in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
-def _bool_to_conf(v: bool) -> str:
-    return "true" if v else "false"
-
-
-def _coerce_owntone_bool(value: object) -> Optional[bool]:
-    """Parse a bool-like OwnTone setting value into True/False/None."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-    if isinstance(value, str):
-        return _parse_bool(value)
-    return None
-
-
-def _coerce_owntone_int(value: object) -> Optional[int]:
-    """Parse an int-like OwnTone setting value into int/None."""
-    if isinstance(value, bool):
-        return int(value)
-    try:
-        return int(str(value).strip())
-    except Exception:
-        return None
-
-
-def read_pipe_autostart_from_conf(conf_path: Path | str = OWNTONE_CONF_PATH) -> Optional[bool]:
-    """Return library.pipe_autostart from owntone.conf, or None if unavailable."""
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return None
-
-    span = _find_block_span(text, re.compile(r"(?m)^\s*library\s*\{\s*$"))
-    if not span:
-        return None
-
-    block = text[span[0]:span[1]]
-    m = re.search(r"(?m)^\s*pipe_autostart\s*=\s*(?P<v>[^\s#]+)", block)
-    if not m:
-        return None
-    return _parse_bool(m.group("v"))
-
-
-def write_pipe_autostart_to_conf(
-    enabled: bool,
-    conf_path: Path | str = OWNTONE_CONF_PATH,
-) -> bool:
-    """Write library.pipe_autostart in owntone.conf."""
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return False
-
-    lib_re = re.compile(r"(?m)^\s*library\s*\{\s*$")
-    span = _find_block_span(text, lib_re)
-    if not span:
-        return False
-
-    block = text[span[0]:span[1]]
-    line_re = re.compile(
-        r"(?m)^(?P<indent>\s*)(?:#\s*)?pipe_autostart\s*=\s*(?:true|false)(?P<rest>\s*(?:#.*)?)$"
-    )
-    m = line_re.search(block)
-    if m:
-        indent = m.group("indent")
-        rest = m.group("rest") or ""
-        new_line = f"{indent}pipe_autostart = {_bool_to_conf(bool(enabled))}{rest}"
-        new_block = block[:m.start()] + new_line + block[m.end():]
-    else:
-        close_idx = block.rfind("}")
-        if close_idx == -1:
-            return False
-        indent = "\t"
-        for ln in block.splitlines()[1:]:
-            if ln.strip() and not ln.lstrip().startswith("#"):
-                indent = re.match(r"^\s*", ln).group(0)  # type: ignore[union-attr]
-                break
-        ins = f"{indent}pipe_autostart = {_bool_to_conf(bool(enabled))}\n"
-        new_block = block[:close_idx] + ins + block[close_idx:]
-
-    new_text = text[:span[0]] + new_block + text[span[1]:]
-    try:
-        _atomic_write_text(path, new_text)
-    except Exception:
-        logger.exception("Failed writing %s", path)
-        return False
-
-    return True
-
-
-def read_log_level_from_conf(conf_path: Path | str = OWNTONE_CONF_PATH) -> Optional[str]:
-    """Return general.loglevel from owntone.conf, or None if unavailable."""
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return None
-
-    span = _find_block_span(text, re.compile(r"(?m)^\s*general\s*\{\s*$"))
-    if not span:
-        return None
-
-    block = text[span[0]:span[1]]
-    m = re.search(r"(?m)^\s*loglevel\s*=\s*(?P<v>[^\s#]+)", block)
-    if not m:
-        return None
-    value = normalize_log_level(m.group("v"))
-    return value
-
-
-def write_log_level_to_conf(
-    level_name: str,
-    conf_path: Path | str = OWNTONE_CONF_PATH,
-) -> bool:
-    """Write general.loglevel in owntone.conf."""
-    normalized = normalize_log_level(level_name)
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return False
-
-    general_re = re.compile(r"(?m)^\s*general\s*\{\s*$")
-    span = _find_block_span(text, general_re)
-    if not span:
-        return False
-
-    block = text[span[0]:span[1]]
-    line_re = re.compile(
-        r"(?m)^(?P<indent>\s*)(?:#\s*)?loglevel\s*=\s*[^\s#]+(?P<rest>\s*(?:#.*)?)$"
-    )
-    m = line_re.search(block)
-    if m:
-        indent = m.group("indent")
-        rest = m.group("rest") or ""
-        new_line = f"{indent}loglevel = {normalized}{rest}"
-        new_block = block[:m.start()] + new_line + block[m.end():]
-    else:
-        close_idx = block.rfind("}")
-        if close_idx == -1:
-            return False
-        indent = "\t"
-        for ln in block.splitlines()[1:]:
-            if ln.strip() and not ln.lstrip().startswith("#"):
-                indent = re.match(r"^\s*", ln).group(0)  # type: ignore[union-attr]
-                break
-        ins = f"{indent}loglevel = {normalized}\n"
-        new_block = block[:close_idx] + ins + block[close_idx:]
-
-    new_text = text[:span[0]] + new_block + text[span[1]:]
-    try:
-        _atomic_write_text(path, new_text)
-    except Exception:
-        logger.exception("Failed writing %s", path)
-        return False
-    return True
-
-
-def read_and_set_global_pipe_directory(conf_path: Path | str = OWNTONE_CONF_PATH) -> str:
-    """Read OwnTone's library.directories and set the global pipe directory.
-
-    Conf source: `library { directories = { ... } }`.
-    We infer the "pipe directory" as the first directory entry containing
-    "pipe"/"pipes" in the path.
-    """
-    global OWNTONE_PIPE_DIR
-
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        OWNTONE_PIPE_DIR = ""
-        return ""
-
-    span = _find_block_span(text, re.compile(r"(?m)^\s*library\s*\{\s*$"))
-    if not span:
-        OWNTONE_PIPE_DIR = ""
-        return ""
-
-    block = text[span[0]:span[1]]
-    m = re.search(r"(?m)^\s*directories\s*=\s*\{(?P<body>[^}]*)\}\s*$", block)
-    if not m:
-        OWNTONE_PIPE_DIR = ""
-        return ""
-
-    dirs = re.findall(r'"([^"]*)"', m.group("body"))
-    pipe_dir = ""
-    for d in dirs:
-        if "pipe" in d.lower():
-            pipe_dir = d
-            break
-
-    OWNTONE_PIPE_DIR = pipe_dir
-    return pipe_dir
-
-
-def write_and_set_global_pipe_directory(pipe_dir: str, conf_path: Path | str = OWNTONE_CONF_PATH) -> bool:
-    """Ensure `pipe_dir` is present in `library.directories` and update global."""
-    global OWNTONE_PIPE_DIR
-    pipe_dir = (pipe_dir or "").strip()
-    if not pipe_dir:
-        return False
-
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return False
-
-    lib_re = re.compile(r"(?m)^\s*library\s*\{\s*$")
-    span = _find_block_span(text, lib_re)
-    if not span:
-        return False
-
-    block = text[span[0]:span[1]]
-
-    dir_line_re = re.compile(r"(?m)^(?P<indent>\s*)directories\s*=\s*\{(?P<body>[^}]*)\}\s*$")
-    m = dir_line_re.search(block)
-    if m:
-        indent = m.group("indent")
-        dirs = re.findall(r'"([^"]*)"', m.group("body"))
-        # Replace existing pipe-ish dir if present; else append.
-        replaced = False
-        for i, d in enumerate(list(dirs)):
-            if "pipe" in d.lower():
-                dirs[i] = pipe_dir
-                replaced = True
-                break
-        if not replaced:
-            dirs.append(pipe_dir)
-
-        # Deduplicate while preserving order.
-        seen: set[str] = set()
-        cleaned: list[str] = []
-        for d in dirs:
-            if d not in seen:
-                seen.add(d)
-                cleaned.append(d)
-        new_line = f"{indent}directories = {{ " + ", ".join(f'\"{d}\"' for d in cleaned) + " }"
-        new_block = block[:m.start()] + new_line + block[m.end():]
-    else:
-        # Insert a new directories line near the top of the block.
-        # Try to match indentation style (tabs in upstream example).
-        indent = "\t"
-        for ln in block.splitlines()[1:]:
-            if ln.strip() and not ln.lstrip().startswith("#"):
-                indent = re.match(r"^\s*", ln).group(0)  # type: ignore[union-attr]
-                break
-        insert_at = block.find("{")
-        insert_at = block.find("\n", insert_at)
-        if insert_at == -1:
-            return False
-        insert_at += 1
-        new_line = f"{indent}directories = {{ \"{pipe_dir}\" }}\n"
-        new_block = block[:insert_at] + new_line + block[insert_at:]
-
-    new_text = text[:span[0]] + new_block + text[span[1]:]
-    try:
-        _atomic_write_text(path, new_text)
-    except Exception:
-        logger.exception("Failed writing %s", path)
-        return False
-
-    OWNTONE_PIPE_DIR = pipe_dir
-    return True
-
-
-def read_and_set_global_uncompressed_audio(conf_path: Path | str = OWNTONE_CONF_PATH) -> bool:
-    """Read and set OwnTone's `airplay_shared.uncompressed_alac`."""
-    global OWNTONE_UNCOMPRESSED_ALAC
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        OWNTONE_UNCOMPRESSED_ALAC = False
-        return False
-
-    span = _find_block_span(text, re.compile(r"(?m)^\s*airplay_shared\s*\{\s*$"))
-    if not span:
-        OWNTONE_UNCOMPRESSED_ALAC = False
-        return False
-
-    block = text[span[0]:span[1]]
-    m = re.search(r"(?m)^\s*uncompressed_alac\s*=\s*(?P<v>[^\s#]+)", block)
-    val = _parse_bool(m.group("v")) if m else None
-    OWNTONE_UNCOMPRESSED_ALAC = bool(val) if val is not None else False
-    return OWNTONE_UNCOMPRESSED_ALAC
-
-
-def write_and_set_global_uncompressed_audio(enabled: bool, conf_path: Path | str = OWNTONE_CONF_PATH) -> bool:
-    """Write OwnTone's `airplay_shared.uncompressed_alac` and update global."""
-    global OWNTONE_UNCOMPRESSED_ALAC
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return False
-
-    shared_re = re.compile(r"(?m)^\s*airplay_shared\s*\{\s*$")
-    span = _find_block_span(text, shared_re)
-
-    if span:
-        block = text[span[0]:span[1]]
-        line_re = re.compile(r"(?m)^(?P<indent>\s*)uncompressed_alac\s*=\s*[^\s#]+(?P<rest>\s*(?:#.*)?)$")
-        m = line_re.search(block)
-        if m:
-            indent = m.group("indent")
-            rest = m.group("rest") or ""
-            new_line = f"{indent}uncompressed_alac = {_bool_to_conf(bool(enabled))}{rest}"
-            new_block = block[:m.start()] + new_line + block[m.end():]
-        else:
-            # Insert before closing brace.
-            close_idx = block.rfind("}")
-            if close_idx == -1:
-                return False
-            # Guess indentation.
-            indent = "\t"
-            for ln in block.splitlines()[1:]:
-                if ln.strip() and not ln.lstrip().startswith("#"):
-                    indent = re.match(r"^\s*", ln).group(0)  # type: ignore[union-attr]
-                    break
-            ins = f"{indent}uncompressed_alac = {_bool_to_conf(bool(enabled))}\n"
-            new_block = block[:close_idx] + ins + block[close_idx:]
-
-        new_text = text[:span[0]] + new_block + text[span[1]:]
-    else:
-        # Append a new block.
-        if not text.endswith("\n"):
-            text += "\n"
-        new_text = text + (
-            "\nairplay_shared {\n"
-            f"\tuncompressed_alac = {_bool_to_conf(bool(enabled))}\n"
-            "}\n"
+        if not isinstance(settings_payload, dict) or not isinstance(settings_payload.get("categories"), list):
+            return DetectionResult(
+                matched=False,
+                backend_id=self.backend_id,
+                detail="official settings endpoint did not return category data",
+            )
+
+        version = ""
+        if isinstance(config_payload, dict):
+            version = str(config_payload.get("version") or "").strip()
+        detail = f"OwnTone official API detected (version={version or 'unknown'})"
+        return DetectionResult(matched=True, backend_id=self.backend_id, detail=detail)
+
+    def get_capabilities(self) -> BackendCapabilities:
+        return BackendCapabilities(
+            can_list_outputs=True,
+            can_get_output=True,
+            can_set_output_enabled=True,
+            can_set_selected_outputs=True,
+            can_set_output_volume=True,
+            can_set_output_offset=True,
+            can_submit_output_pin=True,
+            can_set_output_mode=False,
+            can_play=True,
+            can_stop=True,
+            can_ensure_pipe_source_ready=False,
+            can_refresh_runtime_state=False,
+            can_push_metadata=False,
+            can_restart=False,
+            supports_runtime_settings=False,
+            supports_restart_required_reporting=False,
+            supported_setting_keys=(),
         )
 
-    try:
-        _atomic_write_text(path, new_text)
-    except Exception:
-        logger.exception("Failed writing %s", path)
-        return False
+    def get_status(self) -> BackendStatus:
+        config_payload, config_resp, config_err = self._get_json("/api/config")
+        if config_err:
+            return BackendStatus(ok=False, reachable=False, ready=False, detail=config_err)
+        if config_resp is None or not config_resp.ok:
+            return BackendStatus(
+                ok=False,
+                reachable=True,
+                ready=False,
+                detail=f"GET /api/config failed with status {getattr(config_resp, 'status_code', '?')}",
+            )
 
-    OWNTONE_UNCOMPRESSED_ALAC = bool(enabled)
-    return True
+        player_payload, player_resp, player_err = self._get_json("/api/player")
+        if player_err:
+            return BackendStatus(ok=False, reachable=True, ready=False, detail=player_err)
+        if player_resp is None or not player_resp.ok:
+            return BackendStatus(
+                ok=False,
+                reachable=True,
+                ready=False,
+                detail=f"GET /api/player failed with status {getattr(player_resp, 'status_code', '?')}",
+            )
 
+        detail = ""
+        if isinstance(player_payload, dict):
+            state = str(player_payload.get("state") or "").strip()
+            if state:
+                detail = f"player_state={state}"
 
-def read_airplay2_for_speaker(speaker_name: str, conf_path: Path | str = OWNTONE_CONF_PATH) -> Optional[bool]:
-    """Return True if RAOP (AirPlay 1) is disabled for this speaker.
-
-    OwnTone uses `raop_disable = true` inside an `airplay "NAME" { ... }` block
-    to disable AirPlay 1 for that device (effectively forcing AirPlay 2 when supported).
-    """
-    speaker_name = (speaker_name or "").strip()
-    if not speaker_name:
-        return None
-
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return None
-
-    conf_name = speaker_name.replace('"', '\\"')
-    header = re.compile(rf'(?m)^\s*airplay\s+"{re.escape(conf_name)}"\s*\{{\s*$')
-    span = _find_block_span(text, header)
-    if not span:
-        return None
-
-    block = text[span[0]:span[1]]
-    m = re.search(r"(?m)^\s*raop_disable\s*=\s*(?P<v>[^\s#]+)", block)
-    v = _parse_bool(m.group("v")) if m else None
-    return v
-
-
-def write_airplay2_for_speaker(speaker_name: str, enabled: bool, conf_path: Path | str = OWNTONE_CONF_PATH) -> bool:
-    """Set AirPlay2 preference for a named speaker by writing `raop_disable`.
-
-    - enabled=True  -> writes `raop_disable = true`
-    - enabled=False -> writes `raop_disable = false`
-    """
-    speaker_name = (speaker_name or "").strip()
-    if not speaker_name:
-        return False
-
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return False
-
-    conf_name = speaker_name.replace('"', '\\"')
-    header = re.compile(rf'(?m)^\s*airplay\s+"{re.escape(conf_name)}"\s*\{{\s*$')
-    span = _find_block_span(text, header)
-
-    if span:
-        block = text[span[0]:span[1]]
-        line_re = re.compile(r"(?m)^(?P<indent>\s*)raop_disable\s*=\s*[^\s#]+(?P<rest>\s*(?:#.*)?)$")
-        m = line_re.search(block)
-        if m:
-            indent = m.group("indent")
-            rest = m.group("rest") or ""
-            new_line = f"{indent}raop_disable = {_bool_to_conf(bool(enabled))}{rest}"
-            new_block = block[:m.start()] + new_line + block[m.end():]
-        else:
-            close_idx = block.rfind("}")
-            if close_idx == -1:
-                return False
-            indent = "\t"
-            for ln in block.splitlines()[1:]:
-                if ln.strip() and not ln.lstrip().startswith("#"):
-                    indent = re.match(r"^\s*", ln).group(0)  # type: ignore[union-attr]
-                    break
-            ins = f"{indent}raop_disable = {_bool_to_conf(bool(enabled))}\n"
-            new_block = block[:close_idx] + ins + block[close_idx:]
-
-        new_text = text[:span[0]] + new_block + text[span[1]:]
-    else:
-        # Append a new per-device block.
-        if not text.endswith("\n"):
-            text += "\n"
-        new_text = text + (
-            f"\nairplay \"{conf_name}\" {{\n"
-            f"\traop_disable = {_bool_to_conf(bool(enabled))}\n"
-            "}\n"
-        )
-
-    try:
-        _atomic_write_text(path, new_text)
-    except Exception:
-        logger.exception("Failed writing %s", path)
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# OwnTone settings API helpers
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class OwntoneSettingGetResult:
-    available: bool
-    ok: bool
-    value: Optional[object] = None
-
-
-@dataclass(frozen=True)
-class OwntoneSettingPutResult:
-    available: bool
-    ok: bool
-
-
-def owntone_get_setting(base_url: str, category: str, option: str) -> OwntoneSettingGetResult:
-    """GET /api/settings/{category}/{option} and return its 'value' field.
-
-    Returns a structured result so callers can distinguish:
-      - endpoint unavailable on older OwnTone builds (404)
-      - endpoint available but request/parse failed
-      - success with a parsed JSON "value"
-    """
-    url = base_url.rstrip("/") + f"/api/settings/{category}/{option}"
-    try:
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 404:
-            return OwntoneSettingGetResult(available=False, ok=False, value=None)
-        resp.raise_for_status()
-        return OwntoneSettingGetResult(
-            available=True,
+        return BackendStatus(
             ok=True,
-            value=resp.json().get("value"),
+            reachable=True,
+            ready=True,
+            restart_required=False,
+            detail=detail,
         )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Error reading OwnTone setting %s/%s: %s", category, option, e)
-        return OwntoneSettingGetResult(available=True, ok=False, value=None)
 
+    def restart(self) -> ActionResult:
+        return self._unsupported_action("restart")
 
-def owntone_put_setting(
-    base_url: str,
-    category: str,
-    option: str,
-    value,
-) -> OwntoneSettingPutResult:
-    """PUT /api/settings/{category}/{option} with {"value": value}.
+    def list_outputs(self) -> ListOutputsResult:
+        payload, resp, err = self._get_json("/api/outputs")
+        if err or resp is None or not resp.ok or not isinstance(payload, dict):
+            return ListOutputsResult(
+                ok=False,
+                error="Failed to list outputs",
+                error_code="request_failed" if err else "http_error",
+            )
+        outputs = payload.get("outputs", [])
+        if not isinstance(outputs, list):
+            return ListOutputsResult(ok=False, error="Invalid outputs payload", error_code="invalid_payload")
+        return ListOutputsResult(
+            ok=True,
+            outputs=tuple(
+                self._normalize_output_info(output)
+                for output in outputs
+                if isinstance(output, dict)
+            ),
+        )
 
-    Returns a structured result so callers can distinguish endpoint
-    unavailability (404) from ordinary request failures.
-    """
-    url = base_url.rstrip("/") + f"/api/settings/{category}/{option}"
-    try:
-        resp = requests.put(url, json={"value": value}, timeout=5)
+    def get_output(self, output_id: str) -> GetOutputResult:
+        out_id = str(output_id or "").strip()
+        if not out_id:
+            return GetOutputResult(ok=False, error="Missing output id", error_code="missing_output_id")
+        payload, resp, err = self._get_json(f"/api/outputs/{out_id}")
+        if err:
+            return GetOutputResult(ok=False, error="Failed to get output", error_code="request_failed")
+        if resp is None:
+            return GetOutputResult(ok=False, error="No backend response", error_code="no_response")
         if resp.status_code == 404:
-            logger.debug(
-                "OwnTone setting %s/%s endpoint not available (404).", category, option
-            )
-            return OwntoneSettingPutResult(available=False, ok=False)
+            return GetOutputResult(ok=False, error="Output not found", error_code="not_found")
         if not resp.ok:
-            logger.warning(
-                "OwnTone PUT settings/%s/%s failed: %s %s",
-                category, option, resp.status_code, resp.text,
-            )
-            return OwntoneSettingPutResult(available=True, ok=False)
-        return OwntoneSettingPutResult(available=True, ok=True)
-    except requests.RequestException as e:  # noqa: BLE001
-        logger.warning("Error writing OwnTone setting %s/%s: %s", category, option, e)
-        return OwntoneSettingPutResult(available=True, ok=False)
+            return GetOutputResult(ok=False, error=f"Backend returned HTTP {resp.status_code}", error_code="http_error")
+        if not isinstance(payload, dict):
+            return GetOutputResult(ok=False, error="Invalid output payload", error_code="invalid_payload")
+        return GetOutputResult(ok=True, output=self._normalize_output_info(payload))
 
-
-def owntone_apply_log_level(
-    base_url: str,
-    desired_log_level: str,
-) -> OwntoneSettingPutResult:
-    """Apply the configured platform log level to OwnTone via its settings API."""
-    normalized = normalize_log_level(desired_log_level)
-    return owntone_put_setting(
-        base_url,
-        "debug",
-        "loglevel",
-        owntone_log_level_value(normalized),
-    )
-
-
-def owntone_check_api_settings(base_url: str, desired_log_level: str) -> bool:
-    """Check and fix pipe_autostart and loglevel via the OwnTone settings API.
-
-    Requires the OwnTone PR that adds /api/settings endpoints. On older
-    OwnTone builds that return 404, falls back to owntone.conf so existing
-    installations continue to work.
-
-    loglevel is corrected immediately via API when available; the conf-file
-    fallback requires a restart.
-    pipe_autostart is corrected via API and requires a restart to take effect;
-    the conf-file fallback also requires a restart.
-
-    Returns True if OwnTone must be restarted for the changes to take effect.
-    """
-    needs_restart = False
-
-    # --- loglevel (debug category, takes effect immediately) ---
-    try:
-        desired_level_name = normalize_log_level(desired_log_level)
-        desired_level = owntone_log_level_value(desired_level_name)
-        current_level_res = owntone_get_setting(base_url, "debug", "loglevel")
-        current_level = _coerce_owntone_int(current_level_res.value)
-        if not current_level_res.available:
-            logger.debug(
-                "OwnTone settings API: debug/loglevel not available; "
-                "falling back to owntone.conf."
-            )
-            conf_level = read_log_level_from_conf()
-            if conf_level != desired_level_name:
-                logger.info(
-                    "OwnTone loglevel in owntone.conf is %r (expected %r); "
-                    "correcting there (restart required).",
-                    conf_level,
-                    desired_level_name,
-                )
-                if write_log_level_to_conf(desired_level_name):
-                    needs_restart = True
-                else:
-                    logger.warning("Failed to set OwnTone loglevel in owntone.conf.")
-        elif not current_level_res.ok:
-            logger.warning("OwnTone settings API request failed for debug/loglevel.")
-        elif current_level is None:
-            logger.warning(
-                "OwnTone settings API returned an unparseable loglevel value: %r",
-                current_level_res.value,
-            )
-        elif current_level != desired_level:
-            logger.info(
-                "OwnTone loglevel is %s (expected %s); correcting via API.",
-                current_level, desired_level,
-            )
-            put_res = owntone_apply_log_level(base_url, desired_level_name)
-            if put_res.ok:
-                logger.info(
-                    "OwnTone loglevel set to %s via API.", desired_level_name
-                )
-            else:
-                logger.warning("Failed to set OwnTone loglevel via API.")
-        else:
-            logger.debug("OwnTone loglevel already correct (%s).", current_level)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Error checking OwnTone loglevel via API: %s", e)
-
-    # --- pipe_autostart (library category, restart required if changed) ---
-    try:
-        current_pipe_res = owntone_get_setting(base_url, "library", "pipe_autostart")
-        current_pipe = _coerce_owntone_bool(current_pipe_res.value)
-        if not current_pipe_res.available:
-            logger.debug(
-                "OwnTone settings API: library/pipe_autostart not available; "
-                "falling back to owntone.conf."
-            )
-            conf_pipe = read_pipe_autostart_from_conf()
-            if conf_pipe is not True:
-                logger.warning(
-                    "OwnTone pipe_autostart is missing/disabled in owntone.conf; "
-                    "enabling there (restart required)."
-                )
-                if write_pipe_autostart_to_conf(True):
-                    needs_restart = True
-                else:
-                    logger.warning("Failed to enable OwnTone pipe_autostart in owntone.conf.")
-        elif not current_pipe_res.ok:
-            logger.warning(
-                "OwnTone settings API request failed for library/pipe_autostart."
-            )
-        elif current_pipe is None:
-            logger.warning(
-                "OwnTone settings API returned an unparseable pipe_autostart value: %r",
-                current_pipe_res.value,
-            )
-        elif not current_pipe:
-            logger.warning(
-                "OwnTone pipe_autostart is disabled; enabling via API (restart required)."
-            )
-            put_res = owntone_put_setting(base_url, "library", "pipe_autostart", True)
-            if put_res.ok:
-                logger.info("OwnTone pipe_autostart enabled via API.")
-                needs_restart = True
-            else:
-                logger.warning("Failed to enable OwnTone pipe_autostart via API.")
-        else:
-            logger.debug("OwnTone pipe_autostart already enabled.")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Error checking OwnTone pipe_autostart via API: %s", e)
-
-    return needs_restart
-
-
-# ---------------------------------------------------------------------------
-# OwnTone config health check + auto-fix
-# ---------------------------------------------------------------------------
-
-OWNTONE_OK = 0
-OWNTONE_RESTART_REQUIRED = 1
-OWNTONE_NOT_OK = -1
-OWNTONE_TARGET_PIPE_DIR = "/tmp/autostream-pipes"
-
-
-def owntone_config_ok(conf_path: Path | str = OWNTONE_CONF_PATH) -> int:
-    """
-    Ensure owntone.conf has:
-      1) library.directories = { "/tmp/autostream-pipes" }
-
-    pipe_autostart and loglevel are checked/fixed at runtime via the OwnTone
-    settings API by owntone_check_api_settings(), called after OwnTone is up.
-
-    Return codes:
-      - OWNTONE_OK (=0) if already correct
-      - OWNTONE_RESTART_REQUIRED (=1) if file was updated successfully
-      - OWNTONE_NOT_OK (=-1) if update was needed but failed
-    """
-    path = Path(conf_path)
-    text = _read_text(path)
-    if not text:
-        return OWNTONE_NOT_OK
-
-    lib_re = re.compile(r"(?m)^\s*library\s*\{\s*$")
-    lib_span = _find_block_span(text, lib_re)
-    if not lib_span:
-        return OWNTONE_NOT_OK
-    lib_block = text[lib_span[0] : lib_span[1]]
-
-    def _dirs_ok(b: str) -> bool:
-        m = re.search(r"(?m)^\s*directories\s*=\s*\{(?P<body>[^}]*)\}\s*$", b)
-        if not m:
-            return False
-        dirs = re.findall(r'"([^"]*)"', m.group("body"))
-        return len(dirs) == 1 and dirs[0] == OWNTONE_TARGET_PIPE_DIR
-
-    if _dirs_ok(lib_block):
-        return OWNTONE_OK
-
-    # Update library.directories
-    dir_line_re = re.compile(r"(?m)^(?P<indent>\s*)directories\s*=\s*\{[^}]*\}\s*$")
-    m = dir_line_re.search(lib_block)
-    if m:
-        indent = m.group("indent")
-        new_line = f'{indent}directories = {{ "{OWNTONE_TARGET_PIPE_DIR}" }}'
-        lib_block = lib_block[: m.start()] + new_line + lib_block[m.end() :]
-    else:
-        insert_at = lib_block.find("{")
-        insert_at = lib_block.find("\n", insert_at)
-        if insert_at == -1:
-            return OWNTONE_NOT_OK
-        insert_at += 1
-        lib_block = (
-            lib_block[:insert_at]
-            + f'\tdirectories = {{ "{OWNTONE_TARGET_PIPE_DIR}" }}\n'
-            + lib_block[insert_at:]
+    def set_output_enabled(self, output_id: str, enabled: bool) -> ActionResult:
+        return self._put_output_fields(
+            output_id,
+            {"selected": bool(enabled)},
+            allow_pin_required=bool(enabled),
         )
 
-    new_text = text[: lib_span[0]] + lib_block + text[lib_span[1] :]
-    try:
-        _atomic_write_text(path, new_text)
-    except Exception:
-        logger.exception("Failed writing %s", path)
-        return OWNTONE_NOT_OK
+    def set_selected_outputs(self, output_ids: list[str]) -> ActionResult:
+        ids = [str(output_id).strip() for output_id in (output_ids or []) if str(output_id).strip()]
+        return self._put_json("/api/outputs/set", {"outputs": ids}, success_statuses=(204,))
 
-    updated = _read_text(path)
-    if not updated:
-        return OWNTONE_NOT_OK
+    def set_output_volume(self, output_id: str, volume_percent: int) -> ActionResult:
+        try:
+            volume = int(volume_percent)
+        except Exception:
+            volume = 0
+        volume = max(0, min(100, volume))
+        return self._put_output_fields(output_id, {"volume": volume})
 
-    lib_span2 = _find_block_span(updated, lib_re)
-    if not lib_span2:
-        return OWNTONE_NOT_OK
-    lib_block2 = updated[lib_span2[0] : lib_span2[1]]
+    def set_output_offset(self, output_id: str, offset_ms: int) -> ActionResult:
+        try:
+            offset = int(offset_ms)
+        except Exception:
+            offset = 0
+        offset = max(-2000, min(2000, offset))
+        return self._put_output_fields(output_id, {"offset_ms": offset})
 
-    if _dirs_ok(lib_block2):
-        return OWNTONE_RESTART_REQUIRED
+    def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
+        pin_text = str(pin or "").strip()
+        if not pin_text:
+            return ActionResult(ok=False, error="Missing PIN", error_code="missing_pin")
+        return self._put_output_fields(output_id, {"pin": pin_text}, allow_pin_invalid=True)
 
-    return OWNTONE_NOT_OK
+    def set_output_mode(self, output_id: str, mode: str) -> ActionResult:
+        return self._unsupported_action("set_output_mode")
+
+    def play(self) -> ActionResult:
+        return self._put_json("/api/player/play", None, success_statuses=(204,))
+
+    def stop(self) -> ActionResult:
+        return self._put_json("/api/player/stop", None, success_statuses=(204,))
+
+    def ensure_pipe_source_ready(self) -> ActionResult:
+        return self._unsupported_action("ensure_pipe_source_ready")
+
+    def refresh_runtime_state(self) -> ActionResult:
+        return self._unsupported_action("refresh_runtime_state")
+
+    def push_metadata(self, metadata: PlaybackMetadata) -> ActionResult:
+        return self._unsupported_action("push_metadata")
+
+    def get_setting(self, key: str) -> SettingValueResult:
+        return SettingValueResult(
+            ok=False,
+            unsupported=True,
+            error="Normalized backend settings are not supported by the official OwnTone API",
+            error_code="unsupported",
+        )
+
+    def save_setting(self, key: str, value: Any) -> SaveSettingResult:
+        return SaveSettingResult(
+            ok=False,
+            unsupported=True,
+            error="Normalized backend settings are not supported by the official OwnTone API",
+            error_code="unsupported",
+        )
+
+    def list_supported_settings(self) -> list[SettingDescriptor]:
+        return []
+
+REGISTRY.register(OwnToneBackend)

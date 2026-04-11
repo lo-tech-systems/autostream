@@ -12,8 +12,6 @@ import html
 import logging
 import textwrap
 
-import requests
-
 from typing import Optional
 
 from autostream_config import parse_config
@@ -22,6 +20,7 @@ from autostream_core import (
     get_monitor_levels_dbfs,
     get_playback_snapshot,
 )
+from autostream_player_service import list_outputs
 from autostream_sysutils import reboot_system
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
@@ -131,37 +130,36 @@ def send_airplay_page(
             f'{label}{hz_txt}: {dbfs:.1f} dB</span>'
         )
 
-    outputs = []
-    try:
-        resp = requests.get(owntone_base_url.rstrip("/") + "/api/outputs", timeout=3)
-        if resp.status_code == 200:
-            outputs = resp.json().get("outputs", [])
-        else:
-            error = error or f"Owntone returned HTTP {resp.status_code}"
-    except Exception as e:
-        error = error or f"Could not reach Owntone at {owntone_base_url}"
+    outputs_result = list_outputs(owntone_base_url, timeout=3)
+    outputs = list(outputs_result.outputs) if outputs_result.ok else []
+    if not outputs_result.ok:
+        error = error or (
+            outputs_result.error
+            or outputs_result.detail
+            or f"Could not reach Owntone at {owntone_base_url}"
+        )
 
     # Keep the configured default output at the top; otherwise use a stable
     # alphabetical order regardless of whether an output is currently enabled.
     outputs = sorted(
         outputs,
-        key=lambda o: (
-            0 if (o.get("name") == default_output_name) else 1,
-            str(o.get("name") or "").casefold(),
+        key=lambda output: (
+            0 if (output.name == default_output_name) else 1,
+            str(output.name or "").casefold(),
         ),
     )
 
     outputs_html = ""
     for out in outputs:
-        out_id = out.get("id")
-        if out_id is None: continue
-        out_id = str(out_id)
-        name = out.get("name", f"Output {out_id}")
-        selected = bool(out.get("selected", False))
+        out_id = str(out.id or "").strip()
+        if not out_id:
+            continue
+        name = out.name or f"Output {out_id}"
+        selected = bool(out.selected)
         if str(name).strip().casefold() in hidden_output_names and not selected and name != default_output_name:
             continue
 
-        volume = max(0, min(100, int(out.get("volume", 25))))
+        volume = max(0, min(100, int(out.volume_percent)))
         safe_name = html.escape(str(name))
         default_badge = '<span class="output-card-default">Default</span>' if name == default_output_name else ""
         state_text = "On" if selected else "Off"

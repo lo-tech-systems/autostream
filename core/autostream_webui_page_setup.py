@@ -20,8 +20,6 @@ import html
 import logging
 import textwrap
 
-import requests
-
 from datetime import datetime
 from typing import Optional
 from urllib.parse import parse_qs
@@ -37,6 +35,7 @@ from autostream_core import (
     update_live_owntone_runtime,
     update_playback_input_config,
 )
+from autostream_player_service import list_outputs
 from autostream_playback import (
     InputPlaybackSnapshot,
     format_hours,
@@ -450,19 +449,17 @@ def send_setup_page(
         """
 
     owntone_outputs_html = ""
-    try:
-        resp = requests.get(parsed.owntone.base_url.rstrip("/") + "/api/outputs", timeout=3)
-        if resp.status_code == 200:
-            outputs = resp.json().get("outputs", [])
-            hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
-            for out in outputs:
-                nm = out.get("name", "")
-                if not nm: continue
-                if nm.strip().casefold() in hidden and nm != parsed.owntone.output_name: continue
-                sel = " selected" if nm == parsed.owntone.output_name else ""
-                owntone_outputs_html += f"<option value='{html.escape(nm)}'{sel}>{html.escape(nm)}</option>"
-    except Exception:
-        pass
+    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
+    if outputs_result.ok:
+        hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
+        for out in outputs_result.outputs:
+            nm = str(out.name or "")
+            if not nm:
+                continue
+            if nm.strip().casefold() in hidden and nm != parsed.owntone.output_name:
+                continue
+            sel = " selected" if nm == parsed.owntone.output_name else ""
+            owntone_outputs_html += f"<option value='{html.escape(nm)}'{sel}>{html.escape(nm)}</option>"
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""

@@ -22,8 +22,6 @@ import json
 import logging
 import subprocess
 
-import requests
-
 from typing import Optional
 
 from autostream_config import parse_config
@@ -32,6 +30,7 @@ from autostream_core import (
     get_monitor_levels_dbfs,
     get_playback_snapshot,
 )
+from autostream_player_service import list_outputs
 from autostream_webui_common import locked_load_config
 from autostream_webui_state import WebUIState
 
@@ -105,34 +104,19 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
         send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
 
-    outputs = []
-
-    url = parsed.owntone.base_url.rstrip("/") + "/api/outputs"
-    logging.info("Owntone API request: GET %s", url)
-
-    try:
-        resp = requests.get(url, timeout=2)
-
-        logging.info(
-            "Owntone API response: status=%s body=%s",
-            resp.status_code,
-            (resp.text or "").strip(),
+    outputs_result = list_outputs(parsed.owntone.base_url, timeout=2)
+    if not outputs_result.ok:
+        logging.error(
+            "Owntone outputs request failed: %s",
+            outputs_result.error or outputs_result.detail or outputs_result.error_code,
         )
-
-        if resp.status_code == 200:
-            outputs = resp.json().get("outputs", [])
-        else:
-            outputs = []
-
-    except Exception as e:
-        logging.error("Owntone API request failed: %s", e)
-        outputs = []
+    outputs = list(outputs_result.outputs) if outputs_result.ok else []
 
     hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
 
     names = []
     for out in outputs:
-        nm = (out.get("name") or "").strip()
+        nm = str(out.name or "").strip()
         if not nm:
             continue
         # Mirror existing behavior: hide hidden outputs unless it is the configured default
@@ -156,36 +140,38 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
         send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
 
-    outputs = []
-    try:
-        resp = requests.get(parsed.owntone.base_url.rstrip("/") + "/api/outputs", timeout=2)
-        if resp.status_code == 200:
-            outputs = resp.json().get("outputs", [])
-        else:
-            send_json(handler, 200, {"ok": False, "error": f"HTTP {resp.status_code}", "outputs": []})
-            return
-    except Exception as e:
-        send_json(handler, 200, {"ok": False, "error": str(e), "outputs": []})
+    outputs_result = list_outputs(parsed.owntone.base_url, timeout=2)
+    if not outputs_result.ok:
+        send_json(
+            handler,
+            200,
+            {
+                "ok": False,
+                "error": outputs_result.error or outputs_result.detail or outputs_result.error_code,
+                "outputs": [],
+            },
+        )
         return
+    outputs = list(outputs_result.outputs)
 
     default_output_name = parsed.owntone.output_name
     hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
 
     filtered = []
     for out in outputs:
-        out_id = out.get("id")
-        name = (out.get("name") or "").strip()
-        if out_id is None or not name:
+        out_id = str(out.id or "").strip()
+        name = str(out.name or "").strip()
+        if not out_id or not name:
             continue
 
-        selected = bool(out.get("selected", False))
+        selected = bool(out.selected)
         # Mirror '/' page behaviour: hide hidden outputs unless selected or default
         if name.casefold() in hidden and not selected and name != default_output_name:
             continue
 
-        vol = max(0, min(100, int(out.get("volume", 25))))
+        vol = max(0, min(100, int(out.volume_percent)))
         filtered.append({
-            "id": str(out_id),
+            "id": out_id,
             "name": name,
             "selected": selected,
             "volume": vol,

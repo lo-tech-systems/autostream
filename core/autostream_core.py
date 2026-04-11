@@ -25,8 +25,6 @@ import signal
 import threading
 from typing import Optional
 
-import requests
-
 from autostream_config import (
     DEFAULT_LOG_LEVEL,
     load_and_parse,
@@ -45,18 +43,17 @@ try:
 except ImportError:  # Optional recognizer; core should run without it.
     VinylRecognizer = None  # type: ignore[assignment]
 
-from autostream_owntone import (
-    build_owntone_output_update_payload,
-    owntone_fetch_outputs,
-    owntone_disable_all_outputs,
-    owntone_config_ok,
-    owntone_check_api_settings,
-    owntone_restart_service,
-    owntone_ensure_pipe_indexed,
-    resolve_owntone_output_airplay_mode,
-    OWNTONE_OK,
-    OWNTONE_RESTART_REQUIRED,
-    OWNTONE_NOT_OK,
+from autostream_player_service import (
+    config_airplay_mode_to_backend,
+    ensure_pipe_source_ready,
+    list_outputs,
+    refresh_runtime_state,
+    set_output_enabled,
+    set_selected_outputs,
+    set_output_mode,
+    set_output_offset,
+    set_output_volume,
+    stop_and_disable_all,
 )
 from autostream_playback import (
     DEFAULT_STYLUS_LIFE_HOURS,
@@ -335,22 +332,15 @@ def _stop_and_disable_owntone(base_url: str, reason: str) -> None:
     """Best-effort stop of OwnTone playback and deselection of all outputs."""
     if not base_url:
         return
-    try:
-        url = base_url.rstrip("/") + "/api/player/stop"
-        resp = requests.put(url, timeout=3)
-        if resp.ok:
-            logging.info("OwnTone player stopped (%s).", reason)
-        else:
-            logging.warning(
-                "OwnTone player stop failed (%s): status=%s",
-                reason, resp.status_code,
-            )
-    except Exception as e:
-        logging.warning(
-            "OwnTone player stop request failed (%s): %s", reason, e,
-        )
-
-    owntone_disable_all_outputs(base_url)
+    result = stop_and_disable_all(base_url, timeout=3)
+    if result.ok:
+        logging.info("OwnTone player stopped and outputs cleared (%s).", reason)
+        return
+    logging.warning(
+        "OwnTone stop/disable request failed (%s): %s",
+        reason,
+        result.error or result.detail or result.error_code or "unknown error",
+    )
 
 
 def handle_signal(signum, frame):
@@ -1041,7 +1031,7 @@ class AudioMonitor:
         # If transitioning from fully idle, clear previous output selection
         # so we start from a known state.
         if self.owntone_base_url and was_idle:
-            owntone_disable_all_outputs(self.owntone_base_url)
+            _stop_and_disable_owntone(self.owntone_base_url, "capture start")
 
         self._maybe_retry_owntone(time.time())
 
@@ -1205,36 +1195,35 @@ class AudioMonitor:
         self._owntone_last_log = now
         logging.log(level, msg, *args)
 
-    def _get_owntone_outputs(self) -> Optional[list[dict]]:
+    def _get_owntone_outputs(self):
         """Return OwnTone outputs list, or None if API is unavailable."""
         if not self.owntone_base_url:
             return None
-        return owntone_fetch_outputs(
-            self.owntone_base_url,
-            timeout=3,
-            log_errors=False,
-        )
+        result = list_outputs(self.owntone_base_url, timeout=3)
+        if not result.ok:
+            return None
+        return list(result.outputs)
 
     @staticmethod
-    def _selected_output_ids(outputs: list[dict]) -> list[str]:
+    def _selected_output_ids(outputs) -> list[str]:
         return [
-            str(o.get("id"))
-            for o in outputs
-            if o.get("selected") and o.get("id") is not None
+            str(output.id)
+            for output in outputs
+            if output.selected and output.id
         ]
 
-    def _has_any_selected_outputs(self, outputs: Optional[list[dict]] = None) -> bool:
+    def _has_any_selected_outputs(self, outputs=None) -> bool:
         """Return True if OwnTone currently has at least one selected output."""
         if outputs is None:
             outputs = self._get_owntone_outputs()
             if outputs is None:
                 return False
-        return any(bool(o.get("selected", False)) for o in outputs)
+        return any(bool(output.selected) for output in outputs)
 
     def _auto_select_default_output(
         self,
         now: float,
-        outputs: Optional[list[dict]] = None,
+        outputs=None,
         reason: str = "auto-select",
     ) -> bool:
         """If nothing is selected, auto-enable the configured default output."""
@@ -1262,10 +1251,10 @@ class AudioMonitor:
             return False
 
         default_out = next(
-            (o for o in outputs if str(o.get("name") or "") == default_name),
+            (output for output in outputs if str(output.name or "") == default_name),
             None,
         )
-        if not default_out or default_out.get("id") is None:
+        if not default_out or not default_out.id:
             self._throttled_owntone_log(
                 now, logging.WARNING,
                 "Default output '%s' not found in OwnTone; cannot apply fallback (%s).",
@@ -1273,71 +1262,74 @@ class AudioMonitor:
             )
             return False
 
-        out_id = str(default_out.get("id"))
-        base = self.owntone_base_url.rstrip("/")
+        out_id = str(default_out.id)
         try:
             out_volume = int(self.owntone_volume_percent)
         except Exception:
             out_volume = 20
         out_volume = max(0, min(100, out_volume))
-        mode = resolve_owntone_output_airplay_mode(
-            out_id,
-            output_airplay_modes=self.owntone_output_airplay_modes,
-        )
-        payload_result = build_owntone_output_update_payload(
-            default_out,
-            selected=True,
-            volume=out_volume,
-            offset_ms=self.owntone_output_offsets_ms.get(out_id),
-            protocol_mode=mode,
-        )
-        payload = payload_result.payload
-        if payload_result.protocol_coerced:
-            logging.warning(
-                "OwnTone output %s does not support the configured runtime protocol; coercing to default.",
-                out_id,
-            )
-        if payload_result.protocol_requested and not payload_result.protocol_included:
-            if payload_result.output_known:
-                logging.info(
-                    "Skipping runtime protocol for OwnTone output %s because this build does not advertise protocol capability.",
-                    out_id,
-                )
-            else:
-                logging.warning(
-                    "Skipping runtime protocol for OwnTone output %s because output metadata was unavailable.",
-                    out_id,
-                )
-
-        try:
-            resp = requests.put(
-                base + f"/api/outputs/{out_id}", json=payload, timeout=3,
-            )
-            if not resp.ok:
-                self._throttled_owntone_log(
-                    now, logging.WARNING,
-                    "Failed to auto-enable default output '%s' (%s): status=%s body=%s",
-                    default_name, reason, resp.status_code, (resp.text or "")[:200],
-                )
-                return False
-            logging.info(
-                "No outputs selected; auto-enabled default output '%s' (%s).",
-                default_name, reason,
-            )
-            return True
-        except Exception as e:
+        enable_result = set_output_enabled(self.owntone_base_url, out_id, True, timeout=3)
+        if not enable_result.ok:
             self._throttled_owntone_log(
-                now, logging.WARNING,
+                now,
+                logging.WARNING,
                 "Failed to auto-enable default output '%s' (%s): %s",
-                default_name, reason, e,
+                default_name,
+                reason,
+                enable_result.error or enable_result.detail or enable_result.error_code,
             )
             return False
 
-    def _refresh_selected_outputs(self, outputs: Optional[list[dict]] = None) -> bool:
+        volume_result = set_output_volume(self.owntone_base_url, out_id, out_volume, timeout=3)
+        if not volume_result.ok:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Default output '%s' was enabled but volume update failed (%s): %s",
+                default_name,
+                reason,
+                volume_result.error or volume_result.detail or volume_result.error_code,
+            )
+
+        offset_ms = self.owntone_output_offsets_ms.get(out_id)
+        if offset_ms is not None:
+            offset_result = set_output_offset(self.owntone_base_url, out_id, int(offset_ms), timeout=3)
+            if not offset_result.ok:
+                self._throttled_owntone_log(
+                    now,
+                    logging.WARNING,
+                    "Default output '%s' offset update failed (%s): %s",
+                    default_name,
+                    reason,
+                    offset_result.error or offset_result.detail or offset_result.error_code,
+                )
+
+        mode_result = set_output_mode(
+            self.owntone_base_url,
+            out_id,
+            config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_id)),
+            timeout=3,
+        )
+        if not mode_result.ok and mode_result.error_code != "unsupported":
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Default output '%s' mode update failed (%s): %s",
+                default_name,
+                reason,
+                mode_result.error or mode_result.detail or mode_result.error_code,
+            )
+
+        logging.info(
+            "No outputs selected; auto-enabled default output '%s' (%s).",
+            default_name, reason,
+        )
+        return True
+
+    def _refresh_selected_outputs(self, outputs=None) -> bool:
         """Re-apply current selected output IDs to nudge OwnTone playback state."""
         if not self.owntone_base_url:
             return False
-        base = self.owntone_base_url.rstrip("/")
         try:
             if outputs is None:
                 outputs = self._get_owntone_outputs()
@@ -1346,61 +1338,54 @@ class AudioMonitor:
             selected_ids = self._selected_output_ids(outputs)
             if not selected_ids:
                 return False
-            set_payload = {"outputs": selected_ids}
-            set_resp = requests.put(
-                base + "/api/outputs/set", json=set_payload, timeout=3,
-            )
-            if not set_resp.ok:
+            set_result = set_selected_outputs(self.owntone_base_url, selected_ids, timeout=3)
+            if not set_result.ok:
                 logging.warning(
-                    "Failed to refresh selected OwnTone outputs via /api/outputs/set: status=%s body=%s",
-                    set_resp.status_code,
-                    (set_resp.text or "")[:200],
+                    "Failed to refresh selected OwnTone outputs: %s",
+                    set_result.error or set_result.detail or set_result.error_code,
                 )
                 return False
-            outputs_by_id = {str(o.get("id")): o for o in outputs if o.get("id") is not None}
+            refresh_result = refresh_runtime_state(self.owntone_base_url, timeout=3)
+            if not refresh_result.ok and refresh_result.error_code != "unsupported":
+                logging.warning(
+                    "Failed to refresh OwnTone runtime state: %s",
+                    refresh_result.error or refresh_result.detail or refresh_result.error_code,
+                )
+                return False
+            outputs_by_id = {str(output.id): output for output in outputs if output.id}
             for out_id in selected_ids:
                 out_key = str(out_id)
-                mode = resolve_owntone_output_airplay_mode(
-                    out_key,
-                    output_airplay_modes=self.owntone_output_airplay_modes,
-                )
-                payload_result = build_owntone_output_update_payload(
-                    outputs_by_id.get(out_key),
-                    selected=True,
-                    offset_ms=self.owntone_output_offsets_ms.get(out_key),
-                    protocol_mode=mode,
-                )
-                payload = payload_result.payload
-                if payload_result.protocol_coerced:
-                    logging.warning(
-                        "OwnTone output %s does not support the configured runtime protocol; coercing to default.",
+                output = outputs_by_id.get(out_key)
+                if output is None:
+                    continue
+                offset_ms = self.owntone_output_offsets_ms.get(out_key)
+                if offset_ms is not None:
+                    offset_result = set_output_offset(
+                        self.owntone_base_url,
                         out_key,
-                    )
-                if payload_result.protocol_requested and not payload_result.protocol_included:
-                    if payload_result.output_known:
-                        logging.info(
-                            "Skipping runtime protocol refresh for OwnTone output %s because this build does not advertise protocol capability.",
-                            out_key,
-                        )
-                    else:
-                        logging.warning(
-                            "Skipping runtime protocol refresh for OwnTone output %s because output metadata was unavailable.",
-                            out_key,
-                        )
-                if len(payload) > 1:
-                    resp = requests.put(
-                        base + f"/api/outputs/{out_id}",
-                        json=payload,
+                        int(offset_ms),
                         timeout=3,
                     )
-                    if not resp.ok:
+                    if not offset_result.ok:
                         logging.warning(
-                            "Failed to refresh OwnTone output %s: status=%s body=%s",
+                            "Failed to refresh OwnTone output %s offset: %s",
                             out_id,
-                            resp.status_code,
-                            (resp.text or "")[:200],
+                            offset_result.error or offset_result.detail or offset_result.error_code,
                         )
                         return False
+                mode_result = set_output_mode(
+                    self.owntone_base_url,
+                    out_key,
+                    config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_key)),
+                    timeout=3,
+                )
+                if not mode_result.ok and mode_result.error_code != "unsupported":
+                    logging.warning(
+                        "Failed to refresh OwnTone output %s mode: %s",
+                        out_id,
+                        mode_result.error or mode_result.detail or mode_result.error_code,
+                    )
+                    return False
             logging.info("Refreshed selected OwnTone outputs: %s", selected_ids)
             return True
         except Exception as e:
@@ -1656,28 +1641,6 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     setup_logging(cfg.general.log_file, cfg.general.log_level)
     _ensure_playback_tracker(cfg)
 
-    # --- Ensure OwnTone config is correct before doing anything else ---
-    cfg_status = owntone_config_ok()
-    if cfg_status == OWNTONE_OK:
-        logging.info(
-            "OwnTone config OK (directories=/tmp/autostream-pipes).",
-        )
-    elif cfg_status == OWNTONE_RESTART_REQUIRED:
-        logging.warning(
-            "OwnTone config was updated; OwnTone restart required.",
-        )
-        try:
-            if owntone_restart_service():
-                logging.info("Requested OwnTone restart via autostream-admin.")
-            else:
-                logging.warning("OwnTone restart request failed (autostream-admin).")
-        except Exception as e:
-            logging.warning("Could not restart OwnTone automatically: %s", e)
-    else:
-        logging.error(
-            "OwnTone config NOT OK and could not be fixed. Playback via pipe may fail.",
-        )
-
     # Optionally start the web UI.
     if start_webui is not None:
         try:
@@ -1735,41 +1698,15 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                 continue
 
             if cfg.owntone.base_url:
-                if owntone_ensure_pipe_indexed(cfg.owntone.base_url, timeout_s=15.0):
+                pipe_ready_result = ensure_pipe_source_ready(cfg.owntone.base_url, timeout=3)
+                if pipe_ready_result.ok:
                     logging.info("OwnTone pipe source is indexed and ready.")
                 else:
                     logging.warning(
                         "OwnTone pipe source is not indexed yet; "
-                        "playback start may fail until files rescan succeeds.",
+                        "playback start may fail until backend refresh succeeds (%s).",
+                        pipe_ready_result.error or pipe_ready_result.detail or pipe_ready_result.error_code or "not ready",
                     )
-
-                # Check pipe_autostart and loglevel via the settings API.
-                # Older OwnTone builds fall back to owntone.conf and may then
-                # require a restart.
-                api_needs_restart = owntone_check_api_settings(
-                    cfg.owntone.base_url,
-                    cfg.general.log_level,
-                )
-                if api_needs_restart:
-                    logging.warning(
-                        "OwnTone API settings were corrected; restarting OwnTone."
-                    )
-                    try:
-                        if owntone_restart_service():
-                            logging.info(
-                                "Requested OwnTone restart (API settings fix)."
-                            )
-                            owntone_ensure_pipe_indexed(
-                                cfg.owntone.base_url, timeout_s=15.0
-                            )
-                        else:
-                            logging.warning(
-                                "OwnTone restart request failed (API settings fix)."
-                            )
-                    except Exception as e:
-                        logging.warning(
-                            "Could not restart OwnTone after API settings fix: %s", e
-                        )
 
             monitors = _configure_startup_monitors(client, cfg, fifo_path)
             if monitors is not None:

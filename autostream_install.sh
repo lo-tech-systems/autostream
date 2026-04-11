@@ -28,21 +28,13 @@
 # --fetch-autostream
 # Clone or update the Autostream repository from GitHub.
 #
-# --owntone-apt-ref <ref>
-# Git ref, tag, or commit used to fetch Owntone APT repository metadata.
-#
-# --owntone-key-fpr <fingerprint>
-# Expected GPG key fingerprint for the Owntone APT repository signing key.
-#
-# --use-lo-tech-owntone
-# Build and install OwnTone from the lo-tech-systems source repository
-# instead of using the packaged OwnTone install. The packaged install
-# remains the default.
-#
-# --skip-owntone-install
-# Skip installing or building OwnTone. This is intended for systems where
-# OwnTone is already present, while still allowing autostream to stage its
-# own owntone.conf and apply the systemd override.
+# --owntone=[mini|full|skip]
+# Select how OwnTone should be provisioned:
+#   full (default): install packaged OwnTone from the public repository
+#   mini: build and install OwnTone from the lo-tech-systems source repository
+#         without modifying /etc/owntone.conf
+#   skip: do not install or build OwnTone; only reuse an existing installation
+#         and update /etc/owntone.conf when present
 #
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
@@ -73,17 +65,13 @@ PIN_VALUE=""
 
 SDMON_METHOD=""                  # e.g. auto|sandisk|adata|transcend|micron|swissbit|2step
 
-OWNTONE_APT_REF="refs/heads/master"  # Prefer pinning to a commit or tag for release builds
-OWNTONE_KEY_FPR=""                   # Optional: set expected Owntone repo key fingerprint to verify
 FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitly requested
 PROMPT_REBOOT_ON_EXIT=0              # Enabled only after a real install run starts
-USE_LO_TECH_OWNTONE=0                # Build OwnTone from lo-tech-systems source repo
-OWNTONE_APT_ARGS_SUPPLIED=0          # Track whether repo-specific OwnTone args were passed
-SKIP_OWNTONE_INSTALL=0               # Reuse an existing OwnTone install without reinstalling it
+OWNTONE_MODE="full"                  # full=packaged, mini=lo-tech source build, skip=reuse existing install
 
 usage() {
   cat <<EOF
-Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone-apt-ref <ref>] [--owntone-key-fpr <fingerprint>] [--use-lo-tech-owntone] [--skip-owntone-install] [--fetch-autostream]
+Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone=<mini|full|skip>] [--fetch-autostream]
 
   --unattended PIN=1234      Run non-interactively (or skip confirmation prompts) and set the PIN.
                              If PIN is omitted/invalid, the installer falls back to attended mode.
@@ -91,12 +79,10 @@ Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--own
   --sdmon[=<method>]         Enable sdmon (SD Card Monitoring); bare --sdmon uses auto.
                              auto | sandisk | adata | transcend | micron | swissbit | 2step
 
-  --owntone-apt-ref REF      GitHub ref/commit for Owntone APT metadata (default: ${OWNTONE_APT_REF}).
-  --owntone-key-fpr FPR      Expected Owntone repo key fingerprint (optional hardening).
-  --use-lo-tech-owntone      Build and install OwnTone from the lo-tech-systems repo.
-                             When this is set, --owntone-apt-ref and --owntone-key-fpr are ignored.
-  --skip-owntone-install     Do not install or build OwnTone.
-                             Keeps the owntone.conf staging and systemd override steps.
+  --owntone=MODE             OwnTone provisioning mode:
+                             full = install packaged OwnTone (default)
+                             mini = build/install lo-tech OwnTone from source without editing /etc/owntone.conf
+                             skip = do not install/build OwnTone, but update /etc/owntone.conf when present
   --fetch-autostream         Clone/update the autostream GitHub repository.
   --help, -h                 Show this help.
 
@@ -104,9 +90,8 @@ Examples:
   sudo ./${SCRIPT_NAME}
   sudo ./${SCRIPT_NAME} --unattended PIN=1234
   sudo ./${SCRIPT_NAME} --unattended PIN=abcd-1234 --sdmon=sandisk
-  sudo ./${SCRIPT_NAME} --use-lo-tech-owntone
-  sudo ./${SCRIPT_NAME} --skip-owntone-install
-  sudo ./${SCRIPT_NAME} --owntone-apt-ref <commit-sha> --owntone-key-fpr "ABCD ..."
+  sudo ./${SCRIPT_NAME} --owntone=mini
+  sudo ./${SCRIPT_NAME} --owntone=skip
 
 EOF
 }
@@ -114,6 +99,13 @@ EOF
 is_valid_sdmon_method() {
   case "$1" in
     auto|sandisk|adata|transcend|micron|swissbit|2step) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_valid_owntone_mode() {
+  case "$1" in
+    mini|full|skip) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -147,28 +139,27 @@ parse_args() {
         fi
         shift
         ;;
-      --owntone-apt-ref)
-        [[ $# -ge 2 ]] || { error "--owntone-apt-ref requires a value"; exit 2; }
-        OWNTONE_APT_REF="$2"
-        OWNTONE_APT_ARGS_SUPPLIED=1
-        shift 2
+      --owntone=*)
+        OWNTONE_MODE="${1#--owntone=}"
+        if ! is_valid_owntone_mode "${OWNTONE_MODE}"; then
+          error "Invalid --owntone mode: ${OWNTONE_MODE}"
+          usage
+          exit 2
+        fi
+        shift
         ;;
-      --owntone-key-fpr)
-        [[ $# -ge 2 ]] || { error "--owntone-key-fpr requires a value"; exit 2; }
-        OWNTONE_KEY_FPR="$2"
-        OWNTONE_APT_ARGS_SUPPLIED=1
+      --owntone)
+        [[ $# -ge 2 ]] || { error "--owntone requires a value"; exit 2; }
+        OWNTONE_MODE="$2"
+        if ! is_valid_owntone_mode "${OWNTONE_MODE}"; then
+          error "Invalid --owntone mode: ${OWNTONE_MODE}"
+          usage
+          exit 2
+        fi
         shift 2
         ;;
       --fetch-autostream)
         FETCH_AUTOSTREAM=1
-        shift
-        ;;
-      --use-lo-tech-owntone)
-        USE_LO_TECH_OWNTONE=1
-        shift
-        ;;
-      --skip-owntone-install)
-        SKIP_OWNTONE_INSTALL=1
         shift
         ;;
       --help|-h)
@@ -620,25 +611,13 @@ patch_sdmon_service_method() {
 
 configure_owntone_apt_repo() {
   info "Configuring Owntone APT repository"
-  curl -fsSL "https://raw.githubusercontent.com/owntone/owntone-apt/${OWNTONE_APT_REF}/repo/rpi/owntone.gpg" \
+  curl -fsSL "https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone.gpg" \
     | gpg --dearmor \
     | tee /usr/share/keyrings/owntone-archive-keyring.gpg >/dev/null
 
-  if [[ -n "${OWNTONE_KEY_FPR}" ]]; then
-    info "Verifying Owntone APT key fingerprint"
-    local_expected="$(echo "${OWNTONE_KEY_FPR}" | tr -d '[:space:]')"
-    local_actual="$(gpg --show-keys --with-colons /usr/share/keyrings/owntone-archive-keyring.gpg | awk -F: '$1=="fpr"{print $10; exit}')"
-    if [[ -z "${local_actual}" || "${local_actual}" != "${local_expected}" ]]; then
-      error "Owntone APT key fingerprint mismatch. Expected: ${local_expected}; got: ${local_actual:-<none>}"
-      exit 1
-    fi
-  else
-    warn "OWNTONE_KEY_FPR not set; skipping Owntone APT key fingerprint verification."
-  fi
-
   curl -fsSL \
     -o /etc/apt/sources.list.d/owntone.list \
-    "https://raw.githubusercontent.com/owntone/owntone-apt/${OWNTONE_APT_REF}/repo/rpi/owntone-trixie.list"
+    "https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone-trixie.list"
 
   DEBIAN_FRONTEND=noninteractive apt-get update
 }
@@ -717,19 +696,6 @@ fi
   show_warnings_and_prompt
   require_rpi_os_trixie
 
-  if [[ ${USE_LO_TECH_OWNTONE} -eq 1 && ${OWNTONE_APT_ARGS_SUPPLIED} -eq 1 ]]; then
-    warn "--use-lo-tech-owntone is set; --owntone-apt-ref/--owntone-key-fpr will be ignored."
-  fi
-
-  if [[ ${SKIP_OWNTONE_INSTALL} -eq 1 ]]; then
-    if [[ ${USE_LO_TECH_OWNTONE} -eq 1 ]]; then
-      warn "--skip-owntone-install is set; --use-lo-tech-owntone will be ignored."
-    fi
-    if [[ ${OWNTONE_APT_ARGS_SUPPLIED} -eq 1 ]]; then
-      warn "--skip-owntone-install is set; --owntone-apt-ref/--owntone-key-fpr will be ignored."
-    fi
-  fi
-
   if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
     info "Unattended mode: setting PIN from command line"
     set_pin_file "${PIN_VALUE}"
@@ -764,16 +730,16 @@ fi
   # Note - Flask is intentionally installed at the system level because
   # autostream_wifi_watcher runs directly via its shebang as a boot/recovery
   # path and should not depend on the application venv being present/healthy.
-  apt_install git build-essential libffi-dev pkg-config fq acl \
+  apt_install git build-essential libffi-dev pkg-config fq \
     libasound2-dev libsamplerate0-dev python3-dev python3-venv python3-pip python3-flask
 
   # Platform services
   apt_install nginx watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
   # Application services
-  if [[ ${SKIP_OWNTONE_INSTALL} -eq 1 ]]; then
+  if [[ "${OWNTONE_MODE}" == "skip" ]]; then
     info "Skipping OwnTone install/build; reusing existing system OwnTone"
-  elif [[ ${USE_LO_TECH_OWNTONE} -eq 1 ]]; then
+  elif [[ "${OWNTONE_MODE}" == "mini" ]]; then
     install_lo_tech_owntone
   else
     install_packaged_owntone
@@ -833,74 +799,52 @@ fi
   chown -R autostream:autostream "${INSTALL_DIR}"
   chmod 0755 "${INSTALL_DIR}"
 
-  # Owntone config dir - owned by root, but allow autostream user via ACL
-  info "Creating owntone.conf"
-  mkdir -p "${INSTALL_DIR}/owntone"
-  if [[ -f /etc/owntone.conf ]]; then
-    install /etc/owntone.conf "${INSTALL_DIR}/owntone/owntone.conf"
-
-    # Keep OwnTone focused on autostream pipe playback and increase logging
-    # verbosity for diagnostics.
-    python3 - "${INSTALL_DIR}/owntone/owntone.conf" <<'PYOWNTONE'
+  if [[ "${OWNTONE_MODE}" == "mini" ]]; then
+    info "Skipping /etc/owntone.conf update for --owntone=mini"
+  elif [[ "${OWNTONE_MODE}" == "skip" && ! -f /etc/owntone.conf ]]; then
+    warn "--owntone=skip is set and /etc/owntone.conf is missing; skipping OwnTone config update."
+  else
+    info "Configuring /etc/owntone.conf for autostream pipe playback"
+    python3 - /etc/owntone.conf <<'PYOWNTONE'
 from pathlib import Path
 import re
 import sys
 
 conf = Path(sys.argv[1])
-text = conf.read_text(encoding="utf-8")
+if conf.exists():
+    text = conf.read_text(encoding="utf-8")
+else:
+    text = ""
 
-# Set general.loglevel = info
-gen = re.search(r'(?ms)^\s*general\s*\{.*?^\s*\}', text)
-if gen:
-    block = gen.group(0)
-    if re.search(r'(?m)^\s*loglevel\s*=\s*[^\s#]+', block):
-        block = re.sub(r'(?m)^(\s*)loglevel\s*=\s*[^\s#]+\s*$', r'\1loglevel = info', block, count=1)
-    elif re.search(r'(?m)^\s*#\s*loglevel\s*=\s*[^\s#]+', block):
-        block = re.sub(r'(?m)^(\s*)#\s*loglevel\s*=\s*[^\s#]+\s*$', r'\1loglevel = info', block, count=1)
-    else:
-        i = block.find('{')
-        j = block.find('\n', i)
-        if j != -1:
-            block = block[:j+1] + '\tloglevel = info\n' + block[j+1:]
-    text = text[:gen.start()] + block + text[gen.end():]
-
-# Set library.directories and pipe_autostart
+line = 'directories = { "/tmp/autostream-pipes" }'
 lib = re.search(r'(?ms)^\s*library\s*\{.*?^\s*\}', text)
 if lib:
     block = lib.group(0)
     if re.search(r'(?m)^\s*directories\s*=\s*\{[^}]*\}', block):
-        block = re.sub(r'(?m)^(\s*)directories\s*=\s*\{[^}]*\}\s*$', r'\1directories = { "/tmp/autostream-pipes" }', block, count=1)
+        block = re.sub(
+            r'(?m)^(\s*)directories\s*=\s*\{[^}]*\}\s*$',
+            r'\1' + line,
+            block,
+            count=1,
+        )
     else:
-        i = block.find('{')
-        j = block.find('\n', i)
-        if j != -1:
-            block = block[:j+1] + '\tdirectories = { "/tmp/autostream-pipes" }\n' + block[j+1:]
-
-    if re.search(r'(?m)^\s*pipe_autostart\s*=\s*(true|false)', block):
-        block = re.sub(r'(?m)^(\s*)pipe_autostart\s*=\s*(true|false)\s*$', r'\1pipe_autostart = true', block, count=1)
-    elif re.search(r'(?m)^\s*#\s*pipe_autostart\s*=\s*(true|false)', block):
-        block = re.sub(r'(?m)^(\s*)#\s*pipe_autostart\s*=\s*(true|false)\s*$', r'\1pipe_autostart = true', block, count=1)
-    else:
-        close = block.rfind('}')
-        if close != -1:
-            block = block[:close] + '\tpipe_autostart = true\n' + block[close:]
-
+        open_brace = block.find('{')
+        first_newline = block.find('\n', open_brace)
+        if first_newline != -1:
+            block = block[:first_newline + 1] + '\t' + line + '\n' + block[first_newline + 1:]
+        else:
+            block = block.rstrip() + '\n\t' + line + '\n}'
     text = text[:lib.start()] + block + text[lib.end():]
+else:
+    if text and not text.endswith('\n'):
+        text += '\n'
+    if text:
+        text += '\n'
+    text += 'library {\n\t' + line + '\n}\n'
 
 conf.write_text(text, encoding="utf-8")
 PYOWNTONE
-  else
-    warn "/etc/owntone.conf not found; owntone.conf was not staged"
   fi
-
-  ###########################################
-  # systemd override for owntone
-  ###########################################
-  info "Applying owntone systemd override"
-  mkdir -p /etc/systemd/system/owntone.service.d
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/owntone_override.conf" /etc/systemd/system/owntone.service.d/owntone_override.conf
-  systemctl daemon-reload
-  systemctl restart owntone
 
   ###########################################
   # Copy in files
@@ -913,6 +857,7 @@ PYOWNTONE
   cp -a "${AUTOSTREAM_DIR}/core/." "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/version" "${INSTALL_DIR}/"
+  chmod +x "${INSTALL_DIR}/autostream_wifi_watcher"
   if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" ]]; then
     cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
   fi
@@ -933,9 +878,6 @@ PYOWNTONE
   if [[ -f "${INSTALL_DIR}/autostream.ini" ]]; then
     sed -i -E 's|^[[:space:]]*fifo_path[[:space:]]*=.*$|fifo_path = /tmp/autostream-pipes/autostream.fifo|' "${INSTALL_DIR}/autostream.ini"
   fi
-  # Ensure the FIFO directory remains writable by the autostream service user
-  # even when created during a root-run install.
-  install -d -m 1777 -o root -g root /tmp/autostream-pipes
 
   ###########################################
   # Supervisor + helper binaries/scripts
@@ -1119,18 +1061,6 @@ PYOWNTONE
   chmod 0644 "${INSTALL_DIR}/nginx/offline"/*.html 2>/dev/null || true
 
   # 5) Exceptions that must remain root-owned (restore after the bulk chown)
-  # Owntone config hardening: root-owned + restrictive perms + ACL access for autostream
-  if [[ -d "${INSTALL_DIR}/owntone" ]]; then
-    chown -R root:root "${INSTALL_DIR}/owntone"
-    chmod 0750 "${INSTALL_DIR}/owntone"
-    setfacl -m u:autostream:rwx "${INSTALL_DIR}/owntone" 2>/dev/null || true
-    setfacl -m d:u:autostream:rwx "${INSTALL_DIR}/owntone" 2>/dev/null || true
-    # Allow autostream read/write access to owntone.conf if present
-    if [[ -f "${INSTALL_DIR}/owntone/owntone.conf" ]]; then
-      setfacl -m u:autostream:rw "${INSTALL_DIR}/owntone/owntone.conf" 2>/dev/null || true
-    fi
-  fi
-
   # SSID file: root-owned and readable
   if [[ -f "${INSTALL_DIR}/ssid" ]]; then
     chown root:root "${INSTALL_DIR}/ssid"

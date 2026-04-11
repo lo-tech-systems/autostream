@@ -20,14 +20,11 @@ import json
 import logging
 import textwrap
 
-import requests
-
 from typing import Optional
 from urllib.parse import parse_qs, quote
 
 from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
-    DEFAULT_OWNTONE_PROTOCOL_API_STATE,
     mark_configured,
     normalize_airplay_mode,
     parse_config,
@@ -40,22 +37,22 @@ from autostream_core import (
     update_live_owntone_runtime,
     update_playback_input_config,
 )
-from autostream_owntone import (
-    _coerce_owntone_bool,
-    _coerce_owntone_int,
-    build_owntone_output_update_payload,
-    owntone_fetch_outputs,
-    owntone_get_output,
-    owntone_get_setting,
-    owntone_output_protocol_support,
-    owntone_put_setting,
-    read_airplay2_for_speaker,
-    read_and_set_global_uncompressed_audio,
-    resolve_owntone_output_airplay_mode,
-    resolve_owntone_protocol_api_state,
-    write_airplay2_for_speaker,
-    write_and_set_global_uncompressed_audio,
-    OWNTONE_CONF_PATH,
+from autostream_players import (
+    SETTING_START_BUFFER_MS,
+    SETTING_START_BUFFER_MS_DEFAULT,
+    SETTING_START_BUFFER_MS_MAX,
+    SETTING_START_BUFFER_MS_MIN,
+    SETTING_START_BUFFER_MS_STEP,
+    SETTING_UNCOMPRESSED_ALAC,
+)
+from autostream_player_service import (
+    config_airplay_mode_to_backend,
+    save_setting,
+    set_output_enabled,
+    set_output_mode,
+    set_output_offset,
+    set_output_volume,
+    submit_output_pin,
 )
 from autostream_playback import normalize_stylus_life_hours, suggested_silence_threshold_dbfs
 from autostream_sysutils import get_system_hostname, set_system_hostname
@@ -82,7 +79,6 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
         out_id = payload.get("id")
         op = (payload.get("op") or "").strip().lower()
         selected = bool(payload.get("selected", False))
-        volume = max(0, min(100, int(payload.get("volume", 50))))
 
         # PIN may arrive as string or number depending on client implementation.
         pin_raw = payload.get("pin") if isinstance(payload, dict) else None
@@ -91,146 +87,102 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
         base_url = parsed.owntone.base_url.rstrip("/")
-        url = base_url + f"/api/outputs/{out_id}"
+        out_id_text = str(out_id or "").strip()
+        if not out_id_text:
+            send_json(handler, 200, {"ok": False, "error": "Missing output id"})
+            return
 
-        # Two modes:
-        #   (1) Normal output update: selected/volume plus autostream-managed
-        #       runtime settings like offset/protocol (never send pin here)
-        #   (2) PIN verification: pin ONLY (no selected/volume)
         if op == "pin":
             if not pin:
-                send_json(handler, 200, {"ok": False, "error": "Missing PIN", "id": str(out_id)})
+                send_json(handler, 200, {"ok": False, "error": "Missing PIN", "id": out_id_text})
                 return
-            out_payload = {"pin": pin}
-
-            logging.info("Owntone API call: PUT %s json={\"pin\":\"***\"}", url)
-            resp = requests.put(url, json=out_payload, timeout=3)
-            logging.info("Owntone API response: status=%s body=%s",
-                         getattr(resp, "status_code", None),
-                         (getattr(resp, "text", "") or "").strip())
-
-            # Mode (2): PIN-only verification.
-            # OwnTone returns 400 if the PIN was wrong/failed; client should re-prompt.
-            if resp.status_code == 400:
+            pin_result = submit_output_pin(base_url, out_id_text, pin, timeout=3)
+            if not pin_result.ok and pin_result.error_code == "pin_invalid":
                 send_json(handler, 200, {
                     "ok": False,
-                    "id": str(out_id),
+                    "id": out_id_text,
                     "pin_invalid": True,
-                    "status": int(resp.status_code),
-                    "error": (resp.text or "").strip(),
+                    "error": pin_result.error or pin_result.detail or pin_result.error_code,
                 })
                 return
-            if not resp.ok:
+            if not pin_result.ok:
                 send_json(handler, 200, {
                     "ok": False,
-                    "id": str(out_id),
-                    "status": int(resp.status_code),
-                    "error": (resp.text or "").strip(),
+                    "id": out_id_text,
+                    "error": pin_result.error or pin_result.detail or pin_result.error_code,
                 })
                 return
-            send_json(handler, 200, {"ok": True, "id": str(out_id)})
+            send_json(handler, 200, {"ok": True, "id": out_id_text})
             return
 
         if selected:
-            outputs = owntone_fetch_outputs(base_url, timeout=3)
-            out_obj = owntone_get_output(
-                base_url,
-                out_id,
-                outputs=outputs,
-                timeout=3,
-            )
-            mode = resolve_owntone_output_airplay_mode(
-                out_id,
-                output_airplay_modes=parsed.owntone.output_airplay_modes,
-            )
-            payload_result = build_owntone_output_update_payload(
-                out_obj,
-                selected=True,
-                volume=volume,
-                offset_ms=parsed.owntone.output_offsets_ms.get(str(out_id)),
-                protocol_mode=mode,
-            )
-            out_payload = payload_result.payload
-            if payload_result.protocol_coerced:
-                logging.warning(
-                    "OwnTone output %s does not support the configured runtime protocol; coercing to default.",
-                    out_id,
-                )
-            if payload_result.protocol_requested and not payload_result.protocol_included:
-                if payload_result.output_known:
-                    logging.info(
-                        "Skipping runtime protocol for OwnTone output %s because this build does not advertise protocol capability.",
-                        out_id,
-                    )
-                else:
-                    logging.warning(
-                        "Skipping runtime protocol for OwnTone output %s because output metadata was unavailable.",
-                        out_id,
-                    )
-            logging.info("Owntone API call: PUT %s json=%s", url, out_payload)
-            resp = requests.put(url, json=out_payload, timeout=3)
-            logging.info("Owntone API response: status=%s body=%s",
-                         getattr(resp, "status_code", None),
-                         (getattr(resp, "text", "") or "").strip())
-
-            # OwnTone returns HTTP 400 when an output enable requires device PIN verification.
-            if resp.status_code == 400:
+            volume = max(0, min(100, int(payload.get("volume", 50))))
+            enable_result = set_output_enabled(base_url, out_id_text, True, timeout=3)
+            if not enable_result.ok and enable_result.error_code == "pin_required":
                 send_json(handler, 200, {
                     "ok": False,
                     "pin_required": True,
-                    "id": str(out_id),
+                    "id": out_id_text,
                     "output_name": str(payload.get("name") or ""),
-                    "status": int(resp.status_code),
-                    "error": (resp.text or "").strip(),
+                    "error": enable_result.error or enable_result.detail or enable_result.error_code,
                 })
                 return
-
-            if not resp.ok:
+            if not enable_result.ok:
                 send_json(handler, 200, {
                     "ok": False,
-                    "id": str(out_id),
-                    "status": int(resp.status_code),
-                    "error": (resp.text or "").strip(),
+                    "id": out_id_text,
+                    "error": enable_result.error or enable_result.detail or enable_result.error_code,
                     "pin_invalid": False,
                 })
                 return
 
-            send_json(handler, 200, {"ok": True, "id": str(out_id)})
+            volume_result = set_output_volume(base_url, out_id_text, volume, timeout=3)
+            if not volume_result.ok:
+                send_json(handler, 200, {
+                    "ok": False,
+                    "id": out_id_text,
+                    "error": volume_result.error or volume_result.detail or volume_result.error_code,
+                })
+                return
+
+            offset_ms = parsed.owntone.output_offsets_ms.get(out_id_text)
+            if offset_ms is not None:
+                offset_result = set_output_offset(base_url, out_id_text, int(offset_ms), timeout=3)
+                if not offset_result.ok:
+                    send_json(handler, 200, {
+                        "ok": False,
+                        "id": out_id_text,
+                        "error": offset_result.error or offset_result.detail or offset_result.error_code,
+                    })
+                    return
+
+            mode_text = parsed.owntone.output_airplay_modes.get(out_id_text, DEFAULT_AIRPLAY_MODE)
+            mode_result = set_output_mode(
+                base_url,
+                out_id_text,
+                config_airplay_mode_to_backend(mode_text),
+                timeout=3,
+            )
+            if not mode_result.ok and mode_result.error_code != "unsupported":
+                send_json(handler, 200, {
+                    "ok": False,
+                    "id": out_id_text,
+                    "error": mode_result.error or mode_result.detail or mode_result.error_code,
+                })
+                return
+
+            send_json(handler, 200, {"ok": True, "id": out_id_text})
             return
 
-        # Disable path: preserve all other currently-selected outputs by using /api/outputs/set.
-        outputs_url = base_url + "/api/outputs"
-        set_url = base_url + "/api/outputs/set"
-        list_resp = requests.get(outputs_url, timeout=3)
-        if not list_resp.ok:
+        disable_result = set_output_enabled(base_url, out_id_text, False, timeout=3)
+        if not disable_result.ok:
             send_json(handler, 200, {
                 "ok": False,
-                "id": str(out_id),
-                "status": int(list_resp.status_code),
-                "error": (list_resp.text or "").strip(),
+                "id": out_id_text,
+                "error": disable_result.error or disable_result.detail or disable_result.error_code,
             })
             return
-
-        outputs = (list_resp.json() or {}).get("outputs", [])
-        remaining = [str(o.get("id")) for o in outputs if o.get("selected") and str(o.get("id")) != str(out_id)]
-
-        set_payload = {"outputs": remaining}
-        logging.info("Owntone API call: PUT %s json=%s", set_url, set_payload)
-        resp = requests.put(set_url, json=set_payload, timeout=3)
-        logging.info("Owntone API response: status=%s body=%s",
-                     getattr(resp, "status_code", None),
-                     (getattr(resp, "text", "") or "").strip())
-        if not resp.ok:
-            send_json(handler, 200, {
-                "ok": False,
-                "id": str(out_id),
-                "status": int(resp.status_code),
-                "error": (resp.text or "").strip(),
-                "pin_invalid": False,
-            })
-            return
-
-        send_json(handler, 200, {"ok": True, "id": str(out_id)})
+        send_json(handler, 200, {"ok": True, "id": out_id_text})
     except Exception as e:
         logging.error("Update failed: %s", e)
         send_json(handler, 200, {"ok": False, "error": str(e)})
@@ -538,7 +490,6 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
     try:
         cfg = locked_load_config(state.config_path)
 
-        # Tuple: (stable_output_id, display_name, show, mode, offset_ms_or_none)
         speakers: list[tuple[str, str, bool, str, Optional[int]]] = []
         valid_airplay_modes = {DEFAULT_AIRPLAY_MODE, "raop", "airplay2"}
         i = 0
@@ -576,144 +527,19 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             cfg.set("webui", "hidden_outputs", "")
 
         base_url = cfg.get("owntone", "base_url", fallback="http://localhost:3689")
-        current_outputs = owntone_fetch_outputs(base_url, timeout=3)
-        current_outputs_list = current_outputs or []
-        outputs_by_id = {
-            str(o.get("id")).strip(): o
-            for o in current_outputs_list
-            if o.get("id") is not None
-        }
-        persisted_protocol_api_state = cfg.get(
-            "owntone",
-            "protocol_api_state",
-            fallback=DEFAULT_OWNTONE_PROTOCOL_API_STATE,
-        )
-        protocol_api_state = resolve_owntone_protocol_api_state(
-            current_outputs,
-            persisted_protocol_api_state,
-        )
-        if current_outputs is None:
-            logging.warning(
-                "OwnTone setup save: output metadata was unavailable; reusing last-known protocol compatibility state %r.",
-                protocol_api_state,
-            )
-        elif not current_outputs_list:
-            logging.info(
-                "OwnTone setup save: no outputs are currently discovered; reusing last-known protocol compatibility state %r.",
-                protocol_api_state,
-            )
 
         existing_parsed = parse_config(cfg)
-        # Preserve entries for currently undiscovered outputs so a temporary
-        # disappearance does not erase the user's saved id-based preference.
         offsets_by_id = dict(existing_parsed.owntone.output_offsets_ms)
         runtime_airplay_modes_by_id = dict(existing_parsed.owntone.output_airplay_modes)
-        existing_runtime_mode_ids = set(runtime_airplay_modes_by_id.keys())
         known_outputs = dict(existing_parsed.owntone.known_outputs)
-        conf_airplay_writes: list[tuple[str, bool]] = []
-        if protocol_api_state == "legacy":
-            runtime_airplay_modes_by_id = {}
         for out_id, spk, _show, mode, offset_ms in speakers:
             out_id = str(out_id or "").strip()
-            out_obj = outputs_by_id.get(out_id) if out_id else None
             if out_id and spk.strip():
                 known_outputs[out_id] = spk.strip()
             if out_id:
                 if offset_ms is not None:
                     offsets_by_id[out_id] = offset_ms
-
-            normalized_mode = normalize_airplay_mode(mode)
-            if protocol_api_state == "runtime":
-                if not out_id:
-                    logging.warning(
-                        "OwnTone speaker %r has no stable output id yet; cannot save runtime protocol preference.",
-                        spk,
-                    )
-                    continue
-                protocol_support = owntone_output_protocol_support(out_obj)
-                if protocol_support.supports_runtime_protocol:
-                    if normalized_mode == "raop" and not protocol_support.supports_raop:
-                        logging.warning(
-                            "OwnTone speaker %r does not support AirPlay 1; coercing mode to default.",
-                            spk,
-                        )
-                        normalized_mode = DEFAULT_AIRPLAY_MODE
-                    elif normalized_mode == "airplay2" and not protocol_support.supports_airplay2:
-                        logging.warning(
-                            "OwnTone speaker %r does not support AirPlay 2; coercing mode to default.",
-                            spk,
-                        )
-                        normalized_mode = DEFAULT_AIRPLAY_MODE
-                    logging.info(
-                        "OwnTone speaker %r will use runtime protocol preference %r on output id %s.",
-                        spk,
-                        normalized_mode,
-                        out_id,
-                    )
-                elif out_obj is None:
-                    if out_id not in existing_runtime_mode_ids:
-                        logging.warning(
-                            "OwnTone speaker %r is not currently discovered and has no previously confirmed runtime AirPlay mode; leaving its mode unchanged.",
-                            spk,
-                        )
-                        continue
-                    logging.info(
-                        "OwnTone speaker %r is not currently discovered; saving runtime protocol preference %r on output id %s for later.",
-                        spk,
-                        normalized_mode,
-                        out_id,
-                        )
-                else:
-                    if out_id not in existing_runtime_mode_ids:
-                        logging.warning(
-                            "OwnTone speaker %r did not provide protocol capability metadata and has no previously confirmed runtime AirPlay mode; leaving its mode unchanged.",
-                            spk,
-                        )
-                        continue
-                    logging.warning(
-                        "OwnTone speaker %r did not provide protocol capability metadata during this save; keeping runtime preference %r on output id %s pending.",
-                        spk,
-                        normalized_mode,
-                        out_id,
-                    )
-                runtime_airplay_modes_by_id[out_id] = normalized_mode
-                continue
-
-            if protocol_api_state == "legacy":
-                if not spk.strip():
-                    logging.warning(
-                        "OwnTone speaker %r has no usable display name; cannot apply legacy owntone.conf mode handling.",
-                        out_id,
-                    )
-                    continue
-                if out_id:
-                    runtime_airplay_modes_by_id.pop(out_id, None)
-                conf_airplay_writes.append((spk, normalized_mode == "airplay2"))
-                logging.info(
-                    "OwnTone speaker %r will use legacy owntone.conf AirPlay mode handling.",
-                    spk,
-                )
-                continue
-
-            if not out_id:
-                logging.warning(
-                    "OwnTone speaker %r has no stable output id and compatibility is still unknown; mode change will be ignored for now.",
-                    spk,
-                )
-                continue
-            if out_id not in existing_runtime_mode_ids:
-                logging.warning(
-                    "OwnTone speaker %r compatibility is still unknown and it has no previously confirmed runtime AirPlay mode; leaving its mode unchanged.",
-                    spk,
-                )
-                continue
-            runtime_airplay_modes_by_id[out_id] = normalized_mode
-            logging.warning(
-                "OwnTone speaker %r compatibility could not be confirmed; saving pending runtime protocol preference %r on output id %s only.",
-                spk,
-                normalized_mode,
-                out_id,
-            )
+                runtime_airplay_modes_by_id[out_id] = normalize_airplay_mode(mode)
 
         if cfg.has_section("owntone_offsets"):
             cfg.remove_section("owntone_offsets")
@@ -739,73 +565,43 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         for oid, name in sorted(known_outputs.items(), key=lambda kv: kv[0]):
             cfg.set("owntone_known_outputs", str(oid), str(name))
 
-        if not cfg.has_section("owntone"):
-            cfg.add_section("owntone")
-        cfg.set("owntone", "protocol_api_state", protocol_api_state)
-
-        want_uncompressed_audio = ("uncompressed_alac" in form)
-        api_set_uncompressed = owntone_put_setting(
-            base_url, "airplay", "uncompressed_alac", want_uncompressed_audio
-        )
-        if api_set_uncompressed.available and not api_set_uncompressed.ok:
-            raise RuntimeError("Could not update OwnTone uncompressed_alac via API")
-
         restart_required = False
+        want_uncompressed_audio = ("uncompressed_alac" in form)
+        save_uncompressed_result = save_setting(
+            base_url,
+            SETTING_UNCOMPRESSED_ALAC,
+            want_uncompressed_audio,
+            timeout=3,
+        )
+        if not save_uncompressed_result.ok and not save_uncompressed_result.unsupported:
+            raise RuntimeError("Could not update OwnTone uncompressed_alac via API")
+        restart_required = restart_required or bool(save_uncompressed_result.restart_required)
 
-        _START_BUFFER_MIN = 300
-        _START_BUFFER_MAX = 3500
-        _START_BUFFER_STEP = 50
         if "start_buffer_ms" in form:
             try:
-                want_buffer = int(fld("start_buffer_ms", "2250").strip())
+                want_buffer = int(fld("start_buffer_ms", str(SETTING_START_BUFFER_MS_DEFAULT)).strip())
             except (ValueError, TypeError):
-                want_buffer = 2250
+                want_buffer = SETTING_START_BUFFER_MS_DEFAULT
             want_buffer = max(
-                _START_BUFFER_MIN,
+                SETTING_START_BUFFER_MS_MIN,
                 min(
-                    _START_BUFFER_MAX,
-                    round(want_buffer / _START_BUFFER_STEP) * _START_BUFFER_STEP,
+                    SETTING_START_BUFFER_MS_MAX,
+                    round(want_buffer / SETTING_START_BUFFER_MS_STEP) * SETTING_START_BUFFER_MS_STEP,
                 ),
             )
-            cur_buf_res = owntone_get_setting(base_url, "general", "start_buffer_ms")
-            cur_buf = (
-                _coerce_owntone_int(cur_buf_res.value)
-                if (cur_buf_res.available and cur_buf_res.ok)
-                else None
+            save_buffer_result = save_setting(
+                base_url,
+                SETTING_START_BUFFER_MS,
+                want_buffer,
+                timeout=3,
             )
-            if cur_buf is None or want_buffer != cur_buf:
-                api_set_buffer = owntone_put_setting(
-                    base_url, "general", "start_buffer_ms", want_buffer
-                )
-                if api_set_buffer.available and not api_set_buffer.ok:
-                    raise RuntimeError("Could not update OwnTone start_buffer_ms via API")
-                if api_set_buffer.ok:
-                    restart_required = True
+            if not save_buffer_result.ok and not save_buffer_result.unsupported:
+                raise RuntimeError("Could not update OwnTone start_buffer_ms via API")
+            restart_required = restart_required or bool(save_buffer_result.restart_required)
 
         with CONFIG_IO_LOCK:
             with open(state.config_path, "w", encoding="utf-8") as f:
                 cfg.write(f)
-
-            for spk, ap2 in conf_airplay_writes:
-                current_ap2 = read_airplay2_for_speaker(spk, OWNTONE_CONF_PATH)
-                if current_ap2 is None or bool(current_ap2) != bool(ap2):
-                    if not write_airplay2_for_speaker(spk, ap2, OWNTONE_CONF_PATH):
-                        raise RuntimeError(
-                            f"Could not update AirPlay mode for speaker {spk!r}"
-                        )
-                    restart_required = True
-
-            if not api_set_uncompressed.available:
-                current_uncompressed = bool(
-                    read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH)
-                )
-                if current_uncompressed != bool(want_uncompressed_audio):
-                    if not write_and_set_global_uncompressed_audio(
-                        enabled=want_uncompressed_audio,
-                        conf_path=OWNTONE_CONF_PATH,
-                    ):
-                        raise RuntimeError("Could not update OwnTone uncompressed_alac setting")
-                    restart_required = True
 
         saved_parsed = parse_config(cfg)
         update_live_owntone_runtime(
@@ -832,6 +628,7 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         handler.send_header("Content-Length", "0")
         handler.end_headers()
     except Exception:
+        logging.exception("handle_owntone_setup_post failed")
         send_owntone_setup_page(
             handler,
             state,

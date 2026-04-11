@@ -29,13 +29,7 @@ from autostream_config import (
 
 from autostream_core import update_live_platform_log_level
 
-from autostream_owntone import (
-    owntone_apply_log_level,
-    owntone_restart_service,
-    read_log_level_from_conf,
-    write_log_level_to_conf,
-    OWNTONE_CONF_PATH,
-)
+from autostream_player_service import save_log_level
 
 from autostream_sysutils import tail_lines
 
@@ -191,51 +185,29 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
                 cfg.write(fh)
 
         applied_log_level, monitor_updated = update_live_platform_log_level(new_log_level)
-        owntone_res = None
-        needs_owntone_restart = False
+        player_setting_res = None
         if parsed.owntone.base_url:
-            owntone_res = owntone_apply_log_level(
+            player_setting_res = save_log_level(
                 parsed.owntone.base_url,
                 applied_log_level,
             )
-            if not owntone_res.available:
-                with CONFIG_IO_LOCK:
-                    conf_level = read_log_level_from_conf(OWNTONE_CONF_PATH)
-                    if conf_level != applied_log_level:
-                        if not write_log_level_to_conf(applied_log_level, OWNTONE_CONF_PATH):
-                            raise RuntimeError("Failed writing OwnTone loglevel to owntone.conf")
-                        needs_owntone_restart = True
-
-        if needs_owntone_restart and not owntone_restart_service():
-            flash_text = (
-                "Log level saved, but OwnTone restart failed"
-                if monitor_updated
-                else "Log level saved, but OwnTone restart failed and monitor runtime update failed"
-            )
-            _set_flash_cookie(handler, flash_text, max_age=30)
-            handler.send_response(302)
-            handler.send_header("Location", "/logs")
-            handler.end_headers()
-            return
 
         flash_text = (
             "Log level saved"
             if monitor_updated
             else "Log level saved, but monitor runtime log level was not updated"
         )
-        owntone_still_needs_attention = (
-            owntone_res is not None
-            and not owntone_res.ok
-            and not (owntone_res.available is False and not needs_owntone_restart)
+        player_needs_attention = (
+            player_setting_res is not None
+            and not player_setting_res.ok
+            and not player_setting_res.unsupported
         )
-        if owntone_still_needs_attention:
-            flash_text = (
-                "Log level saved; OwnTone restarted"
-                if needs_owntone_restart
-                else "Log level saved, but OwnTone was not updated"
-            )
+        if player_needs_attention:
+            flash_text = "Log level saved, but OwnTone was not updated"
             if not monitor_updated:
                 flash_text += " and monitor runtime update failed"
+        elif player_setting_res is not None and player_setting_res.unsupported and not monitor_updated:
+            flash_text = "Log level saved, but monitor runtime log level was not updated"
 
         _set_flash_cookie(handler, flash_text, max_age=30)
         handler.send_response(302)

@@ -18,39 +18,32 @@ Contents:
 from __future__ import annotations
 
 import html
-import logging
+import json
 import textwrap
 import threading
 import time
-
-import requests
 
 from typing import Optional
 from urllib.parse import parse_qs, quote, urlparse
 
 from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
-    DEFAULT_OWNTONE_PROTOCOL_API_STATE,
-    normalize_airplay_mode,
     parse_config,
     unconfigured,
 )
-from autostream_owntone import (
-    _coerce_owntone_bool,
-    _coerce_owntone_int,
-    build_owntone_output_update_payload,
-    owntone_fetch_outputs,
-    owntone_get_setting,
-    owntone_output_protocol_support,
-    owntone_put_setting,
-    read_airplay2_for_speaker,
-    read_and_set_global_pipe_directory,
-    read_and_set_global_uncompressed_audio,
-    resolve_owntone_output_airplay_mode,
-    resolve_owntone_protocol_api_state,
-    write_airplay2_for_speaker,
-    write_and_set_global_uncompressed_audio,
-    OWNTONE_CONF_PATH,
+from autostream_players import (
+    SETTING_START_BUFFER_MS,
+    SETTING_START_BUFFER_MS_DEFAULT,
+    SETTING_START_BUFFER_MS_MAX,
+    SETTING_START_BUFFER_MS_MIN,
+    SETTING_START_BUFFER_MS_STEP,
+    SETTING_UNCOMPRESSED_ALAC,
+)
+from autostream_player_service import (
+    get_capabilities,
+    get_setting,
+    list_outputs,
+    output_supported_config_modes,
 )
 from autostream_sysutils import run_admin_cmd
 from autostream_webui_assets import (
@@ -68,31 +61,23 @@ from autostream_webui_api import send_json
 # -----------------------------------------------------------------------------
 
 def wait_for_owntone_api(base_url: str, timeout_s: float = 10.0) -> tuple[bool, str]:
-    url = base_url.rstrip("/") + "/api/outputs"
-    deadline = time.time() + timeout_s
+    deadline = time.monotonic() + timeout_s
     last_err = ""
-    while time.time() < deadline:
-        try:
-            r = requests.get(url, timeout=1)
-            if r.status_code == 200:
-                return True, ""
-            last_err = f"HTTP {r.status_code}"
-        except Exception as e:
-            last_err = str(e)
+    while time.monotonic() < deadline:
+        result = list_outputs(base_url, timeout=1)
+        if result.ok:
+            return True, ""
+        last_err = result.error or result.detail or result.error_code or "unavailable"
         time.sleep(0.5)
     return False, f"Owntone is still starting ({last_err})"
 
 
 def _owntone_ready_quick(base_url: str, timeout_s: float = 0.6) -> tuple[bool, str]:
     """Fast readiness probe used by /api/owntone/ready."""
-    try:
-        url = base_url.rstrip("/") + "/api/outputs"
-        r = requests.get(url, timeout=timeout_s)
-        if 200 <= r.status_code < 300:
-            return True, "Owntone is responding"
-        return False, f"Owntone returned HTTP {r.status_code}"
-    except Exception as e:
-        return False, str(e)
+    result = list_outputs(base_url, timeout=timeout_s)
+    if result.ok:
+        return True, "Owntone is responding"
+    return False, result.error or result.detail or result.error_code or "unavailable"
 
 
 # -----------------------------------------------------------------------------
@@ -166,7 +151,8 @@ def send_owntone_restarting_page(handler, state) -> None:
     # Allow a caller-provided next target, defaulting to owntone setup.
     qs = parse_qs(urlparse(handler.path).query)
     next_path = (qs.get("next", []) or ["/owntone-setup"])[0]
-    next_path_js = html.escape(next_path, quote=True)
+    next_path_html = html.escape(next_path, quote=True)
+    next_path_js = json.dumps(next_path)  # safe for embedding in a JS string literal
 
     body = f"""<!doctype html>
       <html>
@@ -186,10 +172,10 @@ def send_owntone_restarting_page(handler, state) -> None:
           <h1>Restarting Owntone…</h1>
           <p class="muted">This can take a few seconds on a Pi Zero. We'll continue automatically when it's ready.</p>
           <p id="status" class="muted">Checking…</p>
-          <p class="muted">If this doesn't move on, you can <a href="{next_path_js}">try continuing</a>.</p>
+          <p class="muted">If this doesn't move on, you can <a href="{next_path_html}">try continuing</a>.</p>
         </div>
         <script>
-          const nextPath = "{next_path_js}";
+          const nextPath = {next_path_js};
           async function poll() {{
             try {{
               const r = await fetch("/api/owntone/ready", {{ cache: "no-store" }});
@@ -246,24 +232,18 @@ def send_owntone_setup_page(
         return
 
     hidden_set = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
-    outputs_result = owntone_fetch_outputs(parsed.owntone.base_url, timeout=3)
-    outputs = outputs_result or []
-    protocol_api_state = resolve_owntone_protocol_api_state(
-        outputs_result,
-        parsed.owntone.protocol_api_state,
-    )
+    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
+    outputs = list(outputs_result.outputs) if outputs_result.ok else []
+    capabilities = get_capabilities(parsed.owntone.base_url, timeout=3)
 
     known_outputs = dict(parsed.owntone.known_outputs)
     discovered_ids: set[str] = set()
     row_specs: list[dict[str, object]] = []
 
-    for out_obj in outputs:
-        name = str(out_obj.get("name") or "").strip()
-        out_id = out_obj.get("id")
-        if not name or out_id is None:
-            continue
-        out_id_s = str(out_id).strip()
-        if not out_id_s:
+    for output in outputs:
+        name = str(output.name or "").strip()
+        out_id_s = str(output.id or "").strip()
+        if not name or not out_id_s:
             continue
         known_outputs[out_id_s] = name
         discovered_ids.add(out_id_s)
@@ -271,9 +251,8 @@ def send_owntone_setup_page(
             {
                 "id": out_id_s,
                 "name": name,
-                "out_obj": out_obj,
+                "output": output,
                 "discovered": True,
-                "name_only": False,
             }
         )
 
@@ -286,9 +265,8 @@ def send_owntone_setup_page(
             {
                 "id": key,
                 "name": disp,
-                "out_obj": None,
+                "output": None,
                 "discovered": False,
-                "name_only": False,
             }
         )
 
@@ -301,9 +279,8 @@ def send_owntone_setup_page(
             {
                 "id": "",
                 "name": h_s,
-                "out_obj": None,
+                "output": None,
                 "discovered": False,
-                "name_only": True,
             }
         )
 
@@ -314,113 +291,71 @@ def send_owntone_setup_page(
         ),
     )
 
-    # Try API first (requires OwnTone settings endpoint); fall back to conf file.
-    _uncompressed_api = owntone_get_setting(
-        parsed.owntone.base_url, "airplay", "uncompressed_alac"
+    uncompressed_result = get_setting(
+        parsed.owntone.base_url,
+        SETTING_UNCOMPRESSED_ALAC,
+        timeout=3,
     )
-    _uncompressed_api_bool = _coerce_owntone_bool(_uncompressed_api.value)
-    uncompressed = (
-        bool(_uncompressed_api_bool)
-        if _uncompressed_api.available and _uncompressed_api.ok and _uncompressed_api_bool is not None
-        else bool(read_and_set_global_uncompressed_audio(OWNTONE_CONF_PATH))
-    )
+    uncompressed_supported = bool(uncompressed_result.ok)
+    uncompressed = bool(uncompressed_result.value) if uncompressed_result.ok else False
 
-    _START_BUFFER_MIN = 300
-    _START_BUFFER_MAX = 3500
-    _START_BUFFER_STEP = 50
-    _START_BUFFER_DEFAULT = 2250
-    _buf_api = owntone_get_setting(parsed.owntone.base_url, "general", "start_buffer_ms")
-    _buf_raw = _coerce_owntone_int(_buf_api.value) if (_buf_api.available and _buf_api.ok) else None
-    if _buf_raw is not None:
-        # Snap to nearest step within slider range.
-        start_buffer_ms = max(_START_BUFFER_MIN, min(_START_BUFFER_MAX,
-            round(_buf_raw / _START_BUFFER_STEP) * _START_BUFFER_STEP))
+    start_buffer_result = get_setting(
+        parsed.owntone.base_url,
+        SETTING_START_BUFFER_MS,
+        timeout=3,
+    )
+    if start_buffer_result.ok:
+        try:
+            _buf_raw = int(start_buffer_result.value)
+        except Exception:
+            _buf_raw = None
     else:
-        start_buffer_ms = _START_BUFFER_DEFAULT
-    start_buffer_available = _buf_api.available and _buf_api.ok
+        _buf_raw = None
+    if _buf_raw is not None:
+        start_buffer_ms = max(SETTING_START_BUFFER_MS_MIN, min(SETTING_START_BUFFER_MS_MAX,
+            round(_buf_raw / SETTING_START_BUFFER_MS_STEP) * SETTING_START_BUFFER_MS_STEP))
+    else:
+        start_buffer_ms = SETTING_START_BUFFER_MS_DEFAULT
+    start_buffer_available = bool(start_buffer_result.ok)
 
     speakers_html = ""
     for i, row in enumerate(row_specs):
         spk = str(row["name"])
         show = spk.casefold() not in hidden_set
-        out_obj = row.get("out_obj") if isinstance(row.get("out_obj"), dict) else None
+        output = row.get("output")
         out_id = str(row.get("id") or "").strip()
         discovered = bool(row.get("discovered"))
-        name_only = bool(row.get("name_only"))
-        saved_runtime_mode = (
-            resolve_owntone_output_airplay_mode(
-                out_id,
-                output_airplay_modes=parsed.owntone.output_airplay_modes,
-            )
-            if out_id
-            else None
+        saved_runtime_mode = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE)
+        supported_config_modes = (
+            output_supported_config_modes(output)
+            if output is not None and out_id
+            else (DEFAULT_AIRPLAY_MODE,)
         )
-        has_saved_runtime_mode = saved_runtime_mode is not None
-
-        # Newer OwnTone builds advertise per-output protocol capability.
-        protocol_support = owntone_output_protocol_support(out_obj)
-        supports_protocol_api = protocol_support.supports_runtime_protocol
-        supports_raop = protocol_support.supports_raop if supports_protocol_api else None
-        supports_ap2 = protocol_support.supports_airplay2 if supports_protocol_api else None
 
         mode_note_html = ""
-        if supports_protocol_api and out_id:
-            current_mode = saved_runtime_mode or DEFAULT_AIRPLAY_MODE
-        elif protocol_api_state == "legacy":
-            if out_id or not name_only:
-                current_mode = (
-                    "airplay2"
-                    if (read_airplay2_for_speaker(spk, OWNTONE_CONF_PATH) or False)
-                    else DEFAULT_AIRPLAY_MODE
-                )
-                mode_note_html = (
-                    "<div class='storage-meta'>Older OwnTone build: saved in owntone.conf and applied after restart.</div>"
-                )
-            else:
-                current_mode = DEFAULT_AIRPLAY_MODE
-                mode_note_html = (
-                    "<div class='storage-meta'>Speaker id is not known yet. Rediscover the speaker before changing its mode.</div>"
-                )
-        else:
-            current_mode = saved_runtime_mode or DEFAULT_AIRPLAY_MODE
-            if out_id and has_saved_runtime_mode and not discovered:
-                mode_note_html = (
-                    "<div class='storage-meta'>Speaker not currently discovered. "
-                    "Saved mode will be applied when it reappears.</div>"
-                )
-            elif out_id and has_saved_runtime_mode:
-                mode_note_html = (
-                    "<div class='storage-meta'>Speaker capability metadata is unavailable right now. "
-                    "Saved mode will be kept and applied when capability can be confirmed.</div>"
-                )
-            elif out_id and not discovered:
-                mode_note_html = (
-                    "<div class='storage-meta'>Speaker not currently discovered and recent AirPlay capability "
-                    "could not be confirmed. Rediscover the speaker before changing its mode.</div>"
-                )
-            elif out_id:
-                mode_note_html = (
-                    "<div class='storage-meta'>Speaker capability metadata is unavailable right now. "
-                    "Rediscover the speaker before changing its mode.</div>"
-                )
-            else:
-                mode_note_html = (
-                    "<div class='storage-meta'>Speaker id is not known yet. Rediscover the speaker before changing its mode.</div>"
-                )
+        current_mode = saved_runtime_mode or DEFAULT_AIRPLAY_MODE
+        if current_mode not in supported_config_modes and discovered and output is not None:
+            current_mode = DEFAULT_AIRPLAY_MODE
+        if out_id and not discovered:
+            mode_note_html = (
+                "<div class='storage-meta'>Speaker not currently discovered. "
+                "Saved mode will be applied when it reappears.</div>"
+            )
+        elif out_id and len(supported_config_modes) == 1:
+            mode_note_html = (
+                "<div class='storage-meta'>Only Auto mode is currently exposed by this backend. "
+                "Additional protocols will appear here when supported.</div>"
+            )
+        elif not out_id:
+            mode_note_html = (
+                "<div class='storage-meta'>Speaker id is not known yet. Rediscover the speaker before changing its mode.</div>"
+            )
 
-        can_edit_mode = bool(
-            out_id and (supports_protocol_api or has_saved_runtime_mode)
-        ) or (
-            protocol_api_state == "legacy" and not name_only
-        )
-        show_raop = True if (not supports_protocol_api and can_edit_mode) else supports_raop
-        show_airplay2 = True if (not supports_protocol_api and can_edit_mode) else supports_ap2
-        is_airplay_output = show_raop or show_airplay2
+        can_edit_mode = bool(out_id and discovered and output is not None)
 
-        # Offset slider is only shown if the output object includes offset_ms.
         offset_html = ""
-        if out_id and (
-            (out_obj and ("offset_ms" in out_obj))
+        if capabilities.can_set_output_offset and out_id and (
+            (output is not None and output.offset_ms is not None)
             or out_id in parsed.owntone.output_offsets_ms
         ):
             try:
@@ -442,23 +377,26 @@ def send_owntone_setup_page(
                   </label>
                 """
 
-        if is_airplay_output:
-            mode_options = (
-                f'<option value="{DEFAULT_AIRPLAY_MODE}"'
-                f'{" selected" if current_mode == DEFAULT_AIRPLAY_MODE else ""}>Auto</option>'
-            )
-            if show_raop:
-                mode_options += f'<option value="raop"{" selected" if current_mode == "raop" else ""}>AirPlay</option>'
-            if show_airplay2:
-                mode_options += f'<option value="airplay2"{" selected" if current_mode == "airplay2" else ""}>AirPlay 2</option>'
+        if can_edit_mode:
+            mode_options = ""
+            for supported_mode in supported_config_modes:
+                label = "Auto"
+                if supported_mode == "raop":
+                    label = "AirPlay"
+                elif supported_mode == "airplay2":
+                    label = "AirPlay 2"
+                mode_options += (
+                    f'<option value="{supported_mode}"'
+                    f'{" selected" if current_mode == supported_mode else ""}>{label}</option>'
+                )
             mode_html = f"""
             <label style="display:block;margin-bottom:0.5rem;">
               <span>Mode</span>
-              <select name="mode_{i}">{mode_options}</select>
+              <select name="mode_{i}"{' disabled' if len(supported_config_modes) <= 1 else ''}>{mode_options}</select>
             </label>{mode_note_html}"""
         else:
             mode_html = (
-                f'<input type="hidden" name="mode_{i}" value="{DEFAULT_AIRPLAY_MODE}">'
+                f'<input type="hidden" name="mode_{i}" value="{current_mode}">{mode_note_html}'
             )
 
         speakers_html += f"""
@@ -503,12 +441,13 @@ def send_owntone_setup_page(
         <fieldset><legend>Audio</legend>
           <div style="display:flex;align-items:center;gap:0.75rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="uncompressed_alac" {'checked' if uncompressed else ''}>
+              <input type="checkbox" name="uncompressed_alac" {'checked' if uncompressed else ''}{' disabled' if not uncompressed_supported else ''}>
               <span class="switch"></span>
             </label>
             <span>Use uncompressed audio</span>
           </div>
-          {'<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(_START_BUFFER_MIN) + '" max="' + str(_START_BUFFER_MAX) + '" step="' + str(_START_BUFFER_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else ''}
+          {'<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else ''}
+          {'<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(SETTING_START_BUFFER_MS_MIN) + '" max="' + str(SETTING_START_BUFFER_MS_MAX) + '" step="' + str(SETTING_START_BUFFER_MS_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else '<div class="storage-meta" style="margin-top:0.75rem;">This backend does not currently expose start-buffer control.</div>'}
         </fieldset>
         <p class="actions"><button type="submit">{submit_label}</button></p>
       </form></div>
