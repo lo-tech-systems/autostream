@@ -70,6 +70,8 @@ Running on a Pi ZeroW or Zero2W, it consumes less than 2 Watts.
 
 autostream runs on Linux and uses **Owntone** for speaker discovery and streaming (AirPlay / AirPlay 2). Owntone is a separate project with its own license and is installed automatically by the autostream installation script.
 
+By default, `autostream_install.sh` builds and installs **owntone-mini** from the Lo-tech Systems GitHub repository. If you need the packaged upstream build instead, run the installer with `--owntone=full`.
+
 ---
 
 ## Getting Started
@@ -87,6 +89,7 @@ git clone https://github.com/lo-tech-systems/autostream.git
 ```sh
 cd autostream && sudo ./autostream_install.sh
 ```
+This installs the default `owntone-mini` build from source. Use `sudo ./autostream_install.sh --owntone=full` if you explicitly want the packaged OwnTone build instead.
 5. Connect one or two audio sources
 6. Reboot, then use an iPhone to browse with Safari to http://autostream.local/ (replace 'autostream' with the hostname of your Pi)
 7. Run the one-time setup (two screens)

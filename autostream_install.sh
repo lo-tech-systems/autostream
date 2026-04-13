@@ -30,9 +30,9 @@
 #
 # --owntone=[mini|full|skip]
 # Select how OwnTone should be provisioned:
-#   full (default): install packaged OwnTone from the public repository
-#   mini: build and install OwnTone from the lo-tech-systems source repository
-#         without modifying /etc/owntone.conf
+#   mini (default): build and install OwnTone from the lo-tech-systems source
+#                   repository without modifying /etc/owntone.conf
+#   full: install packaged OwnTone from the public repository
 #   skip: do not install or build OwnTone; only reuse an existing installation
 #         and update /etc/owntone.conf when present
 #
@@ -67,7 +67,7 @@ SDMON_METHOD=""                  # e.g. auto|sandisk|adata|transcend|micron|swis
 
 FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitly requested
 PROMPT_REBOOT_ON_EXIT=0              # Enabled only after a real install run starts
-OWNTONE_MODE="full"                  # full=packaged, mini=lo-tech source build, skip=reuse existing install
+OWNTONE_MODE="mini"                  # mini=lo-tech source build, full=packaged, skip=reuse existing install
 
 usage() {
   cat <<EOF
@@ -80,8 +80,9 @@ Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--own
                              auto | sandisk | adata | transcend | micron | swissbit | 2step
 
   --owntone=MODE             OwnTone provisioning mode:
-                             full = install packaged OwnTone (default)
-                             mini = build/install lo-tech OwnTone from source without editing /etc/owntone.conf
+                             mini = build/install lo-tech OwnTone from source (default)
+                                    without editing /etc/owntone.conf
+                             full = install packaged OwnTone
                              skip = do not install/build OwnTone, but update /etc/owntone.conf when present
   --fetch-autostream         Clone/update the autostream GitHub repository.
   --help, -h                 Show this help.
@@ -90,7 +91,7 @@ Examples:
   sudo ./${SCRIPT_NAME}
   sudo ./${SCRIPT_NAME} --unattended PIN=1234
   sudo ./${SCRIPT_NAME} --unattended PIN=abcd-1234 --sdmon=sandisk
-  sudo ./${SCRIPT_NAME} --owntone=mini
+  sudo ./${SCRIPT_NAME} --owntone=full
   sudo ./${SCRIPT_NAME} --owntone=skip
 
 EOF
@@ -338,7 +339,8 @@ show_warnings_and_prompt() {
 AUTOSTREAM INSTALLER
 =============================================================================
 This script will:
-- Install OS packages (nginx, owntone, watchdog, dnsmasq, build tools, etc.)
+- Install OS packages (nginx, watchdog, dnsmasq, build tools, etc.) and build
+  OwnTone Mini by default
 - Enable/disable systemd services
 - Create system users/groups and modify permissions
 - Modify /boot/firmware/config.txt to enable the hardware watchdog
@@ -628,8 +630,24 @@ install_packaged_owntone() {
   systemctl enable owntone
 }
 
-install_lo_tech_owntone() {
-  info "Installing OwnTone from lo-tech-systems source repository"
+remove_owntone_apt_repo() {
+  local removed=0
+  if [[ -f /etc/apt/sources.list.d/owntone.list ]]; then
+    rm -f /etc/apt/sources.list.d/owntone.list
+    removed=1
+  fi
+  if [[ -f /usr/share/keyrings/owntone-archive-keyring.gpg ]]; then
+    rm -f /usr/share/keyrings/owntone-archive-keyring.gpg
+    removed=1
+  fi
+  if [[ ${removed} -eq 1 ]]; then
+    info "Removed OwnTone APT repository configuration"
+    DEBIAN_FRONTEND=noninteractive apt-get update
+  fi
+}
+
+install_owntone_mini_from_source() {
+  info "Installing OwnTone Mini from lo-tech-systems source repository"
   apt_install nginx autotools-dev autoconf automake libtool gettext gawk \
     gperf bison flex libconfuse-dev libunistring-dev libsqlite3-dev \
     libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libavutil-dev \
@@ -641,11 +659,14 @@ install_lo_tech_owntone() {
     info "Removing packaged OwnTone before source install"
     systemctl stop owntone || true
     DEBIAN_FRONTEND=noninteractive apt-get remove -y owntone
+    remove_owntone_apt_repo
+  else
+    remove_owntone_apt_repo
   fi
 
   local tmpdir
   tmpdir="$(mktemp -d)"
-  git clone https://github.com/lo-tech-systems/owntone-server.git "${tmpdir}/owntone-server"
+  git clone --branch minimal --single-branch https://github.com/lo-tech-systems/owntone-server.git "${tmpdir}/owntone-server"
   (
     cd "${tmpdir}/owntone-server"
     autoreconf -i
@@ -740,7 +761,7 @@ fi
   if [[ "${OWNTONE_MODE}" == "skip" ]]; then
     info "Skipping OwnTone install/build; reusing existing system OwnTone"
   elif [[ "${OWNTONE_MODE}" == "mini" ]]; then
-    install_lo_tech_owntone
+    install_owntone_mini_from_source
   else
     install_packaged_owntone
   fi

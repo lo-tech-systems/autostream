@@ -4,7 +4,7 @@ After installation, **autostream** only requires a short, one-time setup using a
 
 ## Initial Setup
 
-1. Run the installer (see README.md)
+1. Run the installer (see README.md). By default this builds and installs `owntone-mini` from source; use `--owntone=full` only if you specifically want the packaged OwnTone build.
 
 2. After installation, connect your input devices (turntable, SPDIF dongle, USB preamp, etc.) and then reboot the system.
 
