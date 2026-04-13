@@ -88,6 +88,7 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             can_refresh_runtime_state=False,
             can_push_metadata=False,
             can_restart=False,
+            can_request_library_update=True,
             supports_runtime_settings=False,
             supports_restart_required_reporting=False,
             supported_setting_keys=(),
@@ -217,6 +218,9 @@ class OwnToneBackend(OwnToneHttpBackendBase):
 
     def refresh_runtime_state(self) -> ActionResult:
         return self._unsupported_action("refresh_runtime_state")
+
+    def request_library_update(self) -> ActionResult:
+        return self._put_json("/api/update", None, success_statuses=(204,))
 
     def push_metadata(self, metadata: PlaybackMetadata) -> ActionResult:
         return self._unsupported_action("push_metadata")

@@ -69,7 +69,7 @@ _SETTING_SPECS: dict[str, _MiniSettingSpec] = {
         category="misc",
         option="pipe_path",
         value_type="string",
-        requires_restart_on_change=True,
+        requires_restart_on_change=False,
     ),
     SETTING_PIPE_AUTOSTART: _MiniSettingSpec(
         category="misc",
@@ -158,6 +158,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             can_refresh_runtime_state=True,
             can_push_metadata=True,
             can_restart=False,
+            can_request_library_update=True,
             supports_runtime_settings=True,
             supports_restart_required_reporting=True,
             supported_setting_keys=tuple(_SETTING_SPECS.keys()),
@@ -303,10 +304,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
     def ensure_pipe_source_ready(self) -> ActionResult:
         """Block for up to 15 seconds while waiting for the pipe source to appear."""
         deadline = time.monotonic() + 15.0
-        update_result = self._put_json("/api/update", None, success_statuses=(204,))
-        if not update_result.ok:
-            return update_result
-        next_update = time.monotonic() + 2.0
+        next_update = time.monotonic()
 
         while time.monotonic() < deadline:
             payload, resp, err = self._get_json("/api/library")
@@ -336,6 +334,9 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         )
 
     def refresh_runtime_state(self) -> ActionResult:
+        return self._put_json("/api/update", None, success_statuses=(204,))
+
+    def request_library_update(self) -> ActionResult:
         return self._put_json("/api/update", None, success_statuses=(204,))
 
     def push_metadata(self, metadata: PlaybackMetadata) -> ActionResult:

@@ -135,6 +135,7 @@ class BackendCapabilities:
     can_refresh_runtime_state: bool = False
     can_push_metadata: bool = False
     can_restart: bool = False
+    can_request_library_update: bool = False
     supports_runtime_settings: bool = False
     supports_restart_required_reporting: bool = False
     supported_setting_keys: tuple[str, ...] = ()
@@ -279,6 +280,10 @@ class PlayerBackend(ABC):
     @abstractmethod
     def refresh_runtime_state(self) -> ActionResult:
         """Re-apply selected runtime state after reconnect or restart."""
+
+    @abstractmethod
+    def request_library_update(self) -> ActionResult:
+        """Request the backend to rescan or refresh its library state."""
 
     @abstractmethod
     def push_metadata(self, metadata: PlaybackMetadata) -> ActionResult:

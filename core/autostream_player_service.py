@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import os
+import stat
 import threading
 import time
 from typing import Optional, Any
@@ -23,6 +25,7 @@ from autostream_players import (
     PlaybackMetadata,
     SaveSettingResult,
     SETTING_LOG_LEVEL,
+    SETTING_PIPE_PATH,
     SettingDescriptor,
     SettingValueResult,
     create_backend,
@@ -43,8 +46,264 @@ class ResolvedBackend:
     backend: Any
 
 
+@dataclass(frozen=True)
+class FifoEnsureResult:
+    ok: bool
+    created_dir: bool = False
+    created_fifo: bool = False
+    error: str = ""
+    error_code: str = ""
+
+
+@dataclass(frozen=True)
+class FifoReconcileResult:
+    ok: bool
+    created_dir: bool = False
+    created_fifo: bool = False
+    backend_setting_checked: bool = False
+    backend_setting_supported: bool = False
+    backend_setting_changed: bool = False
+    refresh_attempted: bool = False
+    refresh_succeeded: bool = False
+    error: str = ""
+    error_code: str = ""
+    detail: str = ""
+
+
 def _normalize_base_url(base_url: str) -> str:
     return (str(base_url or "").strip() or "http://localhost:3689").rstrip("/")
+
+
+def ensure_audio_fifo(path: str) -> FifoEnsureResult:
+    """Ensure the configured backend audio FIFO exists and is a named pipe."""
+    try:
+        if not path or not os.path.isabs(path):
+            return FifoEnsureResult(
+                ok=False,
+                error=f"Configured fifo_path must be an absolute path: {path!r}",
+                error_code="invalid_path",
+            )
+
+        created_dir = False
+        fifo_dir = os.path.dirname(path)
+        if fifo_dir:
+            created_dir = not os.path.isdir(fifo_dir)
+            os.makedirs(fifo_dir, mode=0o777, exist_ok=True)
+
+        if os.path.exists(path):
+            st = os.stat(path)
+            if not stat.S_ISFIFO(st.st_mode):
+                return FifoEnsureResult(
+                    ok=False,
+                    created_dir=created_dir,
+                    error=f"Configured fifo_path exists but is not a FIFO: {path!r}",
+                    error_code="not_fifo",
+                )
+            return FifoEnsureResult(ok=True, created_dir=created_dir)
+
+        os.mkfifo(path, 0o666)
+        return FifoEnsureResult(ok=True, created_dir=created_dir, created_fifo=True)
+    except Exception as exc:
+        return FifoEnsureResult(
+            ok=False,
+            error=f"Could not create audio FIFO {path!r}: {exc}",
+            error_code="create_failed",
+        )
+
+
+def _request_library_update_with_retry(
+    backend: Any,
+    base_url: str,
+    *,
+    timeout_s: float = 30.0,
+    interval_s: float = 5.0,
+) -> ActionResult:
+    """Request a backend update, retrying briefly during cold start."""
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    attempt = 0
+
+    while True:
+        attempt += 1
+        result = backend.request_library_update()
+        if result.ok:
+            LOG.info(
+                "Playback backend update accepted for %s after %d attempt(s).",
+                base_url,
+                attempt,
+            )
+            return result
+
+        if result.error_code == "unsupported":
+            LOG.info(
+                "Playback backend %s does not support update requests for %s.",
+                getattr(backend, "backend_id", "unknown"),
+                base_url,
+            )
+            return result
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result
+
+        LOG.info(
+            "Playback backend update for %s not ready yet; retrying in %.1f s (%s).",
+            base_url,
+            interval_s,
+            result.error or result.detail or result.error_code or "request failed",
+        )
+        time.sleep(min(float(interval_s), max(0.0, remaining)))
+
+
+def reconcile_fifo_with_backend(
+    base_url: str,
+    fifo_path: str,
+    *,
+    timeout: float = 3.0,
+    update_timeout_s: float = 30.0,
+    update_interval_s: float = 5.0,
+) -> FifoReconcileResult:
+    """Ensure the local FIFO exists and align backend pipe-path state if possible."""
+    fifo_result = ensure_audio_fifo(fifo_path)
+    if not fifo_result.ok:
+        return FifoReconcileResult(
+            ok=False,
+            created_dir=fifo_result.created_dir,
+            created_fifo=fifo_result.created_fifo,
+            error=fifo_result.error,
+            error_code=fifo_result.error_code,
+        )
+
+    if fifo_result.created_dir:
+        LOG.info("Created audio FIFO directory at %s", os.path.dirname(fifo_path))
+    if fifo_result.created_fifo:
+        LOG.info("Created audio FIFO at %s", fifo_path)
+
+    base_url_text = str(base_url or "").strip()
+    if not base_url_text:
+        return FifoReconcileResult(
+            ok=True,
+            created_dir=fifo_result.created_dir,
+            created_fifo=fifo_result.created_fifo,
+        )
+
+    resolved = resolve_backend(base_url_text, timeout=timeout)
+    backend = resolved.backend
+    setting_changed = False
+    setting_checked = False
+    setting_supported = False
+    warning_error = ""
+    warning_error_code = ""
+    warning_detail = ""
+
+    setting_result = backend.get_setting(SETTING_PIPE_PATH)
+    if setting_result.unsupported or setting_result.error_code == "unsupported":
+        setting_checked = True
+        LOG.debug(
+            "Playback backend %s does not expose pipe-path inspection at %s; continuing.",
+            resolved.backend_id,
+            base_url_text,
+        )
+    elif setting_result.ok:
+        setting_checked = True
+        setting_supported = True
+        backend_fifo_path = str(setting_result.value or "").strip()
+        wanted_fifo_path = str(fifo_path or "").strip()
+        if backend_fifo_path == wanted_fifo_path:
+            LOG.debug(
+                "Playback backend %s pipe path already matches configured FIFO at %s.",
+                resolved.backend_id,
+                base_url_text,
+            )
+        else:
+            save_result = backend.save_setting(SETTING_PIPE_PATH, wanted_fifo_path)
+            if not save_result.ok:
+                LOG.warning(
+                    "Could not update playback backend %s pipe path at %s: %s",
+                    resolved.backend_id,
+                    base_url_text,
+                    save_result.error or save_result.error_code or "save failed",
+                )
+                warning_error = save_result.error or "Failed to save backend FIFO path"
+                warning_error_code = save_result.error_code or "save_failed"
+                warning_detail = save_result.detail
+            else:
+                setting_changed = True
+                LOG.info(
+                    "Updated playback backend %s pipe path from %r to %r at %s.",
+                    resolved.backend_id,
+                    backend_fifo_path,
+                    wanted_fifo_path,
+                    base_url_text,
+                )
+                if save_result.restart_required:
+                    LOG.warning(
+                        "Playback backend %s still reported restart_required after pipe-path update at %s.",
+                        resolved.backend_id,
+                        base_url_text,
+                    )
+    else:
+        LOG.warning(
+            "Could not read playback backend %s pipe path at %s: %s",
+            resolved.backend_id,
+            base_url_text,
+            setting_result.error or setting_result.error_code or "read failed",
+        )
+        warning_error = setting_result.error or "Failed to read backend FIFO path"
+        warning_error_code = setting_result.error_code or "read_failed"
+
+    should_refresh = bool(fifo_result.created_fifo or setting_changed)
+    if not should_refresh:
+        return FifoReconcileResult(
+            ok=True,
+            created_dir=fifo_result.created_dir,
+            created_fifo=fifo_result.created_fifo,
+            backend_setting_checked=setting_checked,
+            backend_setting_supported=setting_supported,
+            backend_setting_changed=setting_changed,
+            error=warning_error,
+            error_code=warning_error_code,
+            detail=warning_detail,
+        )
+
+    update_result = _request_library_update_with_retry(
+        backend,
+        base_url_text,
+        timeout_s=update_timeout_s,
+        interval_s=update_interval_s,
+    )
+    if not update_result.ok and update_result.error_code != "unsupported":
+        LOG.warning(
+            "Could not request playback backend update for %s: %s",
+            base_url_text,
+            update_result.error or update_result.detail or update_result.error_code or "update failed",
+        )
+        return FifoReconcileResult(
+            ok=True,
+            created_dir=fifo_result.created_dir,
+            created_fifo=fifo_result.created_fifo,
+            backend_setting_checked=setting_checked,
+            backend_setting_supported=setting_supported,
+            backend_setting_changed=setting_changed,
+            refresh_attempted=True,
+            refresh_succeeded=False,
+            error=update_result.error or warning_error or "Failed to request backend update",
+            error_code=update_result.error_code or warning_error_code or "update_failed",
+            detail=update_result.detail or warning_detail,
+        )
+
+    return FifoReconcileResult(
+        ok=True,
+        created_dir=fifo_result.created_dir,
+        created_fifo=fifo_result.created_fifo,
+        backend_setting_checked=setting_checked,
+        backend_setting_supported=setting_supported,
+        backend_setting_changed=setting_changed,
+        refresh_attempted=True,
+        refresh_succeeded=update_result.ok,
+        error=warning_error,
+        error_code=warning_error_code,
+        detail=update_result.detail or warning_detail,
+    )
 
 
 def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
@@ -193,6 +452,10 @@ def ensure_pipe_source_ready(base_url: str, *, timeout: float = 3.0) -> ActionRe
 
 def refresh_runtime_state(base_url: str, *, timeout: float = 3.0) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.refresh_runtime_state()
+
+
+def request_library_update(base_url: str, *, timeout: float = 3.0) -> ActionResult:
+    return resolve_backend(base_url, timeout=timeout).backend.request_library_update()
 
 
 def get_status(base_url: str, *, timeout: float = 3.0) -> BackendStatus:

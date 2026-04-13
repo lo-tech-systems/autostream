@@ -14,10 +14,9 @@ and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
 variable.
 """
 
+import os
 import json
 import logging
-import os
-import stat
 import socket
 import sys
 import time
@@ -47,6 +46,7 @@ from autostream_player_service import (
     config_airplay_mode_to_backend,
     ensure_pipe_source_ready,
     list_outputs,
+    reconcile_fifo_with_backend,
     refresh_runtime_state,
     set_output_enabled,
     set_selected_outputs,
@@ -498,32 +498,6 @@ def get_available_monitor_devices(
         return []
     finally:
         client.close()
-
-
-def ensure_audio_fifo(path: str) -> bool:
-    """Ensure the configured OwnTone audio FIFO exists and is a named pipe."""
-    try:
-        if not path or not os.path.isabs(path):
-            logging.error("Configured fifo_path must be an absolute path: %r", path)
-            return False
-
-        fifo_dir = os.path.dirname(path)
-        if fifo_dir:
-            os.makedirs(fifo_dir, mode=0o777, exist_ok=True)
-
-        if os.path.exists(path):
-            st = os.stat(path)
-            if not stat.S_ISFIFO(st.st_mode):
-                logging.error("Configured fifo_path exists but is not a FIFO: %r", path)
-                return False
-            return True
-
-        os.mkfifo(path, 0o666)
-        logging.info("Created audio FIFO at %s", path)
-        return True
-    except Exception as e:
-        logging.error("Could not create audio FIFO %r: %s", path, e)
-        return False
 
 
 def build_monitor_eq_bands(
@@ -1157,6 +1131,22 @@ class AudioMonitor:
             return
         self._owntone_last_attempt = now
 
+        fifo_result = reconcile_fifo_with_backend(
+            self.owntone_base_url,
+            self.fifo_path,
+            timeout=3.0,
+            update_timeout_s=5.0,
+            update_interval_s=2.0,
+        )
+        if not fifo_result.ok:
+            self._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Skipping OwnTone recovery while FIFO/backend reconciliation failed: %s",
+                fifo_result.error or fifo_result.detail or fifo_result.error_code or "reconcile failed",
+            )
+            return
+
         outputs = self._get_owntone_outputs()
         if outputs is None:
             self._throttled_owntone_log(
@@ -1401,6 +1391,7 @@ def _resync_monitor_daemon(
     client: MonitorClient,
     monitors: list["AudioMonitor"],
     fifo_path: str,
+    owntone_base_url: str,
 ) -> bool:
     """Re-send the full daemon state after reconnect.
 
@@ -1409,7 +1400,18 @@ def _resync_monitor_daemon(
     the coordinator does not continue with Python-side monitor objects that do
     not exist in the daemon.
     """
-    if not ensure_audio_fifo(fifo_path):
+    fifo_result = reconcile_fifo_with_backend(
+        owntone_base_url,
+        fifo_path,
+        timeout=3.0,
+        update_timeout_s=5.0,
+        update_interval_s=2.0,
+    )
+    if not fifo_result.ok:
+        logging.error(
+            "Could not reconcile audio FIFO/backend during monitor-daemon reconnect: %s",
+            fifo_result.error or fifo_result.detail or fifo_result.error_code or "reconcile failed",
+        )
         client.close()
         return False
 
@@ -1686,7 +1688,12 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                 time.sleep(5.0)
                 continue
 
-            if not ensure_audio_fifo(fifo_path):
+            fifo_result = reconcile_fifo_with_backend(cfg.owntone.base_url, fifo_path, timeout=3.0)
+            if not fifo_result.ok:
+                logging.error(
+                    "Could not reconcile audio FIFO/backend during startup: %s",
+                    fifo_result.error or fifo_result.detail or fifo_result.error_code or "reconcile failed",
+                )
                 client.close()
                 time.sleep(5.0)
                 continue
@@ -1754,12 +1761,32 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 
                     # Reconnected: re-send the full configuration because the
                     # daemon may have restarted and lost its state.
-                    if not _resync_monitor_daemon(client, monitors, fifo_path):
+                    if not _resync_monitor_daemon(
+                        client,
+                        monitors,
+                        fifo_path,
+                        cfg.owntone.base_url,
+                    ):
                         reconnect_at = time.time() + 5.0
                         current = None
                         continue
 
                 # ── Poll status ───────────────────────────────────────────────
+                    if cfg.owntone.base_url:
+                        pipe_ready_result = ensure_pipe_source_ready(cfg.owntone.base_url, timeout=3)
+                        if pipe_ready_result.ok:
+                            logging.info("OwnTone pipe source is indexed and ready after reconnect.")
+                        else:
+                            logging.warning(
+                                "OwnTone pipe source is not indexed yet after reconnect; "
+                                "playback recovery may lag until backend refresh succeeds (%s).",
+                                pipe_ready_result.error or pipe_ready_result.detail or pipe_ready_result.error_code or "not ready",
+                            )
+
+                    for m in monitors:
+                        m._owntone_enabled_ok = False
+                        m._owntone_last_attempt = 0.0
+
                 status = client.get_status()
                 if status is None:
                     logging.warning("get_status() failed; will reconnect.")
