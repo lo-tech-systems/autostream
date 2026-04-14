@@ -24,6 +24,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from autostream_config import DEFAULT_STYLUS_LIFE_HOURS, VALID_STYLUS_LIFE_HOURS, normalize_stylus_life_hours
 from autostream_sysutils import atomic_write_file
 
 
@@ -39,9 +40,6 @@ DEFAULT_PLAYBACK_STATS_PATH = Path(
         "/opt/autostream/playback_stats.json",
     )
 ).expanduser()
-
-DEFAULT_STYLUS_LIFE_HOURS = 500
-VALID_STYLUS_LIFE_HOURS = (100, 250, 500, 750, 1000)
 
 TURNTABLE_SILENCE_THRESHOLD_DBFS = -45.0
 LINE_LEVEL_SILENCE_THRESHOLD_DBFS = -60.0
@@ -68,18 +66,6 @@ def suggested_silence_threshold_dbfs(is_turntable: bool) -> float:
         if bool(is_turntable)
         else LINE_LEVEL_SILENCE_THRESHOLD_DBFS
     )
-
-
-def normalize_stylus_life_hours(
-    value: object,
-    default: int = DEFAULT_STYLUS_LIFE_HOURS,
-) -> int:
-    """Return a safe positive stylus-life value in hours."""
-    try:
-        hours = int(str(value).strip())
-    except Exception:
-        return int(default)
-    return hours if hours > 0 else int(default)
 
 
 def input_label(input_index: int) -> str:

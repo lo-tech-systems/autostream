@@ -63,13 +63,25 @@ import threading
 import configparser
 from typing import Iterable, Optional, Tuple
 
-from autostream_playback import DEFAULT_STYLUS_LIFE_HOURS, normalize_stylus_life_hours
-
-
 DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 DEFAULT_AIRPLAY_MODE = "default"
 VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
+DEFAULT_STYLUS_LIFE_HOURS = 500
+VALID_STYLUS_LIFE_HOURS = (100, 250, 500, 750, 1000)
+
+
+def normalize_stylus_life_hours(
+    value: object,
+    default: int = DEFAULT_STYLUS_LIFE_HOURS,
+) -> int:
+    """Return a safe positive stylus-life value in hours."""
+    try:
+        hours = int(str(value).strip())
+    except Exception:
+        return int(default)
+    return hours if hours > 0 else int(default)
+
 
 _PYTHON_LOG_LEVELS = {
     "fatal": logging.CRITICAL,
