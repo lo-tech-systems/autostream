@@ -21,7 +21,7 @@ import logging
 import textwrap
 
 from typing import Optional
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from autostream_config import (
     CONFIG_IO_LOCK,
@@ -296,7 +296,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
         if hostname_changed:
             host_header = handler.headers.get("Host", "")
-            port = host_header.rsplit(":", 1)[1] if ":" in host_header else None
+            port_num = urlparse(f"http://{host_header}").port
+            port = str(port_num) if port_num else None
             host_p = f"{nh}.local:{port}" if port else f"{nh}.local"
             redirect_url = f"http://{host_p}{next_path}"
 
