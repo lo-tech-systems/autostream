@@ -276,6 +276,26 @@ def _split_list(raw: str | None) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _parse_audio_input_config(
+    cfg: configparser.ConfigParser,
+    section: str,
+) -> AudioInputConfig:
+    """Parse a single [audioN] section into an AudioInputConfig."""
+    return AudioInputConfig(
+        capture_device=cfg.get(section, "capture_device", fallback="").strip(),
+        silence_threshold_dbfs=cfg.getfloat(section, "silence_threshold", fallback=-66.0),
+        is_turntable=cfg.getboolean(section, "turntable", fallback=False),
+        stylus_life_hours=normalize_stylus_life_hours(
+            cfg.get(section, "stylus_life_hours", fallback=str(DEFAULT_STYLUS_LIFE_HOURS)),
+            default=DEFAULT_STYLUS_LIFE_HOURS,
+        ),
+        gain_db=cfg.getfloat(section, "gain_db", fallback=0.0),
+        eq_40hz_db=cfg.getfloat(section, "eq_40hz_db", fallback=0.0),
+        eq_100hz_db=cfg.getfloat(section, "eq_100hz_db", fallback=0.0),
+        eq_10khz_db=cfg.getfloat(section, "eq_10khz_db", fallback=0.0),
+    )
+
+
 def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     # General
     log_file = cfg.get(
@@ -297,53 +317,11 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     )
 
     # Audio #1
-    capture_device1 = cfg.get("audio1", "capture_device", fallback="").strip()
-    silence_threshold1 = cfg.getfloat("audio1", "silence_threshold", fallback=-66.0)
-    turntable1 = cfg.getboolean("audio1", "turntable", fallback=False)
-    stylus_life_hours1 = normalize_stylus_life_hours(
-        cfg.get("audio1", "stylus_life_hours", fallback=str(DEFAULT_STYLUS_LIFE_HOURS)),
-        default=DEFAULT_STYLUS_LIFE_HOURS,
-    )
-    gain_db1 = cfg.getfloat("audio1", "gain_db", fallback=0.0)
-    eq_40hz_db1 = cfg.getfloat("audio1", "eq_40hz_db", fallback=0.0)
-    eq_100hz_db1 = cfg.getfloat("audio1", "eq_100hz_db", fallback=0.0)
-    eq_10khz_db1 = cfg.getfloat("audio1", "eq_10khz_db", fallback=0.0)
-
-    audio1 = AudioInputConfig(
-        capture_device=capture_device1,
-        silence_threshold_dbfs=silence_threshold1,
-        is_turntable=turntable1,
-        stylus_life_hours=stylus_life_hours1,
-        gain_db=gain_db1,
-        eq_40hz_db=eq_40hz_db1,
-        eq_100hz_db=eq_100hz_db1,
-        eq_10khz_db=eq_10khz_db1,
-    )
+    audio1 = _parse_audio_input_config(cfg, "audio1")
 
     # Audio #2
     audio2_enabled = cfg.getboolean("audio2", "enabled", fallback=False)
-    capture_device2 = cfg.get("audio2", "capture_device", fallback="").strip()
-    silence_threshold2 = cfg.getfloat("audio2", "silence_threshold", fallback=-66.0)
-    turntable2 = cfg.getboolean("audio2", "turntable", fallback=False)
-    stylus_life_hours2 = normalize_stylus_life_hours(
-        cfg.get("audio2", "stylus_life_hours", fallback=str(DEFAULT_STYLUS_LIFE_HOURS)),
-        default=DEFAULT_STYLUS_LIFE_HOURS,
-    )
-    gain_db2 = cfg.getfloat("audio2", "gain_db", fallback=0.0)
-    eq_40hz_db2 = cfg.getfloat("audio2", "eq_40hz_db", fallback=0.0)
-    eq_100hz_db2 = cfg.getfloat("audio2", "eq_100hz_db", fallback=0.0)
-    eq_10khz_db2 = cfg.getfloat("audio2", "eq_10khz_db", fallback=0.0)
-
-    audio2 = AudioInputConfig(
-        capture_device=capture_device2,
-        silence_threshold_dbfs=silence_threshold2,
-        is_turntable=turntable2,
-        stylus_life_hours=stylus_life_hours2,
-        gain_db=gain_db2,
-        eq_40hz_db=eq_40hz_db2,
-        eq_100hz_db=eq_100hz_db2,
-        eq_10khz_db=eq_10khz_db2,
-    )
+    audio2 = _parse_audio_input_config(cfg, "audio2")
 
     # Owntone per-output offsets (keyed by output id as string)
     offsets: dict[str, int] = {}
