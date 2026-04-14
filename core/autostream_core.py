@@ -565,12 +565,11 @@ def set_live_input_eq(
         )
         if ok:
             with _monitors_lock:
-                snapshot = list(all_monitors)
-            for mon in snapshot:
-                if mon.input_index == input_index:
-                    mon.eq_40hz_db = float(eq_40hz_db)
-                    mon.eq_100hz_db = float(eq_100hz_db)
-                    mon.eq_10khz_db = float(eq_10khz_db)
+                for mon in all_monitors:
+                    if mon.input_index == input_index:
+                        mon.eq_40hz_db = float(eq_40hz_db)
+                        mon.eq_100hz_db = float(eq_100hz_db)
+                        mon.eq_10khz_db = float(eq_10khz_db)
         return ok
     finally:
         client.close()
@@ -589,10 +588,9 @@ def set_live_input_gain(
         ok = apply_input_gain(client, input_index, gain_db)
         if ok:
             with _monitors_lock:
-                snapshot = list(all_monitors)
-            for mon in snapshot:
-                if mon.input_index == input_index:
-                    mon.gain_db = float(gain_db)
+                for mon in all_monitors:
+                    if mon.input_index == input_index:
+                        mon.gain_db = float(gain_db)
         return ok
     finally:
         client.close()
