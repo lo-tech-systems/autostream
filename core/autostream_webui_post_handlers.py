@@ -24,6 +24,7 @@ from typing import Optional
 from urllib.parse import parse_qs, quote
 
 from autostream_config import (
+    CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
     mark_configured,
     normalize_airplay_mode,
@@ -58,7 +59,6 @@ from autostream_playback import normalize_stylus_life_hours, suggested_silence_t
 from autostream_sysutils import atomic_write_file, get_system_hostname, set_system_hostname
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
-    CONFIG_IO_LOCK,
     _set_flash_cookie,
     build_top_banner_html,
     locked_load_config,

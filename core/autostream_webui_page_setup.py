@@ -25,6 +25,7 @@ from typing import Optional
 from urllib.parse import parse_qs
 
 from autostream_config import (
+    CONFIG_IO_LOCK,
     mark_configured,
     parse_config,
     unconfigured,
@@ -52,7 +53,6 @@ from autostream_webui_assets import (
     VIEWPORT_META,
 )
 from autostream_webui_common import (
-    CONFIG_IO_LOCK,
     _fallback_input_snapshot,
     _set_flash_cookie,
     build_top_banner_html,

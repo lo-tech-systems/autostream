@@ -21,6 +21,7 @@ from typing import Optional
 from urllib.parse import parse_qs
 
 from autostream_config import (
+    CONFIG_IO_LOCK,
     get_log_level_options,
     load_config,
     normalize_log_level,
@@ -39,7 +40,6 @@ from autostream_webui_assets import (
 )
 
 from autostream_webui_common import (
-    CONFIG_IO_LOCK,
     _set_flash_cookie,
     build_top_banner_html,
     locked_load_config,
