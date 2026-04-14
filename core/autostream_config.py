@@ -312,8 +312,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     )
 
     # Audio #1
-    capture_device1 = cfg.get("audio1", "capture_device", fallback="").strip() \
-                 or cfg.get("audio1", "input_device", fallback="").strip()
+    capture_device1 = cfg.get("audio1", "capture_device", fallback="").strip()
     silence_threshold1 = cfg.getfloat("audio1", "silence_threshold", fallback=-66.0)
     turntable1 = cfg.getboolean("audio1", "turntable", fallback=False)
     stylus_life_hours1 = normalize_stylus_life_hours(
@@ -338,8 +337,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
 
     # Audio #2
     audio2_enabled = cfg.getboolean("audio2", "enabled", fallback=False)
-    capture_device2 = cfg.get("audio2", "capture_device", fallback="").strip() \
-                 or cfg.get("audio2", "input_device", fallback="").strip()
+    capture_device2 = cfg.get("audio2", "capture_device", fallback="").strip()
     silence_threshold2 = cfg.getfloat("audio2", "silence_threshold", fallback=-66.0)
     turntable2 = cfg.getboolean("audio2", "turntable", fallback=False)
     stylus_life_hours2 = normalize_stylus_life_hours(
@@ -487,7 +485,7 @@ def unconfigured(path: str) -> bool:
 
     Requires:
       - [general] fifo_path (non-empty)
-      - [audio1] capture_device OR legacy input_device in an ALSA hw:* format
+      - [audio1] capture_device in an ALSA hw:* format
       - [owntone] output_name (non-empty)
 
     Cached by (mtime, size) so we only re-parse when the INI changes.
@@ -519,16 +517,7 @@ def unconfigured(path: str) -> bool:
         is_unconfigured = True
     else:
         fifo_path = _get_nonempty(cfg, "general", "fifo_path")
-
-        # Support both INI key names during migration:
-        # - "capture_device" is the canonical key used by the current
-        #   monitor-based pipeline and Web UI.
-        # - "input_device" is accepted only for backward compatibility with
-        #   older INI files.
-        audio1_dev = (
-            _get_nonempty(cfg, "audio1", "capture_device")
-            or _get_nonempty(cfg, "audio1", "input_device")
-        )
+        audio1_dev = _get_nonempty(cfg, "audio1", "capture_device")
 
         output_name = _get_nonempty(cfg, "owntone", "output_name")
 
