@@ -20,10 +20,11 @@ from typing import Callable, Optional
 import json
 import logging
 import os
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
+
+from autostream_sysutils import atomic_write_file
 
 
 LOGGER = logging.getLogger(__name__)
@@ -113,44 +114,12 @@ def _coerce_non_negative_int(value: object, default: int = 0) -> int:
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
-    """Write JSON atomically in the destination directory."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write JSON atomically, preserving existing file permissions."""
+    def _write(fh):
+        json.dump(payload, fh, indent=2, sort_keys=True)
+        fh.write("\n")
 
-    mode = None
-    try:
-        mode = path.stat().st_mode
-    except FileNotFoundError:
-        mode = None
-    except Exception:
-        mode = None
-
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f"{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-    tmp = Path(tmp_name)
-
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, sort_keys=True)
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-
-        if mode is not None:
-            try:
-                os.chmod(tmp, mode)
-            except Exception:
-                LOGGER.exception("Failed applying mode to %s", tmp)
-
-        os.replace(tmp, path)
-    finally:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except Exception:
-            pass
+    atomic_write_file(path, _write, preserve_mode=True)
 
 
 def _read_json_object(path: Path) -> dict:

@@ -53,7 +53,7 @@ from autostream_player_service import (
     update_output,
 )
 from autostream_playback import normalize_stylus_life_hours, suggested_silence_threshold_dbfs
-from autostream_sysutils import get_system_hostname, set_system_hostname
+from autostream_sysutils import atomic_write_file, get_system_hostname, set_system_hostname
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
     CONFIG_IO_LOCK,
@@ -238,8 +238,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
         # Atomicity across concurrent requests/tabs:
         with CONFIG_IO_LOCK:
-            with open(state.config_path, "w", encoding="utf-8") as f:
-                cfg.write(f)
+            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
             mark_configured(state.config_path)
 
         update_live_owntone_runtime(
@@ -574,8 +573,7 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             restart_required = restart_required or bool(save_buffer_result.restart_required)
 
         with CONFIG_IO_LOCK:
-            with open(state.config_path, "w", encoding="utf-8") as f:
-                cfg.write(f)
+            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
 
         saved_parsed = parse_config(cfg)
         update_live_owntone_runtime(

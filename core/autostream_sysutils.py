@@ -13,10 +13,72 @@ import socket
 import re
 import logging
 import os
+import tempfile
 import time
 import json
+from typing import Callable, IO, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Atomic file writer
+# ---------------------------------------------------------------------------
+
+def atomic_write_file(
+    path: "str | Path",
+    writer: Callable[[IO], None],
+    *,
+    preserve_mode: bool = True,
+) -> None:
+    """Write to *path* atomically: temp file → writer() → fsync → os.replace.
+
+    *writer* receives an open text-mode file object and is responsible for
+    writing all content.  The destination file is only replaced once the
+    write and fsync have both succeeded, so a crash or kill mid-write leaves
+    the original file intact.
+
+    If *preserve_mode* is True (the default) and the destination file already
+    exists, its permission bits are copied to the temporary file before the
+    rename so the replacement inherits the same mode.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    mode: Optional[int] = None
+    if preserve_mode:
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            writer(fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+        if mode is not None:
+            try:
+                os.chmod(tmp, mode)
+            except Exception:
+                logger.warning("atomic_write_file: could not apply mode to %s", tmp)
+
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 SDCARD_HEALTH_JSON_FILE = Path("/opt/autostream/sdcardhealth.json")
 
