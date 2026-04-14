@@ -70,8 +70,6 @@ DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 DEFAULT_AIRPLAY_MODE = "default"
 VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
-DEFAULT_OWNTONE_PROTOCOL_API_STATE = "unknown"
-VALID_OWNTONE_PROTOCOL_API_STATES = ("runtime", "legacy", "unknown")
 
 _PYTHON_LOG_LEVELS = {
     "fatal": logging.CRITICAL,
@@ -129,21 +127,6 @@ def normalize_airplay_mode(
         return text
     fallback = str(default or "").strip().lower()
     return fallback if fallback in VALID_AIRPLAY_MODES else DEFAULT_AIRPLAY_MODE
-
-
-def normalize_owntone_protocol_api_state(
-    value: object,
-    default: str = DEFAULT_OWNTONE_PROTOCOL_API_STATE,
-) -> str:
-    """Return a supported OwnTone protocol-compatibility state."""
-    text = str(value or "").strip().lower()
-    if text in VALID_OWNTONE_PROTOCOL_API_STATES:
-        return text
-    fallback = str(default or "").strip().lower()
-    if fallback in VALID_OWNTONE_PROTOCOL_API_STATES:
-        return fallback
-    return DEFAULT_OWNTONE_PROTOCOL_API_STATE
-
 
 
 # -----------------------------
@@ -226,7 +209,6 @@ class OwntoneConfig:
     base_url: str
     output_name: str
     volume_percent: int
-    protocol_api_state: str
     output_offsets_ms: dict[str, int]
     output_airplay_modes: dict[str, str]
     known_outputs: dict[str, str]
@@ -398,13 +380,6 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         base_url=cfg.get("owntone", "base_url", fallback="http://localhost:3689"),
         output_name=cfg.get("owntone", "output_name", fallback=""),
         volume_percent=cfg.getint("owntone", "volume_percent", fallback=20),
-        protocol_api_state=normalize_owntone_protocol_api_state(
-            cfg.get(
-                "owntone",
-                "protocol_api_state",
-                fallback=DEFAULT_OWNTONE_PROTOCOL_API_STATE,
-            ),
-        ),
         output_offsets_ms=offsets,
         output_airplay_modes=airplay_modes,
         known_outputs=known_outputs,
