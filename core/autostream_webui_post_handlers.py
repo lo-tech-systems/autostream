@@ -31,10 +31,12 @@ from autostream_config import (
     unconfigured,
 )
 from autostream_core import (
+    request_config_reload,
     reset_input_stylus,
     set_live_input_eq,
     set_live_input_gain,
     update_live_owntone_runtime,
+    update_live_silence_seconds,
     update_playback_input_config,
 )
 from autostream_players import (
@@ -63,7 +65,7 @@ from autostream_webui_common import (
 )
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
-from autostream_webui_page_setup import send_setup_page
+from autostream_webui_page_setup import _stylus_reset_flash_text, send_setup_page
 from autostream_webui_page_owntone import send_owntone_setup_page, start_owntone_restart_async
 
 
@@ -278,7 +280,6 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             if reset_stylus_input in (1, 2):
                 reset_stylus_result = reset_input_stylus(reset_stylus_input)
 
-        from autostream_webui_page_setup import _stylus_reset_flash_text
         flash_text = "Settings saved"
         if reset_stylus_input is not None and reset_stylus_result is not None:
             flash_text = _stylus_reset_flash_text(
@@ -356,12 +357,10 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         silence_seconds_changed = new_silence_seconds != old_silence_seconds
 
         if silence_seconds_changed and not daemon_changed:
-            from autostream_core import update_live_silence_seconds
             if not update_live_silence_seconds(new_silence_seconds):
                 daemon_changed = True
 
         if daemon_changed:
-            from autostream_core import request_config_reload
             request_config_reload()
     except Exception:
         logging.exception("handle_setup_post: unexpected failure during save")
