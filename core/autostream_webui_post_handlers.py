@@ -529,9 +529,6 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
         for oid, mode in sorted(runtime_airplay_modes_by_id.items(), key=lambda kv: kv[0]):
             cfg.set("owntone_airplay_modes", str(oid), mode)
 
-        if cfg.has_section("owntone_airplay_modes_by_name"):
-            cfg.remove_section("owntone_airplay_modes_by_name")
-
         if cfg.has_section("owntone_known_outputs"):
             cfg.remove_section("owntone_known_outputs")
         cfg.add_section("owntone_known_outputs")
