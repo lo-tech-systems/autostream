@@ -359,7 +359,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         if daemon_changed:
             from autostream_core import request_config_reload
             request_config_reload()
-    except Exception as e:
+    except Exception:
+        logging.exception("handle_setup_post: unexpected failure during save")
         send_setup_page(handler, state, auth, flash_msg="Save failed", flash_type="error")
 
 
