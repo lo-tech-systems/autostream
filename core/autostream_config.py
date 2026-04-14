@@ -404,6 +404,15 @@ def load_and_parse(path: str) -> AutostreamConfig:
     return parse_config(load_config(path))
 
 
+# Cache: path -> ((mtime, size), unconfigured_bool)
+_unconfigured_lock = threading.Lock()
+_unconfigured_cache: dict[str, tuple[tuple[float, int], bool]] = {}
+_MONITOR_DEVICE_RE = re.compile(
+    r"^hw:(?:\d+,\d+|CARD=[^,]+,DEV=\d+)$",
+    re.IGNORECASE,
+)
+
+
 def mark_configured(path: str) -> None:
     """
     After successfully writing the INI, call this to force unconfigured(path) == False
@@ -418,6 +427,7 @@ def mark_configured(path: str) -> None:
     with _unconfigured_lock:
         _unconfigured_cache[path] = (sig, False)
 
+
 def _is_minimally_valid_ini(path: str) -> bool:
     """
     Return True if INI can be parsed and contains at least one section.
@@ -430,15 +440,6 @@ def _is_minimally_valid_ini(path: str) -> bool:
     except Exception:
         return False
     return len(p.sections()) > 0
-
-
-# Cache: path -> ((mtime, size), unconfigured_bool)
-_unconfigured_lock = threading.Lock()
-_unconfigured_cache: dict[str, tuple[tuple[float, int], bool]] = {}
-_MONITOR_DEVICE_RE = re.compile(
-    r"^hw:(?:\d+,\d+|CARD=[^,]+,DEV=\d+)$",
-    re.IGNORECASE,
-)
 
 
 def _get_nonempty(cfg: configparser.ConfigParser, section: str, key: str) -> str:
