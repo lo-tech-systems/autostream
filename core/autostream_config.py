@@ -89,6 +89,9 @@ _OWNTONE_LOG_LEVELS = {
     "spam": 5,
 }
 
+# Inverse of _OWNTONE_LOG_LEVELS: OwnTone integer severity → platform level name.
+OWNTONE_INT_TO_LOG_LEVEL: dict[int, str] = {v: k for k, v in _OWNTONE_LOG_LEVELS.items()}
+
 
 CONFIG_IO_LOCK = threading.Lock()
 

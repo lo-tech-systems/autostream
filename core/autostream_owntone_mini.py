@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Any, Optional
 
-from autostream_config import normalize_log_level, owntone_log_level_value
+from autostream_config import normalize_log_level, owntone_log_level_value, OWNTONE_INT_TO_LOG_LEVEL
 from autostream_players import (
     ActionResult,
     BACKEND_OWNTONE_MINI,
@@ -50,15 +50,6 @@ _MINI_SERVER_TO_BACKEND_MODE: dict[str, str] = {
     "airplay2": OUTPUT_MODE_AIRPLAY2,
 }
 
-
-_LOG_LEVEL_BY_VALUE = {
-    0: "fatal",
-    1: "log",
-    2: "warning",
-    3: "info",
-    4: "debug",
-    5: "spam",
-}
 
 
 @dataclass(frozen=True)
@@ -513,7 +504,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
     def _normalize_setting_value_from_backend(self, spec: _MiniSettingSpec, value: Any) -> Any:
         if spec.option == "loglevel":
             try:
-                return _LOG_LEVEL_BY_VALUE[int(value)]
+                return OWNTONE_INT_TO_LOG_LEVEL[int(value)]
             except Exception:
                 return normalize_log_level(value)
         if spec.value_type == "bool":
