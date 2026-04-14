@@ -48,12 +48,11 @@ from autostream_player_service import (
     list_outputs,
     reconcile_fifo_with_backend,
     refresh_runtime_state,
-    set_output_enabled,
     set_selected_outputs,
     set_output_mode,
     set_output_offset,
-    set_output_volume,
     stop_and_disable_all,
+    update_output,
 )
 from autostream_playback import (
     DEFAULT_STYLUS_LIFE_HOURS,
@@ -1258,41 +1257,25 @@ class AudioMonitor:
         except Exception:
             out_volume = 20
         out_volume = max(0, min(100, out_volume))
-        enable_result = set_output_enabled(self.owntone_base_url, out_id, True, timeout=3)
-        if not enable_result.ok:
+        offset_ms = self.owntone_output_offsets_ms.get(out_id)
+        update_result = update_output(
+            self.owntone_base_url,
+            out_id,
+            enabled=True,
+            volume_percent=out_volume,
+            offset_ms=int(offset_ms) if offset_ms is not None else None,
+            timeout=3,
+        )
+        if not update_result.ok:
             self._throttled_owntone_log(
                 now,
                 logging.WARNING,
-                "Failed to auto-enable default output '%s' (%s): %s",
+                "Failed to apply default output settings for '%s' (%s): %s",
                 default_name,
                 reason,
-                enable_result.error or enable_result.detail or enable_result.error_code,
+                update_result.error or update_result.detail or update_result.error_code,
             )
             return False
-
-        volume_result = set_output_volume(self.owntone_base_url, out_id, out_volume, timeout=3)
-        if not volume_result.ok:
-            self._throttled_owntone_log(
-                now,
-                logging.WARNING,
-                "Default output '%s' was enabled but volume update failed (%s): %s",
-                default_name,
-                reason,
-                volume_result.error or volume_result.detail or volume_result.error_code,
-            )
-
-        offset_ms = self.owntone_output_offsets_ms.get(out_id)
-        if offset_ms is not None:
-            offset_result = set_output_offset(self.owntone_base_url, out_id, int(offset_ms), timeout=3)
-            if not offset_result.ok:
-                self._throttled_owntone_log(
-                    now,
-                    logging.WARNING,
-                    "Default output '%s' offset update failed (%s): %s",
-                    default_name,
-                    reason,
-                    offset_result.error or offset_result.detail or offset_result.error_code,
-                )
 
         mode_result = set_output_mode(
             self.owntone_base_url,

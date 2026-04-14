@@ -198,6 +198,37 @@ class OwnToneBackend(OwnToneHttpBackendBase):
         offset = max(-2000, min(2000, offset))
         return self._put_output_fields(output_id, {"offset_ms": offset})
 
+    def update_output(
+        self,
+        output_id: str,
+        *,
+        enabled: Optional[bool] = None,
+        volume_percent: Optional[int] = None,
+        offset_ms: Optional[int] = None,
+    ) -> ActionResult:
+        payload: dict[str, Any] = {}
+        if enabled is not None:
+            payload["selected"] = bool(enabled)
+        if volume_percent is not None:
+            try:
+                volume = int(volume_percent)
+            except Exception:
+                volume = 0
+            payload["volume"] = max(0, min(100, volume))
+        if offset_ms is not None:
+            try:
+                offset = int(offset_ms)
+            except Exception:
+                offset = 0
+            payload["offset_ms"] = max(-2000, min(2000, offset))
+        if not payload:
+            return ActionResult(ok=False, error="No output fields provided", error_code="missing_fields")
+        return self._put_output_fields(
+            output_id,
+            payload,
+            allow_pin_required=bool(enabled),
+        )
+
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
         pin_text = str(pin or "").strip()
         if not pin_text:

@@ -50,9 +50,8 @@ from autostream_player_service import (
     save_setting,
     set_output_enabled,
     set_output_mode,
-    set_output_offset,
-    set_output_volume,
     submit_output_pin,
+    update_output,
 )
 from autostream_playback import normalize_stylus_life_hours, suggested_silence_threshold_dbfs
 from autostream_sysutils import get_system_hostname, set_system_hostname
@@ -117,44 +116,32 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 
         if selected:
             volume = max(0, min(100, int(payload.get("volume", 50))))
-            enable_result = set_output_enabled(base_url, out_id_text, True, timeout=3)
-            if not enable_result.ok and enable_result.error_code == "pin_required":
+            offset_ms = parsed.owntone.output_offsets_ms.get(out_id_text)
+            update_result = update_output(
+                base_url,
+                out_id_text,
+                enabled=True,
+                volume_percent=volume,
+                offset_ms=int(offset_ms) if offset_ms is not None else None,
+                timeout=3,
+            )
+            if not update_result.ok and update_result.error_code == "pin_required":
                 send_json(handler, 200, {
                     "ok": False,
                     "pin_required": True,
                     "id": out_id_text,
                     "output_name": str(payload.get("name") or ""),
-                    "error": enable_result.error or enable_result.detail or enable_result.error_code,
+                    "error": update_result.error or update_result.detail or update_result.error_code,
                 })
                 return
-            if not enable_result.ok:
+            if not update_result.ok:
                 send_json(handler, 200, {
                     "ok": False,
                     "id": out_id_text,
-                    "error": enable_result.error or enable_result.detail or enable_result.error_code,
+                    "error": update_result.error or update_result.detail or update_result.error_code,
                     "pin_invalid": False,
                 })
                 return
-
-            volume_result = set_output_volume(base_url, out_id_text, volume, timeout=3)
-            if not volume_result.ok:
-                send_json(handler, 200, {
-                    "ok": False,
-                    "id": out_id_text,
-                    "error": volume_result.error or volume_result.detail or volume_result.error_code,
-                })
-                return
-
-            offset_ms = parsed.owntone.output_offsets_ms.get(out_id_text)
-            if offset_ms is not None:
-                offset_result = set_output_offset(base_url, out_id_text, int(offset_ms), timeout=3)
-                if not offset_result.ok:
-                    send_json(handler, 200, {
-                        "ok": False,
-                        "id": out_id_text,
-                        "error": offset_result.error or offset_result.detail or offset_result.error_code,
-                    })
-                    return
 
             mode_text = parsed.owntone.output_airplay_modes.get(out_id_text, DEFAULT_AIRPLAY_MODE)
             mode_result = set_output_mode(

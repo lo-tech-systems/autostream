@@ -411,6 +411,23 @@ def set_output_offset(base_url: str, output_id: str, offset_ms: int, *, timeout:
     return resolve_backend(base_url, timeout=timeout).backend.set_output_offset(output_id, offset_ms)
 
 
+def update_output(
+    base_url: str,
+    output_id: str,
+    *,
+    enabled: bool | None = None,
+    volume_percent: int | None = None,
+    offset_ms: int | None = None,
+    timeout: float = 3.0,
+) -> ActionResult:
+    return resolve_backend(base_url, timeout=timeout).backend.update_output(
+        output_id,
+        enabled=enabled,
+        volume_percent=volume_percent,
+        offset_ms=offset_ms,
+    )
+
+
 def submit_output_pin(base_url: str, output_id: str, pin: str, *, timeout: float = 3.0) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.submit_output_pin(output_id, pin)
 

@@ -258,6 +258,17 @@ class PlayerBackend(ABC):
         """Set one output's timing offset."""
 
     @abstractmethod
+    def update_output(
+        self,
+        output_id: str,
+        *,
+        enabled: Optional[bool] = None,
+        volume_percent: Optional[int] = None,
+        offset_ms: Optional[int] = None,
+    ) -> ActionResult:
+        """Update multiple fields on one output in a single backend request."""
+
+    @abstractmethod
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
         """Submit an authorization PIN for an output."""
 
