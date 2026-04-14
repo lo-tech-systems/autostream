@@ -351,7 +351,7 @@ def send_owntone_setup_page(
                 "<div class='storage-meta'>Speaker id is not known yet. Rediscover the speaker before changing its mode.</div>"
             )
 
-        can_edit_mode = bool(out_id and discovered and output is not None)
+        can_edit_mode = bool(out_id and discovered and output is not None and capabilities.can_set_output_mode)
 
         offset_html = ""
         if capabilities.can_set_output_offset and out_id and (

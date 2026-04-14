@@ -6,7 +6,7 @@ Player backend implementation for the cut-down OwnTone HTTP API.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import time
 from typing import Any, Optional
@@ -20,6 +20,10 @@ from autostream_players import (
     DetectionResult,
     GetOutputResult,
     ListOutputsResult,
+    OUTPUT_MODE_AUTO,
+    OUTPUT_MODE_AIRPLAY1,
+    OUTPUT_MODE_AIRPLAY2,
+    OutputInfo,
     PlaybackMetadata,
     OwnToneHttpBackendBase,
     REGISTRY,
@@ -36,6 +40,15 @@ from autostream_players import (
 
 
 LOG = logging.getLogger(__name__)
+
+# Maps owntone-mini server mode values to normalized internal mode constants.
+# "auto" is always a valid PUT value but is intentionally omitted from the
+# server's supported_modes list; it is handled separately in normalization.
+_MINI_SERVER_TO_BACKEND_MODE: dict[str, str] = {
+    "auto": OUTPUT_MODE_AUTO,
+    "raop": OUTPUT_MODE_AIRPLAY1,
+    "airplay2": OUTPUT_MODE_AIRPLAY2,
+}
 
 
 _LOG_LEVEL_BY_VALUE = {
@@ -151,7 +164,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             can_set_output_volume=True,
             can_set_output_offset=True,
             can_submit_output_pin=True,
-            can_set_output_mode=False,
+            can_set_output_mode=True,
             can_play=True,
             can_stop=True,
             can_ensure_pipe_source_ready=True,
@@ -221,6 +234,31 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
 
     def restart(self) -> ActionResult:
         return self._unsupported_action("restart")
+
+    def _normalize_output_info(self, output: dict[str, Any]) -> OutputInfo:
+        """Extend base normalization with owntone-mini mode fields."""
+        base = super()._normalize_output_info(output)
+
+        # Parse current mode from server value.
+        mode_raw = str(output.get("mode") or "").strip().lower()
+        current_mode = _MINI_SERVER_TO_BACKEND_MODE.get(mode_raw, OUTPUT_MODE_AUTO)
+
+        # Parse supported modes. The server intentionally omits "auto" from this
+        # list even though it is always a valid PUT value, so we prepend it.
+        supported_raw = output.get("supported_modes")
+        if isinstance(supported_raw, list):
+            mapped: list[str] = []
+            for raw_val in supported_raw:
+                internal = _MINI_SERVER_TO_BACKEND_MODE.get(str(raw_val or "").strip().lower())
+                if internal is not None and internal not in mapped:
+                    mapped.append(internal)
+            if OUTPUT_MODE_AUTO not in mapped:
+                mapped.insert(0, OUTPUT_MODE_AUTO)
+            supported_modes: tuple[str, ...] = tuple(mapped)
+        else:
+            supported_modes = (OUTPUT_MODE_AUTO,)
+
+        return replace(base, current_mode=current_mode, supported_modes=supported_modes)
 
     def list_outputs(self) -> ListOutputsResult:
         payload, resp, err = self._get_json("/api/outputs")
@@ -293,6 +331,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         enabled: Optional[bool] = None,
         volume_percent: Optional[int] = None,
         offset_ms: Optional[int] = None,
+        mode: Optional[str] = None,
     ) -> ActionResult:
         payload: dict[str, Any] = {}
         if enabled is not None:
@@ -309,6 +348,20 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             except Exception:
                 offset = 0
             payload["offset_ms"] = max(-2000, min(2000, offset))
+        if mode is not None:
+            # Map from internal backend mode constants to owntone-mini server values.
+            # Internal: "auto" | "airplay1" | "airplay2"
+            # Server:   "auto" | "raop"     | "airplay2"
+            mode_text = str(mode).strip().lower()
+            mini_mode = "raop" if mode_text == "airplay1" else mode_text
+            if mini_mode in ("auto", "raop", "airplay2"):
+                payload["mode"] = mini_mode
+            else:
+                LOG.info(
+                    "Unrecognized output mode %r for output %s; mode will be omitted from update.",
+                    mode,
+                    output_id,
+                )
         if not payload:
             return ActionResult(ok=False, error="No output fields provided", error_code="missing_fields")
         return self._put_output_fields(
@@ -322,9 +375,6 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         if not pin_text:
             return ActionResult(ok=False, error="Missing PIN", error_code="missing_pin")
         return self._put_output_fields(output_id, {"pin": pin_text}, allow_pin_invalid=True)
-
-    def set_output_mode(self, output_id: str, mode: str) -> ActionResult:
-        return self._unsupported_action("set_output_mode")
 
     def play(self) -> ActionResult:
         return self._put_json("/api/player/play", None, success_statuses=(204,))

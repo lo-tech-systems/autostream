@@ -265,16 +265,19 @@ class PlayerBackend(ABC):
         enabled: Optional[bool] = None,
         volume_percent: Optional[int] = None,
         offset_ms: Optional[int] = None,
+        mode: Optional[str] = None,
     ) -> ActionResult:
-        """Update multiple fields on one output in a single backend request."""
+        """Update multiple fields on one output in a single backend request.
+
+        mode should be a normalized backend mode string (e.g. OUTPUT_MODE_AUTO,
+        OUTPUT_MODE_AIRPLAY1, OUTPUT_MODE_AIRPLAY2).  Backends that do not
+        support mode must absorb an unsupported-mode condition internally:
+        log at INFO and return ok=True rather than propagating a failure.
+        """
 
     @abstractmethod
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
         """Submit an authorization PIN for an output."""
-
-    @abstractmethod
-    def set_output_mode(self, output_id: str, mode: str) -> ActionResult:
-        """Set a normalized output mode such as auto/airplay1/airplay2."""
 
     @abstractmethod
     def play(self) -> ActionResult:

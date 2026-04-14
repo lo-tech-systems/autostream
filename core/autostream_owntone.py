@@ -205,6 +205,7 @@ class OwnToneBackend(OwnToneHttpBackendBase):
         enabled: Optional[bool] = None,
         volume_percent: Optional[int] = None,
         offset_ms: Optional[int] = None,
+        mode: Optional[str] = None,
     ) -> ActionResult:
         payload: dict[str, Any] = {}
         if enabled is not None:
@@ -221,6 +222,12 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             except Exception:
                 offset = 0
             payload["offset_ms"] = max(-2000, min(2000, offset))
+        if mode is not None:
+            LOG.info(
+                "Output mode setting is not supported by the %s backend; mode=%r will be ignored.",
+                self.backend_id,
+                mode,
+            )
         if not payload:
             return ActionResult(ok=False, error="No output fields provided", error_code="missing_fields")
         return self._put_output_fields(
@@ -234,9 +241,6 @@ class OwnToneBackend(OwnToneHttpBackendBase):
         if not pin_text:
             return ActionResult(ok=False, error="Missing PIN", error_code="missing_pin")
         return self._put_output_fields(output_id, {"pin": pin_text}, allow_pin_invalid=True)
-
-    def set_output_mode(self, output_id: str, mode: str) -> ActionResult:
-        return self._unsupported_action("set_output_mode")
 
     def play(self) -> ActionResult:
         return self._put_json("/api/player/play", None, success_statuses=(204,))

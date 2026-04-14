@@ -49,7 +49,6 @@ from autostream_player_service import (
     config_airplay_mode_to_backend,
     save_setting,
     set_output_enabled,
-    set_output_mode,
     submit_output_pin,
     update_output,
 )
@@ -117,12 +116,14 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
         if selected:
             volume = max(0, min(100, int(payload.get("volume", 50))))
             offset_ms = parsed.owntone.output_offsets_ms.get(out_id_text)
+            mode_text = parsed.owntone.output_airplay_modes.get(out_id_text, DEFAULT_AIRPLAY_MODE)
             update_result = update_output(
                 base_url,
                 out_id_text,
                 enabled=True,
                 volume_percent=volume,
                 offset_ms=int(offset_ms) if offset_ms is not None else None,
+                mode=config_airplay_mode_to_backend(mode_text),
                 timeout=3,
             )
             if not update_result.ok and update_result.error_code == "pin_required":
@@ -140,21 +141,6 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
                     "id": out_id_text,
                     "error": update_result.error or update_result.detail or update_result.error_code,
                     "pin_invalid": False,
-                })
-                return
-
-            mode_text = parsed.owntone.output_airplay_modes.get(out_id_text, DEFAULT_AIRPLAY_MODE)
-            mode_result = set_output_mode(
-                base_url,
-                out_id_text,
-                config_airplay_mode_to_backend(mode_text),
-                timeout=3,
-            )
-            if not mode_result.ok and mode_result.error_code != "unsupported":
-                send_json(handler, 200, {
-                    "ok": False,
-                    "id": out_id_text,
-                    "error": mode_result.error or mode_result.detail or mode_result.error_code,
                 })
                 return
 

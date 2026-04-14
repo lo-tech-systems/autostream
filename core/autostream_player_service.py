@@ -418,6 +418,7 @@ def update_output(
     enabled: bool | None = None,
     volume_percent: int | None = None,
     offset_ms: int | None = None,
+    mode: str | None = None,
     timeout: float = 3.0,
 ) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.update_output(
@@ -425,15 +426,12 @@ def update_output(
         enabled=enabled,
         volume_percent=volume_percent,
         offset_ms=offset_ms,
+        mode=mode,
     )
 
 
 def submit_output_pin(base_url: str, output_id: str, pin: str, *, timeout: float = 3.0) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.submit_output_pin(output_id, pin)
-
-
-def set_output_mode(base_url: str, output_id: str, mode: str, *, timeout: float = 3.0) -> ActionResult:
-    return resolve_backend(base_url, timeout=timeout).backend.set_output_mode(output_id, mode)
 
 
 def play(base_url: str, *, timeout: float = 3.0) -> ActionResult:

@@ -49,8 +49,6 @@ from autostream_player_service import (
     reconcile_fifo_with_backend,
     refresh_runtime_state,
     set_selected_outputs,
-    set_output_mode,
-    set_output_offset,
     stop_and_disable_all,
     update_output,
 )
@@ -1264,6 +1262,7 @@ class AudioMonitor:
             enabled=True,
             volume_percent=out_volume,
             offset_ms=int(offset_ms) if offset_ms is not None else None,
+            mode=config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_id)),
             timeout=3,
         )
         if not update_result.ok:
@@ -1276,22 +1275,6 @@ class AudioMonitor:
                 update_result.error or update_result.detail or update_result.error_code,
             )
             return False
-
-        mode_result = set_output_mode(
-            self.owntone_base_url,
-            out_id,
-            config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_id)),
-            timeout=3,
-        )
-        if not mode_result.ok and mode_result.error_code != "unsupported":
-            self._throttled_owntone_log(
-                now,
-                logging.WARNING,
-                "Default output '%s' mode update failed (%s): %s",
-                default_name,
-                reason,
-                mode_result.error or mode_result.detail or mode_result.error_code,
-            )
 
         logging.info(
             "No outputs selected; auto-enabled default output '%s' (%s).",
@@ -1326,37 +1309,30 @@ class AudioMonitor:
                 )
                 return False
             outputs_by_id = {str(output.id): output for output in outputs if output.id}
+            try:
+                recovery_volume = int(self.owntone_volume_percent)
+            except Exception:
+                recovery_volume = 20
+            recovery_volume = max(0, min(100, recovery_volume))
             for out_id in selected_ids:
                 out_key = str(out_id)
                 output = outputs_by_id.get(out_key)
                 if output is None:
                     continue
                 offset_ms = self.owntone_output_offsets_ms.get(out_key)
-                if offset_ms is not None:
-                    offset_result = set_output_offset(
-                        self.owntone_base_url,
-                        out_key,
-                        int(offset_ms),
-                        timeout=3,
-                    )
-                    if not offset_result.ok:
-                        logging.warning(
-                            "Failed to refresh OwnTone output %s offset: %s",
-                            out_id,
-                            offset_result.error or offset_result.detail or offset_result.error_code,
-                        )
-                        return False
-                mode_result = set_output_mode(
+                update_result = update_output(
                     self.owntone_base_url,
                     out_key,
-                    config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_key)),
+                    volume_percent=recovery_volume,
+                    offset_ms=int(offset_ms) if offset_ms is not None else None,
+                    mode=config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_key)),
                     timeout=3,
                 )
-                if not mode_result.ok and mode_result.error_code != "unsupported":
+                if not update_result.ok:
                     logging.warning(
-                        "Failed to refresh OwnTone output %s mode: %s",
+                        "Failed to refresh OwnTone output %s settings: %s",
                         out_id,
-                        mode_result.error or mode_result.detail or mode_result.error_code,
+                        update_result.error or update_result.detail or update_result.error_code,
                     )
                     return False
             logging.info("Refreshed selected OwnTone outputs: %s", selected_ids)

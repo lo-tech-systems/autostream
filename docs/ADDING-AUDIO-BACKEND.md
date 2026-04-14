@@ -240,8 +240,12 @@ The service layer already provides helpers for config compatibility:
 - `backend_output_mode_to_config()`
 - `output_supported_config_modes()`
 
-If your backend does not support mode selection, return
-`ActionResult(..., error_code="unsupported")` from `set_output_mode()`.
+Mode selection is handled inside `update_output()`, not as a separate method.
+If your backend does not support mode, absorb the `mode` parameter silently
+inside `update_output()`: log at `INFO` and omit the mode field from any
+request payload.  Return `ok=True` so callers are not affected.
+Set `can_set_output_mode=False` in `get_capabilities()` so the Web UI hides
+mode controls for outputs served by this backend.
 
 ## Step 8: Support Normalized Settings Where They Make Sense
 
