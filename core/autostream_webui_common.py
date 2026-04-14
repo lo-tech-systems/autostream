@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import html
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 from typing import Optional
 
@@ -109,8 +110,7 @@ def get_app_version() -> str:
     Returns "unknown" if the file is missing or unreadable.
     """
     try:
-        with open("version", "r", encoding="utf-8") as f:
-            return f.read().strip()
+        return (Path(__file__).parent / "version").read_text(encoding="utf-8").strip()
     except Exception:
         return "unknown"
 
