@@ -67,6 +67,11 @@ from autostream_webui_page_setup import send_setup_page
 from autostream_webui_page_owntone import send_owntone_setup_page, start_owntone_restart_async
 
 
+def _fld(form: dict, n: str, d: str = "") -> str:
+    """Return the first value for form field *n*, or *d* if absent/empty."""
+    return (form.get(n, []) or [d])[0]
+
+
 # -----------------------------------------------------------------------------
 # Output toggle / volume handler
 # -----------------------------------------------------------------------------
@@ -167,7 +172,7 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 
 def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
     form = parse_qs(body)
-    def fld(n, d=""): return (form.get(n, []) or [d])[0]
+    def fld(n, d=""): return _fld(form, n, d)
     try:
         cfg = locked_load_config(state.config_path)
         p = parse_config(cfg)
@@ -456,10 +461,7 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
 
 def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> None:
     form = parse_qs(body)
-
-    def fld(n, d=""):
-        return (form.get(n, []) or [d])[0]
-
+    def fld(n, d=""): return _fld(form, n, d)
     try:
         cfg = locked_load_config(state.config_path)
 
