@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 import os
-import time
-from pathlib import Path
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Optional
 
 from autostream_sysutils import run_cmd
@@ -28,7 +29,6 @@ LICENSE_CHECK = False
 # Raspberry Pi PSU check related functions.
 # ---------------------------------------------------------------------------
 
-import threading
 _psu_seen_lock = threading.Lock()
 _seen_historic_undervolt = False
 
@@ -63,7 +63,8 @@ def _read_get_throttled_value() -> Optional[int]:
     sysfs_path = "/sys/devices/platform/soc/soc:firmware/get_throttled"
     try:
         if os.path.isfile(sysfs_path):
-            raw = open(sysfs_path, "r", encoding="utf-8").read().strip()
+            with open(sysfs_path, "r", encoding="utf-8") as _f:
+                raw = _f.read().strip()
             value = int(raw, 0)  # handles "0x..." or decimal
     except Exception:
         value = None
