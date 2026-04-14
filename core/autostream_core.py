@@ -344,8 +344,11 @@ def handle_signal(signum, frame):
     stop_flag.set()
 
 
-signal.signal(signal.SIGINT,  handle_signal)
-signal.signal(signal.SIGTERM, handle_signal)
+def _install_signal_handlers() -> None:
+    """Register SIGINT/SIGTERM handlers. Call once from the process entry point."""
+    signal.signal(signal.SIGINT,  handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
 
 _live_platform_log_level = normalize_log_level(DEFAULT_LOG_LEVEL)
 
@@ -1596,6 +1599,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     If start_webui is provided it is called with config_path to start the
     optional web UI in a background thread.
     """
+    _install_signal_handlers()
     cfg = load_and_parse(config_path)
     setup_logging(cfg.general.log_file, cfg.general.log_level)
     _ensure_playback_tracker(cfg)
