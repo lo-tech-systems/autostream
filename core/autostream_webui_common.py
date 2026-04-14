@@ -36,7 +36,7 @@ from typing import Optional
 
 from autostream_auth import FLASH_COOKIE_NAME
 from autostream_config import CONFIG_IO_LOCK, load_config
-from autostream_playback import InputPlaybackSnapshot
+from autostream_playback_stats import InputPlaybackSnapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
 
 

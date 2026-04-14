@@ -52,7 +52,7 @@ from autostream_player_service import (
     stop_and_disable_all,
     update_output,
 )
-from autostream_playback import (
+from autostream_playback_stats import (
     DEFAULT_STYLUS_LIFE_HOURS,
     InputPlaybackSnapshot,
     PlaybackInputConfig,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_playback.py
+"""autostream_playback_stats.py
 
 Playback-hours tracking for autostream inputs.
 

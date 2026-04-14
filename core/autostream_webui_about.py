@@ -28,7 +28,7 @@ import textwrap
 
 from autostream_config import parse_config
 from autostream_core import get_playback_snapshot
-from autostream_playback import InputPlaybackSnapshot
+from autostream_playback_stats import InputPlaybackSnapshot
 from autostream_rpi import get_cpu_temperature_c
 from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_health_percent
 

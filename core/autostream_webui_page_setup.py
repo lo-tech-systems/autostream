@@ -37,7 +37,7 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_player_service import list_outputs
-from autostream_playback import (
+from autostream_playback_stats import (
     InputPlaybackSnapshot,
     format_hours,
     get_stylus_life_options,

@@ -55,7 +55,7 @@ from autostream_player_service import (
     submit_output_pin,
     update_output,
 )
-from autostream_playback import normalize_stylus_life_hours, suggested_silence_threshold_dbfs
+from autostream_playback_stats import normalize_stylus_life_hours, suggested_silence_threshold_dbfs
 from autostream_sysutils import atomic_write_file, get_system_hostname, set_system_hostname
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
