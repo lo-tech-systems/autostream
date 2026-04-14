@@ -357,7 +357,8 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
     with _CACHE_LOCK:
         if len(_DETECTION_CACHE) >= _DETECTION_CACHE_MAX_ENTRIES:
             # Evict the oldest entry to keep the dict bounded.
-            oldest_key = min(_DETECTION_CACHE, key=lambda k: _DETECTION_CACHE[k][0])
+            # Dict insertion order is guaranteed (Python 3.7+), so the first key is oldest.
+            oldest_key = next(iter(_DETECTION_CACHE))
             LOG.debug(
                 "Evicting playback backend cache entry for %s to keep cache bounded",
                 oldest_key,
