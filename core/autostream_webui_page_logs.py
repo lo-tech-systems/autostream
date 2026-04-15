@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_logs.py
+"""autostream_webui_page_logs.py
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
