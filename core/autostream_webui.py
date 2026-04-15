@@ -47,7 +47,7 @@ from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
 from autostream_webui_state import WebUIState
 import autostream_webui_pages as pages
 import autostream_webui_about as about_page
-import autostream_webui_license as license_page
+import autostream_webui_page_license as license_page
 import autostream_webui_logs as logs_page
 
 from autostream_config import unconfigured

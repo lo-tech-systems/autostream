@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""autostream_webui_license.py
+"""autostream_webui_page_license.py
+
+Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+
+Page renderer for the /license route.
 
 Dedicated renderer for the License page.
 """
