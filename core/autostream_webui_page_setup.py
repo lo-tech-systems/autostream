@@ -287,8 +287,13 @@ def send_setup_page(
 
     initial_setup = unconfigured(state.config_path)
     h1 = "Initial Setup (2 of 2)" if initial_setup else "Setup"
-    submit_label = "Finish" if initial_setup else "Save Settings"
-    nav_html = "" if initial_setup else """<a href="/" class="pill-btn">← Done</a>"""
+    submit_label = "Finish"
+    setup_form_id = "setupForm"
+    nav_html = (
+        ""
+        if initial_setup
+        else f"""<button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">← Done</button>"""
+    )
     playback_snapshot = get_playback_snapshot()
     input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
         parsed.audio1,
@@ -303,7 +308,8 @@ def send_setup_page(
     owntone_button_html = "" if initial_setup else """
           <button type="button"
             onclick="window.location.href='/owntone-setup';"
-            style="width:100%;padding:0.8rem;border-radius:999px;background:#6c757d;opacity:1;color:#fff;border:none;font-weight:600;margin-top:0.5rem;font-size:1.1rem;">
+            class="pill-btn small"
+            style="width:100%;margin-top:0.5rem;">
             More Owntone Settings
           </button>
         """
@@ -511,12 +517,12 @@ def send_setup_page(
 
         factory_reset_zone = f"""
       <div style="margin-top:2rem;padding:1rem 1.25rem;border:1.5px solid #c00000;border-radius:8px;">
-        <p style="margin:0 0 0.5rem;font-weight:600;color:#c00000;">Danger Zone</p>
+        <p style="margin:0 0 0.5rem;font-weight:600;color:#c00000;">Factory Reset</p>
         <p style="margin:0 0 0.75rem;font-size:0.95rem;color:#444;">Factory Reset returns the appliance to first-run Wi-Fi setup mode. All settings will be erased.</p>
         <button type="button"
           id="btnFactoryReset"
           class="pill-btn"
-          style="color:#8b0000;"
+          style="width:100%;color:#fff;"
           onclick="showFactoryResetModal()">
           Factory Reset
         </button>
@@ -617,7 +623,7 @@ def send_setup_page(
       </p>
       {f"<p style='color:green;'>Saved</p>" if saved_ok else ""}
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
-      <form method="POST" action="/setup" autocomplete="off">
+      <form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
         {input1_html}
         {input2_html}
@@ -643,7 +649,7 @@ def send_setup_page(
           </label>
           {update_html}
         </fieldset>
-        <p class="actions"><button type="submit">{submit_label}</button></p>
+        {f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else ''}
       </form>
       {factory_reset_zone}
       </div>

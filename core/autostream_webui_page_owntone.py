@@ -422,8 +422,13 @@ def send_owntone_setup_page(
 
     initial_setup = unconfigured(state.config_path)
     h1 = "Initial Setup (1 of 2)" if initial_setup else "Owntone Setup"
-    back_html = "" if initial_setup else '<a href="/setup" class="pill-btn">← Back</a>'
-    submit_label = "Continue..." if initial_setup else "Save Settings"
+    submit_label = "Continue"
+    owntone_setup_form_id = "owntoneSetupForm"
+    back_html = (
+        ""
+        if initial_setup
+        else f'<button type="submit" form="{owntone_setup_form_id}" class="pill-btn small" style="width:auto;">← Done</button>'
+    )
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
@@ -435,7 +440,7 @@ def send_owntone_setup_page(
         {back_html}
         <a href="/owntone-setup" class="pill-btn" style="font-size:0.95rem;font-weight:500;border:1px solid #ccc;">↻ Refresh</a>
       </p>
-      <form method="POST" action="/owntone-setup">
+      <form id="{owntone_setup_form_id}" method="POST" action="/owntone-setup">
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
         {speakers_html}
         <fieldset><legend>Audio</legend>
@@ -449,7 +454,7 @@ def send_owntone_setup_page(
           {'<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else ''}
           {'<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(SETTING_START_BUFFER_MS_MIN) + '" max="' + str(SETTING_START_BUFFER_MS_MAX) + '" step="' + str(SETTING_START_BUFFER_MS_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else '<div class="storage-meta" style="margin-top:0.75rem;">This backend does not currently expose start-buffer control.</div>'}
         </fieldset>
-        <p class="actions"><button type="submit">{submit_label}</button></p>
+        {f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else ''}
       </form></div>
       <script>
         function onShowToggle(i, checked){{
