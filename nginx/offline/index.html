@@ -78,6 +78,29 @@
       <a class="pill-btn" href="/offline/reboot">Reboot</a>
     </div>
 
+    <div style="margin-top:1.25rem;text-align:center;">
+      <div id="fr-trigger">
+        <button class="pill-btn" style="color:#8b0000;"
+          onclick="document.getElementById('fr-confirm').style.display='block';document.getElementById('fr-trigger').style.display='none';">
+          Factory Reset
+        </button>
+      </div>
+      <div id="fr-confirm" style="display:none;padding:1rem;border:1.5px solid #c00000;border-radius:8px;text-align:left;">
+        <p style="margin:0 0 0.75rem;">This will erase all settings, including WiFi settings, and then reboot the appliance.
+        After reboot, reconnect to the <strong>autostream_XXXX</strong> WiFi network and use the factory-configured PIN to reconfigure.</p>
+        <div style="display:flex;gap:0.75rem;">
+          <button class="pill-btn" style="flex:1;"
+            onclick="document.getElementById('fr-confirm').style.display='none';document.getElementById('fr-trigger').style.display='block';">
+            Cancel
+          </button>
+          <a class="pill-btn" href="/offline/factory-reset"
+            style="flex:1;text-align:center;background:#c00000;color:#fff;font-weight:700;">
+            Continue
+          </a>
+        </div>
+      </div>
+    </div>
+
   </div>
 </body>
 </html>

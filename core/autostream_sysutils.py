@@ -85,6 +85,26 @@ SDCARD_HEALTH_JSON_FILE = Path("/opt/autostream/sdcardhealth.json")
 # Privileged helper (installed outside /opt/autostream)
 AUTOSTREAM_ADMIN_BIN = os.environ.get("AUTOSTREAM_ADMIN_BIN", "/usr/local/libexec/autostream/autostream_admin")
 
+
+# ---------------------------------------------------------------------------
+# AP SSID helper
+# ---------------------------------------------------------------------------
+
+def get_ap_ssid(ifname: str = "wlan0") -> str:
+    """Return the AP SSID for the given interface based on its MAC address.
+
+    Format: autostream_XXXX where XXXX are the last four hex digits of the MAC.
+    Falls back to autostream_SETUP if the MAC cannot be read.
+    """
+    try:
+        mac = Path(f"/sys/class/net/{ifname}/address").read_text(
+            encoding="ascii", errors="ignore"
+        ).strip().replace(":", "")
+        suffix = mac[-4:].upper() if len(mac) >= 4 else "0000"
+        return f"autostream_{suffix}"
+    except Exception:
+        return "autostream_SETUP"
+
 # ---------------------------------------------------------------------------
 # Command helpers
 # ---------------------------------------------------------------------------
@@ -223,6 +243,31 @@ def reboot_system(reason: str = "UserRequestNormal", delay_s: int | None = None)
         "Reboot request via autostream_admin failed (rc=%s, stderr=%s)",
         p.returncode,
         (p.stderr or "").strip(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Factory reset request helper
+# ---------------------------------------------------------------------------
+
+def factory_reset_system() -> None:
+    """Request a factory reset via the privileged autostream_admin helper.
+
+    The helper schedules the actual reset as a transient systemd unit (to
+    escape the autostream.service cgroup) and returns immediately, so this
+    function returns before the reset sequence begins. The caller should
+    navigate the user to the nginx-served /offline/resetting holding page
+    immediately after calling this function.
+
+    Raises RuntimeError if the scheduling call fails.
+    """
+    p = run_admin_cmd(["factory-reset"], timeout=15.0)
+    if p.returncode == 0:
+        logger.info("Factory reset scheduled via autostream_admin")
+        return
+    raise RuntimeError(
+        f"Factory reset scheduling failed via autostream_admin "
+        f"(rc={p.returncode}): {(p.stderr or '').strip()}"
     )
 
 

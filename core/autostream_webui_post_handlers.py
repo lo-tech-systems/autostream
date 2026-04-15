@@ -11,6 +11,7 @@ Contents:
   - handle_live_input_eq_update   -- POST /api/input_eq
   - handle_live_input_gain_update -- POST /api/input_gain
   - handle_owntone_setup_post     -- POST /owntone-setup
+  - handle_factory_reset_post     -- POST /api/factory-reset
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ from autostream_player_service import (
     update_output,
 )
 from autostream_playback_stats import normalize_stylus_life_hours, suggested_silence_threshold_dbfs
-from autostream_sysutils import atomic_write_file, get_system_hostname, set_system_hostname
+from autostream_sysutils import atomic_write_file, factory_reset_system, get_system_hostname, set_system_hostname
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
     _set_flash_cookie,
@@ -606,3 +607,26 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             auth,
             error="Save failed",
         )
+
+
+# -----------------------------------------------------------------------------
+# Factory reset handler
+# -----------------------------------------------------------------------------
+
+def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
+    """POST /api/factory-reset — schedule factory reset via privileged helper.
+
+    The privileged helper schedules the actual reset as a transient systemd
+    unit (escaping the autostream.service cgroup) and returns immediately, so
+    this handler completes before the reset sequence begins.
+
+    The client should navigate to /offline/resetting immediately after
+    issuing this request and must not wait for a meaningful response body,
+    since the service will be stopped as part of the reset sequence.
+    """
+    try:
+        factory_reset_system()
+        send_json(handler, 200, {"ok": True})
+    except Exception as e:
+        logging.error("handle_factory_reset_post: scheduling failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": str(e)})

@@ -370,6 +370,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             reboot_system("UserRequestNormal", delay_s=3)
             pages.send_json(self, 200, {"ok": True})
 
+        elif path == "/api/factory-reset":
+            # Requires authentication when a PIN is configured.
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
+            pages.handle_factory_reset_post(self, STATE, AUTH)
+
         else:
             self.send_error(404, "Not found")
 

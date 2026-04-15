@@ -22,6 +22,9 @@ Cmnd_Alias AUTOSTREAM_ADMIN_OWNTONE     = /usr/local/libexec/autostream/autostre
 # allow the webui to change the hostname (note - hostname regex is enforced within autostream_admin)
 Cmnd_Alias AUTOSTREAM_ADMIN_HOST        = /usr/local/libexec/autostream/autostream_admin sethostname *
 
+# allow factory reset (scheduling only — no arguments, no --execute flag)
+Cmnd_Alias AUTOSTREAM_ADMIN_FACTORY_RESET = /usr/local/libexec/autostream/autostream_admin factory-reset
+
 # Full list of allowed actions for autostream user:
 Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URN,        \
@@ -30,7 +33,8 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URSE_DELAY, \
                               AUTOSTREAM_ADMIN_REBOOT_ND,         \
                               AUTOSTREAM_ADMIN_OWNTONE,           \
-                              AUTOSTREAM_ADMIN_HOST
+                              AUTOSTREAM_ADMIN_HOST,              \
+                              AUTOSTREAM_ADMIN_FACTORY_RESET
 
 Defaults!AUTOSTREAM_ADMIN env_reset
 Defaults!AUTOSTREAM_ADMIN secure_path="/usr/sbin:/usr/bin:/sbin:/bin"
@@ -38,5 +42,5 @@ Defaults!AUTOSTREAM_ADMIN !requiretty
 
 AUTOSTREAM_WEB ALL=(root) NOPASSWD: AUTOSTREAM_ADMIN
 
-# Also allow the NGINX user to reboot the host
-AUTOSTREAM_NGINX ALL=(root) NOPASSWD: AUTOSTREAM_ADMIN_REBOOT_URSE_DELAY
+# Also allow the NGINX user to reboot the host and trigger factory reset
+AUTOSTREAM_NGINX ALL=(root) NOPASSWD: AUTOSTREAM_ADMIN_REBOOT_URSE_DELAY, AUTOSTREAM_ADMIN_FACTORY_RESET

@@ -48,6 +48,7 @@ from autostream_webui_page_owntone import (
 )
 
 from autostream_webui_post_handlers import (
+    handle_factory_reset_post,
     handle_live_input_eq_update,
     handle_live_input_gain_update,
     handle_output_update,
@@ -170,6 +171,7 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
 
 
 __all__ = [
+    "handle_factory_reset_post",
     "handle_live_input_eq_update",
     "handle_live_input_gain_update",
     "handle_output_update",

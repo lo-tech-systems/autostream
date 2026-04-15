@@ -44,7 +44,7 @@ from autostream_playback_stats import (
     normalize_stylus_life_hours,
     suggested_silence_threshold_dbfs,
 )
-from autostream_sysutils import get_system_hostname, set_system_hostname
+from autostream_sysutils import get_ap_ssid, get_system_hostname, set_system_hostname
 from autostream_webui_assets import (
     A2HS_SCRIPT,
     BANNER_HTML,
@@ -470,6 +470,119 @@ def send_setup_page(
         text-security: disc;
       }
     """
+
+    # Factory reset danger zone — only shown outside initial setup
+    factory_reset_modal_css = ""
+    factory_reset_zone = ""
+    factory_reset_modal = ""
+    factory_reset_js = ""
+    if not initial_setup:
+        ap_ssid = get_ap_ssid()
+        pin_val = auth.get_boot_pin_value()
+        safe_ssid = html.escape(ap_ssid)
+        if pin_val:
+            modal_body_html = (
+                f"This will erase all settings, including WiFi settings, and reboot "
+                f"the appliance.<br><br>After reboot, connect to the WiFi network "
+                f"<strong>{safe_ssid}</strong> to reconfigure the appliance. "
+                f"You will need the factory-configured PIN "
+                f"(<strong>{html.escape(pin_val)}</strong>). "
+                f"<br><br>Do you wish to continue?"
+            )
+        else:
+            modal_body_html = (
+                f"This will erase all settings, including WiFi settings, and then reboot "
+                f"the appliance. After reboot, please connect to the WiFi network "
+                f"<strong>{safe_ssid}</strong> to reconfigure the appliance. "
+                f"You will need the factory-configured PIN. "
+                f"Do you wish to continue?"
+            )
+
+        factory_reset_modal_css = """
+          #factoryResetModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
+          #factoryResetModal.show{display:flex;}
+          #factoryResetModal .panel{width:min(28rem,100%);background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+          #factoryResetModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid #eee;font-weight:700;color:#c00000;}
+          #factoryResetModal .bd{padding:1rem;}
+          #factoryResetModal .bd p{margin:0 0 .75rem 0;}
+          #factoryResetModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid #eee;}
+          #factoryResetModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
+        """
+
+        factory_reset_zone = f"""
+      <div style="margin-top:2rem;padding:1rem 1.25rem;border:1.5px solid #c00000;border-radius:8px;">
+        <p style="margin:0 0 0.5rem;font-weight:600;color:#c00000;">Danger Zone</p>
+        <p style="margin:0 0 0.75rem;font-size:0.95rem;color:#444;">Factory Reset returns the appliance to first-run Wi-Fi setup mode. All settings will be erased.</p>
+        <button type="button"
+          id="btnFactoryReset"
+          class="pill-btn"
+          style="color:#8b0000;"
+          onclick="showFactoryResetModal()">
+          Factory Reset
+        </button>
+      </div>"""
+
+        factory_reset_modal = f"""
+      <div id="factoryResetModal" role="dialog" aria-modal="true" aria-labelledby="factoryResetModalTitle">
+        <div class="panel">
+          <div class="hdr" id="factoryResetModalTitle">Factory Reset</div>
+          <div class="bd">
+            <p id="factoryResetModalMsg">{modal_body_html}</p>
+            <p id="factoryResetModalError" style="display:none;color:#b00020;font-weight:600;"></p>
+          </div>
+          <div class="ft">
+            <button type="button" class="btn" id="factoryResetCancel"
+              style="background:#6c757d;color:#fff;"
+              onclick="hideFactoryResetModal()">Cancel</button>
+            <button type="button" class="btn" id="factoryResetContinue"
+              style="background:#c00000;color:#fff;font-weight:700;border:none;"
+              onclick="doFactoryReset()">Continue</button>
+          </div>
+        </div>
+      </div>"""
+
+        factory_reset_js = f"""
+      <script>
+        function showFactoryResetModal() {{
+          const m = document.getElementById('factoryResetModal');
+          if (m) m.classList.add('show');
+        }}
+        function hideFactoryResetModal() {{
+          const m = document.getElementById('factoryResetModal');
+          if (m) m.classList.remove('show');
+        }}
+        async function doFactoryReset() {{
+          const cont = document.getElementById('factoryResetContinue');
+          const canc = document.getElementById('factoryResetCancel');
+          const errEl = document.getElementById('factoryResetModalError');
+          if (cont) cont.disabled = true;
+          if (canc) canc.disabled = true;
+          try {{
+            const r = await fetch('/api/factory-reset', {{
+              method: 'POST',
+              headers: {{
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRF-Token': window.__CSRF || ''
+              }},
+              body: 'csrf_token=' + encodeURIComponent(window.__CSRF || ''),
+              keepalive: true
+            }});
+            let ok = false;
+            try {{ const j = await r.json(); ok = !!(j && j.ok); }} catch (e) {{}}
+            if (ok) {{
+              window.location.replace('/offline/resetting');
+            }} else {{
+              if (errEl) {{ errEl.textContent = 'Reset could not be scheduled. Please try again.'; errEl.style.display = ''; }}
+              if (cont) cont.disabled = false;
+              if (canc) canc.disabled = false;
+            }}
+          }} catch (e) {{
+            // Network error: the service may have already started resetting.
+            window.location.replace('/offline/resetting');
+          }}
+        }}
+      </script>"""
+
     input1_html = input_fieldset_html(
         input_index=1,
         title="Input 1",
@@ -495,7 +608,7 @@ def send_setup_page(
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}</style>{csrf_meta}
+      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}</style>{csrf_meta}
       </head>
       <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>{h1}</h1>
       <p class="actions" style="display:flex;justify-content:space-between;gap:0.75rem;">
@@ -531,7 +644,10 @@ def send_setup_page(
           {update_html}
         </fieldset>
         <p class="actions"><button type="submit">{submit_label}</button></p>
-      </form></div>
+      </form>
+      {factory_reset_zone}
+      </div>
+      {factory_reset_modal}
       <div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
         <div class="panel">
           <div class="hdr" id="pinModalTitle">Change PIN</div>
@@ -935,11 +1051,19 @@ def send_setup_page(
           syncInputUi(2);
           localizeResetDates();
         }});
-        function requestReboot(){{
+        async function requestReboot(){{
           if(!confirm("Reboot system?")) return;
-          // Navigate to the holding page first so it can be served before the reboot begins.
-          // The holding page will POST /api/reboot and then auto-return to '/' when ready.
-          window.location.href = "/rebooting";
+          // Fire the reboot API (keepalive so the request is sent even as the page navigates).
+          // Then send the user to the nginx-served holding page which polls until the device is back.
+          try {{
+            fetch("/api/reboot", {{
+              method: "POST",
+              headers: {{"X-CSRF-Token": window.__CSRF || ""}},
+              cache: "no-store",
+              keepalive: true
+            }});
+          }} catch (e) {{}}
+          window.location.replace("/offline/rebooting");
         }}
         (async function(){{
           const msg = (t) => {{ document.getElementById("updMsg").textContent = t; }};
@@ -1019,6 +1143,7 @@ def send_setup_page(
           setInterval(refreshOwntoneOutputs, 2000);
         }});
       </script>
+      {factory_reset_js}
       </html>
     """)
     body_bytes = html_body.encode("utf-8")

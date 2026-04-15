@@ -335,6 +335,21 @@ class AuthManager:
 
         return None
 
+    def get_boot_pin_value(self) -> Optional[str]:
+        """Return the current PIN from the boot partition only, or None if absent/invalid.
+
+        Reads directly from /boot/firmware/pin.txt or /boot/pin.txt (the
+        PIN_PATH_CANDIDATES list). Does not consult the config-file override
+        and does not use the internal cache.
+
+        Intended for display purposes only (e.g. the factory reset confirmation
+        modal). The returned value has already been validated against PIN_REGEX.
+        """
+        pin, _path, _mtime, status = self._read_pin_file()
+        if status == PIN_STATUS_OK and pin and PIN_REGEX.match(pin):
+            return pin
+        return None
+
     def set_pin(self, new_pin: str) -> tuple[int, dict]:
         """
         Set or replace the configured PIN.
