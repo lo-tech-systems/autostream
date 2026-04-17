@@ -283,20 +283,45 @@ load_state() {
     exit 1
   fi
   info "Loading saved install state from ${STATE_FILE}"
-  # Preserve values that must not be overwritten by the saved state file:
-  #   AUTOSTREAM_DIR   — the staged release tree (script's own directory),
-  #                      not the original install path from the state file.
-  #   AUTOSTREAM_RELEASE_TAG — the new release tag exported by the supervisor
-  #                      via --setenv; the state file contains the OLD tag.
-  local _script_autostream_dir="${AUTOSTREAM_DIR}"
-  local _env_release_tag="${AUTOSTREAM_RELEASE_TAG:-}"
-  # shellcheck source=/dev/null
-  source "${STATE_FILE}"
-  # Restore: staged tree and new release tag are authoritative in update mode.
-  AUTOSTREAM_DIR="${_script_autostream_dir}"
-  if [[ -n "${_env_release_tag}" ]]; then
-    AUTOSTREAM_RELEASE_TAG="${_env_release_tag}"
-  fi
+
+  # Parse KEY=VALUE pairs explicitly rather than using 'source'.
+  # 'source' executes the file as shell code; a compromised or malformed
+  # state file could run arbitrary commands as root during an update.
+  # Only the specific keys required are accepted; all others are ignored.
+  #
+  # AUTOSTREAM_DIR and AUTOSTREAM_RELEASE_TAG are intentionally excluded:
+  #   AUTOSTREAM_DIR         — always the staged release tree (this script's
+  #                            own directory), not the original install path.
+  #   AUTOSTREAM_RELEASE_TAG — exported by the supervisor via --setenv and
+  #                            carries the NEW tag; the state file records the
+  #                            OLD installed tag and must not overwrite it.
+  local _key _val _line
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    # Skip blank lines and comments.
+    [[ -n "${_line}" && "${_line}" != \#* ]] || continue
+    # Skip lines with no '='.
+    [[ "${_line}" == *=* ]] || continue
+
+    _key="${_line%%=*}"
+    _val="${_line#*=}"
+
+    # Strip surrounding double or single quotes written by save_state's heredoc.
+    if [[ ${#_val} -ge 2 ]]; then
+      if [[ "${_val:0:1}" == '"' && "${_val: -1}" == '"' ]]; then
+        _val="${_val:1:${#_val}-2}"
+      elif [[ "${_val:0:1}" == "'" && "${_val: -1}" == "'" ]]; then
+        _val="${_val:1:${#_val}-2}"
+      fi
+    fi
+
+    case "${_key}" in
+      OWNTONE_MODE)     OWNTONE_MODE="${_val}"     ;;
+      SDMON_METHOD)     SDMON_METHOD="${_val}"      ;;
+      FETCH_AUTOSTREAM) FETCH_AUTOSTREAM="${_val}"  ;;
+      INSTALL_DIR)      INSTALL_DIR="${_val}"       ;;
+    esac
+  done < "${STATE_FILE}"
+
   info "Update mode: using staged release at ${AUTOSTREAM_DIR}"
 }
 

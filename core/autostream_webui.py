@@ -384,6 +384,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             logs_page.handle_logs_post(self, STATE, body_str)
 
         elif path == "/api/update/apply":
+            # Requires authentication when a PIN is configured.
+            # CSRF alone does not enforce authentication — unauthenticated
+            # sessions also carry a CSRF token, so an explicit auth check
+            # is needed here just as it is for /api/factory-reset.
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
             # Body optional
             self._start_update_apply()
 
@@ -394,6 +401,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             AUTH.handle_pin_change(self, body_bytes)
 
         elif path == "/api/reboot":
+            # Requires authentication when a PIN is configured.
+            # CSRF alone does not enforce authentication — unauthenticated
+            # sessions also carry a CSRF token, so an explicit auth check
+            # is needed here just as it is for /api/factory-reset.
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
             # Body optional
             # Goes via autostream-admin (sudo) through autostream_sysutils.reboot_system()
             # Use helper's delayed reboot so the rebooting page has time to render.

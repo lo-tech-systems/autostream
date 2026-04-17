@@ -287,7 +287,11 @@ def cmd_apply() -> Dict[str, Any]:
 
         _log("apply: extracting tarball")
         with tarfile.open(tar_path, "r:gz") as tf:
-            tf.extractall(extract_dir)
+            # filter='data' (Python 3.12+) strips absolute paths, '../' traversal
+            # sequences, and unsafe member types (devices, setuid bits) before
+            # extraction.  Without a filter, a crafted tarball could write to
+            # arbitrary filesystem paths because this runs as root.
+            tf.extractall(extract_dir, filter="data")
 
         # GitHub tarballs have a single top-level directory.
         top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
