@@ -49,6 +49,7 @@ import autostream_webui_pages as pages
 import autostream_webui_page_about as about_page
 import autostream_webui_page_license as license_page
 import autostream_webui_page_logs as logs_page
+from autostream_webui_api import run_updater
 
 from autostream_config import unconfigured
 
@@ -99,6 +100,35 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         if path.endswith("/") and path != "/":
             path = path[:-1]
         return path
+
+    def _start_update_apply(self) -> None:
+        """Stage the latest release and schedule the installer.
+
+        Runs run_updater("apply") in the handler's own thread (ThreadingHTTPServer
+        gives each request its own thread). The updater downloads and extracts the
+        release tarball, schedules autostream_install.sh --update via systemd-run,
+        and returns a JSON result. On success the JS client redirects to
+        /offline/updating; on failure the error is shown on the page.
+        """
+        try:
+            rc, out, err = run_updater(["apply"], timeout=180)
+            if rc == 0:
+                try:
+                    result = json.loads(out or "{}")
+                    result.setdefault("ok", True)
+                except Exception:
+                    result = {"ok": True}
+            else:
+                try:
+                    result = json.loads(out or "{}")
+                    result.setdefault("ok", False)
+                except Exception:
+                    result = {"ok": False, "error": "apply failed"}
+                if not result.get("ok") and err.strip():
+                    result.setdefault("details", err.strip())
+        except Exception as e:
+            result = {"ok": False, "error": "apply failed", "details": str(e)}
+        pages.send_json(self, 200, result)
 
     # Reduce noisy TLS/HTTPS probes hitting this plain-HTTP server
     def log_error(self, format, *args):  # noqa: A003
@@ -230,7 +260,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/update/check":
             pages.send_update_check_json(self)
         elif path == "/api/update/status":
-            pages.send_update_status_json(self, STATE)
+            pages.send_update_status_json(self)
         elif path == "/api/owntone/outputs":
             pages.send_owntone_outputs_json(self, STATE)
         elif path == "/api/owntone/outputs_state":

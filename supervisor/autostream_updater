@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """autostream-updater
 
-Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Root-only helper used by the Autostream web UI.
 
-UPDATED IMPLEMENTATION
+COMMANDS
+--------
+  check   Check whether a newer release is available on GitHub.
+          Outputs JSON: {ok, installed, candidate, update_available, apmode}
 
-1) Check for updates by looking at GitHub releases for lo-tech-systems/autostream and
-   comparing the latest release version to /opt/autostream/release.
-2) If /opt/autostream/release does not exist, assume an update is available (provided
-   the GitHub repo/releases is reachable, i.e. not a 404).
-3) To update, download the latest release tarball and copy only *.py files into
-   /opt/autostream, then update /opt/autostream/release.
+  apply   Stage the latest GitHub release and invoke autostream_install.sh
+          --update via a transient systemd unit (escaping the service cgroup).
+          Outputs JSON: {ok, staged_tag} on success, {ok:false, error} on failure.
+          The installer owns all progress/result reporting via update-result.env.
 
-Outputs JSON on stdout (kept compatible with the current web UI):
-- check: {ok, installed, candidate, update_available, apmode}
-- apply: {ok, installed} on success, or {ok:false, error, details?} on failure
+NOTES
+-----
+- Must run as root.
+- The installer (autostream_install.sh) is the authoritative writer of both
+  install-state.env (applied version) and update-result.env (progress/result).
+- This helper does not write install-state.env or update-result.env directly.
+- Staging location: /var/lib/autostream/update-staging/  (root-owned, cleaned
+  at the start of each apply run so stale extracts do not accumulate).
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -38,8 +44,8 @@ from typing import Any, Dict, Optional, Tuple
 # ---- Paths / constants ----
 LOG_PATH = Path("/var/log/autostream/update.log")
 APMODE_FLAG = Path("/tmp/apmode")
-INSTALL_DIR = Path("/opt/autostream")
-RELEASE_FILE = INSTALL_DIR / "release"
+INSTALL_STATE_FILE = Path("/var/lib/autostream/install-state.env")
+STAGING_DIR = Path("/var/lib/autostream/update-staging")
 
 # GitHub repo
 REPO_OWNER = "lo-tech-systems"
@@ -49,6 +55,12 @@ API_LATEST = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/la
 
 # A conservative user-agent helps avoid 403s.
 UA = "autostream-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
+
+# systemd-run candidates
+SYSTEMDRUN_CANDIDATES = (
+    "/bin/systemd-run",
+    "/usr/bin/systemd-run",
+)
 
 
 # ---- Helpers ----
@@ -84,14 +96,34 @@ def _repo_exists() -> bool:
         return False
 
 
-def _read_installed_version() -> str:
+def _read_env_file(path: Path) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    text = path.read_text(encoding="utf-8")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        data[key] = value
+    return data
+
+
+def _read_installed_release_tag() -> str:
     try:
-        v = RELEASE_FILE.read_text(encoding="utf-8").strip()
-        return v or "unknown"
+        env = _read_env_file(INSTALL_STATE_FILE)
+        v = str(env.get("AUTOSTREAM_RELEASE_TAG") or "").strip()
+        if v:
+            return v
     except FileNotFoundError:
         return "missing"
-    except Exception:
+    except Exception as e:
+        _log(f"read_installed_release_tag: install-state read failed: {e}")
         return "unknown"
+    return "unknown"
 
 
 _semver_re = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$")
@@ -105,7 +137,7 @@ def _version_key(v: str) -> Tuple[int, int, int, str]:
     maj = int(m.group(1) or 0)
     min_ = int(m.group(2) or 0)
     pat = int(m.group(3) or 0)
-    return (maj, min_, pat, v)
+    return (maj, min_, pat, v or "")
 
 
 def _github_latest_release() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -131,7 +163,7 @@ def _github_latest_release() -> Tuple[Optional[str], Optional[str], Optional[str
         return None, None, None
 
 
-def _download_file(url: str, dst: Path, timeout: int = 60) -> None:
+def _download_file(url: str, dst: Path, timeout: int = 120) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/octet-stream"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -139,18 +171,15 @@ def _download_file(url: str, dst: Path, timeout: int = 60) -> None:
             shutil.copyfileobj(resp, f)
 
 
-def _copy_py_files_from_tree(src_root: Path, dst_root: Path) -> int:
-    """Copy all *.py files found under src_root into dst_root, preserving paths."""
-    copied = 0
-    for p in src_root.rglob("*.py"):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(src_root)
-        out = dst_root / rel
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, out)
-        copied += 1
-    return copied
+def _find_systemd_run() -> Optional[str]:
+    """Return an absolute path to systemd-run if available, else None."""
+    for path in SYSTEMDRUN_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    p = shutil.which("systemd-run")
+    if p and os.path.isabs(p) and os.access(p, os.X_OK):
+        return p
+    return None
 
 
 # ---- Commands ----
@@ -162,7 +191,7 @@ def cmd_check() -> Dict[str, Any]:
         _log("check: GitHub releases page not reachable / 404")
         return {"ok": False, "error": "GitHub repo/releases not reachable (404 or network error)", "apmode": apmode}
 
-    installed = _read_installed_version()
+    installed = _read_installed_release_tag()
 
     tag, _tarball_url, html_url = _github_latest_release()
     if not tag:
@@ -201,9 +230,30 @@ def cmd_check() -> Dict[str, Any]:
 
 
 def cmd_apply() -> Dict[str, Any]:
+    """Stage the latest GitHub release and schedule the installer via systemd-run.
+
+    Sequence:
+      1. Refuse if in AP mode.
+      2. Resolve the latest release tag from GitHub.
+      3. Clean up any previous staging directory.
+      4. Download and extract the release tarball to the staging directory.
+      5. Locate autostream_install.sh in the extracted tree.
+      6. Schedule autostream_install.sh --update as a transient systemd unit,
+         exporting AUTOSTREAM_RELEASE_TAG into the installer environment.
+      7. Return {ok: True, staged_tag: <tag>} immediately.
+
+    The installer owns all further progress reporting via update-result.env.
+    The installer restarts autostream.service on completion; no explicit reboot
+    is required for the update to take effect.
+    """
     if APMODE_FLAG.exists():
         _log("apply: refused in AP mode")
         return {"ok": False, "error": "Refusing to update while in AP mode (/tmp/apmode present)."}
+
+    systemd_run = _find_systemd_run()
+    if systemd_run is None:
+        _log("apply: systemd-run not found; cannot schedule installer")
+        return {"ok": False, "error": "systemd-run not found; cannot schedule installer"}
 
     if not _repo_exists():
         _log("apply: GitHub releases page not reachable / 404")
@@ -214,52 +264,80 @@ def cmd_apply() -> Dict[str, Any]:
         _log("apply: no latest release or tarball_url")
         return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
 
-    candidate = tag.lstrip("v")
-    installed = _read_installed_version()
+    _log(f"apply: staging release tag={tag} tarball={tarball_url}")
 
-    _log(f"apply: candidate={candidate} installed={installed} tarball={tarball_url}")
-
-    # Stop service before replacing python code.
-    _log("apply: stopping autostream.service")
-    _run(["/bin/systemctl", "stop", "autostream.service"], timeout=30)
+    # Clean up any previous staging directory so stale extracts do not accumulate.
+    if STAGING_DIR.exists():
+        try:
+            shutil.rmtree(str(STAGING_DIR))
+            _log(f"apply: removed previous staging dir {STAGING_DIR}")
+        except Exception as e:
+            _log(f"apply: warning — could not remove previous staging dir: {e}")
 
     try:
-        with tempfile.TemporaryDirectory(prefix="autostream_upd_") as td:
-            td_path = Path(td)
-            tar_path = td_path / "release.tgz"
+        STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(str(STAGING_DIR), 0o700)
 
-            _log("apply: downloading release tarball")
-            _download_file(tarball_url, tar_path, timeout=120)
+        tar_path = STAGING_DIR / "release.tgz"
+        _log("apply: downloading release tarball")
+        _download_file(tarball_url, tar_path, timeout=120)
 
-            extract_dir = td_path / "extract"
-            extract_dir.mkdir(parents=True, exist_ok=True)
+        extract_dir = STAGING_DIR / "src"
+        extract_dir.mkdir(parents=True, exist_ok=True)
 
-            _log("apply: extracting tarball")
-            with tarfile.open(tar_path, "r:gz") as tf:
-                tf.extractall(extract_dir)
+        _log("apply: extracting tarball")
+        with tarfile.open(tar_path, "r:gz") as tf:
+            tf.extractall(extract_dir)
 
-            # GitHub tarballs have a single top-level directory.
-            top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
-            repo_root = top_dirs[0] if len(top_dirs) == 1 else extract_dir
+        # GitHub tarballs have a single top-level directory.
+        top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
+        if len(top_dirs) == 1:
+            repo_root = top_dirs[0]
+        else:
+            repo_root = extract_dir
 
-            # Copy only *.py files from the extracted repo into /opt/autostream.
-            _log("apply: copying .py files into /opt/autostream")
-            copied = _copy_py_files_from_tree(repo_root, INSTALL_DIR)
-            if copied <= 0:
-                raise RuntimeError("No .py files found in release tarball")
+        installer = repo_root / "autostream_install.sh"
+        if not installer.exists():
+            raise FileNotFoundError(f"autostream_install.sh not found in extracted tree at {repo_root}")
 
-            RELEASE_FILE.write_text(candidate + "\n", encoding="utf-8")
-            _log(f"apply: wrote {RELEASE_FILE} = {candidate} (copied {copied} files)")
+        # Ensure the installer is executable.
+        os.chmod(str(installer), 0o755)
+
+        # Validate the staging directory contains the expected structure.
+        if not (repo_root / "system").is_dir():
+            raise FileNotFoundError(f"Expected 'system/' directory not found in extracted tree at {repo_root}")
+
+        _log(f"apply: staged release at {repo_root}")
 
     except Exception as e:
-        _log(f"apply: failed: {e}")
-        _run(["/bin/systemctl", "start", "autostream.service"], timeout=30)
-        return {"ok": False, "error": "Update failed", "details": str(e)}
+        _log(f"apply: staging failed: {e}")
+        return {"ok": False, "error": "Release staging failed", "details": str(e)}
 
-    _log("apply: restarting autostream.service")
-    _run(["/bin/systemctl", "restart", "autostream.service"], timeout=30)
+    # Schedule the installer as a transient systemd unit so it runs outside
+    # the autostream.service cgroup (same pattern as factory-reset).
+    unit_suffix = f"{int(time.time())}-{os.getpid()}"
+    unit_name = f"autostream-update-{unit_suffix}"
 
-    return {"ok": True, "installed": candidate}
+    cmd = [
+        str(systemd_run),
+        "--quiet",
+        "--collect",
+        f"--unit={unit_name}",
+        "--on-active=1",           # fire 1 second after scheduling
+        "--property=Type=oneshot",
+        f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
+        "--",
+        str(installer),
+        "--update",
+    ]
+
+    rc, out, err = _run(cmd, timeout=15)
+    if rc != 0:
+        _log(f"apply: systemd-run scheduling failed rc={rc} stderr='{err}'")
+        return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
+
+    _log(f"apply: installer scheduled as transient unit {unit_name} tag={tag}")
+    return {"ok": True, "staged_tag": tag.lstrip("v")}
 
 
 # ---- Entrypoint ----

@@ -21,6 +21,7 @@ Cmnd_Alias AUTOSTREAM_ADMIN_OWNTONE     = /usr/local/libexec/autostream/autostre
 
 # allow read-only access to update status for offline nginx pages
 Cmnd_Alias AUTOSTREAM_ADMIN_UPDATE_STATUS = /usr/local/libexec/autostream/autostream_admin update-status
+Cmnd_Alias AUTOSTREAM_ADMIN_VERSION_INFO  = /usr/local/libexec/autostream/autostream_admin version-info
 
 # allow the webui to change the hostname (note - hostname regex is enforced within autostream_admin)
 Cmnd_Alias AUTOSTREAM_ADMIN_HOST        = /usr/local/libexec/autostream/autostream_admin sethostname *
@@ -37,6 +38,7 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_ND,         \
                               AUTOSTREAM_ADMIN_OWNTONE,           \
                               AUTOSTREAM_ADMIN_UPDATE_STATUS,     \
+                              AUTOSTREAM_ADMIN_VERSION_INFO,      \
                               AUTOSTREAM_ADMIN_HOST,              \
                               AUTOSTREAM_ADMIN_FACTORY_RESET
 

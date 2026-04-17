@@ -1075,20 +1075,47 @@ def send_setup_page(
           const msg = (t) => {{ document.getElementById("updMsg").textContent = t; }};
           const bCheck = document.getElementById("btnCheck"), bInst = document.getElementById("btnInst");
           let cand = null;
-          async function poll(){{
-            const r = await fetch("/api/update/status"); const j = await r.json();
-            if(j.running){{ msg("Installing update..."); bCheck.disabled=true; bInst.disabled=true; setTimeout(poll,2000); return; }}
-            bCheck.disabled=false;
-            if(j.last_result){{ msg(j.last_result.ok?"Update installed.":"Update failed: "+j.last_result.error); }}
+          // On page load, check persisted update status so any recent result is visible.
+          async function checkPersistedStatus(){{
+            try {{
+              const r = await fetch("/api/update/status"); const j = await r.json();
+              if(j.ok && j.status === "in_progress"){{
+                // An update is already running — send the user to the progress page.
+                window.location.replace("/offline/updating");
+                return;
+              }}
+              if(j.ok && j.status === "success"){{ msg("Last update: installed successfully."); }}
+              else if(j.ok && (j.status === "failure" || j.status === "error")){{
+                msg("Last update failed: " + (j.message || "unknown error"));
+              }}
+            }} catch(e) {{ /* ignore — no persisted status yet */ }}
           }}
           bCheck.onclick = async () => {{
             msg("Checking..."); bInst.disabled=true;
-            const r = await fetch("/api/update/check"); const j = await r.json();
-            if(j.ok && j.update_available){{ cand=j.candidate; msg("Update available: "+j.candidate); bInst.disabled=false; }}
-            else msg(j.ok?"No updates available.":"Check failed.");
+            try {{
+              const r = await fetch("/api/update/check"); const j = await r.json();
+              if(j.ok && j.update_available){{ cand=j.candidate; msg("Update available: "+j.candidate); bInst.disabled=false; }}
+              else msg(j.ok?"No updates available.":"Check failed.");
+            }} catch(e) {{ msg("Check failed."); }}
           }};
-          bInst.onclick = async () => {{ if(!cand)return; msg("Starting..."); bCheck.disabled=true; bInst.disabled=true; await fetch("/api/update/apply",{{method:"POST",headers:{{"X-CSRF-Token":window.__CSRF||""}}}}); poll(); }};
-          poll();
+          bInst.onclick = async () => {{
+            if(!cand) return;
+            msg("Starting update..."); bCheck.disabled=true; bInst.disabled=true;
+            try {{
+              const r = await fetch("/api/update/apply",{{method:"POST",headers:{{"X-CSRF-Token":window.__CSRF||""}}}});
+              const j = await r.json().catch(()=>({{ok:false}}));
+              if(j.ok){{
+                window.location.replace("/offline/updating");
+              }} else {{
+                msg("Failed to start update: " + (j.error || "unknown error"));
+                bCheck.disabled=false;
+              }}
+            }} catch(e) {{
+              // Network error: service may have already started the update.
+              window.location.replace("/offline/updating");
+            }}
+          }};
+          checkPersistedStatus();
         }})();
       </script>
       <script>

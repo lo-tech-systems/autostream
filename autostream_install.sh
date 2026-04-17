@@ -147,6 +147,18 @@ is_valid_owntone_mode() {
   esac
 }
 
+detect_install_version() {
+  local raw=""
+
+  if [[ -n "${AUTOSTREAM_RELEASE_TAG:-}" ]]; then
+    raw="${AUTOSTREAM_RELEASE_TAG}"
+  fi
+
+  raw="${raw#refs/tags/}"
+  raw="${raw#v}"
+  printf '%s\n' "${raw:-unknown}"
+}
+
 #############################################
 # Argument parsing
 #############################################
@@ -244,11 +256,13 @@ parse_args() {
 # Install state persistence
 #############################################
 save_state() {
+  local release_tag
+  release_tag="$(detect_install_version)"
   mkdir -p "${STAMP_DIR}"
   cat > "${STATE_FILE}" <<EOF
 # autostream install state — written by ${SCRIPT_NAME}
 # Do not edit manually.
-INSTALL_VERSION="$(cat "${AUTOSTREAM_DIR}/version" 2>/dev/null || echo unknown)"
+AUTOSTREAM_RELEASE_TAG="${release_tag}"
 INSTALL_TIMESTAMP="$(date -Is)"
 INSTALL_DIR="${INSTALL_DIR}"
 AUTOSTREAM_DIR="${AUTOSTREAM_DIR}"
@@ -269,8 +283,21 @@ load_state() {
     exit 1
   fi
   info "Loading saved install state from ${STATE_FILE}"
+  # Preserve values that must not be overwritten by the saved state file:
+  #   AUTOSTREAM_DIR   — the staged release tree (script's own directory),
+  #                      not the original install path from the state file.
+  #   AUTOSTREAM_RELEASE_TAG — the new release tag exported by the supervisor
+  #                      via --setenv; the state file contains the OLD tag.
+  local _script_autostream_dir="${AUTOSTREAM_DIR}"
+  local _env_release_tag="${AUTOSTREAM_RELEASE_TAG:-}"
   # shellcheck source=/dev/null
   source "${STATE_FILE}"
+  # Restore: staged tree and new release tag are authoritative in update mode.
+  AUTOSTREAM_DIR="${_script_autostream_dir}"
+  if [[ -n "${_env_release_tag}" ]]; then
+    AUTOSTREAM_RELEASE_TAG="${_env_release_tag}"
+  fi
+  info "Update mode: using staged release at ${AUTOSTREAM_DIR}"
 }
 
 write_update_result() {
@@ -608,7 +635,6 @@ deploy_phase() {
   rm -f "${INSTALL_DIR}/requirements.lock"
   cp -a "${AUTOSTREAM_DIR}/core/." "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
-  cp -a "${AUTOSTREAM_DIR}/version" "${INSTALL_DIR}/"
   chmod +x "${INSTALL_DIR}/autostream_wifi_watcher"
   if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" ]]; then
     cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
@@ -882,7 +908,8 @@ run_update() {
   set_phase "complete"
   write_update_result "success" "Update complete" 100
 
-  info "Update complete."
+  info "Update complete. Scheduling reboot..."
+  /usr/local/libexec/autostream/autostream_admin reboot --delay 3 AutostreamUpdate || true
 }
 
 #############################################

@@ -31,6 +31,7 @@ from autostream_core import (
     get_playback_snapshot,
 )
 from autostream_player_service import list_outputs
+from autostream_sysutils import run_admin_cmd
 from autostream_webui_common import locked_load_config
 from autostream_webui_state import WebUIState
 
@@ -57,7 +58,7 @@ def send_json(handler, code: int, payload: dict) -> None:
 # -----------------------------------------------------------------------------
 
 def run_updater(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
-    cmd = ["/usr/bin/sudo", "-n", "/usr/local/libexec/autostream/autostream_updater.py", *args]
+    cmd = ["/usr/bin/sudo", "-n", "/usr/local/libexec/autostream/autostream_updater", *args]
     p = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -67,6 +68,7 @@ def run_updater(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
         check=False,
     )
     return p.returncode, p.stdout, p.stderr
+
 
 
 # -----------------------------------------------------------------------------
@@ -217,5 +219,30 @@ def send_update_check_json(handler) -> None:
         send_json(handler, 200, {"ok": False})
 
 
-def send_update_status_json(handler, state: WebUIState) -> None:
-    send_json(handler, 200, state.get_update_status())
+def send_update_status_json(handler) -> None:
+    """Return the persisted update status from update-result.env via autostream_admin.
+
+    The response shape matches what autostream_admin update-status emits:
+      {ok, status, message, percent, last_run_at}
+    where status is one of: in_progress | success | failure | error | unknown
+    """
+    p = run_admin_cmd(["update-status"], timeout=10.0)
+    if p.returncode != 0:
+        send_json(handler, 200, {
+            "ok": False,
+            "status": "error",
+            "message": "Could not read update status",
+            "percent": 0,
+            "last_run_at": "",
+        })
+        return
+    try:
+        send_json(handler, 200, json.loads(p.stdout or "{}"))
+    except Exception:
+        send_json(handler, 200, {
+            "ok": False,
+            "status": "error",
+            "message": "Malformed update status response",
+            "percent": 0,
+            "last_run_at": "",
+        })

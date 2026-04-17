@@ -16,8 +16,8 @@ Contents:
   - build_top_banner_html                -- render the top-of-page banner HTML
                                             (flash messages, PSU warnings,
                                             licence state)
-  - get_app_version                      -- read the application version string
-                                            from the on-disk version file
+  - get_app_version                      -- read the installed application
+                                            version via the privileged helper
   - _fallback_input_snapshot             -- construct a zero-valued
                                             InputPlaybackSnapshot from config
                                             when no live snapshot is available
@@ -29,8 +29,9 @@ Contents:
 from __future__ import annotations
 
 import html
+import json
+import subprocess
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import quote
 from typing import Optional
 
@@ -104,15 +105,35 @@ def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "su
 # -----------------------------------------------------------------------------
 
 def get_app_version() -> str:
-    """Return the application version string from the on-disk 'version' file.
-
-    The file is expected to be a single line of plain text (e.g. "1.4.2").
-    Returns "unknown" if the file is missing or unreadable.
-    """
+    """Return the installed application version via the privileged helper."""
+    cmd = [
+        "/usr/bin/sudo",
+        "-n",
+        "/usr/local/libexec/autostream/autostream_admin",
+        "version-info",
+    ]
     try:
-        return (Path(__file__).parent / "version").read_text(encoding="utf-8").strip()
+        p = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
     except Exception:
         return "unknown"
+
+    if p.returncode != 0:
+        return "unknown"
+
+    try:
+        payload = json.loads(p.stdout or "{}")
+    except Exception:
+        return "unknown"
+
+    version = str(payload.get("release_tag") or "").strip()
+    return version or "unknown"
 
 
 # -----------------------------------------------------------------------------

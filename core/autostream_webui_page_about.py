@@ -14,7 +14,7 @@ Helpers kept in this module:
   - _stylus_box_html  -- render a single stylus-life fieldset card
 
 Shared helpers (imported from autostream_webui_common):
-  - get_app_version           -- read application version string
+  - get_app_version           -- read installed application version
   - _fallback_input_snapshot  -- build a zero-valued snapshot from config when
                                  the monitor has no live data for an input
   - _format_reset_date        -- format a stylus-reset ISO timestamp as a
