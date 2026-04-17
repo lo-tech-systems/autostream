@@ -13,33 +13,52 @@
 # - Run this on a dedicated Raspberry Pi that will be a single-purpose autostream device.
 # - It will install packages, enable services, and modify system configuration.
 #
+# Modes:
+#   (default)  First-time installation.
+#   --update   Update an existing installation, reusing prior install choices.
+#              This must be the only flag passed.
+#
 # Options:
 # --unattended PIN=1234
-# Skips Continue Y/N prompt and sets the PIN to the value specified.
-# Falls back to attended mode if PIN is not specified.
+#   Skips Continue Y/N prompt and sets the PIN to the value specified.
+#   Falls back to attended mode if PIN is not specified.
 #
 # --sdmon=[auto|sandisk|adata|transcend|micron|swissbit|2step]
-# Enable sdmon (SD Card Monitoring) with the specified method.
-# IMPORTANT: This should only be used with supported cards, generally
-#            industrial-grade cards from those manufacturers, for example
-#            the Sandisk SDSDQAF3-008G-I. sdmon may cause consumer-grade
-#            cards to go offline.
+#   Enable sdmon (SD Card Monitoring) with the specified method.
+#   IMPORTANT: This should only be used with supported cards, generally
+#              industrial-grade cards from those manufacturers, for example
+#              the Sandisk SDSDQAF3-008G-I. sdmon may cause consumer-grade
+#              cards to go offline.
 #
 # --fetch-autostream
-# Clone or update the Autostream repository from GitHub.
+#   Clone or update the Autostream repository from GitHub.
+#
+# --help, -h
+#   Show usage information and exit.
 #
 # --owntone=[mini|full|skip]
-# Select how OwnTone should be provisioned:
-#   mini (default): build and install OwnTone from the lo-tech-systems source
-#                   repository without modifying /etc/owntone.conf
-#   full: install packaged OwnTone from the public repository
-#   skip: do not install or build OwnTone; only reuse an existing installation
-#         and update /etc/owntone.conf when present
+#   Select how OwnTone should be provisioned:
+#     mini (default): build and install OwnTone from the lo-tech-systems source
+#                     repository without modifying /etc/owntone.conf
+#     full: install packaged OwnTone from the public repository
+#     skip: do not install or build OwnTone; only reuse an existing installation
+#           and update /etc/owntone.conf when present
 #
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
+
+#############################################
+# Source libraries
+#############################################
+INSTALLER_LIB="$(cd "$(dirname "$0")/installer/lib" && pwd)"
+# shellcheck source=installer/lib/helpers.sh
+source "${INSTALLER_LIB}/helpers.sh"
+# shellcheck source=installer/lib/owntone.sh
+source "${INSTALLER_LIB}/owntone.sh"
+# shellcheck source=installer/lib/hardware.sh
+source "${INSTALLER_LIB}/hardware.sh"
 
 #############################################
 # Globals
@@ -50,53 +69,70 @@ ORIG_HOME="$(getent passwd "${ORIG_USER}" | cut -d: -f6)"
 LOGFILE="${ORIG_HOME}/autostream_install.log"
 
 AUTOSTREAM_DIR="$(cd "$(dirname "$0")" && pwd)"
-#AUTOSTREAM_DIR="${ORIG_HOME}/autostream"
 
 INSTALL_DIR="/opt/autostream"
 APP_LOG_DIR="/var/log/autostream"
-STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin binaries
-LIBEXEC_DIR="/usr/local/libexec/autostream"  # root-owned helper scripts
+STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin area
+LIBEXEC_DIR="/usr/local/libexec/autostream"
+
+STATE_FILE="${STAMP_DIR}/install-state.env"
+UPDATE_RESULT_FILE="${STAMP_DIR}/update-result.env"
 
 PIN_REGEX='^[A-Za-z0-9-]{4,20}$'
 
-# Installer flags
+# Installer flags — defaults; overridden by saved state then CLI args
+INSTALL_MODE="install"           # install | update
 UNATTENDED=0
 PIN_VALUE=""
+SDMON_METHOD=""
+FETCH_AUTOSTREAM=0
+OWNTONE_MODE="mini"
+PROMPT_REBOOT_ON_EXIT=0
+CURRENT_PHASE=""
+UPDATE_RUN_AT=""
 
-SDMON_METHOD=""                  # e.g. auto|sandisk|adata|transcend|micron|swissbit|2step
-
-FETCH_AUTOSTREAM=0                   # Only fetch autostream repo when explicitly requested
-PROMPT_REBOOT_ON_EXIT=0              # Enabled only after a real install run starts
-OWNTONE_MODE="mini"                  # mini=lo-tech source build, full=packaged, skip=reuse existing install
-
+#############################################
+# Usage
+#############################################
 usage() {
   cat <<EOF
 Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone=<mini|full|skip>] [--fetch-autostream]
+       sudo ./${SCRIPT_NAME} --update
 
-  --unattended PIN=1234      Run non-interactively (or skip confirmation prompts) and set the PIN.
-                             If PIN is omitted/invalid, the installer falls back to attended mode.
+Modes:
+  (default)               First-time install.
+  --update                Update an existing installation using the choices
+                          saved in ${STATE_FILE}. This must be the only flag.
 
-  --sdmon[=<method>]         Enable sdmon (SD Card Monitoring); bare --sdmon uses auto.
-                             auto | sandisk | adata | transcend | micron | swissbit | 2step
+Options:
+  --unattended PIN=1234   Run non-interactively and set the PIN.
+                          If PIN is omitted/invalid, falls back to attended mode.
 
-  --owntone=MODE             OwnTone provisioning mode:
-                             mini = build/install lo-tech OwnTone from source (default)
-                                    without editing /etc/owntone.conf
-                             full = install packaged OwnTone
-                             skip = do not install/build OwnTone, but update /etc/owntone.conf when present
-  --fetch-autostream         Clone/update the autostream GitHub repository.
-  --help, -h                 Show this help.
+  --sdmon[=<method>]      Enable sdmon (SD Card Monitoring); bare --sdmon uses auto.
+                          auto | sandisk | adata | transcend | micron | swissbit | 2step
+
+  --owntone=MODE          OwnTone provisioning mode:
+                          mini = build/install lo-tech OwnTone from source (default)
+                                 without editing /etc/owntone.conf
+                          full = install packaged OwnTone
+                          skip = do not install/build OwnTone, but update /etc/owntone.conf when present
+
+  --fetch-autostream      Clone/update the autostream GitHub repository.
+  --help, -h              Show this help.
 
 Examples:
   sudo ./${SCRIPT_NAME}
   sudo ./${SCRIPT_NAME} --unattended PIN=1234
   sudo ./${SCRIPT_NAME} --unattended PIN=abcd-1234 --sdmon=sandisk
   sudo ./${SCRIPT_NAME} --owntone=full
-  sudo ./${SCRIPT_NAME} --owntone=skip
+  sudo ./${SCRIPT_NAME} --update
 
 EOF
 }
 
+#############################################
+# Argument validation helpers
+#############################################
 is_valid_sdmon_method() {
   case "$1" in
     auto|sandisk|adata|transcend|micron|swissbit|2step) return 0 ;;
@@ -111,72 +147,91 @@ is_valid_owntone_mode() {
   esac
 }
 
+#############################################
+# Argument parsing
+#############################################
 parse_args() {
+  local _unattended_seen=0
+  local _update_seen=0
+  local _non_update_arg_seen=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --update)
+        INSTALL_MODE="update"
+        _update_seen=1
+        shift
+        ;;
       --unattended)
+        _non_update_arg_seen=1
+        _unattended_seen=1
         UNATTENDED=1
-        # Expect a following arg like PIN=1234
         if [[ $# -ge 2 && "$2" == PIN=* ]]; then
           PIN_VALUE="${2#PIN=}"
           shift 2
         else
-          # Narrative says: fall back to attended mode if PIN not specified.
           PIN_VALUE=""
           UNATTENDED=0
           shift
         fi
         ;;
       --sdmon)
+        _non_update_arg_seen=1
         SDMON_METHOD="auto"
         shift
         ;;
       --sdmon=*)
+        _non_update_arg_seen=1
         SDMON_METHOD="${1#--sdmon=}"
         if ! is_valid_sdmon_method "${SDMON_METHOD}"; then
           error "Invalid --sdmon method: ${SDMON_METHOD}"
-          usage
-          exit 2
+          usage; exit 2
         fi
         shift
         ;;
       --owntone=*)
+        _non_update_arg_seen=1
         OWNTONE_MODE="${1#--owntone=}"
         if ! is_valid_owntone_mode "${OWNTONE_MODE}"; then
           error "Invalid --owntone mode: ${OWNTONE_MODE}"
-          usage
-          exit 2
+          usage; exit 2
         fi
         shift
         ;;
       --owntone)
+        _non_update_arg_seen=1
         [[ $# -ge 2 ]] || { error "--owntone requires a value"; exit 2; }
         OWNTONE_MODE="$2"
         if ! is_valid_owntone_mode "${OWNTONE_MODE}"; then
           error "Invalid --owntone mode: ${OWNTONE_MODE}"
-          usage
-          exit 2
+          usage; exit 2
         fi
         shift 2
         ;;
       --fetch-autostream)
+        _non_update_arg_seen=1
         FETCH_AUTOSTREAM=1
         shift
         ;;
       --help|-h)
-        usage
-        exit 0
+        usage; exit 0
         ;;
       *)
         error "Unknown argument: $1"
-        usage
-        exit 2
+        usage; exit 2
         ;;
     esac
   done
 
-  # If --unattended provided with a PIN, validate it here. If invalid, revert to attended.
-  if [[ ${UNATTENDED} -eq 1 ]]; then
+  if [[ ${_update_seen} -eq 1 && ${_non_update_arg_seen} -eq 1 ]]; then
+    error "--update must be the only flag."
+    usage
+    exit 2
+  fi
+
+  # Only validate PIN against UNATTENDED when --unattended was present on this
+  # invocation.  If UNATTENDED=1 was loaded from saved state (update mode) but
+  # --unattended was not passed this run, we must not clear it.
+  if [[ ${_unattended_seen} -eq 1 && ${UNATTENDED} -eq 1 ]]; then
     if [[ -z "${PIN_VALUE}" || ! "${PIN_VALUE}" =~ ${PIN_REGEX} ]]; then
       warn "--unattended supplied but PIN is missing/invalid; falling back to attended mode."
       UNATTENDED=0
@@ -186,62 +241,75 @@ parse_args() {
 }
 
 #############################################
-# Logging + error handling
+# Install state persistence
 #############################################
-init_logging() {
-  # Overwrite existing log file
-  mkdir -p "${ORIG_HOME}" || true
-  : > "${LOGFILE}"
-  chmod 0644 "${LOGFILE}" || true
-
-  # Tee all output to log
-  exec > >(tee -a "${LOGFILE}") 2>&1
-
-  echo "[INFO] ${SCRIPT_NAME} starting at $(date -Is)"
-  echo "[INFO] Running as: $(id -un) (uid=$(id -u)); original user: ${ORIG_USER}; original home: ${ORIG_HOME}"
-  echo "[INFO] Log file: ${LOGFILE}"
+save_state() {
+  mkdir -p "${STAMP_DIR}"
+  cat > "${STATE_FILE}" <<EOF
+# autostream install state — written by ${SCRIPT_NAME}
+# Do not edit manually.
+INSTALL_VERSION="$(cat "${AUTOSTREAM_DIR}/version" 2>/dev/null || echo unknown)"
+INSTALL_TIMESTAMP="$(date -Is)"
+INSTALL_DIR="${INSTALL_DIR}"
+AUTOSTREAM_DIR="${AUTOSTREAM_DIR}"
+OWNTONE_MODE="${OWNTONE_MODE}"
+SDMON_METHOD="${SDMON_METHOD}"
+FETCH_AUTOSTREAM="${FETCH_AUTOSTREAM}"
+EOF
+  chmod 0600 "${STATE_FILE}"
+  chown root:root "${STATE_FILE}"
+  info "Saved install state to ${STATE_FILE}"
 }
 
-info()  { echo "[INFO] $*"; }
-warn()  { echo "[WARN] $*"; }
-error() { echo "[ERROR] $*"; }
-
-has_tty() {
-  # Prefer the controlling terminal if present. This works even when stdin/stdout
-  # are redirected (common over SSH or when logging/capturing output).
-  [[ -r /dev/tty && -w /dev/tty ]]
-}
-
-tty_read() {
-  # Usage: tty_read "Prompt" varname
-  local prompt="$1" __var="$2"
-  IFS= read -r -p "${prompt}" "${__var}" < /dev/tty
-}
-
-open_log_prompt() {
-  # Offer to open the log with less (or pager) when interactive.
-  local reason="$1"
-  warn "${reason}"
-
-  if has_tty; then
-    echo
-    tty_read "Open the log now? (Y/N) " ans || true
-    case "${ans:-N}" in
-      Y|y)
-        ${PAGER:-less} "${LOGFILE}" || true
-        ;;
-      *)
-        info "Log not opened. You can view it later: ${LOGFILE}"
-        ;;
-    esac
-  else
-    info "Non-interactive session; log available at: ${LOGFILE}"
+load_state() {
+  if [[ ! -f "${STATE_FILE}" ]]; then
+    error "No saved install state found at ${STATE_FILE}."
+    error "Cannot run --update without a prior installation."
+    error "Run without --update to perform a first-time install."
+    exit 1
   fi
+  info "Loading saved install state from ${STATE_FILE}"
+  # shellcheck source=/dev/null
+  source "${STATE_FILE}"
 }
 
+write_update_result() {
+  local status="$1"
+  local message="$2"
+  local percent="${3:-}"
+  local run_at="${UPDATE_RUN_AT:-$(date -Is)}"
+  local tmp
+
+  mkdir -p "${STAMP_DIR}"
+  tmp="$(mktemp)"
+  cat > "${tmp}" <<EOF
+LAST_RUN_AT="${run_at}"
+STATUS="${status}"
+MESSAGE="${message}"
+PERCENT_COMPLETE="${percent}"
+EOF
+  install -m 0600 -o root -g root "${tmp}" "${UPDATE_RESULT_FILE}"
+  rm -f "${tmp}"
+}
+
+set_phase() {
+  CURRENT_PHASE="$1"
+}
+
+
+#############################################
+# Error and exit traps
+#############################################
 on_error() {
   local exit_code=$?
   local line_no=${BASH_LINENO[0]:-?}
+  if [[ "${INSTALL_MODE}" == "update" ]]; then
+    if [[ -n "${CURRENT_PHASE}" ]]; then
+      write_update_result "failure" "Failed at ${CURRENT_PHASE} stage"
+    else
+      write_update_result "failure" "Update failed"
+    fi
+  fi
   error "Installation failed (exit ${exit_code}) at line ${line_no}."
   open_log_prompt "Check ${LOGFILE} for details."
   exit "${exit_code}"
@@ -259,13 +327,8 @@ on_exit() {
       echo
       tty_read "Reboot now to complete setup? (Y/N) " rb || true
       case "${rb:-N}" in
-        Y|y)
-          info "Rebooting..."
-          reboot
-          ;;
-        *)
-          info "Reboot skipped. It's recommended to reboot soon."
-          ;;
+        Y|y) info "Rebooting..."; reboot ;;
+        *)   info "Reboot skipped. It's recommended to reboot soon." ;;
       esac
     else
       info "Non-interactive session detected; not prompting for reboot."
@@ -276,37 +339,22 @@ on_exit() {
 trap on_exit EXIT
 
 #############################################
-# Helpers
+# Preflight checks
 #############################################
-require_sudo() {
-  if [[ ${EUID} -ne 0 ]]; then
-    echo "This script must be run as root (e.g., sudo ./${SCRIPT_NAME})."
+check_network_manager() {
+  if ! command -v nmcli >/dev/null 2>&1; then
+    error "nmcli not found. This application requires NetworkManager. Aborting."
     exit 1
   fi
-}
-
-validate_sudoers() {
-  # Validate sudoers syntax to avoid bricking sudo access
-  if ! command -v visudo >/dev/null 2>&1; then
-    warn "visudo not found; cannot validate sudoers syntax."
-    return 0
-  fi
-
-  # Validate main sudoers file
-  if ! visudo -cf /etc/sudoers; then
-    error "sudoers validation failed for /etc/sudoers"
+  if ! systemctl is-active --quiet NetworkManager; then
+    error "NetworkManager service is not active. Aborting."
     exit 1
   fi
-
-  # Validate each fragment we installed
-  local f
-  for f in /etc/sudoers.d/autostream*; do
-    [[ -e "$f" ]] || continue
-    if ! visudo -cf "$f"; then
-      error "sudoers validation failed for ${f}"
-      exit 1
-    fi
-  done
+  if ! nmcli -t -f RUNNING general status 2>/dev/null | grep -qx running; then
+    error "NetworkManager is installed but not managing networking."
+    error "Please disable other network managers (e.g. dhcpcd, ifupdown). Aborting."
+    exit 1
+  fi
 }
 
 require_rpi_os_trixie() {
@@ -322,8 +370,7 @@ require_rpi_os_trixie() {
       echo
       tty_read "Type 'TRIXIE' to continue anyway, or anything else to abort: " confirm || true
       if [[ "${confirm}" != "TRIXIE" ]]; then
-        error "Aborting."
-        exit 1
+        error "Aborting."; exit 1
       fi
     else
       error "Non-interactive session detected; refusing to override OS safety check."
@@ -339,11 +386,11 @@ show_warnings_and_prompt() {
 AUTOSTREAM INSTALLER
 =============================================================================
 This script will:
-- Install OS packages (nginx, watchdog, dnsmasq, build tools, etc.) and build
-  OwnTone Mini by default
+- Install OS packages (nginx, watchdog, dnsmasq, build tools, etc.)
+- Provision OwnTone according to the selected mode (mini by default)
 - Enable/disable systemd services
 - Create system users/groups and modify permissions
-- Modify /boot/firmware/config.txt to enable the hardware watchdog
+- Modify /boot/firmware/config.txt to enable the hardware watchdog and disable Bluetooth
 - Configure nginx, logrotate, NetworkManager hooks, and autostream services
 
 WARNING:
@@ -361,7 +408,6 @@ EOF
       info "--unattended supplied with PIN; skipping interactive confirmation."
       return 0
     fi
-
     tty_read "Continue with installation? (Y/N) " ans || true
     case "${ans:-N}" in
       Y|y) info "Continuing..." ;;
@@ -378,9 +424,11 @@ EOF
   fi
 }
 
+#############################################
+# PIN management
+#############################################
 set_pin_file() {
   local pin="$1"
-
   if [[ -d /boot/firmware ]]; then
     echo "${pin}" > /boot/firmware/pin.txt
     chmod 0644 /boot/firmware/pin.txt || true
@@ -423,299 +471,18 @@ prompt_for_pin() {
   set_pin_file "${pin}"
 }
 
-apt_install() {
-  local soft_fail=0
-  if [[ "$1" == "--soft" ]]; then
-    soft_fail=1
-    shift
-  fi
-
-  local pkgs=("$@")
-  [[ ${#pkgs[@]} -eq 0 ]] && return 0
-
-  info "Installing packages: ${pkgs[*]}"
-
-  if ! DEBIAN_FRONTEND=noninteractive \
-       apt-get install -y --no-install-recommends "${pkgs[@]}"; then
-    if (( soft_fail )); then
-      warn "apt_install soft-failed for packages: ${pkgs[*]}"
-      return 0
+handle_pin() {
+  # install: prompt or use unattended PIN
+  # update:  skip unless --unattended PIN=... explicitly provided on this run
+  if [[ "${INSTALL_MODE}" == "update" ]]; then
+    if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
+      info "Update mode: overwriting PIN from --unattended flag"
+      set_pin_file "${PIN_VALUE}"
     else
-      error "apt_install failed for packages: ${pkgs[*]}"
-      return 1
+      info "Update mode: skipping PIN prompt (re-run with --unattended PIN=... to change)"
     fi
-  fi
-}
-
-ensure_group() {
-  local group="$1"
-  if getent group "${group}" >/dev/null; then
-    info "Group '${group}' already exists."
-  else
-    info "Creating group '${group}'"
-    groupadd "${group}"
-  fi
-}
-
-ensure_user() {
-  local user="$1"
-  local group="$2"
-
-  if id -u "${user}" >/dev/null 2>&1; then
-    info "User '${user}' already exists."
-  else
-    info "Creating system user '${user}'"
-    useradd --system --no-create-home --shell /usr/sbin/nologin -g "${group}" "${user}"
-  fi
-}
-
-ensure_user_in_group() {
-  local user="$1"
-  local group="$2"
-
-  if ! getent group "${group}" >/dev/null 2>&1; then
-    warn "Group '${group}' not found; cannot add '${user}' to it."
     return 0
   fi
-
-  if id -nG "${user}" 2>/dev/null | tr ' ' '
-' | grep -qx "${group}"; then
-    info "User '${user}' is already a member of '${group}'."
-    return 0
-  fi
-
-  info "Adding user '${user}' to group '${group}'"
-  usermod -aG "${group}" "${user}"
-}
-
-install_text_linux() {
-  # Install a text file and normalize line endings to LF (strip CR).
-  # Usage: install_text_linux <src> <dest> <mode> [owner] [group]
-  local src="$1" dest="$2" mode="$3" owner="${4:-root}" group="${5:-root}"
-
-  if [[ ! -f "$src" ]]; then
-    error "Missing required file: $src"
-    return 1
-  fi
-
-  install -m "$mode" -o "$owner" -g "$group" "$src" "$dest"
-
-  # Convert CRLF -> LF in-place (remove trailing carriage return)
-  sed -i 's/\r$//' "$dest" || true
-}
-
-install_bin() {
-  # Install an executable file (binary or script). Does not modify contents.
-  # Usage: install_bin <src> <dest> <mode> [owner] [group]
-  local src="$1" dest="$2" mode="$3" owner="${4:-root}" group="${5:-root}"
-
-  if [[ ! -e "${src}" ]]; then
-    error "Missing required file: ${src}"
-    return 1
-  fi
-
-  install -m "${mode}" -o "${owner}" -g "${group}" "${src}" "${dest}"
-}
-
-git_clone_or_update() {
-  local repo_url="$1"
-  local dest_dir="$2"
-
-  if [[ -d "${dest_dir}/.git" ]]; then
-    info "Updating ${dest_dir}"
-    git -C "${dest_dir}" fetch --all --prune
-    git -C "${dest_dir}" reset --hard origin/main
-  else
-    info "Cloning ${repo_url} into ${dest_dir}"
-    rm -rf "${dest_dir}" || true
-    git clone "${repo_url}" "${dest_dir}"
-  fi
-}
-
-update_pi_firmware_config() {
-  # updates /boot/firmware/config.txt to enable the hardware watchdog and disable Bluetooth
-  local cfg="/boot/firmware/config.txt"
-  if [[ ! -f "${cfg}" ]]; then
-    warn "${cfg} not found; skipping firmware settings update."
-    return 0
-  fi
-  info "Updating firmware settings in ${cfg}"
-
-  local tmp
-  tmp="$(mktemp)"
-
-  if grep -qE '^\s*\[all\]\s*$' "${cfg}"; then
-    awk '
-      BEGIN { inserted=0 }
-      # Drop any existing watchdog param regardless of value
-      /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }
-      # Drop any existing disable-bt overlay line (with or without extra params)
-      /^[[:space:]]*dtoverlay=disable-bt([[:space:]]*|,.*)$/ { next }
-
-      {
-        print
-        if (!inserted && $0 ~ /^[[:space:]]*\[all\][[:space:]]*$/) {
-          print "dtparam=watchdog=on"
-          print "dtoverlay=disable-bt"
-          inserted=1
-        }
-      }
-    ' "${cfg}" > "${tmp}"
-  else
-    {
-      echo "[all]"
-      echo "dtparam=watchdog=on"
-      echo "dtoverlay=disable-bt"
-      echo
-      # Also clean conflicting lines from the rest of the file
-      awk '
-        /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }
-        /^[[:space:]]*dtoverlay=disable-bt([[:space:]]*|,.*)$/ { next }
-        { print }
-      ' "${cfg}"
-    } > "${tmp}"
-  fi
-
-  install -m "$(stat -c %a "${cfg}")" \
-          -o "$(stat -c %u "${cfg}")" \
-          -g "$(stat -c %g "${cfg}")" \
-          "${tmp}" "${cfg}"
-  rm -f "${tmp}"
-}
-
-patch_sdmon_service_method() {
-  # Inject the requested sdmon method into ExecStart before the /dev node.
-  # The -a flag is only valid for the 2step method.
-  local method="$1"
-  local svc="/etc/systemd/system/autostream_sdcardhealth.service"
-
-  [[ -f "${svc}" ]] || { warn "sdmon service not found at ${svc}; cannot patch method"; return 0; }
-
-  local method_args="-m ${method}"
-  if [[ "${method}" == "2step" ]]; then
-    method_args="${method_args} -a"
-  fi
-
-  if grep -qE "^ExecStart=.*\\bsdmon\\b" "${svc}"; then
-    info "Patching ${svc} to set sdmon method: ${method}"
-    # Remove any existing -m/-a flags and then insert the requested method before the /dev node.
-    sed -i -E \
-      "/^ExecStart=.*\\bsdmon\\b/ {
-        s/[[:space:]]-m[[:space:]]+[A-Za-z0-9_-]+//g
-        s/[[:space:]]-a//g
-        s#(\\bsdmon\\b[^\n]*)([[:space:]]+/dev/)#\\1 ${method_args}\\2#
-      }" \
-      "${svc}"
-  else
-    warn "No ExecStart line referencing sdmon found in ${svc}; cannot patch method"
-  fi
-}
-
-configure_owntone_apt_repo() {
-  info "Configuring Owntone APT repository"
-  curl -fsSL "https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone.gpg" \
-    | gpg --dearmor \
-    | tee /usr/share/keyrings/owntone-archive-keyring.gpg >/dev/null
-
-  curl -fsSL \
-    -o /etc/apt/sources.list.d/owntone.list \
-    "https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone-trixie.list"
-
-  DEBIAN_FRONTEND=noninteractive apt-get update
-}
-
-install_packaged_owntone() {
-  configure_owntone_apt_repo
-  apt_install owntone
-  systemctl enable owntone
-}
-
-remove_owntone_apt_repo() {
-  local removed=0
-  if [[ -f /etc/apt/sources.list.d/owntone.list ]]; then
-    rm -f /etc/apt/sources.list.d/owntone.list
-    removed=1
-  fi
-  if [[ -f /usr/share/keyrings/owntone-archive-keyring.gpg ]]; then
-    rm -f /usr/share/keyrings/owntone-archive-keyring.gpg
-    removed=1
-  fi
-  if [[ ${removed} -eq 1 ]]; then
-    info "Removed OwnTone APT repository configuration"
-    DEBIAN_FRONTEND=noninteractive apt-get update
-  fi
-}
-
-install_owntone_mini_from_source() {
-  info "Installing OwnTone Mini from lo-tech-systems source repository"
-  apt_install nginx autotools-dev autoconf automake libtool gettext gawk \
-    gperf bison flex libconfuse-dev libunistring-dev libsqlite3-dev \
-    libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libavutil-dev \
-    libxml2-dev libgcrypt20-dev libavahi-client-dev zlib1g-dev \
-    libevent-dev libplist-dev libsodium-dev libjson-c-dev libwebsockets-dev \
-    libcurl4-openssl-dev libprotobuf-c-dev libgnutls28-dev
-
-  if dpkg -s owntone >/dev/null 2>&1; then
-    info "Removing packaged OwnTone before source install"
-    systemctl stop owntone || true
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y owntone
-    remove_owntone_apt_repo
-  else
-    remove_owntone_apt_repo
-  fi
-
-  local tmpdir
-  tmpdir="$(mktemp -d)"
-  git clone --branch minimal --single-branch https://github.com/lo-tech-systems/owntone-server.git "${tmpdir}/owntone-server"
-  (
-    cd "${tmpdir}/owntone-server"
-    autoreconf -i
-    ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --enable-install-user --enable-chromecast
-    make -j2
-    make install
-  )
-  rm -rf "${tmpdir}"
-
-  systemctl daemon-reload
-  systemctl enable avahi-daemon
-  systemctl enable owntone
-  systemctl start owntone
-}
-
-#############################################
-# Main
-#############################################
-main() {
-  parse_args "$@"
-  PROMPT_REBOOT_ON_EXIT=1
-  require_sudo
-  init_logging
-
-# --- NetworkManager / nmcli hard requirement ---
-if ! command -v nmcli >/dev/null 2>&1; then
-  echo "ERROR: nmcli not found."
-  echo "This application requires NetworkManager. Aborting."
-  exit 1
-fi
-
-# Ensure NetworkManager is running and managing networking
-if ! systemctl is-active --quiet NetworkManager; then
-  echo "ERROR: NetworkManager service is not active."
-  echo "This application requires NetworkManager to manage networking. Aborting."
-  exit 1
-fi
-
-# Ensure NetworkManager is actually in control (not ifupdown, dhcpcd, etc.)
-if ! nmcli -t -f RUNNING general status 2>/dev/null | grep -qx running; then
-  echo "ERROR: NetworkManager is installed but not managing networking."
-  echo "Please disable other network managers (e.g. dhcpcd, ifupdown)."
-  echo "Aborting."
-  exit 1
-fi
-# --- end NetworkManager guard ---
-
-  show_warnings_and_prompt
-  require_rpi_os_trixie
 
   if [[ ${UNATTENDED} -eq 1 && -n "${PIN_VALUE}" ]]; then
     info "Unattended mode: setting PIN from command line"
@@ -723,20 +490,24 @@ fi
   else
     prompt_for_pin
   fi
+}
 
-  info "Setting working directory to original user's home: ${ORIG_HOME}"
-  cd "${ORIG_HOME}"
+#############################################
+# Install phases
+#############################################
+
+# bootstrap_phase: first-time-only setup — users, groups, directories, base packages.
+bootstrap_phase() {
+  info "=== Phase: bootstrap ==="
 
   info "Creating directories"
   mkdir -p "${AUTOSTREAM_DIR}" || true
   mkdir -p "${INSTALL_DIR}" "${APP_LOG_DIR}"
 
-  # Root-only stamps/admin directory
   mkdir -p "${STAMP_DIR}"
   chown root:root "${STAMP_DIR}"
   chmod 0700 "${STAMP_DIR}"
 
-  # Root-owned libexec helpers
   mkdir -p "${LIBEXEC_DIR}"
   chown root:root "${LIBEXEC_DIR}"
   chmod 0755 "${LIBEXEC_DIR}"
@@ -744,55 +515,51 @@ fi
   info "Updating apt metadata"
   DEBIAN_FRONTEND=noninteractive apt-get update
 
-  # Base prerequisites
   apt_install curl gpg ca-certificates
 
-  # Platform libraries
-  # Note - Flask is intentionally installed at the system level because
-  # autostream_wifi_watcher runs directly via its shebang as a boot/recovery
-  # path and should not depend on the application venv being present/healthy.
+  # Note: Flask is installed at system level because autostream_wifi_watcher
+  # runs directly via its shebang as a boot/recovery path and must not depend
+  # on the application venv being present.
   apt_install git build-essential libffi-dev pkg-config fq \
     libasound2-dev libsamplerate0-dev python3-dev python3-venv python3-pip python3-flask
 
-  # Platform services
   apt_install nginx watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
-  # Application services
-  if [[ "${OWNTONE_MODE}" == "skip" ]]; then
-    info "Skipping OwnTone install/build; reusing existing system OwnTone"
-  elif [[ "${OWNTONE_MODE}" == "mini" ]]; then
-    install_owntone_mini_from_source
-  else
-    install_packaged_owntone
-  fi
-
-  # Python libraries. Anything that fails will be installed by pip later, so
-  # failures here are non-fatal; this mainly speeds up the venv install.
   apt_install --soft python3-requests
 
-  # sdmon (only when enabled)
-  if [[ -n "${SDMON_METHOD}" ]]; then
-    info "Installing sdmon (method: ${SDMON_METHOD})"
-    if [[ ! -x "/usr/local/sbin/sdmon" ]]; then
-      tmpdir="$(mktemp -d)"
-      git clone https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon"
-      make -C "${tmpdir}/sdmon/src"
-      install -m 0755 "${tmpdir}/sdmon/src/sdmon" "/usr/local/sbin/sdmon"
-      rm -rf "${tmpdir}"
-    fi
-  else
-    info "sdmon not enabled (use --sdmon=<method> to enable)"
-  fi
-
-  # Create autostream user and groups
   ensure_group autostream
   ensure_user autostream autostream
   ensure_user_in_group autostream netdev
   ensure_user_in_group autostream audio
   # video group required to allow autostream to query PSU status via vcgencmd
   ensure_user_in_group autostream video
+}
 
-  # Download/update autostream (optional)
+# system_upgrade_phase: refresh installed OS packages during update.
+system_upgrade_phase() {
+  set_phase "system upgrade"
+  info "=== Phase: system upgrade ==="
+  info "Updating apt metadata"
+  DEBIAN_FRONTEND=noninteractive apt-get update
+  info "Upgrading installed system packages"
+  DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+}
+
+# fetch_phase: clone/update the autostream source repo (install only).
+fetch_phase() {
+  set_phase "fetch"
+  info "=== Phase: fetch ==="
+
+  if [[ "${INSTALL_MODE}" == "update" ]]; then
+    info "Update mode: skipping autostream GitHub fetch"
+    if [[ ! -d "${AUTOSTREAM_DIR}/system" ]]; then
+      error "autostream files not found at ${AUTOSTREAM_DIR}."
+      error "The update service should provide the application files before running --update."
+      exit 1
+    fi
+    return 0
+  fi
+
   if [[ ${FETCH_AUTOSTREAM} -eq 1 ]]; then
     info "Fetching autostream repository from GitHub"
     git_clone_or_update https://github.com/lo-tech-systems/autostream.git "${AUTOSTREAM_DIR}"
@@ -805,75 +572,39 @@ fi
     error "Either pre-populate this directory or re-run with --fetch-autostream."
     exit 1
   fi
+}
 
-  ###########################################
-  # Permissions + policy
-  ###########################################
-  info "Configuring permissions and policy"
+# sdmon_phase: build and install sdmon binary (install and update).
+sdmon_phase() {
+  set_phase "sdmon"
+  info "=== Phase: sdmon ==="
 
-  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
-  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_admin" /etc/sudoers.d/autostream_admin
-  validate_sudoers
-
-  # Install directory ownership
-  mkdir -p "${INSTALL_DIR}"
-  chown -R autostream:autostream "${INSTALL_DIR}"
-  chmod 0755 "${INSTALL_DIR}"
-
-  if [[ "${OWNTONE_MODE}" == "mini" ]]; then
-    info "Skipping /etc/owntone.conf update for --owntone=mini"
-  elif [[ "${OWNTONE_MODE}" == "skip" && ! -f /etc/owntone.conf ]]; then
-    warn "--owntone=skip is set and /etc/owntone.conf is missing; skipping OwnTone config update."
-  else
-    info "Configuring /etc/owntone.conf for autostream pipe playback"
-    python3 - /etc/owntone.conf <<'PYOWNTONE'
-from pathlib import Path
-import re
-import sys
-
-conf = Path(sys.argv[1])
-if conf.exists():
-    text = conf.read_text(encoding="utf-8")
-else:
-    text = ""
-
-line = 'directories = { "/tmp/autostream-pipes" }'
-lib = re.search(r'(?ms)^\s*library\s*\{.*?^\s*\}', text)
-if lib:
-    block = lib.group(0)
-    if re.search(r'(?m)^\s*directories\s*=\s*\{[^}]*\}', block):
-        block = re.sub(
-            r'(?m)^(\s*)directories\s*=\s*\{[^}]*\}\s*$',
-            r'\1' + line,
-            block,
-            count=1,
-        )
-    else:
-        open_brace = block.find('{')
-        first_newline = block.find('\n', open_brace)
-        if first_newline != -1:
-            block = block[:first_newline + 1] + '\t' + line + '\n' + block[first_newline + 1:]
-        else:
-            block = block.rstrip() + '\n\t' + line + '\n}'
-    text = text[:lib.start()] + block + text[lib.end():]
-else:
-    if text and not text.endswith('\n'):
-        text += '\n'
-    if text:
-        text += '\n'
-    text += 'library {\n\t' + line + '\n}\n'
-
-conf.write_text(text, encoding="utf-8")
-PYOWNTONE
+  if [[ -z "${SDMON_METHOD}" ]]; then
+    info "sdmon not enabled (use --sdmon=<method> to enable)"
+    return 0
   fi
 
-  ###########################################
-  # Copy in files
-  ###########################################
+  info "Installing sdmon (method: ${SDMON_METHOD})"
+  if [[ ! -x "/usr/local/sbin/sdmon" ]]; then
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    git clone https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon"
+    make -C "${tmpdir}/sdmon/src"
+    install -m 0755 "${tmpdir}/sdmon/src/sdmon" "/usr/local/sbin/sdmon"
+    rm -rf "${tmpdir}"
+  else
+    info "sdmon binary already present at /usr/local/sbin/sdmon"
+  fi
+}
+
+# deploy_phase: copy app files, build monitor binary, set up venv (install and update).
+deploy_phase() {
+  set_phase "deploy"
+  info "=== Phase: deploy ==="
+
   info "Deploying autostream files to ${INSTALL_DIR}"
-  # Remove stale dependency lockfiles from previous installs before copying the
-  # new tree.  Otherwise an old requirements.lock can survive repo upgrades and
-  # keep reinstalling packages that are no longer part of the project.
+  # Remove stale dependency lockfiles before copying — an old requirements.lock
+  # can survive repo upgrades and reinstall packages no longer in the project.
   rm -f "${INSTALL_DIR}/requirements.lock"
   cp -a "${AUTOSTREAM_DIR}/core/." "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
@@ -883,9 +614,6 @@ PYOWNTONE
     cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
   fi
 
-  ###########################################
-  # Build autostream_monitor
-  ###########################################
   info "Building autostream_monitor"
   mkdir -p "${INSTALL_DIR}/monitor"
   g++ -std=c++17 -O2 \
@@ -894,79 +622,50 @@ PYOWNTONE
     -lasound -lsamplerate -lpthread
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 
-  # Keep autostream FIFO in a dedicated subdirectory to avoid scanning unrelated
-  # transient files under /tmp.
   if [[ -f "${INSTALL_DIR}/autostream.ini" ]]; then
-    sed -i -E 's|^[[:space:]]*fifo_path[[:space:]]*=.*$|fifo_path = /tmp/autostream-pipes/autostream.fifo|' "${INSTALL_DIR}/autostream.ini"
+    sed -i -E 's|^[[:space:]]*fifo_path[[:space:]]*=.*$|fifo_path = /tmp/autostream-pipes/autostream.fifo|' \
+      "${INSTALL_DIR}/autostream.ini"
   fi
 
-  ###########################################
-  # Supervisor + helper binaries/scripts
-  ###########################################
   info "Installing supervisor and helper scripts"
-
-  # 1) Create /var/lib/autostream (root 0700) for stamps
-  mkdir -p "${STAMP_DIR}"
-
-  # 2) Use /usr/local/libexec/autostream for helper scripts
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater" "${LIBEXEC_DIR}/autostream_updater" 0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin" "${LIBEXEC_DIR}/autostream_admin" 0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"   "${LIBEXEC_DIR}/autostream_admin"   0755 root root
 
-  # Record current WiFi connection (if any)
-  info "Recording current network connection (if applicable)"
+  info "Setting ownership to enable autostream to manage venv"
+  chown autostream:autostream "${INSTALL_DIR}"
 
-  # Capture the active WiFi client connection name (if present)
-  if [[ ! -s "${INSTALL_DIR}/ssid" ]]; then
-    wifi_conn="$(
-      nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
-        | awk -F: '$1=="wlan0" && $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {print $4; exit}'
-    )"
+  info "Creating/updating Python virtual environment"
+  if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
+    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache python3 -m venv --system-site-packages "${INSTALL_DIR}/venv"
+  fi
+  sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache "${INSTALL_DIR}/venv/bin/pip" install -U pip
 
-    if [[ -n "${wifi_conn}" ]]; then
-      # Ensure we are not recording the hotspot/AP connection
-      wifi_mode="$(
-        nmcli -t -f 802-11-wireless.mode connection show "${wifi_conn}" 2>/dev/null \
-          | awk -F: '{print tolower($2)}' | head -n1
-      )"
-      if [[ "${wifi_mode}" != "ap" ]]; then
-        printf "%s\n" "${wifi_conn}" > "${INSTALL_DIR}/ssid"
-        info "Recorded WiFi connection '${wifi_conn}' to ${INSTALL_DIR}/ssid"
-      else
-        info "Current WiFi connection '${wifi_conn}' is AP mode; not recording"
-      fi
-    else
-      info "No active WiFi connection detected on wlan0; Hotspot mode will be used if wired connection is not detected"
-    fi
+  if [[ -f "${INSTALL_DIR}/requirements.lock" ]]; then
+    info "Installing Python dependencies from requirements.lock (hash-checked)"
+    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache \
+      "${INSTALL_DIR}/venv/bin/pip" install --require-hashes -r "${INSTALL_DIR}/requirements.lock"
   else
-    info "WiFi connection already recorded at ${INSTALL_DIR}/ssid"
+    warn "requirements.lock not found; installing from requirements.txt (not hash-pinned)"
+    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache \
+      "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
   fi
+}
 
-  # systemd services (install explicit units to avoid clobbering unrelated files)
-  info "Installing systemd units"
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service" /etc/systemd/system/
+# configure_phase: apply/refresh all managed system configs (install and update).
+configure_phase() {
+  set_phase "configure"
+  info "=== Phase: configure ==="
 
-  if [[ -n "${SDMON_METHOD}" ]]; then
-    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
-    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer" /etc/systemd/system/
-  else
-    info "Skipping sdmon systemd units (use --sdmon=<method> to enable)"
-  fi
+  info "Configuring permissions and policy"
+  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
+  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_admin"   /etc/sudoers.d/autostream_admin
+  validate_sudoers
 
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream.service" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_wifi_watcher.service" /etc/systemd/system/
+  mkdir -p "${INSTALL_DIR}"
+  chown -R autostream:autostream "${INSTALL_DIR}"
+  chmod 0755 "${INSTALL_DIR}"
 
-  systemctl daemon-reload
-
-  if [[ -n "${SDMON_METHOD}" ]]; then
-    patch_sdmon_service_method "${SDMON_METHOD}"
-    systemctl daemon-reload
-    systemctl enable autostream_sdcardhealth.timer
-  fi
- 
-  systemctl enable autostream_monitor.service
-  systemctl enable autostream.service
-  systemctl enable autostream_wifi_watcher.service
+  provision_owntone "${INSTALL_MODE}"
 
   # nginx
   info "Configuring nginx"
@@ -979,7 +678,6 @@ PYOWNTONE
     rm -f /etc/nginx/sites-enabled/default
   fi
   ln -sf /etc/nginx/sites-available/autostream-nginx.conf /etc/nginx/sites-enabled/autostream-nginx.conf
-
   nginx -t
   systemctl enable nginx
 
@@ -991,107 +689,217 @@ PYOWNTONE
   systemctl disable dnsmasq || true
 
   # NetworkManager
-  cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/99-wlan-fix" /etc/NetworkManager/dispatcher.d/
-  cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/mdns.conf" /etc/NetworkManager/conf.d/
+  cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/99-wlan-fix"     /etc/NetworkManager/dispatcher.d/
+  cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/mdns.conf"       /etc/NetworkManager/conf.d/
   cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/wifi-powersave.conf" /etc/NetworkManager/conf.d/
 
-  ###########################################
-  # Cloud-init hostname / /etc/hosts control
-  ###########################################
-  info "Disabling cloud-init /etc/hosts management in user-data"
+  # cloud-init
+  configure_cloud_init
 
-  USER_DATA="/boot/firmware/user-data"
+  # Firmware / watchdog
+  update_pi_firmware_config
+  cp -a "${AUTOSTREAM_DIR}/system/watchdog/watchdog.conf" /etc/watchdog.conf
+  systemctl enable watchdog
 
-  if [ -f "$USER_DATA" ]; then
-    # If manage_etc_hosts already exists, replace it
-    if grep -q '^manage_etc_hosts:' "$USER_DATA"; then
-      sed -i 's/^manage_etc_hosts:.*/manage_etc_hosts: false/' "$USER_DATA"
-    else
-      # Otherwise append it
-      printf "\nmanage_etc_hosts: false\n" >> "$USER_DATA"
-    fi
+  # Permissions pass
+  permissions_pass
+}
 
-    # Preserve hostnames (prevents cloud-init from overwriting /etc/hosts)
-    if grep -q '^preserve_hostname:' "$USER_DATA"; then
-      sed -i 's/^preserve_hostname:.*/preserve_hostname: true/' "$USER_DATA"
-    else
-      printf "preserve_hostname: true\n" >> "$USER_DATA"
-    fi
-  else
-    warn "cloud-init user-data not found at $USER_DATA"
+configure_cloud_init() {
+  info "Disabling cloud-init /etc/hosts management"
+  local user_data="/boot/firmware/user-data"
+
+  if [[ ! -f "${user_data}" ]]; then
+    warn "cloud-init user-data not found at ${user_data}"
+    return 0
   fi
 
-  # Ensure cloud-init re-reads user-data even if it already ran
+  if grep -q '^manage_etc_hosts:' "${user_data}"; then
+    sed -i 's/^manage_etc_hosts:.*/manage_etc_hosts: false/' "${user_data}"
+  else
+    printf "\nmanage_etc_hosts: false\n" >> "${user_data}"
+  fi
+
+  if grep -q '^preserve_hostname:' "${user_data}"; then
+    sed -i 's/^preserve_hostname:.*/preserve_hostname: true/' "${user_data}"
+  else
+    printf "preserve_hostname: true\n" >> "${user_data}"
+  fi
+
   if command -v cloud-init >/dev/null 2>&1; then
     info "Resetting cloud-init state to apply updated user-data"
     cloud-init clean --logs || true
   fi
+}
 
-  ###########################################
-  # Watchdog and firmware settings
-  ###########################################
-  update_pi_firmware_config
-  cp -a "${AUTOSTREAM_DIR}/system/watchdog/watchdog.conf" /etc/watchdog.conf
-  systemctl enable watchdog
-  # no need to disable bluetooth services as it is disabled in the firmware config
-
-  ###########################################
-  # Python venv
-  ###########################################
-  info "Setting permissions to enable autostream to create Python venv"
-  chown autostream:autostream "${INSTALL_DIR}"
-
-  info "Creating Python virtual environment"
-  if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
-    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache python3 -m venv --system-site-packages "${INSTALL_DIR}/venv"
-  fi
-
-  sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache "${INSTALL_DIR}/venv/bin/pip" install -U pip
-
-  if [[ -f "${INSTALL_DIR}/requirements.lock" ]]; then
-    info "Installing Python dependencies from requirements.lock (hash-checked)"
-    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache "${INSTALL_DIR}/venv/bin/pip" install --require-hashes -r "${INSTALL_DIR}/requirements.lock"
-  else
-    warn "requirements.lock not found; installing from requirements.txt (not hash-pinned)"
-    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
-  fi
-
-  ###########################################
-  # Permissions
-  ###########################################
+permissions_pass() {
   info "Setting ownership and permissions"
 
-  # 1) Normalize ownership for the whole install tree (we'll restore exceptions below)
   chown -R autostream:autostream "${INSTALL_DIR}"
   chown -R autostream:autostream "${APP_LOG_DIR}"
-
-  # 2) Base directory expectations
   chmod 0755 "${INSTALL_DIR}"
-
-  # 3) Log directory
   chmod 0755 "${APP_LOG_DIR}"
 
-  # 4) Executables / scripts
-  # Top-level installer/runtime scripts shipped in INSTALL_DIR
   find "${INSTALL_DIR}" -maxdepth 1 -type f -name "*.sh" -exec chmod 0755 {} + 2>/dev/null || true
-
-  # Nginx CGI scripts should be executable
-  chmod 0755 "${INSTALL_DIR}/nginx/cgi"/*.cgi 2>/dev/null || true
-
-  # Offline html should be world-readable
+  chmod 0755 "${INSTALL_DIR}/nginx/cgi"/*.cgi  2>/dev/null || true
   chmod 0644 "${INSTALL_DIR}/nginx/offline"/*.html 2>/dev/null || true
 
-  # 5) Exceptions that must remain root-owned (restore after the bulk chown)
-  # SSID file: root-owned and readable
   if [[ -f "${INSTALL_DIR}/ssid" ]]; then
     chown root:root "${INSTALL_DIR}/ssid"
     chmod 0644 "${INSTALL_DIR}/ssid"
   fi
 
-  # autostream directory owned by autostream
   chown autostream:autostream "${INSTALL_DIR}"
+}
 
-  info "Install script completed."
+# services_phase: install and enable/reload systemd units (install and update).
+services_phase() {
+  set_phase "services"
+  info "=== Phase: services ==="
+
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service" /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service" /etc/systemd/system/
+
+  if [[ -n "${SDMON_METHOD}" ]]; then
+    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
+    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer"   /etc/systemd/system/
+  else
+    info "Skipping sdmon systemd units (use --sdmon=<method> to enable)"
+  fi
+
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream.service"              /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_wifi_watcher.service" /etc/systemd/system/
+
+  systemctl daemon-reload
+
+  if [[ -n "${SDMON_METHOD}" ]]; then
+    patch_sdmon_service_method "${SDMON_METHOD}"
+    systemctl daemon-reload
+    systemctl enable autostream_sdcardhealth.timer
+  fi
+
+  systemctl enable autostream_monitor.service
+  systemctl enable autostream.service
+  systemctl enable autostream_wifi_watcher.service
+
+  if [[ "${INSTALL_MODE}" == "update" ]]; then
+    info "Restarting affected services"
+    systemctl restart autostream.service         || true
+    systemctl restart autostream_monitor.service || true
+    systemctl reload  nginx                      || true
+  fi
+}
+
+# network_state_phase: record current WiFi connection (install only).
+network_state_phase() {
+  info "=== Phase: network state ==="
+  info "Recording current network connection (if applicable)"
+
+  if [[ -s "${INSTALL_DIR}/ssid" ]]; then
+    info "WiFi connection already recorded at ${INSTALL_DIR}/ssid"
+    return 0
+  fi
+
+  local wifi_conn
+  wifi_conn="$(
+    nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
+      | awk -F: '$1=="wlan0" && $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {print $4; exit}'
+  )"
+
+  if [[ -n "${wifi_conn}" ]]; then
+    local wifi_mode
+    wifi_mode="$(
+      nmcli -t -f 802-11-wireless.mode connection show "${wifi_conn}" 2>/dev/null \
+        | awk -F: '{print tolower($2)}' | head -n1
+    )"
+    if [[ "${wifi_mode}" != "ap" ]]; then
+      printf "%s\n" "${wifi_conn}" > "${INSTALL_DIR}/ssid"
+      info "Recorded WiFi connection '${wifi_conn}' to ${INSTALL_DIR}/ssid"
+    else
+      info "Current WiFi connection '${wifi_conn}' is AP mode; not recording"
+    fi
+  else
+    info "No active WiFi connection detected on wlan0; hotspot mode will be used if wired connection is not detected"
+  fi
+}
+
+#############################################
+# Orchestration
+#############################################
+run_install() {
+  info ">>> Starting first-time installation <<<"
+  PROMPT_REBOOT_ON_EXIT=1
+
+  check_network_manager
+  show_warnings_and_prompt
+  require_rpi_os_trixie
+  handle_pin
+
+  info "Setting working directory to original user's home: ${ORIG_HOME}"
+  cd "${ORIG_HOME}"
+
+  bootstrap_phase
+  fetch_phase
+  sdmon_phase
+  deploy_phase
+  configure_phase
+  network_state_phase
+  services_phase
+  save_state
+
+  info "Installation complete."
+}
+
+run_update() {
+  info ">>> Starting update of existing installation <<<"
+  PROMPT_REBOOT_ON_EXIT=0
+  UPDATE_RUN_AT="$(date -Is)"
+  set_phase "preflight"
+  write_update_result "in_progress" "Starting update" 0
+
+  check_network_manager
+
+  write_update_result "in_progress" "Updating system packages" 20
+  system_upgrade_phase
+
+  info "Setting working directory to original user's home: ${ORIG_HOME}"
+  cd "${ORIG_HOME}"
+
+  fetch_phase
+  sdmon_phase
+
+  write_update_result "in_progress" "Deploying application" 40
+  deploy_phase
+
+  write_update_result "in_progress" "Configuring services" 60
+  configure_phase
+
+  write_update_result "in_progress" "Restarting services" 80
+  services_phase
+
+  set_phase "state save"
+  save_state
+  set_phase "complete"
+  write_update_result "success" "Update complete" 100
+
+  info "Update complete."
+}
+
+#############################################
+# Main
+#############################################
+main() {
+  require_sudo
+  parse_args "$@"
+  init_logging
+
+  if [[ "${INSTALL_MODE}" == "update" ]]; then
+    load_state
+    info "Loaded saved update config: OWNTONE_MODE=${OWNTONE_MODE} SDMON_METHOD=${SDMON_METHOD:-none}"
+    run_update
+  else
+    run_install
+  fi
 }
 
 main "$@"
