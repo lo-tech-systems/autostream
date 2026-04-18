@@ -52,12 +52,15 @@ def locked_load_config(path: str):
 # cycle (e.g. "Settings saved", "Save failed").
 # -----------------------------------------------------------------------------
 
-def _set_flash_cookie(handler, message: str, *, max_age: int = 30) -> None:
+def _set_flash_cookie(handler, message: str, *, max_age: int = 30, flash_type: str = "success") -> None:
     """
     Set a short-lived flash cookie to be consumed (and cleared) on the next GET.
     Stored URL-escaped to keep it cookie-safe.
+    Non-success types are encoded as a '<type>:' prefix so the reader can
+    reconstruct the correct banner colour without a separate cookie.
     """
-    val = quote(message, safe="")
+    encoded = (f"{flash_type}:{message}") if flash_type != "success" else message
+    val = quote(encoded, safe="")
     cookie = (
         f"{FLASH_COOKIE_NAME}={val}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax"
     )

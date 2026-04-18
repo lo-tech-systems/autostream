@@ -41,6 +41,7 @@ def send_airplay_page(
     auth,
     error: Optional[str] = None,
     flash_msg: Optional[str] = None,
+    flash_type: str = "success",
 ) -> None:
     """Render the main AirPlay control page."""
     try:
@@ -186,7 +187,7 @@ def send_airplay_page(
           </div>
         """
 
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
+    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
     csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';window.__PRESET_VOLUME={preset_volume};</script>"

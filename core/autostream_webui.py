@@ -23,7 +23,7 @@ import threading
 import time
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse, unquote
+from urllib.parse import parse_qs, urlparse, unquote, quote
 import json
 
 from autostream_core import (
@@ -161,6 +161,20 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         super().end_headers()
 
+    def _redirect_with_error_flash(self, message: str, location: str = "/") -> None:
+        """Send a 302 redirect and set a one-shot error flash cookie."""
+        val = quote(f"error:{message}", safe="")
+        cookie = f"{FLASH_COOKIE_NAME}={val}; Max-Age=30; Path=/; HttpOnly; SameSite=Lax"
+        pending = getattr(self, "_pending_set_cookies", None)
+        if pending is None:
+            self._pending_set_cookies = [cookie]
+        else:
+            pending.append(cookie)
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):  # noqa: N802
         global initial_setup
 
@@ -219,6 +233,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         query = urlparse(self.path).query
         qs = parse_qs(query)
         msg = (qs.get("msg") or [""])[0]
+        flash_type = "success"
 
         # One-shot flash message (cookie-based). This avoids "sticky" URLs in iOS A2HS/PWA.
         # Priority: explicit ?msg=... wins; otherwise consume the cookie once.
@@ -230,9 +245,16 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 raw = cookies.get(FLASH_COOKIE_NAME, "")
                 if raw:
                     try:
-                        msg = unquote(raw)
+                        decoded = unquote(raw)
                     except Exception:
-                        msg = raw
+                        decoded = raw
+                    # Decode optional '<type>:' prefix written by _set_flash_cookie.
+                    colon = decoded.find(":")
+                    if colon > 0 and decoded[:colon] in ("error", "warning"):
+                        flash_type = decoded[:colon]
+                        msg = decoded[colon + 1:]
+                    else:
+                        msg = decoded
                     # Clear cookie so the flash is one-shot.
                     clear_cookie = (
                         f"{FLASH_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
@@ -244,7 +266,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                         pending.append(clear_cookie)
 
         if path == "/":
-            pages.send_airplay_page(self, STATE, AUTH, flash_msg=msg)
+            pages.send_airplay_page(self, STATE, AUTH, flash_msg=msg, flash_type=flash_type)
         elif path == "/setup":
             pages.send_setup_page(self, STATE, AUTH, flash_msg=msg)
         elif path == "/owntone-setup":
@@ -293,7 +315,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             and AUTH.get_pin_if_enabled() is not None
             and not AUTH.is_authenticated(self.headers)
         ):
-            self.send_error(403, "Authentication required")
+            self._redirect_with_error_flash("Settings not saved, please try again")
             return
 
         # --- 2) Read body once (may be empty) ---
@@ -335,7 +357,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         csrf_token = token_from_header or token_from_body
 
         if not AUTH.validate_csrf(self, csrf_token):
-            self.send_error(403, "CSRF validation failed")
+            if path in ("/setup", "/owntone-setup", "/logs"):
+                self._redirect_with_error_flash("Settings not saved, please try again")
+            else:
+                self.send_error(403, "CSRF validation failed")
             return
 
         # --- 5) Route: enforce body only where needed ---
