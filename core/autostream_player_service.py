@@ -324,16 +324,14 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
                 backend=create_backend(backend_id, base_url=normalized_base_url, timeout=timeout),
             )
 
-    LOG.info(
+    LOG.debug(
         "Resolving playback backend for %s (timeout=%.1fs)",
         normalized_base_url,
         timeout,
     )
     backend, detections = detect_backend(normalized_base_url, timeout=timeout)
     for detection in detections:
-        level = logging.INFO if detection.matched else logging.DEBUG
-        LOG.log(
-            level,
+        LOG.debug(
             "Playback backend probe for %s: candidate=%s matched=%s detail=%s",
             normalized_base_url,
             detection.backend_id,
@@ -348,7 +346,7 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
         )
         backend = create_backend(BACKEND_OWNTONE, base_url=normalized_base_url, timeout=timeout)
     backend_id = backend.backend_id
-    LOG.info(
+    LOG.debug(
         "Playback backend selected for %s: backend=%s",
         normalized_base_url,
         backend_id,
