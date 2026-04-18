@@ -16,15 +16,22 @@ Flask must be installed at the system level by the installer.
 
 If the WiFi is unconfigured or remains disconnected for 1 minute after boot, it is put into
 AP mode with a captive portal that enables the user to easily connect the Pi to the WiFi.
-This AP mode will remain active for up to 15 minutes. After that time, to re-enter AP mode,
-the user would need to power-cycle the device. As an exception to this, note that if the
-user provided WiFi connection details didn't work (e.g., wrong password), the AP mode will
-re-activated and the timer reset for up to another 15 minutes.
 
-If a wired ethernet connection is up, the AP mode is supressed.
+For an unconfigured device (no WiFi profile saved), the AP mode stays active indefinitely
+until the user successfully configures a network or a wired ethernet connection appears.
+
+For a previously-configured device that cannot reconnect, AP mode stays active for up to
+30 minutes. After that time, to re-enter AP mode, the user would need to power-cycle the
+device. As an exception to this, note that if the user provided WiFi connection details
+didn't work (e.g., wrong password), the AP mode will be re-activated and the timer reset
+for up to another 30 minutes.
+
+If a wired ethernet connection is up, the AP mode is suppressed (unless the user explicitly
+requested AP mode via the /request_ap_mode endpoint, in which case ethernet does not
+suppress it).
 
 If there is a WiFi connection configured, but the wired connection is down, when the script
-closes AP mode after the allowed 15 minutes it will try to connect to that connection
+closes AP mode after the allowed 30 minutes it will try to connect to that connection
 periodically. If there is no connection still after 24 hours, the device will be rebooted
 and the process will repeat.
 
@@ -44,6 +51,8 @@ controls which web server (this or autostream_webui.py) services requests via th
 (or not) of /tmp/apmode.
 """
 
+import glob
+import ipaddress
 import os
 import time
 import threading
@@ -71,7 +80,7 @@ NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
 
 BOOT_AP_GRACE = 60                      # if still offline after boot grace -> enter AP mode
 BOOT_AP_CUTOFF = 15 * 60                # ONLY allow *automatic* entry into AP mode within this many seconds of boot
-AP_MAX_DURATION = 15 * 60               # AP mode lifetime (fixed, not extended by web activity)
+AP_MAX_DURATION = 30 * 60               # AP mode lifetime for configured devices (fixed, not extended by web activity)
 AP_POST_CLOSE_REBOOT_AFTER = 24 * 60 * 60  # if still offline 24h after closing AP -> reboot
 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
@@ -171,10 +180,6 @@ ap_request_event = threading.Event()
 # AP / host configuration
 AP_IFNAME = "wlan0"
 AP_CONNECTION_NAME = "Hotspot"  # default/fixed name for our AP connection
-HOSTNAME = get_system_hostname()
-# NOTE: HOSTNAME can change at runtime; prefer get_system_hostname() when constructing
-# user-facing URLs. Keep this for legacy/logging only.
-HOST_SETUP_URL = f"http://{HOSTNAME}.local/setup"
 
 app = Flask(__name__)
 
@@ -214,7 +219,7 @@ def clear_apmode_flag() -> None:
             log(f"Removing stale AP flag at startup: {AP_MODE_FLAG_PATH}")
             os.remove(AP_MODE_FLAG_PATH)
     except Exception:
-        log(f"Failed to remove %s at startup {AP_MODE_FLAG_PATH}")
+        log(f"Failed to remove {AP_MODE_FLAG_PATH} at startup")
 
 
 def update_apmode_flag(in_setup: bool) -> None:
@@ -236,14 +241,22 @@ def update_apmode_flag(in_setup: bool) -> None:
 def enter_setup_mode(reason: str = "") -> None:
     """Transition into SetupMode and start AP mode, if permitted.
 
-    AP mode is only allowed once per boot cycle. Once AP_MAX_DURATION elapses and
-    AP mode is closed, it will not be re-entered until the device is power-cycled.
+    For configured devices: AP mode runs for up to AP_MAX_DURATION (30 min).  Once
+    that window closes, AP will not be re-entered automatically until the device is
+    power-cycled (ap_exhausted latch).  force_setup_mode bypasses this to allow
+    re-entry after a failed WiFi configuration attempt.
+
+    For unconfigured devices: AP mode runs indefinitely (no timeout applied by the
+    monitor loop) until the user successfully configures a network or wired ethernet
+    appears.
     """
     with state_lock:
         if STATE.setup_mode:
             return
         if STATE.ap_exhausted and not STATE.force_setup_mode:
-            # Don't automatically re-enter AP mode after the 15-minute window.
+            # AP mode has been used up for this boot cycle (configured-device path).
+            # force_setup_mode is set by apply_wifi_async on a failed config attempt
+            # to allow re-entry despite the latch.
             return
         STATE.setup_mode = True
         STATE.ap_enter_time = time.monotonic()
@@ -264,8 +277,10 @@ def leave_setup_mode(reason: str = "") -> None:
         STATE.manual_ap_active = False
 
     log(f"Leaving SetupMode. Reason: {reason}")
-    update_apmode_flag(False)
+    # Tear down the AP before removing the flag so nginx does not route traffic
+    # to the main webui while the setup SSID is still broadcasting.
     stop_ap_mode()
+    update_apmode_flag(False)
 
 def get_configured_wifi_connection_name() -> Optional[str]:
     """Return the configured *client* WiFi connection name, if any.
@@ -345,8 +360,6 @@ def is_wifi_client_healthy(
     return is_gateway_reachable()
 
 
-import glob
-
 def is_wired_connected() -> bool:
     """Return True if any wired (ethernet) interface has carrier."""
     # Traditional + predictable ethernet names
@@ -367,7 +380,6 @@ def is_wired_connected() -> bool:
 
     return False
 
-import ipaddress
 
 _OK_NEIGH_STATES = {"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"}
 
@@ -523,14 +535,12 @@ def get_ap_ssid(ifname: str) -> str:
 
     Format: autostream_XXXX where XXXX are the last four hex digits of the MAC.
     """
-    result = run_cmd(["cat", f"/sys/class/net/{ifname}/address"])
-    if result.returncode != 0:
-        log(
-            f"Error reading MAC address for {ifname}: {result.stderr.strip()}; using default SSID"
-        )
+    try:
+        with open(f"/sys/class/net/{ifname}/address", "r", encoding="utf-8") as f:
+            mac = f.read().strip().replace(":", "")
+    except OSError as e:
+        log(f"Error reading MAC address for {ifname}: {e}; using default SSID")
         return "autostream_SETUP"
-
-    mac = result.stdout.strip().replace(":", "")
     suffix = mac[-4:].upper() if len(mac) >= 4 else "0000"
     ssid = f"autostream_{suffix}"
     log(f"Using AP SSID '{ssid}' for interface {ifname}")
@@ -682,6 +692,15 @@ def start_ap_mode() -> None:
     be handled elsewhere.
     """
     with ap_mode_lock:
+        # Guard against a race where leave_setup_mode ran (from apply_wifi_async or the
+        # ethernet-suppression path) between enter_setup_mode setting setup_mode=True and
+        # this function acquiring ap_mode_lock.  In that case stop_ap_mode has already
+        # run and setup_mode is False; starting AP now would leave it running unmanaged.
+        with state_lock:
+            if not STATE.setup_mode:
+                log("start_ap_mode: setup_mode cleared before AP could start; aborting")
+                return
+
         log("Enabling AP mode for SetupMode")
 
         ssid = get_ap_ssid(AP_IFNAME)
@@ -808,25 +827,21 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
                 with state_lock:
                     STATE.last_apply_result = "ok"
                     STATE.last_apply_error = ""
-                log("WiFi configuration and connectivity verified; leaving SetupMode")
-                with state_lock:
                     STATE.force_setup_mode = False
-                leave_setup_mode("WiFi configuration successful and connectivity verified")
+                log("WiFi configuration and connectivity verified")
             else:
                 with state_lock:
                     STATE.last_apply_result = "failed"
                     STATE.last_apply_error = "no-local-ip"
-                log("Local IPv4 check failed after WiFi configuration; entering SetupMode")
-                with state_lock:
                     STATE.force_setup_mode = True
+                log("Local IPv4 check failed after WiFi configuration; entering SetupMode")
                 enter_setup_mode("Local IPv4 check failed after WiFi configuration")
         else:
             with state_lock:
                 STATE.last_apply_result = "failed"
                 STATE.last_apply_error = "nmcli-failed"
-            log("WiFi configuration failed; returning to SetupMode")
-            with state_lock:
                 STATE.force_setup_mode = True
+            log("WiFi configuration failed; returning to SetupMode")
             enter_setup_mode("nmcli failed to configure WiFi")
     finally:
         with state_lock:
@@ -1386,6 +1401,15 @@ def request_ap_mode():
         reason = (request.form.get("reason") or "").strip()
 
     with state_lock:
+        # Reject early if AP mode is exhausted for this boot cycle and cannot be
+        # force-entered (i.e. no recent failed config attempt).  Without this the
+        # caller would receive a success response but AP mode would never start.
+        if STATE.ap_exhausted and not STATE.force_setup_mode:
+            return jsonify({
+                "ok": False,
+                "error": "ap_exhausted",
+                "message": "AP mode is not available until the device is power-cycled.",
+            }), 409
         STATE.ap_request_reason = reason
         ap_request_event.set()
 
@@ -1400,12 +1424,14 @@ def network_monitor_loop():
     """Background loop to check network state and enforce the narrative rules.
 
     Summary of behaviour (ethernet always wins):
-      - If wired ethernet is up: never enter AP mode; if currently in AP mode, exit it.
+      - If wired ethernet is up: never enter AP mode; if currently in AP mode, exit it
+            (unless the user explicitly requested AP via /request_ap_mode).
       - If WiFi is unconfigured OR still disconnected after BOOT_AP_GRACE seconds:
-            enter AP mode (once per boot) for up to AP_MAX_DURATION seconds.
-      - When AP mode closes after AP_MAX_DURATION:
-            if WiFi is configured (and ethernet is still down) periodically try to connect.
-            If still offline after AP_POST_CLOSE_REBOOT_AFTER, reboot.
+            enter AP mode within the boot window (BOOT_AP_GRACE..BOOT_AP_CUTOFF).
+            Unconfigured devices: AP runs indefinitely (no timeout).
+            Configured devices that failed to reconnect: AP runs for AP_MAX_DURATION.
+      - When AP mode closes (configured-device path):
+            periodically attempt reconnect; reboot after AP_POST_CLOSE_REBOOT_AFTER.
       - If WiFi is configured and ethernet is down:
             use the kernel's view of the default gateway as a health check.
             If unreachable for > GW_DOWN_RECONNECT_AFTER: periodically attempt reconnect.
@@ -1421,9 +1447,12 @@ def network_monitor_loop():
     while True:
         now = time.monotonic()
         with state_lock:
-            STATE.manual_ap_active = False
-
-        with state_lock:
+            # Only clear manual_ap_active when AP is not running.  While AP is active
+            # the flag must persist so the ethernet-suppression check below respects
+            # the user's explicit request for the full session, not just one iteration.
+            # leave_setup_mode and the AP-lifetime expiry block clear the flag on close.
+            if not STATE.setup_mode:
+                STATE.manual_ap_active = False
             boot_time = STATE.boot_time or now
 
         # Handle manual request to enter AP mode (from the normal WebUI via localhost).
@@ -1470,16 +1499,21 @@ def network_monitor_loop():
             log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
             log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
 
-        # Ethernet suppresses AP mode entirely.
+        # Ethernet suppresses AP mode entirely (unless the user explicitly requested AP).
+        # State is read under the lock; leave_setup_mode is called outside to avoid
+        # a deadlock (leave_setup_mode also acquires state_lock, which is not re-entrant).
         with state_lock:
-            if wired_connected and not STATE.manual_ap_active:
+            ethernet_wins = wired_connected and not STATE.manual_ap_active
+            in_ap_for_eth = STATE.setup_mode
+            if ethernet_wins:
                 STATE.conn_down_start = None
                 STATE.last_reconnect_attempt = None
-                in_setup = STATE.setup_mode
-                if in_setup:
-                    leave_setup_mode("Wired ethernet is up; suppressing AP mode")
-                time.sleep(NETWORK_MONITOR_INTERVAL)
-                continue
+
+        if ethernet_wins:
+            if in_ap_for_eth:
+                leave_setup_mode("Wired ethernet is up; suppressing AP mode")
+            time.sleep(NETWORK_MONITOR_INTERVAL)
+            continue
 
         with state_lock:
             if wired_connected and STATE.manual_ap_active:
@@ -1488,20 +1522,24 @@ def network_monitor_loop():
                 STATE.conn_down_start = None
                 STATE.last_reconnect_attempt = None
 
-        # If we're currently in AP mode, enforce the fixed 15-minute lifetime.
+        # If we're currently in AP mode, enforce the fixed 30-minute lifetime.
         with state_lock:
             in_setup = STATE.setup_mode
             ap_started = STATE.ap_enter_time
 
         if in_setup and ap_started is not None:
             ap_age = now - ap_started
-            if ap_age >= AP_MAX_DURATION:
+            # Unconfigured devices (no WiFi profile) stay in AP indefinitely — they have
+            # nowhere else to go.  Only apply the timeout for previously-configured devices
+            # that failed to reconnect (recovery AP).  Ethernet suppression above handles
+            # the wired-ethernet exit path for unconfigured devices.
+            if ap_age >= AP_MAX_DURATION and wifi_cfg:
                 # Close AP mode; do not allow re-entry this boot (unless forced).
                 with state_lock:
                     STATE.ap_exhausted = True
                     STATE.ap_closed_time = now
                     STATE.manual_ap_active = False
-                leave_setup_mode(f"AP mode lifetime expired after {ap_age:.0f}s")
+                leave_setup_mode(f"AP mode lifetime expired after {ap_age:.0f}s (configured device)")
             time.sleep(NETWORK_MONITOR_INTERVAL)
             continue
 
@@ -1601,6 +1639,12 @@ def network_monitor_loop():
                 with state_lock:
                     STATE.conn_down_start = None
                     STATE.last_reconnect_attempt = None
+                    # Reset the post-AP reboot timer so that any future disconnection
+                    # starts a fresh 24-hour window.  Without this, offline_for in the
+                    # post-AP-close block would be measured from the original boot-era
+                    # AP close time and could trigger an immediate reboot on a device
+                    # that has been running healthily for more than 24 hours.
+                    STATE.ap_closed_time = None
 
         time.sleep(NETWORK_MONITOR_INTERVAL)
 
