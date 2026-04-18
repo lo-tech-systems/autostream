@@ -1552,7 +1552,9 @@ def network_monitor_loop():
         if (not in_setup) and (not ap_exhausted) and (not forced):
             boot_age = now - boot_time
             # Auto-setup mode is only entered if:
-            #   - WiFi is not configured OR WiFi is not connected
+            #   - WiFi is not configured, OR WiFi is not connected, OR WiFi is
+            #     connected but the client is unhealthy (NM activated but no
+            #     usable IPv4/gateway — e.g. DHCP failure or router changed)
             #   - still offline AFTER the boot grace period.
             #   - still offline BEFORE the boot cutoff period.
             # This avoids immediately switching to AP mode before NetworkManager /
@@ -1560,12 +1562,12 @@ def network_monitor_loop():
             should_enter_ap = (
                 boot_age >= BOOT_AP_GRACE
                 and boot_age <= BOOT_AP_CUTOFF
-                and ((not wifi_cfg) or (not wifi_connected))
+                and ((not wifi_cfg) or (not wifi_connected) or (not client_ok))
             )
 
             if should_enter_ap:
                 enter_setup_mode(
-                    reason=f"boot_age={boot_age:.0f}s, wifi_cfg={wifi_cfg}, wifi_connected={wifi_connected}"
+                    reason=f"boot_age={boot_age:.0f}s, wifi_cfg={wifi_cfg}, wifi_connected={wifi_connected}, client_ok={client_ok}"
                 )
                 time.sleep(NETWORK_MONITOR_INTERVAL)
                 continue
