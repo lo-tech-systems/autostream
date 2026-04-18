@@ -101,7 +101,7 @@
     </div>
 
     <div class="status-row">
-      <div class="status-label" id="status-label">Preparing update...</div>
+      <div class="status-label" id="status-label">Preparing...</div>
       <div class="status-percent" id="status-percent">0%</div>
     </div>
 
@@ -133,11 +133,29 @@
       return n;
     }
 
+    var STATUS_LABELS = {
+      'unknown':     'Preparing...',
+      'in_progress': 'In progress',
+      'success':     'Complete',
+      'failure':     'Failed',
+      'error':       'Error'
+    };
+
+    function friendlyStatus(status) {
+      return STATUS_LABELS[status] || status;
+    }
+
     function render(data) {
       var status = (data && data.status) ? String(data.status) : 'unknown';
-      var message = (data && data.message) ? String(data.message) : 'Status temporarily unavailable';
       var percent = safePercent(data && data.percent);
       var lastRun = (data && data.last_run_at) ? String(data.last_run_at) : 'unknown';
+
+      var message;
+      if (status === 'unknown') {
+        message = 'Preparing update...';
+      } else {
+        message = (data && data.message) ? String(data.message) : 'Status temporarily unavailable';
+      }
 
       if (successMode) {
         return;
@@ -151,7 +169,7 @@
       }
 
       text(messageEl, message);
-      text(statusLabelEl, 'Status: ' + status);
+      text(statusLabelEl, friendlyStatus(status));
       text(statusPercentEl, percent + '%');
       text(lastRunEl, 'Last update run: ' + lastRun);
       fillEl.style.width = percent + '%';
@@ -162,7 +180,7 @@
     }
 
     function pollRoot() {
-      text(statusLabelEl, 'Status: waiting for autostream');
+      text(statusLabelEl, 'Waiting for autostream...');
       fetch('/', { cache: 'no-store' })
         .then(function(response) {
           if (response && response.ok && !response.redirected) {
@@ -181,7 +199,7 @@
       if (elapsed < RESTART_WAIT_MS) {
         var remainingSeconds = Math.ceil((RESTART_WAIT_MS - elapsed) / 1000);
         text(messageEl, 'autostream appliance is restarting, please wait.');
-        text(statusLabelEl, 'Status: restarting');
+        text(statusLabelEl, 'Restarting...');
         text(statusPercentEl, remainingSeconds + 's');
         window.setTimeout(runRestartCountdown, 1000);
         return;

@@ -45,6 +45,7 @@ from typing import Any, Dict, Optional, Tuple
 LOG_PATH = Path("/var/log/autostream/update.log")
 APMODE_FLAG = Path("/tmp/apmode")
 INSTALL_STATE_FILE = Path("/var/lib/autostream/install-state.env")
+UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
 STAGING_DIR = Path("/var/lib/autostream/update-staging")
 
 # GitHub repo
@@ -339,6 +340,15 @@ def cmd_apply() -> Dict[str, Any]:
     if rc != 0:
         _log(f"apply: systemd-run scheduling failed rc={rc} stderr='{err}'")
         return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
+
+    # Clear any stale update-result.env from the previous run so the status
+    # page does not immediately show the old "success / 100%" result before
+    # the new installer has written its first progress entry.
+    try:
+        UPDATE_RESULT_FILE.unlink(missing_ok=True)
+        _log("apply: cleared stale update-result.env")
+    except Exception as e:
+        _log(f"apply: warning — could not clear update-result.env: {e}")
 
     _log(f"apply: installer scheduled as transient unit {unit_name} tag={tag}")
     return {"ok": True, "staged_tag": tag.lstrip("v")}
