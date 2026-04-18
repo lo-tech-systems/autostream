@@ -6,8 +6,8 @@
 
 [Unit]
 Description=WiFi Setup State Machine (AP Mode + Captive Portal based WiFi Config)
-After=network-online.target
-Wants=network-online.target
+After=NetworkManager.service
+Wants=NetworkManager.service
 
 [Service]
 Type=simple
