@@ -636,6 +636,89 @@ body {
   /* JS sets --flash-rollup-y to the banner height (px) */
   transform: translateY(calc(-1 * var(--flash-rollup-y, 0px)));
 }
+
+/* ── Setup page: slide-panel navigation (post-config only) ── */
+.setup-slide-viewport {
+  overflow: hidden;
+  width: 100%;
+}
+.setup-slide-track {
+  display: flex;
+  width: 300%;
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.setup-slide-track.panel-open {
+  transform: translateX(-33.333%);
+}
+.setup-slide-track.preamp-open {
+  transform: translateX(-66.667%);
+}
+.setup-slide-list,
+.setup-slide-panels,
+.setup-slide-preamp {
+  width: 33.333%;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.setup-list-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 0.9rem;
+  margin-bottom: 0.62rem;
+  border-radius: 12px;
+  border: 1px solid #d9dee3;
+  background: #f8fafb;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 120ms ease;
+  gap: 0.5rem;
+}
+.setup-list-card:active {
+  background: #edf2f7;
+}
+.setup-list-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.setup-list-card-title {
+  font-weight: 700;
+  font-size: 1rem;
+  color: #121212;
+  line-height: 1.2;
+}
+.setup-list-card-sub {
+  font-size: 0.82rem;
+  color: #6c757d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.setup-list-chevron {
+  font-size: 1.4rem;
+  color: #adb5bd;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.setup-detail-panel {
+  display: none;
+}
+.setup-detail-panel.active {
+  display: block;
+}
+.setup-preamp-panel {
+  display: none;
+}
+.setup-preamp-panel.active {
+  display: block;
+}
+.setup-detail-back {
+  margin-bottom: 0.75rem;
+}
 """
 
 BANNER_HTML = """

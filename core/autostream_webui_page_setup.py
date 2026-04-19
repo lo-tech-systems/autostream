@@ -79,9 +79,10 @@ def _format_reset_timestamp(raw: Optional[str]) -> str:
         return str(raw)
 
 
-def _settings_card_html(inner_html: str, *, margin_top: str = "0.75rem") -> str:
+def _settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: bool = False) -> str:
+    border_colour = "#c00000" if warn else "#e4e4e4"
     return (
-        f"<div style='margin-top:{margin_top};padding:0.75rem 0.85rem;border:1px solid #e4e4e4;"
+        f"<div style='margin-top:{margin_top};padding:0.75rem 0.85rem;border:1px solid {border_colour};"
         "border-radius:8px;background:#fafafa;font-size:0.95rem;line-height:1.5;'>"
         f"{inner_html}"
         "</div>"
@@ -94,6 +95,7 @@ def _playback_summary_html(
     input_index: int,
     reset_button_html: str = "",
     stylus_life_hours: Optional[int] = None,
+    warn: bool = False,
 ) -> str:
     def summary_row(
         label: str,
@@ -205,7 +207,7 @@ def _playback_summary_html(
             "</div>"
         )
 
-    return _settings_card_html("".join(rows))
+    return _settings_card_html("".join(rows), warn=warn)
 
 
 def _audio_controls_card_html(
@@ -289,11 +291,7 @@ def send_setup_page(
     h1 = "Initial Setup (2 of 2)" if initial_setup else "Setup"
     submit_label = "Finish"
     setup_form_id = "setupForm"
-    nav_html = (
-        ""
-        if initial_setup
-        else f"""<button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">← Done</button>"""
-    )
+    nav_html = ""  # Done button lives inside the slide list for post-config
     playback_snapshot = get_playback_snapshot()
     input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
         parsed.audio1,
@@ -338,11 +336,13 @@ def send_setup_page(
             if not hw:
                 continue
             label = str(dev.get("label") or hw).strip()
+            card = str(dev.get("card") or "").strip()
+            card_short = card.split(", ")[0].strip() if card else hw
             sel = " selected" if hw == cur_str else ""
             if sel:
                 found = True
             opts += (
-                f"<option value='{html.escape(hw)}'{sel}>"
+                f"<option value='{html.escape(hw)}' data-card='{html.escape(card_short)}'{sel}>"
                 f"{html.escape(label)}</option>"
             )
         if not found and cur:
@@ -352,6 +352,26 @@ def send_setup_page(
                 f"{missing} (not currently detected)</option>"
             ) + opts
         return opts
+
+    def _preamp_card_html(input_index: int, parsed_input) -> str:
+        gain_val = int(parsed_input.gain_db)
+        gain_label = f"{gain_val:+d} dB" if gain_val != 0 else "0 dB"
+        eq_flat = (
+            parsed_input.eq_40hz_db == 0
+            and parsed_input.eq_100hz_db == 0
+            and parsed_input.eq_10khz_db == 0
+        )
+        eq_label = "Flat" if eq_flat else "Custom"
+        sub = html.escape(f"Gain {gain_label} \u00b7 EQ {eq_label}")
+        return (
+            f"<div class='setup-list-card' onclick=\"openPreamp('input{input_index}')\" style='margin-top:0.75rem;'>"
+            f"<div class='setup-list-card-body'>"
+            f"<span class='setup-list-card-title'>Pre-amp</span>"
+            f"<span class='setup-list-card-sub' id='preamp-{input_index}-card-sub'>{sub}</span>"
+            f"</div>"
+            f"<span class='setup-list-chevron'>\u203a</span>"
+            f"</div>"
+        )
 
     def input_fieldset_html(
         *,
@@ -389,6 +409,7 @@ def send_setup_page(
                 "Mark Stylus Changed</button>"
             )
 
+        is_warning = snapshot.stylus_warning or snapshot.stylus_overdue
         show_playback_card = not initial_setup
         playback_html = (
             _playback_summary_html(
@@ -396,6 +417,7 @@ def send_setup_page(
                 input_index=input_index,
                 reset_button_html=reset_button_html,
                 stylus_life_hours=stylus_life_hours,
+                warn=is_warning,
             )
             if show_playback_card
             else ""
@@ -443,13 +465,7 @@ def send_setup_page(
             <div id="{playback_wrap_id}" style="display:{'block' if show_playback_card and is_turntable else 'none'};">
               {playback_html}
             </div>
-            {_audio_controls_card_html(
-                input_index=input_index,
-                gain_db=parsed_input.gain_db,
-                eq_40hz_db=parsed_input.eq_40hz_db,
-                eq_100hz_db=parsed_input.eq_100hz_db,
-                eq_10khz_db=parsed_input.eq_10khz_db,
-            ) if not initial_setup else ""}
+            {_preamp_card_html(input_index, parsed_input) if not initial_setup else ""}
           {settings_close}
         </fieldset>
         """
@@ -612,28 +628,14 @@ def send_setup_page(
         enabled_name="audio2_enabled",
     )
 
-    html_body = textwrap.dedent(f"""\
-      <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}</style>{csrf_meta}
-      </head>
-      <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>{h1}</h1>
-      <p class="actions" style="display:flex;justify-content:space-between;gap:0.75rem;">
-        {nav_html}
-        <a href="/logs" class="pill-btn">Logs</a>
-      </p>
-      {f"<p style='color:green;'>Saved</p>" if saved_ok else ""}
-      {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
-      <form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">
-        <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
-        {input1_html}
-        {input2_html}
-        <fieldset><legend>Playback</legend>
+    # Fieldset fragments shared by both layout paths
+    playback_fieldset_html = f"""<fieldset><legend>Playback</legend>
           <label>Default Speakers:
             <select id="owntone_output_select" name="owntone_output_name">
               {owntone_outputs_html}
             </select>
             <div id="owntone_output_hint" class="helptext" style="display:none;">
-              Looking for speakers…
+              Looking for speakers\u2026
             </div>
           </label>
           <label><div class="slider-header"><span>Default Volume:</span><span id="vol_val">{parsed.owntone.volume_percent}%</span></div>
@@ -642,16 +644,172 @@ def send_setup_page(
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
           {owntone_button_html}
-        </fieldset>
-        <fieldset><legend>System (build: {html.escape(get_app_version())})</legend>
+        </fieldset>"""
+    system_fieldset_html = f"""<fieldset><legend>System (build: {html.escape(get_app_version())})</legend>
           <label style="display:flex;align-items:center;gap:.75rem;">
             <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}">
           </label>
           {update_html}
-        </fieldset>
-        {f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else ''}
+        </fieldset>"""
+
+    # Build the form body content — flat for initial setup, slide-panel for post-config
+    if initial_setup:
+        form_content_html = f"""{input1_html}
+        {input2_html}
+        {playback_fieldset_html}
+        {system_fieldset_html}
+        <p class="actions"><button type="submit">{submit_label}</button></p>"""
+    else:
+        def _friendly(hw) -> str:
+            """Return shortened card name for use in sub-labels (first segment before ', ')."""
+            for d in monitor_devices:
+                if str(d.get("hw") or "").strip() == str(hw or "").strip():
+                    c = str(d.get("card") or "").strip()
+                    return c.split(", ")[0].strip() if c else str(hw)
+            return str(hw) if hw else "Not configured"
+
+        dev1 = _friendly(parsed.audio1.capture_device)
+        mode1 = "Turntable" if parsed.audio1.is_turntable else "Line In"
+        gain1 = int(parsed.audio1.gain_db)
+        gain1_str = f"{gain1:+d} dB" if gain1 != 0 else "0 dB"
+        input1_summary = html.escape(f"{dev1} \u00b7 {mode1} \u00b7 {gain1_str}")
+        if not parsed.audio2_enabled:
+            input2_summary = "Disabled"
+        else:
+            dev2 = _friendly(parsed.audio2.capture_device)
+            mode2 = "Turntable" if parsed.audio2.is_turntable else "Line In"
+            gain2 = int(parsed.audio2.gain_db)
+            gain2_str = f"{gain2:+d} dB" if gain2 != 0 else "0 dB"
+            input2_summary = html.escape(f"{dev2} \u00b7 {mode2} \u00b7 {gain2_str}")
+        speaker = str(parsed.owntone.output_name or "No speaker selected")
+        playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
+        system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()}")
+        input1_warn = input1_snapshot.stylus_warning or input1_snapshot.stylus_overdue
+        input2_warn = input2_snapshot.stylus_warning or input2_snapshot.stylus_overdue
+        i1_card_style = ' style="border-color:#c00000;"' if input1_warn else ''
+        i1_text_style = ' style="color:#c00000;"' if input1_warn else ''
+        i2_card_style = ' style="border-color:#c00000;"' if input2_warn else ''
+        i2_text_style = ' style="color:#c00000;"' if input2_warn else ''
+        form_content_html = f"""<div class="setup-slide-viewport">
+      <div class="setup-slide-track" id="setupSlideTrack">
+        <div class="setup-slide-list">
+          <p class="actions" style="display:flex;justify-content:space-between;gap:0.75rem;margin-bottom:1rem;">
+            <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Done</button>
+            <a href="/logs" class="pill-btn small">Logs</a>
+          </p>
+          <div class="setup-list-card" onclick="openPanel('input1')"{i1_card_style}>
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title"{i1_text_style}>Input 1</span>
+              <span class="setup-list-card-sub" id="input1-card-sub">{input1_summary}</span>
+            </div>
+            <span class="setup-list-chevron"{i1_text_style}>\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('input2')"{i2_card_style}>
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title"{i2_text_style}>Input 2</span>
+              <span class="setup-list-card-sub" id="input2-card-sub">{input2_summary}</span>
+            </div>
+            <span class="setup-list-chevron"{i2_text_style}>\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('playback')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Playback</span>
+              <span class="setup-list-card-sub">{playback_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('system')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">System</span>
+              <span class="setup-list-card-sub">{system_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('factory-reset')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Factory Reset</span>
+              <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+        </div>
+        <div class="setup-slide-panels">
+          <div class="setup-detail-panel" id="panel-input1">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {input1_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-input2">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {input2_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-playback">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {playback_fieldset_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-system">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {system_fieldset_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-factory-reset">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {factory_reset_zone}
+          </div>
+        </div>
+        <div class="setup-slide-preamp">
+          <div class="setup-preamp-panel" id="preamp-input1">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePreamp()">\u2190 Back</button>
+            </div>
+            <fieldset><legend>Input 1 Pre-amp</legend>
+              {_audio_controls_card_html(
+                input_index=1,
+                gain_db=parsed.audio1.gain_db,
+                eq_40hz_db=parsed.audio1.eq_40hz_db,
+                eq_100hz_db=parsed.audio1.eq_100hz_db,
+                eq_10khz_db=parsed.audio1.eq_10khz_db,
+              )}
+            </fieldset>
+          </div>
+          <div class="setup-preamp-panel" id="preamp-input2">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePreamp()">\u2190 Back</button>
+            </div>
+            <fieldset><legend>Input 2 Pre-amp</legend>
+              {_audio_controls_card_html(
+                input_index=2,
+                gain_db=parsed.audio2.gain_db,
+                eq_40hz_db=parsed.audio2.eq_40hz_db,
+                eq_100hz_db=parsed.audio2.eq_100hz_db,
+                eq_10khz_db=parsed.audio2.eq_10khz_db,
+              )}
+            </fieldset>
+          </div>
+        </div>
+      </div>
+    </div>"""
+
+    html_body = textwrap.dedent(f"""\
+      <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
+      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}</style>{csrf_meta}
+      </head>
+      <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>{h1}</h1>
+      {f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else ""}
+      {f"<p style='color:green;'>Saved</p>" if saved_ok else ""}
+      {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
+      <form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
+        {form_content_html}
       </form>
-      {factory_reset_zone}
       </div>
       {factory_reset_modal}
       <div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
@@ -1176,6 +1334,77 @@ def send_setup_page(
           setInterval(refreshOwntoneOutputs, 2000);
         }});
       </script>
+      {f"""<script>
+        function _inputCardSub(captureSelName, turntableName, gainId) {{
+          var sel = document.querySelector('select[name="' + captureSelName + '"]');
+          var opt = sel ? sel.options[sel.selectedIndex] : null;
+          var dev = (opt && opt.dataset.card) ? opt.dataset.card : (sel && sel.value ? sel.value : 'Not configured');
+          var turntable = document.querySelector('input[name="' + turntableName + '"]');
+          var mode = (turntable && turntable.checked) ? 'Turntable' : 'Line In';
+          var gainEl = document.getElementById(gainId);
+          var gain = gainEl ? parseInt(gainEl.value, 10) : 0;
+          var gainStr = gain > 0 ? '+' + gain + ' dB' : (gain < 0 ? gain + ' dB' : '0 dB');
+          return dev + ' \u00b7 ' + mode + ' \u00b7 ' + gainStr;
+        }}
+        function _preampCardSub(prefix) {{
+          var gainEl = document.getElementById(prefix + '_gain_db');
+          var gain = gainEl ? parseInt(gainEl.value, 10) : 0;
+          var gainStr = gain > 0 ? '+' + gain + ' dB' : (gain < 0 ? gain + ' dB' : '0 dB');
+          var eq40 = parseFloat((document.getElementById(prefix + '_eq_40hz_db') || {{}}).value || 0);
+          var eq100 = parseFloat((document.getElementById(prefix + '_eq_100hz_db') || {{}}).value || 0);
+          var eq10k = parseFloat((document.getElementById(prefix + '_eq_10khz_db') || {{}}).value || 0);
+          var eqLabel = (eq40 === 0 && eq100 === 0 && eq10k === 0) ? 'Flat' : 'Custom';
+          return 'Gain ' + gainStr + ' \u00b7 EQ ' + eqLabel;
+        }}
+        function refreshInputCardSubs() {{
+          var s1 = document.getElementById('input1-card-sub');
+          if (s1) s1.textContent = _inputCardSub('audio_capture_device', 'audio_turntable', 'audio1_gain_db');
+          var s2 = document.getElementById('input2-card-sub');
+          if (s2) {{
+            var en = document.querySelector('input[name="audio2_enabled"]');
+            if (en && !en.checked) {{
+              s2.textContent = 'Disabled';
+            }} else {{
+              s2.textContent = _inputCardSub('audio2_capture_device', 'audio2_turntable', 'audio2_gain_db');
+            }}
+          }}
+        }}
+        function refreshPreampCardSubs() {{
+          var p1 = document.getElementById('preamp-1-card-sub');
+          if (p1) p1.textContent = _preampCardSub('audio1');
+          var p2 = document.getElementById('preamp-2-card-sub');
+          if (p2) p2.textContent = _preampCardSub('audio2');
+        }}
+        function openPanel(id) {{
+          document.querySelectorAll('.setup-detail-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+          var panel = document.getElementById('panel-' + id);
+          if (panel) panel.classList.add('active');
+          var track = document.getElementById('setupSlideTrack');
+          if (track) {{ track.classList.remove('preamp-open'); track.classList.add('panel-open'); }}
+          window.scrollTo(0, 0);
+        }}
+        function closePanel() {{
+          refreshInputCardSubs();
+          var track = document.getElementById('setupSlideTrack');
+          if (track) {{ track.classList.remove('panel-open'); track.classList.remove('preamp-open'); }}
+          window.scrollTo(0, 0);
+        }}
+        function openPreamp(id) {{
+          document.querySelectorAll('.setup-preamp-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+          var panel = document.getElementById('preamp-' + id);
+          if (panel) panel.classList.add('active');
+          var track = document.getElementById('setupSlideTrack');
+          if (track) track.classList.add('preamp-open');
+          window.scrollTo(0, 0);
+        }}
+        function closePreamp() {{
+          refreshPreampCardSubs();
+          refreshInputCardSubs();
+          var track = document.getElementById('setupSlideTrack');
+          if (track) track.classList.remove('preamp-open');
+          window.scrollTo(0, 0);
+        }}
+      </script>""" if not initial_setup else ""}
       {factory_reset_js}
       </html>
     """)
