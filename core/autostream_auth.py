@@ -821,12 +821,7 @@ class AuthManager:
                 {err_banner}
                 {self.banner_html}
                 <h1>Setup</h1>
-                <a href="/"
-                    style="display:inline-block;padding:0.6rem 1.2rem;font-size:1rem;font-weight:600;
-                            background:#6c757d;color:#fff;text-decoration:none;border-radius:999px;
-                            box-shadow:0 2px 6px rgba(0,0,0,0.05);">
-                    ← Back
-                </a>
+                <a href="/" class="pill-btn small">← Back</a>
                 <p>Enter the device PIN. This may be on a label attached to the device.</p>
 
                 <div class=\"card\">

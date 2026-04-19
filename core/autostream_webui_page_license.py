@@ -121,7 +121,7 @@ def send_license_page(handler, state: WebUIState) -> None:
       .licence-pane ul {{ margin: 0.1rem 0 0.3rem; padding-left: 1.4rem; }}
       .licence-pane hr {{ margin: 0.5rem 0; border: 0; border-top: 1px solid currentColor; opacity: 0.2; }}
       </style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>License</h1>
-      <p class="actions" style="margin:1rem 0;"><a href="/about" class="pill-btn">← Back</a></p>
+      <p class="actions" style="margin:1rem 0;"><a href="/about" class="pill-btn small">← Back</a></p>
       {license_block}
       </div></body></html>
     """)

@@ -438,7 +438,7 @@ def send_owntone_setup_page(
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
       <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
         {back_html}
-        <a href="/owntone-setup" class="pill-btn" style="font-size:0.95rem;font-weight:500;border:1px solid #ccc;">↻ Refresh</a>
+        <a href="/owntone-setup" class="pill-btn small" style="font-weight:500;border:1px solid #ccc;">↻ Refresh</a>
       </p>
       <form id="{owntone_setup_form_id}" method="POST" action="/owntone-setup">
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">

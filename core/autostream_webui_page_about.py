@@ -180,7 +180,7 @@ def send_about_page(handler, state: WebUIState) -> None:
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
       <title>About</title><style>{STYLE_CSS}</style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
-      <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;"><a href="/" class="pill-btn">← Back</a><a href="/license" class="pill-btn" style="background:#6c757d;color:#fff;border-color:#6c757d;">License</a></p>
+      <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;"><a href="/" class="pill-btn small">← Back</a><a href="/license" class="pill-btn small" style="background:#6c757d;color:#fff;border-color:#6c757d;">License</a></p>
       <fieldset><legend>Overview</legend>
           <p><strong>autostream</strong> streams audio from turntables, CD players, and other analogue Hi-Fi sources to AirPlay&#8209;compatible speakers.</p>
       </fieldset>

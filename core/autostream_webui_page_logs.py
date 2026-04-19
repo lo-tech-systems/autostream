@@ -118,7 +118,7 @@ def send_logs_page(
         <div id="applyingBox">Applying Change&#8230;</div>
       </div>
       <div class="container">{BANNER_HTML}<h1>Logs</h1>
-      <p class="actions" style="display:flex;justify-content:space-between;"><a href="/setup" class="pill-btn">← Back</a> <a href="/logs" class="pill-btn">↻ Refresh</a></p>
+      <p class="actions" style="display:flex;justify-content:space-between;"><a href="/setup" class="pill-btn small">← Back</a> <a href="/logs" class="pill-btn small">↻ Refresh</a></p>
       <form method="post" action="/logs" id="logLevelForm" onsubmit="showApplying()">
         <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
         <fieldset><legend>Log Level</legend>
