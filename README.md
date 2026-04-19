@@ -8,6 +8,11 @@
 
 > License: Source-available. Free for personal use. Commercial licensing available.
 
+One-line install on Raspberry Pi OS (Trixie):
+```sh
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
+```
+
 ---
 
 ![autostream](docs/autostream-flyer.png)
@@ -70,29 +75,24 @@ Running on a Pi ZeroW or Zero2W, it consumes less than 2 Watts.
 
 autostream runs on Linux and uses **Owntone** for speaker discovery and streaming (AirPlay / AirPlay 2). Owntone is a separate project with its own license and is installed automatically by the autostream installation script.
 
-By default, `autostream_install.sh` builds and installs **owntone-mini** from the Lo-tech Systems GitHub repository. If you need the packaged upstream build instead, run the installer with `--owntone=full`.
+By default, the installer builds and installs **owntone-mini** from the Lo-tech Systems GitHub repository. If you need the packaged upstream build instead, pass `--owntone=full` (see Getting Started below).
 
 ---
 
 ## Getting Started
 
 1. Create a Raspbian Lite microSD with Raspberry Pi imager, boot the Pi from it, and SSH to it.
-2. Install Git
+2. Run the installer:
 ```sh
-sudo apt install git
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
 ```
-3. Clone the repository:
+This downloads the latest stable release and runs the installer. By default it builds and installs `owntone-mini` from source. To use the packaged OwnTone build instead:
 ```sh
-git clone https://github.com/lo-tech-systems/autostream.git
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash -s -- --owntone=full
 ```
-4. Run the install script:
-```sh
-cd autostream && sudo ./autostream_install.sh
-```
-This installs the default `owntone-mini` build from source. Use `sudo ./autostream_install.sh --owntone=full` if you explicitly want the packaged OwnTone build instead.
-5. Connect one or two audio sources
-6. Reboot, then use an iPhone to browse with Safari to http://autostream.local/ (replace 'autostream' with the hostname of your Pi)
-7. Run the one-time setup (two screens)
+3. Connect one or two audio sources
+4. Reboot, then use an iPhone to browse with Safari to http://autostream.local/ (replace 'autostream' with the hostname of your Pi)
+5. Run the one-time setup (two screens)
 
 Detailed setup instructions are provided in the docs folder.
 
