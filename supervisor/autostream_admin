@@ -301,12 +301,48 @@ def read_version_info() -> int:
     return 0
 
 
+def _is_stale_in_progress(last_run_at_str: str) -> bool:
+    """Return True if an in_progress update should be considered stale.
+
+    An in-progress update is stale if its start timestamp is either:
+      - more than 15 minutes ago, or
+      - before the current system boot time.
+
+    If the timestamp cannot be parsed we err on the side of caution and
+    treat the record as stale so the UI can offer a retry.
+    """
+    STALE_MINUTES = 15
+    now = dt.datetime.now(tz=dt.timezone.utc)
+
+    try:
+        last_run_at = dt.datetime.fromisoformat(last_run_at_str)
+        # Ensure aware so arithmetic with now (UTC) is valid.
+        if last_run_at.tzinfo is None:
+            last_run_at = last_run_at.replace(tzinfo=dt.timezone.utc)
+    except (ValueError, TypeError):
+        return True  # unparseable timestamp → treat as stale
+
+    if (now - last_run_at) > dt.timedelta(minutes=STALE_MINUTES):
+        return True
+
+    try:
+        uptime_seconds = float(Path("/proc/uptime").read_text().split()[0])
+        boot_time = now - dt.timedelta(seconds=uptime_seconds)
+        if last_run_at < boot_time:
+            return True
+    except Exception:
+        pass  # /proc/uptime unavailable — rely on the age check alone
+
+    return False
+
+
 def read_update_status() -> int:
     """Emit the latest installer update status as JSON on stdout."""
     data = {
         "ok": True,
         "last_run_at": "",
         "status": "unknown",
+        "stale": False,
         "message": "No update status available",
         "percent": 0,
     }
@@ -331,6 +367,9 @@ def read_update_status() -> int:
     except ValueError:
         percent = 0
     data["percent"] = max(0, min(100, percent))
+
+    if data["status"] == "in_progress":
+        data["stale"] = _is_stale_in_progress(data["last_run_at"])
 
     print(json.dumps(data))
     return 0
