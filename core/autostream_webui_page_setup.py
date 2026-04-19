@@ -821,7 +821,7 @@ def send_setup_page(
           </div>
           <div class="ft">
             <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
-            <button type="button" class="btn ok" id="pinModalOk">Continue</button>
+            <button type="button" class="btn ok" id="pinModalOk">Apply</button>
           </div>
         </div>
       </div>
@@ -829,8 +829,6 @@ def send_setup_page(
       </body>
       <script>
         const pinChangeState = {{
-          step: 'idle',
-          newPin: '',
           busy: false,
         }};
         function pinModalElements() {{
@@ -840,17 +838,15 @@ def send_setup_page(
             body: document.querySelector('#pinModal .bd'),
             message: document.getElementById('pinModalMessage'),
             error: document.getElementById('pinModalError'),
-            input: document.getElementById('pinModalValue'),
+            newInput: document.getElementById('pinModalNew'),
+            repeatInput: document.getElementById('pinModalRepeat'),
             cancel: document.getElementById('pinModalCancel'),
             ok: document.getElementById('pinModalOk'),
           }};
         }}
-        function ensurePinModalInput() {{
-          const els = pinModalElements();
-          if (!els.body) return null;
-          if (els.input) return els.input;
+        function _makePinInput(id, placeholder) {{
           const input = document.createElement('input');
-          input.id = 'pinModalValue';
+          input.id = id;
           input.name = 'v';
           input.type = 'text';
           input.className = 'pin-entry';
@@ -861,103 +857,95 @@ def send_setup_page(
           input.setAttribute('autocorrect', 'off');
           input.setAttribute('spellcheck', 'false');
           input.setAttribute('data-form-type', 'other');
-          input.setAttribute('placeholder', '');
-          input.addEventListener('keydown', (ev) => {{
-            if (ev.key === 'Enter') {{
-              ev.preventDefault();
-              handlePinModalOk();
-            }}
-          }});
-          const err = els.error;
-          if (err && err.parentNode === els.body) {{
-            els.body.insertBefore(input, err.nextSibling);
-          }} else {{
-            els.body.appendChild(input);
-          }}
+          input.setAttribute('placeholder', placeholder);
           return input;
         }}
-        function armPinModalInput() {{
-          const input = ensurePinModalInput();
-          if (!input) return;
-          input.setAttribute('name', 'v');
+        function _armPinInput(input) {{
+          input.value = '';
+          input.setAttribute('readonly', 'readonly');
           const enable = () => input.removeAttribute('readonly');
           input.addEventListener('pointerdown', enable, {{ once: true }});
           input.addEventListener('focus', enable, {{ once: true }});
         }}
-        function resetPinChangeState() {{
-          pinChangeState.step = 'idle';
-          pinChangeState.newPin = '';
-          pinChangeState.busy = false;
+        function ensurePinModalInputs() {{
+          const els = pinModalElements();
+          if (!els.body) return;
+          if (!els.newInput) {{
+            const newInput = _makePinInput('pinModalNew', 'New PIN');
+            newInput.addEventListener('keydown', (ev) => {{
+              if (ev.key === 'Enter') {{
+                ev.preventDefault();
+                const rep = document.getElementById('pinModalRepeat');
+                if (rep) rep.focus();
+              }}
+            }});
+            const err = els.error;
+            if (err && err.parentNode === els.body) {{
+              els.body.insertBefore(newInput, err.nextSibling);
+            }} else {{
+              els.body.appendChild(newInput);
+            }}
+          }}
+          if (!els.repeatInput) {{
+            const repeatInput = _makePinInput('pinModalRepeat', 'Repeat PIN');
+            repeatInput.style.marginTop = '0.5rem';
+            repeatInput.addEventListener('keydown', (ev) => {{
+              if (ev.key === 'Enter') {{ ev.preventDefault(); handlePinModalOk(); }}
+            }});
+            const newInput = document.getElementById('pinModalNew');
+            if (newInput) newInput.after(repeatInput);
+            else els.body.appendChild(repeatInput);
+          }}
         }}
         function setPinModalBusy(busy) {{
           pinChangeState.busy = !!busy;
           const els = pinModalElements();
-          if (!els.cancel || !els.ok || !els.input) return;
-          els.cancel.disabled = !!busy;
-          els.ok.disabled = !!busy;
-          els.input.disabled = !!busy;
+          if (els.cancel) els.cancel.disabled = !!busy;
+          if (els.ok) els.ok.disabled = !!busy;
+          if (els.newInput) els.newInput.disabled = !!busy;
+          if (els.repeatInput) els.repeatInput.disabled = !!busy;
         }}
-        function showPinModalStep(step, options) {{
-          const opts = options || {{}};
-          ensurePinModalInput();
+        function showPinModalError(message) {{
           const els = pinModalElements();
-          if (!els.modal) return;
-          pinChangeState.step = step;
-          els.modal.classList.add('show');
-          els.title.textContent = opts.title || 'Change PIN';
-          els.message.textContent = opts.message || '';
-          if (opts.error) {{
+          if (!els.error) return;
+          if (message) {{
             els.error.style.display = '';
-            els.error.textContent = opts.error;
+            els.error.textContent = message;
           }} else {{
             els.error.style.display = 'none';
             els.error.textContent = '';
-          }}
-          els.input.style.display = opts.showInput === false ? 'none' : '';
-          els.input.type = opts.inputType || 'text';
-          els.input.placeholder = opts.placeholder || '';
-          els.input.value = '';
-          els.input.setAttribute('readonly', 'readonly');
-          els.cancel.textContent = opts.cancelLabel || 'Cancel';
-          els.cancel.style.display = opts.showCancel === false ? 'none' : '';
-          els.ok.textContent = opts.okLabel || 'Continue';
-          els.ok.style.display = opts.showOk === false ? 'none' : '';
-          setPinModalBusy(false);
-          armPinModalInput();
-          if (opts.showInput === false) {{
-            els.input.blur();
           }}
         }}
         function closePinModal() {{
           const els = pinModalElements();
           if (!els.modal) return;
           els.modal.classList.remove('show');
-          if (els.input) {{
-            els.input.value = '';
-            els.input.remove();
-          }}
-          els.error.style.display = 'none';
-          els.error.textContent = '';
-          resetPinChangeState();
+          if (els.newInput) {{ els.newInput.value = ''; els.newInput.remove(); }}
+          if (els.repeatInput) {{ els.repeatInput.value = ''; els.repeatInput.remove(); }}
+          showPinModalError(null);
+          els.message.textContent = '';
+          els.ok.textContent = 'Apply';
+          els.ok.style.display = '';
+          els.cancel.textContent = 'Cancel';
+          els.cancel.style.display = '';
+          pinChangeState.busy = false;
         }}
         function openChangePinModal() {{
-          resetPinChangeState();
-          showPinModalStep('new', {{
-            title: 'Change PIN',
-            message: 'Enter your new PIN.',
-            placeholder: 'New',
-            cancelLabel: 'Cancel',
-            okLabel: 'Continue',
-          }});
-        }}
-        function pinModalFailure(message) {{
-          showPinModalStep('failure', {{
-            title: 'Change PIN',
-            message: message || 'Unable to change PIN.',
-            showInput: false,
-            cancelLabel: 'Cancel',
-            showOk: false,
-          }});
+          pinChangeState.busy = false;
+          const els = pinModalElements();
+          if (!els.modal) return;
+          ensurePinModalInputs();
+          const inputs = pinModalElements();
+          showPinModalError(null);
+          els.message.textContent = '';
+          els.ok.textContent = 'Apply';
+          els.ok.style.display = '';
+          els.cancel.textContent = 'Cancel';
+          els.cancel.style.display = '';
+          if (inputs.newInput) _armPinInput(inputs.newInput);
+          if (inputs.repeatInput) _armPinInput(inputs.repeatInput);
+          setPinModalBusy(false);
+          els.modal.classList.add('show');
         }}
         async function submitPinChange(newPin, newPinCheck) {{
           const resp = await fetch('/api/pin/change', {{
@@ -982,81 +970,46 @@ def send_setup_page(
         async function handlePinModalOk() {{
           if (pinChangeState.busy) return;
           const els = pinModalElements();
-          const value = (els.input.value || '').trim();
-          els.input.value = '';
-          if (pinChangeState.step === 'new') {{
-            if (!value) {{
-              showPinModalStep('new', {{
-                title: 'Change PIN',
-                message: 'Enter your new PIN.',
-                placeholder: 'New',
-                cancelLabel: 'Cancel',
-                okLabel: 'Continue',
-                error: 'Enter a new PIN.',
-              }});
-              return;
-            }}
-            pinChangeState.newPin = value;
-            showPinModalStep('confirm', {{
-              title: 'Change PIN',
-              message: 'Enter the new PIN again.',
-              placeholder: 'Repeat',
-              cancelLabel: 'Cancel',
-              okLabel: 'Apply',
-            }});
+          const newVal = ((els.newInput && els.newInput.value) || '').trim();
+          const repeatVal = ((els.repeatInput && els.repeatInput.value) || '').trim();
+          if (!newVal) {{
+            showPinModalError('Enter a new PIN.');
+            if (els.newInput) els.newInput.focus();
             return;
           }}
-          if (pinChangeState.step === 'confirm') {{
-            if (!value) {{
-              showPinModalStep('confirm', {{
-                title: 'Change PIN',
-                message: 'Enter the new PIN again.',
-                placeholder: 'Repeat',
-                cancelLabel: 'Cancel',
-                okLabel: 'Apply',
-                error: 'Enter the new PIN again.',
-              }});
-              return;
-            }}
-            if (pinChangeState.newPin !== value) {{
-              showPinModalStep('mismatch', {{
-                title: 'Change PIN',
-                message: 'Values did not match.',
-                showInput: false,
-                cancelLabel: 'Cancel',
-                showOk: false,
-              }});
-              return;
-            }}
-            setPinModalBusy(true);
-            try {{
-              const result = await submitPinChange(pinChangeState.newPin, value);
-              if (result.status === 200 && result.body.ok) {{
-                showPinModalStep('success', {{
-                  title: 'Change PIN',
-                  message: 'PIN changed successfully. Returning to the home screen…',
-                  showInput: false,
-                  cancelLabel: 'Continue',
-                  showOk: false,
-                }});
-                window.setTimeout(() => {{
-                  window.location.href = '/';
-                }}, 900);
-                return;
-              }}
-              pinModalFailure(friendlyPinChangeError(result.body.error || 'Unable to change PIN.'));
-            }} catch (e) {{
-              pinModalFailure('Unable to change PIN.');
-            }} finally {{
+          if (!repeatVal) {{
+            showPinModalError('Repeat the new PIN.');
+            if (els.repeatInput) els.repeatInput.focus();
+            return;
+          }}
+          if (newVal !== repeatVal) {{
+            showPinModalError('The two PINs did not match. Please try again.');
+            if (els.newInput) {{ _armPinInput(els.newInput); els.newInput.focus(); }}
+            if (els.repeatInput) _armPinInput(els.repeatInput);
+            return;
+          }}
+          setPinModalBusy(true);
+          try {{
+            const result = await submitPinChange(newVal, repeatVal);
+            if (result.status === 200 && result.body.ok) {{
+              if (els.newInput) {{ els.newInput.value = ''; els.newInput.style.display = 'none'; }}
+              if (els.repeatInput) {{ els.repeatInput.value = ''; els.repeatInput.style.display = 'none'; }}
+              showPinModalError(null);
+              els.message.textContent = 'PIN changed successfully. Returning to the home screen\u2026';
+              els.ok.style.display = 'none';
+              els.cancel.textContent = 'Continue';
               setPinModalBusy(false);
+              window.setTimeout(() => {{ window.location.href = '/'; }}, 900);
+              return;
             }}
+            showPinModalError(friendlyPinChangeError(result.body.error || 'Unable to change PIN.'));
+          }} catch (e) {{
+            showPinModalError('Unable to change PIN.');
+          }} finally {{
+            setPinModalBusy(false);
           }}
         }}
         function handlePinModalCancel() {{
-          if (pinChangeState.step === 'success') {{
-            window.location.href = '/';
-            return;
-          }}
           closePinModal();
         }}
         const gainTimers = {{}};
