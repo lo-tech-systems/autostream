@@ -15,7 +15,7 @@ warn()  { echo "[WARN] $*"; }
 error() { echo "[ERROR] $*"; }
 
 init_logging() {
-  mkdir -p "${ORIG_HOME}" || true
+  mkdir -p "$(dirname "${LOGFILE}")" || true
   : > "${LOGFILE}"
   chmod 0644 "${LOGFILE}" || true
   exec > >(tee -a "${LOGFILE}") 2>&1

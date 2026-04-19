@@ -66,12 +66,21 @@ source "${INSTALLER_LIB}/hardware.sh"
 SCRIPT_NAME="$(basename "${0}")"
 ORIG_USER="${SUDO_USER:-$(id -un)}"
 ORIG_HOME="$(getent passwd "${ORIG_USER}" | cut -d: -f6)"
-LOGFILE="${ORIG_HOME}/autostream_install.log"
 
 AUTOSTREAM_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 INSTALL_DIR="/opt/autostream"
 APP_LOG_DIR="/var/log/autostream"
+
+# When invoked interactively via sudo (fresh install/manual run) the log goes
+# beside the calling user's home directory so they can easily find it.
+# When invoked by a systemd unit (update) there is no SUDO_USER, so we log to
+# the standard application log directory instead.
+if [[ -n "${SUDO_USER:-}" ]]; then
+  LOGFILE="${ORIG_HOME}/autostream_install.log"
+else
+  LOGFILE="${APP_LOG_DIR}/autostream_install.log"
+fi
 STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin area
 LIBEXEC_DIR="/usr/local/libexec/autostream"
 
