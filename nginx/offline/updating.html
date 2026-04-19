@@ -120,6 +120,9 @@
     var lastRunEl = document.getElementById('last-run');
     var successMode = false;
     var successStartedAt = 0;
+    var lastKnownPercent = 0;
+    var consecutiveFailures = 0;
+    var FAILURE_THRESHOLD = 6;
 
     function text(el, value) {
       if (el) el.textContent = value;
@@ -233,15 +236,25 @@
           return response.json();
         })
         .then(function(data) {
+          consecutiveFailures = 0;
+          lastKnownPercent = safePercent(data && data.percent);
           render(data);
         })
         .catch(function() {
-          render({
-            status: 'error',
-            message: 'Status temporarily unavailable',
-            percent: 0,
-            last_run_at: 'unknown'
-          });
+          consecutiveFailures++;
+          if (consecutiveFailures >= FAILURE_THRESHOLD) {
+            render({
+              status: 'failure',
+              message: 'Update has failed. Please power-cycle your device.',
+              percent: lastKnownPercent
+            });
+          } else {
+            render({
+              status: 'in_progress',
+              message: 'Restarting web handler...',
+              percent: lastKnownPercent
+            });
+          }
         })
         .finally(function() {
           if (!successMode) {
