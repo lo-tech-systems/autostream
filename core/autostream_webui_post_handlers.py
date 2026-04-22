@@ -237,14 +237,16 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         if not cfg.has_section("general"): cfg.add_section("general")
         cfg.set("general", "silence_seconds", fld("silence_seconds", str(p.general.silence_seconds)))
 
-        # Only persist show_master_volume when the Customise panel was rendered
-        # (sentinel field present). During initial setup the panel is absent and
-        # the checkbox is never submitted; leaving the key absent lets parse_config
-        # use its default of True.
+        # Only persist show_master_volume / show_input_detail when the Customise
+        # panel was rendered (sentinel field present). During initial setup the
+        # panel is absent and the checkboxes are never submitted; leaving the
+        # keys absent lets parse_config use its defaults (True / False).
         if "webui_show_master_volume_present" in form:
             if not cfg.has_section("webui"): cfg.add_section("webui")
             new_show_master_volume = "webui_show_master_volume" in form
             cfg.set("webui", "show_master_volume", "yes" if new_show_master_volume else "no")
+            new_show_input_detail = "webui_show_input_detail" in form
+            cfg.set("webui", "show_input_detail", "yes" if new_show_input_detail else "no")
 
         # Persist defaults into the INI the first time it is created (or if missing)
         if not cfg.get("general", "log_file", fallback="").strip():

@@ -247,6 +247,9 @@ class WebUIConfig:
     hidden_outputs: tuple[str, ...]
     # Whether to show the master volume card on the home page. Default: True.
     show_master_volume: bool
+    # Whether to show the input detail pill (label, sample rate, dBFS) on the
+    # home page. Default: False.
+    show_input_detail: bool
 
 
 @dataclass(frozen=True)
@@ -384,6 +387,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     webui = WebUIConfig(
         hidden_outputs=_split_list(cfg.get("webui", "hidden_outputs", fallback="")),
         show_master_volume=cfg.getboolean("webui", "show_master_volume", fallback=True),
+        show_input_detail=cfg.getboolean("webui", "show_input_detail", fallback=False),
     )
 
     return AutostreamConfig(

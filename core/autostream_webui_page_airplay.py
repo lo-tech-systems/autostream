@@ -98,6 +98,8 @@ def send_airplay_page(
     owntone_base_url = parsed.owntone.base_url
     default_output_name = parsed.owntone.output_name
     hidden_output_names = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
+    show_master_volume = parsed.webui.show_master_volume
+    show_input_detail = parsed.webui.show_input_detail
 
     try:
         is_playing = any_monitor_capturing()
@@ -120,16 +122,17 @@ def send_airplay_page(
     status_class = "playing" if is_playing else "waiting"
 
     input_levels_html = ""
-    for lv in input_levels:
-        label = html.escape(str(lv.get("label", "Input ")))
-        dbfs = float(lv.get("dbfs", -90.0))
-        detected_hz = float(lv.get("detected_hz", 0.0)) / 1000.0
-        hz_txt = f" ({detected_hz:.3f} kHz)" if detected_hz > 0 else ""
-        extra_cls = " input-level-pill-active" if lv.get("is_above_threshold") else ""
-        input_levels_html += (
-            f'<span class="pill status-pill input-level-pill{extra_cls}">'
-            f'{label}{hz_txt}: {dbfs:.1f} dB</span>'
-        )
+    if show_input_detail:
+        for lv in input_levels:
+            label = html.escape(str(lv.get("label", "Input ")))
+            dbfs = float(lv.get("dbfs", -90.0))
+            detected_hz = float(lv.get("detected_hz", 0.0)) / 1000.0
+            hz_txt = f" ({detected_hz:.3f} kHz)" if detected_hz > 0 else ""
+            extra_cls = " input-level-pill-active" if lv.get("is_above_threshold") else ""
+            input_levels_html += (
+                f'<span class="pill status-pill input-level-pill{extra_cls}">'
+                f'{label}{hz_txt}: {dbfs:.1f} dB</span>'
+            )
 
     outputs_result = list_outputs(owntone_base_url, timeout=3)
     outputs = list(outputs_result.outputs) if outputs_result.ok else []
@@ -188,7 +191,6 @@ def send_airplay_page(
         """
 
     # Master volume: average of currently-selected outputs, or preset if none on.
-    show_master_volume = parsed.webui.show_master_volume
     _selected_volumes = [
         max(0, min(100, int(out.volume_percent)))
         for out in outputs
@@ -205,7 +207,13 @@ def send_airplay_page(
     preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
     if master_inactive:
         initial_master = preset_volume
-    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';window.__PRESET_VOLUME={preset_volume};</script>"
+    csrf_meta = (
+        f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
+        f"<script>window.__CSRF='{html.escape(csrf_token)}';"
+        f"window.__PRESET_VOLUME={preset_volume};"
+        f"window.__SHOW_INPUT_DETAIL={'true' if show_input_detail else 'false'};"
+        f"</script>"
+    )
 
     master_volume_css = """
 .master-volume-card {
@@ -548,7 +556,7 @@ def send_airplay_page(
           var row = document.getElementById('input-level-row');
           var wrap = document.getElementById('home-input-level-wrap');
           if(!row) return;
-          if(!Array.isArray(levels) || levels.length===0){{
+          if(!window.__SHOW_INPUT_DETAIL || !Array.isArray(levels) || levels.length===0){{
             row.hidden = true;
             if (wrap) wrap.hidden = true;
             row.innerHTML = '';

@@ -685,7 +685,8 @@ def send_setup_page(
         playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
         system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()}")
         customise_summary = html.escape(
-            "Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off"
+            ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
+            + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
         )
         input1_warn = input1_snapshot.stylus_warning or input1_snapshot.stylus_overdue
         input2_warn = input2_snapshot.stylus_warning or input2_snapshot.stylus_overdue
@@ -780,6 +781,13 @@ def send_setup_page(
                   <span class="switch"></span>
                 </label>
                 <span>Show master volume control</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Display input detail</span>
               </div>
             </fieldset>
           </div>
@@ -1365,7 +1373,10 @@ def send_setup_page(
           var sub = document.getElementById('customise-card-sub');
           if (!sub) return;
           var cb = document.getElementById('webui_show_master_volume');
-          sub.textContent = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
+          var cbDet = document.getElementById('webui_show_input_detail');
+          var mv = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
+          var det = (cbDet && cbDet.checked) ? 'Input detail: On' : 'Input detail: Off';
+          sub.textContent = mv + ' \u00b7 ' + det;
         }}
         function closePanel() {{
           refreshInputCardSubs();
