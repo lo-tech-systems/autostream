@@ -187,14 +187,52 @@ def send_airplay_page(
           </div>
         """
 
+    # Master volume: average of currently-selected outputs, or preset if none on.
+    show_master_volume = parsed.webui.show_master_volume
+    _selected_volumes = [
+        max(0, min(100, int(out.volume_percent)))
+        for out in outputs
+        if out.selected
+    ]
+    if _selected_volumes:
+        initial_master = round(sum(_selected_volumes) / len(_selected_volumes))
+        master_inactive = False
+    else:
+        master_inactive = True
+
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
+    if master_inactive:
+        initial_master = preset_volume
     csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';window.__PRESET_VOLUME={preset_volume};</script>"
+
+    master_volume_css = """
+.master-volume-card {
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.72rem 0.55rem;
+  border-radius: 12px;
+  border: 2px solid #2b80d1;
+  background: #eaf2fb;
+}
+.master-volume-card.master-volume-inactive {
+  border-color: #d9dee3;
+  background: #f8fafb;
+  opacity: 0.55;
+}
+.master-volume-card .slider-header {
+  font-size: 0.9rem;
+  margin-bottom: 0.08rem;
+}
+.master-volume-card input[type=range] {
+  margin-top: 0.1rem;
+  height: 20px;
+}
+"""
 
     html_body = textwrap.dedent(f"""\
       <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}</style>{csrf_meta}
+      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}\n{master_volume_css}</style>{csrf_meta}
 
       <script>
         function normalizeVolume(v){{
@@ -276,6 +314,69 @@ def send_airplay_page(
               else if (ev.key === 'Escape') {{ ev.preventDefault(); btnCancel.click(); }}
             }};
           }});
+        }}
+
+        function computeMasterVolume(){{
+          var sum=0, count=0;
+          document.querySelectorAll('.output-card').forEach(function(card){{
+            var id=card.getAttribute('data-output-id');
+            if(!id) return;
+            var cb=document.getElementById('output_enabled_'+id);
+            var sl=document.getElementById('vol_slider_'+id);
+            if(cb && cb.checked && sl){{sum+=normalizeVolume(sl.value);count++;}}
+          }});
+          return count>0 ? Math.round(sum/count) : null;
+        }}
+        function updateMasterVolumeCard(){{
+          var card=document.getElementById('master-volume-card');
+          var sl=document.getElementById('master_vol_slider');
+          var lbl=document.getElementById('master_vol_label');
+          if(!card||!sl) return;
+          var v=computeMasterVolume();
+          var inactive=(v===null);
+          var val=inactive?(window.__PRESET_VOLUME||20):v;
+          card.classList.toggle('master-volume-inactive',inactive);
+          sl.disabled=inactive;
+          if(String(sl.value)!==String(val)) sl.value=String(val);
+          if(lbl) lbl.textContent=formatVolume(val);
+        }}
+        function onMasterVolumeDragStart(){{
+          var sl=document.getElementById('master_vol_slider');
+          if(!sl||sl.disabled) return;
+          var snaps={{}};
+          document.querySelectorAll('.output-card').forEach(function(card){{
+            var id=card.getAttribute('data-output-id');
+            if(!id) return;
+            var cb=document.getElementById('output_enabled_'+id);
+            var vs=document.getElementById('vol_slider_'+id);
+            if(cb&&cb.checked&&vs) snaps[id]=normalizeVolume(vs.value);
+          }});
+          window.__MASTER_DRAG_SNAPSHOTS=snaps;
+          window.__MASTER_DRAG_BASE=normalizeVolume(sl.value);
+        }}
+        function _applyMasterScale(newMaster){{
+          var snaps=window.__MASTER_DRAG_SNAPSHOTS||{{}};
+          var base=typeof window.__MASTER_DRAG_BASE==='number'?window.__MASTER_DRAG_BASE:0;
+          var nm=normalizeVolume(newMaster);
+          Object.keys(snaps).forEach(function(id){{
+            var sl=document.getElementById('vol_slider_'+id);
+            if(!sl) return;
+            var nv=base>0?Math.round(snaps[id]*nm/base):nm;
+            nv=Math.max(0,Math.min(100,nv));
+            sl.value=String(nv);
+            updateVolumeLabel(id,nv);
+          }});
+        }}
+        function onMasterVolumeInput(v){{
+          var lbl=document.getElementById('master_vol_label');
+          if(lbl) lbl.textContent=formatVolume(v);
+          _applyMasterScale(v);
+        }}
+        function onMasterVolumeChange(v){{
+          _applyMasterScale(v);
+          var snaps=window.__MASTER_DRAG_SNAPSHOTS||{{}};
+          Object.keys(snaps).forEach(function(id){{ sendUpdate(id); }});
+          window.__MASTER_DRAG_SNAPSHOTS={{}};
         }}
 
         async function postOutputUpdate(id, selected, volume){{
@@ -430,10 +531,12 @@ def send_airplay_page(
             if (sl) {{ sl.value = String(window.__PRESET_VOLUME || 20); updateVolumeLabel(id, sl.value); }}
           }}
           reorderOutputCards();
+          updateMasterVolumeCard();
           sendUpdate(id);
         }}
         function onVolumeChange(id,v){{
           updateVolumeLabel(id,v);
+          if(!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
           sendUpdate(id);
         }}
         function escapeHtml(s){{
@@ -525,10 +628,13 @@ def send_airplay_page(
             }}
           }}
           reorderOutputCards();
+          if(!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
         }}
 
         window.addEventListener('DOMContentLoaded',function(){{
           window.__PENDING_OUTPUTS = new Set();
+          window.__MASTER_DRAG_SNAPSHOTS = {{}};
+          window.__MASTER_DRAG_BASE = 0;
           document.querySelectorAll('[data-volume-label-for]').forEach(s=>{{
             var i=s.getAttribute('data-volume-label-for'), sl=document.getElementById('vol_slider_'+i);
             if(sl)updateVolumeLabel(i, sl.value);
@@ -536,6 +642,7 @@ def send_airplay_page(
             if(cb) updateOutputStateVisual(String(i), !!cb.checked);
           }});
           reorderOutputCards();
+          updateMasterVolumeCard();
           setInterval(() => {{ refreshStatus(); refreshOutputsState(); }}, 2000);
           refreshStatus();
           refreshOutputsState();
@@ -578,6 +685,14 @@ def send_airplay_page(
       </div>
       {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
       {A2HS_PROMPT_HTML}
+      {f'''<div class="master-volume-card{' master-volume-inactive' if master_inactive else ''}" id="master-volume-card">
+        <div class="slider-header"><span>Master Volume</span><span id="master_vol_label">{initial_master}%</span></div>
+        <input type="range" id="master_vol_slider" min="0" max="100" step="1" value="{initial_master}"{' disabled' if master_inactive else ''}
+               oninput="onMasterVolumeInput(this.value)"
+               onchange="onMasterVolumeChange(this.value)"
+               onmousedown="onMasterVolumeDragStart()"
+               ontouchstart="onMasterVolumeDragStart()">
+      </div>''' if show_master_volume else ''}
       <div id="outputs-list">{outputs_html}</div>
       <div class="home-input-level-wrap" id="home-input-level-wrap" {'hidden' if not input_levels_html else ''}>
         <div id="input-level-row" class="pill-row input-level-row">

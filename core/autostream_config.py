@@ -245,6 +245,8 @@ class WebUIConfig:
     # Names of Owntone outputs that should be hidden from the Web UI.
     # Matching is case-insensitive.
     hidden_outputs: tuple[str, ...]
+    # Whether to show the master volume card on the home page. Default: True.
+    show_master_volume: bool
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
     # Web UI
     webui = WebUIConfig(
         hidden_outputs=_split_list(cfg.get("webui", "hidden_outputs", fallback="")),
+        show_master_volume=cfg.getboolean("webui", "show_master_volume", fallback=True),
     )
 
     return AutostreamConfig(

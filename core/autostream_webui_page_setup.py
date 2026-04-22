@@ -684,6 +684,9 @@ def send_setup_page(
         speaker = str(parsed.owntone.output_name or "No speaker selected")
         playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
         system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()}")
+        customise_summary = html.escape(
+            "Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off"
+        )
         input1_warn = input1_snapshot.stylus_warning or input1_snapshot.stylus_overdue
         input2_warn = input2_snapshot.stylus_warning or input2_snapshot.stylus_overdue
         i1_card_style = ' style="border-color:#c00000;"' if input1_warn else ''
@@ -715,6 +718,13 @@ def send_setup_page(
             <div class="setup-list-card-body">
               <span class="setup-list-card-title">Playback</span>
               <span class="setup-list-card-sub">{playback_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('customise')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Customise</span>
+              <span class="setup-list-card-sub" id="customise-card-sub">{customise_summary}</span>
             </div>
             <span class="setup-list-chevron">\u203a</span>
           </div>
@@ -757,6 +767,21 @@ def send_setup_page(
               <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
             </div>
             {system_fieldset_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-customise">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            <fieldset><legend>Customise</legend>
+              <input type="hidden" name="webui_show_master_volume_present" value="1">
+              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.5rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Show master volume control</span>
+              </div>
+            </fieldset>
           </div>
           <div class="setup-detail-panel" id="panel-factory-reset">
             <div class="setup-detail-back">
@@ -1336,8 +1361,15 @@ def send_setup_page(
           if (track) {{ track.classList.remove('preamp-open'); track.classList.add('panel-open'); }}
           window.scrollTo(0, 0);
         }}
+        function refreshCustomiseCardSub() {{
+          var sub = document.getElementById('customise-card-sub');
+          if (!sub) return;
+          var cb = document.getElementById('webui_show_master_volume');
+          sub.textContent = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
+        }}
         function closePanel() {{
           refreshInputCardSubs();
+          refreshCustomiseCardSub();
           var track = document.getElementById('setupSlideTrack');
           if (track) {{ track.classList.remove('panel-open'); track.classList.remove('preamp-open'); }}
           window.scrollTo(0, 0);
