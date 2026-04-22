@@ -107,8 +107,22 @@ def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "su
 # Application version
 # -----------------------------------------------------------------------------
 
+# Cached on first call; immutable for the process lifetime since an update
+# always triggers a full process restart.
+_app_version_cache: Optional[str] = None
+
+
 def get_app_version() -> str:
-    """Return the installed application version via the privileged helper."""
+    """Return the installed application version via the privileged helper.
+
+    The result is cached in memory after the first call. Because applying an
+    update always restarts the process, the version cannot change while the
+    process is running.
+    """
+    global _app_version_cache
+    if _app_version_cache is not None:
+        return _app_version_cache
+
     cmd = [
         "/usr/bin/sudo",
         "-n",
@@ -136,7 +150,8 @@ def get_app_version() -> str:
         return "unknown"
 
     version = str(payload.get("release_tag") or "").strip()
-    return version or "unknown"
+    _app_version_cache = version or "unknown"
+    return _app_version_cache
 
 
 # -----------------------------------------------------------------------------
