@@ -429,7 +429,7 @@ def get_monitor_levels_dbfs() -> list[dict]:
     for idx, mon in enumerate(snapshot, start=1):
         levels.append({
             "label": f"Input {idx}",
-            "dbfs": round(mon.level_dbfs, 1),
+            "dbfs": round(mon.poll_peak_dbfs, 1),
             "detected_hz": round(mon.detected_hz, 1),
             "is_above_threshold": not mon.is_silent,
         })
@@ -898,6 +898,7 @@ class AudioMonitor:
 
         # --- Status (updated by coordinator via _ingest_status) ---
         self.level_dbfs: float = -90.0
+        self.poll_peak_dbfs: float = -90.0
         self.detected_hz: float = 0.0
         self.is_silent: bool = True
         self.is_capturing: bool = False
@@ -948,10 +949,11 @@ class AudioMonitor:
         """
         was_capturing = self.is_capturing
 
-        self.level_dbfs  = float(status_entry.get("level_dbfs", -90.0))
-        self.detected_hz = float(status_entry.get("detected_hz", 0.0))
-        self.is_silent   = bool(status_entry.get("silent", True))
-        self.is_capturing = bool(status_entry.get("capturing", False))
+        self.level_dbfs      = float(status_entry.get("level_dbfs", -90.0))
+        self.poll_peak_dbfs  = float(status_entry.get("poll_peak_dbfs", -90.0))
+        self.detected_hz     = float(status_entry.get("detected_hz", 0.0))
+        self.is_silent       = bool(status_entry.get("silent", True))
+        self.is_capturing    = bool(status_entry.get("capturing", False))
 
         if not self.is_silent:
             self._last_active_time = time.time()

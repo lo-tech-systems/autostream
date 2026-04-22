@@ -1440,6 +1440,7 @@ bool InputChannel::start(std::string* error_out)
     _current_eq_bands.reset();
 
     // Reset session peak accumulators so the new session starts from scratch.
+    _poll_peak_sample.store(0,            std::memory_order_relaxed);
     _session_raw_peak_sample.store(0,     std::memory_order_relaxed);
     _session_effective_peak_linear.store(0.0f, std::memory_order_relaxed);
 
@@ -1535,6 +1536,7 @@ void InputChannel::stop()
 
     _capturing.store(false);
     _current_peak_sample.store(0, std::memory_order_relaxed);
+    _poll_peak_sample.store(0, std::memory_order_relaxed);
     _session_raw_peak_sample.store(0, std::memory_order_relaxed);
     _session_effective_peak_linear.store(0.0f, std::memory_order_relaxed);
 
@@ -1569,6 +1571,7 @@ InputChannelStatus InputChannel::get_status() const
         s = _status;
     }
     s.level_dbfs             = sample_to_dbfs(_current_peak_sample.load(std::memory_order_relaxed));
+    s.poll_peak_dbfs         = sample_to_dbfs(_poll_peak_sample.exchange(0, std::memory_order_relaxed));
     s.raw_peak_dbfs          = sample_to_dbfs(_session_raw_peak_sample.load(std::memory_order_relaxed));
     s.effective_peak_dbfs    = linear_to_dbfs(_session_effective_peak_linear.load(std::memory_order_relaxed));
     s.is_started             = _started.load(std::memory_order_relaxed);
@@ -1818,6 +1821,18 @@ void InputChannel::process_thread_func()
         // ── Compute peak sample level (pure integer, no float) ───────────────
         int peak_sample = compute_peak_sample(pcm_in.data(), frames_in, /*channels=*/2);
         _current_peak_sample.store(peak_sample, std::memory_order_relaxed);
+
+        // Accumulate poll-window peak — reset by get_status() via exchange(0).
+        // Use CAS so that a concurrent exchange(0) in get_status() is never lost:
+        // if get_status() wins the exchange between our load and store, the CAS
+        // fails, prev is updated to 0, and we retry to set peak_sample.
+        {
+            int prev = _poll_peak_sample.load(std::memory_order_relaxed);
+            while (peak_sample > prev &&
+                   !_poll_peak_sample.compare_exchange_weak(
+                       prev, peak_sample, std::memory_order_relaxed))
+                ; // prev is updated on failure; retry with latest value
+        }
 
         // Accumulate session raw peak (no float / log10 — integer compare only).
         {
@@ -2665,6 +2680,7 @@ std::string AudioMonitor::api_get_status()
         oss << "{"
             << "\"index\":"               << s.index                << ","
             << "\"level_dbfs\":"          << s.level_dbfs            << ","
+            << "\"poll_peak_dbfs\":"      << s.poll_peak_dbfs        << ","
             << "\"silent\":"              << (s.is_silent    ? "true" : "false") << ","
             << "\"capturing\":"           << (s.is_capturing ? "true" : "false") << ","
             << "\"detected_hz\":"         << s.detected_hz           << ","

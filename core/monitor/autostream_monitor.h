@@ -48,14 +48,17 @@
 //
 //   get_status response:
 //     {"type":"status","log_level":"warning","inputs":[
-//       {"index":1,"level_dbfs":-42.1,"silent":false,
+//       {"index":1,"level_dbfs":-42.1,"poll_peak_dbfs":-38.2,"silent":false,
 //        "capturing":true,"detected_hz":44097.3,
 //        "raw_peak_dbfs":-12.3,"effective_peak_dbfs":-9.1,
 //        "started":true,"running":true},
-//       {"index":2,"level_dbfs":-90.0,"silent":true,
+//       {"index":2,"level_dbfs":-90.0,"poll_peak_dbfs":-90.0,"silent":true,
 //        "capturing":false,"detected_hz":0.0,
 //        "raw_peak_dbfs":-90.0,"effective_peak_dbfs":-90.0,
 //        "started":false,"running":false}]}
+//   poll_peak_dbfs: maximum raw peak dBFS accumulated since the previous
+//   get_status() call.  Reset to -90.0 on each get_status() so each poll
+//   sees only the peak from the interval since the last poll.
 //
 //   get_id_snapshot response -- JSON ack line followed immediately by a raw
 //   binary payload of (frames * 2) bytes (signed 16-bit little-endian, mono,
@@ -408,6 +411,7 @@ struct InputChannelStatus
 {
     int    index                  = 0;
     float  level_dbfs             = -90.0f;  // peak dBFS of the most recent block
+    float  poll_peak_dbfs         = -90.0f;  // max raw dBFS since the last get_status() call
     bool   is_silent              = true;
     bool   is_capturing           = false;
     double detected_hz            = 0.0;
@@ -602,6 +606,7 @@ private:
     // Written by the process thread every block; read by get_status().
     // Stored as integer / linear float so the process thread never calls log10.
     std::atomic<int>   _current_peak_sample{0};        // current-block raw peak (0..32768)
+    mutable std::atomic<int> _poll_peak_sample{0};    // max raw peak since last get_status() call; mutable so exchange(0) is callable from const get_status()
     std::atomic<int>   _session_raw_peak_sample{0};     // session max raw peak
     std::atomic<float> _session_effective_peak_linear{0.0f}; // session max effective peak (linear, >=0)
 
