@@ -70,16 +70,16 @@ def _stylus_box_html(
     remaining_seconds = max(0, int(snapshot.stylus_remaining_seconds or 0))
     remaining_hours = max(0.0, remaining_seconds / 3600.0)
     remaining_pct = max(0.0, min(100.0, (remaining_seconds / life_total_seconds) * 100.0))
-    bar_color = (
-        "#dc3545" if remaining_pct <= 10.0
-        else ("#f0ad4e" if remaining_pct <= 20.0
-              else "#28a745")
+    bar_status = (
+        "critical" if remaining_pct <= 10.0
+        else ("warning" if remaining_pct <= 20.0
+              else "healthy")
     )
     meta_text = f"{remaining_hours:.1f} hours remaining"
     return f"""
       <fieldset><legend>{html.escape(title)}</legend>
         <div class='bar-label'><strong>Life Remaining:</strong> {remaining_pct:.1f}%</div>
-        <div class='storage-bar'><div class='used' style='width:{remaining_pct}%;background:{bar_color};'></div></div>
+        <div class='storage-bar'><div class='used' style='width:{remaining_pct}%;' data-status='{bar_status}'></div></div>
         <div class='storage-meta'>{html.escape(meta_text)}</div>
       </fieldset>
     """
@@ -123,10 +123,10 @@ def send_about_page(handler, state: WebUIState) -> None:
     if du:
         tot, usd, fre = du
         pct = (usd / tot) * 100 if tot else 0
-        clr = "#28a745" if pct < 60 else ("#f0ad4e" if pct < 80 else "#dc3545")
+        disk_status = "healthy" if pct < 60 else ("warning" if pct < 80 else "critical")
         storage_html = (
             f"<div class='bar-label'><strong>Disk Usage:</strong> {pct:.1f}%</div>"
-            f"<div class='storage-bar'><div class='used' style='width:{pct}%;background:{clr};'></div></div>"
+            f"<div class='storage-bar'><div class='used' style='width:{pct}%;' data-status='{disk_status}'></div></div>"
             f"<div class='storage-meta'>Free: {fmt_bytes(fre)} / {fmt_bytes(tot)}</div>"
         )
 
@@ -134,10 +134,10 @@ def send_about_page(handler, state: WebUIState) -> None:
     sd_health = get_sdcard_health_percent()
     sd_html = ""
     if sd_health is not None:
-        clr = "#dc3545" if sd_health <= 10 else ("#f0ad4e" if sd_health <= 30 else "#28a745")
+        sd_status = "critical" if sd_health <= 10 else ("warning" if sd_health <= 30 else "healthy")
         sd_html = (
             f"<div class='bar-label'><strong>SD Health:</strong> {sd_health}%</div>"
-            f"<div class='storage-bar'><div class='used' style='width:{sd_health}%;background:{clr};'></div></div>"
+            f"<div class='storage-bar'><div class='used' style='width:{sd_health}%;' data-status='{sd_status}'></div></div>"
         )
 
     # Stylus life cards — only shown for inputs configured as turntables.
@@ -286,6 +286,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="about",
+        dark_mode=parsed.webui.dark_mode if parsed else False,
     )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)

@@ -82,10 +82,12 @@ def send_logs_page(
 ) -> None:
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     current_log_level = "info"
+    dark_mode = False
     try:
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
         current_log_level = parsed.general.log_level
+        dark_mode = parsed.webui.dark_mode
         log_path = _resolve_allowed_log_path(parsed.general.log_file)
         lines = tail_lines(str(log_path), 100)
         log_content = "\n".join(lines)
@@ -172,6 +174,7 @@ def send_logs_page(
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="logs",
+        dark_mode=dark_mode,
     )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)

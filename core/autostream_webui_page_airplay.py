@@ -24,7 +24,8 @@ from autostream_sysutils import reboot_system
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
     A2HS_SCRIPT,
-    BANNER_HTML,
+    BANNER_DISMISS_SCRIPT,
+    BANNER_LOGO_HTML,
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import build_page_html, build_top_banner_html, locked_load_config
@@ -211,12 +212,12 @@ def send_airplay_page(
   margin-bottom: 0.75rem;
   padding: 0.6rem 0.72rem 0.55rem;
   border-radius: 12px;
-  border: 2px solid #2b80d1;
-  background: #eaf2fb;
+  border: 2px solid var(--color-accent);
+  background: var(--color-surface-selected);
 }
 .master-volume-card.master-volume-inactive {
-  border-color: #d9dee3;
-  background: #f8fafb;
+  border-color: var(--color-border-card);
+  background: var(--color-surface-raised);
   opacity: 0.55;
 }
 .master-volume-card .slider-header {
@@ -328,7 +329,6 @@ def send_airplay_page(
         function updateMasterVolumeCard(){{
           var card=document.getElementById('master-volume-card');
           var sl=document.getElementById('master_vol_slider');
-          var lbl=document.getElementById('master_vol_label');
           if(!card||!sl) return;
           var v=computeMasterVolume();
           var inactive=(v===null);
@@ -336,7 +336,6 @@ def send_airplay_page(
           card.classList.toggle('master-volume-inactive',inactive);
           sl.disabled=inactive;
           if(String(sl.value)!==String(val)) sl.value=String(val);
-          if(lbl) lbl.textContent=formatVolume(val);
         }}
         function onMasterVolumeDragStart(){{
           var sl=document.getElementById('master_vol_slider');
@@ -366,8 +365,6 @@ def send_airplay_page(
           }});
         }}
         function onMasterVolumeInput(v){{
-          var lbl=document.getElementById('master_vol_label');
-          if(lbl) lbl.textContent=formatVolume(v);
           _applyMasterScale(v);
         }}
         function onMasterVolumeChange(v){{
@@ -636,7 +633,29 @@ def send_airplay_page(
           refreshOutputsState();
         }});
       </script>"""
-    _body_prefix = """\
+    # Status pill HTML is reused in two places depending on layout.
+    _status_pill_html = (
+        f"<span id='status-pill' class='pill status-pill status-{status_class}'>"
+        f"{html.escape(status_text)}</span>"
+    )
+
+    # Build the master volume card, embedding the status pill in its header row
+    # in place of the volume percentage label.
+    master_inactive_cls = " master-volume-inactive" if master_inactive else ""
+    master_disabled_attr = " disabled" if master_inactive else ""
+    _master_vol_html = (
+        f'<div class="master-volume-card{master_inactive_cls}" id="master-volume-card">'
+        f'<div class="slider-header"><span>Master Volume</span>{_status_pill_html}</div>'
+        f'<input type="range" id="master_vol_slider" min="0" max="100" step="1"'
+        f' value="{initial_master}"{master_disabled_attr}'
+        f' oninput="onMasterVolumeInput(this.value)"'
+        f' onchange="onMasterVolumeChange(this.value)"'
+        f' onmousedown="onMasterVolumeDragStart()"'
+        f' ontouchstart="onMasterVolumeDragStart()">'
+        f'</div>'
+    ) if show_master_volume else ""
+
+    _body_prefix = """
 <div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
   <div class="panel">
     <div class="hdr" id="pinModalTitle">Enter PIN</div>
@@ -650,30 +669,30 @@ def send_airplay_page(
     </div>
   </div>
 </div>"""
-    _body_html = (
-        f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_HTML}</div></div>"
+
+    # Top controls row: refresh on left, status pill on right (pill shown here only
+    # when master volume is hidden; otherwise the pill lives inside the master volume card).
+    _top_controls_html = (
         f"<div class='airplay-top-controls'>"
-        f"<div class='airplay-refresh-wrap'>"
-        f"<button type='button' class='pill-btn' onclick='location.reload();'"
+        f"<button type='button' class='pill-btn small' onclick='location.reload();'"
         f" title='Reload page to refresh speakers'>\u21bb Refresh</button>"
-        f"</div>"
-        f"<span id='status-pill' class='pill status-pill status-{status_class}'>"
-        f"{html.escape(status_text)}</span>"
-        f"</div>"
-        f"<div id='stylus-warning-banner' {'hidden' if not stylus_banner_text else ''}"
+        + (f"{_status_pill_html}" if not show_master_volume else "")
+        + f"</div>"
+    )
+
+    _body_html = (
+        # Full-width logo
+        f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
+        # Refresh + optional pill, then master volume
+        + _top_controls_html
+        + _master_vol_html
+        # Warnings and output cards
+        + f"<div id='stylus-warning-banner' {'hidden' if not stylus_banner_text else ''}"
         f" style='margin:0.85rem 0 0.35rem;padding:0.8rem 1rem;border-radius:8px;"
-        f"background:#c00000;color:#fff;font-weight:700;text-align:center;'>"
+        f"background:var(--color-status-danger);color:#fff;font-weight:700;text-align:center;'>"
         f"{html.escape(stylus_banner_text)}</div>"
-        + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")
+        + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + A2HS_PROMPT_HTML
-        + (f'<div class="master-volume-card{" master-volume-inactive" if master_inactive else ""}" id="master-volume-card">'
-           f'<div class="slider-header"><span>Master Volume</span><span id="master_vol_label">{initial_master}%</span></div>'
-           f'<input type="range" id="master_vol_slider" min="0" max="100" step="1" value="{initial_master}"{" disabled" if master_inactive else ""}'
-           f' oninput="onMasterVolumeInput(this.value)"'
-           f' onchange="onMasterVolumeChange(this.value)"'
-           f' onmousedown="onMasterVolumeDragStart()"'
-           f' ontouchstart="onMasterVolumeDragStart()">'
-           f'</div>' if show_master_volume else "")
         + f"<div id='outputs-list'>{outputs_html}</div>"
         + f"<div class='home-input-level-wrap' id='home-input-level-wrap' {'hidden' if not input_levels_html else ''}>"
         + f"<div id='input-level-row' class='pill-row input-level-row'>{input_levels_html}</div>"
@@ -685,11 +704,12 @@ def send_airplay_page(
         extra_css=_extra_css,
         head_extra=_head_extra,
         body_prefix=_body_prefix,
-        body_suffix=A2HS_SCRIPT,
+        body_suffix=A2HS_SCRIPT + BANNER_DISMISS_SCRIPT,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="home",
         setup_warn=bool(stylus_banner_text),
+        dark_mode=parsed.webui.dark_mode,
     )
     body_bytes = html_body.encode("utf-8")
     try:

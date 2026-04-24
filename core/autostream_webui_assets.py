@@ -7,10 +7,109 @@ Web assets (e.g. CSS) to support web front-end for autostrea
 
 
 STYLE_CSS = """
+/* ── Colour palette ─────────────────────────────────────────────────────────
+   All theme-sensitive colours are defined here as CSS custom properties.
+   The [data-theme="dark"] block overrides them for dark mode; every rule
+   below uses var(--color-*) so no hardcoded colours appear in components.
+   Status colours (danger, success, warning) are overridden in dark mode via
+   --color-status-danger/success/warning.
+   ── */
+:root {
+  /* Background layers */
+  --color-bg:                #f5f5f5;
+  --color-surface:           #ffffff;
+  --color-surface-raised:    #f8fafb;
+  --color-surface-selected:  #f1f6fc;
+  --color-surface-code:      #f3f4f6;
+  --color-surface-pane:      #f4f5f6;
+  --color-surface-muted:     #e9ecef;
+  --color-surface-pressed:   #edf2f7;
+  /* Text */
+  --color-text:              #333333;
+  --color-text-secondary:    #555555;
+  --color-text-strong:       #121212;
+  --color-text-pane:         #1a1a1a;
+  --color-text-dim:          #6c757d;
+  --color-text-muted:        #495057;
+  /* Borders */
+  --color-border:            #dddddd;
+  --color-border-card:       #d9dee3;
+  --color-border-code:       #d1d5db;
+  --color-border-nav:        #e0e0e0;
+  /* Status chips */
+  --color-chip-on-bg:        #d1e7dd;
+  --color-chip-on-text:      #0f5132;
+  --color-chip-off-bg:       #e2e3e5;
+  --color-chip-off-text:     #41464b;
+  --color-chip-neutral-bg:   #eceff2;
+  --color-chip-neutral-text: #495057;
+  /* Controls and interactive */
+  --color-control-off:       #adb5bd;
+  --color-toggle-on:         #198754;
+  --color-nav-inactive:      #8a8a8e;
+  --color-accent:            #2b80d1;
+  --color-btn-bg:            #6c757d;
+  /* Status (theme-invariant) */
+  --color-success:           #28a745;
+  --color-danger:            #c00000;
+  /* Status highlights: bars, banners, danger zones (overridden in dark mode) */
+  --color-status-danger:     #dc3545;
+  --color-status-success:    #28a745;
+  --color-status-warning:    #f0ad4e;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  /* --color-surface matches --color-bg so the container blends seamlessly
+     with the page body; the logo background (#0e2841) therefore matches too.
+     Cards use --color-surface-raised to remain visually distinct. */
+  --color-bg:                #0e2841;
+  --color-surface:           #0e2841;
+  --color-surface-raised:    #1a3a58;
+  --color-surface-selected:  #1e4470;
+  --color-surface-code:      #132f4c;
+  --color-surface-pane:      #0c2035;
+  --color-surface-muted:     #1a3250;
+  --color-surface-pressed:   #204870;
+  --color-text:              #dce8f2;
+  --color-text-secondary:    #8eacc4;
+  --color-text-strong:       #edf2f8;
+  --color-text-pane:         #c8daea;
+  --color-text-dim:          #7a9ab8;
+  --color-text-muted:        #7a9ab8;
+  --color-border:            #243e58;
+  --color-border-card:       #243e58;
+  --color-border-code:       #2e5072;
+  --color-border-nav:        #1a3250;
+  --color-chip-on-bg:        #1a4a30;
+  --color-chip-on-text:      #5dce84;
+  --color-chip-off-bg:       #283848;
+  --color-chip-off-text:     #7a9ab8;
+  --color-chip-neutral-bg:   #1e3c58;
+  --color-chip-neutral-text: #7a9ab8;
+  --color-control-off:       #3c5a72;
+  --color-toggle-on:         #28a060;
+  --color-nav-inactive:      #6a8aa0;
+  --color-accent:            #5298d8;
+  --color-btn-bg:            #3c5a72;
+  /* Status highlights: deep rose/teal/amber replacements for dark mode */
+  --color-status-danger:     #B23A48;
+  --color-status-success:    #2F9E7E;
+  --color-status-warning:    #E0A458;
+  color-scheme: dark;
+}
+
+/* Logo: show light logo by default; swap to dark logo in dark theme.
+   Three-part selectors (specificity 0,3,0) beat any two-part rule such as
+   .airplay-brand .banner-logo (0,2,0), preventing it from overriding display:none. */
+.banner-logo-wrap .banner-logo.banner-logo-dark { display: none; }
+[data-theme="dark"] .banner-logo-wrap .banner-logo.banner-logo-light { display: none; }
+[data-theme="dark"] .banner-logo-wrap .banner-logo.banner-logo-dark { display: block; }
+
 .container {
   max-width: 1000px;
   margin: 1rem auto;
-  background: #fff;
+  background: var(--color-surface);
   padding: 1.25rem 1.5rem 1.5rem;
   box-shadow: 0 2px 6px rgba(0,0,0,0.05);
   border-radius: 8px;
@@ -26,7 +125,7 @@ STYLE_CSS = """
 
 .status-label {
   font-weight: 600;
-  color: #555;
+  color: var(--color-text-secondary);
 }
 
 .status-pill {
@@ -37,13 +136,13 @@ STYLE_CSS = """
 }
 
 .status-pill.status-playing {
-  background: #d1e7dd;
-  color: #0f5132;
+  background: var(--color-chip-on-bg);
+  color: var(--color-chip-on-text);
 }
 
 .status-pill.status-waiting {
-  background: #e2e3e5;
-  color: #41464b;
+  background: var(--color-chip-off-bg);
+  color: var(--color-chip-off-text);
 }
 
 h1 {
@@ -72,13 +171,17 @@ select {
   margin-top: 0.25rem;
   box-sizing: border-box;
   font-size: 1rem;
+  background: var(--color-surface-code);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-code);
+  border-radius: 4px;
 }
 
 fieldset {
   margin-bottom: 1.5rem;
   padding: 1rem 0.9rem 1.2rem;
   border-radius: 6px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--color-border);
 }
 
 legend {
@@ -95,8 +198,8 @@ legend {
   margin: 0;
   padding: 0.5rem 0.75rem;
   border-radius: 10px;
-  background: #f3f4f6;   /* light grey */
-  border: 1px solid #d1d5db;
+  background: var(--color-surface-code);
+  border: 1px solid var(--color-border-code);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
                "Liberation Mono", "Courier New", monospace; /* courier-ish */
   font-size: 0.95rem;
@@ -110,7 +213,7 @@ legend {
   display: block;
   text-align:center;
   font-size: 0.9rem;
-  color: #555;
+  color: var(--color-text-secondary);
   margin-top: 0.25rem;
 }
 
@@ -160,7 +263,7 @@ button[type=submit] {
   padding: 0.8rem 1.6rem;       /* bigger button */
   font-size: 1.05rem;
   font-weight: 600;
-  background: #6c757d;
+  background: var(--color-btn-bg);
   color: #fff;
   border-radius: 999px;
   border: none;
@@ -183,26 +286,26 @@ button[type=submit] {
   min-width: 3rem;
   text-align: right;
   font-size: 1rem;
-  color: #333;
+  color: var(--color-text);
 }
 
 .output-card {
   margin-bottom: 0.62rem;
   padding: 0.52rem 0.72rem 0.5rem;
   border-radius: 12px;
-  border: 1px solid #d9dee3;
-  background: #f8fafb;
+  border: 1px solid var(--color-border-card);
+  background: var(--color-surface-raised);
   transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
 }
 
 .output-card-on {
-  border-color: #2b80d1;
-  background: #f1f6fc;
+  border-color: var(--color-accent);
+  background: var(--color-surface-selected);
 }
 
 .output-card-off {
-  border-color: #d9dee3;
-  background: #f8fafb;
+  border-color: var(--color-border-card);
+  background: var(--color-surface-raised);
 }
 
 .output-card-head {
@@ -225,7 +328,7 @@ button[type=submit] {
   grid-column: 1 / -1;
   font-size: 0.99rem;
   font-weight: 700;
-  color: #121212;
+  color: var(--color-text-strong);
   line-height: 1.12;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -235,8 +338,8 @@ button[type=submit] {
   display: inline-block;
   padding: 0.06rem 0.4rem;
   border-radius: 999px;
-  background: #eceff2;
-  color: #495057;
+  background: var(--color-chip-neutral-bg);
+  color: var(--color-chip-neutral-text);
   font-size: 0.68rem;
   font-weight: 700;
   white-space: nowrap;
@@ -252,13 +355,13 @@ button[type=submit] {
 }
 
 .output-state-chip.on {
-  background: #d1e7dd;
-  color: #0f5132;
+  background: var(--color-chip-on-bg);
+  color: var(--color-chip-on-text);
 }
 
 .output-state-chip.off {
-  background: #e2e3e5;
-  color: #41464b;
+  background: var(--color-chip-off-bg);
+  color: var(--color-chip-off-text);
 }
 
 .output-toggle {
@@ -279,7 +382,7 @@ button[type=submit] {
   width: 48px;
   height: 27px;
   border-radius: 999px;
-  background: #adb5bd;
+  background: var(--color-control-off);
   transition: background 140ms ease;
 }
 
@@ -297,7 +400,7 @@ button[type=submit] {
 }
 
 .output-toggle input:checked + .switch {
-  background: #198754;
+  background: var(--color-toggle-on);
 }
 
 .output-toggle input:checked + .switch::after {
@@ -333,8 +436,9 @@ button[type=submit]:active {
   display: inline-block;
   padding: 0.6rem 1.2rem;
   font-size: 1rem;
+  line-height: 1;
   font-weight: 600;
-  background: #6c757d;
+  background: var(--color-btn-bg);
   color: #fff;
   border-radius: 999px;
   border: none;
@@ -348,7 +452,7 @@ button[type=submit]:active {
   padding: 0.6rem 1.2rem;
   font-size: 1rem;
   font-weight: 600;
-  background: #6c757d;
+  background: var(--color-btn-bg);
   cursor: not-allowed;
   color: #fff;
   border-radius: 999px;
@@ -420,11 +524,6 @@ button[type=submit]:active {
   margin: 0;
 }
 
-.airplay-refresh-wrap .pill-btn {
-  padding: 0.45rem 1.1rem;
-  font-size: 0.85rem;
-}
-
 .airplay-top-controls {
   display: flex;
   align-items: center;
@@ -445,8 +544,8 @@ button[type=submit]:active {
 }
 
 .input-level-pill {
-  background: #e9ecef;
-  color: #495057;
+  background: var(--color-surface-muted);
+  color: var(--color-chip-neutral-text);
   font-size: 0.82rem;
 }
 
@@ -463,15 +562,15 @@ button[type=submit]:active {
 }
 
 .input-level-pill-active {
-  background: #d1e7dd;
-  color: #0f5132;
+  background: var(--color-chip-on-bg);
+  color: var(--color-chip-on-text);
 }
 
 /* iOS-style storage bar */
 .storage-bar {
   width: 100%;
   height: 14px;
-  background: #e9ecef;           /* light grey (available) */
+  background: var(--color-surface-muted);
   border-radius: 999px;
   overflow: hidden;
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.08);
@@ -481,10 +580,15 @@ button[type=submit]:active {
 .storage-bar .used {
   height: 100%;
   width: 0%;
-  background: #28a745;           /* green default */
+  background: var(--color-success);
   border-radius: 999px;
   transition: width 0.3s ease;
 }
+
+/* Status-driven bar colours — set via data-status="healthy|warning|critical" */
+.storage-bar .used[data-status="healthy"]  { background: var(--color-status-success); }
+.storage-bar .used[data-status="warning"]  { background: var(--color-status-warning); }
+.storage-bar .used[data-status="critical"] { background: var(--color-status-danger);  }
 
 .storage-meta {
   display: flex;
@@ -504,8 +608,8 @@ button[type=submit]:active {
 }
 
 .licence-pane {
-  background: #f4f5f6;
-  color: #1a1a1a;
+  background: var(--color-surface-pane);
+  color: var(--color-text-pane);
   padding: 0.75rem;
   border-radius: 6px;
   font-size: 0.85rem;
@@ -530,7 +634,7 @@ button[type=submit]:active {
 }
 
 code {
-  background: #0f0f0fd;
+  background: #0f0f0f;
   padding: 0 0.25rem;
   border-radius: 3px;
 }
@@ -543,10 +647,6 @@ code {
 @media (max-width: 520px) {
   .airplay-masthead {
     align-items: center;
-  }
-  .airplay-refresh-wrap .pill-btn {
-    padding: 0.5rem 1rem;
-    font-size: 0.83rem;
   }
 }
 
@@ -563,7 +663,7 @@ code {
 #a2hs-inner {
   max-width: 480px;
   margin: 0 auto;
-  background: #fff;
+  background: var(--color-surface);
   border-radius: 1rem;
   padding: 0.9rem 1rem;
   box-shadow: 0 4px 16px rgba(0,0,0,0.2);
@@ -579,7 +679,7 @@ body {
   margin: 0 !important;
   padding: 0 !important;   /* critical for iOS fixed banner */
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #f5f5f5;
+  background: var(--color-bg);
   font-size: 18px;
 }
 
@@ -588,7 +688,7 @@ body {
   top: 0 !important;
   left: 0 !important;
   right: 0 !important;
-  background: #c00000;
+  background: var(--color-status-danger);
   color: #ffffff;
   text-align: center;
   font-weight: 700;
@@ -609,7 +709,7 @@ body {
   top: 0 !important;
   left: 0 !important;
   right: 0 !important;
-  background: #28a745;
+  background: var(--color-status-success);
   color: #ffffff;
   text-align: center;
   font-weight: 700;
@@ -667,8 +767,8 @@ body {
   padding: 0.85rem 0.9rem;
   margin-bottom: 0.62rem;
   border-radius: 12px;
-  border: 1px solid #d9dee3;
-  background: #f8fafb;
+  border: 1px solid var(--color-border-card);
+  background: var(--color-surface-raised);
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
@@ -676,7 +776,7 @@ body {
   gap: 0.5rem;
 }
 .setup-list-card:active {
-  background: #edf2f7;
+  background: var(--color-surface-pressed);
 }
 .setup-list-card-body {
   display: flex;
@@ -688,19 +788,19 @@ body {
 .setup-list-card-title {
   font-weight: 700;
   font-size: 1rem;
-  color: #121212;
+  color: var(--color-text-strong);
   line-height: 1.2;
 }
 .setup-list-card-sub {
   font-size: 0.82rem;
-  color: #6c757d;
+  color: var(--color-text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .setup-list-chevron {
   font-size: 1.4rem;
-  color: #adb5bd;
+  color: var(--color-control-off);
   flex-shrink: 0;
   line-height: 1;
 }
@@ -731,8 +831,8 @@ body.has-bottom-nav .container {
   bottom: 0;
   left: 0;
   right: 0;
-  background: #fff;
-  border-top: 1px solid #e0e0e0;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border-nav);
   display: flex;
   z-index: 1000;
   padding-bottom: constant(safe-area-inset-bottom);
@@ -745,7 +845,7 @@ body.has-bottom-nav .container {
   align-items: center;
   justify-content: center;
   padding: 0.55rem 0 0.5rem;
-  color: #8a8a8e;
+  color: var(--color-nav-inactive);
   text-decoration: none;
   font-size: 0.7rem;
   font-weight: 500;
@@ -757,18 +857,36 @@ body.has-bottom-nav .container {
   height: 24px;
 }
 .nav-tab-active {
-  color: #2b80d1;
+  color: var(--color-accent);
 }
 .nav-tab-warn {
-  color: #c00000;
+  color: var(--color-danger);
+}
+
+/* ── Mobile: match body background to --color-surface so no gap shows
+   above or below the content container.  Dark mode already has
+   --color-bg == --color-surface; this brings light mode into line.
+   Placed last so it overrides the base body { background } rule above. ── */
+@media (max-width: 599px) {
+  body {
+    background: var(--color-surface);
+  }
+  .container {
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 """
 
-BANNER_HTML = """
+BANNER_LOGO_HTML = """
   <div class="banner-logo-wrap">
-    <img src="/autostream-badge.png" alt="AutoStream" class="banner-logo">
+    <img src="/autostream-badge.png" alt="AutoStream" class="banner-logo banner-logo-light">
+    <img src="/autostream-badge-dark.png" alt="AutoStream" class="banner-logo banner-logo-dark">
   </div>
+"""
 
+BANNER_DISMISS_SCRIPT = """
 <script>
 document.addEventListener("DOMContentLoaded", () => {
   const banner = document.getElementById("green-banner");
@@ -797,6 +915,9 @@ document.addEventListener("DOMContentLoaded", () => {
 </script>
 """
 
+# Backward-compatible alias used by all pages except the home page.
+BANNER_HTML = BANNER_LOGO_HTML + BANNER_DISMISS_SCRIPT
+
 
 LICENSE_BANNER_CSS = ""
 
@@ -805,15 +926,15 @@ VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scal
 PIN_MODAL_CSS = """
   #pinModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
   #pinModal.show{display:flex;}
-  #pinModal .panel{width:min(22rem,100%);background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
-  #pinModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid #eee;font-weight:700;}
+  #pinModal .panel{width:min(22rem,100%);background:var(--color-surface);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+  #pinModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;}
   #pinModal .bd{padding:1rem;}
   #pinModal .bd p{margin:0 0 .75rem 0;}
-  #pinModal input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid #ccc;border-radius:12px;outline:none;}
-  #pinModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid #eee;}
-  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;background:#6c757d;color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
-  #pinModal .btn.cancel{background:#6c757d;color:#fff;}
-  #pinModal .btn.ok{background:#6c757d;color:#fff;}
+  #pinModal input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid var(--color-border-code);border-radius:12px;outline:none;}
+  #pinModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
+  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;background:var(--color-btn-bg);color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
+  #pinModal .btn.cancel{background:var(--color-btn-bg);color:#fff;}
+  #pinModal .btn.ok{background:var(--color-btn-bg);color:#fff;}
 """
 
 

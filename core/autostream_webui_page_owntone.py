@@ -429,8 +429,8 @@ def send_owntone_setup_page(
 
     _body_html = (
         f"{BANNER_HTML}{('<h1>' + h1 + '</h1>') if initial_setup else ''}"
-        + (f"<p style='color:green;'>Saved</p>" if saved_ok else "")
-        + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")
+        + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
+        + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
         + f"{back_html}"
         + f"<a href='/owntone-setup' class='pill-btn small' style='font-weight:500;border:1px solid #ccc;'>\u21bb Refresh</a>"
@@ -466,6 +466,7 @@ def send_owntone_setup_page(
         body_suffix=_body_suffix,
         show_nav=not initial_setup,
         active_tab="setup",
+        dark_mode=parsed.webui.dark_mode,
     )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)

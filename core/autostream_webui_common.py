@@ -251,6 +251,7 @@ def build_page_html(
     active_tab: str = "",
     show_nav: bool = True,
     setup_warn: bool = False,
+    dark_mode: bool = False,
 ) -> str:
     """Render a complete HTML page using the shared scaffold.
 
@@ -273,12 +274,14 @@ def build_page_html(
                   nav bar tab
     show_nav    : when False the nav bar is omitted (e.g. initial-setup wizard)
     setup_warn  : when True the Setup tab is highlighted red
+    dark_mode   : when True the dark colour theme is applied via data-theme="dark"
     """
     style = STYLE_CSS + ("\n" + extra_css.strip() if extra_css.strip() else "")
     nav = build_nav_bar_html(active_tab, setup_warn=setup_warn) if show_nav else ""
     body_cls = ' class="has-bottom-nav"' if show_nav else ""
+    theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
     return (
-        f'<!DOCTYPE html><html>'
+        f'<!DOCTYPE html><html{theme_attr}>'
         f'<head><meta charset="utf-8">{VIEWPORT_META}'
         f'<title>{html.escape(title)}</title>'
         f'<style>{style}</style>'

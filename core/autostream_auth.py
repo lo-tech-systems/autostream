@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import logging
-from autostream_config import read_pin_override, write_pin_override
+from autostream_config import load_config, parse_config, read_pin_override, write_pin_override
 LOG = logging.getLogger(__name__)
 
 # ----------------------------
@@ -628,7 +628,15 @@ class AuthManager:
 
         nonce = self._issue_nonce(handler)
 
-        html = self._render_auth_page(next_path=next_path, nonce=nonce, error=bool(err))
+        dark_mode = False
+        try:
+            cfg = load_config(self._config_path)
+            parsed = parse_config(cfg)
+            dark_mode = parsed.webui.dark_mode
+        except Exception:
+            pass
+
+        html = self._render_auth_page(next_path=next_path, nonce=nonce, error=bool(err), dark_mode=dark_mode)
         body = html.encode("utf-8")
 
         handler.send_response(200)
@@ -793,7 +801,7 @@ class AuthManager:
         handler.end_headers()
         handler.wfile.write(payload)
 
-    def _render_auth_page(self, next_path: str, nonce: str, error: bool) -> str:
+    def _render_auth_page(self, next_path: str, nonce: str, error: bool, dark_mode: bool = False) -> str:
         # Reuse existing banner styles if provided.
         # If error: show a red fixed banner with "Incorrect PIN".
         err_banner = ""
@@ -805,9 +813,10 @@ class AuthManager:
 
         # Minimal page that matches the existing Autostream look by using injected CSS.
         # Uses WebCrypto SHA-256 to compute proof without sending the PIN in plaintext.
+        theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
         return f"""
             <!doctype html>
-            <html lang=\"en\">
+            <html lang=\"en\"{theme_attr}>
             <head>
             <meta charset=\"utf-8\" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />

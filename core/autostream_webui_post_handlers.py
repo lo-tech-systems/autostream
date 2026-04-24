@@ -247,6 +247,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             cfg.set("webui", "show_master_volume", "yes" if new_show_master_volume else "no")
             new_show_input_detail = "webui_show_input_detail" in form
             cfg.set("webui", "show_input_detail", "yes" if new_show_input_detail else "no")
+            new_dark_mode = "webui_dark_mode" in form
+            cfg.set("webui", "dark_mode", "yes" if new_dark_mode else "no")
 
         # Persist defaults into the INI the first time it is created (or if missing)
         if not cfg.get("general", "log_file", fallback="").strip():

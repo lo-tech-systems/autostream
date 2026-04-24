@@ -78,10 +78,10 @@ def _format_reset_timestamp(raw: Optional[str]) -> str:
 
 
 def _settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: bool = False) -> str:
-    border_colour = "#c00000" if warn else "#e4e4e4"
+    border_colour = "var(--color-status-danger)" if warn else "var(--color-border)"
     return (
         f"<div style='margin-top:{margin_top};padding:0.75rem 0.85rem;border:1px solid {border_colour};"
-        "border-radius:8px;background:#fafafa;font-size:0.95rem;line-height:1.5;'>"
+        "border-radius:8px;background:var(--color-surface-raised);font-size:0.95rem;line-height:1.5;'>"
         f"{inner_html}"
         "</div>"
     )
@@ -520,18 +520,18 @@ def send_setup_page(
         factory_reset_modal_css = """
           #factoryResetModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
           #factoryResetModal.show{display:flex;}
-          #factoryResetModal .panel{width:min(28rem,100%);background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
-          #factoryResetModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid #eee;font-weight:700;color:#c00000;}
+          #factoryResetModal .panel{width:min(28rem,100%);background:var(--color-surface-raised);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+          #factoryResetModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;color:var(--color-status-danger);}
           #factoryResetModal .bd{padding:1rem;}
           #factoryResetModal .bd p{margin:0 0 .75rem 0;}
-          #factoryResetModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid #eee;}
+          #factoryResetModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
           #factoryResetModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
         """
 
         factory_reset_zone = f"""
-      <div style="margin-top:2rem;padding:1rem 1.25rem;border:1.5px solid #c00000;border-radius:8px;">
-        <p style="margin:0 0 0.5rem;font-weight:600;color:#c00000;">Factory Reset</p>
-        <p style="margin:0 0 0.75rem;font-size:0.95rem;color:#444;">Factory Reset returns the appliance to first-run Wi-Fi setup mode. All settings will be erased.</p>
+      <div style="margin-top:2rem;padding:1rem 1.25rem;border:1.5px solid var(--color-status-danger);border-radius:8px;">
+        <p style="margin:0 0 0.5rem;font-weight:600;color:var(--color-status-danger);">Factory Reset</p>
+        <p style="margin:0 0 0.75rem;font-size:0.95rem;color:var(--color-text);">Factory Reset returns the appliance to first-run Wi-Fi setup mode. All settings will be erased.</p>
         <button type="button"
           id="btnFactoryReset"
           class="pill-btn"
@@ -547,14 +547,14 @@ def send_setup_page(
           <div class="hdr" id="factoryResetModalTitle">Factory Reset</div>
           <div class="bd">
             <p id="factoryResetModalMsg">{modal_body_html}</p>
-            <p id="factoryResetModalError" style="display:none;color:#b00020;font-weight:600;"></p>
+            <p id="factoryResetModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
           </div>
           <div class="ft">
             <button type="button" class="btn" id="factoryResetCancel"
               style="background:#6c757d;color:#fff;"
               onclick="hideFactoryResetModal()">Cancel</button>
             <button type="button" class="btn" id="factoryResetContinue"
-              style="background:#c00000;color:#fff;font-weight:700;border:none;"
+              style="background:var(--color-status-danger);color:#fff;font-weight:700;border:none;"
               onclick="doFactoryReset()">Continue</button>
           </div>
         </div>
@@ -684,13 +684,14 @@ def send_setup_page(
         customise_summary = html.escape(
             ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
             + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
+            + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
         )
         input1_warn = input1_snapshot.stylus_warning or input1_snapshot.stylus_overdue
         input2_warn = input2_snapshot.stylus_warning or input2_snapshot.stylus_overdue
-        i1_card_style = ' style="border-color:#c00000;"' if input1_warn else ''
-        i1_text_style = ' style="color:#c00000;"' if input1_warn else ''
-        i2_card_style = ' style="border-color:#c00000;"' if input2_warn else ''
-        i2_text_style = ' style="color:#c00000;"' if input2_warn else ''
+        i1_card_style = ' style="border-color:var(--color-status-danger);"' if input1_warn else ''
+        i1_text_style = ' style="color:var(--color-status-danger);"' if input1_warn else ''
+        i2_card_style = ' style="border-color:var(--color-status-danger);"' if input2_warn else ''
+        i2_text_style = ' style="color:var(--color-status-danger);"' if input2_warn else ''
         form_content_html = f"""<div class="setup-slide-viewport">
       <div class="setup-slide-track" id="setupSlideTrack">
         <div class="setup-slide-list">
@@ -785,6 +786,13 @@ def send_setup_page(
                 </label>
                 <span>Display input detail</span>
               </div>
+              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Dark mode</span>
+              </div>
             </fieldset>
           </div>
           <div class="setup-detail-panel" id="panel-factory-reset">
@@ -834,7 +842,7 @@ def send_setup_page(
     <div class="hdr" id="pinModalTitle">Change PIN</div>
     <div class="bd">
       <p id="pinModalMessage">Enter your current PIN.</p>
-      <p id="pinModalError" style="display:none;color:#b00020;font-weight:600;"></p>
+      <p id="pinModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
     </div>
     <div class="ft">
       <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
@@ -846,8 +854,8 @@ def send_setup_page(
     _body_html = (
         f"{BANNER_HTML}{('<h1>' + h1 + '</h1>') if initial_setup else ''}"
         + (f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else "")
-        + (f"<p style='color:green;'>Saved</p>" if saved_ok else "")
-        + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")
+        + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
+        + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + f'<form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">'
         + f'<input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">'
         + form_content_html
@@ -1368,9 +1376,11 @@ def send_setup_page(
           if (!sub) return;
           var cb = document.getElementById('webui_show_master_volume');
           var cbDet = document.getElementById('webui_show_input_detail');
+          var cbDark = document.getElementById('webui_dark_mode');
           var mv = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
           var det = (cbDet && cbDet.checked) ? 'Input detail: On' : 'Input detail: Off';
-          sub.textContent = mv + ' \u00b7 ' + det;
+          var dark = (cbDark && cbDark.checked) ? 'Dark mode: On' : 'Dark mode: Off';
+          sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark;
         }}
         function closePanel() {{
           refreshInputCardSubs();
@@ -1407,6 +1417,7 @@ def send_setup_page(
         lic_spacer=lic_spacer,
         show_nav=not initial_setup,
         active_tab="setup",
+        dark_mode=parsed.webui.dark_mode,
     )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)

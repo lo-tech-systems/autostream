@@ -250,6 +250,8 @@ class WebUIConfig:
     # Whether to show the input detail pill (label, sample rate, dBFS) on the
     # home page. Default: False.
     show_input_detail: bool
+    # Whether to use the dark colour theme. Default: False.
+    dark_mode: bool
 
 
 @dataclass(frozen=True)
@@ -388,6 +390,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         hidden_outputs=_split_list(cfg.get("webui", "hidden_outputs", fallback="")),
         show_master_volume=cfg.getboolean("webui", "show_master_volume", fallback=True),
         show_input_detail=cfg.getboolean("webui", "show_input_detail", fallback=False),
+        dark_mode=cfg.getboolean("webui", "dark_mode", fallback=False),
     )
 
     return AutostreamConfig(
