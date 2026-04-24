@@ -119,7 +119,7 @@ def send_logs_page(
         "</div>"
     )
     _body_html = (
-        f"{BANNER_HTML}<h1>Logs</h1>"
+        f"{BANNER_HTML}"
         f"<p class='actions' style='display:flex;justify-content:flex-end;'>"
         f"<a href='/logs' class='pill-btn small'>\u21bb Refresh</a></p>"
         f"<form method='post' action='/logs' id='logLevelForm' onsubmit='showApplying()'>"

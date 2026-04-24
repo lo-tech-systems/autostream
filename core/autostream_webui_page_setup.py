@@ -695,7 +695,7 @@ def send_setup_page(
       <div class="setup-slide-track" id="setupSlideTrack">
         <div class="setup-slide-list">
           <p class="actions" style="display:flex;margin-bottom:1rem;">
-            <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Done</button>
+            <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
           </p>
           <div class="setup-list-card" onclick="openPanel('input1')"{i1_card_style}>
             <div class="setup-list-card-body">
@@ -844,7 +844,7 @@ def send_setup_page(
 </div>"""
     _body_prefix = f"{factory_reset_modal}\n{_pin_modal_div}"
     _body_html = (
-        f"{BANNER_HTML}<h1>{h1}</h1>"
+        f"{BANNER_HTML}{('<h1>' + h1 + '</h1>') if initial_setup else ''}"
         + (f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else "")
         + (f"<p style='color:green;'>Saved</p>" if saved_ok else "")
         + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")

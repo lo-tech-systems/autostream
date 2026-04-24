@@ -428,7 +428,7 @@ def send_owntone_setup_page(
     )
 
     _body_html = (
-        f"{BANNER_HTML}<h1>{h1}</h1>"
+        f"{BANNER_HTML}{('<h1>' + h1 + '</h1>') if initial_setup else ''}"
         + (f"<p style='color:green;'>Saved</p>" if saved_ok else "")
         + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")
         + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"

@@ -222,7 +222,7 @@ def build_nav_bar_html(active: str = "", *, setup_warn: bool = False) -> str:
         ("home",  "/",      "Home",  NAV_ICON_HOME,  ""),
         ("setup", "/setup", "Setup", NAV_ICON_SETUP, ' id="setup-nav-tab"'),
         ("logs",  "/logs",  "Logs",  NAV_ICON_LOGS,  ""),
-        ("about", "/about", "About", NAV_ICON_ABOUT, ""),
+        ("about", "/about", "Info",  NAV_ICON_ABOUT, ""),
     ]
     items = []
     for key, href, label, icon, extra_attrs in tabs:

@@ -820,7 +820,6 @@ class AuthManager:
             <div class=\"container\">
                 {err_banner}
                 {self.banner_html}
-                <h1>Setup</h1>
                 <a href="/" class="pill-btn small">← Back</a>
                 <p>Enter the device PIN. This may be on a label attached to the device.</p>
 
