@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import html
 import json
-import textwrap
 import threading
 import time
 
@@ -48,10 +47,8 @@ from autostream_player_service import (
 from autostream_sysutils import run_admin_cmd
 from autostream_webui_assets import (
     BANNER_HTML,
-    STYLE_CSS,
-    VIEWPORT_META,
 )
-from autostream_webui_common import build_top_banner_html, locked_load_config
+from autostream_webui_common import build_page_html, build_top_banner_html, locked_load_config
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
 
@@ -427,42 +424,49 @@ def send_owntone_setup_page(
     back_html = (
         ""
         if initial_setup
-        else f'<button type="submit" form="{owntone_setup_form_id}" class="pill-btn small" style="width:auto;">← Done</button>'
+        else f'<button type="submit" form="{owntone_setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>'
     )
 
-    html_body = textwrap.dedent(f"""\
-      <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>Owntone Setup</title><style>{STYLE_CSS}</style></head>
-      <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>{h1}</h1>
-      {f"<p style='color:green;'>Saved</p>" if saved_ok else ""}
-      {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
-      <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;">
-        {back_html}
-        <a href="/owntone-setup" class="pill-btn small" style="font-weight:500;border:1px solid #ccc;">↻ Refresh</a>
-      </p>
-      <form id="{owntone_setup_form_id}" method="POST" action="/owntone-setup">
-        <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
-        {speakers_html}
-        <fieldset><legend>Audio</legend>
-          <div style="display:flex;align-items:center;gap:0.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="uncompressed_alac" {'checked' if uncompressed else ''}{' disabled' if not uncompressed_supported else ''}>
-              <span class="switch"></span>
-            </label>
-            <span>Use uncompressed audio</span>
-          </div>
-          {'<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else ''}
-          {'<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(SETTING_START_BUFFER_MS_MIN) + '" max="' + str(SETTING_START_BUFFER_MS_MAX) + '" step="' + str(SETTING_START_BUFFER_MS_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else '<div class="storage-meta" style="margin-top:0.75rem;">This backend does not currently expose start-buffer control.</div>'}
-        </fieldset>
-        {f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else ''}
-      </form></div>
-      <script>
-        function onShowToggle(i, checked){{
-          document.getElementById('spk_settings_' + i).style.display = checked ? 'block' : 'none';
-        }}
-      </script>
-      </body></html>
-    """)
+    _body_html = (
+        f"{BANNER_HTML}<h1>{h1}</h1>"
+        + (f"<p style='color:green;'>Saved</p>" if saved_ok else "")
+        + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")
+        + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
+        + f"{back_html}"
+        + f"<a href='/owntone-setup' class='pill-btn small' style='font-weight:500;border:1px solid #ccc;'>\u21bb Refresh</a>"
+        + f"</p>"
+        + f"<form id='{owntone_setup_form_id}' method='POST' action='/owntone-setup'>"
+        + f"<input type='hidden' name='csrf_token' value='{html.escape(csrf_token)}'>"
+        + speakers_html
+        + f"<fieldset><legend>Audio</legend>"
+        + f"<div style='display:flex;align-items:center;gap:0.75rem;'>"
+        + f"<label class='output-toggle' style='margin:0;'>"
+        + f"<input type='checkbox' name='uncompressed_alac' {'checked' if uncompressed else ''}{' disabled' if not uncompressed_supported else ''}>"
+        + f"<span class='switch'></span>"
+        + f"</label>"
+        + f"<span>Use uncompressed audio</span>"
+        + f"</div>"
+        + ('<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else '')
+        + ('<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(SETTING_START_BUFFER_MS_MIN) + '" max="' + str(SETTING_START_BUFFER_MS_MAX) + '" step="' + str(SETTING_START_BUFFER_MS_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else '<div class="storage-meta" style="margin-top:0.75rem;">This backend does not currently expose start-buffer control.</div>')
+        + f"</fieldset>"
+        + (f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else '')
+        + f"</form>"
+    )
+    _body_suffix = """\
+<script>
+  function onShowToggle(i, checked) {
+    document.getElementById('spk_settings_' + i).style.display = checked ? 'block' : 'none';
+  }
+</script>"""
+    html_body = build_page_html(
+        "Owntone Setup",
+        _body_html,
+        lic_html=lic_html,
+        lic_spacer=lic_spacer,
+        body_suffix=_body_suffix,
+        show_nav=not initial_setup,
+        active_tab="setup",
+    )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)
     handler.send_header("Content-Type", "text/html; charset=utf-8")

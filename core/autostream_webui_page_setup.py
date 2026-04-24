@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import html
 import logging
-import textwrap
 
 from datetime import datetime
 from typing import Optional
@@ -49,12 +48,11 @@ from autostream_webui_assets import (
     A2HS_SCRIPT,
     BANNER_HTML,
     PIN_MODAL_CSS,
-    STYLE_CSS,
-    VIEWPORT_META,
 )
 from autostream_webui_common import (
     _fallback_input_snapshot,
     _set_flash_cookie,
+    build_page_html,
     build_top_banner_html,
     get_app_version,
     locked_load_config,
@@ -291,7 +289,6 @@ def send_setup_page(
     h1 = "Initial Setup (2 of 2)" if initial_setup else "Setup"
     submit_label = "Finish"
     setup_form_id = "setupForm"
-    nav_html = ""  # Done button lives inside the slide list for post-config
     playback_snapshot = get_playback_snapshot()
     input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
         parsed.audio1,
@@ -697,9 +694,8 @@ def send_setup_page(
         form_content_html = f"""<div class="setup-slide-viewport">
       <div class="setup-slide-track" id="setupSlideTrack">
         <div class="setup-slide-list">
-          <p class="actions" style="display:flex;justify-content:space-between;gap:0.75rem;margin-bottom:1rem;">
+          <p class="actions" style="display:flex;margin-bottom:1rem;">
             <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Done</button>
-            <a href="/logs" class="pill-btn small">Logs</a>
           </p>
           <div class="setup-list-card" onclick="openPanel('input1')"{i1_card_style}>
             <div class="setup-list-card-body">
@@ -831,35 +827,33 @@ def send_setup_page(
       </div>
     </div>"""
 
-    html_body = textwrap.dedent(f"""\
-      <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}</style>{csrf_meta}
-      </head>
-      <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}<h1>{h1}</h1>
-      {f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else ""}
-      {f"<p style='color:green;'>Saved</p>" if saved_ok else ""}
-      {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
-      <form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">
-        <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
-        {form_content_html}
-      </form>
-      </div>
-      {factory_reset_modal}
-      <div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
-        <div class="panel">
-          <div class="hdr" id="pinModalTitle">Change PIN</div>
-          <div class="bd">
-            <p id="pinModalMessage">Enter your current PIN.</p>
-            <p id="pinModalError" style="display:none;color:#b00020;font-weight:600;"></p>
-          </div>
-          <div class="ft">
-            <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
-            <button type="button" class="btn ok" id="pinModalOk">Apply</button>
-          </div>
-        </div>
-      </div>
-      {A2HS_SCRIPT}
-      </body>
+    _extra_css = f"{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}"
+    _pin_modal_div = """\
+<div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
+  <div class="panel">
+    <div class="hdr" id="pinModalTitle">Change PIN</div>
+    <div class="bd">
+      <p id="pinModalMessage">Enter your current PIN.</p>
+      <p id="pinModalError" style="display:none;color:#b00020;font-weight:600;"></p>
+    </div>
+    <div class="ft">
+      <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
+      <button type="button" class="btn ok" id="pinModalOk">Apply</button>
+    </div>
+  </div>
+</div>"""
+    _body_prefix = f"{factory_reset_modal}\n{_pin_modal_div}"
+    _body_html = (
+        f"{BANNER_HTML}<h1>{h1}</h1>"
+        + (f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else "")
+        + (f"<p style='color:green;'>Saved</p>" if saved_ok else "")
+        + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")
+        + f'<form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">'
+        + f'<input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">'
+        + form_content_html
+        + "</form>"
+    )
+    _body_suffix = f"""{A2HS_SCRIPT}
       <script>
         const pinChangeState = {{
           busy: false,
@@ -1401,9 +1395,19 @@ def send_setup_page(
           window.scrollTo(0, 0);
         }}
       </script>""" if not initial_setup else ""}
-      {factory_reset_js}
-      </html>
-    """)
+      {factory_reset_js}"""
+    html_body = build_page_html(
+        "autostream",
+        _body_html,
+        extra_css=_extra_css,
+        head_extra=csrf_meta,
+        body_prefix=_body_prefix,
+        body_suffix=_body_suffix,
+        lic_html=lic_html,
+        lic_spacer=lic_spacer,
+        show_nav=not initial_setup,
+        active_tab="setup",
+    )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)
     handler.send_header("Content-Type", "text/html; charset=utf-8")

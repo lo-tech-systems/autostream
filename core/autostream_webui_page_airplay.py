@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import html
 import logging
-import textwrap
 
 from typing import Optional
 
@@ -27,10 +26,8 @@ from autostream_webui_assets import (
     A2HS_SCRIPT,
     BANNER_HTML,
     PIN_MODAL_CSS,
-    STYLE_CSS,
-    VIEWPORT_META,
 )
-from autostream_webui_common import build_top_banner_html, locked_load_config
+from autostream_webui_common import build_page_html, build_top_banner_html, locked_load_config
 from autostream_webui_state import WebUIState
 from autostream_webui_api import _status_text_for_home
 
@@ -52,22 +49,21 @@ def send_airplay_page(
         # if the INI is missing. Hence, take the nuclear option and inform the user that something
         # went wrong - then reboot the system. This code serves only inline code in case the file
         # system is dead (which is likely). Reboot may therefore also fail.
-        body = textwrap.dedent(f"""\
-          <!DOCTYPE html><html><head><meta charset="utf-8"><title>Logs</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-          <style>{STYLE_CSS}
-          body {{ font-size: 14px !important; }}
-          </style></head>
-          <body>
-            <h1>System Error</h1>
-            <p>Unfortunately, an unrecoverable error has occurred:
-            autostream was unable to read the configuration file.</p>
-            <p><strong>autostream will now try to reboot.</strong></p>
-            <p>Please check back in a few minutes. If the system does not recover,
-            please power-cycle autostream and try again. If the problem persists,
-            please replace the SD card and reinstall autostream.</p>
-          </body>
-        """)
+        body = (
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>System Error</title>"
+            "<style>body{font-family:system-ui,sans-serif;margin:2rem;}</style>"
+            "</head><body>"
+            "<h1>System Error</h1>"
+            "<p>Unfortunately, an unrecoverable error has occurred: "
+            "autostream was unable to read the configuration file.</p>"
+            "<p><strong>autostream will now try to reboot.</strong></p>"
+            "<p>Please check back in a few minutes. If the system does not recover, "
+            "please power-cycle autostream and try again. If the problem persists, "
+            "please replace the SD card and reinstall autostream.</p>"
+            "</body></html>"
+        )
 
         # Best-effort response; never prevent reboot.
         try:
@@ -113,11 +109,6 @@ def send_airplay_page(
 
     playback_snapshot = get_playback_snapshot()
     stylus_banner_text = playback_snapshot.banner_text or ""
-    setup_button_style = (
-        "flex:1;text-align:center;background:#c00000;color:#fff;border-color:#c00000;"
-        if stylus_banner_text else
-        "flex:1;text-align:center;"
-    )
     status_text = _status_text_for_home(is_playing, input_levels)
     status_class = "playing" if is_playing else "waiting"
 
@@ -238,9 +229,8 @@ def send_airplay_page(
 }
 """
 
-    html_body = textwrap.dedent(f"""\
-      <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>autostream</title><style>{STYLE_CSS}\n{PIN_MODAL_CSS}\n{master_volume_css}</style>{csrf_meta}
+    _extra_css = f"{PIN_MODAL_CSS}\n{master_volume_css}"
+    _head_extra = f"""{csrf_meta}
 
       <script>
         function normalizeVolume(v){{
@@ -576,28 +566,18 @@ def send_airplay_page(
           }}).join('');
         }}
         function refreshStatus(){{
-          fetch('/api/status').then(r=>r.json()).then(d=>{{
+          fetch('/api/status', {{ cache: 'no-store' }}).then(r=>r.json()).then(d=>{{
             var p=document.getElementById('status-pill');if(!p)return;
             p.textContent=d.status_text; p.classList.remove('status-playing','status-waiting');
             p.classList.add('status-'+d.status_class);
             renderInputLevels(d.input_levels || []);
             var warn=document.getElementById('stylus-warning-banner');
-            var setupBtn=document.getElementById('setup-pill-btn');
+            var setupTab=document.getElementById('setup-nav-tab');
             if (warn) {{
               var txt = String((d && d.playback_banner_text) || '').trim();
               warn.hidden = !txt;
               warn.textContent = txt;
-              if (setupBtn) {{
-                if (txt) {{
-                  setupBtn.style.background = '#c00000';
-                  setupBtn.style.color = '#fff';
-                  setupBtn.style.borderColor = '#c00000';
-                }} else {{
-                  setupBtn.style.background = '';
-                  setupBtn.style.color = '';
-                  setupBtn.style.borderColor = '';
-                }}
-              }}
+              if (setupTab) setupTab.classList.toggle('nav-tab-warn', !!txt);
             }}
           }});
         }}
@@ -655,67 +635,62 @@ def send_airplay_page(
           refreshStatus();
           refreshOutputsState();
         }});
-      </script></head>
-      <body>{lic_html}{lic_spacer}
-      <div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
-        <div class="panel">
-          <div class="hdr" id="pinModalTitle">Enter PIN</div>
-          <div class="bd">
-            <p>Enter the PIN shown on your Apple TV (or other AirPlay device) to enable playback.</p>
-            <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" />
-          </div>
-          <div class="ft">
-            <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
-            <button type="button" class="btn ok" id="pinModalOk">OK</button>
-          </div>
-        </div>
-      </div>
-      <div class="container">
-      <div class="airplay-masthead">
-        <div class="airplay-brand">{BANNER_HTML}</div>
-      </div>
-      <div class="airplay-top-controls">
-        <div class="airplay-refresh-wrap">
-          <button type="button"
-                  class="pill-btn"
-                  onclick="location.reload();"
-                  title="Reload page to refresh speakers">
-            ↻ Refresh
-          </button>
-        </div>
-        <span id="status-pill"
-              class="pill status-pill status-{status_class}">
-          {html.escape(status_text)}
-        </span>
-      </div>
-      <div id="stylus-warning-banner" {'hidden' if not stylus_banner_text else ''} style="margin:0.85rem 0 0.35rem;padding:0.8rem 1rem;border-radius:8px;background:#c00000;color:#fff;font-weight:700;text-align:center;">
-        {html.escape(stylus_banner_text)}
-      </div>
-      {f"<p style='color:red;'>{html.escape(error)}</p>" if error else ""}
-      {A2HS_PROMPT_HTML}
-      {f'''<div class="master-volume-card{' master-volume-inactive' if master_inactive else ''}" id="master-volume-card">
-        <div class="slider-header"><span>Master Volume</span><span id="master_vol_label">{initial_master}%</span></div>
-        <input type="range" id="master_vol_slider" min="0" max="100" step="1" value="{initial_master}"{' disabled' if master_inactive else ''}
-               oninput="onMasterVolumeInput(this.value)"
-               onchange="onMasterVolumeChange(this.value)"
-               onmousedown="onMasterVolumeDragStart()"
-               ontouchstart="onMasterVolumeDragStart()">
-      </div>''' if show_master_volume else ''}
-      <div id="outputs-list">{outputs_html}</div>
-      <div class="home-input-level-wrap" id="home-input-level-wrap" {'hidden' if not input_levels_html else ''}>
-        <div id="input-level-row" class="pill-row input-level-row">
-          {input_levels_html}
-        </div>
-      </div>
-      <br />
-      <p class="actions" style="margin-top:1rem;display:flex;gap:0.75rem;">
-        <a href="/about" class="pill-btn" style="flex:1;text-align:center;">About</a>
-        <a href="/setup" id="setup-pill-btn" class="pill-btn" style="{setup_button_style}">Setup</a>
-      </p>
-      <p style="margin-top:0.25rem; text-align:center;">
-        <small>Copyright &copy; Lo-tech Systems Limited.<br><strong>lo-tech.co.uk/autostream</strong></small>
-      </p></div>{A2HS_SCRIPT}</body></html>
-    """)
+      </script>"""
+    _body_prefix = """\
+<div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
+  <div class="panel">
+    <div class="hdr" id="pinModalTitle">Enter PIN</div>
+    <div class="bd">
+      <p>Enter the PIN shown on your Apple TV (or other AirPlay device) to enable playback.</p>
+      <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" />
+    </div>
+    <div class="ft">
+      <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
+      <button type="button" class="btn ok" id="pinModalOk">OK</button>
+    </div>
+  </div>
+</div>"""
+    _body_html = (
+        f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_HTML}</div></div>"
+        f"<div class='airplay-top-controls'>"
+        f"<div class='airplay-refresh-wrap'>"
+        f"<button type='button' class='pill-btn' onclick='location.reload();'"
+        f" title='Reload page to refresh speakers'>\u21bb Refresh</button>"
+        f"</div>"
+        f"<span id='status-pill' class='pill status-pill status-{status_class}'>"
+        f"{html.escape(status_text)}</span>"
+        f"</div>"
+        f"<div id='stylus-warning-banner' {'hidden' if not stylus_banner_text else ''}"
+        f" style='margin:0.85rem 0 0.35rem;padding:0.8rem 1rem;border-radius:8px;"
+        f"background:#c00000;color:#fff;font-weight:700;text-align:center;'>"
+        f"{html.escape(stylus_banner_text)}</div>"
+        + (f"<p style='color:red;'>{html.escape(error)}</p>" if error else "")
+        + A2HS_PROMPT_HTML
+        + (f'<div class="master-volume-card{" master-volume-inactive" if master_inactive else ""}" id="master-volume-card">'
+           f'<div class="slider-header"><span>Master Volume</span><span id="master_vol_label">{initial_master}%</span></div>'
+           f'<input type="range" id="master_vol_slider" min="0" max="100" step="1" value="{initial_master}"{" disabled" if master_inactive else ""}'
+           f' oninput="onMasterVolumeInput(this.value)"'
+           f' onchange="onMasterVolumeChange(this.value)"'
+           f' onmousedown="onMasterVolumeDragStart()"'
+           f' ontouchstart="onMasterVolumeDragStart()">'
+           f'</div>' if show_master_volume else "")
+        + f"<div id='outputs-list'>{outputs_html}</div>"
+        + f"<div class='home-input-level-wrap' id='home-input-level-wrap' {'hidden' if not input_levels_html else ''}>"
+        + f"<div id='input-level-row' class='pill-row input-level-row'>{input_levels_html}</div>"
+        + f"</div>"
+    )
+    html_body = build_page_html(
+        "autostream",
+        _body_html,
+        extra_css=_extra_css,
+        head_extra=_head_extra,
+        body_prefix=_body_prefix,
+        body_suffix=A2HS_SCRIPT,
+        lic_html=lic_html,
+        lic_spacer=lic_spacer,
+        active_tab="home",
+        setup_warn=bool(stylus_banner_text),
+    )
     body_bytes = html_body.encode("utf-8")
     try:
         handler.send_response(200)

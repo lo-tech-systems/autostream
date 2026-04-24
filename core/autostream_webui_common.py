@@ -16,6 +16,10 @@ Contents:
   - build_top_banner_html                -- render the top-of-page banner HTML
                                             (flash messages, PSU warnings,
                                             licence state)
+  - build_nav_bar_html                   -- render the shared fixed bottom
+                                            navigation bar (Home/Setup/Logs/About)
+  - build_page_html                      -- render a complete HTML page using the
+                                            shared scaffold (head, container, nav)
   - get_app_version                      -- read the installed application
                                             version via the privileged helper
   - _fallback_input_snapshot             -- construct a zero-valued
@@ -24,12 +28,15 @@ Contents:
   - _format_reset_date                   -- format a stylus-reset ISO timestamp
                                             as a short "Mon-YY" date string for
                                             compact display (e.g. the About page)
+  - load_license_text                    -- read the LICENSE / LICENCE file
+  - render_license_md                    -- convert LICENSE Markdown to HTML
 """
 
 from __future__ import annotations
 
 import html
 import json
+import re
 import subprocess
 from datetime import datetime
 from urllib.parse import quote
@@ -39,6 +46,15 @@ from autostream_auth import FLASH_COOKIE_NAME
 from autostream_config import CONFIG_IO_LOCK, load_config
 from autostream_playback_stats import InputPlaybackSnapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
+from autostream_webui_assets import (
+    BANNER_HTML,
+    NAV_ICON_ABOUT,
+    NAV_ICON_HOME,
+    NAV_ICON_LOGS,
+    NAV_ICON_SETUP,
+    STYLE_CSS,
+    VIEWPORT_META,
+)
 
 
 def locked_load_config(path: str):
@@ -196,6 +212,89 @@ def _fallback_input_snapshot(
 # Compact date formatter for the About page stylus panel
 # -----------------------------------------------------------------------------
 
+def build_nav_bar_html(active: str = "", *, setup_warn: bool = False) -> str:
+    """Return the fixed bottom navigation bar HTML.
+
+    active:     one of 'home', 'setup', 'logs', 'about'
+    setup_warn: when True the Setup tab is styled red (e.g. stylus overdue)
+    """
+    tabs = [
+        ("home",  "/",      "Home",  NAV_ICON_HOME,  ""),
+        ("setup", "/setup", "Setup", NAV_ICON_SETUP, ' id="setup-nav-tab"'),
+        ("logs",  "/logs",  "Logs",  NAV_ICON_LOGS,  ""),
+        ("about", "/about", "About", NAV_ICON_ABOUT, ""),
+    ]
+    items = []
+    for key, href, label, icon, extra_attrs in tabs:
+        classes = ["nav-tab"]
+        if key == active:
+            classes.append("nav-tab-active")
+        if key == "setup" and setup_warn:
+            classes.append("nav-tab-warn")
+        cls = " ".join(classes)
+        items.append(
+            f'<a href="{href}" class="{cls}"{extra_attrs}>{icon}<span>{label}</span></a>'
+        )
+    return '<nav class="bottom-nav">' + "".join(items) + "</nav>"
+
+
+def build_page_html(
+    title: str,
+    body_html: str,
+    *,
+    extra_css: str = "",
+    head_extra: str = "",
+    body_prefix: str = "",
+    body_suffix: str = "",
+    lic_html: str = "",
+    lic_spacer: str = "",
+    active_tab: str = "",
+    show_nav: bool = True,
+    setup_warn: bool = False,
+) -> str:
+    """Render a complete HTML page using the shared scaffold.
+
+    Parameters
+    ----------
+    title       : page <title> (plain text, will be HTML-escaped)
+    body_html   : content placed inside <div class="container"> after the
+                  opening tag; callers are responsible for including BANNER_HTML
+                  where needed
+    extra_css   : CSS appended to STYLE_CSS inside the <style> block
+    head_extra  : raw HTML injected after </style> and before </head>
+                  (e.g. csrf_meta, page-specific <script> blocks)
+    body_prefix : raw HTML injected after <body> and before <div class="container">
+                  (e.g. modal dialogs, overlay divs)
+    body_suffix : raw HTML injected after the closing </div> of .container and
+                  before the nav bar (e.g. scripts, A2HS_SCRIPT)
+    lic_html    : from build_top_banner_html() — the fixed flash/PSU banner
+    lic_spacer  : from build_top_banner_html() — the spacer div
+    active_tab  : one of 'home', 'setup', 'logs', 'about'; selects the active
+                  nav bar tab
+    show_nav    : when False the nav bar is omitted (e.g. initial-setup wizard)
+    setup_warn  : when True the Setup tab is highlighted red
+    """
+    style = STYLE_CSS + ("\n" + extra_css.strip() if extra_css.strip() else "")
+    nav = build_nav_bar_html(active_tab, setup_warn=setup_warn) if show_nav else ""
+    body_cls = ' class="has-bottom-nav"' if show_nav else ""
+    return (
+        f'<!DOCTYPE html><html>'
+        f'<head><meta charset="utf-8">{VIEWPORT_META}'
+        f'<title>{html.escape(title)}</title>'
+        f'<style>{style}</style>'
+        f'{head_extra}'
+        f'</head>'
+        f'<body{body_cls}>{lic_html}{lic_spacer}'
+        f'{body_prefix}'
+        f'<div class="container">'
+        f'{body_html}'
+        f'</div>'
+        f'{body_suffix}'
+        f'{nav}'
+        f'</body></html>'
+    )
+
+
 def _format_reset_date(raw: Optional[str]) -> str:
     """Format a stylus-reset ISO timestamp as a compact "Mon-YY" string.
 
@@ -235,3 +334,81 @@ def _format_reset_date(raw: Optional[str]) -> str:
             if month in month_map:
                 return f"{month_map[month]}-{year}"
         return raw_s
+
+
+# -----------------------------------------------------------------------------
+# License text helpers (used by the About page)
+# -----------------------------------------------------------------------------
+
+_URL_RE = re.compile(r'(https?://[^\s<>"]+)')
+
+
+def load_license_text() -> str:
+    """Read the LICENSE / LICENCE file from the working directory."""
+    for fname in ("LICENCE", "LICENSE"):
+        try:
+            with open(fname, "r", encoding="utf-8") as f:
+                text = f.read().strip()
+            if text:
+                return text
+        except (FileNotFoundError, Exception):
+            continue
+    return ""
+
+
+def render_license_md(text: str) -> str:
+    """Convert the limited Markdown used in the LICENSE file to HTML.
+
+    Handles: # H1 (rendered as h2), ### H3, --- hr, * list items,
+    bare URLs, and plain paragraphs.
+    """
+    def _autolink(s: str) -> str:
+        return _URL_RE.sub(
+            lambda m: (
+                f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">'
+                f'{m.group(1)}</a>'
+            ), s
+        )
+
+    lines = text.splitlines()
+    out: list[str] = []
+    in_ul = False
+    pending: list[str] = []
+
+    def flush_para() -> None:
+        nonlocal pending
+        if pending:
+            out.append(f"<p>{_autolink(' '.join(pending))}</p>")
+            pending = []
+
+    def close_ul() -> None:
+        nonlocal in_ul
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+
+    for line in lines:
+        if line.startswith("# "):
+            close_ul(); flush_para()
+            out.append(f"<h2>{html.escape(line[2:].strip())}</h2>")
+        elif line.startswith("### "):
+            close_ul(); flush_para()
+            out.append(f"<h3>{html.escape(line[4:].strip())}</h3>")
+        elif line.strip() == "---":
+            close_ul(); flush_para()
+            out.append("<hr>")
+        elif line.startswith("* "):
+            flush_para()
+            if not in_ul:
+                out.append("<ul>")
+                in_ul = True
+            out.append(f"<li>{html.escape(line[2:].strip())}</li>")
+        elif not line.strip():
+            close_ul(); flush_para()
+        else:
+            close_ul()
+            pending.append(html.escape(line.strip()))
+
+    close_ul()
+    flush_para()
+    return "\n".join(out)

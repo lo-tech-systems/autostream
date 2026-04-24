@@ -8,7 +8,7 @@ Page renderer for the /about route.
 Responsibilities:
   - Render the About page: product overview, per-input stylus life bars,
     system information (build version, total playback hours, CPU temperature,
-    disk usage, SD card health), and copyright notice.
+    disk usage, SD card health), and copyright/license notice.
 
 Helpers kept in this module:
   - _stylus_box_html  -- render a single stylus-life fieldset card
@@ -19,12 +19,13 @@ Shared helpers (imported from autostream_webui_common):
                                  the monitor has no live data for an input
   - _format_reset_date        -- format a stylus-reset ISO timestamp as a
                                  compact "Mon-YY" label
+  - load_license_text         -- read the LICENSE / LICENCE file
+  - render_license_md         -- convert the LICENSE Markdown to HTML
 """
 
 from __future__ import annotations
 
 import html
-import textwrap
 
 from autostream_config import parse_config
 from autostream_core import get_playback_snapshot
@@ -34,16 +35,17 @@ from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_healt
 
 from autostream_webui_assets import (
     BANNER_HTML,
-    STYLE_CSS,
-    VIEWPORT_META,
 )
 
 from autostream_webui_common import (
     _fallback_input_snapshot,
     _format_reset_date,
+    build_page_html,
     build_top_banner_html,
     get_app_version,
+    load_license_text,
     locked_load_config,
+    render_license_md,
 )
 
 from autostream_webui_state import WebUIState
@@ -177,25 +179,54 @@ def send_about_page(handler, state: WebUIState) -> None:
 
         stylus_html = "".join(stylus_rows)
 
-    html_body = textwrap.dedent(f"""\
-      <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-      <title>About</title><style>{STYLE_CSS}</style></head><body>{lic_html}{lic_spacer}<div class='container'>{BANNER_HTML}<h1>About</h1>
-      <p class="actions" style="margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;"><a href="/" class="pill-btn small">← Back</a><a href="/license" class="pill-btn small" style="background:#6c757d;color:#fff;border-color:#6c757d;">License</a></p>
-      <fieldset><legend>Overview</legend>
-          <p><strong>autostream</strong> streams audio from turntables, CD players, and other analogue Hi-Fi sources to AirPlay&#8209;compatible speakers.</p>
-      </fieldset>
-      {stylus_html}
-      <fieldset><legend>System (build {html.escape(version)})</legend>
-        <div class='bar-label'><strong>Total Playback Time:</strong> {total_playback_hours:.1f} hours</div>
-        <div class='bar-label'><strong>CPU temperature:</strong> {html.escape(cpu_temp_text)}</div>
-        {storage_html}{sd_html}
-      </fieldset>
-      <fieldset><legend>Copyright</legend>
-          <p><strong>autostream</strong> is Copyright &copy; 2025&#8211;2026 Lo-tech Systems Limited. autostream and the autostream logo are trademarks of Lo-tech Systems Limited.</p>
-          <p>autostream uses OwnTone and ALSA, redistributed under the terms of their respective open-source licences. AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc. All other trademarks are the property of their respective owners.</p>
-      </fieldset>
-      </div></body></html>
-    """)
+    license_text = load_license_text()
+    if license_text:
+        license_inner = f'<div class="licence-pane">{render_license_md(license_text)}</div>'
+    else:
+        license_inner = "<p>License text is unavailable.</p>"
+
+    _extra_css = (
+        ".licence-pane p { margin: 0.1rem 0 0.3rem; }\n"
+        ".licence-pane h2, .licence-pane h3 { margin: 0.5rem 0 0.15rem; }\n"
+        ".licence-pane ul { margin: 0.1rem 0 0.3rem; padding-left: 1.4rem; }\n"
+        ".licence-pane hr { margin: 0.5rem 0; border: 0; border-top: 1px solid currentColor; opacity: 0.2; }\n"
+        "details > summary { cursor: pointer; font-weight: 700; list-style: none; padding: 0.1rem 0; }\n"
+        "details > summary::-webkit-details-marker { display: none; }\n"
+        r"details > summary::before { content: '\25BA\00A0'; font-size: 0.75em; }" + "\n"
+        r"details[open] > summary::before { content: '\25BC\00A0'; }"
+    )
+    _body_html = (
+        f"{BANNER_HTML}<h1>About</h1>"
+        f"<fieldset><legend>Overview</legend>"
+        f"<p><strong>autostream</strong> streams audio from turntables, CD players, and other"
+        f" analogue Hi-Fi sources to AirPlay&#8209;compatible speakers.</p>"
+        f"</fieldset>"
+        f"{stylus_html}"
+        f"<fieldset><legend>System (build {html.escape(version)})</legend>"
+        f"<div class='bar-label'><strong>Total Playback Time:</strong> {total_playback_hours:.1f} hours</div>"
+        f"<div class='bar-label'><strong>CPU temperature:</strong> {html.escape(cpu_temp_text)}</div>"
+        f"{storage_html}{sd_html}"
+        f"</fieldset>"
+        f"<fieldset><legend>Copyright &amp; License</legend>"
+        f"<p><strong>autostream</strong> is Copyright &copy; 2025&#8211;2026 Lo-tech Systems Limited."
+        f" autostream and the autostream logo are trademarks of Lo-tech Systems Limited.</p>"
+        f"<p>autostream uses OwnTone and ALSA, redistributed under the terms of their respective"
+        f" open-source licences. AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc."
+        f" All other trademarks are the property of their respective owners.</p>"
+        f"<details style='margin-top:0.75rem;'>"
+        f"<summary>License</summary>"
+        f"<div style='margin-top:0.5rem;'>{license_inner}</div>"
+        f"</details>"
+        f"</fieldset>"
+    )
+    html_body = build_page_html(
+        "About",
+        _body_html,
+        extra_css=_extra_css,
+        lic_html=lic_html,
+        lic_spacer=lic_spacer,
+        active_tab="about",
+    )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)
     handler.send_header("Content-Type", "text/html; charset=utf-8")

@@ -45,11 +45,34 @@ from autostream_webui_assets import (
 from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
 
 from autostream_webui_state import WebUIState
-import autostream_webui_pages as pages
-import autostream_webui_page_about as about_page
-import autostream_webui_page_license as license_page
-import autostream_webui_page_logs as logs_page
-from autostream_webui_api import run_updater
+from autostream_webui_api import (
+    run_updater,
+    send_json,
+    send_owntone_outputs_json,
+    send_owntone_outputs_state_json,
+    send_status_json,
+    send_update_check_json,
+    send_update_status_json,
+)
+from autostream_webui_page_about import send_about_page
+from autostream_webui_page_airplay import send_airplay_page
+from autostream_webui_page_license import send_license_page
+from autostream_webui_page_logs import handle_logs_post, send_logs_page
+from autostream_webui_page_owntone import (
+    send_owntone_ready_json,
+    send_owntone_restarting_page,
+    send_owntone_setup_page,
+)
+from autostream_webui_page_rebooting import send_rebooting_page
+from autostream_webui_page_setup import send_setup_page
+from autostream_webui_post_handlers import (
+    handle_factory_reset_post,
+    handle_live_input_eq_update,
+    handle_live_input_gain_update,
+    handle_output_update,
+    handle_owntone_setup_post,
+    handle_setup_post,
+)
 
 from autostream_config import unconfigured
 
@@ -128,7 +151,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                     result.setdefault("details", err.strip())
         except Exception as e:
             result = {"ok": False, "error": "apply failed", "details": str(e)}
-        pages.send_json(self, 200, result)
+        send_json(self, 200, result)
 
     # Reduce noisy TLS/HTTPS probes hitting this plain-HTTP server
     def log_error(self, format, *args):  # noqa: A003
@@ -266,33 +289,33 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                         pending.append(clear_cookie)
 
         if path == "/":
-            pages.send_airplay_page(self, STATE, AUTH, flash_msg=msg, flash_type=flash_type)
+            send_airplay_page(self, STATE, AUTH, flash_msg=msg, flash_type=flash_type)
         elif path == "/setup":
-            pages.send_setup_page(self, STATE, AUTH, flash_msg=msg)
+            send_setup_page(self, STATE, AUTH, flash_msg=msg)
         elif path == "/owntone-setup":
-            pages.send_owntone_setup_page(self, STATE, AUTH, flash_msg=msg)
+            send_owntone_setup_page(self, STATE, AUTH, flash_msg=msg)
         elif path == "/about":
-            about_page.send_about_page(self, STATE)
+            send_about_page(self, STATE)
         elif path == "/license":
-            license_page.send_license_page(self, STATE)
+            send_license_page(self, STATE)
         elif path == "/logs":
-            logs_page.send_logs_page(self, STATE, flash_msg=msg)
+            send_logs_page(self, STATE, flash_msg=msg)
         elif path == "/api/status":
-            pages.send_status_json(self)
+            send_status_json(self)
         elif path == "/api/update/check":
-            pages.send_update_check_json(self)
+            send_update_check_json(self)
         elif path == "/api/update/status":
-            pages.send_update_status_json(self)
+            send_update_status_json(self)
         elif path == "/api/owntone/outputs":
-            pages.send_owntone_outputs_json(self, STATE)
+            send_owntone_outputs_json(self, STATE)
         elif path == "/api/owntone/outputs_state":
-            pages.send_owntone_outputs_state_json(self, STATE)
+            send_owntone_outputs_state_json(self, STATE)
         elif path == "/api/owntone/ready":
-            pages.send_owntone_ready_json(self, STATE)
+            send_owntone_ready_json(self, STATE)
         elif path == "/owntone-restarting":
-            pages.send_owntone_restarting_page(self, STATE)
+            send_owntone_restarting_page(self, STATE)
         elif path == "/rebooting":
-            pages.send_rebooting_page(self, STATE, AUTH)
+            send_rebooting_page(self, STATE, AUTH)
         else:
             self.send_error(404, "Not found")
 
@@ -371,25 +394,25 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
 
-            pages.handle_output_update(self, STATE, body_str)
+            handle_output_update(self, STATE, body_str)
 
         elif path == "/api/input_eq":
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
-            pages.handle_live_input_eq_update(self, STATE, body_str)
+            handle_live_input_eq_update(self, STATE, body_str)
 
         elif path == "/api/input_gain":
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
-            pages.handle_live_input_gain_update(self, STATE, body_str)
+            handle_live_input_gain_update(self, STATE, body_str)
 
         elif path == "/setup":
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
-            pages.handle_setup_post(self, STATE, AUTH, body_str)
+            handle_setup_post(self, STATE, AUTH, body_str)
             with _setup_lock:
                 initial_setup = 0
 
@@ -397,7 +420,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
-            pages.handle_owntone_setup_post(self, STATE, AUTH, body_str)
+            handle_owntone_setup_post(self, STATE, AUTH, body_str)
             with _setup_lock:
                 if initial_setup == 1:
                     initial_setup = 2
@@ -406,7 +429,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
-            logs_page.handle_logs_post(self, STATE, body_str)
+            handle_logs_post(self, STATE, body_str)
 
         elif path == "/api/update/apply":
             # Requires authentication when a PIN is configured.
@@ -437,14 +460,14 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             # Goes via autostream-admin (sudo) through autostream_sysutils.reboot_system()
             # Use helper's delayed reboot so the rebooting page has time to render.
             reboot_system("UserRequestNormal", delay_s=3)
-            pages.send_json(self, 200, {"ok": True})
+            send_json(self, 200, {"ok": True})
 
         elif path == "/api/factory-reset":
             # Requires authentication when a PIN is configured.
             if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
                 self.send_error(403, "Authentication required")
                 return
-            pages.handle_factory_reset_post(self, STATE, AUTH)
+            handle_factory_reset_post(self, STATE, AUTH)
 
         else:
             self.send_error(404, "Not found")

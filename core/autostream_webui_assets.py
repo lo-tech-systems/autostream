@@ -719,6 +719,49 @@ body {
 .setup-detail-back {
   margin-bottom: 0.75rem;
 }
+
+/* ── Nav bar bottom clearance (only when nav bar is present) ── */
+body.has-bottom-nav .container {
+  padding-bottom: 5rem;
+}
+
+/* ── Bottom navigation bar ── */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border-top: 1px solid #e0e0e0;
+  display: flex;
+  z-index: 1000;
+  padding-bottom: constant(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.nav-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 0 0.5rem;
+  color: #8a8a8e;
+  text-decoration: none;
+  font-size: 0.7rem;
+  font-weight: 500;
+  gap: 0.18rem;
+  -webkit-tap-highlight-color: transparent;
+}
+.nav-tab svg {
+  width: 24px;
+  height: 24px;
+}
+.nav-tab-active {
+  color: #2b80d1;
+}
+.nav-tab-warn {
+  color: #c00000;
+}
 """
 
 BANNER_HTML = """
@@ -854,3 +897,49 @@ A2HS_SCRIPT = """
 })();
 </script>
 """
+
+# ── Bottom nav icons (Feather-style inline SVG) ──────────────────────────────
+
+NAV_ICON_HOME = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/>'
+    '<path d="M9 21V12h6v9"/>'
+    '</svg>'
+)
+
+NAV_ICON_SETUP = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<circle cx="12" cy="12" r="3"/>'
+    '<path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0'
+    'l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09'
+    'A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06'
+    'A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9'
+    'a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68'
+    'a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33'
+    'l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21'
+    'a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>'
+    '</svg>'
+)
+
+NAV_ICON_LOGS = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<line x1="8" y1="6" x2="21" y2="6"/>'
+    '<line x1="8" y1="12" x2="21" y2="12"/>'
+    '<line x1="8" y1="18" x2="21" y2="18"/>'
+    '<line x1="3" y1="6" x2="3.01" y2="6"/>'
+    '<line x1="3" y1="12" x2="3.01" y2="12"/>'
+    '<line x1="3" y1="18" x2="3.01" y2="18"/>'
+    '</svg>'
+)
+
+NAV_ICON_ABOUT = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<circle cx="12" cy="12" r="10"/>'
+    '<line x1="12" y1="16" x2="12" y2="12"/>'
+    '<line x1="12" y1="8" x2="12.01" y2="8"/>'
+    '</svg>'
+)
