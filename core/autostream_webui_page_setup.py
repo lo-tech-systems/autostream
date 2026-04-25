@@ -458,6 +458,7 @@ def send_setup_page(
             ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
             + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
             + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
+            + (" \u00b7 Hostname: On" if parsed.webui.show_hostname_on_home else " \u00b7 Hostname: Off")
         )
         form_content_html = f"""<div class="setup-slide-viewport">
       <div class="setup-slide-track" id="setupSlideTrack">
@@ -559,6 +560,13 @@ def send_setup_page(
                   <span class="switch"></span>
                 </label>
                 <span>Dark mode</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Display Hostname</span>
               </div>
             </fieldset>
           </div>
@@ -1092,10 +1100,12 @@ def send_setup_page(
           var cb = document.getElementById('webui_show_master_volume');
           var cbDet = document.getElementById('webui_show_input_detail');
           var cbDark = document.getElementById('webui_dark_mode');
+          var cbHost = document.getElementById('webui_show_hostname_on_home');
           var mv = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
           var det = (cbDet && cbDet.checked) ? 'Input detail: On' : 'Input detail: Off';
           var dark = (cbDark && cbDark.checked) ? 'Dark mode: On' : 'Dark mode: Off';
-          sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark;
+          var host = (cbHost && cbHost.checked) ? 'Hostname: On' : 'Hostname: Off';
+          sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark + ' \u00b7 ' + host;
         }}
         function closePanel() {{
           refreshInputCardSubs();

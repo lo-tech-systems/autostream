@@ -145,6 +145,11 @@ STYLE_CSS = """
   color: var(--color-chip-off-text);
 }
 
+.hostname-pill {
+  background: var(--color-chip-neutral-bg);
+  color: var(--color-chip-neutral-text);
+}
+
 h1 {
   font-size: 1.6rem;
   margin: 0 0 0.75rem 0;

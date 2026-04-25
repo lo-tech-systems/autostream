@@ -259,6 +259,8 @@ class WebUIConfig:
     show_input_detail: bool
     # Whether to use the dark colour theme. Default: False.
     dark_mode: bool
+    # Whether to show the system hostname in the home-page top controls.
+    show_hostname_on_home: bool
 
 
 @dataclass(frozen=True)
@@ -398,6 +400,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         show_master_volume=cfg.getboolean("webui", "show_master_volume", fallback=True),
         show_input_detail=cfg.getboolean("webui", "show_input_detail", fallback=False),
         dark_mode=cfg.getboolean("webui", "dark_mode", fallback=False),
+        show_hostname_on_home=cfg.getboolean("webui", "show_hostname_on_home", fallback=False),
     )
 
     return AutostreamConfig(

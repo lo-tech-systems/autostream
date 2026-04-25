@@ -20,7 +20,7 @@ from autostream_core import (
     get_playback_snapshot,
 )
 from autostream_player_service import list_outputs
-from autostream_sysutils import reboot_system
+from autostream_sysutils import get_system_hostname, reboot_system
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
     A2HS_SCRIPT,
@@ -42,6 +42,12 @@ def send_airplay_page(
     flash_type: str = "success",
 ) -> None:
     """Render the main AirPlay control page."""
+    def _display_hostname_label() -> str:
+        hostname = str(get_system_hostname() or "").strip()
+        if hostname.lower().endswith(".local"):
+            hostname = hostname[:-6]
+        return hostname.strip() or "autostream"
+
     try:
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
@@ -97,6 +103,7 @@ def send_airplay_page(
     hidden_output_names = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
     show_master_volume = parsed.webui.show_master_volume
     show_input_detail = parsed.webui.show_input_detail
+    show_hostname_on_home = parsed.webui.show_hostname_on_home
 
     try:
         is_playing = any_monitor_capturing()
@@ -112,6 +119,7 @@ def send_airplay_page(
     stylus_banner_text = playback_snapshot.banner_text or ""
     status_text = _status_text_for_home(is_playing, input_levels)
     status_class = "playing" if is_playing else "waiting"
+    hostname_label = _display_hostname_label()
 
     input_levels_html = ""
     if show_input_detail:
@@ -670,11 +678,25 @@ def send_airplay_page(
 
     # Top controls row: refresh on left, status pill on right (pill shown here only
     # when master volume is hidden; otherwise the pill lives inside the master volume card).
+    _top_right_pill_html = ""
+    if show_master_volume:
+        if show_hostname_on_home:
+            _top_right_pill_html = (
+                f'<span class="status-pill hostname-pill">{html.escape(hostname_label)}</span>'
+            )
+    else:
+        top_text = status_text
+        top_classes = f"status-pill status-{status_class}"
+        if show_hostname_on_home:
+            top_text = f"{hostname_label}: {status_text}"
+            top_classes += " hostname-pill"
+        _top_right_pill_html = f'<span class="{top_classes}">{html.escape(top_text)}</span>'
+
     _top_controls_html = (
         f"<div class='airplay-top-controls'>"
         f"<button type='button' class='pill-btn small' onclick='location.reload();'"
         f" title='Reload page to refresh speakers'>\u21bb Refresh</button>"
-        + (f"{_status_pill_html}" if not show_master_volume else "")
+        + _top_right_pill_html
         + f"</div>"
     )
 
