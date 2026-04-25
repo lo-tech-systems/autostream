@@ -690,7 +690,7 @@ def send_airplay_page(
         f"margin:0.85rem 0 0.35rem;padding:0.85rem 0.9rem;border-radius:12px;"
         f"border:1px solid var(--color-status-danger);"
         f"background:var(--color-surface-raised);"
-        f"color:#fff;font-size:0.99rem;"
+        f"color:var(--color-text);font-size:0.99rem;"
         f"text-align:center;text-decoration:none;'>"
         f"{html.escape(stylus_banner_text)}</a>"
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")

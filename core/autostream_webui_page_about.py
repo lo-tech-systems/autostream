@@ -115,13 +115,18 @@ def send_about_page(handler, state: WebUIState) -> None:
     )
 
     # System panel content
-    _system_panel_html = (
-        f"<fieldset><legend>System (build {html.escape(version)})</legend>"
-        f"<div class='bar-label'><strong>Total Playback Time:</strong> {total_playback_hours:.1f} hours</div>"
-        f"<div class='bar-label'><strong>CPU temperature:</strong> {html.escape(cpu_temp_text)}</div>"
-        f"{storage_html}{sd_html}"
-        f"</fieldset>"
-    )
+    _system_panel_parts = [
+        f"<fieldset><legend>System</legend>",
+        f"<div class='bar-label'><strong>Build</strong><span>{html.escape(version)}</span></div>",
+        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Total Playback Time</strong><span>{total_playback_hours:.1f} hours</span></div>",
+        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>CPU Temperature</strong><span>{html.escape(cpu_temp_text)}</span></div>",
+    ]
+    if storage_html:
+        _system_panel_parts.append(f"<div style='margin-top:0.65rem;'>{storage_html}</div>")
+    if sd_html:
+        _system_panel_parts.append(f"<div style='margin-top:0.65rem;'>{sd_html}</div>")
+    _system_panel_parts.append("</fieldset>")
+    _system_panel_html = "".join(_system_panel_parts)
 
     # Copyright panel content
     _copyright_panel_html = (
@@ -144,8 +149,8 @@ def send_about_page(handler, state: WebUIState) -> None:
     _dark_mode = parsed.webui.dark_mode if parsed else False
     _logo_src = "/lo-tech-logo-dark.png" if _dark_mode else "/lo-tech-logo.png"
     _powered_by_html = (
-        f"<div style='padding:4rem 0 3rem;text-align:center;'>"
-        f"<p style='font-size:0.95rem;color:#fff;margin:0 0 0.5rem;'>POWERED BY</p>"
+        f"<div id='about-powered-by' style='padding:4rem 0 3rem;text-align:center;'>"
+        f"<p style='font-size:0.95rem;color:var(--color-text);margin:0 0 0.5rem;'>POWERED BY</p>"
         f"<img src='{_logo_src}' alt='Lo-tech Systems' style='max-height:40px;width:auto;'>"
         f"</div>"
     )
@@ -203,11 +208,13 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"var panel=document.getElementById('about-panel-'+name);"
         f"if(panel)panel.classList.add('active');"
         f"document.getElementById('aboutSlideTrack').classList.add('panel-open');"
+        f"var pb=document.getElementById('about-powered-by');if(pb)pb.style.display='none';"
         f"window.scrollTo(0,0);"
         f"}}"
         f"function closeAboutPanel(){{"
         f"document.querySelectorAll('.setup-detail-panel').forEach(function(p){{p.classList.remove('active');}});"
         f"document.getElementById('aboutSlideTrack').classList.remove('panel-open');"
+        f"var pb=document.getElementById('about-powered-by');if(pb)pb.style.display='';"
         f"window.scrollTo(0,0);"
         f"}}"
         f"</script>"
