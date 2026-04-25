@@ -88,6 +88,15 @@ ALLOWLIST_PATHS = {
     "/api/owntone/outputs_state",
 }
 
+# Static asset extensions that must never trigger an auth redirect.
+# If these reach Python (nginx misconfiguration or missing file), the correct
+# response is a 404 — not a redirect to /auth, which would overwrite the
+# per-client nonce and lock the user out of PIN-protected pages.
+_STATIC_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+    ".css", ".js", ".woff", ".woff2", ".ttf",
+})
+
 
 # ----------------------------
 # Helpers
@@ -435,6 +444,13 @@ class AuthManager:
         if self.get_pin_if_enabled() is None:
             return False
         if path in ALLOWLIST_PATHS:
+            return False
+        # Static assets must never trigger an auth redirect. If they reach
+        # Python (e.g. nginx misconfiguration, missing file), the correct
+        # outcome is a 404 — not a /auth redirect that would overwrite the
+        # per-client nonce and lock the user out.
+        _, ext = os.path.splitext(path)
+        if ext.lower() in _STATIC_EXTENSIONS:
             return False
         return True
 
