@@ -314,6 +314,13 @@ def cmd_apply() -> Dict[str, Any]:
 
         _log(f"apply: staged release at {repo_root}")
 
+        # Write the release tag to the staging dir so the boot-time retry
+        # service can recover AUTOSTREAM_RELEASE_TAG after a watchdog reset.
+        tag_file = STAGING_DIR / "release_tag"
+        tag_file.write_text(tag + "\n", encoding="utf-8")
+        os.chmod(str(tag_file), 0o600)
+        _log(f"apply: wrote release_tag to {tag_file}")
+
     except Exception as e:
         _log(f"apply: staging failed: {e}")
         return {"ok": False, "error": "Release staging failed", "details": str(e)}

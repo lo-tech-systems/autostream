@@ -1,0 +1,284 @@
+#!/usr/bin/python3
+"""autostream_update_retry
+
+Boot-time service that detects and recovers from an interrupted update caused
+by a watchdog reset.  Invoked once per boot by autostream_update_retry.service,
+ordered before autostream_monitor.service and autostream.service.
+
+Recovery condition (all must hold):
+  - /var/lib/autostream/update-result.env has STATUS=in_progress
+  - LAST_RUN_AT in that file predates the current boot (update was interrupted)
+  - /var/lib/autostream/update-staging/src/<dir>/autostream_install.sh exists
+    and is executable
+  - retry_count in the staging dir is below MAX_RETRIES
+
+On recovery:
+  1. Write /tmp/autostream-updating  (nginx redirect flag — sends web hits to
+     the /offline/updating progress page for the duration of the retry)
+  2. Increment retry_count in the staging dir
+  3. Write update-result.env with a "Retrying update (attempt N of MAX)" message
+     so the progress page shows meaningful status
+  4. Schedule autostream_install.sh --update via systemd-run (same mechanism
+     used by autostream_updater for normal updates)
+
+The installer's on_exit trap removes /tmp/autostream-updating on completion
+(success or failure).  If the watchdog fires again during a retry the cycle
+repeats until MAX_RETRIES is reached, after which the update is marked failed
+and the user is asked to retry manually from the web UI.
+
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# ---- Paths / constants -------------------------------------------------------
+STAMP_DIR          = Path("/var/lib/autostream")
+UPDATE_RESULT_FILE = STAMP_DIR / "update-result.env"
+STAGING_DIR        = STAMP_DIR / "update-staging"
+RELEASE_TAG_FILE   = STAGING_DIR / "release_tag"
+RETRY_COUNT_FILE   = STAGING_DIR / "retry_count"
+UPDATING_FLAG      = Path("/tmp/autostream-updating")
+LOG_PATH           = Path("/var/log/autostream/update.log")
+
+MAX_RETRIES = 3
+
+SYSTEMDRUN_CANDIDATES = (
+    "/bin/systemd-run",
+    "/usr/bin/systemd-run",
+)
+
+
+# ---- Logging -----------------------------------------------------------------
+
+def _log(msg: str) -> None:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(f"[{ts}] [update-retry] {msg}\n")
+
+
+# ---- Env file reader ---------------------------------------------------------
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    """Parse a KEY="value" env file; returns an empty dict if the file is absent."""
+    data: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return data
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        data[key] = value
+    return data
+
+
+# ---- State helpers -----------------------------------------------------------
+
+def _is_pre_boot(timestamp_str: str) -> bool:
+    """Return True if timestamp_str represents a time before the current boot."""
+    try:
+        ts = datetime.fromisoformat(timestamp_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return True  # unparseable timestamp → treat as pre-boot
+
+    try:
+        uptime_s = float(Path("/proc/uptime").read_text().split()[0])
+        boot_time = datetime.now(tz=timezone.utc) - timedelta(seconds=uptime_s)
+        return ts < boot_time
+    except Exception:
+        # /proc/uptime unavailable; fall back to age-based check
+        return (datetime.now(tz=timezone.utc) - ts) > timedelta(minutes=15)
+
+
+def _find_installer() -> Path | None:
+    """Return the staged autostream_install.sh if present and executable."""
+    src_dir = STAGING_DIR / "src"
+    if not src_dir.is_dir():
+        return None
+    for child in src_dir.iterdir():
+        if not child.is_dir():
+            continue
+        candidate = child / "autostream_install.sh"
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            return candidate
+    return None
+
+
+def _read_retry_count() -> int:
+    try:
+        return max(0, int(RETRY_COUNT_FILE.read_text(encoding="utf-8").strip()))
+    except Exception:
+        return 0
+
+
+def _write_retry_count(n: int) -> None:
+    RETRY_COUNT_FILE.write_text(str(n) + "\n", encoding="utf-8")
+    os.chmod(str(RETRY_COUNT_FILE), 0o600)
+
+
+def _write_update_result(status: str, message: str, percent: int, run_at: str) -> None:
+    """Atomically write update-result.env (mirrors the installer's write_update_result)."""
+    STAMP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = UPDATE_RESULT_FILE.with_suffix(".tmp")
+    content = (
+        f'LAST_RUN_AT="{run_at}"\n'
+        f'STATUS="{status}"\n'
+        f'MESSAGE="{message}"\n'
+        f'PERCENT_COMPLETE="{percent}"\n'
+    )
+    tmp.write_text(content, encoding="utf-8")
+    os.chmod(str(tmp), 0o600)
+    os.chown(str(tmp), 0, 0)
+    tmp.replace(UPDATE_RESULT_FILE)
+
+
+def _find_systemd_run() -> str | None:
+    for path in SYSTEMDRUN_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    p = shutil.which("systemd-run")
+    if p and os.path.isabs(p) and os.access(p, os.X_OK):
+        return p
+    return None
+
+
+# ---- Main --------------------------------------------------------------------
+
+def main() -> int:
+    if os.geteuid() != 0:
+        print("autostream_update_retry: must run as root", file=sys.stderr)
+        return 2
+
+    # 1. Check for an interrupted update.
+    env = _read_env_file(UPDATE_RESULT_FILE)
+    status    = env.get("STATUS", "")
+    last_run_at = env.get("LAST_RUN_AT", "")
+
+    if status != "in_progress":
+        _log(f"no interrupted update (status={status!r}); nothing to do")
+        return 0
+
+    if not _is_pre_boot(last_run_at):
+        _log("update in_progress but not pre-boot; skipping (update may be running)")
+        return 0
+
+    # 2. Verify the staged installer is available.
+    installer = _find_installer()
+    if installer is None:
+        _log("interrupted update detected but no staged installer found; cannot retry")
+        return 0
+
+    # 3. Check retry cap.
+    retry_count = _read_retry_count()
+    if retry_count >= MAX_RETRIES:
+        _log(f"retry cap reached ({retry_count}/{MAX_RETRIES}); marking update failed")
+        now_str = datetime.now().astimezone().isoformat(timespec="seconds")
+        _write_update_result(
+            "failure",
+            f"Update failed after {MAX_RETRIES} attempt(s). Please retry from the web UI.",
+            0,
+            now_str,
+        )
+        return 1
+
+    # 4. Read candidate tag (best-effort; "unknown" is acceptable — the installer
+    #    falls back gracefully and writes "unknown" to install-state.env).
+    try:
+        release_tag = RELEASE_TAG_FILE.read_text(encoding="utf-8").strip()
+        if not release_tag:
+            raise ValueError("empty")
+    except Exception:
+        release_tag = "unknown"
+        _log("release_tag file missing or empty; proceeding with tag=unknown")
+
+    attempt = retry_count + 1
+    _log(
+        f"scheduling retry: attempt={attempt}/{MAX_RETRIES} "
+        f"tag={release_tag!r} installer={installer}"
+    )
+
+    # 5. Write nginx redirect flag so web hits go to /offline/updating.
+    UPDATING_FLAG.touch(mode=0o644)
+
+    # 6. Increment persisted retry count *before* firing the installer so that a
+    #    second watchdog reset during this retry is counted correctly.
+    _write_retry_count(attempt)
+
+    # 7. Write update-result.env so the /offline/updating page shows retry state
+    #    immediately (the installer will overwrite this with phase progress once it
+    #    starts running).
+    run_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    _write_update_result(
+        "in_progress",
+        f"Retrying update (attempt {attempt} of {MAX_RETRIES})",
+        0,
+        run_at,
+    )
+
+    # 8. Schedule the installer as a transient systemd unit (same pattern as
+    #    autostream_updater cmd_apply).
+    systemd_run = _find_systemd_run()
+    if systemd_run is None:
+        _log("systemd-run not found; cannot schedule retry")
+        _write_update_result("failure", "Cannot retry: systemd-run not found", 0, run_at)
+        UPDATING_FLAG.unlink(missing_ok=True)
+        return 1
+
+    unit_suffix = f"{int(time.time())}-{os.getpid()}"
+    unit_name   = f"autostream-update-retry-{unit_suffix}"
+
+    cmd = [
+        systemd_run,
+        "--quiet",
+        "--collect",
+        f"--unit={unit_name}",
+        "--on-active=2",
+        "--property=Type=oneshot",
+        "--property=After=NetworkManager.service",
+        "--property=Wants=NetworkManager.service",
+        f"--setenv=AUTOSTREAM_RELEASE_TAG={release_tag}",
+        "--",
+        str(installer),
+        "--update",
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except Exception as exc:
+        _log(f"systemd-run subprocess error: {exc}")
+        _write_update_result("failure", "Failed to schedule retry", 0, run_at)
+        UPDATING_FLAG.unlink(missing_ok=True)
+        return 1
+
+    if result.returncode != 0:
+        _log(
+            f"systemd-run failed rc={result.returncode} "
+            f"stderr={result.stderr.strip()!r}"
+        )
+        _write_update_result("failure", "Failed to schedule retry installer", 0, run_at)
+        UPDATING_FLAG.unlink(missing_ok=True)
+        return 1
+
+    _log(f"retry scheduled as transient unit {unit_name!r}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

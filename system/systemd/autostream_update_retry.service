@@ -1,0 +1,26 @@
+# /etc/systemd/system/autostream_update_retry.service
+#
+# Boot-time service that detects an interrupted update (watchdog reset during
+# a previous update attempt) and re-schedules the installer automatically.
+#
+# Ordering: must complete before autostream_monitor.service starts, which in
+# turn is required by autostream.service.  This ensures the nginx redirect flag
+# (/tmp/autostream-updating) and update-result.env are in place before any
+# autostream service becomes visible to the network.
+#
+# This file is part of autostream.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+[Unit]
+Description=Autostream update retry
+After=local-fs.target
+Before=autostream_monitor.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/autostream/autostream_update_retry
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

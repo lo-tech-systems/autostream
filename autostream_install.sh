@@ -379,6 +379,9 @@ trap on_error ERR
 
 on_exit() {
   local exit_code=$?
+  # Remove the nginx redirect flag written by the boot-time retry service.
+  # This runs on both success and failure paths (trap on EXIT).
+  rm -f /tmp/autostream-updating || true
   if [[ ${PROMPT_REBOOT_ON_EXIT} -ne 1 ]]; then
     exit "${exit_code}"
   fi
@@ -603,7 +606,7 @@ system_upgrade_phase() {
   info "Updating apt metadata"
   DEBIAN_FRONTEND=noninteractive apt-get update
   info "Upgrading installed system packages"
-  DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+  NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 }
 
 # fetch_phase: clone/update the autostream source repo (install only).
@@ -688,8 +691,9 @@ deploy_phase() {
   fi
 
   info "Installing supervisor and helper scripts"
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater" "${LIBEXEC_DIR}/autostream_updater" 0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"   "${LIBEXEC_DIR}/autostream_admin"   0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater"      "${LIBEXEC_DIR}/autostream_updater"      0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"        "${LIBEXEC_DIR}/autostream_admin"        0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry" "${LIBEXEC_DIR}/autostream_update_retry" 0755 root root
 
   info "Setting ownership to enable autostream to manage venv"
   chown autostream:autostream "${INSTALL_DIR}"
@@ -817,8 +821,9 @@ services_phase() {
   set_phase "services"
   info "=== Phase: services ==="
 
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service" /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_update_retry.service" /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service"       /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service"       /etc/systemd/system/
 
   if [[ -n "${SDMON_METHOD}" ]]; then
     install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
@@ -838,6 +843,7 @@ services_phase() {
     systemctl enable autostream_sdcardhealth.timer
   fi
 
+  systemctl enable autostream_update_retry.service
   systemctl enable autostream_monitor.service
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
