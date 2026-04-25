@@ -54,6 +54,7 @@ from autostream_webui_api import (
     send_update_check_json,
     send_update_status_json,
 )
+from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page
 from autostream_webui_page_airplay import send_airplay_page
 from autostream_webui_page_license import send_license_page
@@ -64,6 +65,7 @@ from autostream_webui_page_owntone import (
     send_owntone_setup_page,
 )
 from autostream_webui_page_rebooting import send_rebooting_page
+from autostream_webui_page_service import send_service_page
 from autostream_webui_page_setup import send_setup_page
 from autostream_webui_post_handlers import (
     handle_factory_reset_post,
@@ -71,6 +73,7 @@ from autostream_webui_post_handlers import (
     handle_live_input_gain_update,
     handle_output_update,
     handle_owntone_setup_post,
+    handle_service_post,
     handle_setup_post,
 )
 
@@ -296,6 +299,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_owntone_setup_page(self, STATE, AUTH, flash_msg=msg)
         elif path == "/about":
             send_about_page(self, STATE)
+        elif path == "/service":
+            send_service_page(self, STATE, flash_msg=msg, flash_type=flash_type)
         elif path == "/license":
             send_license_page(self, STATE)
         elif path == "/logs":
@@ -380,7 +385,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         csrf_token = token_from_header or token_from_body
 
         if not AUTH.validate_csrf(self, csrf_token):
-            if path in ("/setup", "/owntone-setup", "/logs"):
+            if path in ("/setup", "/owntone-setup", "/logs", "/service"):
                 self._redirect_with_error_flash("Settings not saved, please try again")
             else:
                 self.send_error(403, "CSRF validation failed")
@@ -430,6 +435,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_logs_post(self, STATE, body_str)
+
+        elif path == "/service":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            handle_service_post(self, STATE, body_str)
 
         elif path == "/api/update/apply":
             # Requires authentication when a PIN is configured.
@@ -497,6 +508,7 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
         config_path=config_path,
         style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
         banner_html=BANNER_HTML,
+        nav_html=build_nav_bar_html("setup"),
         title="autostream",
     )
 
@@ -528,6 +540,7 @@ if __name__ == "__main__":
         config_path=config_path,
         style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
         banner_html=BANNER_HTML,
+        nav_html=build_nav_bar_html("setup"),
         title="autostream",
     )
     run_autostream(config_path, start_webui=start_webui_background)

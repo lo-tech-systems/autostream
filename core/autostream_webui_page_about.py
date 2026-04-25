@@ -6,21 +6,14 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Page renderer for the /about route.
 
 Responsibilities:
-  - Render the About page: product overview, per-input stylus life bars,
-    system information (build version, total playback hours, CPU temperature,
-    disk usage, SD card health), and copyright/license notice.
-
-Helpers kept in this module:
-  - _stylus_box_html  -- render a single stylus-life fieldset card
+  - Render the About page: system information (build version, total playback
+    hours, CPU temperature, disk usage, SD card health), and copyright/license.
+  - Provides a Logs button to reach the log viewer.
 
 Shared helpers (imported from autostream_webui_common):
-  - get_app_version           -- read installed application version
-  - _fallback_input_snapshot  -- build a zero-valued snapshot from config when
-                                 the monitor has no live data for an input
-  - _format_reset_date        -- format a stylus-reset ISO timestamp as a
-                                 compact "Mon-YY" label
-  - load_license_text         -- read the LICENSE / LICENCE file
-  - render_license_md         -- convert the LICENSE Markdown to HTML
+  - get_app_version  -- read installed application version
+  - load_license_text -- read the LICENSE / LICENCE file
+  - render_license_md -- convert the LICENSE Markdown to HTML
 """
 
 from __future__ import annotations
@@ -29,7 +22,6 @@ import html
 
 from autostream_config import parse_config
 from autostream_core import get_playback_snapshot
-from autostream_playback_stats import InputPlaybackSnapshot
 from autostream_rpi import get_cpu_temperature_c
 from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_health_percent
 
@@ -38,8 +30,6 @@ from autostream_webui_assets import (
 )
 
 from autostream_webui_common import (
-    _fallback_input_snapshot,
-    _format_reset_date,
     build_page_html,
     build_top_banner_html,
     get_app_version,
@@ -50,39 +40,6 @@ from autostream_webui_common import (
 
 from autostream_webui_state import WebUIState
 
-
-# -----------------------------------------------------------------------------
-# Stylus life bar card
-# -----------------------------------------------------------------------------
-
-def _stylus_box_html(
-    *,
-    title: str,
-    snapshot: InputPlaybackSnapshot,
-) -> str:
-    """Render a fieldset card showing stylus life remaining as a coloured bar.
-
-    Colour thresholds: red ≤10 %, amber ≤20 %, green otherwise.
-    The bar width is clamped to [0, 100] so an overdue stylus (negative
-    remaining) renders as a full red bar rather than a broken layout.
-    """
-    life_total_seconds = max(1, int(snapshot.stylus_life_hours) * 3600)
-    remaining_seconds = max(0, int(snapshot.stylus_remaining_seconds or 0))
-    remaining_hours = max(0.0, remaining_seconds / 3600.0)
-    remaining_pct = max(0.0, min(100.0, (remaining_seconds / life_total_seconds) * 100.0))
-    bar_status = (
-        "critical" if remaining_pct <= 10.0
-        else ("warning" if remaining_pct <= 20.0
-              else "healthy")
-    )
-    meta_text = f"{remaining_hours:.1f} hours remaining"
-    return f"""
-      <fieldset><legend>{html.escape(title)}</legend>
-        <div class='bar-label'><strong>Life Remaining:</strong> {remaining_pct:.1f}%</div>
-        <div class='storage-bar'><div class='used' style='width:{remaining_pct}%;' data-status='{bar_status}'></div></div>
-        <div class='storage-meta'>{html.escape(meta_text)}</div>
-      </fieldset>
-    """
 
 
 # -----------------------------------------------------------------------------
@@ -140,45 +97,6 @@ def send_about_page(handler, state: WebUIState) -> None:
             f"<div class='storage-bar'><div class='used' style='width:{sd_health}%;' data-status='{sd_status}'></div></div>"
         )
 
-    # Stylus life cards — only shown for inputs configured as turntables.
-    stylus_html = ""
-    if parsed is not None:
-        stylus_rows: list[str] = []
-
-        input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
-            parsed.audio1,
-            1,
-            enabled=True,
-        )
-        if bool(parsed.audio1.is_turntable):
-            input1_title = "Input 1 Stylus"
-            if input1_snapshot.last_stylus_reset_at:
-                input1_title += f" (last changed {_format_reset_date(input1_snapshot.last_stylus_reset_at)})"
-            stylus_rows.append(
-                _stylus_box_html(
-                    title=input1_title,
-                    snapshot=input1_snapshot,
-                )
-            )
-
-        input2_snapshot = playback_snapshot.inputs.get(2) or _fallback_input_snapshot(
-            parsed.audio2,
-            2,
-            enabled=parsed.audio2_enabled,
-        )
-        if bool(parsed.audio2_enabled and parsed.audio2.is_turntable):
-            input2_title = "Input 2 Stylus"
-            if input2_snapshot.last_stylus_reset_at:
-                input2_title += f" (last changed {_format_reset_date(input2_snapshot.last_stylus_reset_at)})"
-            stylus_rows.append(
-                _stylus_box_html(
-                    title=input2_title,
-                    snapshot=input2_snapshot,
-                )
-            )
-
-        stylus_html = "".join(stylus_rows)
-
     license_text = load_license_text()
     if license_text:
         license_inner = f'<div class="licence-pane">{render_license_md(license_text)}</div>'
@@ -223,12 +141,21 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"</fieldset>"
     )
 
+    _dark_mode = parsed.webui.dark_mode if parsed else False
+    _logo_src = "/lo-tech-logo-dark.png" if _dark_mode else "/lo-tech-logo.png"
+    _powered_by_html = (
+        f"<div style='padding:4rem 0 3rem;text-align:center;'>"
+        f"<p style='font-size:0.95rem;color:#fff;margin:0 0 0.5rem;'>POWERED BY</p>"
+        f"<img src='{_logo_src}' alt='Lo-tech Systems' style='max-height:40px;width:auto;'>"
+        f"</div>"
+    )
+
     _body_html = (
         f"{BANNER_HTML}"
+        f"<div style='padding-top:4rem;'>"
         f"<div class='about-slide-viewport'>"
         f"<div class='about-slide-track' id='aboutSlideTrack'>"
         f"<div class='about-slide-list'>"
-        f"{stylus_html}"
         f"<div class='setup-list-card' onclick='openAboutPanel(\"system\")'>"
         f"<div class='setup-list-card-body'><span class='setup-list-card-title'>System</span></div>"
         f"<span class='setup-list-chevron'>\u203a</span>"
@@ -241,6 +168,10 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"<div class='setup-list-card-body'><span class='setup-list-card-title'>License</span></div>"
         f"<span class='setup-list-chevron'>\u203a</span>"
         f"</div>"
+        f"<a href='/logs' class='setup-list-card' style='text-decoration:none;'>"
+        f"<div class='setup-list-card-body'><span class='setup-list-card-title'>Logs</span></div>"
+        f"<span class='setup-list-chevron'>\u203a</span>"
+        f"</a>"
         f"</div>"
         f"<div class='about-slide-detail'>"
         f"<div class='setup-detail-panel' id='about-panel-system'>"
@@ -264,6 +195,8 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"</div>"
         f"</div>"
         f"</div>"
+        f"</div>"
+        f"{_powered_by_html}"
         f"<script>"
         f"function openAboutPanel(name){{"
         f"document.querySelectorAll('.setup-detail-panel').forEach(function(p){{p.classList.remove('active');}});"
@@ -286,7 +219,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="about",
-        dark_mode=parsed.webui.dark_mode if parsed else False,
+        dark_mode=_dark_mode,
     )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)

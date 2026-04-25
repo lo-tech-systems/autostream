@@ -66,7 +66,8 @@ from autostream_webui_common import (
 )
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
-from autostream_webui_page_setup import _stylus_reset_flash_text, send_setup_page
+from autostream_webui_page_setup import send_setup_page
+from autostream_webui_page_service import send_service_page
 from autostream_webui_page_owntone import send_owntone_setup_page, start_owntone_restart_async
 
 
@@ -193,13 +194,6 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         new_audio2_turntable = "audio2_turntable" in form
         new_audio1_threshold = suggested_silence_threshold_dbfs(new_audio1_turntable)
         new_audio2_threshold = suggested_silence_threshold_dbfs(new_audio2_turntable)
-        new_audio1_stylus_life = normalize_stylus_life_hours(
-            fld("audio_stylus_life_hours", str(p.audio1.stylus_life_hours))
-        )
-        new_audio2_stylus_life = normalize_stylus_life_hours(
-            fld("audio2_stylus_life_hours", str(p.audio2.stylus_life_hours))
-        )
-        reset_stylus_input_raw = fld("stylus_reset_input", "").strip()
 
         # Hostname
         old_hn = get_system_hostname()
@@ -213,7 +207,6 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         cfg.set("audio1", "capture_device", fld("audio_capture_device", p.audio1.capture_device))
         cfg.set("audio1", "silence_threshold", str(new_audio1_threshold))
         cfg.set("audio1", "turntable", "yes" if new_audio1_turntable else "no")
-        cfg.set("audio1", "stylus_life_hours", str(new_audio1_stylus_life))
         cfg.set("audio1", "gain_db", fld("audio1_gain_db", str(p.audio1.gain_db)))
         cfg.set("audio1", "eq_40hz_db", fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
         cfg.set("audio1", "eq_100hz_db", fld("audio1_eq_100hz_db", str(p.audio1.eq_100hz_db)))
@@ -224,7 +217,6 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         cfg.set("audio2", "capture_device", fld("audio2_capture_device", p.audio2.capture_device))
         cfg.set("audio2", "silence_threshold", str(new_audio2_threshold))
         cfg.set("audio2", "turntable", "yes" if new_audio2_turntable else "no")
-        cfg.set("audio2", "stylus_life_hours", str(new_audio2_stylus_life))
         cfg.set("audio2", "gain_db", fld("audio2_gain_db", str(p.audio2.gain_db)))
         cfg.set("audio2", "eq_40hz_db", fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
         cfg.set("audio2", "eq_100hz_db", fld("audio2_eq_100hz_db", str(p.audio2.eq_100hz_db)))
@@ -275,35 +267,17 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             1,
             enabled=True,
             is_turntable=new_audio1_turntable,
-            stylus_life_hours=new_audio1_stylus_life,
+            stylus_life_hours=p.audio1.stylus_life_hours,
         )
         update_playback_input_config(
             2,
             enabled=new_audio2_enabled,
             is_turntable=new_audio2_turntable,
-            stylus_life_hours=new_audio2_stylus_life,
+            stylus_life_hours=p.audio2.stylus_life_hours,
         )
 
-        reset_stylus_result = None
-        reset_stylus_input: Optional[int] = None
-        if reset_stylus_input_raw:
-            try:
-                reset_stylus_input = int(reset_stylus_input_raw)
-            except ValueError:
-                reset_stylus_input = None
-            if reset_stylus_input in (1, 2):
-                reset_stylus_result = reset_input_stylus(reset_stylus_input)
-
-        flash_text = "Settings saved"
-        if reset_stylus_input is not None and reset_stylus_result is not None:
-            flash_text = _stylus_reset_flash_text(
-                reset_stylus_input,
-                reset_stylus_result,
-                settings_saved=True,
-            )
-
         # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
-        _set_flash_cookie(handler, flash_text, max_age=30)
+        _set_flash_cookie(handler, "Settings saved", max_age=30)
 
         # Redirect back to / on save
         next_path = "/"
@@ -643,3 +617,98 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
     except Exception as e:
         logging.error("handle_factory_reset_post: scheduling failed: %s", e)
         send_json(handler, 200, {"ok": False, "error": str(e)})
+
+
+# -----------------------------------------------------------------------------
+# Service page POST handler
+# -----------------------------------------------------------------------------
+
+def handle_service_post(handler, state: WebUIState, body: str) -> None:
+    """POST /service — update stylus tracking config or reset a stylus.
+
+    Two actions are handled via the same form:
+
+    * Tracking config change: ``service_stylus_life_input1`` /
+      ``service_stylus_life_input2`` carry the new rated-life value (0 =
+      tracking disabled, positive = hours).
+
+    * Stylus reset: ``service_reset_stylus_input`` = '1' or '2' marks the
+      stylus for that input as changed (zeroes its usage counter).
+
+    No PIN is required; /service is in the auth allowlist.
+    """
+    form = parse_qs(body)
+    def fld(n, d=""): return _fld(form, n, d)
+
+    try:
+        cfg = locked_load_config(state.config_path)
+        p = parse_config(cfg)
+
+        new_audio1_stylus_life = normalize_stylus_life_hours(
+            fld("service_stylus_life_input1", str(p.audio1.stylus_life_hours))
+        )
+        new_audio2_stylus_life = normalize_stylus_life_hours(
+            fld("service_stylus_life_input2", str(p.audio2.stylus_life_hours))
+        )
+        reset_input_raw = fld("service_reset_stylus_input", "").strip()
+
+        # Persist tracking config changes
+        if not cfg.has_section("audio1"):
+            cfg.add_section("audio1")
+        cfg.set("audio1", "stylus_life_hours", str(new_audio1_stylus_life))
+
+        if not cfg.has_section("audio2"):
+            cfg.add_section("audio2")
+        cfg.set("audio2", "stylus_life_hours", str(new_audio2_stylus_life))
+
+        with CONFIG_IO_LOCK:
+            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+
+        update_playback_input_config(
+            1,
+            enabled=True,
+            is_turntable=p.audio1.is_turntable,
+            stylus_life_hours=new_audio1_stylus_life,
+        )
+        update_playback_input_config(
+            2,
+            enabled=p.audio2_enabled,
+            is_turntable=p.audio2.is_turntable,
+            stylus_life_hours=new_audio2_stylus_life,
+        )
+
+        # Stylus reset (optional — only when the reset button was pressed)
+        reset_input: Optional[int] = None
+        reset_result = None
+        if reset_input_raw:
+            try:
+                reset_input = int(reset_input_raw)
+            except ValueError:
+                reset_input = None
+            if reset_input in (1, 2):
+                reset_result = reset_input_stylus(reset_input)
+
+        # Flash only for stylus reset outcomes; plain saves are silent.
+        if reset_input is not None:
+            if reset_result is None or not reset_result.applied:
+                flash_text = f"Input {reset_input} stylus reset failed"
+                flash_type = "error"
+            elif not reset_result.persisted:
+                flash_text = (
+                    f"Input {reset_input} stylus reset, but it could not be saved "
+                    "and may be lost after restart"
+                )
+                flash_type = "error"
+            else:
+                flash_text = f"Input {reset_input} stylus changed"
+                flash_type = "success"
+            _set_flash_cookie(handler, flash_text, flash_type=flash_type, max_age=30)
+
+        handler.send_response(302)
+        handler.send_header("Location", "/service")
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+
+    except Exception:
+        logging.exception("handle_service_post: unexpected failure")
+        send_service_page(handler, state, flash_msg="Save failed", flash_type="error")

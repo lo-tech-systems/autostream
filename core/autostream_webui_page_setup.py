@@ -6,11 +6,8 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Renderer for the main Setup page (/setup).
 
 Contents:
-  - _format_reset_timestamp   -- format stylus-reset ISO timestamp as a locale date
   - _settings_card_html       -- render a styled settings card div
-  - _playback_summary_html    -- render a per-input stylus playback summary card
   - _audio_controls_card_html -- render the gain/EQ sliders card for an input
-  - _stylus_reset_flash_text  -- build flash text describing a stylus reset outcome
   - send_setup_page           -- render and send the /setup page
 """
 
@@ -19,7 +16,6 @@ from __future__ import annotations
 import html
 import logging
 
-from datetime import datetime
 from typing import Optional
 from urllib.parse import parse_qs
 
@@ -30,17 +26,11 @@ from autostream_config import (
     unconfigured,
 )
 from autostream_core import (
-    get_playback_snapshot,
-    reset_input_stylus,
     update_live_owntone_runtime,
     update_playback_input_config,
 )
 from autostream_player_service import list_outputs
 from autostream_playback_stats import (
-    InputPlaybackSnapshot,
-    format_hours,
-    get_stylus_life_options,
-    normalize_stylus_life_hours,
     suggested_silence_threshold_dbfs,
 )
 from autostream_sysutils import get_ap_ssid, get_system_hostname, set_system_hostname
@@ -50,7 +40,6 @@ from autostream_webui_assets import (
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
-    _fallback_input_snapshot,
     _set_flash_cookie,
     build_page_html,
     build_top_banner_html,
@@ -64,19 +53,6 @@ from autostream_webui_state import WebUIState
 # Helpers
 # -----------------------------------------------------------------------------
 
-def _format_reset_timestamp(raw: Optional[str]) -> str:
-    if not raw:
-        return "Never"
-    try:
-        dt = datetime.fromisoformat(str(raw))
-        try:
-            return dt.astimezone().strftime("%x")
-        except Exception:
-            return dt.strftime("%x")
-    except Exception:
-        return str(raw)
-
-
 def _settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: bool = False) -> str:
     border_colour = "var(--color-status-danger)" if warn else "var(--color-border)"
     return (
@@ -85,127 +61,6 @@ def _settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: b
         f"{inner_html}"
         "</div>"
     )
-
-
-def _playback_summary_html(
-    snapshot: InputPlaybackSnapshot,
-    *,
-    input_index: int,
-    reset_button_html: str = "",
-    stylus_life_hours: Optional[int] = None,
-    warn: bool = False,
-) -> str:
-    def summary_row(
-        label: str,
-        value_html: str,
-        *,
-        row_id: str = "",
-        value_id: str = "",
-        hidden: bool = False,
-        extra_attrs: str = "",
-    ) -> str:
-        row_attrs = ""
-        if row_id:
-            row_attrs += f" id='{html.escape(row_id)}'"
-        if extra_attrs:
-            row_attrs += f" {extra_attrs}"
-        if hidden:
-            row_attrs += " style='display:none;'"
-        value_attrs = f" id='{html.escape(value_id)}'" if value_id else ""
-        return (
-            f"<div{row_attrs}><div style='display:flex;align-items:baseline;gap:0.75rem;"
-            "justify-content:space-between;'>"
-            f"<strong>{html.escape(label)}:</strong>"
-            f"<span{value_attrs} style='margin-left:auto;text-align:right;'>{value_html}</span>"
-            "</div></div>"
-        )
-
-    rows: list[str] = []
-    prefix = f"audio{input_index}"
-
-    life_hours = int(
-        stylus_life_hours
-        if stylus_life_hours is not None
-        else snapshot.stylus_life_hours
-    )
-    used = format_hours(snapshot.stylus_playback_seconds)
-    remaining_seconds = snapshot.stylus_remaining_seconds
-    if remaining_seconds is None:
-        remaining_seconds = (life_hours * 3600) - int(snapshot.stylus_playback_seconds)
-    remaining_txt = "Due now"
-    if remaining_seconds > 0:
-        remaining_txt = format_hours(remaining_seconds)
-    rows.append(
-        summary_row(
-            "Stylus Hours",
-            (
-                f"<span id='{prefix}_stylus_hours' data-used-seconds='{int(snapshot.stylus_playback_seconds)}'>"
-                f"{html.escape(used)} / {life_hours} h"
-                "</span>"
-            ),
-        )
-    )
-    rows.append(
-        summary_row(
-            "Stylus Life Remaining",
-            f"<span id='{prefix}_stylus_remaining'>{html.escape(remaining_txt)}</span>",
-        )
-    )
-    if snapshot.last_stylus_reset_at:
-        rows.append(
-            summary_row(
-                "Last Reset",
-                (
-                    f"<span class='local-reset-date' data-reset-iso="
-                    f"'{html.escape(str(snapshot.last_stylus_reset_at))}'>"
-                    f"{html.escape(_format_reset_timestamp(snapshot.last_stylus_reset_at))}"
-                    "</span>"
-                ),
-            )
-        )
-    else:
-        rows.append(summary_row("Last Reset", "Never"))
-
-    if not snapshot.enabled:
-        rows.append(
-            summary_row(
-                "Status",
-                "Disabled",
-                row_id=f"{prefix}_status_row",
-                value_id=f"{prefix}_status_value",
-                extra_attrs="data-active='0'",
-            )
-        )
-    elif snapshot.active:
-        rows.append(
-            summary_row(
-                "Status",
-                "Active now",
-                row_id=f"{prefix}_status_row",
-                value_id=f"{prefix}_status_value",
-                extra_attrs="data-active='1'",
-            )
-        )
-    else:
-        rows.append(
-            summary_row(
-                "Status",
-                "",
-                row_id=f"{prefix}_status_row",
-                value_id=f"{prefix}_status_value",
-                extra_attrs="data-active='0'",
-                hidden=True,
-            )
-        )
-
-    if reset_button_html:
-        rows.append(
-            "<div style='margin-top:0.7rem;display:flex;justify-content:flex-end;'>"
-            f"{reset_button_html}"
-            "</div>"
-        )
-
-    return _settings_card_html("".join(rows), warn=warn)
 
 
 def _audio_controls_card_html(
@@ -232,31 +87,6 @@ def _audio_controls_card_html(
     """
     return _settings_card_html(inner_html)
 
-
-def _stylus_reset_flash_text(
-    input_index: int,
-    result,
-    *,
-    settings_saved: bool = False,
-) -> str:
-    if result is None:
-        return (
-            f"Settings saved, but Input {input_index} stylus reset failed"
-            if settings_saved
-            else f"Input {input_index} stylus reset failed"
-        )
-    if result.applied and result.persisted:
-        return f"Input {input_index} stylus reset"
-    if result.applied:
-        return (
-            f"Input {input_index} stylus reset, but it could not be saved "
-            "and may be lost after restart"
-        )
-    return (
-        f"Settings saved, but Input {input_index} stylus reset failed"
-        if settings_saved
-        else f"Input {input_index} stylus reset failed"
-    )
 
 
 # -----------------------------------------------------------------------------
@@ -289,17 +119,6 @@ def send_setup_page(
     h1 = "Initial Setup (2 of 2)" if initial_setup else "Setup"
     submit_label = "Finish"
     setup_form_id = "setupForm"
-    playback_snapshot = get_playback_snapshot()
-    input1_snapshot = playback_snapshot.inputs.get(1) or _fallback_input_snapshot(
-        parsed.audio1,
-        1,
-        enabled=True,
-    )
-    input2_snapshot = playback_snapshot.inputs.get(2) or _fallback_input_snapshot(
-        parsed.audio2,
-        2,
-        enabled=parsed.audio2_enabled,
-    )
     owntone_button_html = "" if initial_setup else """
           <button type="button"
             onclick="window.location.href='/owntone-setup';"
@@ -375,50 +194,18 @@ def send_setup_page(
         input_index: int,
         title: str,
         parsed_input,
-        snapshot: InputPlaybackSnapshot,
         capture_name: str,
         threshold_name: str,
         turntable_name: str,
-        stylus_life_name: str,
         enabled: bool = True,
         enabled_name: Optional[str] = None,
     ) -> str:
         prefix = "audio1" if input_index == 1 else "audio2"
         threshold_id = "audio_silence_threshold" if input_index == 1 else "audio2_silence_threshold"
         turntable_note_id = f"{prefix}_turntable_note"
-        stylus_wrap_id = f"{prefix}_stylus_wrap"
-        playback_wrap_id = f"{prefix}_playback_wrap"
         settings_wrap_id = f"{prefix}_settings"
         is_turntable = bool(parsed_input.is_turntable)
         threshold_preset = suggested_silence_threshold_dbfs(is_turntable)
-        stylus_life_hours = normalize_stylus_life_hours(parsed_input.stylus_life_hours)
-        stylus_options_html = "".join(
-            f"<option value='{hours}'{' selected' if hours == stylus_life_hours else ''}>{hours} hours</option>"
-            for hours in get_stylus_life_options()
-        )
-
-        reset_button_html = ""
-        if not initial_setup:
-            reset_button_html = (
-                f"<button type='submit' name='stylus_reset_input' value='{input_index}' "
-                "class='pill-btn small' style='padding:0.32rem 0.7rem;font-size:0.85rem;' "
-                f"onclick=\"return confirm('Mark {html.escape(title)} stylus as changed?');\">"
-                "Mark Stylus Changed</button>"
-            )
-
-        is_warning = snapshot.stylus_warning or snapshot.stylus_overdue
-        show_playback_card = not initial_setup
-        playback_html = (
-            _playback_summary_html(
-                snapshot,
-                input_index=input_index,
-                reset_button_html=reset_button_html,
-                stylus_life_hours=stylus_life_hours,
-                warn=is_warning,
-            )
-            if show_playback_card
-            else ""
-        )
 
         enabled_html = ""
         wrap_style = "block" if enabled else "none"
@@ -452,16 +239,6 @@ def send_setup_page(
               Detection threshold preset: {threshold_preset:.0f} dB
             </div>
             <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
-            <div id="{stylus_wrap_id}" style="display:{'block' if is_turntable else 'none'};">
-              <label>Stylus Rated Life:
-                <select name="{stylus_life_name}" onchange="syncInputUi({input_index})">
-                  {stylus_options_html}
-                </select>
-              </label>
-            </div>
-            <div id="{playback_wrap_id}" style="display:{'block' if show_playback_card and is_turntable else 'none'};">
-              {playback_html}
-            </div>
             {_preamp_card_html(input_index, parsed_input) if not initial_setup else ""}
           {settings_close}
         </fieldset>
@@ -606,21 +383,17 @@ def send_setup_page(
         input_index=1,
         title="Input 1",
         parsed_input=parsed.audio1,
-        snapshot=input1_snapshot,
         capture_name="audio_capture_device",
         threshold_name="audio_silence_threshold",
         turntable_name="audio_turntable",
-        stylus_life_name="audio_stylus_life_hours",
     )
     input2_html = input_fieldset_html(
         input_index=2,
         title="Input 2",
         parsed_input=parsed.audio2,
-        snapshot=input2_snapshot,
         capture_name="audio2_capture_device",
         threshold_name="audio2_silence_threshold",
         turntable_name="audio2_turntable",
-        stylus_life_name="audio2_stylus_life_hours",
         enabled=parsed.audio2_enabled,
         enabled_name="audio2_enabled",
     )
@@ -686,31 +459,25 @@ def send_setup_page(
             + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
             + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
         )
-        input1_warn = input1_snapshot.stylus_warning or input1_snapshot.stylus_overdue
-        input2_warn = input2_snapshot.stylus_warning or input2_snapshot.stylus_overdue
-        i1_card_style = ' style="border-color:var(--color-status-danger);"' if input1_warn else ''
-        i1_text_style = ' style="color:var(--color-status-danger);"' if input1_warn else ''
-        i2_card_style = ' style="border-color:var(--color-status-danger);"' if input2_warn else ''
-        i2_text_style = ' style="color:var(--color-status-danger);"' if input2_warn else ''
         form_content_html = f"""<div class="setup-slide-viewport">
       <div class="setup-slide-track" id="setupSlideTrack">
         <div class="setup-slide-list">
           <p class="actions" style="display:flex;margin-bottom:1rem;">
             <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
           </p>
-          <div class="setup-list-card" onclick="openPanel('input1')"{i1_card_style}>
+          <div class="setup-list-card" onclick="openPanel('input1')">
             <div class="setup-list-card-body">
-              <span class="setup-list-card-title"{i1_text_style}>Input 1</span>
+              <span class="setup-list-card-title">Input 1</span>
               <span class="setup-list-card-sub" id="input1-card-sub">{input1_summary}</span>
             </div>
-            <span class="setup-list-chevron"{i1_text_style}>\u203a</span>
+            <span class="setup-list-chevron">\u203a</span>
           </div>
-          <div class="setup-list-card" onclick="openPanel('input2')"{i2_card_style}>
+          <div class="setup-list-card" onclick="openPanel('input2')">
             <div class="setup-list-card-body">
-              <span class="setup-list-card-title"{i2_text_style}>Input 2</span>
+              <span class="setup-list-card-title">Input 2</span>
               <span class="setup-list-card-sub" id="input2-card-sub">{input2_summary}</span>
             </div>
-            <span class="setup-list-chevron"{i2_text_style}>\u203a</span>
+            <span class="setup-list-chevron">\u203a</span>
           </div>
           <div class="setup-list-card" onclick="openPanel('playback')">
             <div class="setup-list-card-body">
@@ -1055,24 +822,9 @@ def send_setup_page(
         }}
         function syncVol(v){{document.getElementById('owntone_volume_percent').value=v;document.getElementById('vol_val').textContent=v+'%';}}
         function thresholdPreset(checked){{ return checked ? -45 : -60; }}
-        function syncStylusLife(inputIndex, value){{
-          const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
-          const hoursEl = document.getElementById(prefix + '_stylus_hours');
-          const remainingEl = document.getElementById(prefix + '_stylus_remaining');
-          if (!hoursEl || !remainingEl) return;
-          const lifeHours = Math.max(1, parseInt(value, 10) || 500);
-          const usedSeconds = parseInt(hoursEl.getAttribute('data-used-seconds') || '0', 10) || 0;
-          const usedHours = (Math.max(0, usedSeconds) / 3600).toFixed(1);
-          hoursEl.textContent = usedHours + ' h / ' + String(lifeHours) + ' h';
-          const remainingSeconds = (lifeHours * 3600) - Math.max(0, usedSeconds);
-          remainingEl.textContent = remainingSeconds > 0
-            ? ((remainingSeconds / 3600).toFixed(1) + ' h')
-            : 'Due now';
-        }}
         function syncInputUi(inputIndex){{
           const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
           const turntableName = inputIndex === 1 ? 'audio_turntable' : 'audio2_turntable';
-          const stylusLifeName = inputIndex === 1 ? 'audio_stylus_life_hours' : 'audio2_stylus_life_hours';
           const enabled = inputIndex === 1
             ? true
             : !!document.querySelector('input[name="audio2_enabled"]')?.checked;
@@ -1080,34 +832,11 @@ def send_setup_page(
           const settings = document.getElementById(prefix + '_settings');
           const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
           const note = document.getElementById(prefix + '_turntable_note');
-          const wrap = document.getElementById(prefix + '_stylus_wrap');
-          const playbackWrap = document.getElementById(prefix + '_playback_wrap');
-          const statusRow = document.getElementById(prefix + '_status_row');
-          const statusValue = document.getElementById(prefix + '_status_value');
           const threshold = thresholdPreset(turntable);
           const hidden = document.getElementById(thresholdId);
           if (settings) settings.style.display = enabled ? 'block' : 'none';
           if (hidden) hidden.value = String(threshold);
           if (note) note.textContent = 'Detection threshold preset: ' + String(threshold) + ' dB';
-          if (wrap) wrap.style.display = enabled && turntable ? 'block' : 'none';
-          if (playbackWrap) playbackWrap.style.display = enabled && turntable ? 'block' : 'none';
-          if (statusRow && statusValue) {{
-            const rowWasActive = statusRow.dataset.active === '1';
-            if (!enabled) {{
-              statusRow.style.display = '';
-              statusValue.textContent = 'Disabled';
-            }} else if (rowWasActive) {{
-              statusRow.style.display = '';
-              statusValue.textContent = 'Active now';
-            }} else {{
-              statusRow.style.display = 'none';
-              statusValue.textContent = '';
-            }}
-          }}
-          if (enabled && turntable) {{
-            const lifeSel = document.querySelector('select[name="' + stylusLifeName + '"]');
-            if (lifeSel) syncStylusLife(inputIndex, lifeSel.value);
-          }}
         }}
         function eqPrefix(inputIndex){{ return inputIndex===1 ? 'audio1' : 'audio2'; }}
         function syncGain(inputIndex, value){{
@@ -1179,19 +908,6 @@ def send_setup_page(
           eqTimers[inputIndex] = setTimeout(() => sendEqUpdate(inputIndex), 120);
         }}
         function syncSil(v){{document.getElementById('sil_val').textContent=v+'s';}}
-        function localizeResetDates(){{
-          document.querySelectorAll('.local-reset-date[data-reset-iso]').forEach((el) => {{
-            const raw = String(el.getAttribute('data-reset-iso') || '').trim();
-            if (!raw) return;
-            const dt = new Date(raw);
-            if (!Number.isNaN(dt.getTime())) {{
-              try {{
-                el.textContent = dt.toLocaleDateString();
-              }} catch (e) {{
-              }}
-            }}
-          }});
-        }}
         window.addEventListener('DOMContentLoaded', () => {{
           const changePinBtn = document.getElementById('btnChangePin');
           const pinModalCancel = document.getElementById('pinModalCancel');
@@ -1201,7 +917,6 @@ def send_setup_page(
           if (pinModalOk) pinModalOk.addEventListener('click', handlePinModalOk);
           syncInputUi(1);
           syncInputUi(2);
-          localizeResetDates();
         }});
         async function requestReboot(){{
           if(!confirm("Reboot system?")) return;

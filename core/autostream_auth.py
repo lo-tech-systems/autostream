@@ -79,6 +79,8 @@ BACKOFF_MAX_SECONDS = 5 * 60
 ALLOWLIST_PATHS = {
     "/",
     "/about",
+    "/logs",
+    "/service",
     "/license",
     "/auth",
     "/api/status",
@@ -162,11 +164,13 @@ class AuthManager:
         config_path: str,
         style_css: str = "",
         banner_html: str = "",
+        nav_html: str = "",
         title: str = "Autostream",
     ) -> None:
         self._config_path = config_path
         self.style_css = style_css
         self.banner_html = banner_html
+        self.nav_html = nav_html
         self.title = title
 
         # In-memory state
@@ -814,6 +818,7 @@ class AuthManager:
         # Minimal page that matches the existing Autostream look by using injected CSS.
         # Uses WebCrypto SHA-256 to compute proof without sending the PIN in plaintext.
         theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
+        body_cls = ' class="has-bottom-nav"' if self.nav_html else ""
         return f"""
             <!doctype html>
             <html lang=\"en\"{theme_attr}>
@@ -825,12 +830,11 @@ class AuthManager:
             {self.style_css}
             </style>
             </head>
-            <body>
+            <body{body_cls}>
             <div class=\"container\">
                 {err_banner}
                 {self.banner_html}
-                <a href="/" class="pill-btn small">← Back</a>
-                <p>Enter the device PIN. This may be on a label attached to the device.</p>
+                <p>Enter the device PIN to access Setup.</p>
 
                 <div class=\"card\">
                 <form id=\"auth-form\" autocomplete=\"off\">
@@ -843,6 +847,7 @@ class AuthManager:
                 </form>
                 </div>
             </div>
+            {self.nav_html}
 
             <script>
             // SHA-256 helper.

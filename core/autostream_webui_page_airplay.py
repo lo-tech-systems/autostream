@@ -569,12 +569,10 @@ def send_airplay_page(
             p.classList.add('status-'+d.status_class);
             renderInputLevels(d.input_levels || []);
             var warn=document.getElementById('stylus-warning-banner');
-            var setupTab=document.getElementById('setup-nav-tab');
             if (warn) {{
               var txt = String((d && d.playback_banner_text) || '').trim();
-              warn.hidden = !txt;
+              warn.style.display = txt ? 'block' : 'none';
               warn.textContent = txt;
-              if (setupTab) setupTab.classList.toggle('nav-tab-warn', !!txt);
             }}
           }});
         }}
@@ -687,10 +685,14 @@ def send_airplay_page(
         + _top_controls_html
         + _master_vol_html
         # Warnings and output cards
-        + f"<div id='stylus-warning-banner' {'hidden' if not stylus_banner_text else ''}"
-        f" style='margin:0.85rem 0 0.35rem;padding:0.8rem 1rem;border-radius:8px;"
-        f"background:var(--color-status-danger);color:#fff;font-weight:700;text-align:center;'>"
-        f"{html.escape(stylus_banner_text)}</div>"
+        + f"<a id='stylus-warning-banner' href='/service'"
+        f" style='{'display:none' if not stylus_banner_text else 'display:block'};"
+        f"margin:0.85rem 0 0.35rem;padding:0.85rem 0.9rem;border-radius:12px;"
+        f"border:1px solid var(--color-status-danger);"
+        f"background:var(--color-surface-raised);"
+        f"color:#fff;font-size:0.99rem;"
+        f"text-align:center;text-decoration:none;'>"
+        f"{html.escape(stylus_banner_text)}</a>"
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + A2HS_PROMPT_HTML
         + f"<div id='outputs-list'>{outputs_html}</div>"
@@ -708,7 +710,7 @@ def send_airplay_page(
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="home",
-        setup_warn=bool(stylus_banner_text),
+        service_warn=bool(stylus_banner_text),
         dark_mode=parsed.webui.dark_mode,
     )
     body_bytes = html_body.encode("utf-8")

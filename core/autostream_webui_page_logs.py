@@ -122,8 +122,10 @@ def send_logs_page(
     )
     _body_html = (
         f"{BANNER_HTML}"
-        f"<p class='actions' style='display:flex;justify-content:flex-end;'>"
-        f"<a href='/logs' class='pill-btn small'>\u21bb Refresh</a></p>"
+        f"<p class='actions' style='display:flex;margin-bottom:1rem;'>"
+        f"<a href='/about' class='pill-btn small'>\u2190 Back</a>"
+        f"<a href='/logs' class='pill-btn small' style='margin-left:auto;'>\u21bb Refresh</a>"
+        f"</p>"
         f"<form method='post' action='/logs' id='logLevelForm' onsubmit='showApplying()'>"
         f"<input type='hidden' name='csrf_token' value='{html.escape(csrf_token)}'>"
         f"<fieldset><legend>Log Level</legend>"
@@ -173,7 +175,7 @@ def send_logs_page(
         body_suffix=_body_suffix,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
-        active_tab="logs",
+        active_tab="about",
         dark_mode=dark_mode,
     )
     body_bytes = html_body.encode("utf-8")

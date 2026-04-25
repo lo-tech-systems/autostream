@@ -43,14 +43,14 @@ from urllib.parse import quote
 from typing import Optional
 
 from autostream_auth import FLASH_COOKIE_NAME
-from autostream_config import CONFIG_IO_LOCK, load_config
+from autostream_config import CONFIG_IO_LOCK, DEFAULT_STYLUS_LIFE_HOURS, load_config
 from autostream_playback_stats import InputPlaybackSnapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
 from autostream_webui_assets import (
     BANNER_HTML,
     NAV_ICON_ABOUT,
     NAV_ICON_HOME,
-    NAV_ICON_LOGS,
+    NAV_ICON_SERVICE,
     NAV_ICON_SETUP,
     STYLE_CSS,
     VIEWPORT_META,
@@ -188,7 +188,7 @@ def _fallback_input_snapshot(
     the config so the About page can still render sensible defaults.
     """
     is_turntable = bool(getattr(parsed_input, "is_turntable", False))
-    stylus_life_hours = int(getattr(parsed_input, "stylus_life_hours", 500))
+    stylus_life_hours = int(getattr(parsed_input, "stylus_life_hours", DEFAULT_STYLUS_LIFE_HOURS))
     return InputPlaybackSnapshot(
         input_index=input_index,
         label=f"Input {input_index}",
@@ -212,25 +212,23 @@ def _fallback_input_snapshot(
 # Compact date formatter for the About page stylus panel
 # -----------------------------------------------------------------------------
 
-def build_nav_bar_html(active: str = "", *, setup_warn: bool = False) -> str:
+def build_nav_bar_html(active: str = "", *, service_warn: bool = False) -> str:
     """Return the fixed bottom navigation bar HTML.
 
-    active:     one of 'home', 'setup', 'logs', 'about'
-    setup_warn: when True the Setup tab is styled red (e.g. stylus overdue)
+    active:       one of 'home', 'setup', 'service', 'about'
+    service_warn: when True the Service tab is styled red (e.g. stylus overdue)
     """
     tabs = [
-        ("home",  "/",      "Home",  NAV_ICON_HOME,  ""),
-        ("setup", "/setup", "Setup", NAV_ICON_SETUP, ' id="setup-nav-tab"'),
-        ("logs",  "/logs",  "Logs",  NAV_ICON_LOGS,  ""),
-        ("about", "/about", "Info",  NAV_ICON_ABOUT, ""),
+        ("home",    "/",        "Home",    NAV_ICON_HOME,    ""),
+        ("setup",   "/setup",   "Setup",   NAV_ICON_SETUP,   ""),
+        ("service", "/service", "Service", NAV_ICON_SERVICE, ' id="service-nav-tab"'),
+        ("about",   "/about",   "Info",    NAV_ICON_ABOUT,   ""),
     ]
     items = []
     for key, href, label, icon, extra_attrs in tabs:
         classes = ["nav-tab"]
         if key == active:
             classes.append("nav-tab-active")
-        if key == "setup" and setup_warn:
-            classes.append("nav-tab-warn")
         cls = " ".join(classes)
         items.append(
             f'<a href="{href}" class="{cls}"{extra_attrs}>{icon}<span>{label}</span></a>'
@@ -250,7 +248,7 @@ def build_page_html(
     lic_spacer: str = "",
     active_tab: str = "",
     show_nav: bool = True,
-    setup_warn: bool = False,
+    service_warn: bool = False,
     dark_mode: bool = False,
 ) -> str:
     """Render a complete HTML page using the shared scaffold.
@@ -270,14 +268,14 @@ def build_page_html(
                   before the nav bar (e.g. scripts, A2HS_SCRIPT)
     lic_html    : from build_top_banner_html() — the fixed flash/PSU banner
     lic_spacer  : from build_top_banner_html() — the spacer div
-    active_tab  : one of 'home', 'setup', 'logs', 'about'; selects the active
-                  nav bar tab
-    show_nav    : when False the nav bar is omitted (e.g. initial-setup wizard)
-    setup_warn  : when True the Setup tab is highlighted red
-    dark_mode   : when True the dark colour theme is applied via data-theme="dark"
+    active_tab   : one of 'home', 'setup', 'service', 'about'; selects the
+                   active nav bar tab
+    show_nav     : when False the nav bar is omitted (e.g. initial-setup wizard)
+    service_warn : when True the Service tab is highlighted red
+    dark_mode    : when True the dark colour theme is applied via data-theme="dark"
     """
     style = STYLE_CSS + ("\n" + extra_css.strip() if extra_css.strip() else "")
-    nav = build_nav_bar_html(active_tab, setup_warn=setup_warn) if show_nav else ""
+    nav = build_nav_bar_html(active_tab, service_warn=service_warn) if show_nav else ""
     body_cls = ' class="has-bottom-nav"' if show_nav else ""
     theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
     return (

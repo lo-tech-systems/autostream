@@ -272,7 +272,7 @@ def build_stylus_warning_text(
         (
             snap
             for snap in snapshots.values()
-            if snap.enabled and snap.stylus_overdue
+            if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_overdue
         ),
         key=lambda snap: snap.input_index,
     )
@@ -285,7 +285,7 @@ def build_stylus_warning_text(
         (
             snap
             for snap in snapshots.values()
-            if snap.enabled and snap.stylus_warning
+            if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_warning
         ),
         key=lambda snap: (
             snap.stylus_remaining_seconds
@@ -454,7 +454,7 @@ class PlaybackTracker:
                     elapsed = int(now - active_since)
                     if elapsed > 0:
                         total_seconds += elapsed
-                        if cfg.is_turntable:
+                        if cfg.is_turntable and cfg.stylus_life_hours > 0:
                             stylus_seconds += elapsed
 
                 stylus_remaining_seconds: Optional[int] = None
@@ -462,7 +462,7 @@ class PlaybackTracker:
                 stylus_warning = False
                 stylus_overdue = False
 
-                if cfg.is_turntable:
+                if cfg.is_turntable and cfg.stylus_life_hours > 0:
                     stylus_remaining_seconds = (
                         int(cfg.stylus_life_hours * 3600) - stylus_seconds
                     )
@@ -491,12 +491,12 @@ class PlaybackTracker:
             warning_indices = tuple(
                 snap.input_index
                 for snap in sorted(inputs.values(), key=lambda snap: snap.input_index)
-                if snap.enabled and snap.stylus_warning and not snap.stylus_overdue
+                if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_warning and not snap.stylus_overdue
             )
             overdue_indices = tuple(
                 snap.input_index
                 for snap in sorted(inputs.values(), key=lambda snap: snap.input_index)
-                if snap.enabled and snap.stylus_overdue
+                if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_overdue
             )
 
             return PlaybackSnapshot(
@@ -526,10 +526,14 @@ class PlaybackTracker:
             stylus_playback_hours=0.0,
             stylus_life_hours=cfg.stylus_life_hours,
             stylus_remaining_seconds=(
-                int(cfg.stylus_life_hours * 3600) if cfg.is_turntable else None
+                int(cfg.stylus_life_hours * 3600)
+                if cfg.is_turntable and cfg.stylus_life_hours > 0
+                else None
             ),
             stylus_remaining_hours=(
-                float(cfg.stylus_life_hours) if cfg.is_turntable else None
+                float(cfg.stylus_life_hours)
+                if cfg.is_turntable and cfg.stylus_life_hours > 0
+                else None
             ),
             stylus_warning=False,
             stylus_overdue=False,
@@ -625,7 +629,7 @@ class PlaybackTracker:
         cfg = self._configs.get(idx, PlaybackInputConfig())
 
         state.total_playback_seconds += elapsed
-        if cfg.is_turntable:
+        if cfg.is_turntable and cfg.stylus_life_hours > 0:
             state.stylus_playback_seconds += elapsed
 
         # Preserve any sub-second remainder so repeated accrual does not drift.

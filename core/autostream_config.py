@@ -67,7 +67,7 @@ DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 DEFAULT_AIRPLAY_MODE = "default"
 VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
-DEFAULT_STYLUS_LIFE_HOURS = 500
+DEFAULT_STYLUS_LIFE_HOURS = 0  # 0 = tracking disabled ("Don't track usage")
 VALID_STYLUS_LIFE_HOURS = (100, 250, 500, 750, 1000)
 
 
@@ -75,11 +75,18 @@ def normalize_stylus_life_hours(
     value: object,
     default: int = DEFAULT_STYLUS_LIFE_HOURS,
 ) -> int:
-    """Return a safe positive stylus-life value in hours."""
+    """Return a valid stylus-life value in hours, or 0 for tracking disabled.
+
+    0 is the sentinel meaning 'Don't track usage'.  Positive values from
+    VALID_STYLUS_LIFE_HOURS mean tracking is enabled with that rated life.
+    Any unrecognised value falls back to *default*.
+    """
     try:
         hours = int(str(value).strip())
     except Exception:
         return int(default)
+    if hours == 0:
+        return 0
     return hours if hours > 0 else int(default)
 
 
