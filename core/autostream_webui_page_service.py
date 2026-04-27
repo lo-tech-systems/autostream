@@ -10,6 +10,11 @@ Responsibilities:
     (stylus, drive belt, main bearing oil), usage reporting, and reset actions.
   - No PIN required; /service is in the auth allowlist.
   - Settings are saved automatically via POST /api/service/config (AJAX).
+
+Schema:
+  _ServiceItem / _SERVICE_ITEMS define the canonical list of maintenance items.
+  autostream_webui_api imports _SERVICE_ITEMS to generate its field map, so
+  adding or renaming an item requires changes only here.
 """
 
 from __future__ import annotations
@@ -25,11 +30,15 @@ from autostream_config import (
     VALID_MAINTENANCE_LIFE_HOURS,
     VALID_BEARING_LIFE_HOURS,
     VALID_MAINTENANCE_LIFE_YEARS,
+    normalize_stylus_life_hours,
+    normalize_maintenance_life_hours,
+    normalize_maintenance_life_years,
+    normalize_bearing_life_hours,
 )
 from autostream_core import get_playback_snapshot
 from autostream_playback_stats import InputPlaybackSnapshot, format_hours
 
-from autostream_webui_assets import BANNER_HTML, PIN_MODAL_CSS
+from autostream_webui_assets import BANNER_HTML, SERVICE_CSS, SERVICE_JS
 
 from autostream_webui_common import (
     _fallback_input_snapshot,
@@ -42,30 +51,58 @@ from autostream_webui_state import WebUIState
 
 
 # -----------------------------------------------------------------------------
-# Module-level constants (CSS, HTML fragments, JavaScript)
+# Service-item schema
 # -----------------------------------------------------------------------------
 
-_SERVICE_CSS = (
-    ".service-slide-viewport { overflow: hidden; width: 100%; }\n"
-    ".service-slide-track { display: flex; width: 200%;"
-    " transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); }\n"
-    ".service-slide-track.panel-detail { transform: translateX(-50%); }\n"
-    ".service-slide-list, .service-slide-detail"
-    " { width: 50%; flex-shrink: 0; min-width: 0; }\n"
-    ".service-divider { border: none; border-top: 1px solid var(--color-border-nav); margin: 0.4rem 0; }\n"
-    "#svcConfirmModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;"
-    "background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}\n"
-    "#svcConfirmModal.show{display:flex;}\n"
-    "#svcConfirmModal .panel{width:min(22rem,100%);background:var(--color-surface);border-radius:16px;"
-    "box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}\n"
-    "#svcConfirmModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;}\n"
-    "#svcConfirmModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}\n"
-    "#svcConfirmModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;"
-    "font-size:1rem;background:var(--color-btn-bg);color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.05);}\n"
-    "#svcConfirmModal .btn.cancel{background:var(--color-surface-alt,rgba(128,128,128,0.25));color:var(--color-text);}\n"
-    + PIN_MODAL_CSS
+@dataclass(frozen=True)
+class _ServiceItem:
+    """Metadata for one maintenance tracking dimension.
+
+    This is the single source of truth for item keys, INI config keys,
+    normalizers, and option sets.  autostream_webui_api imports _SERVICE_ITEMS
+    to generate its _SERVICE_FIELD_MAP rather than maintaining a parallel dict.
+    """
+
+    key: str                         # "stylus" | "belt" | "bearing"
+    card_title: str                  # label shown on the list card, e.g. "Stylus Tracking"
+    hours_config_key: str            # INI key, e.g. "stylus_life_hours"
+    hours_options: tuple             # allowed hour values for the selector
+    hours_normalizer: object         # callable: str -> int
+    years_config_key: Optional[str]  # INI key, or None (stylus has no time dimension)
+    years_normalizer: Optional[object]  # callable: str -> int, or None
+
+
+_SERVICE_ITEMS: tuple[_ServiceItem, ...] = (
+    _ServiceItem(
+        key="stylus",
+        card_title="Stylus Tracking",
+        hours_config_key="stylus_life_hours",
+        hours_options=VALID_STYLUS_LIFE_HOURS,
+        hours_normalizer=normalize_stylus_life_hours,
+        years_config_key=None,
+        years_normalizer=None,
+    ),
+    _ServiceItem(
+        key="belt",
+        card_title="Belt Tracking",
+        hours_config_key="belt_life_hours",
+        hours_options=VALID_MAINTENANCE_LIFE_HOURS,
+        hours_normalizer=normalize_maintenance_life_hours,
+        years_config_key="belt_life_years",
+        years_normalizer=normalize_maintenance_life_years,
+    ),
+    _ServiceItem(
+        key="bearing",
+        card_title="Bearing Oil Tracking",
+        hours_config_key="bearing_life_hours",
+        hours_options=VALID_BEARING_LIFE_HOURS,
+        hours_normalizer=normalize_bearing_life_hours,
+        years_config_key="bearing_life_years",
+        years_normalizer=normalize_maintenance_life_years,
+    ),
 )
 
+# Confirm modal HTML (rendered once per request, referenced by SERVICE_JS).
 _CONFIRM_MODAL_HTML = (
     "<div id='svcConfirmModal' role='dialog' aria-modal='true' aria-labelledby='svcConfirmTitle'>"
     "<div class='panel'>"
@@ -75,192 +112,6 @@ _CONFIRM_MODAL_HTML = (
     "<button type='button' class='btn ok' id='svcConfirmOk'>Yes</button>"
     "</div></div></div>"
 )
-
-# Plain string — no Python substitutions needed; CSRF token is read from DOM.
-_SERVICE_JS = """
-var _csrfToken = document.getElementById('_csrfField').value;
-
-function openServiceDetail(item, idx) {
-  document.querySelectorAll('.service-slide-detail .setup-detail-panel').forEach(function(p) {
-    p.classList.remove('active');
-  });
-  var panel = document.getElementById('service-detail-' + item + '-' + idx);
-  if (panel) panel.classList.add('active');
-  document.getElementById('serviceSlideTrack').classList.add('panel-detail');
-  window.scrollTo(0, 0);
-}
-
-function closeServiceDetail() {
-  document.getElementById('serviceSlideTrack').classList.remove('panel-detail');
-  window.scrollTo(0, 0);
-}
-
-function _autoSaveField(name, value) {
-  fetch('/api/service/config', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
-    body: JSON.stringify({field: name, value: value})
-  }).catch(function() {});
-}
-
-function _updateMaintHours(item, idx) {
-  var sel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
-  if (!sel) return;
-  var lifeHours = parseInt(sel.value, 10);
-  var playSecs = parseInt(sel.getAttribute('data-playback-seconds') || '0', 10);
-  var liveDiv = document.getElementById(item + '-hours-live-' + idx);
-  if (lifeHours === 0) {
-    if (liveDiv) liveDiv.style.display = 'none';
-    return;
-  }
-  if (liveDiv) liveDiv.style.display = '';
-  var lifeSecs = lifeHours * 3600;
-  var remSecs = Math.max(0, lifeSecs - playSecs);
-  var remPct = Math.min(100, remSecs / lifeSecs * 100);
-  var usedH = (Math.max(0, playSecs) / 3600).toFixed(1);
-  var remH = (remSecs / 3600).toFixed(1);
-  var remTxt = remSecs <= 0 ? 'Due now' : remH + ' h';
-  var barStatus = remPct <= 10 ? 'critical' : (remPct <= 20 ? 'warning' : 'healthy');
-  var warnColor = remPct <= 20 ? 'var(--color-status-danger)' : '';
-  var el;
-  el = document.getElementById(item + '-hours-bar-pct-' + idx);
-  if (el) el.textContent = remPct.toFixed(1) + '%';
-  el = document.getElementById(item + '-hours-bar-fill-' + idx);
-  if (el) { el.style.width = remPct.toFixed(1) + '%'; el.setAttribute('data-status', barStatus); }
-  el = document.getElementById(item + '-hours-used-val-' + idx);
-  if (el) el.textContent = usedH + ' h / ' + lifeHours + ' h';
-  el = document.getElementById(item + '-hours-remaining-val-' + idx);
-  if (el) { el.textContent = remTxt; el.style.color = warnColor; }
-}
-
-function _updateMaintTime(item, idx) {
-  var sel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
-  if (!sel) return;
-  var lifeYears = parseInt(sel.value, 10);
-  var elapsedDays = parseInt(sel.getAttribute('data-elapsed-days') || '-1', 10);
-  var serviceAt = sel.getAttribute('data-service-at') || '';
-  var liveDiv = document.getElementById(item + '-time-live-' + idx);
-  if (lifeYears === 0) {
-    if (liveDiv) liveDiv.style.display = 'none';
-    return;
-  }
-  if (liveDiv) liveDiv.style.display = '';
-  var dueEl = document.getElementById(item + '-time-due-val-' + idx);
-  if (dueEl && serviceAt) {
-    try {
-      var dueDate = new Date(serviceAt);
-      dueDate.setDate(dueDate.getDate() + lifeYears * 365);
-      dueEl.textContent = dueDate.toLocaleDateString();
-    } catch(e) {}
-  }
-  if (elapsedDays < 0) return;
-  var totalDays = lifeYears * 365;
-  var remDays = Math.max(0, totalDays - elapsedDays);
-  var remPct = Math.min(100, remDays / totalDays * 100);
-  var barStatus = remPct <= 10 ? 'critical' : (remPct <= 20 ? 'warning' : 'healthy');
-  var warnColor = remPct <= 20 ? 'var(--color-status-danger)' : '';
-  var el;
-  el = document.getElementById(item + '-time-bar-pct-' + idx);
-  if (el) el.textContent = remPct.toFixed(1) + '%';
-  el = document.getElementById(item + '-time-bar-fill-' + idx);
-  if (el) { el.style.width = remPct.toFixed(1) + '%'; el.setAttribute('data-status', barStatus); }
-  el = document.getElementById(item + '-time-remaining-val-' + idx);
-  if (el) { el.textContent = remDays <= 0 ? 'Overdue' : (remDays + ' days remaining'); el.style.color = warnColor; }
-}
-
-function _updateResetBtnState(item, idx) {
-  var hSel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
-  var ySel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
-  var btn = document.getElementById(item + '-reset-btn-' + idx);
-  if (!btn) return;
-  var hOff = !hSel || parseInt(hSel.value, 10) === 0;
-  var yOff = !ySel || parseInt(ySel.value, 10) === 0;
-  btn.disabled = hOff && yOff;
-}
-
-function updateStylusStats(idx) { _updateMaintHours('stylus', idx); _updateResetBtnState('stylus', idx); }
-function updateBeltStats(idx)   { _updateMaintHours('belt', idx);   _updateMaintTime('belt', idx);   _updateResetBtnState('belt', idx); }
-function updateBearingStats(idx){ _updateMaintHours('bearing', idx); _updateMaintTime('bearing', idx); _updateResetBtnState('bearing', idx); }
-
-function _showServiceConfirm(msg) {
-  return new Promise(function(resolve) {
-    var m = document.getElementById('svcConfirmModal');
-    var title = document.getElementById('svcConfirmTitle');
-    var btnOk = document.getElementById('svcConfirmOk');
-    var btnCancel = document.getElementById('svcConfirmCancel');
-    if (!m || !btnOk || !btnCancel) { resolve(true); return; }
-    if (title) title.textContent = msg;
-    m.classList.add('show');
-    var cleanup = function(val) {
-      m.classList.remove('show');
-      btnOk.onclick = null; btnCancel.onclick = null;
-      resolve(val);
-    };
-    btnCancel.onclick = function() { cleanup(false); };
-    btnOk.onclick    = function() { cleanup(true);  };
-  });
-}
-
-function doServiceReset(item, idx) {
-  var labels = {
-    stylus:  'Mark stylus as changed?',
-    belt:    'Mark drive belt as replaced?',
-    bearing: 'Mark bearing as oiled?'
-  };
-  var msg = labels[item] || 'Confirm reset?';
-  _showServiceConfirm(msg).then(function(confirmed) {
-    if (!confirmed) return;
-    var btn = document.getElementById(item + '-reset-btn-' + idx);
-    if (btn) btn.disabled = true;
-    fetch('/api/service/reset', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
-      body: JSON.stringify({item: item, input: idx})
-    }).then(function(r) { return r.json(); }).then(function(d) {
-      if (!d.ok) { if (btn) btn.disabled = false; return; }
-      var hSel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
-      if (hSel) hSel.setAttribute('data-playback-seconds', '0');
-      var ySel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
-      if (ySel) {
-        ySel.setAttribute('data-elapsed-days', '0');
-        ySel.setAttribute('data-service-at', d.last_service_at || '');
-      }
-      var dateKey = item === 'stylus' ? 'stylus-last-service-val-' : item + '-last-service-val-';
-      var dateEl = document.getElementById(dateKey + idx);
-      if (dateEl && d.last_service_at) {
-        try { var dt = new Date(d.last_service_at); dateEl.textContent = dt.toLocaleDateString(); }
-        catch(e) { dateEl.textContent = d.last_service_at; }
-      }
-      var ageEl = document.getElementById(item + '-time-age-val-' + idx);
-      if (ageEl) ageEl.textContent = '0 months';
-      var card = document.getElementById('svc-list-card-' + item + '-' + idx);
-      if (card) {
-        card.style.borderColor = '';
-        var cardTitle = card.querySelector('.setup-list-card-title');
-        if (cardTitle) cardTitle.style.color = '';
-        var cardChevron = card.querySelector('.setup-list-chevron');
-        if (cardChevron) cardChevron.style.color = '';
-        var cardSub = card.querySelector('.setup-list-card-sub');
-        if (cardSub) cardSub.textContent = 'Tracking on';
-      }
-      if (item === 'stylus') {
-        _updateMaintHours('stylus', idx);
-        _updateResetBtnState('stylus', idx);
-      } else {
-        _updateMaintHours(item, idx);
-        _updateMaintTime(item, idx);
-        _updateResetBtnState(item, idx);
-      }
-      if (btn) {
-        btn.style.borderColor = ''; btn.style.background = ''; btn.style.color = '';
-        btn.disabled = false;
-      }
-    }).catch(function() { if (btn) btn.disabled = false; });
-  });
-}
-"""
 
 
 # -----------------------------------------------------------------------------
@@ -842,7 +693,7 @@ def _service_list_card(item: str, idx: int, title: str, sub: str, warn: bool, di
     """Render one list card in pane 1 that navigates to the detail panel."""
     if disabled:
         return (
-            f"<div class='setup-list-card'"
+            f"<div class='setup-list-card' id='svc-list-card-{item}-{idx}'"
             f" style='opacity:0.55;pointer-events:none;cursor:default;'>"
             f"<div class='setup-list-card-body'>"
             f"<span class='setup-list-card-title'>{html.escape(title)}</span>"
@@ -852,9 +703,7 @@ def _service_list_card(item: str, idx: int, title: str, sub: str, warn: bool, di
     warn_border = "border-color:var(--color-status-danger);" if warn else ""
     warn_colour = " style='color:var(--color-status-danger);'" if warn else ""
     card_style = f" style='{warn_border}'" if warn_border else ""
-    chevron = (
-        f"<span class='setup-list-chevron'{warn_colour}>\u203a</span>"
-    )
+    chevron = f"<span class='setup-list-chevron'{warn_colour}>\u203a</span>"
     return (
         f"<div class='setup-list-card' id='svc-list-card-{item}-{idx}'"
         f" onclick=\"openServiceDetail('{item}',{idx})\"{card_style}>"
@@ -907,55 +756,54 @@ def send_service_page(
 
     _back = _back_bar()
 
+    # ── Pane 1: flat card list (one per item × input, divided by input) ────────
+    list_cards = ""
+    for inp_idx, inp_data in ((1, d1), (2, d2)):
+        for si in _SERVICE_ITEMS:
+            sub  = getattr(inp_data, f"{si.key}_sub")
+            warn = getattr(inp_data, f"{si.key}_warn")
+            list_cards += _service_list_card(
+                si.key, inp_idx, f"Input {inp_idx} {si.card_title}",
+                sub, warn, inp_data.cards_disabled,
+            )
+        if inp_idx == 1:
+            list_cards += "<hr class='service-divider'>"
+
+    # ── Pane 2: detail panels (one per item × input) ───────────────────────────
+    detail_panels = ""
+    for inp_idx, inp_data in ((1, d1), (2, d2)):
+        for si in _SERVICE_ITEMS:
+            panel_html = getattr(inp_data, f"{si.key}_html")
+            detail_panels += (
+                f"<div class='setup-detail-panel' id='service-detail-{si.key}-{inp_idx}'>"
+                + _back + panel_html
+                + "</div>"
+            )
+
     _body_html = (
         f"{BANNER_HTML}"
         f"{_CONFIRM_MODAL_HTML}"
         f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
         f"<div class='service-slide-viewport'>"
         f"<div class='service-slide-track' id='serviceSlideTrack'>"
-        # ── Pane 1: flat 6-card list ──────────────────────────────────────────
         f"<div class='service-slide-list'>"
         f"<p style='margin:0.5rem 0 0.85rem;color:var(--color-text-secondary);font-size:0.95rem;'>"
         f"Autostream can keep track of maintenance items for turntables, and remind you when a service item is due."
         f"</p>"
-        + _service_list_card("stylus",  1, "Input 1 Stylus Tracking",     d1.stylus_sub,  d1.stylus_warn,  d1.cards_disabled)
-        + _service_list_card("belt",    1, "Input 1 Belt Tracking",        d1.belt_sub,    d1.belt_warn,    d1.cards_disabled)
-        + _service_list_card("bearing", 1, "Input 1 Bearing Oil Tracking", d1.bearing_sub, d1.bearing_warn, d1.cards_disabled)
-        + "<hr class='service-divider'>"
-        + _service_list_card("stylus",  2, "Input 2 Stylus Tracking",     d2.stylus_sub,  d2.stylus_warn,  d2.cards_disabled)
-        + _service_list_card("belt",    2, "Input 2 Belt Tracking",        d2.belt_sub,    d2.belt_warn,    d2.cards_disabled)
-        + _service_list_card("bearing", 2, "Input 2 Bearing Oil Tracking", d2.bearing_sub, d2.bearing_warn, d2.cards_disabled)
+        + list_cards
         + "</div>"
-        # ── Pane 2: detail panels ─────────────────────────────────────────────
         f"<div class='service-slide-detail'>"
-        f"<div class='setup-detail-panel' id='service-detail-stylus-1'>"
-        + _back + d1.stylus_html
-        + "</div>"
-        f"<div class='setup-detail-panel' id='service-detail-belt-1'>"
-        + _back + d1.belt_html
-        + "</div>"
-        f"<div class='setup-detail-panel' id='service-detail-bearing-1'>"
-        + _back + d1.bearing_html
-        + "</div>"
-        f"<div class='setup-detail-panel' id='service-detail-stylus-2'>"
-        + _back + d2.stylus_html
-        + "</div>"
-        f"<div class='setup-detail-panel' id='service-detail-belt-2'>"
-        + _back + d2.belt_html
-        + "</div>"
-        f"<div class='setup-detail-panel' id='service-detail-bearing-2'>"
-        + _back + d2.bearing_html
+        + detail_panels
         + "</div>"
         f"</div>"
         f"</div>"
-        f"</div>"
-        f"<script>{_SERVICE_JS}</script>"
+        f"<script>{SERVICE_JS}</script>"
     )
 
     html_body = build_page_html(
         "Service",
         _body_html,
-        extra_css=_SERVICE_CSS,
+        extra_css=SERVICE_CSS,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="service",

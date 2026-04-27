@@ -29,10 +29,6 @@ from typing import Optional
 from autostream_config import (
     CONFIG_IO_LOCK,
     parse_config,
-    normalize_bearing_life_hours,
-    normalize_maintenance_life_hours,
-    normalize_maintenance_life_years,
-    normalize_stylus_life_hours,
 )
 from autostream_core import (
     any_monitor_capturing,
@@ -46,25 +42,27 @@ from autostream_core import (
 from autostream_player_service import list_outputs
 from autostream_sysutils import atomic_write_file, run_admin_cmd
 from autostream_webui_common import locked_load_config
+from autostream_webui_page_service import _SERVICE_ITEMS
 from autostream_webui_state import WebUIState
 
 
 # -----------------------------------------------------------------------------
 # Service config field map (field name → config section, key, normaliser)
+# Generated from _SERVICE_ITEMS so field names and normalisers stay in sync
+# with the page schema without needing a parallel hard-coded dict.
 # -----------------------------------------------------------------------------
 
-_SERVICE_FIELD_MAP: dict = {
-    "service_stylus_life_hours_input1":  ("audio1", "stylus_life_hours",  normalize_stylus_life_hours),
-    "service_stylus_life_hours_input2":  ("audio2", "stylus_life_hours",  normalize_stylus_life_hours),
-    "service_belt_life_hours_input1":    ("audio1", "belt_life_hours",    normalize_maintenance_life_hours),
-    "service_belt_life_years_input1":    ("audio1", "belt_life_years",    normalize_maintenance_life_years),
-    "service_belt_life_hours_input2":    ("audio2", "belt_life_hours",    normalize_maintenance_life_hours),
-    "service_belt_life_years_input2":    ("audio2", "belt_life_years",    normalize_maintenance_life_years),
-    "service_bearing_life_hours_input1": ("audio1", "bearing_life_hours", normalize_bearing_life_hours),
-    "service_bearing_life_years_input1": ("audio1", "bearing_life_years", normalize_maintenance_life_years),
-    "service_bearing_life_hours_input2": ("audio2", "bearing_life_hours", normalize_bearing_life_hours),
-    "service_bearing_life_years_input2": ("audio2", "bearing_life_years", normalize_maintenance_life_years),
-}
+_SERVICE_FIELD_MAP: dict = {}
+for _si in _SERVICE_ITEMS:
+    for _n in (1, 2):
+        _sec = f"audio{_n}"
+        _SERVICE_FIELD_MAP[f"service_{_si.key}_life_hours_input{_n}"] = (
+            _sec, _si.hours_config_key, _si.hours_normalizer,
+        )
+        if _si.years_config_key and _si.years_normalizer:
+            _SERVICE_FIELD_MAP[f"service_{_si.key}_life_years_input{_n}"] = (
+                _sec, _si.years_config_key, _si.years_normalizer,
+            )
 
 
 # -----------------------------------------------------------------------------
@@ -354,13 +352,14 @@ def send_service_reset_json(handler, body: str) -> None:
         send_json(handler, 200, {"ok": False, "error": "Reset could not be applied"})
         return
 
-    from datetime import datetime, timezone as _tz
-    now_iso = datetime.now(tz=_tz.utc).replace(microsecond=0).isoformat()
-    send_json(handler, 200, {
+    response: dict = {
         "ok": True,
         "persisted": bool(result.persisted),
-        "last_service_at": now_iso,
-    })
+        "last_service_at": result.last_service_at or "",
+    }
+    if not result.persisted:
+        response["warning"] = "Reset applied but could not be saved — may revert on restart"
+    send_json(handler, 200, response)
 
 
 def send_update_check_json(handler) -> None:

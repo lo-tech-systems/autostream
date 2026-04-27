@@ -263,6 +263,8 @@ def build_nav_bar_html(active: str = "", *, service_warn: bool = False) -> str:
         classes = ["nav-tab"]
         if key == active:
             classes.append("nav-tab-active")
+        if key == "service" and service_warn:
+            classes.append("nav-tab-warn")
         cls = " ".join(classes)
         items.append(
             f'<a href="{href}" class="{cls}"{extra_attrs}>{icon}<span>{label}</span></a>'

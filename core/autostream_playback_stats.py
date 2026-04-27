@@ -466,6 +466,7 @@ class MaintenanceResetResult:
 
     applied: bool
     persisted: bool
+    last_service_at: Optional[str] = None  # ISO timestamp actually written to state
 
 
 def _build_banner(
@@ -660,10 +661,11 @@ class PlaybackTracker:
     ) -> MaintenanceResetResult:
         """Zero one maintenance counter and record today's date. Lock must be held."""
         now = self._time_fn()
+        now_iso = _utc_now_iso(now)
         self._accrue_input_locked(idx, now)
         state = self._ensure_input_state_locked(idx)
         setattr(state, playback_attr, 0)
-        setattr(state, date_attr, _utc_now_iso(now))
+        setattr(state, date_attr, now_iso)
         if idx in self._active_since:
             self._active_since[idx] = now
         self._dirty = True
@@ -671,8 +673,8 @@ class PlaybackTracker:
             self._save_locked(force=True)
         except Exception as exc:
             self._log_save_failure_locked(f"{item_name} reset", exc)
-            return MaintenanceResetResult(applied=True, persisted=False)
-        return MaintenanceResetResult(applied=True, persisted=True)
+            return MaintenanceResetResult(applied=True, persisted=False, last_service_at=now_iso)
+        return MaintenanceResetResult(applied=True, persisted=True, last_service_at=now_iso)
 
     def reset_stylus(self, input_index: int) -> MaintenanceResetResult:
         """Reset stylus usage for an input and persist immediately."""

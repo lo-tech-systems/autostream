@@ -1079,3 +1079,257 @@ NAV_ICON_SERVICE = (
     'a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'
     '</svg>'
 )
+
+
+# -----------------------------------------------------------------------------
+# Service page CSS and JavaScript
+# Exported for use by autostream_webui_page_service.
+# -----------------------------------------------------------------------------
+
+SERVICE_CSS = (
+    ".service-slide-viewport { overflow: hidden; width: 100%; }\n"
+    ".service-slide-track { display: flex; width: 200%;"
+    " transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); }\n"
+    ".service-slide-track.panel-detail { transform: translateX(-50%); }\n"
+    ".service-slide-list, .service-slide-detail"
+    " { width: 50%; flex-shrink: 0; min-width: 0; }\n"
+    ".service-divider { border: none; border-top: 1px solid var(--color-border-nav); margin: 0.4rem 0; }\n"
+    "#svcConfirmModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;"
+    "background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}\n"
+    "#svcConfirmModal.show{display:flex;}\n"
+    "#svcConfirmModal .panel{width:min(22rem,100%);background:var(--color-surface);border-radius:16px;"
+    "box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}\n"
+    "#svcConfirmModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;}\n"
+    "#svcConfirmModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}\n"
+    "#svcConfirmModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;"
+    "font-size:1rem;background:var(--color-btn-bg);color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.05);}\n"
+    "#svcConfirmModal .btn.cancel{background:var(--color-surface-alt,rgba(128,128,128,0.25));color:var(--color-text);}\n"
+    + PIN_MODAL_CSS
+)
+
+# Plain string — no Python substitutions. CSRF token is read from the DOM.
+#
+# Live-calculation note: _updateMaintHours and _updateMaintTime below mirror
+# the server-side logic in _maintenance_item_panel_html (Python). Keep these
+# values in sync with that function:
+#   • Warning threshold  : remaining ≤ 20 %
+#   • Critical threshold : remaining ≤ 10 %
+#   • Year-to-days       : life_years × 365
+SERVICE_JS = """
+var _csrfToken = document.getElementById('_csrfField').value;
+
+// Per-field debounce timers and in-flight AbortControllers for auto-save.
+var _autoSaveTimers = {};
+var _autoSaveControllers = {};
+
+function openServiceDetail(item, idx) {
+  document.querySelectorAll('.service-slide-detail .setup-detail-panel').forEach(function(p) {
+    p.classList.remove('active');
+  });
+  var panel = document.getElementById('service-detail-' + item + '-' + idx);
+  if (panel) panel.classList.add('active');
+  document.getElementById('serviceSlideTrack').classList.add('panel-detail');
+  window.scrollTo(0, 0);
+}
+
+function closeServiceDetail() {
+  document.getElementById('serviceSlideTrack').classList.remove('panel-detail');
+  window.scrollTo(0, 0);
+}
+
+function _showSaveError(fieldName) {
+  var sel = document.querySelector('[name="' + fieldName + '"]');
+  if (!sel) return;
+  var err = document.createElement('span');
+  err.textContent = ' Save failed';
+  err.style.cssText = 'color:var(--color-status-danger);font-size:0.85rem;';
+  sel.parentNode.appendChild(err);
+  setTimeout(function() { if (err.parentNode) err.parentNode.removeChild(err); }, 4000);
+}
+
+function _autoSaveField(name, value) {
+  if (_autoSaveTimers[name]) clearTimeout(_autoSaveTimers[name]);
+  if (_autoSaveControllers[name]) _autoSaveControllers[name].abort();
+  _autoSaveTimers[name] = setTimeout(function() {
+    delete _autoSaveTimers[name];
+    var ctrl = new AbortController();
+    _autoSaveControllers[name] = ctrl;
+    fetch('/api/service/config', {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: ctrl.signal,
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
+      body: JSON.stringify({field: name, value: value})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      delete _autoSaveControllers[name];
+      if (!d.ok) { _showSaveError(name); }
+    }).catch(function(e) {
+      if (e.name !== 'AbortError') { _showSaveError(name); }
+    });
+  }, 300);
+}
+
+function _updateMaintHours(item, idx) {
+  var sel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
+  if (!sel) return;
+  var lifeHours = parseInt(sel.value, 10);
+  var playSecs = parseInt(sel.getAttribute('data-playback-seconds') || '0', 10);
+  var liveDiv = document.getElementById(item + '-hours-live-' + idx);
+  if (lifeHours === 0) {
+    if (liveDiv) liveDiv.style.display = 'none';
+    return;
+  }
+  if (liveDiv) liveDiv.style.display = '';
+  var lifeSecs = lifeHours * 3600;
+  var remSecs = Math.max(0, lifeSecs - playSecs);
+  var remPct = Math.min(100, remSecs / lifeSecs * 100);
+  var usedH = (Math.max(0, playSecs) / 3600).toFixed(1);
+  var remH = (remSecs / 3600).toFixed(1);
+  var remTxt = remSecs <= 0 ? 'Due now' : remH + ' h';
+  var barStatus = remPct <= 10 ? 'critical' : (remPct <= 20 ? 'warning' : 'healthy');
+  var warnColor = remPct <= 20 ? 'var(--color-status-danger)' : '';
+  var el;
+  el = document.getElementById(item + '-hours-bar-pct-' + idx);
+  if (el) el.textContent = remPct.toFixed(1) + '%';
+  el = document.getElementById(item + '-hours-bar-fill-' + idx);
+  if (el) { el.style.width = remPct.toFixed(1) + '%'; el.setAttribute('data-status', barStatus); }
+  el = document.getElementById(item + '-hours-used-val-' + idx);
+  if (el) el.textContent = usedH + ' h / ' + lifeHours + ' h';
+  el = document.getElementById(item + '-hours-remaining-val-' + idx);
+  if (el) { el.textContent = remTxt; el.style.color = warnColor; }
+}
+
+function _updateMaintTime(item, idx) {
+  var sel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
+  if (!sel) return;
+  var lifeYears = parseInt(sel.value, 10);
+  var elapsedDays = parseInt(sel.getAttribute('data-elapsed-days') || '-1', 10);
+  var serviceAt = sel.getAttribute('data-service-at') || '';
+  var liveDiv = document.getElementById(item + '-time-live-' + idx);
+  if (lifeYears === 0) {
+    if (liveDiv) liveDiv.style.display = 'none';
+    return;
+  }
+  if (liveDiv) liveDiv.style.display = '';
+  var dueEl = document.getElementById(item + '-time-due-val-' + idx);
+  if (dueEl && serviceAt) {
+    try {
+      var dueDate = new Date(serviceAt);
+      dueDate.setDate(dueDate.getDate() + lifeYears * 365);
+      dueEl.textContent = dueDate.toLocaleDateString();
+    } catch(e) {}
+  }
+  if (elapsedDays < 0) return;
+  var totalDays = lifeYears * 365;
+  var remDays = Math.max(0, totalDays - elapsedDays);
+  var remPct = Math.min(100, remDays / totalDays * 100);
+  var barStatus = remPct <= 10 ? 'critical' : (remPct <= 20 ? 'warning' : 'healthy');
+  var warnColor = remPct <= 20 ? 'var(--color-status-danger)' : '';
+  var el;
+  el = document.getElementById(item + '-time-bar-pct-' + idx);
+  if (el) el.textContent = remPct.toFixed(1) + '%';
+  el = document.getElementById(item + '-time-bar-fill-' + idx);
+  if (el) { el.style.width = remPct.toFixed(1) + '%'; el.setAttribute('data-status', barStatus); }
+  el = document.getElementById(item + '-time-remaining-val-' + idx);
+  if (el) { el.textContent = remDays <= 0 ? 'Overdue' : (remDays + ' days remaining'); el.style.color = warnColor; }
+}
+
+function _updateResetBtnState(item, idx) {
+  var hSel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
+  var ySel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
+  var btn = document.getElementById(item + '-reset-btn-' + idx);
+  if (!btn) return;
+  var hOff = !hSel || parseInt(hSel.value, 10) === 0;
+  var yOff = !ySel || parseInt(ySel.value, 10) === 0;
+  btn.disabled = hOff && yOff;
+}
+
+function updateStylusStats(idx) { _updateMaintHours('stylus', idx); _updateResetBtnState('stylus', idx); }
+function updateBeltStats(idx)   { _updateMaintHours('belt', idx);   _updateMaintTime('belt', idx);   _updateResetBtnState('belt', idx); }
+function updateBearingStats(idx){ _updateMaintHours('bearing', idx); _updateMaintTime('bearing', idx); _updateResetBtnState('bearing', idx); }
+
+function _showServiceConfirm(msg) {
+  return new Promise(function(resolve) {
+    var m = document.getElementById('svcConfirmModal');
+    var title = document.getElementById('svcConfirmTitle');
+    var btnOk = document.getElementById('svcConfirmOk');
+    var btnCancel = document.getElementById('svcConfirmCancel');
+    if (!m || !btnOk || !btnCancel) { resolve(true); return; }
+    if (title) title.textContent = msg;
+    m.classList.add('show');
+    var cleanup = function(val) {
+      m.classList.remove('show');
+      btnOk.onclick = null; btnCancel.onclick = null;
+      resolve(val);
+    };
+    btnCancel.onclick = function() { cleanup(false); };
+    btnOk.onclick    = function() { cleanup(true);  };
+  });
+}
+
+function doServiceReset(item, idx) {
+  var labels = {
+    stylus:  'Mark stylus as changed?',
+    belt:    'Mark drive belt as replaced?',
+    bearing: 'Mark bearing as oiled?'
+  };
+  var msg = labels[item] || 'Confirm reset?';
+  _showServiceConfirm(msg).then(function(confirmed) {
+    if (!confirmed) return;
+    var btn = document.getElementById(item + '-reset-btn-' + idx);
+    if (btn) btn.disabled = true;
+    fetch('/api/service/reset', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
+      body: JSON.stringify({item: item, input: idx})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) { if (btn) btn.disabled = false; return; }
+      var hSel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
+      if (hSel) hSel.setAttribute('data-playback-seconds', '0');
+      var ySel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
+      if (ySel) {
+        ySel.setAttribute('data-elapsed-days', '0');
+        ySel.setAttribute('data-service-at', d.last_service_at || '');
+      }
+      var dateKey = item === 'stylus' ? 'stylus-last-service-val-' : item + '-last-service-val-';
+      var dateEl = document.getElementById(dateKey + idx);
+      if (dateEl && d.last_service_at) {
+        try { var dt = new Date(d.last_service_at); dateEl.textContent = dt.toLocaleDateString(); }
+        catch(e) { dateEl.textContent = d.last_service_at; }
+      }
+      var ageEl = document.getElementById(item + '-time-age-val-' + idx);
+      if (ageEl) ageEl.textContent = '0 months';
+      var card = document.getElementById('svc-list-card-' + item + '-' + idx);
+      if (card) {
+        card.style.borderColor = '';
+        var cardTitle = card.querySelector('.setup-list-card-title');
+        if (cardTitle) cardTitle.style.color = '';
+        var cardChevron = card.querySelector('.setup-list-chevron');
+        if (cardChevron) cardChevron.style.color = '';
+        var cardSub = card.querySelector('.setup-list-card-sub');
+        if (cardSub) cardSub.textContent = 'Tracking on';
+      }
+      if (d.warning) {
+        var notice = document.createElement('span');
+        notice.textContent = '\u26a0 Reset not persisted \u2014 may revert on restart';
+        notice.style.cssText = 'color:var(--color-status-danger);font-size:0.85rem;display:block;margin-top:0.3rem;';
+        if (btn && btn.parentNode) btn.parentNode.appendChild(notice);
+        setTimeout(function() { if (notice.parentNode) notice.parentNode.removeChild(notice); }, 8000);
+      }
+      if (item === 'stylus') {
+        _updateMaintHours('stylus', idx);
+        _updateResetBtnState('stylus', idx);
+      } else {
+        _updateMaintHours(item, idx);
+        _updateMaintTime(item, idx);
+        _updateResetBtnState(item, idx);
+      }
+      if (btn) {
+        btn.style.borderColor = ''; btn.style.background = ''; btn.style.color = '';
+        btn.disabled = false;
+      }
+    }).catch(function() { if (btn) btn.disabled = false; });
+  });
+}
+"""
