@@ -821,6 +821,114 @@ float EqChain::sample_rate() const
 
 
 // =============================================================================
+// OutputProcessor
+// =============================================================================
+
+OutputProcessor::OutputProcessor() = default;
+
+void OutputProcessor::set_bands(const std::vector<EqBand>& bands, float sample_rate)
+{
+    // Compute the quick-path flag before publishing bands so there is no
+    // window where _is_flat=true but the chain already holds non-flat bands.
+    // A band is considered "flat" only for Peak/LowShelf/HighShelf with 0 dB
+    // gain.  LowPass and HighPass are never flat regardless of parameters.
+    bool is_flat = true;
+    for (const auto& b : bands)
+    {
+        if (b.type == EqBand::Type::LowPass || b.type == EqBand::Type::HighPass)
+        {
+            is_flat = false;
+            break;
+        }
+        if (b.gain_db != 0.0f)
+        {
+            is_flat = false;
+            break;
+        }
+    }
+
+    _eq_chain.set_bands(bands, sample_rate);
+
+    // Store _is_flat after publishing to _eq_chain.  In the brief window
+    // between these two lines, _is_flat may still read true while _eq_chain
+    // already holds the new non-flat bands.  apply() would therefore skip
+    // filtering for at most one audio block (~23 ms) before seeing _is_flat=false
+    // and rebuilding _local_filters from the new bands.  This one-block lag is
+    // imperceptible in practice and is the same trade-off used by the per-input
+    // EqChain (see InputChannel::process_thread_func).
+    _is_flat.store(is_flat, std::memory_order_relaxed);
+    LOG_DEBUG("[output] set_bands: %zu band(s), flat=%s",
+              bands.size(), is_flat ? "true" : "false");
+}
+
+void OutputProcessor::apply(float* samples, int n_frames)
+{
+    // ── EQ path: skipped entirely when all bands are identity ─────────────────
+    if (!_is_flat.load(std::memory_order_relaxed))
+    {
+        std::lock_guard<std::mutex> lock(_apply_mutex);
+
+        // Lazy rebuild: compare shared_ptr addresses (no allocation).
+        // If set_bands() has published new bands since the last call, rebuild
+        // _local_filters with freshly zeroed delay-line state.  Filter state
+        // persists across input handoffs so the output stream is continuous.
+        auto latest = _eq_chain.get_bands();
+        if (latest != _current_bands)
+        {
+            _current_bands = latest;
+            _local_filters.clear();
+            if (latest)
+            {
+                float sr = _eq_chain.sample_rate();
+                for (const auto& band : *latest)
+                {
+                    BiquadFilter f;
+                    f.configure(band, sr);
+                    _local_filters.push_back(f);
+                }
+            }
+        }
+
+        for (auto& filter : _local_filters)
+            filter.process(samples, n_frames);
+    }
+
+    // ── Clip scan: always runs (input EQ / gain may also cause clipping) ──────
+    // Scan the post-output-EQ float data for the maximum absolute value.
+    // Values > 1.0 will be clamped to ±32767 by src_float_to_short_array(),
+    // so we measure the true overshoot here, in float, before the conversion.
+    int   total_samples = n_frames * 2;   // interleaved stereo
+    float peak          = 0.0f;
+    for (int i = 0; i < total_samples; ++i)
+    {
+        float v = std::fabs(samples[i]);
+        if (v > peak)
+            peak = v;
+    }
+
+    // Atomically update _clip_peak_linear keeping the running maximum.
+    // The CAS keep-maximum pattern is safe with relaxed ordering: at worst,
+    // a concurrent poll_clip_overshoot_dbfs() exchange() wins the race and
+    // resets to 0, whereupon the next CAS iteration stores peak from scratch.
+    float prev = _clip_peak_linear.load(std::memory_order_relaxed);
+    while (peak > prev &&
+           !_clip_peak_linear.compare_exchange_weak(
+               prev, peak, std::memory_order_relaxed))
+        ;  // prev refreshed on failure; retry
+}
+
+float OutputProcessor::poll_clip_overshoot_dbfs()
+{
+    // Atomically swap the accumulator for zero and convert to dBFS.
+    // 0.0f means no sample exceeded 1.0 since the last call.
+    float peak = _clip_peak_linear.exchange(0.0f, std::memory_order_relaxed);
+    if (peak <= 1.0f)
+        return 0.0f;
+    return 20.0f * std::log10(peak);
+}
+
+
+// =============================================================================
 // RateEstimator
 // =============================================================================
 
@@ -1282,12 +1390,14 @@ void FifoWriter::close()
 // InputChannel
 // =============================================================================
 
-InputChannel::InputChannel(int         index,
-                           FifoWriter& shared_fifo,
-                           std::mutex& fifo_mutex)
+InputChannel::InputChannel(int              index,
+                           FifoWriter&      shared_fifo,
+                           std::mutex&      fifo_mutex,
+                           OutputProcessor& output_processor)
     : _index(index)
     , _shared_fifo(shared_fifo)
     , _fifo_mutex(fifo_mutex)
+    , _output_processor(output_processor)
     , _ring_buf(RING_BUF_SAMPLES, 0)
 {
     _status.index = index;
@@ -2038,8 +2148,9 @@ void InputChannel::process_thread_func()
                     filter.process(float_out.data(), out_frames);
 
                 // ── Accumulate session effective peak ─────────────────────
-                // Scan the post-gain, post-EQ float samples.  Deferred to
-                // get_status() for the dBFS conversion (no log10 here).
+                // Scan the post-gain, post-input-EQ float samples.  Deferred
+                // to get_status() for the dBFS conversion (no log10 here).
+                // This measures the per-input signal level before output EQ.
                 {
                     float eff_peak = 0.0f;
                     int total_samples = out_frames * 2;
@@ -2053,6 +2164,15 @@ void InputChannel::process_thread_func()
                     if (eff_peak > prev)
                         _session_effective_peak_linear.store(eff_peak, std::memory_order_relaxed);
                 }
+
+                // ── Apply output EQ and update clip tracking ───────────────
+                // Applies the shared output-side parametric EQ in-place.
+                // Always scans for clipping regardless of whether the EQ is
+                // flat (input gain/EQ may have already pushed the signal over
+                // 0 dBFS).  Must be called after per-input EQ but before the
+                // float→int16 conversion so the clip scan sees the true
+                // overshoot rather than the clamped int16 value.
+                _output_processor.apply(float_out.data(), out_frames);
 
                 // Convert back to int16.
                 src_float_to_short_array(float_out.data(), pcm_out.data(), out_frames * 2);
@@ -2507,6 +2627,17 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         }
         return _monitor.api_set_eq(idx, *bands);
     }
+    else if (type == "set_output_eq")
+    {
+        auto bands = parse_eq_bands(json_command);
+        if (!bands)
+        {
+            LOG_WARN("[control] set_output_eq rejected: unknown EQ band type");
+            return "{\"type\":\"ack\",\"command\":\"set_output_eq\","
+                   "\"ok\":false,\"error\":\"unknown EQ band type\"}";
+        }
+        return _monitor.api_set_output_eq(*bands);
+    }
     else if (type == "set_gain")
     {
         int   idx     = json_get_int(json_command, "input", 0);
@@ -2542,9 +2673,10 @@ AudioMonitor::AudioMonitor(const std::string& socket_path)
     for (int i = 0; i < NUM_INPUTS; ++i)
     {
         _inputs[i] = std::make_unique<InputChannel>(
-            i + 1,          // 1-based index
+            i + 1,             // 1-based index
             _fifo_writer,
-            _fifo_mutex
+            _fifo_mutex,
+            _output_processor
         );
     }
 }
@@ -2664,11 +2796,18 @@ InputChannel* AudioMonitor::get_input(int input_index)
 std::string AudioMonitor::api_get_status()
 {
     LOG_SPAM("[monitor] get_status requested");
+
+    // Poll and reset the output clip accumulator.  Must be called before
+    // building the response so the dBFS conversion happens once here rather
+    // than on the hot path.
+    float clip_dbfs = _output_processor.poll_clip_overshoot_dbfs();
+
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(1);
     oss << "{\"type\":\"status\",\"log_level\":\""
         << protocol_log_level_name(logger_get_level())
-        << "\",\"inputs\":[";
+        << "\",\"output_clip_dbfs\":" << clip_dbfs
+        << ",\"inputs\":[";
 
     for (int i = 0; i < NUM_INPUTS; ++i)
     {
@@ -3026,6 +3165,28 @@ std::string AudioMonitor::api_set_eq(int input_index, const std::vector<EqBand>&
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"set_eq\","
         << "\"input\":"        << input_index << ","
+        << "\"bands_applied\":" << bands.size() << ","
+        << "\"ok\":true}";
+    return oss.str();
+}
+
+std::string AudioMonitor::api_set_output_eq(const std::vector<EqBand>& bands)
+{
+    std::string validation_error = validate_eq_bands(bands);
+    if (!validation_error.empty())
+    {
+        LOG_WARN("[monitor] set_output_eq rejected: %s", validation_error.c_str());
+        std::ostringstream oss;
+        oss << "{\"type\":\"ack\",\"command\":\"set_output_eq\","
+            << "\"ok\":false,\"error\":\"" << json_escape(validation_error) << "\"}";
+        return oss.str();
+    }
+
+    _output_processor.set_bands(bands, static_cast<float>(OUTPUT_RATE));
+    LOG_DEBUG("[monitor] set_output_eq applied %zu band(s)", bands.size());
+
+    std::ostringstream oss;
+    oss << "{\"type\":\"ack\",\"command\":\"set_output_eq\","
         << "\"bands_applied\":" << bands.size() << ","
         << "\"ok\":true}";
     return oss.str();

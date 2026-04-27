@@ -37,6 +37,8 @@
 //     {"type":"set_eq","input":1,"bands":[{"type":"peak","freq_hz":100.0,
 //                                          "gain_db":3.0,"q":0.707}]}
 //     {"type":"set_gain","input":1,"gain_db":3.0}
+//     {"type":"set_output_eq","bands":[{"type":"peak","freq_hz":1000.0,
+//                                        "gain_db":2.0,"q":0.707}]}
 //     {"type":"set_log_level","level":"warning"}
 //     {"type":"get_status"}
 //     {"type":"get_id_snapshot","input":1}               (max_seconds default 20)
@@ -47,7 +49,7 @@
 //     {"type":"ack","command":"...", "ok":false,"error":"reason"}
 //
 //   get_status response:
-//     {"type":"status","log_level":"warning","inputs":[
+//     {"type":"status","log_level":"warning","output_clip_dbfs":0.0,"inputs":[
 //       {"index":1,"level_dbfs":-42.1,"poll_peak_dbfs":-38.2,"silent":false,
 //        "capturing":true,"detected_hz":44097.3,
 //        "raw_peak_dbfs":-12.3,"effective_peak_dbfs":-9.1,
@@ -59,6 +61,10 @@
 //   poll_peak_dbfs: maximum raw peak dBFS accumulated since the previous
 //   get_status() call.  Reset to -90.0 on each get_status() so each poll
 //   sees only the peak from the interval since the last poll.
+//   output_clip_dbfs: maximum dB above 0 dBFS reached by the post-output-EQ
+//   signal since the previous get_status() call.  0.0 means no clipping.
+//   Always reported even when the output EQ is flat, since input EQ/gain may
+//   also push the signal over 0 dBFS.  Ignored safely by older clients.
 //
 //   get_id_snapshot response -- JSON ack line followed immediately by a raw
 //   binary payload of (frames * 2) bytes (signed 16-bit little-endian, mono,
@@ -223,6 +229,87 @@ private:
     mutable std::mutex                          _mutex;
     std::shared_ptr<const std::vector<EqBand>>  _bands;
     float                                        _sample_rate = 0.0f;
+};
+
+
+// =============================================================================
+// OutputProcessor
+//
+// Applies a user-configurable parametric EQ to the output stream and tracks
+// clipping.  There is one instance owned by AudioMonitor; a reference to it
+// is threaded into every InputChannel so each process thread can call apply()
+// from the same location in the signal chain.
+//
+// Design notes:
+//
+//   Quick-path: _is_flat is true when the output EQ has no audible effect
+//   (empty band list, or every Peak/LowShelf/HighShelf band has gain_db == 0).
+//   apply() reads _is_flat with a relaxed atomic load before touching any mutex;
+//   when flat, no lock is acquired and no filter arithmetic is performed.
+//   At most one audio block (~23 ms) may pass without the new EQ taking effect
+//   after set_bands() is called — imperceptible in practice.
+//
+//   Filter state lifetime: _local_filters and _current_bands are protected by
+//   _apply_mutex.  Although only one InputChannel has _allow_capture = true at
+//   any instant, the brief handoff window during set_allow_capture() means two
+//   process threads could call apply() concurrently.  _apply_mutex closes that
+//   window without adding overhead on the quick-path (which never acquires it).
+//   The filter state persists across input handoffs so the output stream is
+//   continuous.
+//
+//   Clip tracking: the clip scan always runs, even on the quick-path, because
+//   per-input gain and per-input EQ may already have pushed the signal above
+//   0 dBFS before the output processor is reached.  _clip_peak_linear is
+//   updated via a CAS keep-maximum loop; poll_clip_overshoot_dbfs() exchanges
+//   it for 0.0f (matching the poll_peak_dbfs reset pattern on inputs).
+// =============================================================================
+
+class OutputProcessor
+{
+public:
+    OutputProcessor();
+
+    // Replace all output EQ bands.
+    // Recomputes _is_flat: true iff bands is empty or every band is a
+    // Peak/LowShelf/HighShelf type with gain_db == 0.0f.
+    // LowPass and HighPass bands always set _is_flat = false.
+    // Safe to call from any thread at any time.
+    void set_bands(const std::vector<EqBand>& bands, float sample_rate);
+
+    // Apply the output EQ to n_frames of interleaved stereo float samples
+    // in-place, then scan for clipping and update _clip_peak_linear.
+    // The EQ step is skipped when _is_flat is true; the clip scan always runs.
+    // Safe to call concurrently from two process threads (guarded internally
+    // by _apply_mutex); in practice only one is active at a time.
+    void apply(float* samples, int n_frames);
+
+    // Return the maximum absolute sample value (in dB above 0 dBFS) seen
+    // since the last call, and atomically reset the accumulator to zero.
+    // Returns 0.0f when no sample has exceeded 1.0 in absolute value.
+    // Safe to call from any thread; uses a single atomic exchange.
+    float poll_clip_overshoot_dbfs();
+
+private:
+    // ── Band configuration ────────────────────────────────────────────────────
+    EqChain _eq_chain;   // COW store; set_bands() publishes, apply() reads lazily
+
+    // ── Quick-path flag ───────────────────────────────────────────────────────
+    // Written by set_bands() with relaxed ordering after _eq_chain.set_bands().
+    // Read by apply() with relaxed ordering before acquiring _apply_mutex.
+    // A one-block lag on transition is acceptable (see class note above).
+    std::atomic<bool> _is_flat{true};
+
+    // ── Filter state (access under _apply_mutex) ──────────────────────────────
+    std::mutex                                  _apply_mutex;
+    std::vector<BiquadFilter>                   _local_filters;
+    std::shared_ptr<const std::vector<EqBand>>  _current_bands;
+
+    // ── Clip accumulator ──────────────────────────────────────────────────────
+    // Maximum absolute sample value seen since the last poll_clip_overshoot_dbfs()
+    // call.  1.0 == 0 dBFS; values above 1.0 indicate clipping.
+    // Updated with a CAS keep-maximum loop in apply(); reset via exchange(0)
+    // in poll_clip_overshoot_dbfs().
+    std::atomic<float> _clip_peak_linear{0.0f};
 };
 
 
@@ -445,12 +532,15 @@ struct InputChannelStatus
 class InputChannel
 {
 public:
-    // index:       1 or 2, used only in log messages
-    // shared_fifo: the AudioMonitor's FifoWriter (both inputs write here)
-    // fifo_mutex:  a mutex owned by AudioMonitor that serialises FIFO writes
-    InputChannel(int         index,
-                 FifoWriter& shared_fifo,
-                 std::mutex& fifo_mutex);
+    // index:            1 or 2, used only in log messages
+    // shared_fifo:      the AudioMonitor's FifoWriter (both inputs write here)
+    // fifo_mutex:       a mutex owned by AudioMonitor that serialises FIFO writes
+    // output_processor: the AudioMonitor's OutputProcessor; apply() is called
+    //                   on each block after per-input EQ, before float→int16
+    InputChannel(int              index,
+                 FifoWriter&      shared_fifo,
+                 std::mutex&      fifo_mutex,
+                 OutputProcessor& output_processor);
 
     ~InputChannel();
 
@@ -528,8 +618,9 @@ private:
     int         _index;
 
     // ── Shared resources (owned by AudioMonitor) ─────────────────────────────
-    FifoWriter& _shared_fifo;
-    std::mutex& _fifo_mutex;
+    FifoWriter&      _shared_fifo;
+    std::mutex&      _fifo_mutex;
+    OutputProcessor& _output_processor;
 
     // ── Per-input EQ (owned by this channel) ─────────────────────────────────
     // set_eq() publishes new bands via EqChain::set_bands().  The process thread
@@ -779,6 +870,12 @@ public:
     // Set pre-amplifier gain for one input (1 or 2).  gain_db in [-24, +24].
     std::string api_set_gain(int input_index, float gain_db);
 
+    // Set the output-side parametric EQ applied to the stream after per-input
+    // processing and before the FIFO write.  Bands are shared across all inputs.
+    // An empty band list (or all Peak/Shelf bands with 0 dB gain) enables the
+    // quick-path so no filter arithmetic is performed on the hot path.
+    std::string api_set_output_eq(const std::vector<EqBand>& bands);
+
     // Update the monitor's runtime log level.
     std::string api_set_log_level(const std::string& level_text);
 
@@ -805,8 +902,9 @@ private:
 
     std::string _socket_path;
 
-    FifoWriter  _fifo_writer;
-    std::mutex  _fifo_mutex;
+    FifoWriter      _fifo_writer;
+    std::mutex      _fifo_mutex;
+    OutputProcessor _output_processor;
 
     // _inputs[0] is input 1, _inputs[1] is input 2.
     std::array<std::unique_ptr<InputChannel>, NUM_INPUTS> _inputs;
