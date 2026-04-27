@@ -116,7 +116,9 @@ def send_airplay_page(
         input_levels = []
 
     playback_snapshot = get_playback_snapshot()
-    stylus_banner_text = playback_snapshot.banner_text or ""
+    stylus_banner_text = playback_snapshot.stylus_banner_text or ""
+    belt_banner_text = playback_snapshot.belt_banner_text or ""
+    bearing_banner_text = playback_snapshot.bearing_banner_text or ""
     status_text = _status_text_for_home(is_playing, input_levels)
     status_class = "playing" if is_playing else "waiting"
     hostname_label = _display_hostname_label()
@@ -576,12 +578,14 @@ def send_airplay_page(
             p.textContent=d.status_text; p.classList.remove('status-playing','status-waiting');
             p.classList.add('status-'+d.status_class);
             renderInputLevels(d.input_levels || []);
-            var warn=document.getElementById('stylus-warning-banner');
-            if (warn) {{
-              var txt = String((d && d.playback_banner_text) || '').trim();
-              warn.style.display = txt ? 'block' : 'none';
-              warn.textContent = txt;
-            }}
+            ['stylus', 'belt', 'bearing'].forEach(function(item) {{
+              var el = document.getElementById(item + '-warning-banner');
+              if (!el) return;
+              var key = item === 'stylus' ? 'playback_banner_text' : item + '_banner_text';
+              var txt = String((d && d[key]) || '').trim();
+              el.style.display = txt ? 'block' : 'none';
+              el.textContent = txt;
+            }});
           }});
         }}
         function isActiveControl(el) {{
@@ -715,6 +719,22 @@ def send_airplay_page(
         f"color:var(--color-text);font-size:0.99rem;"
         f"text-align:center;text-decoration:none;'>"
         f"{html.escape(stylus_banner_text)}</a>"
+        + f"<a id='belt-warning-banner' href='/service'"
+        f" style='{'display:none' if not belt_banner_text else 'display:block'};"
+        f"margin:0.35rem 0 0.35rem;padding:0.85rem 0.9rem;border-radius:12px;"
+        f"border:1px solid var(--color-status-danger);"
+        f"background:var(--color-surface-raised);"
+        f"color:var(--color-text);font-size:0.99rem;"
+        f"text-align:center;text-decoration:none;'>"
+        f"{html.escape(belt_banner_text)}</a>"
+        + f"<a id='bearing-warning-banner' href='/service'"
+        f" style='{'display:none' if not bearing_banner_text else 'display:block'};"
+        f"margin:0.35rem 0 0.35rem;padding:0.85rem 0.9rem;border-radius:12px;"
+        f"border:1px solid var(--color-status-danger);"
+        f"background:var(--color-surface-raised);"
+        f"color:var(--color-text);font-size:0.99rem;"
+        f"text-align:center;text-decoration:none;'>"
+        f"{html.escape(bearing_banner_text)}</a>"
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + A2HS_PROMPT_HTML
         + f"<div id='outputs-list'>{outputs_html}</div>"
@@ -732,7 +752,7 @@ def send_airplay_page(
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="home",
-        service_warn=bool(stylus_banner_text),
+        service_warn=playback_snapshot.has_warning,
         dark_mode=parsed.webui.dark_mode,
     )
     body_bytes = html_body.encode("utf-8")

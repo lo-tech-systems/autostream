@@ -70,6 +70,12 @@ VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
 DEFAULT_STYLUS_LIFE_HOURS = 0  # 0 = tracking disabled ("Don't track usage")
 VALID_STYLUS_LIFE_HOURS = (100, 250, 500, 750, 1000)
 
+# Maintenance tracking (drive belt, main bearing oil) — hours and elapsed-time options.
+# 0 is the sentinel meaning "Don't track" for all maintenance thresholds.
+VALID_MAINTENANCE_LIFE_HOURS = (0, 1000, 2000, 3000)        # drive belt
+VALID_BEARING_LIFE_HOURS = (0, 200, 500, 1000, 2000)        # main bearing oil
+VALID_MAINTENANCE_LIFE_YEARS = (0, 1, 2, 3, 4, 5)
+
 
 def normalize_stylus_life_hours(
     value: object,
@@ -88,6 +94,36 @@ def normalize_stylus_life_hours(
     if hours == 0:
         return 0
     return hours if hours > 0 else int(default)
+
+
+def _normalize_choice(value: object, valid_set: tuple, default: int = 0) -> int:
+    """Coerce *value* to a member of *valid_set*, or return 0 / *default*.
+
+    0 is always accepted as the 'Don't track' sentinel.  Any unrecognised
+    positive integer falls back to *default* rather than being accepted.
+    """
+    try:
+        v = int(str(value).strip())
+    except Exception:
+        return int(default)
+    if v == 0:
+        return 0
+    return v if v in valid_set else int(default)
+
+
+def normalize_maintenance_life_hours(value: object, default: int = 0) -> int:
+    """Return a valid belt hours threshold, or 0 (tracking disabled)."""
+    return _normalize_choice(value, VALID_MAINTENANCE_LIFE_HOURS, default)
+
+
+def normalize_bearing_life_hours(value: object, default: int = 0) -> int:
+    """Return a valid bearing hours threshold, or 0 (tracking disabled)."""
+    return _normalize_choice(value, VALID_BEARING_LIFE_HOURS, default)
+
+
+def normalize_maintenance_life_years(value: object, default: int = 0) -> int:
+    """Return a valid elapsed-time threshold in years, or 0 (disabled)."""
+    return _normalize_choice(value, VALID_MAINTENANCE_LIFE_YEARS, default)
 
 
 _PYTHON_LOG_LEVELS = {
@@ -220,6 +256,12 @@ class AudioInputConfig:
     silence_threshold_dbfs: float
     is_turntable: bool
     stylus_life_hours: int
+    # Drive belt maintenance tracking
+    belt_life_hours: int
+    belt_life_years: int
+    # Main bearing oil maintenance tracking
+    bearing_life_hours: int
+    bearing_life_years: int
     gain_db: float
     eq_40hz_db: float
     eq_100hz_db: float
@@ -316,6 +358,18 @@ def _parse_audio_input_config(
         stylus_life_hours=normalize_stylus_life_hours(
             cfg.get(section, "stylus_life_hours", fallback=str(DEFAULT_STYLUS_LIFE_HOURS)),
             default=DEFAULT_STYLUS_LIFE_HOURS,
+        ),
+        belt_life_hours=normalize_maintenance_life_hours(
+            cfg.get(section, "belt_life_hours", fallback="0"),
+        ),
+        belt_life_years=normalize_maintenance_life_years(
+            cfg.get(section, "belt_life_years", fallback="0"),
+        ),
+        bearing_life_hours=normalize_maintenance_life_hours(
+            cfg.get(section, "bearing_life_hours", fallback="0"),
+        ),
+        bearing_life_years=normalize_maintenance_life_years(
+            cfg.get(section, "bearing_life_years", fallback="0"),
         ),
         gain_db=cfg.getfloat(section, "gain_db", fallback=0.0),
         eq_40hz_db=cfg.getfloat(section, "eq_40hz_db", fallback=0.0),

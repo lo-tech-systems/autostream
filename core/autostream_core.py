@@ -55,10 +55,10 @@ from autostream_player_service import (
 from autostream_playback_stats import (
     DEFAULT_STYLUS_LIFE_HOURS,
     InputPlaybackSnapshot,
+    MaintenanceResetResult,
     PlaybackInputConfig,
     PlaybackSnapshot,
     PlaybackTracker,
-    StylusResetResult,
     input_label,
 )
 
@@ -92,9 +92,15 @@ _playback_tracker: Optional[PlaybackTracker] = None
 def _empty_playback_snapshot() -> PlaybackSnapshot:
     return PlaybackSnapshot(
         inputs={},
-        warning_input_indices=(),
-        overdue_input_indices=(),
-        banner_text=None,
+        stylus_warning_indices=(),
+        stylus_overdue_indices=(),
+        stylus_banner_text=None,
+        belt_warning_indices=(),
+        belt_overdue_indices=(),
+        belt_banner_text=None,
+        bearing_warning_indices=(),
+        bearing_overdue_indices=(),
+        bearing_banner_text=None,
     )
 
 
@@ -104,11 +110,19 @@ def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
             enabled=True,
             is_turntable=cfg.audio1.is_turntable,
             stylus_life_hours=cfg.audio1.stylus_life_hours,
+            belt_life_hours=cfg.audio1.belt_life_hours,
+            belt_life_years=cfg.audio1.belt_life_years,
+            bearing_life_hours=cfg.audio1.bearing_life_hours,
+            bearing_life_years=cfg.audio1.bearing_life_years,
         ),
         2: PlaybackInputConfig.normalized(
             enabled=cfg.audio2_enabled,
             is_turntable=cfg.audio2.is_turntable,
             stylus_life_hours=cfg.audio2.stylus_life_hours,
+            belt_life_hours=cfg.audio2.belt_life_hours,
+            belt_life_years=cfg.audio2.belt_life_years,
+            bearing_life_hours=cfg.audio2.bearing_life_hours,
+            bearing_life_years=cfg.audio2.bearing_life_years,
         ),
     }
 
@@ -160,18 +174,56 @@ def get_input_playback_snapshot(input_index: int) -> InputPlaybackSnapshot:
         stylus_warning=False,
         stylus_overdue=False,
         last_stylus_reset_at=None,
+        belt_life_hours=0,
+        belt_playback_seconds=0,
+        belt_playback_hours=0.0,
+        belt_hours_remaining=None,
+        belt_hours_overdue=False,
+        belt_hours_warning=False,
+        belt_life_years=0,
+        belt_elapsed_days=None,
+        belt_time_overdue=False,
+        belt_time_warning=False,
+        belt_overdue=False,
+        belt_warning=False,
+        last_belt_service_at=None,
+        bearing_life_hours=0,
+        bearing_playback_seconds=0,
+        bearing_playback_hours=0.0,
+        bearing_hours_remaining=None,
+        bearing_hours_overdue=False,
+        bearing_hours_warning=False,
+        bearing_life_years=0,
+        bearing_elapsed_days=None,
+        bearing_time_overdue=False,
+        bearing_time_warning=False,
+        bearing_overdue=False,
+        bearing_warning=False,
+        last_bearing_service_at=None,
     )
 
 
-def reset_input_stylus(input_index: int) -> StylusResetResult:
+def _reset_input(input_index: int, method_name: str, item_name: str) -> MaintenanceResetResult:
     tracker = _playback_tracker
     if tracker is None:
-        return StylusResetResult(applied=False, persisted=False)
+        return MaintenanceResetResult(applied=False, persisted=False)
     try:
-        return tracker.reset_stylus(int(input_index))
+        return getattr(tracker, method_name)(int(input_index))
     except Exception as e:
-        logging.warning("Could not reset stylus for input %s: %s", input_index, e)
-        return StylusResetResult(applied=False, persisted=False)
+        logging.warning("Could not reset %s for input %s: %s", item_name, input_index, e)
+        return MaintenanceResetResult(applied=False, persisted=False)
+
+
+def reset_input_stylus(input_index: int) -> MaintenanceResetResult:
+    return _reset_input(input_index, "reset_stylus", "stylus")
+
+
+def reset_input_belt(input_index: int) -> MaintenanceResetResult:
+    return _reset_input(input_index, "reset_belt", "belt")
+
+
+def reset_input_bearing(input_index: int) -> MaintenanceResetResult:
+    return _reset_input(input_index, "reset_bearing", "bearing")
 
 
 def update_playback_input_config(
@@ -180,6 +232,10 @@ def update_playback_input_config(
     enabled: bool,
     is_turntable: bool,
     stylus_life_hours: int,
+    belt_life_hours: int = 0,
+    belt_life_years: int = 0,
+    bearing_life_hours: int = 0,
+    bearing_life_years: int = 0,
 ) -> bool:
     tracker = _playback_tracker
     if tracker is None:
@@ -190,6 +246,10 @@ def update_playback_input_config(
             enabled=enabled,
             is_turntable=is_turntable,
             stylus_life_hours=stylus_life_hours,
+            belt_life_hours=belt_life_hours,
+            belt_life_years=belt_life_years,
+            bearing_life_hours=bearing_life_hours,
+            bearing_life_years=bearing_life_years,
         )
         return True
     except Exception as e:

@@ -86,6 +86,8 @@ ALLOWLIST_PATHS = {
     "/api/status",
     "/api/auth/verify",
     "/api/owntone/outputs_state",
+    "/api/service/reset",
+    "/api/service/config",
 }
 
 # Static asset extensions that must never trigger an auth redirect.

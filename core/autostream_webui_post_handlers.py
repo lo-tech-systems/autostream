@@ -12,6 +12,7 @@ Contents:
   - handle_live_input_gain_update -- POST /api/input_gain
   - handle_owntone_setup_post     -- POST /owntone-setup
   - handle_factory_reset_post     -- POST /api/factory-reset
+  - handle_service_post           -- POST /service
 """
 
 from __future__ import annotations
@@ -29,12 +30,14 @@ from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
     mark_configured,
     normalize_airplay_mode,
+    normalize_bearing_life_hours,
+    normalize_maintenance_life_hours,
+    normalize_maintenance_life_years,
     parse_config,
     unconfigured,
 )
 from autostream_core import (
     request_config_reload,
-    reset_input_stylus,
     set_live_input_eq,
     set_live_input_gain,
     update_live_owntone_runtime,
@@ -270,12 +273,20 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             enabled=True,
             is_turntable=new_audio1_turntable,
             stylus_life_hours=p.audio1.stylus_life_hours,
+            belt_life_hours=p.audio1.belt_life_hours,
+            belt_life_years=p.audio1.belt_life_years,
+            bearing_life_hours=p.audio1.bearing_life_hours,
+            bearing_life_years=p.audio1.bearing_life_years,
         )
         update_playback_input_config(
             2,
             enabled=new_audio2_enabled,
             is_turntable=new_audio2_turntable,
             stylus_life_hours=p.audio2.stylus_life_hours,
+            belt_life_hours=p.audio2.belt_life_hours,
+            belt_life_years=p.audio2.belt_life_years,
+            bearing_life_hours=p.audio2.bearing_life_hours,
+            bearing_life_years=p.audio2.bearing_life_years,
         )
 
         # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
@@ -626,16 +637,17 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
 # -----------------------------------------------------------------------------
 
 def handle_service_post(handler, state: WebUIState, body: str) -> None:
-    """POST /service — update stylus tracking config or reset a stylus.
+    """POST /service — update maintenance tracking config.
 
-    Two actions are handled via the same form:
+    Fields handled:
 
-    * Tracking config change: ``service_stylus_life_input1`` /
-      ``service_stylus_life_input2`` carry the new rated-life value (0 =
-      tracking disabled, positive = hours).
+    * ``service_stylus_life_hours_input1/2``,
+      ``service_belt_life_hours_input1/2``, ``service_belt_life_years_input1/2``,
+      ``service_bearing_life_hours_input1/2``,
+      ``service_bearing_life_years_input1/2`` — rated-life values
+      (0 = tracking disabled).
 
-    * Stylus reset: ``service_reset_stylus_input`` = '1' or '2' marks the
-      stylus for that input as changed (zeroes its usage counter).
+    Maintenance resets are handled via POST /api/service/reset (AJAX).
 
     No PIN is required; /service is in the auth allowlist.
     """
@@ -646,22 +658,58 @@ def handle_service_post(handler, state: WebUIState, body: str) -> None:
         cfg = locked_load_config(state.config_path)
         p = parse_config(cfg)
 
+        # --- Stylus life config ---
         new_audio1_stylus_life = normalize_stylus_life_hours(
-            fld("service_stylus_life_input1", str(p.audio1.stylus_life_hours))
+            fld("service_stylus_life_hours_input1", str(p.audio1.stylus_life_hours))
         )
         new_audio2_stylus_life = normalize_stylus_life_hours(
-            fld("service_stylus_life_input2", str(p.audio2.stylus_life_hours))
+            fld("service_stylus_life_hours_input2", str(p.audio2.stylus_life_hours))
         )
-        reset_input_raw = fld("service_reset_stylus_input", "").strip()
+
+        # --- Belt life config ---
+        new_audio1_belt_life_hours = normalize_maintenance_life_hours(
+            fld("service_belt_life_hours_input1", str(p.audio1.belt_life_hours))
+        )
+        new_audio1_belt_life_years = normalize_maintenance_life_years(
+            fld("service_belt_life_years_input1", str(p.audio1.belt_life_years))
+        )
+        new_audio2_belt_life_hours = normalize_maintenance_life_hours(
+            fld("service_belt_life_hours_input2", str(p.audio2.belt_life_hours))
+        )
+        new_audio2_belt_life_years = normalize_maintenance_life_years(
+            fld("service_belt_life_years_input2", str(p.audio2.belt_life_years))
+        )
+
+        # --- Bearing life config ---
+        new_audio1_bearing_life_hours = normalize_bearing_life_hours(
+            fld("service_bearing_life_hours_input1", str(p.audio1.bearing_life_hours))
+        )
+        new_audio1_bearing_life_years = normalize_maintenance_life_years(
+            fld("service_bearing_life_years_input1", str(p.audio1.bearing_life_years))
+        )
+        new_audio2_bearing_life_hours = normalize_bearing_life_hours(
+            fld("service_bearing_life_hours_input2", str(p.audio2.bearing_life_hours))
+        )
+        new_audio2_bearing_life_years = normalize_maintenance_life_years(
+            fld("service_bearing_life_years_input2", str(p.audio2.bearing_life_years))
+        )
 
         # Persist tracking config changes
         if not cfg.has_section("audio1"):
             cfg.add_section("audio1")
-        cfg.set("audio1", "stylus_life_hours", str(new_audio1_stylus_life))
+        cfg.set("audio1", "stylus_life_hours",   str(new_audio1_stylus_life))
+        cfg.set("audio1", "belt_life_hours",      str(new_audio1_belt_life_hours))
+        cfg.set("audio1", "belt_life_years",      str(new_audio1_belt_life_years))
+        cfg.set("audio1", "bearing_life_hours",   str(new_audio1_bearing_life_hours))
+        cfg.set("audio1", "bearing_life_years",   str(new_audio1_bearing_life_years))
 
         if not cfg.has_section("audio2"):
             cfg.add_section("audio2")
-        cfg.set("audio2", "stylus_life_hours", str(new_audio2_stylus_life))
+        cfg.set("audio2", "stylus_life_hours",   str(new_audio2_stylus_life))
+        cfg.set("audio2", "belt_life_hours",      str(new_audio2_belt_life_hours))
+        cfg.set("audio2", "belt_life_years",      str(new_audio2_belt_life_years))
+        cfg.set("audio2", "bearing_life_hours",   str(new_audio2_bearing_life_hours))
+        cfg.set("audio2", "bearing_life_years",   str(new_audio2_bearing_life_years))
 
         with CONFIG_IO_LOCK:
             atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
@@ -671,40 +719,21 @@ def handle_service_post(handler, state: WebUIState, body: str) -> None:
             enabled=True,
             is_turntable=p.audio1.is_turntable,
             stylus_life_hours=new_audio1_stylus_life,
+            belt_life_hours=new_audio1_belt_life_hours,
+            belt_life_years=new_audio1_belt_life_years,
+            bearing_life_hours=new_audio1_bearing_life_hours,
+            bearing_life_years=new_audio1_bearing_life_years,
         )
         update_playback_input_config(
             2,
             enabled=p.audio2_enabled,
             is_turntable=p.audio2.is_turntable,
             stylus_life_hours=new_audio2_stylus_life,
+            belt_life_hours=new_audio2_belt_life_hours,
+            belt_life_years=new_audio2_belt_life_years,
+            bearing_life_hours=new_audio2_bearing_life_hours,
+            bearing_life_years=new_audio2_bearing_life_years,
         )
-
-        # Stylus reset (optional — only when the reset button was pressed)
-        reset_input: Optional[int] = None
-        reset_result = None
-        if reset_input_raw:
-            try:
-                reset_input = int(reset_input_raw)
-            except ValueError:
-                reset_input = None
-            if reset_input in (1, 2):
-                reset_result = reset_input_stylus(reset_input)
-
-        # Flash only for stylus reset outcomes; plain saves are silent.
-        if reset_input is not None:
-            if reset_result is None or not reset_result.applied:
-                flash_text = f"Input {reset_input} stylus reset failed"
-                flash_type = "error"
-            elif not reset_result.persisted:
-                flash_text = (
-                    f"Input {reset_input} stylus reset, but it could not be saved "
-                    "and may be lost after restart"
-                )
-                flash_type = "error"
-            else:
-                flash_text = f"Input {reset_input} stylus changed"
-                flash_type = "success"
-            _set_flash_cookie(handler, flash_text, flash_type=flash_type, max_age=30)
 
         handler.send_response(302)
         handler.send_header("Location", "/service")

@@ -24,14 +24,23 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from autostream_config import DEFAULT_STYLUS_LIFE_HOURS, VALID_STYLUS_LIFE_HOURS, normalize_stylus_life_hours
+from autostream_config import (
+    DEFAULT_STYLUS_LIFE_HOURS,
+    VALID_STYLUS_LIFE_HOURS,
+    VALID_MAINTENANCE_LIFE_HOURS,
+    VALID_BEARING_LIFE_HOURS,
+    VALID_MAINTENANCE_LIFE_YEARS,
+    normalize_stylus_life_hours,
+    normalize_maintenance_life_hours,
+    normalize_maintenance_life_years,
+)
 from autostream_sysutils import atomic_write_file
 
 
 LOGGER = logging.getLogger(__name__)
 
 
-PLAYBACK_SCHEMA_VERSION = 1
+PLAYBACK_SCHEMA_VERSION = 2
 DEFAULT_FLUSH_INTERVAL_SECONDS = 300.0
 
 DEFAULT_PLAYBACK_STATS_PATH = Path(
@@ -46,6 +55,12 @@ LINE_LEVEL_SILENCE_THRESHOLD_DBFS = -60.0
 
 STYLUS_WARNING_HOURS = 10.0
 STYLUS_WARNING_SECONDS = int(STYLUS_WARNING_HOURS * 3600)
+
+# Maintenance items (belt, bearing): warning thresholds before the due point.
+MAINTENANCE_HOURS_WARNING_THRESHOLD = 50   # hours before hours-limit → "due soon"
+MAINTENANCE_HOURS_WARNING_SECONDS = int(MAINTENANCE_HOURS_WARNING_THRESHOLD * 3600)
+MAINTENANCE_TIME_WARNING_DAYS = 30         # days before time-limit → "due soon"
+
 SAVE_ERROR_LOG_INTERVAL_SECONDS = 60.0
 
 
@@ -57,6 +72,21 @@ def get_default_playback_stats_path() -> Path:
 def get_stylus_life_options() -> tuple[int, ...]:
     """Return the supported stylus-life options for UI dropdowns."""
     return VALID_STYLUS_LIFE_HOURS
+
+
+def get_maintenance_life_hours_options() -> tuple[int, ...]:
+    """Return the supported belt hours-threshold options for UI dropdowns."""
+    return VALID_MAINTENANCE_LIFE_HOURS
+
+
+def get_bearing_life_hours_options() -> tuple[int, ...]:
+    """Return the supported bearing hours-threshold options for UI dropdowns."""
+    return VALID_BEARING_LIFE_HOURS
+
+
+def get_maintenance_life_years_options() -> tuple[int, ...]:
+    """Return the supported maintenance elapsed-time options for UI dropdowns."""
+    return VALID_MAINTENANCE_LIFE_YEARS
 
 
 def suggested_silence_threshold_dbfs(is_turntable: bool) -> float:
@@ -99,6 +129,37 @@ def _coerce_non_negative_int(value: object, default: int = 0) -> int:
     return out if out >= 0 else int(default)
 
 
+def _calc_item_hours(
+    life_hours: int,
+    used_seconds: int,
+    warning_seconds: int,
+) -> tuple:
+    """Return (remaining_secs, overdue, warning) for a hours-tracked maintenance item.
+
+    Returns (None, False, False) when life_hours is 0 (tracking disabled).
+    """
+    if life_hours <= 0:
+        return None, False, False
+    remaining = int(life_hours * 3600) - used_seconds
+    overdue = remaining <= 0
+    warning = not overdue and remaining < warning_seconds
+    return remaining, overdue, warning
+
+
+def _days_elapsed_since(iso_timestamp: Optional[str], now: float) -> Optional[int]:
+    """Return whole days elapsed since *iso_timestamp*, or None if absent/unparseable."""
+    if not iso_timestamp:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso_timestamp))
+        now_dt = datetime.fromtimestamp(float(now), tz=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, (now_dt - dt).days)
+    except Exception:
+        return None
+
+
 def _atomic_write_json(path: Path, payload: dict) -> None:
     """Write JSON atomically, preserving existing file permissions."""
     def _write(fh):
@@ -128,6 +189,10 @@ class PlaybackInputConfig:
     enabled: bool = True
     is_turntable: bool = False
     stylus_life_hours: int = DEFAULT_STYLUS_LIFE_HOURS
+    belt_life_hours: int = 0
+    belt_life_years: int = 0
+    bearing_life_hours: int = 0
+    bearing_life_years: int = 0
 
     @classmethod
     def normalized(
@@ -136,11 +201,19 @@ class PlaybackInputConfig:
         enabled: bool = True,
         is_turntable: bool = False,
         stylus_life_hours: object = DEFAULT_STYLUS_LIFE_HOURS,
+        belt_life_hours: object = 0,
+        belt_life_years: object = 0,
+        bearing_life_hours: object = 0,
+        bearing_life_years: object = 0,
     ) -> "PlaybackInputConfig":
         return cls(
             enabled=bool(enabled),
             is_turntable=bool(is_turntable),
             stylus_life_hours=normalize_stylus_life_hours(stylus_life_hours),
+            belt_life_hours=normalize_maintenance_life_hours(belt_life_hours),
+            belt_life_years=normalize_maintenance_life_years(belt_life_years),
+            bearing_life_hours=normalize_maintenance_life_hours(bearing_life_hours),
+            bearing_life_years=normalize_maintenance_life_years(bearing_life_years),
         )
 
 
@@ -151,6 +224,10 @@ class PlaybackInputState:
     total_playback_seconds: int = 0
     stylus_playback_seconds: int = 0
     last_stylus_reset_at: Optional[str] = None
+    belt_playback_seconds: int = 0
+    last_belt_service_at: Optional[str] = None
+    bearing_playback_seconds: int = 0
+    last_bearing_service_at: Optional[str] = None
 
     @classmethod
     def from_json_obj(cls, raw: object) -> "PlaybackInputState":
@@ -168,6 +245,22 @@ class PlaybackInputState:
                 if raw.get("last_stylus_reset_at")
                 else None
             ),
+            belt_playback_seconds=_coerce_non_negative_int(
+                raw.get("belt_playback_seconds"), 0
+            ),
+            last_belt_service_at=(
+                str(raw.get("last_belt_service_at")).strip()
+                if raw.get("last_belt_service_at")
+                else None
+            ),
+            bearing_playback_seconds=_coerce_non_negative_int(
+                raw.get("bearing_playback_seconds"), 0
+            ),
+            last_bearing_service_at=(
+                str(raw.get("last_bearing_service_at")).strip()
+                if raw.get("last_bearing_service_at")
+                else None
+            ),
         )
 
     def to_json_obj(self) -> dict:
@@ -179,6 +272,14 @@ class PlaybackInputState:
                 self.stylus_playback_seconds, 0
             ),
             "last_stylus_reset_at": self.last_stylus_reset_at,
+            "belt_playback_seconds": _coerce_non_negative_int(
+                self.belt_playback_seconds, 0
+            ),
+            "last_belt_service_at": self.last_belt_service_at,
+            "bearing_playback_seconds": _coerce_non_negative_int(
+                self.bearing_playback_seconds, 0
+            ),
+            "last_bearing_service_at": self.last_bearing_service_at,
         }
 
 
@@ -191,8 +292,12 @@ class InputPlaybackSnapshot:
     active: bool
     enabled: bool
     is_turntable: bool
+
+    # Total lifetime hours
     total_playback_seconds: int
     total_playback_hours: float
+
+    # Stylus wear
     stylus_playback_seconds: int
     stylus_playback_hours: float
     stylus_life_hours: int
@@ -201,6 +306,44 @@ class InputPlaybackSnapshot:
     stylus_warning: bool
     stylus_overdue: bool
     last_stylus_reset_at: Optional[str]
+
+    # Drive belt — hours dimension
+    belt_life_hours: int
+    belt_playback_seconds: int
+    belt_playback_hours: float
+    belt_hours_remaining: Optional[int]   # seconds remaining; None when hours tracking off
+    belt_hours_overdue: bool
+    belt_hours_warning: bool
+
+    # Drive belt — elapsed-time dimension
+    belt_life_years: int
+    belt_elapsed_days: Optional[int]      # None when no service date recorded
+    belt_time_overdue: bool
+    belt_time_warning: bool
+
+    # Drive belt — combined
+    belt_overdue: bool
+    belt_warning: bool
+    last_belt_service_at: Optional[str]
+
+    # Main bearing oil — hours dimension
+    bearing_life_hours: int
+    bearing_playback_seconds: int
+    bearing_playback_hours: float
+    bearing_hours_remaining: Optional[int]
+    bearing_hours_overdue: bool
+    bearing_hours_warning: bool
+
+    # Main bearing oil — elapsed-time dimension
+    bearing_life_years: int
+    bearing_elapsed_days: Optional[int]
+    bearing_time_overdue: bool
+    bearing_time_warning: bool
+
+    # Main bearing oil — combined
+    bearing_overdue: bool
+    bearing_warning: bool
+    last_bearing_service_at: Optional[str]
 
     def to_public_dict(self) -> dict:
         return {
@@ -211,22 +354,61 @@ class InputPlaybackSnapshot:
             "is_turntable": bool(self.is_turntable),
             "total_playback_seconds": int(self.total_playback_seconds),
             "total_playback_hours": float(self.total_playback_hours),
+            # Stylus
             "stylus_playback_seconds": int(self.stylus_playback_seconds),
             "stylus_playback_hours": float(self.stylus_playback_hours),
             "stylus_life_hours": int(self.stylus_life_hours),
             "stylus_remaining_seconds": (
-                None
-                if self.stylus_remaining_seconds is None
+                None if self.stylus_remaining_seconds is None
                 else int(self.stylus_remaining_seconds)
             ),
             "stylus_remaining_hours": (
-                None
-                if self.stylus_remaining_hours is None
+                None if self.stylus_remaining_hours is None
                 else float(self.stylus_remaining_hours)
             ),
             "stylus_warning": bool(self.stylus_warning),
             "stylus_overdue": bool(self.stylus_overdue),
             "last_stylus_reset_at": self.last_stylus_reset_at,
+            # Belt
+            "belt_life_hours": int(self.belt_life_hours),
+            "belt_playback_seconds": int(self.belt_playback_seconds),
+            "belt_playback_hours": float(self.belt_playback_hours),
+            "belt_hours_remaining": (
+                None if self.belt_hours_remaining is None
+                else int(self.belt_hours_remaining)
+            ),
+            "belt_hours_overdue": bool(self.belt_hours_overdue),
+            "belt_hours_warning": bool(self.belt_hours_warning),
+            "belt_life_years": int(self.belt_life_years),
+            "belt_elapsed_days": (
+                None if self.belt_elapsed_days is None
+                else int(self.belt_elapsed_days)
+            ),
+            "belt_time_overdue": bool(self.belt_time_overdue),
+            "belt_time_warning": bool(self.belt_time_warning),
+            "belt_overdue": bool(self.belt_overdue),
+            "belt_warning": bool(self.belt_warning),
+            "last_belt_service_at": self.last_belt_service_at,
+            # Bearing
+            "bearing_life_hours": int(self.bearing_life_hours),
+            "bearing_playback_seconds": int(self.bearing_playback_seconds),
+            "bearing_playback_hours": float(self.bearing_playback_hours),
+            "bearing_hours_remaining": (
+                None if self.bearing_hours_remaining is None
+                else int(self.bearing_hours_remaining)
+            ),
+            "bearing_hours_overdue": bool(self.bearing_hours_overdue),
+            "bearing_hours_warning": bool(self.bearing_hours_warning),
+            "bearing_life_years": int(self.bearing_life_years),
+            "bearing_elapsed_days": (
+                None if self.bearing_elapsed_days is None
+                else int(self.bearing_elapsed_days)
+            ),
+            "bearing_time_overdue": bool(self.bearing_time_overdue),
+            "bearing_time_warning": bool(self.bearing_time_warning),
+            "bearing_overdue": bool(self.bearing_overdue),
+            "bearing_warning": bool(self.bearing_warning),
+            "last_bearing_service_at": self.last_bearing_service_at,
         }
 
 
@@ -235,13 +417,29 @@ class PlaybackSnapshot:
     """Combined playback snapshot for all tracked inputs."""
 
     inputs: dict[int, InputPlaybackSnapshot]
-    warning_input_indices: tuple[int, ...]
-    overdue_input_indices: tuple[int, ...]
-    banner_text: Optional[str]
+
+    # Stylus
+    stylus_warning_indices: tuple[int, ...]
+    stylus_overdue_indices: tuple[int, ...]
+    stylus_banner_text: Optional[str]
+
+    # Drive belt
+    belt_warning_indices: tuple[int, ...]
+    belt_overdue_indices: tuple[int, ...]
+    belt_banner_text: Optional[str]
+
+    # Main bearing oil
+    bearing_warning_indices: tuple[int, ...]
+    bearing_overdue_indices: tuple[int, ...]
+    bearing_banner_text: Optional[str]
 
     @property
     def has_warning(self) -> bool:
-        return bool(self.warning_input_indices or self.overdue_input_indices)
+        return bool(
+            self.stylus_warning_indices or self.stylus_overdue_indices
+            or self.belt_warning_indices or self.belt_overdue_indices
+            or self.bearing_warning_indices or self.bearing_overdue_indices
+        )
 
     def to_public_dict(self) -> dict:
         return {
@@ -249,62 +447,106 @@ class PlaybackSnapshot:
                 str(idx): snap.to_public_dict()
                 for idx, snap in sorted(self.inputs.items())
             },
-            "warning_input_indices": [int(i) for i in self.warning_input_indices],
-            "overdue_input_indices": [int(i) for i in self.overdue_input_indices],
-            "banner_text": self.banner_text,
+            "stylus_warning_input_indices": list(self.stylus_warning_indices),
+            "stylus_overdue_input_indices": list(self.stylus_overdue_indices),
+            "stylus_banner_text": self.stylus_banner_text,
+            "belt_warning_input_indices": list(self.belt_warning_indices),
+            "belt_overdue_input_indices": list(self.belt_overdue_indices),
+            "belt_banner_text": self.belt_banner_text,
+            "bearing_warning_input_indices": list(self.bearing_warning_indices),
+            "bearing_overdue_input_indices": list(self.bearing_overdue_indices),
+            "bearing_banner_text": self.bearing_banner_text,
             "has_warning": self.has_warning,
         }
 
 
 @dataclass(frozen=True)
-class StylusResetResult:
-    """Result of a user-requested stylus reset."""
+class MaintenanceResetResult:
+    """Result of a user-requested maintenance item reset."""
 
     applied: bool
     persisted: bool
 
 
-def build_stylus_warning_text(
+def _build_banner(
     snapshots: dict[int, InputPlaybackSnapshot],
+    *,
+    overdue_filter: Callable,
+    warning_filter: Callable,
+    overdue_single: Callable,
+    overdue_multi: str,
+    warning_single: Callable,
+    warning_multi: str,
+    overdue_sort_key: Optional[Callable] = None,
+    warning_sort_key: Optional[Callable] = None,
 ) -> Optional[str]:
-    """Return a concise banner string, or None if no warning is needed."""
+    """Generic maintenance banner builder — returns a short string or None."""
     overdue = sorted(
-        (
-            snap
-            for snap in snapshots.values()
-            if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_overdue
-        ),
-        key=lambda snap: snap.input_index,
+        (s for s in snapshots.values() if overdue_filter(s)),
+        key=overdue_sort_key or (lambda s: s.input_index),
     )
     if overdue:
-        if len(overdue) == 1:
-            return f"{overdue[0].label} stylus needs changing now."
-        return "Stylus replacement needed on multiple inputs."
-
+        return overdue_single(overdue[0]) if len(overdue) == 1 else overdue_multi
     warning = sorted(
-        (
-            snap
-            for snap in snapshots.values()
-            if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_warning
-        ),
-        key=lambda snap: (
-            snap.stylus_remaining_seconds
-            if snap.stylus_remaining_seconds is not None
-            else 10**18,
-            snap.input_index,
-        ),
+        (s for s in snapshots.values() if warning_filter(s)),
+        key=warning_sort_key or (lambda s: s.input_index),
     )
     if not warning:
         return None
-    if len(warning) == 1:
-        remaining = warning[0].stylus_remaining_hours
-        remaining_txt = (
-            f"{remaining:.1f} h remaining"
-            if remaining is not None
-            else "replacement due soon"
-        )
-        return f"{warning[0].label} stylus needs changing soon ({remaining_txt})."
-    return "Stylus replacement due soon on multiple inputs."
+    return warning_single(warning[0]) if len(warning) == 1 else warning_multi
+
+
+def build_stylus_warning_text(
+    snapshots: dict[int, InputPlaybackSnapshot],
+) -> Optional[str]:
+    """Return a concise banner string, or None if no stylus warning is needed."""
+    return _build_banner(
+        snapshots,
+        overdue_filter=lambda s: s.enabled and s.stylus_life_hours > 0 and s.stylus_overdue,
+        warning_filter=lambda s: s.enabled and s.stylus_life_hours > 0 and s.stylus_warning,
+        overdue_single=lambda s: f"{s.label} stylus needs changing now.",
+        overdue_multi="Stylus replacement needed on multiple inputs.",
+        warning_single=lambda s: (
+            f"{s.label} stylus needs changing soon ({s.stylus_remaining_hours:.1f} h remaining)."
+            if s.stylus_remaining_hours is not None
+            else f"{s.label} stylus needs changing soon (replacement due soon)."
+        ),
+        warning_multi="Stylus replacement due soon on multiple inputs.",
+        warning_sort_key=lambda s: (
+            s.stylus_remaining_seconds if s.stylus_remaining_seconds is not None else 10**18,
+            s.input_index,
+        ),
+    )
+
+
+def build_belt_banner_text(
+    snapshots: dict[int, InputPlaybackSnapshot],
+) -> Optional[str]:
+    """Return a concise banner string for drive belt, or None if no warning."""
+    return _build_banner(
+        snapshots,
+        overdue_filter=lambda s: s.enabled and s.belt_overdue,
+        warning_filter=lambda s: s.enabled and s.belt_warning,
+        overdue_single=lambda s: f"{s.label} drive belt needs attention now.",
+        overdue_multi="Drive belt service needed on multiple inputs.",
+        warning_single=lambda s: f"{s.label} drive belt service is due soon.",
+        warning_multi="Drive belt service due soon on multiple inputs.",
+    )
+
+
+def build_bearing_banner_text(
+    snapshots: dict[int, InputPlaybackSnapshot],
+) -> Optional[str]:
+    """Return a concise banner string for main bearing oil, or None if no warning."""
+    return _build_banner(
+        snapshots,
+        overdue_filter=lambda s: s.enabled and s.bearing_overdue,
+        warning_filter=lambda s: s.enabled and s.bearing_warning,
+        overdue_single=lambda s: f"{s.label} main bearing needs attention now.",
+        overdue_multi="Main bearing service needed on multiple inputs.",
+        warning_single=lambda s: f"{s.label} main bearing service is due soon.",
+        warning_multi="Main bearing service due soon on multiple inputs.",
+    )
 
 
 class PlaybackTracker:
@@ -342,6 +584,10 @@ class PlaybackTracker:
                     enabled=cfg.enabled,
                     is_turntable=cfg.is_turntable,
                     stylus_life_hours=cfg.stylus_life_hours,
+                    belt_life_hours=cfg.belt_life_hours,
+                    belt_life_years=cfg.belt_life_years,
+                    bearing_life_hours=cfg.bearing_life_hours,
+                    bearing_life_years=cfg.bearing_life_years,
                 )
                 for idx, cfg in configs.items()
             }
@@ -356,6 +602,10 @@ class PlaybackTracker:
         enabled: bool,
         is_turntable: bool,
         stylus_life_hours: object,
+        belt_life_hours: object = 0,
+        belt_life_years: object = 0,
+        bearing_life_hours: object = 0,
+        bearing_life_years: object = 0,
     ) -> None:
         """Update config for a single input, splitting active time at the change."""
         idx = self._normalize_input_index(input_index)
@@ -365,6 +615,10 @@ class PlaybackTracker:
                 enabled=enabled,
                 is_turntable=is_turntable,
                 stylus_life_hours=stylus_life_hours,
+                belt_life_hours=belt_life_hours,
+                belt_life_years=belt_life_years,
+                bearing_life_hours=bearing_life_hours,
+                bearing_life_years=bearing_life_years,
             )
             self._configs[idx] = cfg
             if not cfg.enabled:
@@ -397,24 +651,52 @@ class PlaybackTracker:
         else:
             self.on_playback_stopped(input_index)
 
-    def reset_stylus(self, input_index: int) -> StylusResetResult:
+    def _reset_item_locked(
+        self,
+        idx: int,
+        playback_attr: str,
+        date_attr: str,
+        item_name: str,
+    ) -> MaintenanceResetResult:
+        """Zero one maintenance counter and record today's date. Lock must be held."""
+        now = self._time_fn()
+        self._accrue_input_locked(idx, now)
+        state = self._ensure_input_state_locked(idx)
+        setattr(state, playback_attr, 0)
+        setattr(state, date_attr, _utc_now_iso(now))
+        if idx in self._active_since:
+            self._active_since[idx] = now
+        self._dirty = True
+        try:
+            self._save_locked(force=True)
+        except Exception as exc:
+            self._log_save_failure_locked(f"{item_name} reset", exc)
+            return MaintenanceResetResult(applied=True, persisted=False)
+        return MaintenanceResetResult(applied=True, persisted=True)
+
+    def reset_stylus(self, input_index: int) -> MaintenanceResetResult:
         """Reset stylus usage for an input and persist immediately."""
         idx = self._normalize_input_index(input_index)
         with self._lock:
-            now = self._time_fn()
-            self._accrue_input_locked(idx, now)
-            state = self._ensure_input_state_locked(idx)
-            state.stylus_playback_seconds = 0
-            state.last_stylus_reset_at = _utc_now_iso(now)
-            if idx in self._active_since:
-                self._active_since[idx] = now
-            self._dirty = True
-            try:
-                self._save_locked(force=True)
-            except Exception as exc:
-                self._log_save_failure_locked("stylus reset", exc)
-                return StylusResetResult(applied=True, persisted=False)
-            return StylusResetResult(applied=True, persisted=True)
+            return self._reset_item_locked(
+                idx, "stylus_playback_seconds", "last_stylus_reset_at", "stylus"
+            )
+
+    def reset_belt(self, input_index: int) -> MaintenanceResetResult:
+        """Reset belt usage counter and record service date for an input."""
+        idx = self._normalize_input_index(input_index)
+        with self._lock:
+            return self._reset_item_locked(
+                idx, "belt_playback_seconds", "last_belt_service_at", "belt"
+            )
+
+    def reset_bearing(self, input_index: int) -> MaintenanceResetResult:
+        """Reset bearing oil usage counter and record service date for an input."""
+        idx = self._normalize_input_index(input_index)
+        with self._lock:
+            return self._reset_item_locked(
+                idx, "bearing_playback_seconds", "last_bearing_service_at", "bearing"
+            )
 
     def maybe_flush(self) -> None:
         """Persist dirty counters if the flush interval has elapsed."""
@@ -448,6 +730,8 @@ class PlaybackTracker:
 
                 total_seconds = int(state.total_playback_seconds)
                 stylus_seconds = int(state.stylus_playback_seconds)
+                belt_seconds = int(state.belt_playback_seconds)
+                bearing_seconds = int(state.bearing_playback_seconds)
                 active = active_since is not None
 
                 if active_since is not None and now > active_since:
@@ -456,19 +740,74 @@ class PlaybackTracker:
                         total_seconds += elapsed
                         if cfg.is_turntable and cfg.stylus_life_hours > 0:
                             stylus_seconds += elapsed
+                        if cfg.is_turntable and cfg.belt_life_hours > 0:
+                            belt_seconds += elapsed
+                        if cfg.is_turntable and cfg.bearing_life_hours > 0:
+                            bearing_seconds += elapsed
 
-                stylus_remaining_seconds: Optional[int] = None
-                stylus_remaining_hours: Optional[float] = None
-                stylus_warning = False
-                stylus_overdue = False
+                # --- Stylus calculations ---
+                _turntable = cfg.is_turntable
+                stylus_remaining_seconds, stylus_overdue, stylus_warning = _calc_item_hours(
+                    cfg.stylus_life_hours if _turntable else 0,
+                    stylus_seconds,
+                    STYLUS_WARNING_SECONDS,
+                )
+                stylus_remaining_hours = (
+                    round(stylus_remaining_seconds / 3600.0, 1)
+                    if stylus_remaining_seconds is not None else None
+                )
 
-                if cfg.is_turntable and cfg.stylus_life_hours > 0:
-                    stylus_remaining_seconds = (
-                        int(cfg.stylus_life_hours * 3600) - stylus_seconds
+                # --- Belt calculations ---
+                belt_hours_remaining, belt_hours_overdue, belt_hours_warning = _calc_item_hours(
+                    cfg.belt_life_hours if _turntable else 0,
+                    belt_seconds,
+                    MAINTENANCE_HOURS_WARNING_SECONDS,
+                )
+
+                belt_elapsed_days: Optional[int] = None
+                belt_time_overdue = False
+                belt_time_warning = False
+
+                if _turntable and cfg.belt_life_years > 0:
+                    belt_elapsed_days = _days_elapsed_since(state.last_belt_service_at, now)
+                    if belt_elapsed_days is not None:
+                        belt_threshold_days = cfg.belt_life_years * 365
+                        belt_time_overdue = belt_elapsed_days >= belt_threshold_days
+                        belt_time_warning = (
+                            not belt_time_overdue
+                            and belt_elapsed_days >= belt_threshold_days - MAINTENANCE_TIME_WARNING_DAYS
+                        )
+
+                belt_overdue = belt_hours_overdue or belt_time_overdue
+                belt_warning = (belt_hours_warning or belt_time_warning) and not belt_overdue
+
+                # --- Bearing calculations ---
+                bearing_hours_remaining, bearing_hours_overdue, bearing_hours_warning = _calc_item_hours(
+                    cfg.bearing_life_hours if _turntable else 0,
+                    bearing_seconds,
+                    MAINTENANCE_HOURS_WARNING_SECONDS,
+                )
+
+                bearing_elapsed_days: Optional[int] = None
+                bearing_time_overdue = False
+                bearing_time_warning = False
+
+                if _turntable and cfg.bearing_life_years > 0:
+                    bearing_elapsed_days = _days_elapsed_since(
+                        state.last_bearing_service_at, now
                     )
-                    stylus_remaining_hours = round(stylus_remaining_seconds / 3600.0, 1)
-                    stylus_overdue = stylus_remaining_seconds <= 0
-                    stylus_warning = stylus_remaining_seconds < STYLUS_WARNING_SECONDS
+                    if bearing_elapsed_days is not None:
+                        bearing_threshold_days = cfg.bearing_life_years * 365
+                        bearing_time_overdue = bearing_elapsed_days >= bearing_threshold_days
+                        bearing_time_warning = (
+                            not bearing_time_overdue
+                            and bearing_elapsed_days >= bearing_threshold_days - MAINTENANCE_TIME_WARNING_DAYS
+                        )
+
+                bearing_overdue = bearing_hours_overdue or bearing_time_overdue
+                bearing_warning = (
+                    (bearing_hours_warning or bearing_time_warning) and not bearing_overdue
+                )
 
                 inputs[idx] = InputPlaybackSnapshot(
                     input_index=idx,
@@ -478,6 +817,7 @@ class PlaybackTracker:
                     is_turntable=cfg.is_turntable,
                     total_playback_seconds=total_seconds,
                     total_playback_hours=hours_from_seconds(total_seconds),
+                    # Stylus
                     stylus_playback_seconds=stylus_seconds,
                     stylus_playback_hours=hours_from_seconds(stylus_seconds),
                     stylus_life_hours=cfg.stylus_life_hours,
@@ -486,24 +826,67 @@ class PlaybackTracker:
                     stylus_warning=stylus_warning,
                     stylus_overdue=stylus_overdue,
                     last_stylus_reset_at=state.last_stylus_reset_at,
+                    # Belt
+                    belt_life_hours=cfg.belt_life_hours,
+                    belt_playback_seconds=belt_seconds,
+                    belt_playback_hours=hours_from_seconds(belt_seconds),
+                    belt_hours_remaining=belt_hours_remaining,
+                    belt_hours_overdue=belt_hours_overdue,
+                    belt_hours_warning=belt_hours_warning,
+                    belt_life_years=cfg.belt_life_years,
+                    belt_elapsed_days=belt_elapsed_days,
+                    belt_time_overdue=belt_time_overdue,
+                    belt_time_warning=belt_time_warning,
+                    belt_overdue=belt_overdue,
+                    belt_warning=belt_warning,
+                    last_belt_service_at=state.last_belt_service_at,
+                    # Bearing
+                    bearing_life_hours=cfg.bearing_life_hours,
+                    bearing_playback_seconds=bearing_seconds,
+                    bearing_playback_hours=hours_from_seconds(bearing_seconds),
+                    bearing_hours_remaining=bearing_hours_remaining,
+                    bearing_hours_overdue=bearing_hours_overdue,
+                    bearing_hours_warning=bearing_hours_warning,
+                    bearing_life_years=cfg.bearing_life_years,
+                    bearing_elapsed_days=bearing_elapsed_days,
+                    bearing_time_overdue=bearing_time_overdue,
+                    bearing_time_warning=bearing_time_warning,
+                    bearing_overdue=bearing_overdue,
+                    bearing_warning=bearing_warning,
+                    last_bearing_service_at=state.last_bearing_service_at,
                 )
 
-            warning_indices = tuple(
-                snap.input_index
-                for snap in sorted(inputs.values(), key=lambda snap: snap.input_index)
-                if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_warning and not snap.stylus_overdue
-            )
-            overdue_indices = tuple(
-                snap.input_index
-                for snap in sorted(inputs.values(), key=lambda snap: snap.input_index)
-                if snap.enabled and snap.stylus_life_hours > 0 and snap.stylus_overdue
-            )
+            def _sorted_indices(condition):
+                return tuple(
+                    snap.input_index
+                    for snap in sorted(inputs.values(), key=lambda s: s.input_index)
+                    if condition(snap)
+                )
 
             return PlaybackSnapshot(
                 inputs=inputs,
-                warning_input_indices=warning_indices,
-                overdue_input_indices=overdue_indices,
-                banner_text=build_stylus_warning_text(inputs),
+                stylus_warning_indices=_sorted_indices(
+                    lambda s: s.enabled and s.stylus_life_hours > 0
+                    and s.stylus_warning and not s.stylus_overdue
+                ),
+                stylus_overdue_indices=_sorted_indices(
+                    lambda s: s.enabled and s.stylus_life_hours > 0 and s.stylus_overdue
+                ),
+                stylus_banner_text=build_stylus_warning_text(inputs),
+                belt_warning_indices=_sorted_indices(
+                    lambda s: s.enabled and s.belt_warning and not s.belt_overdue
+                ),
+                belt_overdue_indices=_sorted_indices(
+                    lambda s: s.enabled and s.belt_overdue
+                ),
+                belt_banner_text=build_belt_banner_text(inputs),
+                bearing_warning_indices=_sorted_indices(
+                    lambda s: s.enabled and s.bearing_warning and not s.bearing_overdue
+                ),
+                bearing_overdue_indices=_sorted_indices(
+                    lambda s: s.enabled and s.bearing_overdue
+                ),
+                bearing_banner_text=build_bearing_banner_text(inputs),
             )
 
     def get_input_snapshot(self, input_index: int) -> InputPlaybackSnapshot:
@@ -538,6 +921,40 @@ class PlaybackTracker:
             stylus_warning=False,
             stylus_overdue=False,
             last_stylus_reset_at=None,
+            belt_life_hours=cfg.belt_life_hours,
+            belt_playback_seconds=0,
+            belt_playback_hours=0.0,
+            belt_hours_remaining=(
+                int(cfg.belt_life_hours * 3600)
+                if cfg.is_turntable and cfg.belt_life_hours > 0
+                else None
+            ),
+            belt_hours_overdue=False,
+            belt_hours_warning=False,
+            belt_life_years=cfg.belt_life_years,
+            belt_elapsed_days=None,
+            belt_time_overdue=False,
+            belt_time_warning=False,
+            belt_overdue=False,
+            belt_warning=False,
+            last_belt_service_at=None,
+            bearing_life_hours=cfg.bearing_life_hours,
+            bearing_playback_seconds=0,
+            bearing_playback_hours=0.0,
+            bearing_hours_remaining=(
+                int(cfg.bearing_life_hours * 3600)
+                if cfg.is_turntable and cfg.bearing_life_hours > 0
+                else None
+            ),
+            bearing_hours_overdue=False,
+            bearing_hours_warning=False,
+            bearing_life_years=cfg.bearing_life_years,
+            bearing_elapsed_days=None,
+            bearing_time_overdue=False,
+            bearing_time_warning=False,
+            bearing_overdue=False,
+            bearing_warning=False,
+            last_bearing_service_at=None,
         )
 
     def public_snapshot_dict(self) -> dict:
@@ -631,6 +1048,10 @@ class PlaybackTracker:
         state.total_playback_seconds += elapsed
         if cfg.is_turntable and cfg.stylus_life_hours > 0:
             state.stylus_playback_seconds += elapsed
+        if cfg.is_turntable and cfg.belt_life_hours > 0:
+            state.belt_playback_seconds += elapsed
+        if cfg.is_turntable and cfg.bearing_life_hours > 0:
+            state.bearing_playback_seconds += elapsed
 
         # Preserve any sub-second remainder so repeated accrual does not drift.
         self._active_since[idx] = active_since + elapsed

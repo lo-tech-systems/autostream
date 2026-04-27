@@ -50,6 +50,8 @@ from autostream_webui_api import (
     send_json,
     send_owntone_outputs_json,
     send_owntone_outputs_state_json,
+    send_service_config_json,
+    send_service_reset_json,
     send_status_json,
     send_update_check_json,
     send_update_status_json,
@@ -441,6 +443,18 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_service_post(self, STATE, body_str)
+
+        elif path == "/api/service/reset":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            send_service_reset_json(self, body_str)
+
+        elif path == "/api/service/config":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            send_service_config_json(self, STATE, body_str)
 
         elif path == "/api/update/apply":
             # Requires authentication when a PIN is configured.

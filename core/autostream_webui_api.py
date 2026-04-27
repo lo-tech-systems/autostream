@@ -12,6 +12,8 @@ Contents:
   - send_owntone_outputs_json    -- GET /api/owntone/outputs
   - send_owntone_outputs_state_json -- GET /api/owntone/outputs_state
   - send_status_json             -- GET /api/status
+  - send_service_config_json     -- POST /api/service/config
+  - send_service_reset_json      -- POST /api/service/reset
   - send_update_check_json       -- GET /api/update/check
   - send_update_status_json      -- GET /api/update/status
 """
@@ -24,14 +26,25 @@ import subprocess
 
 from typing import Optional
 
-from autostream_config import parse_config
+from autostream_config import (
+    CONFIG_IO_LOCK,
+    parse_config,
+    normalize_bearing_life_hours,
+    normalize_maintenance_life_hours,
+    normalize_maintenance_life_years,
+    normalize_stylus_life_hours,
+)
 from autostream_core import (
     any_monitor_capturing,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
+    reset_input_belt,
+    reset_input_bearing,
+    reset_input_stylus,
+    update_playback_input_config,
 )
 from autostream_player_service import list_outputs
-from autostream_sysutils import run_admin_cmd
+from autostream_sysutils import atomic_write_file, run_admin_cmd
 from autostream_webui_common import locked_load_config
 from autostream_webui_state import WebUIState
 
@@ -207,7 +220,140 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         "status_class": "playing" if is_playing else "waiting",
         "input_levels": input_levels,
         "playback": playback.to_public_dict(),
-        "playback_banner_text": playback.banner_text,
+        "playback_banner_text": playback.stylus_banner_text,
+        "belt_banner_text": playback.belt_banner_text,
+        "bearing_banner_text": playback.bearing_banner_text,
+    })
+
+
+def send_service_config_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/service/config — auto-save one maintenance tracking field.
+
+    Request body (JSON):
+        { "field": "<field_name>", "value": "<raw_value>" }
+
+    Accepted fields:
+        service_stylus_life_hours_input1/2
+        service_belt_life_hours_input1/2, service_belt_life_years_input1/2
+        service_bearing_life_hours_input1/2, service_bearing_life_years_input1/2
+
+    Response (JSON):
+        { "ok": true, "field": "<field>", "value": "<normalised>" }
+    """
+    # Field name → (config section, config key, normaliser)
+    _FIELD_MAP: dict = {
+        "service_stylus_life_hours_input1":  ("audio1", "stylus_life_hours",  normalize_stylus_life_hours),
+        "service_stylus_life_hours_input2":  ("audio2", "stylus_life_hours",  normalize_stylus_life_hours),
+        "service_belt_life_hours_input1":    ("audio1", "belt_life_hours",    normalize_maintenance_life_hours),
+        "service_belt_life_years_input1":    ("audio1", "belt_life_years",    normalize_maintenance_life_years),
+        "service_belt_life_hours_input2":    ("audio2", "belt_life_hours",    normalize_maintenance_life_hours),
+        "service_belt_life_years_input2":    ("audio2", "belt_life_years",    normalize_maintenance_life_years),
+        "service_bearing_life_hours_input1": ("audio1", "bearing_life_hours", normalize_bearing_life_hours),
+        "service_bearing_life_years_input1": ("audio1", "bearing_life_years", normalize_maintenance_life_years),
+        "service_bearing_life_hours_input2": ("audio2", "bearing_life_hours", normalize_bearing_life_hours),
+        "service_bearing_life_years_input2": ("audio2", "bearing_life_years", normalize_maintenance_life_years),
+    }
+
+    try:
+        payload = json.loads(body or "{}")
+        field = str(payload.get("field", "")).strip()
+        value = str(payload.get("value", "")).strip()
+    except Exception:
+        send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
+        return
+
+    if field not in _FIELD_MAP:
+        send_json(handler, 400, {"ok": False, "error": "Unknown field"})
+        return
+
+    section, key, normaliser = _FIELD_MAP[field]
+
+    try:
+        normalised = normaliser(value)
+    except Exception as e:
+        send_json(handler, 400, {"ok": False, "error": f"Invalid value: {e}"})
+        return
+
+    try:
+        cfg = locked_load_config(state.config_path)
+        p = parse_config(cfg)
+
+        if not cfg.has_section(section):
+            cfg.add_section(section)
+        cfg.set(section, key, str(normalised))
+
+        with CONFIG_IO_LOCK:
+            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+
+        # Re-parse so update_playback_input_config sees the full consistent config.
+        p2 = parse_config(cfg)
+        if section == "audio1":
+            update_playback_input_config(
+                1,
+                enabled=True,
+                is_turntable=p.audio1.is_turntable,
+                stylus_life_hours=p2.audio1.stylus_life_hours,
+                belt_life_hours=p2.audio1.belt_life_hours,
+                belt_life_years=p2.audio1.belt_life_years,
+                bearing_life_hours=p2.audio1.bearing_life_hours,
+                bearing_life_years=p2.audio1.bearing_life_years,
+            )
+        else:
+            update_playback_input_config(
+                2,
+                enabled=p.audio2_enabled,
+                is_turntable=p.audio2.is_turntable,
+                stylus_life_hours=p2.audio2.stylus_life_hours,
+                belt_life_hours=p2.audio2.belt_life_hours,
+                belt_life_years=p2.audio2.belt_life_years,
+                bearing_life_hours=p2.audio2.bearing_life_hours,
+                bearing_life_years=p2.audio2.bearing_life_years,
+            )
+    except Exception as e:
+        logging.exception("send_service_config_json: save failed")
+        send_json(handler, 200, {"ok": False, "error": str(e)})
+        return
+
+    send_json(handler, 200, {"ok": True, "field": field, "value": str(normalised)})
+
+
+def send_service_reset_json(handler, body: str) -> None:
+    """POST /api/service/reset — reset one maintenance item counter.
+
+    Request body (JSON):
+        { "item": "stylus"|"belt"|"bearing", "input": 1|2 }
+
+    Response (JSON):
+        { "ok": true, "persisted": true, "last_service_at": "<ISO>" }
+    """
+    try:
+        payload = json.loads(body or "{}")
+        item = str(payload.get("item", "")).strip().lower()
+        input_index = int(payload.get("input", 0))
+    except Exception:
+        send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
+        return
+
+    if item not in ("stylus", "belt", "bearing"):
+        send_json(handler, 400, {"ok": False, "error": "Unknown item"})
+        return
+    if input_index not in (1, 2):
+        send_json(handler, 400, {"ok": False, "error": "Input must be 1 or 2"})
+        return
+
+    reset_fn = {"stylus": reset_input_stylus, "belt": reset_input_belt, "bearing": reset_input_bearing}[item]
+    result = reset_fn(input_index)
+
+    if not result.applied:
+        send_json(handler, 200, {"ok": False, "error": "Reset could not be applied"})
+        return
+
+    from datetime import datetime, timezone as _tz
+    now_iso = datetime.now(tz=_tz.utc).replace(microsecond=0).isoformat()
+    send_json(handler, 200, {
+        "ok": True,
+        "persisted": bool(result.persisted),
+        "last_service_at": now_iso,
     })
 
 
