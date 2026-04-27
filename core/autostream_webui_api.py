@@ -14,6 +14,7 @@ Contents:
   - send_status_json             -- GET /api/status
   - send_service_config_json     -- POST /api/service/config
   - send_service_reset_json      -- POST /api/service/reset
+  Display/card logic imported from autostream_webui_service_schema (shared with page renderer).
   - send_update_check_json       -- GET /api/update/check
   - send_update_status_json      -- GET /api/update/status
 """
@@ -41,8 +42,14 @@ from autostream_core import (
 )
 from autostream_player_service import list_outputs
 from autostream_sysutils import atomic_write_file, run_admin_cmd
-from autostream_webui_common import locked_load_config
-from autostream_webui_page_service import _SERVICE_ITEMS
+from autostream_webui_common import locked_load_config, _fallback_input_snapshot
+from autostream_webui_service_schema import (
+    _SERVICE_ITEMS,
+    _card_display,
+    _format_reset_timestamp,
+    _hours_display,
+    _time_display,
+)
 from autostream_webui_state import WebUIState
 
 
@@ -254,7 +261,8 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         service_bearing_life_hours_input1/2, service_bearing_life_years_input1/2
 
     Response (JSON):
-        { "ok": true, "field": "<field>", "value": "<normalised>" }
+        { "ok": true, "field": "<field>", "value": "<normalised>",
+          "display": { hours_live, hours_bar_pct, ..., time_live, ... } }
     """
     try:
         payload = json.loads(body or "{}")
@@ -318,17 +326,38 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 200, {"ok": False, "error": str(e)})
         return
 
-    send_json(handler, 200, {"ok": True, "field": field, "value": str(normalised)})
+    # Build display dict so the client can update the DOM without recalculation.
+    _display: dict = {}
+    try:
+        _input_idx    = 1 if section == "audio1" else 2
+        _item         = key.split("_")[0]       # "stylus" | "belt" | "bearing"
+        _dimension    = key.split("_")[-1]      # "hours" | "years"
+        _audio        = p.audio1 if _input_idx == 1 else p.audio2
+        _is_turntable = bool(getattr(_audio, "is_turntable", False))
+        _life_hours   = normalised if _dimension == "hours" else int(getattr(_audio, f"{_item}_life_hours", 0) or 0)
+        _life_years   = (normalised if _dimension == "years" else int(getattr(_audio, f"{_item}_life_years", 0) or 0)) if _item != "stylus" else 0
+        _playback = get_playback_snapshot()
+        _snap = _playback.inputs.get(_input_idx)
+        if _snap is None:
+            _snap = _fallback_input_snapshot(_audio, _input_idx, enabled=True)
+        _hd = _hours_display(_item, _life_hours, _snap)
+        _td = _time_display(_item, _life_years, _snap)
+        _display = {**_hd, **_td, **_card_display(_item, _hd, _td, _is_turntable)}
+    except Exception:
+        logging.exception("send_service_config_json: display computation failed")
+
+    send_json(handler, 200, {"ok": True, "field": field, "value": str(normalised), "display": _display})
 
 
-def send_service_reset_json(handler, body: str) -> None:
+def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/service/reset — reset one maintenance item counter.
 
     Request body (JSON):
         { "item": "stylus"|"belt"|"bearing", "input": 1|2 }
 
     Response (JSON):
-        { "ok": true, "persisted": true, "last_service_at": "<ISO>" }
+        { "ok": true, "persisted": true, "last_service_at": "<ISO>",
+          "display": { hours_live, hours_bar_pct, ..., last_service } }
     """
     try:
         payload = json.loads(body or "{}")
@@ -345,6 +374,22 @@ def send_service_reset_json(handler, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "Input must be 1 or 2"})
         return
 
+    # Load config for life thresholds before resetting (used by display computation).
+    _life_hours   = 0
+    _life_years   = 0
+    _is_turntable = False
+    _parsed       = None
+    _audio_cfg    = None
+    try:
+        _cfg = locked_load_config(state.config_path)
+        _parsed = parse_config(_cfg)
+        _audio_cfg    = _parsed.audio1 if input_index == 1 else _parsed.audio2
+        _life_hours   = int(getattr(_audio_cfg, f"{item}_life_hours", 0) or 0)
+        _life_years   = int(getattr(_audio_cfg, f"{item}_life_years", 0) or 0) if item != "stylus" else 0
+        _is_turntable = bool(getattr(_audio_cfg, "is_turntable", False))
+    except Exception:
+        logging.exception("send_service_reset_json: config load for display failed")
+
     reset_fn = {"stylus": reset_input_stylus, "belt": reset_input_belt, "bearing": reset_input_bearing}[item]
     result = reset_fn(input_index)
 
@@ -359,6 +404,25 @@ def send_service_reset_json(handler, body: str) -> None:
     }
     if not result.persisted:
         response["warning"] = "Reset applied but could not be saved — may revert on restart"
+
+    # Build display dict from the live snapshot (updated by the reset).
+    try:
+        _playback = get_playback_snapshot()
+        _snap = _playback.inputs.get(input_index)
+        if _snap is None and _audio_cfg is not None:
+            _snap = _fallback_input_snapshot(_audio_cfg, input_index, enabled=True)
+        if _snap is not None:
+            _hd = _hours_display(item, _life_hours, _snap)
+            _td = _time_display(item, _life_years, _snap)
+            response["display"] = {
+                **_hd,
+                **_td,
+                **_card_display(item, _hd, _td, _is_turntable),
+                "last_service": _format_reset_timestamp(result.last_service_at),
+            }
+    except Exception:
+        logging.exception("send_service_reset_json: display computation failed")
+
     send_json(handler, 200, response)
 
 

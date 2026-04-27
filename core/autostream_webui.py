@@ -441,7 +441,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
-            send_service_reset_json(self, body_str)
+            send_service_reset_json(self, STATE, body_str)
 
         elif path == "/api/service/config":
             if not body_str:

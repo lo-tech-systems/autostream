@@ -10,18 +10,18 @@ Responsibilities:
     (stylus, drive belt, main bearing oil), usage reporting, and reset actions.
   - No PIN required; /service is in the auth allowlist.
   - Settings are saved automatically via POST /api/service/config (AJAX).
+  - Live display values are returned by the API (no client-side recalculation).
 
-Schema:
-  _ServiceItem / _SERVICE_ITEMS define the canonical list of maintenance items.
-  autostream_webui_api imports _SERVICE_ITEMS to generate its field map, so
-  adding or renaming an item requires changes only here.
+Schema / display logic:
+  All maintenance-item metadata and display calculations live in
+  autostream_webui_service_schema so they are shared with autostream_webui_api
+  without either module depending on the other.
 """
 
 from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from autostream_config import (
@@ -30,13 +30,9 @@ from autostream_config import (
     VALID_MAINTENANCE_LIFE_HOURS,
     VALID_BEARING_LIFE_HOURS,
     VALID_MAINTENANCE_LIFE_YEARS,
-    normalize_stylus_life_hours,
-    normalize_maintenance_life_hours,
-    normalize_maintenance_life_years,
-    normalize_bearing_life_hours,
 )
 from autostream_core import get_playback_snapshot
-from autostream_playback_stats import InputPlaybackSnapshot, format_hours
+from autostream_playback_stats import InputPlaybackSnapshot
 
 from autostream_webui_assets import BANNER_HTML, SERVICE_CSS, SERVICE_JS
 
@@ -47,60 +43,17 @@ from autostream_webui_common import (
     locked_load_config,
 )
 
+from autostream_webui_service_schema import (
+    _SERVICE_ITEMS,
+    _SNAP_TIME_ATTRS,
+    _card_display,
+    _format_reset_timestamp,
+    _hours_display,
+    _time_display,
+)
+
 from autostream_webui_state import WebUIState
 
-
-# -----------------------------------------------------------------------------
-# Service-item schema
-# -----------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class _ServiceItem:
-    """Metadata for one maintenance tracking dimension.
-
-    This is the single source of truth for item keys, INI config keys,
-    normalizers, and option sets.  autostream_webui_api imports _SERVICE_ITEMS
-    to generate its _SERVICE_FIELD_MAP rather than maintaining a parallel dict.
-    """
-
-    key: str                         # "stylus" | "belt" | "bearing"
-    card_title: str                  # label shown on the list card, e.g. "Stylus Tracking"
-    hours_config_key: str            # INI key, e.g. "stylus_life_hours"
-    hours_options: tuple             # allowed hour values for the selector
-    hours_normalizer: object         # callable: str -> int
-    years_config_key: Optional[str]  # INI key, or None (stylus has no time dimension)
-    years_normalizer: Optional[object]  # callable: str -> int, or None
-
-
-_SERVICE_ITEMS: tuple[_ServiceItem, ...] = (
-    _ServiceItem(
-        key="stylus",
-        card_title="Stylus Tracking",
-        hours_config_key="stylus_life_hours",
-        hours_options=VALID_STYLUS_LIFE_HOURS,
-        hours_normalizer=normalize_stylus_life_hours,
-        years_config_key=None,
-        years_normalizer=None,
-    ),
-    _ServiceItem(
-        key="belt",
-        card_title="Belt Tracking",
-        hours_config_key="belt_life_hours",
-        hours_options=VALID_MAINTENANCE_LIFE_HOURS,
-        hours_normalizer=normalize_maintenance_life_hours,
-        years_config_key="belt_life_years",
-        years_normalizer=normalize_maintenance_life_years,
-    ),
-    _ServiceItem(
-        key="bearing",
-        card_title="Bearing Oil Tracking",
-        hours_config_key="bearing_life_hours",
-        hours_options=VALID_BEARING_LIFE_HOURS,
-        hours_normalizer=normalize_bearing_life_hours,
-        years_config_key="bearing_life_years",
-        years_normalizer=normalize_maintenance_life_years,
-    ),
-)
 
 # Confirm modal HTML (rendered once per request, referenced by SERVICE_JS).
 _CONFIRM_MODAL_HTML = (
@@ -168,26 +121,27 @@ def _gather_input_render_data(parsed, playback_snapshot, input_index: int, *, en
     snap = playback_snapshot.inputs.get(input_index) or _fallback_input_snapshot(
         audio, input_index, enabled=True,
     )
-    is_turntable = bool(audio.is_turntable)
-    stylus_life = int(audio.stylus_life_hours)
-    belt_hours  = int(audio.belt_life_hours)
-    belt_years  = int(audio.belt_life_years)
+    is_turntable  = bool(audio.is_turntable)
+    stylus_life   = int(audio.stylus_life_hours)
+    belt_hours    = int(audio.belt_life_hours)
+    belt_years    = int(audio.belt_life_years)
     bearing_hours = int(audio.bearing_life_hours)
     bearing_years = int(audio.bearing_life_years)
 
-    stylus_warn = is_turntable and (snap.stylus_warning or snap.stylus_overdue)
-    belt_warn = is_turntable and (
-        snap.belt_hours_overdue or snap.belt_time_overdue
-        or snap.belt_hours_warning or snap.belt_time_warning
-    )
-    bearing_warn = is_turntable and (
-        snap.bearing_hours_overdue or snap.bearing_time_overdue
-        or snap.bearing_hours_warning or snap.bearing_time_warning
-    )
-
-    stylus_sub  = _stylus_card_sub(snap, stylus_life, is_turntable)
-    belt_sub    = _maint_card_sub(snap, "belt",    belt_hours,    belt_years,    is_turntable)
-    bearing_sub = _maint_card_sub(snap, "bearing", bearing_hours, bearing_years, is_turntable)
+    # Card state derived from the same display dicts used by the detail panels
+    # and the live API updates, ensuring the overview and detail are always consistent.
+    stylus_cd  = _card_display("stylus",
+        _hours_display("stylus",  stylus_life,   snap),
+        _time_display("stylus",   0,             snap),
+        is_turntable)
+    belt_cd    = _card_display("belt",
+        _hours_display("belt",    belt_hours,    snap),
+        _time_display("belt",     belt_years,    snap),
+        is_turntable)
+    bearing_cd = _card_display("bearing",
+        _hours_display("bearing", bearing_hours, snap),
+        _time_display("bearing",  bearing_years, snap),
+        is_turntable)
 
     title = f"Input {input_index}"
     stylus_html = _stylus_panel_html(
@@ -196,95 +150,27 @@ def _gather_input_render_data(parsed, playback_snapshot, input_index: int, *, en
     )
     belt_html = _maintenance_item_panel_html(
         input_index=input_index, item="belt", legend="Drive Belt",
-        is_turntable=is_turntable, life_hours=belt_hours, life_years=belt_years,
-        playback_seconds=int(snap.belt_playback_seconds),
-        elapsed_days=snap.belt_elapsed_days, last_service_at=snap.last_belt_service_at,
-        hours_overdue=snap.belt_hours_overdue, hours_warning=snap.belt_hours_warning,
-        time_overdue=snap.belt_time_overdue,  time_warning=snap.belt_time_warning,
+        is_turntable=is_turntable, life_hours=belt_hours, life_years=belt_years, snap=snap,
     )
     bearing_html = _maintenance_item_panel_html(
         input_index=input_index, item="bearing", legend="Main Bearing Oil",
-        is_turntable=is_turntable, life_hours=bearing_hours, life_years=bearing_years,
-        playback_seconds=int(snap.bearing_playback_seconds),
-        elapsed_days=snap.bearing_elapsed_days, last_service_at=snap.last_bearing_service_at,
-        hours_overdue=snap.bearing_hours_overdue, hours_warning=snap.bearing_hours_warning,
-        time_overdue=snap.bearing_time_overdue,   time_warning=snap.bearing_time_warning,
+        is_turntable=is_turntable, life_hours=bearing_hours, life_years=bearing_years, snap=snap,
         life_hours_options=VALID_BEARING_LIFE_HOURS,
     )
 
     return _InputRenderData(
         is_turntable=is_turntable,
         cards_disabled=not is_turntable,
-        stylus_warn=stylus_warn,
-        belt_warn=belt_warn,
-        bearing_warn=bearing_warn,
-        stylus_sub=stylus_sub,
-        belt_sub=belt_sub,
-        bearing_sub=bearing_sub,
+        stylus_warn=stylus_cd["card_warn"],
+        belt_warn=belt_cd["card_warn"],
+        bearing_warn=bearing_cd["card_warn"],
+        stylus_sub=stylus_cd["card_sub"],
+        belt_sub=belt_cd["card_sub"],
+        bearing_sub=bearing_cd["card_sub"],
         stylus_html=stylus_html,
         belt_html=belt_html,
         bearing_html=bearing_html,
     )
-
-
-# -----------------------------------------------------------------------------
-# Formatting helpers
-# -----------------------------------------------------------------------------
-
-def _format_reset_timestamp(raw: Optional[str]) -> str:
-    if not raw:
-        return "Never"
-    try:
-        dt = datetime.fromisoformat(str(raw))
-        try:
-            return dt.astimezone().strftime("%x")
-        except Exception:
-            return dt.strftime("%x")
-    except Exception:
-        return str(raw)
-
-
-def _format_elapsed_days(days: Optional[int]) -> str:
-    """Return a human-readable elapsed time string from a day count (used for remaining-time labels)."""
-    if days is None:
-        return "Unknown"
-    if days == 0:
-        return "Today"
-    if days < 30:
-        return f"{days} day{'s' if days != 1 else ''}"
-    if days < 365:
-        months = days // 30
-        return f"~{months} month{'s' if months != 1 else ''}"
-    years = days // 365
-    remaining_months = (days - years * 365) // 30
-    if remaining_months > 0:
-        return f"{years} yr {remaining_months} mo"
-    return f"{years} year{'s' if years != 1 else ''}"
-
-
-def _format_age_months(days: Optional[int]) -> str:
-    """Return a month count string for the maintenance Age display."""
-    if days is None:
-        return "Unknown"
-    months = days // 30
-    return f"{months} month{'s' if months != 1 else ''}"
-
-
-def _format_due_date(service_at: Optional[str], life_years: int) -> str:
-    """Return an approximate due date string from a service timestamp and threshold."""
-    if not service_at or life_years <= 0:
-        return "Unknown"
-    try:
-        dt = datetime.fromisoformat(str(service_at))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        due = dt + timedelta(days=life_years * 365)
-        try:
-            return due.astimezone().strftime("%x")
-        except Exception:
-            return due.strftime("%x")
-    except Exception:
-        return "Unknown"
 
 
 # -----------------------------------------------------------------------------
@@ -296,7 +182,6 @@ def _tracking_selector_html(
     current_life_hours: int,
     *,
     input_index: int = 0,
-    playback_seconds: int = 0,
 ) -> str:
     """Render the stylus tracking hours dropdown."""
     opts = f"<option value='0'{'  selected' if current_life_hours == 0 else ''}>Don't track usage</option>"
@@ -307,8 +192,8 @@ def _tracking_selector_html(
         f"<label style='display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem;'>"
         f"<span style='min-width:6rem;'>Stylus Life</span>"
         f"<select name='{name}' style='flex:1;' "
-        f"data-playback-seconds='{playback_seconds}' "
-        f"onchange='updateStylusStats({input_index});_autoSaveField(this.name,this.value)'>{opts}</select>"
+        f"onchange='_updateResetBtnState(\"stylus\",{input_index});_autoSaveField(this.name,this.value)'>"
+        f"{opts}</select>"
         f"</label>"
     )
 
@@ -319,7 +204,6 @@ def _maintenance_hours_selector_html(
     *,
     input_index: int,
     item: str,
-    playback_seconds: int,
     label: str,
     options: tuple = VALID_MAINTENANCE_LIFE_HOURS,
 ) -> str:
@@ -336,8 +220,8 @@ def _maintenance_hours_selector_html(
         f"<label style='display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;'>"
         f"<span style='min-width:6rem;'>{html.escape(label)}</span>"
         f"<select name='{name}' style='flex:1;' "
-        f"data-playback-seconds='{playback_seconds}' "
-        f"onchange='update{item.capitalize()}Stats({input_index});_autoSaveField(this.name,this.value)'>{opts}</select>"
+        f"onchange='_updateResetBtnState(\"{item}\",{input_index});_autoSaveField(this.name,this.value)'>"
+        f"{opts}</select>"
         f"</label>"
     )
 
@@ -348,9 +232,7 @@ def _maintenance_years_selector_html(
     *,
     input_index: int,
     item: str,
-    elapsed_days: Optional[int],
     label: str,
-    service_at: Optional[str] = None,
 ) -> str:
     """Render a maintenance item elapsed-time threshold dropdown."""
     is_belt = (item == "belt")
@@ -361,15 +243,12 @@ def _maintenance_years_selector_html(
             continue
         sel = "  selected" if y == current_years else ""
         opts += f"<option value='{y}'{sel}>{y} year{'s' if y != 1 else ''}</option>"
-    elapsed_attr = str(elapsed_days) if elapsed_days is not None else "-1"
-    service_at_attr = html.escape(str(service_at or ""))
     return (
         f"<label style='display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;'>"
         f"<span style='min-width:6rem;'>{html.escape(label)}</span>"
         f"<select name='{name}' style='flex:1;' "
-        f"data-elapsed-days='{elapsed_attr}' "
-        f"data-service-at='{service_at_attr}' "
-        f"onchange='update{item.capitalize()}Stats({input_index});_autoSaveField(this.name,this.value)'>{opts}</select>"
+        f"onchange='_updateResetBtnState(\"{item}\",{input_index});_autoSaveField(this.name,this.value)'>"
+        f"{opts}</select>"
         f"</label>"
     )
 
@@ -395,16 +274,15 @@ def _maintenance_item_panel_html(
     is_turntable: bool,
     life_hours: int,
     life_years: int,
-    playback_seconds: int,
-    elapsed_days: Optional[int],
-    last_service_at: Optional[str],
-    hours_overdue: bool,
-    hours_warning: bool,
-    time_overdue: bool,
-    time_warning: bool,
+    snap: InputPlaybackSnapshot,
     life_hours_options: tuple = VALID_MAINTENANCE_LIFE_HOURS,
 ) -> str:
-    """Render one maintenance fieldset (belt or bearing) for an input."""
+    """Render one maintenance fieldset (belt or bearing) for an input.
+
+    Display values are derived from _hours_display / _time_display — the same
+    functions used by the live JSON API — so the initial render and any
+    subsequent auto-save or reset updates are always calculated identically.
+    """
     if not is_turntable:
         return (
             f"<fieldset><legend>{html.escape(legend)}</legend>"
@@ -416,47 +294,43 @@ def _maintenance_item_panel_html(
     hours_name = f"service_{item}_life_hours_input{input_index}"
     years_name = f"service_{item}_life_years_input{input_index}"
 
-    hours_tracking_off = life_hours == 0
-    years_tracking_off = life_years == 0
-    warn_state = hours_overdue or hours_warning or time_overdue or time_warning
+    hd = _hours_display(item, life_hours, snap)
+    td = _time_display(item, life_years, snap)
+
+    hours_tracking_off = not hd["hours_live"]
+    years_tracking_off = not td["time_live"]
+    warn_state         = hd["hours_remaining_warn"] or td["remaining_warn"]
 
     # ── Hours selector + live section ─────────────────────────────────────────
     hours_selector = _maintenance_hours_selector_html(
         hours_name, life_hours,
         input_index=input_index,
         item=item,
-        playback_seconds=playback_seconds,
         label="Hours Life",
         options=life_hours_options,
     )
 
     hours_live_display = "display:none;" if hours_tracking_off else ""
-    _life_for_calc = life_hours if life_hours > 0 else next((h for h in life_hours_options if h > 0), 1000)
-    _rem_secs = max(0, (_life_for_calc * 3600) - playback_seconds)
-    _rem_pct = min(100.0, (_rem_secs / max(1, _life_for_calc * 3600)) * 100.0)
-    _bar_status = "critical" if _rem_pct <= 10.0 else ("warning" if _rem_pct <= 20.0 else "healthy")
-    hours_warn_state = not hours_tracking_off and (hours_overdue or hours_warning)
-
     hours_live_html = (
         f"<div id='{item}-hours-live-{input_index}' style='{hours_live_display}'>"
         f"<div class='bar-label' style='font-size:0.95rem;'>"
         f"<span>Life Remaining:</span>"
-        f" <span id='{item}-hours-bar-pct-{input_index}'>{_rem_pct:.1f}%</span>"
+        f" <span id='{item}-hours-bar-pct-{input_index}'>{hd['hours_bar_pct']}%</span>"
         f"</div>"
         f"<div class='storage-bar' style='margin-bottom:0.5rem;'>"
         f"<div id='{item}-hours-bar-fill-{input_index}' class='used'"
-        f" style='width:{_rem_pct:.1f}%;' data-status='{_bar_status}'></div>"
+        f" style='width:{hd['hours_bar_pct']}%;' data-status='{hd['hours_bar_status']}'></div>"
         f"</div>"
         f"<div style='margin-bottom:0.5rem;font-size:0.95rem;'>"
         + _summary_row(
             "Used",
-            f"{html.escape(format_hours(playback_seconds))} / {_life_for_calc} h",
+            html.escape(hd["hours_used"]),
             value_id=f"{item}-hours-used-val-{input_index}",
         )
         + _summary_row(
             "Remaining",
-            html.escape("Due now" if _rem_secs <= 0 else format_hours(_rem_secs)),
-            warn=hours_warn_state,
+            html.escape(hd["hours_remaining"]),
+            warn=hd["hours_remaining_warn"],
             value_id=f"{item}-hours-remaining-val-{input_index}",
         )
         + "</div></div>"
@@ -467,55 +341,36 @@ def _maintenance_item_panel_html(
         years_name, life_years,
         input_index=input_index,
         item=item,
-        elapsed_days=elapsed_days,
         label="Time Life",
-        service_at=last_service_at,
     )
 
     years_live_display = "display:none;" if years_tracking_off else ""
-    time_warn_state = not years_tracking_off and (time_overdue or time_warning)
-
-    if elapsed_days is not None and life_years > 0:
-        _total_days = life_years * 365
-        _rem_days = max(0, _total_days - elapsed_days)
-        _time_rem_pct = min(100.0, (_rem_days / max(1, _total_days)) * 100.0)
-        _time_bar_status = "critical" if _time_rem_pct <= 10.0 else ("warning" if _time_rem_pct <= 20.0 else "healthy")
-        elapsed_txt = _format_age_months(elapsed_days)
-        due_date_txt = _format_due_date(last_service_at, life_years)
-        _time_rem_label = "Overdue" if _rem_days == 0 else _format_elapsed_days(_rem_days) + " remaining"
-    elif life_years > 0:
-        _time_rem_pct = 100.0
-        _time_bar_status = "healthy"
-        elapsed_txt = "Not recorded"
-        due_date_txt = "Not set"
-        _time_rem_label = f"{life_years} year{'s' if life_years != 1 else ''} remaining"
-    else:
-        _time_rem_pct = 100.0
-        _time_bar_status = "healthy"
-        elapsed_txt = "N/A"
-        due_date_txt = "N/A"
-        _time_rem_label = "N/A"
-
     years_live_html = (
         f"<div id='{item}-time-live-{input_index}' style='{years_live_display}'>"
         f"<div class='bar-label' style='font-size:0.95rem;'>"
         f"<span>Time Remaining:</span>"
-        f" <span id='{item}-time-bar-pct-{input_index}'>{_time_rem_pct:.1f}%</span>"
+        f" <span id='{item}-time-bar-pct-{input_index}'>{td['time_bar_pct']}%</span>"
         f"</div>"
         f"<div class='storage-bar' style='margin-bottom:0.5rem;'>"
         f"<div id='{item}-time-bar-fill-{input_index}' class='used'"
-        f" style='width:{_time_rem_pct:.1f}%;' data-status='{_time_bar_status}'></div>"
+        f" style='width:{td['time_bar_pct']}%;' data-status='{td['time_bar_status']}'></div>"
         f"</div>"
         f"<div style='margin-bottom:0.5rem;font-size:0.95rem;'>"
-        + _summary_row("Age", html.escape(elapsed_txt), value_id=f"{item}-time-age-val-{input_index}")
-        + _summary_row("Remaining", html.escape(_time_rem_label), warn=time_warn_state,
+        + _summary_row("Age",       html.escape(td["age"]),
+                       value_id=f"{item}-time-age-val-{input_index}")
+        + _summary_row("Remaining", html.escape(td["remaining"]),
+                       warn=td["remaining_warn"],
                        value_id=f"{item}-time-remaining-val-{input_index}")
-        + _summary_row("Due", html.escape(due_date_txt), value_id=f"{item}-time-due-val-{input_index}")
+        + _summary_row("Due",       html.escape(td["due"]),
+                       value_id=f"{item}-time-due-val-{input_index}")
         + "</div></div>"
     )
 
     # ── Reset section ─────────────────────────────────────────────────────────
-    reset_label = "Mark Belt Replaced" if item == "belt" else "Mark Bearing Oiled"
+    _, svc_attr = _SNAP_TIME_ATTRS.get(item, ("", ""))
+    last_service_at = getattr(snap, svc_attr, None) if svc_attr else None
+
+    reset_label  = "Mark Belt Replaced" if item == "belt" else "Mark Bearing Oiled"
     warn_btn_style = (
         "width:100%;border-color:var(--color-status-danger);"
         "background:var(--color-status-danger);color:#fff;"
@@ -559,8 +414,13 @@ def _stylus_panel_html(
     snapshot: InputPlaybackSnapshot,
     stylus_life_hours: int,
 ) -> str:
-    """Render the stylus wear tracking fieldset for one input."""
-    life_name = f"service_stylus_life_hours_input{input_index}"
+    """Render the stylus wear tracking fieldset for one input.
+
+    Display values are derived from _hours_display — the same function used by
+    the live JSON API — so the initial render and any subsequent updates are
+    always calculated identically.
+    """
+    life_name   = f"service_stylus_life_hours_input{input_index}"
     panel_title = html.escape(title) + " Stylus Wear Tracking"
 
     if not is_turntable:
@@ -571,19 +431,12 @@ def _stylus_panel_html(
             f"</p></fieldset>"
         )
 
-    playback_secs = int(snapshot.stylus_playback_seconds)
-    tracking_off = stylus_life_hours == 0
-    _life_for_calc = stylus_life_hours if stylus_life_hours > 0 else VALID_STYLUS_LIFE_HOURS[0]
-    _remaining_seconds = snapshot.stylus_remaining_seconds
-    if _remaining_seconds is None or tracking_off:
-        _remaining_seconds = (_life_for_calc * 3600) - playback_secs
-    _remaining_seconds = max(0, _remaining_seconds)
-    _remaining_pct = min(100.0, (_remaining_seconds / max(1, _life_for_calc * 3600)) * 100.0)
-    _bar_status = "critical" if _remaining_pct <= 10.0 else ("warning" if _remaining_pct <= 20.0 else "healthy")
-    warn_state = not tracking_off and (snapshot.stylus_overdue or snapshot.stylus_warning)
+    hd           = _hours_display("stylus", stylus_life_hours, snapshot)
+    tracking_off = not hd["hours_live"]
+    warn_state   = hd["hours_remaining_warn"]
 
     live_display = "display:none;" if tracking_off else ""
-    active_row = ""
+    active_row   = ""
     if not tracking_off:
         if snapshot.active:
             active_row = _summary_row("Status", "Active now")
@@ -600,21 +453,21 @@ def _stylus_panel_html(
         f"<div id='stylus-hours-live-{input_index}' style='{live_display}'>"
         f"<div class='bar-label' style='font-size:0.95rem;'>"
         f"<span>Life Remaining:</span>"
-        f" <span id='stylus-hours-bar-pct-{input_index}'>{_remaining_pct:.1f}%</span>"
+        f" <span id='stylus-hours-bar-pct-{input_index}'>{hd['hours_bar_pct']}%</span>"
         f"</div>"
         f"<div class='storage-bar' style='margin-bottom:0.75rem;'>"
         f"<div id='stylus-hours-bar-fill-{input_index}' class='used'"
-        f" style='width:{_remaining_pct:.1f}%;' data-status='{_bar_status}'></div>"
+        f" style='width:{hd['hours_bar_pct']}%;' data-status='{hd['hours_bar_status']}'></div>"
         f"</div>"
         f"<div style='margin-bottom:0.75rem;font-size:0.95rem;'>"
         + _summary_row(
             "Used",
-            f"{html.escape(format_hours(playback_secs))} / {_life_for_calc} h",
+            html.escape(hd["hours_used"]),
             value_id=f"stylus-hours-used-val-{input_index}",
         )
         + _summary_row(
             "Remaining",
-            html.escape("Due now" if _remaining_seconds <= 0 else format_hours(_remaining_seconds)),
+            html.escape(hd["hours_remaining"]),
             warn=warn_state,
             value_id=f"stylus-hours-remaining-val-{input_index}",
         )
@@ -637,56 +490,10 @@ def _stylus_panel_html(
 
     return (
         f"<fieldset><legend>{panel_title}</legend>"
-        + _tracking_selector_html(
-            life_name, stylus_life_hours,
-            input_index=input_index,
-            playback_seconds=playback_secs,
-        )
+        + _tracking_selector_html(life_name, stylus_life_hours, input_index=input_index)
         + live_html
         + f"</fieldset>"
     )
-
-
-def _stylus_card_sub(snapshot: InputPlaybackSnapshot, life_hours: int, is_turntable: bool) -> str:
-    """Return sub-text for a stylus list card."""
-    if not is_turntable:
-        return "Not a turntable"
-    if life_hours == 0:
-        return "Tracking off"
-    if snapshot.stylus_overdue:
-        return "Stylus due now"
-    if snapshot.stylus_warning:
-        remaining_secs = snapshot.stylus_remaining_seconds
-        if remaining_secs is not None:
-            return f"Stylus due soon ({format_hours(remaining_secs)} left)"
-        return "Stylus due soon"
-    return "Tracking on"
-
-
-def _maint_card_sub(
-    snapshot: InputPlaybackSnapshot,
-    item: str,
-    life_hours: int,
-    life_years: int,
-    is_turntable: bool,
-) -> str:
-    """Return sub-text for a belt or bearing list card."""
-    if not is_turntable:
-        return "Not a turntable"
-    if item == "belt":
-        overdue = snapshot.belt_hours_overdue or snapshot.belt_time_overdue
-        warning = snapshot.belt_hours_warning or snapshot.belt_time_warning
-    else:
-        overdue = snapshot.bearing_hours_overdue or snapshot.bearing_time_overdue
-        warning = snapshot.bearing_hours_warning or snapshot.bearing_time_warning
-
-    if life_hours == 0 and life_years == 0:
-        return "Tracking off"
-    if overdue:
-        return "Service due now"
-    if warning:
-        return "Service due soon"
-    return "Tracking on"
 
 
 def _service_list_card(item: str, idx: int, title: str, sub: str, warn: bool, disabled: bool) -> str:
@@ -702,8 +509,8 @@ def _service_list_card(item: str, idx: int, title: str, sub: str, warn: bool, di
         )
     warn_border = "border-color:var(--color-status-danger);" if warn else ""
     warn_colour = " style='color:var(--color-status-danger);'" if warn else ""
-    card_style = f" style='{warn_border}'" if warn_border else ""
-    chevron = f"<span class='setup-list-chevron'{warn_colour}>\u203a</span>"
+    card_style  = f" style='{warn_border}'" if warn_border else ""
+    chevron     = f"<span class='setup-list-chevron'{warn_colour}>\u203a</span>"
     return (
         f"<div class='setup-list-card' id='svc-list-card-{item}-{idx}'"
         f" onclick=\"openServiceDetail('{item}',{idx})\"{card_style}>"

@@ -1109,18 +1109,20 @@ SERVICE_CSS = (
 
 # Plain string — no Python substitutions. CSRF token is read from the DOM.
 #
-# Live-calculation note: _updateMaintHours and _updateMaintTime below mirror
-# the server-side logic in _maintenance_item_panel_html (Python). Keep these
-# values in sync with that function:
-#   • Warning threshold  : remaining ≤ 20 %
-#   • Critical threshold : remaining ≤ 10 %
-#   • Year-to-days       : life_years × 365
+# Display values (bar percentages, remaining text, dates, card subtitles) are
+# computed server-side in autostream_webui_service_schema and returned in API
+# responses as a `display` dict. The JS functions below are thin DOM applicators
+# only — no business logic or threshold recalculation here.
+#   _applyHoursDisplay(d, item, idx)  — applies hours display dict to DOM
+#   _applyTimeDisplay(d, item, idx)   — applies time display dict to DOM
+#   _applyCardState(d, item, idx)     — updates list-card subtitle and warn styling
+#   _applyDisplay(display, fieldName) — parses field name, dispatches to all three
 SERVICE_JS = """
 var _csrfToken = document.getElementById('_csrfField').value;
 
-// Per-field debounce timers and in-flight AbortControllers for auto-save.
-var _autoSaveTimers = {};
-var _autoSaveControllers = {};
+// Per-field state for leading+trailing throttle auto-save.
+// Each entry: {timer, ctrl, pending} where pending=null means no trailing call queued.
+var _autoSaveState = {};
 
 function openServiceDetail(item, idx) {
   document.querySelectorAll('.service-slide-detail .setup-detail-panel').forEach(function(p) {
@@ -1147,91 +1149,108 @@ function _showSaveError(fieldName) {
   setTimeout(function() { if (err.parentNode) err.parentNode.removeChild(err); }, 4000);
 }
 
-function _autoSaveField(name, value) {
-  if (_autoSaveTimers[name]) clearTimeout(_autoSaveTimers[name]);
-  if (_autoSaveControllers[name]) _autoSaveControllers[name].abort();
-  _autoSaveTimers[name] = setTimeout(function() {
-    delete _autoSaveTimers[name];
-    var ctrl = new AbortController();
-    _autoSaveControllers[name] = ctrl;
-    fetch('/api/service/config', {
-      method: 'POST',
-      credentials: 'same-origin',
-      signal: ctrl.signal,
-      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
-      body: JSON.stringify({field: name, value: value})
-    }).then(function(r) { return r.json(); }).then(function(d) {
-      delete _autoSaveControllers[name];
-      if (!d.ok) { _showSaveError(name); }
-    }).catch(function(e) {
-      if (e.name !== 'AbortError') { _showSaveError(name); }
-    });
-  }, 300);
+function _fireSave(name, value) {
+  var s = _autoSaveState[name];
+  if (!s) return;
+  if (s.ctrl) { s.ctrl.abort(); }
+  var ctrl = new AbortController();
+  s.ctrl = ctrl;
+  fetch('/api/service/config', {
+    method: 'POST',
+    credentials: 'same-origin',
+    signal: ctrl.signal,
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
+    body: JSON.stringify({field: name, value: value})
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (s.ctrl === ctrl) s.ctrl = null;
+    if (!d.ok) { _showSaveError(name); return; }
+    if (d.display) { _applyDisplay(d.display, name); }
+  }).catch(function(e) {
+    if (e.name !== 'AbortError') { _showSaveError(name); }
+  });
 }
 
-function _updateMaintHours(item, idx) {
-  var sel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
-  if (!sel) return;
-  var lifeHours = parseInt(sel.value, 10);
-  var playSecs = parseInt(sel.getAttribute('data-playback-seconds') || '0', 10);
+function _autoSaveField(name, value) {
+  var s = _autoSaveState[name];
+  if (!s) {
+    // No suppress window active: fire immediately (leading edge) and open a 300 ms window.
+    _autoSaveState[name] = {timer: null, ctrl: null, pending: null};
+    s = _autoSaveState[name];
+    _fireSave(name, value);
+    s.timer = setTimeout(function() {
+      var pending = s.pending;
+      s.timer = null;
+      s.pending = null;
+      delete _autoSaveState[name];
+      // Trailing call: if a further change arrived during the window, fire it now.
+      if (pending !== null) { _autoSaveField(name, pending); }
+    }, 300);
+  } else {
+    // Within suppress window: record latest value for the trailing call.
+    s.pending = value;
+  }
+}
+
+function _applyHoursDisplay(d, item, idx) {
   var liveDiv = document.getElementById(item + '-hours-live-' + idx);
-  if (lifeHours === 0) {
+  if (!d.hours_live) {
     if (liveDiv) liveDiv.style.display = 'none';
     return;
   }
   if (liveDiv) liveDiv.style.display = '';
-  var lifeSecs = lifeHours * 3600;
-  var remSecs = Math.max(0, lifeSecs - playSecs);
-  var remPct = Math.min(100, remSecs / lifeSecs * 100);
-  var usedH = (Math.max(0, playSecs) / 3600).toFixed(1);
-  var remH = (remSecs / 3600).toFixed(1);
-  var remTxt = remSecs <= 0 ? 'Due now' : remH + ' h';
-  var barStatus = remPct <= 10 ? 'critical' : (remPct <= 20 ? 'warning' : 'healthy');
-  var warnColor = remPct <= 20 ? 'var(--color-status-danger)' : '';
   var el;
   el = document.getElementById(item + '-hours-bar-pct-' + idx);
-  if (el) el.textContent = remPct.toFixed(1) + '%';
+  if (el) el.textContent = d.hours_bar_pct + '%';
   el = document.getElementById(item + '-hours-bar-fill-' + idx);
-  if (el) { el.style.width = remPct.toFixed(1) + '%'; el.setAttribute('data-status', barStatus); }
+  if (el) { el.style.width = d.hours_bar_pct + '%'; el.setAttribute('data-status', d.hours_bar_status); }
   el = document.getElementById(item + '-hours-used-val-' + idx);
-  if (el) el.textContent = usedH + ' h / ' + lifeHours + ' h';
+  if (el) el.textContent = d.hours_used;
   el = document.getElementById(item + '-hours-remaining-val-' + idx);
-  if (el) { el.textContent = remTxt; el.style.color = warnColor; }
+  if (el) { el.textContent = d.hours_remaining; el.style.color = d.hours_remaining_warn ? 'var(--color-status-danger)' : ''; }
 }
 
-function _updateMaintTime(item, idx) {
-  var sel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
-  if (!sel) return;
-  var lifeYears = parseInt(sel.value, 10);
-  var elapsedDays = parseInt(sel.getAttribute('data-elapsed-days') || '-1', 10);
-  var serviceAt = sel.getAttribute('data-service-at') || '';
+function _applyTimeDisplay(d, item, idx) {
   var liveDiv = document.getElementById(item + '-time-live-' + idx);
-  if (lifeYears === 0) {
+  if (!d.time_live) {
     if (liveDiv) liveDiv.style.display = 'none';
     return;
   }
   if (liveDiv) liveDiv.style.display = '';
-  var dueEl = document.getElementById(item + '-time-due-val-' + idx);
-  if (dueEl && serviceAt) {
-    try {
-      var dueDate = new Date(serviceAt);
-      dueDate.setDate(dueDate.getDate() + lifeYears * 365);
-      dueEl.textContent = dueDate.toLocaleDateString();
-    } catch(e) {}
-  }
-  if (elapsedDays < 0) return;
-  var totalDays = lifeYears * 365;
-  var remDays = Math.max(0, totalDays - elapsedDays);
-  var remPct = Math.min(100, remDays / totalDays * 100);
-  var barStatus = remPct <= 10 ? 'critical' : (remPct <= 20 ? 'warning' : 'healthy');
-  var warnColor = remPct <= 20 ? 'var(--color-status-danger)' : '';
   var el;
   el = document.getElementById(item + '-time-bar-pct-' + idx);
-  if (el) el.textContent = remPct.toFixed(1) + '%';
+  if (el) el.textContent = d.time_bar_pct + '%';
   el = document.getElementById(item + '-time-bar-fill-' + idx);
-  if (el) { el.style.width = remPct.toFixed(1) + '%'; el.setAttribute('data-status', barStatus); }
+  if (el) { el.style.width = d.time_bar_pct + '%'; el.setAttribute('data-status', d.time_bar_status); }
+  el = document.getElementById(item + '-time-age-val-' + idx);
+  if (el) el.textContent = d.age;
   el = document.getElementById(item + '-time-remaining-val-' + idx);
-  if (el) { el.textContent = remDays <= 0 ? 'Overdue' : (remDays + ' days remaining'); el.style.color = warnColor; }
+  if (el) { el.textContent = d.remaining; el.style.color = d.remaining_warn ? 'var(--color-status-danger)' : ''; }
+  el = document.getElementById(item + '-time-due-val-' + idx);
+  if (el) el.textContent = d.due;
+}
+
+function _applyCardState(d, item, idx) {
+  if (d.card_sub === undefined) return;
+  var card = document.getElementById('svc-list-card-' + item + '-' + idx);
+  if (!card) return;
+  var warn = !!d.card_warn;
+  card.style.borderColor = warn ? 'var(--color-status-danger)' : '';
+  var t = card.querySelector('.setup-list-card-title');
+  if (t) t.style.color = warn ? 'var(--color-status-danger)' : '';
+  var c = card.querySelector('.setup-list-chevron');
+  if (c) c.style.color = warn ? 'var(--color-status-danger)' : '';
+  var s = card.querySelector('.setup-list-card-sub');
+  if (s) s.textContent = d.card_sub;
+}
+
+function _applyDisplay(display, fieldName) {
+  // fieldName: "service_{item}_life_{hours|years}_input{idx}"
+  var m = fieldName.match(/^service_(\\w+)_life_(?:hours|years)_input(\\d+)$/);
+  if (!m) return;
+  var item = m[1], idx = parseInt(m[2], 10);
+  if (display.hours_live !== undefined) { _applyHoursDisplay(display, item, idx); }
+  if (display.time_live  !== undefined) { _applyTimeDisplay(display, item, idx); }
+  _applyCardState(display, item, idx);
 }
 
 function _updateResetBtnState(item, idx) {
@@ -1243,10 +1262,6 @@ function _updateResetBtnState(item, idx) {
   var yOff = !ySel || parseInt(ySel.value, 10) === 0;
   btn.disabled = hOff && yOff;
 }
-
-function updateStylusStats(idx) { _updateMaintHours('stylus', idx); _updateResetBtnState('stylus', idx); }
-function updateBeltStats(idx)   { _updateMaintHours('belt', idx);   _updateMaintTime('belt', idx);   _updateResetBtnState('belt', idx); }
-function updateBearingStats(idx){ _updateMaintHours('bearing', idx); _updateMaintTime('bearing', idx); _updateResetBtnState('bearing', idx); }
 
 function _showServiceConfirm(msg) {
   return new Promise(function(resolve) {
@@ -1285,46 +1300,23 @@ function doServiceReset(item, idx) {
       body: JSON.stringify({item: item, input: idx})
     }).then(function(r) { return r.json(); }).then(function(d) {
       if (!d.ok) { if (btn) btn.disabled = false; return; }
-      var hSel = document.querySelector('[name="service_' + item + '_life_hours_input' + idx + '"]');
-      if (hSel) hSel.setAttribute('data-playback-seconds', '0');
-      var ySel = document.querySelector('[name="service_' + item + '_life_years_input' + idx + '"]');
-      if (ySel) {
-        ySel.setAttribute('data-elapsed-days', '0');
-        ySel.setAttribute('data-service-at', d.last_service_at || '');
+      var _disp = d.display || {card_sub: 'Tracking on', card_warn: false};
+      if (d.display) {
+        _applyHoursDisplay(_disp, item, idx);
+        _applyTimeDisplay(_disp, item, idx);
+        var dateKey = item === 'stylus' ? 'stylus-last-service-val-' : item + '-last-service-val-';
+        var dateEl = document.getElementById(dateKey + idx);
+        if (dateEl && _disp.last_service) { dateEl.textContent = _disp.last_service; }
       }
-      var dateKey = item === 'stylus' ? 'stylus-last-service-val-' : item + '-last-service-val-';
-      var dateEl = document.getElementById(dateKey + idx);
-      if (dateEl && d.last_service_at) {
-        try { var dt = new Date(d.last_service_at); dateEl.textContent = dt.toLocaleDateString(); }
-        catch(e) { dateEl.textContent = d.last_service_at; }
-      }
-      var ageEl = document.getElementById(item + '-time-age-val-' + idx);
-      if (ageEl) ageEl.textContent = '0 months';
-      var card = document.getElementById('svc-list-card-' + item + '-' + idx);
-      if (card) {
-        card.style.borderColor = '';
-        var cardTitle = card.querySelector('.setup-list-card-title');
-        if (cardTitle) cardTitle.style.color = '';
-        var cardChevron = card.querySelector('.setup-list-chevron');
-        if (cardChevron) cardChevron.style.color = '';
-        var cardSub = card.querySelector('.setup-list-card-sub');
-        if (cardSub) cardSub.textContent = 'Tracking on';
-      }
+      _applyCardState(_disp, item, idx);
       if (d.warning) {
         var notice = document.createElement('span');
-        notice.textContent = '\u26a0 Reset not persisted \u2014 may revert on restart';
+        notice.textContent = '\\u26a0 Reset not persisted \\u2014 may revert on restart';
         notice.style.cssText = 'color:var(--color-status-danger);font-size:0.85rem;display:block;margin-top:0.3rem;';
         if (btn && btn.parentNode) btn.parentNode.appendChild(notice);
         setTimeout(function() { if (notice.parentNode) notice.parentNode.removeChild(notice); }, 8000);
       }
-      if (item === 'stylus') {
-        _updateMaintHours('stylus', idx);
-        _updateResetBtnState('stylus', idx);
-      } else {
-        _updateMaintHours(item, idx);
-        _updateMaintTime(item, idx);
-        _updateResetBtnState(item, idx);
-      }
+      _updateResetBtnState(item, idx);
       if (btn) {
         btn.style.borderColor = ''; btn.style.background = ''; btn.style.color = '';
         btn.disabled = false;
