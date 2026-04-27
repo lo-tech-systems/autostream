@@ -940,18 +940,25 @@ LICENSE_BANNER_CSS = ""
 
 VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">'
 
+COMMON_MODAL_CSS = """
+  .modal-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;--modal-primary-bg:var(--color-btn-bg);--modal-primary-text:#fff;--modal-secondary-bg:var(--color-surface-muted);--modal-secondary-text:var(--color-text);}
+  .modal-overlay.show{display:flex;}
+  [data-theme="dark"] .modal-overlay{--modal-primary-bg:var(--color-btn-bg);--modal-primary-text:#fff;--modal-secondary-bg:var(--color-surface-muted);--modal-secondary-text:var(--color-text-strong);}
+  .modal-panel{width:min(var(--modal-width,22rem),100%);background:var(--modal-bg,var(--color-surface));border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+  .modal-hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;color:var(--modal-title-color,var(--color-text-strong));}
+  .modal-bd{padding:1rem;}
+  .modal-bd p{margin:0 0 .75rem 0;}
+  .modal-bd input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid var(--color-border-code);border-radius:12px;outline:none;}
+  .modal-ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
+  .modal-btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
+  .modal-btn:disabled{opacity:0.65;cursor:not-allowed;box-shadow:none;}
+  .modal-btn-primary{background:var(--modal-primary-bg);color:var(--modal-primary-text);}
+  .modal-btn-secondary{background:var(--modal-secondary-bg);color:var(--modal-secondary-text);}
+  .modal-btn-danger{background:var(--color-status-danger);color:#fff;}
+"""
+
 PIN_MODAL_CSS = """
-  #pinModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
-  #pinModal.show{display:flex;}
-  #pinModal .panel{width:min(22rem,100%);background:var(--color-surface);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
-  #pinModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;}
-  #pinModal .bd{padding:1rem;}
-  #pinModal .bd p{margin:0 0 .75rem 0;}
-  #pinModal input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid var(--color-border-code);border-radius:12px;outline:none;}
-  #pinModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
-  #pinModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;background:var(--color-btn-bg);color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
-  #pinModal .btn.cancel{background:var(--color-btn-bg);color:#fff;}
-  #pinModal .btn.ok{background:var(--color-btn-bg);color:#fff;}
+  #pinModal .modal-panel{--modal-width:22rem;}
 """
 
 
@@ -1105,17 +1112,7 @@ SERVICE_CSS = (
     ".service-slide-list, .service-slide-detail"
     " { width: 50%; flex-shrink: 0; min-width: 0; }\n"
     ".service-divider { border: none; border-top: 1px solid var(--color-border-nav); margin: 0.4rem 0; }\n"
-    "#svcConfirmModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;"
-    "background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}\n"
-    "#svcConfirmModal.show{display:flex;}\n"
-    "#svcConfirmModal .panel{width:min(22rem,100%);background:var(--color-surface);border-radius:16px;"
-    "box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}\n"
-    "#svcConfirmModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;}\n"
-    "#svcConfirmModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}\n"
-    "#svcConfirmModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;"
-    "font-size:1rem;background:var(--color-btn-bg);color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.05);}\n"
-    "#svcConfirmModal .btn.cancel{background:var(--color-surface-alt,rgba(128,128,128,0.25));color:var(--color-text);}\n"
-    + PIN_MODAL_CSS
+    + COMMON_MODAL_CSS
 )
 
 # Plain string — no Python substitutions. CSRF token is read from the DOM.

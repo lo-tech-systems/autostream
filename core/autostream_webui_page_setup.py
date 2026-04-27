@@ -37,6 +37,7 @@ from autostream_sysutils import get_ap_ssid, get_system_hostname, set_system_hos
 from autostream_webui_assets import (
     A2HS_SCRIPT,
     BANNER_HTML,
+    COMMON_MODAL_CSS,
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
@@ -272,6 +273,7 @@ def send_setup_page(
     factory_reset_zone = ""
     factory_reset_modal = ""
     factory_reset_js = ""
+    reboot_modal = ""
     if not initial_setup:
         ap_ssid = get_ap_ssid()
         pin_val = auth.get_boot_pin_value()
@@ -295,14 +297,8 @@ def send_setup_page(
             )
 
         factory_reset_modal_css = """
-          #factoryResetModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;}
-          #factoryResetModal.show{display:flex;}
-          #factoryResetModal .panel{width:min(28rem,100%);background:var(--color-surface-raised);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
-          #factoryResetModal .hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;color:var(--color-status-danger);}
-          #factoryResetModal .bd{padding:1rem;}
-          #factoryResetModal .bd p{margin:0 0 .75rem 0;}
-          #factoryResetModal .ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
-          #factoryResetModal .btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
+          #factoryResetModal .modal-panel{--modal-width:28rem;--modal-bg:var(--color-surface-raised);}
+          #factoryResetModal .modal-hdr{--modal-title-color:var(--color-status-danger);}
         """
 
         factory_reset_zone = f"""
@@ -319,20 +315,34 @@ def send_setup_page(
       </div>"""
 
         factory_reset_modal = f"""
-      <div id="factoryResetModal" role="dialog" aria-modal="true" aria-labelledby="factoryResetModalTitle">
-        <div class="panel">
-          <div class="hdr" id="factoryResetModalTitle">Factory Reset</div>
-          <div class="bd">
+      <div id="factoryResetModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="factoryResetModalTitle">
+        <div class="panel modal-panel">
+          <div class="hdr modal-hdr" id="factoryResetModalTitle">Factory Reset</div>
+          <div class="bd modal-bd">
             <p id="factoryResetModalMsg">{modal_body_html}</p>
             <p id="factoryResetModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
           </div>
-          <div class="ft">
-            <button type="button" class="btn" id="factoryResetCancel"
-              style="background:#6c757d;color:#fff;"
+          <div class="ft modal-ft">
+            <button type="button" class="btn modal-btn modal-btn-secondary" id="factoryResetCancel"
               onclick="hideFactoryResetModal()">Cancel</button>
-            <button type="button" class="btn" id="factoryResetContinue"
-              style="background:var(--color-status-danger);color:#fff;font-weight:700;border:none;"
+            <button type="button" class="btn modal-btn modal-btn-danger" id="factoryResetContinue"
               onclick="doFactoryReset()">Continue</button>
+          </div>
+        </div>
+      </div>"""
+
+        reboot_modal = """
+      <div id="rebootModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="rebootModalTitle">
+        <div class="panel modal-panel">
+          <div class="hdr modal-hdr" id="rebootModalTitle">Reboot System</div>
+          <div class="bd modal-bd">
+            <p>This will reboot autostream. Please allow 90 seconds for the system to restart.</p>
+          </div>
+          <div class="ft modal-ft">
+            <button type="button" class="btn modal-btn modal-btn-secondary" id="rebootModalCancel"
+              onclick="hideRebootModal()">Cancel</button>
+            <button type="button" class="btn modal-btn modal-btn-primary" id="rebootModalOk"
+              onclick="confirmReboot()">Reboot</button>
           </div>
         </div>
       </div>"""
@@ -346,6 +356,26 @@ def send_setup_page(
         function hideFactoryResetModal() {{
           const m = document.getElementById('factoryResetModal');
           if (m) m.classList.remove('show');
+        }}
+        function showRebootModal() {{
+          const m = document.getElementById('rebootModal');
+          if (m) m.classList.add('show');
+        }}
+        function hideRebootModal() {{
+          const m = document.getElementById('rebootModal');
+          if (m) m.classList.remove('show');
+        }}
+        async function confirmReboot() {{
+          hideRebootModal();
+          try {{
+            fetch("/api/reboot", {{
+              method: "POST",
+              headers: {{"X-CSRF-Token": window.__CSRF || ""}},
+              cache: "no-store",
+              keepalive: true
+            }});
+          }} catch (e) {{}}
+          window.location.replace("/offline/rebooting");
         }}
         async function doFactoryReset() {{
           const cont = document.getElementById('factoryResetContinue');
@@ -610,22 +640,22 @@ def send_setup_page(
       </div>
     </div>"""
 
-    _extra_css = f"{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}"
+    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}"
     _pin_modal_div = """\
-<div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
-  <div class="panel">
-    <div class="hdr" id="pinModalTitle">Change PIN</div>
-    <div class="bd">
+<div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="pinModalTitle">Change PIN</div>
+    <div class="bd modal-bd">
       <p id="pinModalMessage">Enter your current PIN.</p>
       <p id="pinModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
     </div>
-    <div class="ft">
-      <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
-      <button type="button" class="btn ok" id="pinModalOk">Apply</button>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="pinModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">Apply</button>
     </div>
   </div>
 </div>"""
-    _body_prefix = f"{factory_reset_modal}\n{_pin_modal_div}"
+    _body_prefix = f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}"
     _body_html = (
         f"{BANNER_HTML}{('<h1>' + h1 + '</h1>') if initial_setup else ''}"
         + (f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else "")
@@ -926,19 +956,8 @@ def send_setup_page(
           syncInputUi(1);
           syncInputUi(2);
         }});
-        async function requestReboot(){{
-          if(!confirm("Reboot system?")) return;
-          // Fire the reboot API (keepalive so the request is sent even as the page navigates).
-          // Then send the user to the nginx-served holding page which polls until the device is back.
-          try {{
-            fetch("/api/reboot", {{
-              method: "POST",
-              headers: {{"X-CSRF-Token": window.__CSRF || ""}},
-              cache: "no-store",
-              keepalive: true
-            }});
-          }} catch (e) {{}}
-          window.location.replace("/offline/rebooting");
+        function requestReboot(){{
+          showRebootModal();
         }}
         (async function(){{
           const msg = (t) => {{ document.getElementById("updMsg").textContent = t; }};

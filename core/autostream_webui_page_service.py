@@ -57,12 +57,12 @@ from autostream_webui_state import WebUIState
 
 # Confirm modal HTML (rendered once per request, referenced by SERVICE_JS).
 _CONFIRM_MODAL_HTML = (
-    "<div id='svcConfirmModal' role='dialog' aria-modal='true' aria-labelledby='svcConfirmTitle'>"
-    "<div class='panel'>"
-    "<div class='hdr' id='svcConfirmTitle'>Confirm</div>"
-    "<div class='ft'>"
-    "<button type='button' class='btn cancel' id='svcConfirmCancel'>Cancel</button>"
-    "<button type='button' class='btn ok' id='svcConfirmOk'>Yes</button>"
+    "<div id='svcConfirmModal' class='modal-overlay' role='dialog' aria-modal='true' aria-labelledby='svcConfirmTitle'>"
+    "<div class='panel modal-panel'>"
+    "<div class='hdr modal-hdr' id='svcConfirmTitle'>Confirm</div>"
+    "<div class='ft modal-ft'>"
+    "<button type='button' class='btn modal-btn modal-btn-secondary' id='svcConfirmCancel'>Cancel</button>"
+    "<button type='button' class='btn modal-btn modal-btn-primary' id='svcConfirmOk'>Yes</button>"
     "</div></div></div>"
 )
 

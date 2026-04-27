@@ -26,6 +26,7 @@ from autostream_webui_assets import (
     A2HS_SCRIPT,
     BANNER_DISMISS_SCRIPT,
     BANNER_LOGO_HTML,
+    COMMON_MODAL_CSS,
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import build_page_html, build_top_banner_html, locked_load_config
@@ -240,7 +241,7 @@ def send_airplay_page(
 }
 """
 
-    _extra_css = f"{PIN_MODAL_CSS}\n{master_volume_css}"
+    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{master_volume_css}"
     _head_extra = f"""{csrf_meta}
 
       <script>
@@ -666,16 +667,16 @@ def send_airplay_page(
     ) if show_master_volume else ""
 
     _body_prefix = """
-<div id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
-  <div class="panel">
-    <div class="hdr" id="pinModalTitle">Enter PIN</div>
-    <div class="bd">
+<div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="pinModalTitle">Enter PIN</div>
+    <div class="bd modal-bd">
       <p>Enter the PIN shown on your Apple TV (or other AirPlay device) to enable playback.</p>
       <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" />
     </div>
-    <div class="ft">
-      <button type="button" class="btn cancel" id="pinModalCancel">Cancel</button>
-      <button type="button" class="btn ok" id="pinModalOk">OK</button>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="pinModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">OK</button>
     </div>
   </div>
 </div>"""
