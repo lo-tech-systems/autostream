@@ -39,6 +39,8 @@
 //     {"type":"set_gain","input":1,"gain_db":3.0}
 //     {"type":"set_output_eq","bands":[{"type":"peak","freq_hz":1000.0,
 //                                        "gain_db":2.0,"q":0.707}]}
+//     {"type":"set_output_gain","gain_db":-2.5}
+//     {"type":"set_output_auto_trim","enabled":true}
 //     {"type":"set_log_level","level":"warning"}
 //     {"type":"get_status"}
 //     {"type":"get_id_snapshot","input":1}               (max_seconds default 20)
@@ -48,8 +50,21 @@
 //     {"type":"ack","command":"...", "ok":true}
 //     {"type":"ack","command":"...", "ok":false,"error":"reason"}
 //
+//   set_output_gain response:
+//     {"type":"ack","command":"set_output_gain","ok":true,
+//      "output_gain_db":-2.5,"output_auto_trim_db":-1.2,
+//      "effective_output_gain_db":-3.7}
+//
+//   set_output_auto_trim response:
+//     {"type":"ack","command":"set_output_auto_trim","ok":true,
+//      "output_auto_trim_enabled":true,"output_auto_trim_db":0.0,
+//      "effective_output_gain_db":0.0}
+//
 //   get_status response:
-//     {"type":"status","log_level":"warning","output_clip_dbfs":0.0,"inputs":[
+//     {"type":"status","log_level":"warning","output_clip_dbfs":0.0,
+//      "output_gain_db":0.0,"output_auto_trim_enabled":true,
+//      "output_auto_trim_db":-3.4,"effective_output_gain_db":-3.4,
+//      "inputs":[
 //       {"index":1,"level_dbfs":-42.1,"poll_peak_dbfs":-38.2,"silent":false,
 //        "capturing":true,"detected_hz":44097.3,
 //        "raw_peak_dbfs":-12.3,"effective_peak_dbfs":-9.1,
@@ -62,9 +77,14 @@
 //   get_status() call.  Reset to -90.0 on each get_status() so each poll
 //   sees only the peak from the interval since the last poll.
 //   output_clip_dbfs: maximum dB above 0 dBFS reached by the post-output-EQ
-//   signal since the previous get_status() call.  0.0 means no clipping.
-//   Always reported even when the output EQ is flat, since input EQ/gain may
-//   also push the signal over 0 dBFS.  Ignored safely by older clients.
+//   signal (after output gain is applied) since the previous get_status() call.
+//   0.0 means no clipping.  Ignored safely by older clients.
+//   output_gain_db: configured manual output gain [-10, +10].
+//   output_auto_trim_enabled: whether auto-trim is active.
+//   output_auto_trim_db: current auto-trim cut (<= 0); 0.0 when no trim has
+//   been applied.  Always reported, even when auto-trim is disabled.
+//   effective_output_gain_db: output_gain_db + output_auto_trim_db; use this
+//   value as the manual gain to preserve auto-trim results permanently.
 //
 //   get_id_snapshot response -- JSON ack line followed immediately by a raw
 //   binary payload of (frames * 2) bytes (signed 16-bit little-endian, mono,
@@ -233,12 +253,29 @@ private:
 
 
 // =============================================================================
+// OutputGainState
+//
+// A snapshot of the current output-side gain state returned by
+// OutputProcessor::get_gain_state() and included in get_status responses.
+// =============================================================================
+
+struct OutputGainState
+{
+    float manual_gain_db;    // configured manual output gain (set_output_gain)
+    bool  auto_trim_enabled; // whether auto-trim is currently active
+    float auto_trim_db;      // current auto-trim cut in dB (always <= 0)
+    float effective_gain_db; // manual_gain_db + auto_trim_db
+};
+
+
+// =============================================================================
 // OutputProcessor
 //
-// Applies a user-configurable parametric EQ to the output stream and tracks
-// clipping.  There is one instance owned by AudioMonitor; a reference to it
-// is threaded into every InputChannel so each process thread can call apply()
-// from the same location in the signal chain.
+// Applies a user-configurable parametric EQ to the output stream, applies
+// manual and automatic output gain, and tracks clipping.  There is one
+// instance owned by AudioMonitor; a reference to it is threaded into every
+// InputChannel so each process thread can call apply() from the same location
+// in the signal chain.
 //
 // Design notes:
 //
@@ -257,11 +294,25 @@ private:
 //   The filter state persists across input handoffs so the output stream is
 //   continuous.
 //
-//   Clip tracking: the clip scan always runs, even on the quick-path, because
-//   per-input gain and per-input EQ may already have pushed the signal above
-//   0 dBFS before the output processor is reached.  _clip_peak_linear is
-//   updated via a CAS keep-maximum loop; poll_clip_overshoot_dbfs() exchanges
-//   it for 0.0f (matching the poll_peak_dbfs reset pattern on inputs).
+//   Output gain: after the EQ step, apply() multiplies every sample by the
+//   effective linear gain derived from manual_gain_db + auto_trim_db.  Both
+//   values are read as atomics with relaxed ordering; a one-block lag on change
+//   is imperceptible.  When both are zero the multiply loop is skipped entirely.
+//
+//   Auto-trim: when enabled, apply() detects post-gain clipping (peak > 1.0)
+//   and cuts auto_trim_db by exactly the overshoot in dB, clamped to
+//   AUTO_TRIM_FLOOR_DB.  The trim accumulates downward within a session (it is
+//   never boosted back) and is reset to 0 by reset_auto_trim(), which is called
+//   by AudioMonitor on input handoff (set_allow_capture(true)) and on stop_input.
+//   Enabling auto-trim via set_auto_trim_enabled(true) also resets the trim.
+//   The CAS keep-minimum loop in apply() handles the brief concurrent window
+//   during handoff safely.
+//
+//   Clip tracking: the clip scan always runs, after the output gain step, so
+//   it reflects the true final level seen before float-to-int16 conversion.
+//   _clip_peak_linear is updated via a CAS keep-maximum loop;
+//   poll_clip_overshoot_dbfs() exchanges it for 0.0f (matching the
+//   poll_peak_dbfs reset pattern on inputs).
 // =============================================================================
 
 class OutputProcessor
@@ -276,18 +327,54 @@ public:
     // Safe to call from any thread at any time.
     void set_bands(const std::vector<EqBand>& bands, float sample_rate);
 
-    // Apply the output EQ to n_frames of interleaved stereo float samples
-    // in-place, then scan for clipping and update _clip_peak_linear.
-    // The EQ step is skipped when _is_flat is true; the clip scan always runs.
-    // Safe to call concurrently from two process threads (guarded internally
-    // by _apply_mutex); in practice only one is active at a time.
+    // Apply the output EQ, output gain, and auto-trim to n_frames of
+    // interleaved stereo float samples in-place, then scan for clipping.
+    // Signal chain within apply():
+    //   1. Output EQ (skipped when _is_flat is true)
+    //   2. Effective output gain = manual_gain_db + auto_trim_db (skipped at 0)
+    //   3. Clip scan (always runs; updates _clip_peak_linear)
+    //   4. Auto-trim update (when enabled and clipping detected)
+    // Safe to call concurrently from two process threads (EQ step guarded by
+    // _apply_mutex; gain/clip/trim steps use only atomics); in practice only
+    // one is active at a time.
     void apply(float* samples, int n_frames);
+
+    // Set the manual output gain applied after the output EQ.
+    // gain_db must be in [OUTPUT_GAIN_MIN_DB, OUTPUT_GAIN_MAX_DB].
+    // Safe to call from any thread at any time; a one-block lag is acceptable.
+    void set_manual_gain(float gain_db);
+
+    // Enable or disable automatic output trimming.
+    // When enabled, apply() reacts to post-EQ/gain clipping by cutting the
+    // trim enough to prevent equivalent future clipping.  The trim only cuts,
+    // never boosts, and accumulates within a session (reset by reset_auto_trim).
+    // Enabling always resets the current trim to 0.0 dB.
+    // Safe to call from any thread at any time.
+    void set_auto_trim_enabled(bool enabled);
+
+    // Reset the auto-trim attenuation to 0.0 dB.
+    // Called by AudioMonitor on input handoff (set_allow_capture(true)) and on
+    // stop_input so each new capture session starts from zero trim.
+    // Does not change whether auto-trim is enabled.
+    // Safe to call from any thread at any time.
+    void reset_auto_trim();
 
     // Return the maximum absolute sample value (in dB above 0 dBFS) seen
     // since the last call, and atomically reset the accumulator to zero.
     // Returns 0.0f when no sample has exceeded 1.0 in absolute value.
     // Safe to call from any thread; uses a single atomic exchange.
     float poll_clip_overshoot_dbfs();
+
+    // Return a snapshot of the current output gain state.
+    // Safe to call from any thread at any time.
+    OutputGainState get_gain_state() const;
+
+    // Manual gain range enforced by validate_output_gain_db().
+    static constexpr float OUTPUT_GAIN_MIN_DB = -10.0f;
+    static constexpr float OUTPUT_GAIN_MAX_DB = +10.0f;
+
+    // Maximum attenuation the auto-trim is allowed to accumulate.
+    static constexpr float AUTO_TRIM_FLOOR_DB = -10.0f;
 
 private:
     // ── Band configuration ────────────────────────────────────────────────────
@@ -303,6 +390,21 @@ private:
     std::mutex                                  _apply_mutex;
     std::vector<BiquadFilter>                   _local_filters;
     std::shared_ptr<const std::vector<EqBand>>  _current_bands;
+
+    // ── Manual output gain ────────────────────────────────────────────────────
+    // Written by set_manual_gain() (control thread), read by apply() (process
+    // thread).  Relaxed ordering is sufficient; a one-block lag is acceptable.
+    std::atomic<float> _manual_gain_db{0.0f};
+
+    // ── Auto-trim state ───────────────────────────────────────────────────────
+    // _auto_trim_enabled: written by set_auto_trim_enabled() (control thread),
+    //   read by apply() (process thread).  Relaxed ordering is sufficient.
+    // _auto_trim_db: written by apply() via a CAS keep-minimum loop when
+    //   clipping is detected, and reset to 0 by set_auto_trim_enabled(true) and
+    //   reset_auto_trim().  The auto-trim only accumulates downward, so the CAS
+    //   loop handles concurrent calls during the brief input-handoff window.
+    std::atomic<bool>  _auto_trim_enabled{false};
+    std::atomic<float> _auto_trim_db{0.0f};
 
     // ── Clip accumulator ──────────────────────────────────────────────────────
     // Maximum absolute sample value seen since the last poll_clip_overshoot_dbfs()
@@ -579,6 +681,15 @@ public:
     InputChannelStatus get_status() const;
 
     bool is_running() const { return _running.load(); }
+
+    // Returns true if this channel is currently allowed to write to the shared
+    // FIFO (i.e. set_allow_capture(true) has been called and set_allow_capture(false)
+    // has not yet been called).  Used by AudioMonitor to decide whether stopping
+    // this input should also reset the output auto-trim.
+    bool allow_capture_enabled() const
+    {
+        return _allow_capture.load(std::memory_order_relaxed);
+    }
 
     // Returns true if start() has been called and stop() has not yet completed
     // (includes the case where the capture thread self-stopped after an ALSA
@@ -875,6 +986,15 @@ public:
     // An empty band list (or all Peak/Shelf bands with 0 dB gain) enables the
     // quick-path so no filter arithmetic is performed on the hot path.
     std::string api_set_output_eq(const std::vector<EqBand>& bands);
+
+    // Set the manual output gain applied after the output EQ.
+    // gain_db must be in [OutputProcessor::OUTPUT_GAIN_MIN_DB,
+    //                     OutputProcessor::OUTPUT_GAIN_MAX_DB].
+    std::string api_set_output_gain(float gain_db);
+
+    // Enable or disable automatic output trimming.
+    // Enabling resets the current auto-trim attenuation to 0.0 dB.
+    std::string api_set_output_auto_trim(bool enabled);
 
     // Update the monitor's runtime log level.
     std::string api_set_log_level(const std::string& level_text);

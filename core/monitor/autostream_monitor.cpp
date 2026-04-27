@@ -893,8 +893,25 @@ void OutputProcessor::apply(float* samples, int n_frames)
             filter.process(samples, n_frames);
     }
 
-    // ── Clip scan: always runs (input EQ / gain may also cause clipping) ──────
-    // Scan the post-output-EQ float data for the maximum absolute value.
+    // ── Output gain (manual + auto-trim) ────────────────────────────────────
+    // Compute and apply the effective output gain once per block.
+    // Both atomics are read with relaxed ordering; a one-block lag on change
+    // is imperceptible (~23 ms).  The multiply loop is skipped at 0 dB to
+    // avoid a pow() call and a redundant multiply on the common flat path.
+    {
+        float eff_db = _manual_gain_db.load(std::memory_order_relaxed)
+                     + _auto_trim_db.load(std::memory_order_relaxed);
+        if (eff_db != 0.0f)
+        {
+            float gain  = std::pow(10.0f, eff_db / 20.0f);
+            int   total = n_frames * 2;
+            for (int i = 0; i < total; ++i)
+                samples[i] *= gain;
+        }
+    }
+
+    // ── Clip scan: always runs (reflects the true final level after gain) ─────
+    // Scan the post-EQ, post-gain float data for the maximum absolute value.
     // Values > 1.0 will be clamped to ±32767 by src_float_to_short_array(),
     // so we measure the true overshoot here, in float, before the conversion.
     int   total_samples = n_frames * 2;   // interleaved stereo
@@ -906,6 +923,34 @@ void OutputProcessor::apply(float* samples, int n_frames)
             peak = v;
     }
 
+    // ── Auto-trim update (cut-only, session-hold) ─────────────────────────────
+    // When enabled and the post-gain signal clips, add enough attenuation to
+    // prevent the same overshoot on the next block.  The trim accumulates
+    // downward within a session and is reset by reset_auto_trim() on handoff or
+    // stop.  A CAS keep-minimum loop handles the brief concurrent window during
+    // input handoff without corrupting the trim value.
+    if (peak > 1.0f && _auto_trim_enabled.load(std::memory_order_relaxed))
+    {
+        float cut_db    = -20.0f * std::log10(peak);  // negative: overshoot to cut
+        float prev_trim = _auto_trim_db.load(std::memory_order_relaxed);
+        while (true)
+        {
+            float new_trim = std::max(prev_trim + cut_db, AUTO_TRIM_FLOOR_DB);
+            if (new_trim >= prev_trim)
+                break;   // already at floor or (shouldn't happen) cut_db >= 0
+            if (_auto_trim_db.compare_exchange_weak(prev_trim, new_trim,
+                                                     std::memory_order_relaxed))
+            {
+                LOG_INFO("[output] Auto-trim cut: %.2f dB -> %.2f dB "
+                         "(peak=%.4f, overshoot=%.2f dB)",
+                         prev_trim, new_trim, peak, -cut_db);
+                break;
+            }
+            // prev_trim refreshed by compare_exchange_weak on failure; retry
+        }
+    }
+
+    // ── Clip accumulator ──────────────────────────────────────────────────────
     // Atomically update _clip_peak_linear keeping the running maximum.
     // The CAS keep-maximum pattern is safe with relaxed ordering: at worst,
     // a concurrent poll_clip_overshoot_dbfs() exchange() wins the race and
@@ -925,6 +970,48 @@ float OutputProcessor::poll_clip_overshoot_dbfs()
     if (peak <= 1.0f)
         return 0.0f;
     return 20.0f * std::log10(peak);
+}
+
+void OutputProcessor::set_manual_gain(float gain_db)
+{
+    _manual_gain_db.store(gain_db, std::memory_order_relaxed);
+    LOG_INFO("[output] Manual output gain set to %.2f dB", gain_db);
+}
+
+void OutputProcessor::set_auto_trim_enabled(bool enabled)
+{
+    if (enabled)
+    {
+        // Reset any accumulated trim before enabling so each newly-enabled
+        // auto-trim session starts from zero attenuation.
+        float prev = _auto_trim_db.exchange(0.0f, std::memory_order_relaxed);
+        LOG_INFO("[output] Auto-trim enabled (trim reset: %.2f dB -> 0.0 dB)", prev);
+    }
+    else
+    {
+        LOG_INFO("[output] Auto-trim disabled (trim held at %.2f dB)",
+                 _auto_trim_db.load(std::memory_order_relaxed));
+    }
+    _auto_trim_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+void OutputProcessor::reset_auto_trim()
+{
+    float prev = _auto_trim_db.exchange(0.0f, std::memory_order_relaxed);
+    if (prev != 0.0f)
+        LOG_INFO("[output] Auto-trim reset to 0.0 dB (was %.2f dB)", prev);
+    else
+        LOG_DEBUG("[output] Auto-trim reset (was already 0.0 dB)");
+}
+
+OutputGainState OutputProcessor::get_gain_state() const
+{
+    OutputGainState s;
+    s.manual_gain_db    = _manual_gain_db.load(std::memory_order_relaxed);
+    s.auto_trim_enabled = _auto_trim_enabled.load(std::memory_order_relaxed);
+    s.auto_trim_db      = _auto_trim_db.load(std::memory_order_relaxed);
+    s.effective_gain_db = s.manual_gain_db + s.auto_trim_db;
+    return s;
 }
 
 
@@ -2165,32 +2252,48 @@ void InputChannel::process_thread_func()
                         _session_effective_peak_linear.store(eff_peak, std::memory_order_relaxed);
                 }
 
-                // ── Apply output EQ and update clip tracking ───────────────
-                // Applies the shared output-side parametric EQ in-place.
-                // Always scans for clipping regardless of whether the EQ is
-                // flat (input gain/EQ may have already pushed the signal over
-                // 0 dBFS).  Must be called after per-input EQ but before the
-                // float→int16 conversion so the clip scan sees the true
-                // overshoot rather than the clamped int16 value.
-                _output_processor.apply(float_out.data(), out_frames);
-
-                // Convert back to int16.
-                src_float_to_short_array(float_out.data(), pcm_out.data(), out_frames * 2);
-
-                // Re-check _allow_capture under _fifo_mutex.  The outer check
-                // at the top of this block is an optimisation (skip SRC/EQ
-                // entirely when disabled), but it is not race-free: a handoff
-                // via api_set_allow_capture() could disable this input between
-                // the outer check and here.  Holding _fifo_mutex for the write
-                // and re-checking while holding it means the disable store is
-                // either observed here and the write is skipped, or it is not
-                // yet visible and the write completes before the handoff
-                // enables the new input (api_set_allow_capture acquires
-                // _fifo_mutex before calling ch->set_allow_capture(true)).
+                // ── Output processing and FIFO write (all under _fifo_mutex) ─
+                //
+                // apply() — which includes the auto-trim CAS update — and the
+                // FIFO write are both performed while holding _fifo_mutex.  This
+                // is the key structural invariant that makes auto-trim reset
+                // race-free:
+                //
+                //   Control thread (api_set_allow_capture handoff):
+                //     1. Stores _allow_capture = false on outgoing input.
+                //     2. Acquires _fifo_mutex.
+                //     3. Calls reset_auto_trim() (trim → 0).
+                //     4. Stores _allow_capture = true on incoming input.
+                //     5. Releases _fifo_mutex.
+                //
+                //   Process thread of outgoing input: either
+                //     A. Holds _fifo_mutex when the control thread tries step 2.
+                //        The outgoing thread's apply() and write complete, mutex
+                //        is released, then the control thread resets trim.  The
+                //        outgoing thread's NEXT iteration observes
+                //        _allow_capture = false and skips apply() entirely.
+                //     B. Does not hold _fifo_mutex when the control thread does
+                //        step 2.  The control thread acquires first; the outgoing
+                //        thread waits.  When it finally acquires, it reads
+                //        _allow_capture = false and skips both apply() and the
+                //        FIFO write — the trim is never touched.
+                //
+                // In both cases the trim is 0 before the incoming input's first
+                // apply() call, and the outgoing input cannot write a negative
+                // trim after the reset.
                 {
                     std::lock_guard<std::mutex> lock(_fifo_mutex);
                     if (_allow_capture.load(std::memory_order_relaxed))
                     {
+                        // Apply output EQ, output gain, and auto-trim in-place.
+                        // Must precede float→int16 so the clip scan sees the
+                        // true overshoot before clamping.
+                        _output_processor.apply(float_out.data(), out_frames);
+
+                        // Convert to int16.
+                        src_float_to_short_array(float_out.data(), pcm_out.data(),
+                                                 out_frames * 2);
+
                         if (_prefill_frames_remaining > 0)
                         {
                             // Accumulation phase: append to the pre-fill buffer.
@@ -2644,6 +2747,16 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         float gain_db = json_get_float(json_command, "gain_db", 0.0f);
         return _monitor.api_set_gain(idx, gain_db);
     }
+    else if (type == "set_output_gain")
+    {
+        float gain_db = json_get_float(json_command, "gain_db", 0.0f);
+        return _monitor.api_set_output_gain(gain_db);
+    }
+    else if (type == "set_output_auto_trim")
+    {
+        bool enabled = json_get_bool(json_command, "enabled", false);
+        return _monitor.api_set_output_auto_trim(enabled);
+    }
     else if (type == "set_log_level")
     {
         std::string level_text = json_get_string(json_command, "level");
@@ -2802,11 +2915,18 @@ std::string AudioMonitor::api_get_status()
     // than on the hot path.
     float clip_dbfs = _output_processor.poll_clip_overshoot_dbfs();
 
+    // Snapshot the current output gain state.
+    OutputGainState gs = _output_processor.get_gain_state();
+
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(1);
     oss << "{\"type\":\"status\",\"log_level\":\""
         << protocol_log_level_name(logger_get_level())
-        << "\",\"output_clip_dbfs\":" << clip_dbfs
+        << "\",\"output_clip_dbfs\":"           << clip_dbfs
+        << ",\"output_gain_db\":"               << gs.manual_gain_db
+        << ",\"output_auto_trim_enabled\":"     << (gs.auto_trim_enabled ? "true" : "false")
+        << ",\"output_auto_trim_db\":"          << gs.auto_trim_db
+        << ",\"effective_output_gain_db\":"     << gs.effective_gain_db
         << ",\"inputs\":[";
 
     for (int i = 0; i < NUM_INPUTS; ++i)
@@ -2898,6 +3018,16 @@ static std::string validate_gain_db(float gain_db)
 {
     if (gain_db < -24.0f || gain_db > 24.0f)
         return "gain_db must be in the range [-24.0, +24.0]";
+    return "";
+}
+
+// Return an error string if gain_db is out of range for the output gain, or "".
+// The output gain range is narrower than the per-input gain: [-10, +10] dB.
+static std::string validate_output_gain_db(float gain_db)
+{
+    if (gain_db < OutputProcessor::OUTPUT_GAIN_MIN_DB ||
+        gain_db > OutputProcessor::OUTPUT_GAIN_MAX_DB)
+        return "gain_db must be in the range [-10.0, +10.0]";
     return "";
 }
 
@@ -3072,8 +3202,24 @@ std::string AudioMonitor::api_stop_input(int input_index)
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
 
+    // Read _allow_capture *before* stop() so we know whether this was the
+    // active FIFO writer.  stop() joins the process thread, which is safe to
+    // do with _allow_capture still set; the thread exits cleanly.  We must not
+    // reset the shared auto-trim for the inactive (monitoring-only) input,
+    // because doing so would discard the trim that was learned for the currently
+    // active input's session — exactly the bug the fix is designed to prevent.
+    const bool was_active = ch->allow_capture_enabled();
+
     ch->stop();
-    LOG_INFO("[monitor] stop_input(%d) completed", input_index);
+
+    // Reset auto-trim only when the stopped input was the one feeding the FIFO.
+    // Stopping the idle monitoring input must not disturb trim accumulated by
+    // the active session on the other input.
+    if (was_active)
+        _output_processor.reset_auto_trim();
+
+    LOG_INFO("[monitor] stop_input(%d) completed (was_active=%s)",
+             input_index, was_active ? "true" : "false");
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"stop_input\","
@@ -3098,29 +3244,56 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
     // exclusion here: enabling capture on one input disables it on all others.
     //
     // Sequence for a handoff (allow == true):
-    //   1. Store _allow_capture = false on all other inputs.  Their process
-    //      threads re-check this flag under _fifo_mutex immediately before
-    //      each write, so any write that begins after this store will be
+    //   1. Read which other inputs, if any, are currently marked as the active
+    //      writer.  This determines whether this call is a true handoff (a
+    //      different source is taking over) or an idempotent reassertion of the
+    //      already-active input.  Auto-trim must only be reset on a true handoff;
+    //      resetting on an idempotent call would discard the trim learned for the
+    //      session that is still running.
+    //   2. Store _allow_capture = false on all other inputs.  Their process
+    //      threads re-check this flag under _fifo_mutex before calling apply()
+    //      or writing, so any apply()/write that begins after this store will be
     //      suppressed.
-    //   2. Acquire _fifo_mutex before enabling the new input.  This ensures
-    //      that if a just-disabled thread is mid-write (holding _fifo_mutex),
-    //      we wait for that write to finish before step 3.
-    //   3. Enable the new input while still under _fifo_mutex, so the first
-    //      write from the new input cannot race with a trailing write from the
-    //      old input.
+    //   3. Acquire _fifo_mutex.  This blocks until any in-flight apply()+write
+    //      from a just-disabled thread completes (that thread also holds
+    //      _fifo_mutex during apply() and the FIFO write).
+    //   4. If this is a true handoff, reset auto-trim while holding _fifo_mutex.
+    //      Because apply() — including the auto-trim CAS update — only runs
+    //      under _fifo_mutex, holding the lock here guarantees that no outgoing
+    //      process thread can write a stale negative trim after this reset.
+    //   5. Enable the new input while still under _fifo_mutex, so the first
+    //      apply()/write from the new input cannot race with a trailing write
+    //      from the old input.
     if (allow)
     {
+        // Step 1: detect a real handoff before mutating any state.
+        bool is_handoff = false;
+        for (int i = 0; i < NUM_INPUTS; ++i)
+        {
+            if (_inputs[i].get() != ch && _inputs[i]->allow_capture_enabled())
+                is_handoff = true;
+        }
+
+        // Step 2: disable all other inputs.
         for (int i = 0; i < NUM_INPUTS; ++i)
         {
             if (_inputs[i].get() != ch)
                 _inputs[i]->set_allow_capture(false);
         }
-        // Acquire _fifo_mutex before enabling the new input so that any
-        // in-flight write from a just-disabled thread completes first.
-        // The process thread re-checks _allow_capture while holding this
-        // mutex, so no stale write can follow once we release it.
-        std::lock_guard<std::mutex> lock(_fifo_mutex);
-        ch->set_allow_capture(true);
+
+        // Steps 3-5: acquire mutex, conditionally reset trim, enable new input.
+        {
+            std::lock_guard<std::mutex> lock(_fifo_mutex);
+
+            // Step 4: reset trim inside the mutex so no outgoing apply() call
+            // can write a negative trim after this point (apply() is also under
+            // _fifo_mutex; see process_thread_func for the full invariant).
+            if (is_handoff)
+                _output_processor.reset_auto_trim();
+
+            // Step 5: enable the new input while holding the lock.
+            ch->set_allow_capture(true);
+        }
     }
     else
     {
@@ -3189,6 +3362,46 @@ std::string AudioMonitor::api_set_output_eq(const std::vector<EqBand>& bands)
     oss << "{\"type\":\"ack\",\"command\":\"set_output_eq\","
         << "\"bands_applied\":" << bands.size() << ","
         << "\"ok\":true}";
+    return oss.str();
+}
+
+std::string AudioMonitor::api_set_output_gain(float gain_db)
+{
+    std::string validation_error = validate_output_gain_db(gain_db);
+    if (!validation_error.empty())
+    {
+        LOG_WARN("[monitor] set_output_gain rejected: %s", validation_error.c_str());
+        std::ostringstream oss;
+        oss << "{\"type\":\"ack\",\"command\":\"set_output_gain\","
+            << "\"ok\":false,\"error\":\"" << json_escape(validation_error) << "\"}";
+        return oss.str();
+    }
+
+    _output_processor.set_manual_gain(gain_db);
+
+    OutputGainState gs = _output_processor.get_gain_state();
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1);
+    oss << "{\"type\":\"ack\",\"command\":\"set_output_gain\","
+        << "\"ok\":true,"
+        << "\"output_gain_db\":"           << gs.manual_gain_db    << ","
+        << "\"output_auto_trim_db\":"      << gs.auto_trim_db      << ","
+        << "\"effective_output_gain_db\":" << gs.effective_gain_db << "}";
+    return oss.str();
+}
+
+std::string AudioMonitor::api_set_output_auto_trim(bool enabled)
+{
+    _output_processor.set_auto_trim_enabled(enabled);
+
+    OutputGainState gs = _output_processor.get_gain_state();
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1);
+    oss << "{\"type\":\"ack\",\"command\":\"set_output_auto_trim\","
+        << "\"ok\":true,"
+        << "\"output_auto_trim_enabled\":"  << (gs.auto_trim_enabled ? "true" : "false") << ","
+        << "\"output_auto_trim_db\":"       << gs.auto_trim_db      << ","
+        << "\"effective_output_gain_db\":"  << gs.effective_gain_db << "}";
     return oss.str();
 }
 

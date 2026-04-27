@@ -35,9 +35,9 @@ for higher-level orchestration, UI, settings, and playback-backend control.
   - owns capture/process threads, ALSA state, resampler state, input gain, and
     per-input EQ
 - `OutputProcessor`
-  - applies the shared output-side EQ after per-input processing and before FIFO
-    write
-  - also tracks post-EQ clipping
+  - applies the shared output-side EQ after per-input processing
+  - applies manual output gain and automatic output trim after the EQ
+  - tracks post-gain clipping and exposes it via `output_clip_dbfs`
 - `EqChain` and `BiquadFilter`
   - implement the parametric EQ system
 - `RateEstimator`
@@ -431,6 +431,87 @@ Typical errors:
 - `unknown EQ band type`
 - any EQ-band validation error
 
+### `set_output_gain`
+
+Sets the manual output gain applied after the output EQ.
+
+Request:
+
+```json
+{"type":"set_output_gain","gain_db":-2.5}
+```
+
+Validation:
+
+- `gain_db` must be in `[-10.0, +10.0]`
+
+Behavior:
+
+- applied after output EQ, before float-to-`int16` conversion
+- shared across all inputs
+- combined with any active auto-trim: `effective_output_gain_db = output_gain_db + output_auto_trim_db`
+- a value of `0.0` is unity gain (default)
+
+Success response:
+
+```json
+{
+  "type":"ack",
+  "command":"set_output_gain",
+  "ok":true,
+  "output_gain_db":-2.5,
+  "output_auto_trim_db":-1.2,
+  "effective_output_gain_db":-3.7
+}
+```
+
+Typical errors:
+
+- `gain_db must be in the range [-10.0, +10.0]`
+
+### `set_output_auto_trim`
+
+Enables or disables automatic output trimming.
+
+Request:
+
+```json
+{"type":"set_output_auto_trim","enabled":true}
+```
+
+Behavior:
+
+- when enabled, `apply()` monitors post-EQ/gain clipping; if a processed block
+  clips (peak > 0 dBFS), the auto-trim attenuation is increased by the overshoot
+  in dB so the next block avoids the same clip
+- the trim is cut-only: it only accumulates downward, never boosts back
+- the trim is session-scoped: it resets to `0.0 dB` on `stop_input` or on
+  `set_allow_capture(true)` (input handoff)
+- enabling always resets the current trim to `0.0 dB`
+- disabling preserves the current trim value in `output_auto_trim_db` but stops
+  the trim from being updated further
+- the minimum allowed auto-trim is `-10.0 dB`
+
+Success response:
+
+```json
+{
+  "type":"ack",
+  "command":"set_output_auto_trim",
+  "ok":true,
+  "output_auto_trim_enabled":true,
+  "output_auto_trim_db":0.0,
+  "effective_output_gain_db":0.0
+}
+```
+
+Recommended workflow for deriving a permanent manual gain value:
+
+1. Set `output_gain_db` to `0.0` and enable auto-trim.
+2. Let audio play through at typical levels until the trim stabilises.
+3. Read `effective_output_gain_db` from the next `get_status` response.
+4. Disable auto-trim and set `output_gain_db` to that value to make it permanent.
+
 ### `set_log_level`
 
 Changes the daemon log level at runtime.
@@ -485,6 +566,10 @@ Success response:
   "type":"status",
   "log_level":"warning",
   "output_clip_dbfs":0.0,
+  "output_gain_db":0.0,
+  "output_auto_trim_enabled":true,
+  "output_auto_trim_db":-3.4,
+  "effective_output_gain_db":-3.4,
   "inputs":[
     {
       "index":1,
@@ -507,10 +592,23 @@ Top-level fields:
 - `log_level`
   - current runtime log level
 - `output_clip_dbfs`
-  - maximum post-output-EQ overshoot above 0 dBFS since the previous
+  - maximum post-EQ, post-gain overshoot above 0 dBFS since the previous
     `get_status` call
   - `0.0` means no clipping
   - this value is reset on every `get_status` call
+- `output_gain_db`
+  - currently configured manual output gain
+  - range `[-10.0, +10.0]`; default `0.0`
+- `output_auto_trim_enabled`
+  - whether auto-trim is currently active
+- `output_auto_trim_db`
+  - current auto-trim cut in dB; always `<= 0.0`
+  - `0.0` means no trim has been applied this session
+  - reported even when auto-trim is disabled
+- `effective_output_gain_db`
+  - `output_gain_db + output_auto_trim_db`
+  - use this value as the `gain_db` argument to `set_output_gain` to make the
+    auto-derived attenuation permanent
 
 Per-input fields:
 
@@ -592,15 +690,19 @@ For an input that is actively feeding the FIFO, the signal path is:
 4. per-input gain
 5. per-input EQ
 6. output EQ
-7. clip scan
-8. float-to-`int16` conversion
-9. FIFO write
+7. output gain (`output_gain_db + output_auto_trim_db`)
+8. clip scan and auto-trim update
+9. float-to-`int16` conversion
+10. FIFO write
 
 This ordering matters:
 
 - identification snapshots are intentionally pre-gain and pre-EQ
-- `effective_peak_dbfs` reflects per-input processing but not output EQ
-- `output_clip_dbfs` reflects the final post-output-EQ float-domain signal
+- `effective_peak_dbfs` reflects per-input processing but not output EQ or output gain
+- `output_clip_dbfs` reflects the final level after all processing, matching what
+  is written to the FIFO
+- auto-trim sees the real final level, so it reacts to headroom consumed by any
+  combination of per-input gain, per-input EQ, output EQ, and manual output gain
 
 ## Notes And Caveats
 
@@ -610,9 +712,14 @@ This ordering matters:
 - EQ updates are applied lazily by the audio threads; a new EQ setting may take
   effect on the next processed block rather than mid-block.
 - `set_allow_capture(true)` for one input implicitly disables FIFO capture on
-  the other input.
+  the other input and resets the output auto-trim to `0.0 dB`.
+- `stop_input` also resets the output auto-trim to `0.0 dB`; each new session
+  starts from zero attenuation regardless of what accumulated in the previous one.
 - `get_status` is a poll/reset API for peak and clip accumulators, not a pure
   read-only snapshot.
+- `output_auto_trim_db` is always reported (even when auto-trim is disabled) so
+  that polling clients can display the current effective gain without needing to
+  track whether auto-trim is on or off.
 
 ## Source Of Truth
 
