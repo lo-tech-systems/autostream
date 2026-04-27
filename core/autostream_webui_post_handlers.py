@@ -12,7 +12,6 @@ Contents:
   - handle_live_input_gain_update -- POST /api/input_gain
   - handle_owntone_setup_post     -- POST /owntone-setup
   - handle_factory_reset_post     -- POST /api/factory-reset
-  - handle_service_post           -- POST /service
 """
 
 from __future__ import annotations
@@ -30,9 +29,6 @@ from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
     mark_configured,
     normalize_airplay_mode,
-    normalize_bearing_life_hours,
-    normalize_maintenance_life_hours,
-    normalize_maintenance_life_years,
     parse_config,
     unconfigured,
 )
@@ -59,7 +55,7 @@ from autostream_player_service import (
     submit_output_pin,
     update_output,
 )
-from autostream_playback_stats import normalize_stylus_life_hours, suggested_silence_threshold_dbfs
+from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_sysutils import atomic_write_file, factory_reset_system, get_system_hostname, set_system_hostname
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
@@ -70,7 +66,6 @@ from autostream_webui_common import (
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
 from autostream_webui_page_setup import send_setup_page
-from autostream_webui_page_service import send_service_page
 from autostream_webui_page_owntone import send_owntone_setup_page, start_owntone_restart_async
 
 
@@ -631,115 +626,3 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
         logging.error("handle_factory_reset_post: scheduling failed: %s", e)
         send_json(handler, 200, {"ok": False, "error": str(e)})
 
-
-# -----------------------------------------------------------------------------
-# Service page POST handler
-# -----------------------------------------------------------------------------
-
-def handle_service_post(handler, state: WebUIState, body: str) -> None:
-    """POST /service — update maintenance tracking config.
-
-    Fields handled:
-
-    * ``service_stylus_life_hours_input1/2``,
-      ``service_belt_life_hours_input1/2``, ``service_belt_life_years_input1/2``,
-      ``service_bearing_life_hours_input1/2``,
-      ``service_bearing_life_years_input1/2`` — rated-life values
-      (0 = tracking disabled).
-
-    Maintenance resets are handled via POST /api/service/reset (AJAX).
-
-    No PIN is required; /service is in the auth allowlist.
-    """
-    form = parse_qs(body)
-    def fld(n, d=""): return _fld(form, n, d)
-
-    try:
-        cfg = locked_load_config(state.config_path)
-        p = parse_config(cfg)
-
-        # --- Stylus life config ---
-        new_audio1_stylus_life = normalize_stylus_life_hours(
-            fld("service_stylus_life_hours_input1", str(p.audio1.stylus_life_hours))
-        )
-        new_audio2_stylus_life = normalize_stylus_life_hours(
-            fld("service_stylus_life_hours_input2", str(p.audio2.stylus_life_hours))
-        )
-
-        # --- Belt life config ---
-        new_audio1_belt_life_hours = normalize_maintenance_life_hours(
-            fld("service_belt_life_hours_input1", str(p.audio1.belt_life_hours))
-        )
-        new_audio1_belt_life_years = normalize_maintenance_life_years(
-            fld("service_belt_life_years_input1", str(p.audio1.belt_life_years))
-        )
-        new_audio2_belt_life_hours = normalize_maintenance_life_hours(
-            fld("service_belt_life_hours_input2", str(p.audio2.belt_life_hours))
-        )
-        new_audio2_belt_life_years = normalize_maintenance_life_years(
-            fld("service_belt_life_years_input2", str(p.audio2.belt_life_years))
-        )
-
-        # --- Bearing life config ---
-        new_audio1_bearing_life_hours = normalize_bearing_life_hours(
-            fld("service_bearing_life_hours_input1", str(p.audio1.bearing_life_hours))
-        )
-        new_audio1_bearing_life_years = normalize_maintenance_life_years(
-            fld("service_bearing_life_years_input1", str(p.audio1.bearing_life_years))
-        )
-        new_audio2_bearing_life_hours = normalize_bearing_life_hours(
-            fld("service_bearing_life_hours_input2", str(p.audio2.bearing_life_hours))
-        )
-        new_audio2_bearing_life_years = normalize_maintenance_life_years(
-            fld("service_bearing_life_years_input2", str(p.audio2.bearing_life_years))
-        )
-
-        # Persist tracking config changes
-        if not cfg.has_section("audio1"):
-            cfg.add_section("audio1")
-        cfg.set("audio1", "stylus_life_hours",   str(new_audio1_stylus_life))
-        cfg.set("audio1", "belt_life_hours",      str(new_audio1_belt_life_hours))
-        cfg.set("audio1", "belt_life_years",      str(new_audio1_belt_life_years))
-        cfg.set("audio1", "bearing_life_hours",   str(new_audio1_bearing_life_hours))
-        cfg.set("audio1", "bearing_life_years",   str(new_audio1_bearing_life_years))
-
-        if not cfg.has_section("audio2"):
-            cfg.add_section("audio2")
-        cfg.set("audio2", "stylus_life_hours",   str(new_audio2_stylus_life))
-        cfg.set("audio2", "belt_life_hours",      str(new_audio2_belt_life_hours))
-        cfg.set("audio2", "belt_life_years",      str(new_audio2_belt_life_years))
-        cfg.set("audio2", "bearing_life_hours",   str(new_audio2_bearing_life_hours))
-        cfg.set("audio2", "bearing_life_years",   str(new_audio2_bearing_life_years))
-
-        with CONFIG_IO_LOCK:
-            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
-
-        update_playback_input_config(
-            1,
-            enabled=True,
-            is_turntable=p.audio1.is_turntable,
-            stylus_life_hours=new_audio1_stylus_life,
-            belt_life_hours=new_audio1_belt_life_hours,
-            belt_life_years=new_audio1_belt_life_years,
-            bearing_life_hours=new_audio1_bearing_life_hours,
-            bearing_life_years=new_audio1_bearing_life_years,
-        )
-        update_playback_input_config(
-            2,
-            enabled=p.audio2_enabled,
-            is_turntable=p.audio2.is_turntable,
-            stylus_life_hours=new_audio2_stylus_life,
-            belt_life_hours=new_audio2_belt_life_hours,
-            belt_life_years=new_audio2_belt_life_years,
-            bearing_life_hours=new_audio2_bearing_life_hours,
-            bearing_life_years=new_audio2_bearing_life_years,
-        )
-
-        handler.send_response(302)
-        handler.send_header("Location", "/service")
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
-
-    except Exception:
-        logging.exception("handle_service_post: unexpected failure")
-        send_service_page(handler, state, flash_msg="Save failed", flash_type="error")

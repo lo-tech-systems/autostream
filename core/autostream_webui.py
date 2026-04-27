@@ -75,7 +75,6 @@ from autostream_webui_post_handlers import (
     handle_live_input_gain_update,
     handle_output_update,
     handle_owntone_setup_post,
-    handle_service_post,
     handle_setup_post,
 )
 
@@ -437,12 +436,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_logs_post(self, STATE, body_str)
-
-        elif path == "/service":
-            if not body_str:
-                self.send_error(400, "Missing request body")
-                return
-            handle_service_post(self, STATE, body_str)
 
         elif path == "/api/service/reset":
             if not body_str:

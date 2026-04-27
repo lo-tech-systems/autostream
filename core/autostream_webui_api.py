@@ -50,6 +50,24 @@ from autostream_webui_state import WebUIState
 
 
 # -----------------------------------------------------------------------------
+# Service config field map (field name → config section, key, normaliser)
+# -----------------------------------------------------------------------------
+
+_SERVICE_FIELD_MAP: dict = {
+    "service_stylus_life_hours_input1":  ("audio1", "stylus_life_hours",  normalize_stylus_life_hours),
+    "service_stylus_life_hours_input2":  ("audio2", "stylus_life_hours",  normalize_stylus_life_hours),
+    "service_belt_life_hours_input1":    ("audio1", "belt_life_hours",    normalize_maintenance_life_hours),
+    "service_belt_life_years_input1":    ("audio1", "belt_life_years",    normalize_maintenance_life_years),
+    "service_belt_life_hours_input2":    ("audio2", "belt_life_hours",    normalize_maintenance_life_hours),
+    "service_belt_life_years_input2":    ("audio2", "belt_life_years",    normalize_maintenance_life_years),
+    "service_bearing_life_hours_input1": ("audio1", "bearing_life_hours", normalize_bearing_life_hours),
+    "service_bearing_life_years_input1": ("audio1", "bearing_life_years", normalize_maintenance_life_years),
+    "service_bearing_life_hours_input2": ("audio2", "bearing_life_hours", normalize_bearing_life_hours),
+    "service_bearing_life_years_input2": ("audio2", "bearing_life_years", normalize_maintenance_life_years),
+}
+
+
+# -----------------------------------------------------------------------------
 # Core JSON response helper
 # -----------------------------------------------------------------------------
 
@@ -232,7 +250,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
     Request body (JSON):
         { "field": "<field_name>", "value": "<raw_value>" }
 
-    Accepted fields:
+    Accepted fields (see _SERVICE_FIELD_MAP):
         service_stylus_life_hours_input1/2
         service_belt_life_hours_input1/2, service_belt_life_years_input1/2
         service_bearing_life_hours_input1/2, service_bearing_life_years_input1/2
@@ -240,20 +258,6 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
     Response (JSON):
         { "ok": true, "field": "<field>", "value": "<normalised>" }
     """
-    # Field name → (config section, config key, normaliser)
-    _FIELD_MAP: dict = {
-        "service_stylus_life_hours_input1":  ("audio1", "stylus_life_hours",  normalize_stylus_life_hours),
-        "service_stylus_life_hours_input2":  ("audio2", "stylus_life_hours",  normalize_stylus_life_hours),
-        "service_belt_life_hours_input1":    ("audio1", "belt_life_hours",    normalize_maintenance_life_hours),
-        "service_belt_life_years_input1":    ("audio1", "belt_life_years",    normalize_maintenance_life_years),
-        "service_belt_life_hours_input2":    ("audio2", "belt_life_hours",    normalize_maintenance_life_hours),
-        "service_belt_life_years_input2":    ("audio2", "belt_life_years",    normalize_maintenance_life_years),
-        "service_bearing_life_hours_input1": ("audio1", "bearing_life_hours", normalize_bearing_life_hours),
-        "service_bearing_life_years_input1": ("audio1", "bearing_life_years", normalize_maintenance_life_years),
-        "service_bearing_life_hours_input2": ("audio2", "bearing_life_hours", normalize_bearing_life_hours),
-        "service_bearing_life_years_input2": ("audio2", "bearing_life_years", normalize_maintenance_life_years),
-    }
-
     try:
         payload = json.loads(body or "{}")
         field = str(payload.get("field", "")).strip()
@@ -262,11 +266,11 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
         return
 
-    if field not in _FIELD_MAP:
+    if field not in _SERVICE_FIELD_MAP:
         send_json(handler, 400, {"ok": False, "error": "Unknown field"})
         return
 
-    section, key, normaliser = _FIELD_MAP[field]
+    section, key, normaliser = _SERVICE_FIELD_MAP[field]
 
     try:
         normalised = normaliser(value)
@@ -285,29 +289,31 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         with CONFIG_IO_LOCK:
             atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
 
-        # Re-parse so update_playback_input_config sees the full consistent config.
-        p2 = parse_config(cfg)
+        # Build live-update args from the pre-write parse, substituting the one
+        # changed key. This avoids a second parse_config call on the same object.
         if section == "audio1":
+            a = p.audio1
             update_playback_input_config(
                 1,
                 enabled=True,
-                is_turntable=p.audio1.is_turntable,
-                stylus_life_hours=p2.audio1.stylus_life_hours,
-                belt_life_hours=p2.audio1.belt_life_hours,
-                belt_life_years=p2.audio1.belt_life_years,
-                bearing_life_hours=p2.audio1.bearing_life_hours,
-                bearing_life_years=p2.audio1.bearing_life_years,
+                is_turntable=a.is_turntable,
+                stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
+                belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
+                belt_life_years=normalised if key == "belt_life_years" else a.belt_life_years,
+                bearing_life_hours=normalised if key == "bearing_life_hours" else a.bearing_life_hours,
+                bearing_life_years=normalised if key == "bearing_life_years" else a.bearing_life_years,
             )
         else:
+            a = p.audio2
             update_playback_input_config(
                 2,
                 enabled=p.audio2_enabled,
-                is_turntable=p.audio2.is_turntable,
-                stylus_life_hours=p2.audio2.stylus_life_hours,
-                belt_life_hours=p2.audio2.belt_life_hours,
-                belt_life_years=p2.audio2.belt_life_years,
-                bearing_life_hours=p2.audio2.bearing_life_hours,
-                bearing_life_years=p2.audio2.bearing_life_years,
+                is_turntable=a.is_turntable,
+                stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
+                belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
+                belt_life_years=normalised if key == "belt_life_years" else a.belt_life_years,
+                bearing_life_hours=normalised if key == "bearing_life_hours" else a.bearing_life_hours,
+                bearing_life_years=normalised if key == "bearing_life_years" else a.bearing_life_years,
             )
     except Exception as e:
         logging.exception("send_service_config_json: save failed")
