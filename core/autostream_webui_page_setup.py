@@ -540,33 +540,33 @@ def send_setup_page(
             </div>
             <fieldset><legend>Customise</legend>
               <input type="hidden" name="webui_show_master_volume_present" value="1">
-              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.5rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub()">
-                  <span class="switch"></span>
-                </label>
-                <span>Show master volume control</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub()">
-                  <span class="switch"></span>
-                </label>
-                <span>Display input detail</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub()">
-                  <span class="switch"></span>
-                </label>
-                <span>Dark mode</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;">
+              <div class="setup-customise-row" style="margin-top:0.5rem;">
                 <label class="output-toggle" style="margin:0;">
                   <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="refreshCustomiseCardSub()">
                   <span class="switch"></span>
                 </label>
                 <span>Display Hostname</span>
+              </div>
+              <div class="setup-customise-row" style="margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Show Master Volume Control</span>
+              </div>
+              <div class="setup-customise-row" style="margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Display Input Detail</span>
+              </div>
+              <div class="setup-customise-row" style="margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Dark Mode</span>
               </div>
             </fieldset>
           </div>

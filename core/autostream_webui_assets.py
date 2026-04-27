@@ -826,6 +826,17 @@ body {
 }
 
 /* ── Nav bar bottom clearance (only when nav bar is present) ── */
+.setup-customise-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.setup-customise-row > span:last-child {
+  font-size: 0.94rem;
+  line-height: 1.25;
+}
+
 body.has-bottom-nav .container {
   padding-bottom: 5rem;
 }
