@@ -17,6 +17,8 @@ Contents:
   Display/card logic imported from autostream_webui_service_schema (shared with page renderer).
   - send_update_check_json       -- GET /api/update/check
   - send_update_status_json      -- GET /api/update/status
+  - send_output_eq_config_json   -- POST /api/output_eq/config
+  - send_output_eq_status_json   -- GET /api/output_eq/status
 """
 
 from __future__ import annotations
@@ -33,11 +35,15 @@ from autostream_config import (
 )
 from autostream_core import (
     any_monitor_capturing,
+    get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
+    set_live_output_auto_trim,
+    set_live_output_eq,
+    set_live_output_gain,
     update_playback_input_config,
 )
 from autostream_player_service import list_outputs
@@ -464,3 +470,125 @@ def send_update_status_json(handler) -> None:
             "percent": 0,
             "last_run_at": "",
         })
+
+
+# -----------------------------------------------------------------------------
+# Output EQ JSON endpoints
+# -----------------------------------------------------------------------------
+
+# Fields accepted by send_output_eq_config_json and their types.
+_OUTPUT_EQ_DB_FIELDS = frozenset({
+    "gain_db", "peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db",
+})
+_OUTPUT_EQ_BOOL_FIELDS = frozenset({"auto_trim_enabled"})
+_OUTPUT_EQ_ALL_FIELDS = _OUTPUT_EQ_DB_FIELDS | _OUTPUT_EQ_BOOL_FIELDS
+_OUTPUT_EQ_DB_MIN = -10.0
+_OUTPUT_EQ_DB_MAX = 10.0
+
+
+def send_output_eq_config_json(handler, state, body: str) -> None:
+    """POST /api/output_eq/config — auto-save one output EQ field.
+
+    Request body (JSON):
+        { "field": "<field_name>", "value": "<raw_value>" }
+
+    Accepted fields:
+        gain_db, auto_trim_enabled, peq1_db … peq6_db
+
+    Each save atomically writes autostream.ini and immediately applies the
+    live change to autostream_monitor.  For PEQ band changes, all six bands
+    are re-sent to the monitor so the output EQ state stays consistent.
+    """
+    try:
+        payload = json.loads(body or "{}")
+        field = str(payload.get("field", "")).strip()
+        value_raw = str(payload.get("value", "")).strip()
+    except Exception:
+        send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
+        return
+
+    if field not in _OUTPUT_EQ_ALL_FIELDS:
+        send_json(handler, 400, {"ok": False, "error": "Unknown field"})
+        return
+
+    section = "output_eq"
+
+    if field in _OUTPUT_EQ_BOOL_FIELDS:
+        normalised_bool = value_raw.lower() in ("true", "1", "yes")
+        normalised_str = "true" if normalised_bool else "false"
+        try:
+            cfg = locked_load_config(state.config_path)
+            if not cfg.has_section(section):
+                cfg.add_section(section)
+            cfg.set(section, field, normalised_str)
+            with CONFIG_IO_LOCK:
+                atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+            set_live_output_auto_trim(normalised_bool)
+        except Exception as e:
+            logging.exception("send_output_eq_config_json: save failed")
+            send_json(handler, 200, {"ok": False, "error": str(e)})
+            return
+        send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
+        return
+
+    # Numeric dB field
+    try:
+        value = float(value_raw)
+    except ValueError:
+        send_json(handler, 400, {"ok": False, "error": "Value must be numeric"})
+        return
+
+    value = max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, value))
+    normalised_str = f"{value:.1f}"
+
+    try:
+        cfg = locked_load_config(state.config_path)
+        p = parse_config(cfg)
+
+        if not cfg.has_section(section):
+            cfg.add_section(section)
+        cfg.set(section, field, normalised_str)
+        with CONFIG_IO_LOCK:
+            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+
+        # Apply the live change.  For any PEQ band change, rebuild the full
+        # six-band array from the pre-write parsed config, substituting the
+        # one changed band, to avoid a second config parse.
+        oeq = p.output_eq
+        if field == "gain_db":
+            set_live_output_gain(value)
+        else:
+            band_vals = {b: float(getattr(oeq, b)) for b in _OUTPUT_EQ_DB_FIELDS if b != "gain_db"}
+            band_vals[field] = value
+            set_live_output_eq(
+                band_vals["peq1_db"],
+                band_vals["peq2_db"],
+                band_vals["peq3_db"],
+                band_vals["peq4_db"],
+                band_vals["peq5_db"],
+                band_vals["peq6_db"],
+            )
+    except Exception as e:
+        logging.exception("send_output_eq_config_json: save failed")
+        send_json(handler, 200, {"ok": False, "error": str(e)})
+        return
+
+    send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
+
+
+def send_output_eq_status_json(handler) -> None:
+    """GET /api/output_eq/status — return live output trim state from the monitor.
+
+    Response (JSON):
+        { "ok": true,
+          "output_auto_trim_enabled": bool,
+          "output_auto_trim_db": float,
+          "effective_output_gain_db": float }
+    or on monitor unavailable:
+        { "ok": false, "error": "Monitor unavailable" }
+    """
+    status = get_live_output_eq_status()
+    if status is None:
+        send_json(handler, 200, {"ok": False, "error": "Monitor unavailable"})
+        return
+    send_json(handler, 200, {"ok": True, **status})

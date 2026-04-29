@@ -306,6 +306,19 @@ class WebUIConfig:
 
 
 @dataclass(frozen=True)
+class OutputEqConfig:
+    """Shared output-stage EQ and gain settings (INI section [output_eq])."""
+    gain_db: float
+    auto_trim_enabled: bool
+    peq1_db: float
+    peq2_db: float
+    peq3_db: float
+    peq4_db: float
+    peq5_db: float
+    peq6_db: float
+
+
+@dataclass(frozen=True)
 class AutostreamConfig:
     general: GeneralConfig
     audio1: AudioInputConfig
@@ -313,6 +326,7 @@ class AutostreamConfig:
     audio2: AudioInputConfig
     owntone: OwntoneConfig
     webui: WebUIConfig
+    output_eq: OutputEqConfig
 
 
 def _split_list(raw: str | None) -> tuple[str, ...]:
@@ -457,6 +471,17 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         show_hostname_on_home=cfg.getboolean("webui", "show_hostname_on_home", fallback=False),
     )
 
+    output_eq = OutputEqConfig(
+        gain_db=cfg.getfloat("output_eq", "gain_db", fallback=0.0),
+        auto_trim_enabled=cfg.getboolean("output_eq", "auto_trim_enabled", fallback=False),
+        peq1_db=cfg.getfloat("output_eq", "peq1_db", fallback=0.0),
+        peq2_db=cfg.getfloat("output_eq", "peq2_db", fallback=0.0),
+        peq3_db=cfg.getfloat("output_eq", "peq3_db", fallback=0.0),
+        peq4_db=cfg.getfloat("output_eq", "peq4_db", fallback=0.0),
+        peq5_db=cfg.getfloat("output_eq", "peq5_db", fallback=0.0),
+        peq6_db=cfg.getfloat("output_eq", "peq6_db", fallback=0.0),
+    )
+
     return AutostreamConfig(
         general=general,
         audio1=audio1,
@@ -464,6 +489,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         audio2=audio2,
         owntone=owntone,
         webui=webui,
+        output_eq=output_eq,
     )
 
 

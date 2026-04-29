@@ -6,7 +6,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Renderer for the main Setup page (/setup).
 
 Contents:
-  - _settings_card_html       -- render a styled settings card div
   - _audio_controls_card_html -- render the gain/EQ sliders card for an input
   - send_setup_page           -- render and send the /setup page
 """
@@ -46,6 +45,7 @@ from autostream_webui_common import (
     build_top_banner_html,
     get_app_version,
     locked_load_config,
+    settings_card_html,
 )
 from autostream_webui_state import WebUIState
 
@@ -53,16 +53,6 @@ from autostream_webui_state import WebUIState
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
-
-def _settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: bool = False) -> str:
-    border_colour = "var(--color-status-danger)" if warn else "var(--color-border)"
-    return (
-        f"<div style='margin-top:{margin_top};padding:0.75rem 0.85rem;border:1px solid {border_colour};"
-        "border-radius:8px;background:var(--color-surface-raised);font-size:0.95rem;line-height:1.5;'>"
-        f"{inner_html}"
-        "</div>"
-    )
-
 
 def _audio_controls_card_html(
     *,
@@ -86,7 +76,7 @@ def _audio_controls_card_html(
       <label><div class="slider-header"><span>Treble:</span><span id="{prefix}_eq_10khz_db_val">{eq_10khz_db:.0f} dB</span></div>
       <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_10khz_db" name="{prefix}_eq_10khz_db" value="{eq_10khz_db:.0f}" oninput="syncEq({input_index}, '10khz', this.value)"></label>
     """
-    return _settings_card_html(inner_html)
+    return settings_card_html(inner_html)
 
 
 

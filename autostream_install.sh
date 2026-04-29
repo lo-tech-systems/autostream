@@ -682,6 +682,9 @@ deploy_phase() {
   g++ -std=c++17 -O2 \
     -o "${INSTALL_DIR}/monitor/autostream_monitor" \
     "${INSTALL_DIR}/monitor/autostream_monitor.cpp" \
+    "${INSTALL_DIR}/monitor/autostream_monitor_dsp.cpp" \
+    "${INSTALL_DIR}/monitor/autostream_monitor_io.cpp" \
+    "${INSTALL_DIR}/monitor/autostream_monitor_utils.cpp" \
     -lasound -lsamplerate -lpthread
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 

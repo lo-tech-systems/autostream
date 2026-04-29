@@ -48,6 +48,8 @@ from autostream_webui_state import WebUIState
 from autostream_webui_api import (
     run_updater,
     send_json,
+    send_output_eq_config_json,
+    send_output_eq_status_json,
     send_owntone_outputs_json,
     send_owntone_outputs_state_json,
     send_service_config_json,
@@ -58,6 +60,7 @@ from autostream_webui_api import (
 )
 from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page
+from autostream_webui_page_equaliser import send_equaliser_page
 from autostream_webui_page_airplay import send_airplay_page
 from autostream_webui_page_license import send_license_page
 from autostream_webui_page_logs import handle_logs_post, send_logs_page
@@ -294,6 +297,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         if path == "/":
             send_airplay_page(self, STATE, AUTH, flash_msg=msg, flash_type=flash_type)
+        elif path == "/equaliser":
+            send_equaliser_page(self, STATE, flash_msg=msg, flash_type=flash_type)
         elif path == "/setup":
             send_setup_page(self, STATE, AUTH, flash_msg=msg)
         elif path == "/owntone-setup":
@@ -306,6 +311,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_license_page(self, STATE)
         elif path == "/logs":
             send_logs_page(self, STATE, flash_msg=msg)
+        elif path == "/api/output_eq/status":
+            send_output_eq_status_json(self)
         elif path == "/api/status":
             send_status_json(self)
         elif path == "/api/update/check":
@@ -436,6 +443,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_logs_post(self, STATE, body_str)
+
+        elif path == "/api/output_eq/config":
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            send_output_eq_config_json(self, STATE, body_str)
 
         elif path == "/api/service/reset":
             if not body_str:

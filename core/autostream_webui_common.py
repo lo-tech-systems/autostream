@@ -49,6 +49,7 @@ from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
 from autostream_webui_assets import (
     BANNER_HTML,
     NAV_ICON_ABOUT,
+    NAV_ICON_EQUALISER,
     NAV_ICON_HOME,
     NAV_ICON_SERVICE,
     NAV_ICON_SETUP,
@@ -243,6 +244,30 @@ def _fallback_input_snapshot(
 
 
 # -----------------------------------------------------------------------------
+# Shared settings-card helper (used by Setup and Equaliser pages)
+# -----------------------------------------------------------------------------
+
+def settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: bool = False) -> str:
+    """Render a styled settings card div matching the Setup/Equaliser page presentation.
+
+    Parameters
+    ----------
+    inner_html  : HTML content placed inside the card
+    margin_top  : top margin (CSS value, default "0.75rem")
+    warn        : when True the card border is rendered in the danger colour
+    """
+    border_colour = "var(--color-status-danger)" if warn else "var(--color-border)"
+    return (
+        f"<div style='margin-top:{margin_top};padding:0.75rem 0.85rem;"
+        f"border:1px solid {border_colour};"
+        "border-radius:8px;background:var(--color-surface-raised);"
+        "font-size:0.95rem;line-height:1.5;'>"
+        + inner_html
+        + "</div>"
+    )
+
+
+# -----------------------------------------------------------------------------
 # Compact date formatter for the About page stylus panel
 # -----------------------------------------------------------------------------
 
@@ -253,10 +278,11 @@ def build_nav_bar_html(active: str = "", *, service_warn: bool = False) -> str:
     service_warn: when True the Service tab is styled red (e.g. stylus overdue)
     """
     tabs = [
-        ("home",    "/",        "Home",    NAV_ICON_HOME,    ""),
-        ("setup",   "/setup",   "Setup",   NAV_ICON_SETUP,   ""),
-        ("service", "/service", "Service", NAV_ICON_SERVICE, ' id="service-nav-tab"'),
-        ("about",   "/about",   "Info",    NAV_ICON_ABOUT,   ""),
+        ("home",      "/",          "Home",      NAV_ICON_HOME,      ""),
+        ("equaliser", "/equaliser", "Equaliser", NAV_ICON_EQUALISER, ""),
+        ("service",   "/service",   "Service",   NAV_ICON_SERVICE,   ' id="service-nav-tab"'),
+        ("setup",     "/setup",     "Setup",     NAV_ICON_SETUP,     ""),
+        ("about",     "/about",     "Info",      NAV_ICON_ABOUT,     ""),
     ]
     items = []
     for key, href, label, icon, extra_attrs in tabs:

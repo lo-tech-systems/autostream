@@ -79,6 +79,7 @@ BACKOFF_MAX_SECONDS = 5 * 60
 ALLOWLIST_PATHS = {
     "/",
     "/about",
+    "/equaliser",
     "/logs",
     "/service",
     "/license",
@@ -86,6 +87,8 @@ ALLOWLIST_PATHS = {
     "/api/status",
     "/api/auth/verify",
     "/api/owntone/outputs_state",
+    "/api/output_eq/config",
+    "/api/output_eq/status",
     "/api/service/reset",
     "/api/service/config",
 }

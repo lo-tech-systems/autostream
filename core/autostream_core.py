@@ -26,6 +26,7 @@ from typing import Optional
 
 from autostream_config import (
     DEFAULT_LOG_LEVEL,
+    OutputEqConfig,
     load_and_parse,
     normalize_airplay_mode,
     normalize_log_level,
@@ -560,6 +561,20 @@ def get_available_monitor_devices(
         client.close()
 
 
+# Fixed output PEQ band definitions.  The stored field names (peq1_db … peq6_db)
+# are generic so the storage model can survive a future move to user-configurable
+# parametrics.  This table is the single source of truth for both the band
+# parameters sent to autostream_monitor and the labels shown on the Equaliser page.
+OUTPUT_PEQ_BANDS: list[dict] = [
+    {"key": "peq1_db", "label": "40Hz",   "type": "low_shelf",  "freq_hz":    40.0, "q": 0.5},
+    {"key": "peq2_db", "label": "100Hz",  "type": "peak",       "freq_hz":   100.0, "q": 0.707},
+    {"key": "peq3_db", "label": "300Hz",  "type": "peak",       "freq_hz":   300.0, "q": 0.707},
+    {"key": "peq4_db", "label": "1kHz",   "type": "peak",       "freq_hz":  1000.0, "q": 0.707},
+    {"key": "peq5_db", "label": "4kHz",   "type": "peak",       "freq_hz":  4000.0, "q": 0.707},
+    {"key": "peq6_db", "label": "10kHz",  "type": "high_shelf", "freq_hz": 10000.0, "q": 0.5},
+]
+
+
 def build_monitor_eq_bands(
     eq_40hz_db: float,
     eq_100hz_db: float,
@@ -655,6 +670,149 @@ def set_live_input_gain(
                     if mon.input_index == input_index:
                         mon.gain_db = float(gain_db)
         return ok
+    finally:
+        client.close()
+
+
+def build_output_eq_bands(
+    peq1_db: float,
+    peq2_db: float,
+    peq3_db: float,
+    peq4_db: float,
+    peq5_db: float,
+    peq6_db: float,
+) -> list[dict]:
+    """Return the six-band output EQ definition expected by autostream_monitor."""
+    values = [peq1_db, peq2_db, peq3_db, peq4_db, peq5_db, peq6_db]
+    return [
+        {"type": b["type"], "freq_hz": b["freq_hz"], "gain_db": float(db), "q": b["q"]}
+        for b, db in zip(OUTPUT_PEQ_BANDS, values)
+    ]
+
+
+def apply_output_eq(
+    client: "MonitorClient",
+    peq1_db: float,
+    peq2_db: float,
+    peq3_db: float,
+    peq4_db: float,
+    peq5_db: float,
+    peq6_db: float,
+) -> bool:
+    """Push shared output EQ bands to autostream_monitor."""
+    return client.set_output_eq(
+        build_output_eq_bands(peq1_db, peq2_db, peq3_db, peq4_db, peq5_db, peq6_db)
+    )
+
+
+def apply_output_gain(client: "MonitorClient", gain_db: float) -> bool:
+    """Push shared output gain to autostream_monitor."""
+    return client.set_output_gain(float(gain_db))
+
+
+def apply_output_auto_trim(client: "MonitorClient", enabled: bool) -> bool:
+    """Push shared output auto-trim enable state to autostream_monitor."""
+    return client.set_output_auto_trim(bool(enabled))
+
+
+def _apply_output_eq_config(
+    client: "MonitorClient",
+    output_eq: OutputEqConfig,
+) -> bool:
+    """Push all persisted [output_eq] settings to the running monitor daemon.
+
+    Applies gain, EQ bands, and auto-trim in one call.  Used during both
+    initial startup and reconnect resync so the daemon always reflects the INI.
+    """
+    if not apply_output_gain(client, output_eq.gain_db):
+        return False
+    if not apply_output_eq(
+        client,
+        output_eq.peq1_db,
+        output_eq.peq2_db,
+        output_eq.peq3_db,
+        output_eq.peq4_db,
+        output_eq.peq5_db,
+        output_eq.peq6_db,
+    ):
+        return False
+    if not apply_output_auto_trim(client, output_eq.auto_trim_enabled):
+        return False
+    return True
+
+
+def set_live_output_eq(
+    peq1_db: float,
+    peq2_db: float,
+    peq3_db: float,
+    peq4_db: float,
+    peq5_db: float,
+    peq6_db: float,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply shared output EQ immediately to the running autostream_monitor."""
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return False
+        return apply_output_eq(client, peq1_db, peq2_db, peq3_db, peq4_db, peq5_db, peq6_db)
+    finally:
+        client.close()
+
+
+def set_live_output_gain(
+    gain_db: float,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply shared output gain immediately to the running autostream_monitor."""
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return False
+        return apply_output_gain(client, gain_db)
+    finally:
+        client.close()
+
+
+def set_live_output_auto_trim(
+    enabled: bool,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply shared output auto-trim enable state immediately to the running monitor."""
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return False
+        return apply_output_auto_trim(client, enabled)
+    finally:
+        client.close()
+
+
+def get_live_output_eq_status(
+    socket_path: Optional[str] = None,
+) -> Optional[dict]:
+    """Return current output EQ status from autostream_monitor, or None if unavailable.
+
+    Returned dict contains:
+      output_auto_trim_enabled  bool
+      output_auto_trim_db       float  (current accumulated trim; 0.0 or negative)
+      effective_output_gain_db  float
+    """
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        if not client.connect():
+            return None
+        status = client.get_status()
+        if not status:
+            return None
+        return {
+            "output_auto_trim_enabled": bool(status.get("output_auto_trim_enabled", False)),
+            "output_auto_trim_db": float(status.get("output_auto_trim_db", 0.0)),
+            "effective_output_gain_db": float(status.get("effective_output_gain_db", 0.0)),
+        }
+    except Exception as e:
+        logging.warning("Could not get live output EQ status: %s", e)
+        return None
     finally:
         client.close()
 
@@ -839,6 +997,21 @@ class MonitorClient:
     def set_gain(self, index: int, gain_db: float) -> bool:
         with self._lock:
             resp = self._command({"type": "set_gain", "input": index, "gain_db": gain_db})
+            return bool(resp and resp.get("ok"))
+
+    def set_output_eq(self, bands: list[dict]) -> bool:
+        with self._lock:
+            resp = self._command({"type": "set_output_eq", "bands": bands})
+            return bool(resp and resp.get("ok"))
+
+    def set_output_gain(self, gain_db: float) -> bool:
+        with self._lock:
+            resp = self._command({"type": "set_output_gain", "gain_db": gain_db})
+            return bool(resp and resp.get("ok"))
+
+    def set_output_auto_trim(self, enabled: bool) -> bool:
+        with self._lock:
+            resp = self._command({"type": "set_output_auto_trim", "enabled": enabled})
             return bool(resp and resp.get("ok"))
 
     def set_log_level(self, log_level: str) -> bool:
@@ -1414,6 +1587,7 @@ def _resync_monitor_daemon(
     monitors: list["AudioMonitor"],
     fifo_path: str,
     owntone_base_url: str,
+    output_eq: OutputEqConfig,
 ) -> bool:
     """Re-send the full daemon state after reconnect.
 
@@ -1519,6 +1693,11 @@ def _resync_monitor_daemon(
             client.close()
             return False
         m._allow_capture_sent = m._allow_capture
+
+    if not _apply_output_eq_config(client, output_eq):
+        logging.warning("Output EQ config failed after reconnect; will retry full resync.")
+        client.close()
+        return False
 
     return True
 
@@ -1649,6 +1828,10 @@ def _configure_startup_monitors(
 
     for m in monitors:
         m.apply_allow_capture(client)
+
+    if not _apply_output_eq_config(client, cfg.output_eq):
+        logging.warning("Output EQ config failed during startup; will retry.")
+        return None
 
     return monitors
 
@@ -1789,6 +1972,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                         monitors,
                         fifo_path,
                         cfg.owntone.base_url,
+                        cfg.output_eq,
                     ):
                         reconnect_at = time.time() + 5.0
                         current = None
