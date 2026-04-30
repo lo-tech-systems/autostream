@@ -551,34 +551,101 @@ button[type=submit]:active {
   flex: 0 0 auto;
 }
 
-.input-level-row {
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: -0.2rem;
+/* ── Now Playing card ────────────────────────────────────────────────────── */
+.now-playing-card {
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.75rem 0.6rem;
+  border-radius: 12px;
+  border: 2px solid var(--color-accent);
+  background: var(--color-surface-selected);
 }
-
-.input-level-pill {
-  background: var(--color-surface-muted);
-  color: var(--color-chip-neutral-text);
-  font-size: 0.82rem;
+.now-playing-hdr {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.45rem;
 }
-
-.home-input-level-wrap {
+.now-playing-body {
   display: flex;
-  justify-content: center;
-  margin-top: 1rem;
-  margin-bottom: 1rem;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.45rem;
 }
-
-.home-input-level-wrap .input-level-row {
-  justify-content: center;
-  margin-top: 0;
+.now-playing-icon {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  color: var(--color-text);
 }
-
-.input-level-pill-active {
-  background: var(--color-chip-on-bg);
-  color: var(--color-chip-on-text);
+.now-playing-icon svg { width: 100%; height: 100%; }
+.now-playing-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.now-playing-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.now-playing-signal {
+  font-size: 0.78rem;
+  color: var(--color-text-dim);
+  margin-top: 0.1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.now-playing-playing-to {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vu-meter {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+  width: 10px;
+  height: 48px;
+  flex-shrink: 0;
+}
+.vu-bar {
+  width: 100%;
+  flex: 1;
+  border-radius: 1px;
+  background: var(--color-surface-muted);
+  transition: background-color 0.12s ease-out;
+}
+.now-playing-card.np-ready {
+  border-color: var(--color-border-card);
+  border-width: 1px;
+  background: var(--color-surface-raised);
+  opacity: 0.45;
+}
+.now-playing-card.np-ready .now-playing-body {
+  display: none;
+}
+.np-volume-wrap {
+  margin-top: 0.5rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--color-border);
+}
+.np-volume-wrap .slider-header {
+  font-size: 0.9rem;
+  margin-bottom: 0.08rem;
+}
+.np-volume-wrap input[type=range] {
+  margin-top: 0.1rem;
+  height: 20px;
+}
+.np-volume-wrap.master-volume-inactive {
+  opacity: 0.5;
 }
 
 /* iOS-style storage bar */
@@ -1310,6 +1377,46 @@ NAV_ICON_SERVICE = (
     '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77'
     'a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91'
     'a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'
+    '</svg>'
+)
+
+# ── Input type icons (Now Playing card) ──────────────────────────────────────
+
+ICON_TURNTABLE = (
+    '<svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    # Rounded-square frame
+    '<rect x="2" y="2" width="40" height="40" rx="7"'
+    ' stroke="var(--color-accent)" stroke-width="1.5"/>'
+    # Record outer rim
+    '<circle cx="19" cy="23" r="13"'
+    ' stroke="var(--color-accent)" stroke-width="1.5"/>'
+    # Record groove ring (subtle)
+    '<circle cx="19" cy="23" r="8"'
+    ' stroke="var(--color-accent)" stroke-width="1" opacity="0.5"/>'
+    # Label area
+    '<circle cx="19" cy="23" r="4.5"'
+    ' stroke="var(--color-accent)" stroke-width="1.2"/>'
+    # Centre spindle (filled dot)
+    '<circle cx="19" cy="23" r="1.5" fill="var(--color-accent)"/>'
+    # Tonearm pivot (filled dot, upper right)
+    '<circle cx="37" cy="8" r="2.5" fill="var(--color-accent)"/>'
+    # Tonearm body
+    '<line x1="36" y1="10" x2="29" y2="17"'
+    ' stroke="var(--color-accent)" stroke-width="2" stroke-linecap="round"/>'
+    # Headshell
+    '<line x1="29" y1="17" x2="26.5" y2="14.5"'
+    ' stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round"/>'
+    '</svg>'
+)
+
+ICON_LINE_LEVEL = (
+    '<svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    '<rect x="10" y="4" width="9" height="24" rx="4.5" fill="currentColor" opacity="0.85"/>'
+    '<rect x="12.5" y="26" width="4" height="8" rx="2" fill="currentColor" opacity="0.75"/>'
+    '<circle cx="14.5" cy="37" r="3" fill="currentColor"/>'
+    '<rect x="25" y="4" width="9" height="24" rx="4.5" fill="#f47320" opacity="0.9"/>'
+    '<rect x="27.5" y="26" width="4" height="8" rx="2" fill="#f47320" opacity="0.8"/>'
+    '<circle cx="29.5" cy="37" r="3" fill="#f47320"/>'
     '</svg>'
 )
 

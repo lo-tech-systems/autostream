@@ -9,13 +9,13 @@ Renderer for the main AirPlay control page (/).
 from __future__ import annotations
 
 import html
+import json
 import logging
 
 from typing import Optional
 
 from autostream_config import parse_config
 from autostream_core import (
-    any_monitor_capturing,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
 )
@@ -27,11 +27,12 @@ from autostream_webui_assets import (
     BANNER_DISMISS_SCRIPT,
     BANNER_LOGO_HTML,
     COMMON_MODAL_CSS,
+    ICON_LINE_LEVEL,
+    ICON_TURNTABLE,
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import build_page_html, build_top_banner_html, locked_load_config
 from autostream_webui_state import WebUIState
-from autostream_webui_api import _status_text_for_home
 
 
 def send_airplay_page(
@@ -107,11 +108,6 @@ def send_airplay_page(
     show_hostname_on_home = parsed.webui.show_hostname_on_home
 
     try:
-        is_playing = any_monitor_capturing()
-    except Exception:
-        is_playing = False
-
-    try:
         input_levels = get_monitor_levels_dbfs()
     except Exception:
         input_levels = []
@@ -120,22 +116,32 @@ def send_airplay_page(
     stylus_banner_text = playback_snapshot.stylus_banner_text or ""
     belt_banner_text = playback_snapshot.belt_banner_text or ""
     bearing_banner_text = playback_snapshot.bearing_banner_text or ""
-    status_text = _status_text_for_home(is_playing, input_levels)
-    status_class = "playing" if is_playing else "waiting"
     hostname_label = _display_hostname_label()
 
-    input_levels_html = ""
-    if show_input_detail:
-        for lv in input_levels:
-            label = html.escape(str(lv.get("label", "Input ")))
-            dbfs = float(lv.get("dbfs", -90.0))
-            detected_hz = float(lv.get("detected_hz", 0.0)) / 1000.0
-            hz_txt = f" ({detected_hz:.3f} kHz)" if detected_hz > 0 else ""
-            extra_cls = " input-level-pill-active" if lv.get("is_above_threshold") else ""
-            input_levels_html += (
-                f'<span class="pill status-pill input-level-pill{extra_cls}">'
-                f'{label}{hz_txt}: {dbfs:.1f} dB</span>'
-            )
+    # Determine the active input for the initial Now Playing card render.
+    _np_active_idx = 0
+    _np_active_level: dict = {}
+    for _i, _lv in enumerate(input_levels):
+        if _lv.get("is_above_threshold"):
+            _np_active_idx = _i
+            _np_active_level = _lv
+            break
+    else:
+        if input_levels:
+            _np_active_level = input_levels[0]
+
+    _np_is_playing = any(lv.get("is_above_threshold") for lv in input_levels)
+    _np_snap = playback_snapshot.inputs.get(_np_active_idx + 1)
+    _np_is_turntable = bool(_np_snap.is_turntable) if _np_snap else False
+    _np_label = str(_np_active_level.get("label", f"Input {_np_active_idx + 1}"))
+    _np_type_label = "Turntable" if _np_is_turntable else "Line Level"
+    _np_hz = float(_np_active_level.get("detected_hz", 0.0))
+    _np_signal_parts = []
+    if show_input_detail and _np_hz > 0:
+        _np_signal_parts.append("Locked")
+        _np_signal_parts.append(f"{_np_hz / 1000:.0f} kHz")
+    _np_signal = " \u00b7 ".join(_np_signal_parts)
+    _np_icon_svg = ICON_TURNTABLE if _np_is_turntable else ICON_LINE_LEVEL
 
     outputs_result = list_outputs(owntone_base_url, timeout=3)
     outputs = list(outputs_result.outputs) if outputs_result.ok else []
@@ -215,33 +221,12 @@ def send_airplay_page(
         f"<script>window.__CSRF='{html.escape(csrf_token)}';"
         f"window.__PRESET_VOLUME={preset_volume};"
         f"window.__SHOW_INPUT_DETAIL={'true' if show_input_detail else 'false'};"
+        f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
+        f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"</script>"
     )
 
-    master_volume_css = """
-.master-volume-card {
-  margin-bottom: 0.75rem;
-  padding: 0.6rem 0.72rem 0.55rem;
-  border-radius: 12px;
-  border: 2px solid var(--color-accent);
-  background: var(--color-surface-selected);
-}
-.master-volume-card.master-volume-inactive {
-  border-color: var(--color-border-card);
-  background: var(--color-surface-raised);
-  opacity: 0.55;
-}
-.master-volume-card .slider-header {
-  font-size: 0.9rem;
-  margin-bottom: 0.08rem;
-}
-.master-volume-card input[type=range] {
-  margin-top: 0.1rem;
-  height: 20px;
-}
-"""
-
-    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{master_volume_css}"
+    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}"
     _head_extra = f"""{csrf_meta}
 
       <script>
@@ -545,40 +530,57 @@ def send_airplay_page(
           if(!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
           sendUpdate(id);
         }}
-        function escapeHtml(s){{
-          return String(s||'').replace(/[&<>"']/g, function(ch){{
-            return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch] || ch;
+        var VU_THRESHOLDS = [-60, -48, -36, -24, -12, -6, -3];
+        var VU_COLORS = ['#2196F3','#2196F3','#2196F3','#2196F3','#f0ad4e','#fd7e14','#dc3545'];
+        function updateVuBars(dbfs){{
+          if (!window.__SHOW_INPUT_DETAIL) return;
+          var bars = document.querySelectorAll('#np-vu .vu-bar');
+          bars.forEach(function(bar, i){{
+            var lit = Number.isFinite(Number(dbfs)) && Number(dbfs) >= VU_THRESHOLDS[i];
+            bar.style.background = lit ? VU_COLORS[i] : '';
           }});
         }}
-        function renderInputLevels(levels){{
-          var row = document.getElementById('input-level-row');
-          var wrap = document.getElementById('home-input-level-wrap');
-          if(!row) return;
-          if(!window.__SHOW_INPUT_DETAIL || !Array.isArray(levels) || levels.length===0){{
-            row.hidden = true;
-            if (wrap) wrap.hidden = true;
-            row.innerHTML = '';
-            return;
+        function updateNowPlayingCard(data){{
+          var levels = (data && data.input_levels) || [];
+          var inputs = (data && data.playback && data.playback.inputs) || {{}};
+          var isPlaying = false, activeLevel = null, activeIdx = 0;
+          for (var i = 0; i < levels.length; i++) {{
+            if (levels[i] && levels[i].is_above_threshold) {{
+              isPlaying = true; activeLevel = levels[i]; activeIdx = i; break;
+            }}
           }}
-          row.hidden = false;
-          if (wrap) wrap.hidden = false;
-          row.innerHTML = levels.map(function(lv){{
-            var label = escapeHtml(String((lv && lv.label) || 'Input '));
-            var db = Number(lv && lv.dbfs);
-            var hz = Number(lv && lv.detected_hz);
-            var txt = Number.isFinite(db) ? db.toFixed(1) + ' dB' : '-- dB';
-            var hzTxt = '';
-            if (Number.isFinite(hz) && hz > 0) hzTxt = ' (' + (hz / 1000).toFixed(3) + ' kHz)';
-            var cls = (lv && lv.is_above_threshold) ? ' input-level-pill-active' : '';
-            return '<span class="pill status-pill input-level-pill' + cls + '">' + label + hzTxt + ': ' + txt + '</span>';
-          }}).join('');
+          var card = document.getElementById('now-playing-card');
+          var hdrEl = document.getElementById('np-hdr');
+          if (card) card.classList.toggle('np-ready', !isPlaying);
+          if (hdrEl) hdrEl.textContent = isPlaying ? 'Now Playing' : 'Ready';
+          if (!isPlaying) {{ updateVuBars(-90); return; }}
+          if (!activeLevel && levels.length > 0) {{ activeLevel = levels[0]; activeIdx = 0; }}
+          if (!activeLevel) return;
+          var inputSnap = inputs[String(activeIdx + 1)] || {{}};
+          var isTurntable = !!inputSnap.is_turntable;
+          var label = String(activeLevel.label || ('Input ' + (activeIdx + 1)));
+          var signalParts = [];
+          if (window.__SHOW_INPUT_DETAIL) {{
+            var hz = Number(activeLevel.detected_hz || 0);
+            if (Number.isFinite(hz) && hz > 0) {{
+              signalParts.push('Locked');
+              signalParts.push(Math.round(hz / 1000) + ' kHz');
+            }}
+          }}
+          var nameEl = document.getElementById('np-name');
+          var signalEl = document.getElementById('np-signal');
+          var iconEl = document.getElementById('np-icon');
+          if (nameEl) nameEl.textContent = label + ' \u00b7 ' + (isTurntable ? 'Turntable' : 'Line Level');
+          if (signalEl) signalEl.textContent = signalParts.join(' \u00b7 ');
+          if (iconEl && iconEl.dataset.iconType !== String(isTurntable)) {{
+            iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+            iconEl.dataset.iconType = String(isTurntable);
+          }}
+          updateVuBars(Number(activeLevel.dbfs || -90));
         }}
         function refreshStatus(){{
           fetch('/api/status', {{ cache: 'no-store' }}).then(r=>r.json()).then(d=>{{
-            var p=document.getElementById('status-pill');if(!p)return;
-            p.textContent=d.status_text; p.classList.remove('status-playing','status-waiting');
-            p.classList.add('status-'+d.status_class);
-            renderInputLevels(d.input_levels || []);
+            updateNowPlayingCard(d);
             ['stylus', 'belt', 'bearing'].forEach(function(item) {{
               var el = document.getElementById(item + '-warning-banner');
               if (!el) return;
@@ -644,28 +646,6 @@ def send_airplay_page(
           refreshOutputsState();
         }});
       </script>"""
-    # Status pill HTML is reused in two places depending on layout.
-    _status_pill_html = (
-        f"<span id='status-pill' class='pill status-pill status-{status_class}'>"
-        f"{html.escape(status_text)}</span>"
-    )
-
-    # Build the master volume card, embedding the status pill in its header row
-    # in place of the volume percentage label.
-    master_inactive_cls = " master-volume-inactive" if master_inactive else ""
-    master_disabled_attr = " disabled" if master_inactive else ""
-    _master_vol_html = (
-        f'<div class="master-volume-card{master_inactive_cls}" id="master-volume-card">'
-        f'<div class="slider-header"><span>Master Volume</span>{_status_pill_html}</div>'
-        f'<input type="range" id="master_vol_slider" min="0" max="100" step="1"'
-        f' value="{initial_master}"{master_disabled_attr}'
-        f' oninput="onMasterVolumeInput(this.value)"'
-        f' onchange="onMasterVolumeChange(this.value)"'
-        f' onmousedown="onMasterVolumeDragStart()"'
-        f' ontouchstart="onMasterVolumeDragStart()">'
-        f'</div>'
-    ) if show_master_volume else ""
-
     _body_prefix = """
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
   <div class="panel modal-panel">
@@ -681,67 +661,92 @@ def send_airplay_page(
   </div>
 </div>"""
 
-    # Top controls row: refresh on left, status pill on right (pill shown here only
-    # when master volume is hidden; otherwise the pill lives inside the master volume card).
-    _top_right_pill_html = ""
-    if show_master_volume:
-        if show_hostname_on_home:
-            _top_right_pill_html = (
-                f'<span class="status-pill hostname-pill">{html.escape(hostname_label)}</span>'
-            )
-    else:
-        top_text = status_text
-        top_classes = f"status-pill status-{status_class}"
-        if show_hostname_on_home:
-            top_text = f"{hostname_label}: {status_text}"
-            top_classes += " hostname-pill"
-        _top_right_pill_html = f'<span class="{top_classes}">{html.escape(top_text)}</span>'
-
+    # Top controls row: refresh button, with optional hostname pill on the right.
+    _top_right_html = (
+        f'<span class="status-pill hostname-pill">{html.escape(hostname_label)}</span>'
+        if show_hostname_on_home else ""
+    )
     _top_controls_html = (
         f"<div class='airplay-top-controls'>"
         f"<button type='button' class='pill-btn small' onclick='location.reload();'"
         f" title='Reload page to refresh speakers'>\u21bb Refresh</button>"
-        + _top_right_pill_html
+        + _top_right_html
         + f"</div>"
     )
 
+    # Master volume wrapper embedded inside the Now Playing card.
+    master_disabled_attr = " disabled" if master_inactive else ""
+    _np_vol_html = (
+        f'<div class="np-volume-wrap{" master-volume-inactive" if master_inactive else ""}"'
+        f' id="master-volume-card">'
+        f'<div class="slider-header"><span>Master Volume</span></div>'
+        f'<input type="range" id="master_vol_slider" min="0" max="100" step="1"'
+        f' value="{initial_master}"{master_disabled_attr}'
+        f' oninput="onMasterVolumeInput(this.value)"'
+        f' onchange="onMasterVolumeChange(this.value)"'
+        f' onmousedown="onMasterVolumeDragStart()"'
+        f' ontouchstart="onMasterVolumeDragStart()">'
+        f'</div>'
+    ) if show_master_volume else ""
+
+    # Now Playing card: header, input body (hidden when ready), master volume.
+    # Active (playing): accent border + surface-selected. Ready: dim via .np-ready.
+    _vu_html = (
+        f'<div class="vu-meter" id="np-vu" aria-hidden="true">'
+        + ('<div class="vu-bar"></div>' * 7)
+        + '</div>'
+    ) if show_input_detail else ""
+    _np_card_cls = "" if _np_is_playing else " np-ready"
+    _np_hdr_text = "Now Playing" if _np_is_playing else "Ready"
+    _now_playing_card_html = (
+        f'<div class="now-playing-card{_np_card_cls}" id="now-playing-card">'
+        f'<div class="now-playing-hdr" id="np-hdr">{html.escape(_np_hdr_text)}</div>'
+        f'<div class="now-playing-body">'
+        f'<div class="now-playing-icon" id="np-icon" data-icon-type="{str(_np_is_turntable).lower()}">'
+        f'{_np_icon_svg}'
+        f'</div>'
+        f'<div class="now-playing-meta">'
+        f'<div class="now-playing-name" id="np-name">'
+        f'{html.escape(_np_label)} \u00b7 {html.escape(_np_type_label)}'
+        f'</div>'
+        f'<div class="now-playing-signal" id="np-signal">{html.escape(_np_signal)}</div>'
+        f'</div>'
+        f'{_vu_html}'
+        f'</div>'
+        f'{_np_vol_html}'
+        f'</div>'
+    )
+
+    _warn_style_base = (
+        "padding:0.85rem 0.9rem;border-radius:12px;"
+        "border:1px solid var(--color-status-danger);"
+        "background:var(--color-surface-raised);"
+        "color:var(--color-text);font-size:0.99rem;"
+        "text-align:center;text-decoration:none;"
+    )
     _body_html = (
         # Full-width logo
         f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
-        # Refresh + optional pill, then master volume
+        # Refresh button + optional hostname pill
         + _top_controls_html
-        + _master_vol_html
-        # Warnings and output cards
+        # Now Playing card (contains master volume when enabled)
+        + _now_playing_card_html
+        # Service warning banners
         + f"<a id='stylus-warning-banner' href='/service'"
-        f" style='{'display:none' if not stylus_banner_text else 'display:block'};"
-        f"margin:0.85rem 0 0.35rem;padding:0.85rem 0.9rem;border-radius:12px;"
-        f"border:1px solid var(--color-status-danger);"
-        f"background:var(--color-surface-raised);"
-        f"color:var(--color-text);font-size:0.99rem;"
-        f"text-align:center;text-decoration:none;'>"
+        f" style='display:{'none' if not stylus_banner_text else 'block'};"
+        f"margin:0.85rem 0 0.35rem;{_warn_style_base}'>"
         f"{html.escape(stylus_banner_text)}</a>"
         + f"<a id='belt-warning-banner' href='/service'"
-        f" style='{'display:none' if not belt_banner_text else 'display:block'};"
-        f"margin:0.35rem 0 0.35rem;padding:0.85rem 0.9rem;border-radius:12px;"
-        f"border:1px solid var(--color-status-danger);"
-        f"background:var(--color-surface-raised);"
-        f"color:var(--color-text);font-size:0.99rem;"
-        f"text-align:center;text-decoration:none;'>"
+        f" style='display:{'none' if not belt_banner_text else 'block'};"
+        f"margin:0.35rem 0 0.35rem;{_warn_style_base}'>"
         f"{html.escape(belt_banner_text)}</a>"
         + f"<a id='bearing-warning-banner' href='/service'"
-        f" style='{'display:none' if not bearing_banner_text else 'display:block'};"
-        f"margin:0.35rem 0 0.35rem;padding:0.85rem 0.9rem;border-radius:12px;"
-        f"border:1px solid var(--color-status-danger);"
-        f"background:var(--color-surface-raised);"
-        f"color:var(--color-text);font-size:0.99rem;"
-        f"text-align:center;text-decoration:none;'>"
+        f" style='display:{'none' if not bearing_banner_text else 'block'};"
+        f"margin:0.35rem 0 0.35rem;{_warn_style_base}'>"
         f"{html.escape(bearing_banner_text)}</a>"
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + A2HS_PROMPT_HTML
         + f"<div id='outputs-list'>{outputs_html}</div>"
-        + f"<div class='home-input-level-wrap' id='home-input-level-wrap' {'hidden' if not input_levels_html else ''}>"
-        + f"<div id='input-level-row' class='pill-row input-level-row'>{input_levels_html}</div>"
-        + f"</div>"
     )
     html_body = build_page_html(
         "autostream",
