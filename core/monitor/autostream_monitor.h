@@ -5,105 +5,33 @@
 //
 // Header for the autostream audio monitor daemon.
 //
-// This program replaces the Python AudioMonitor class, sounddevice, and ffmpeg.
-// It is designed to run as a long-lived systemd service that starts at boot
-// with no audio device connected.  Python (autostream_core.py) configures it
-// at runtime via a Unix domain socket using a simple newline-delimited JSON
-// protocol.
+// This native daemon replaces the previous Python AudioMonitor/sounddevice/
+// ffmpeg pipeline.  It runs as a long-lived service, captures from up to two
+// ALSA USB inputs, performs silence detection, rate correction, EQ/gain
+// processing, and writes a 44.1 kHz stereo PCM stream to a named FIFO.
 //
-// Responsibilities:
-//   - ALSA audio capture from up to two USB devices
-//   - Real-time silence detection and level metering
-//   - Adaptive sample-rate conversion (libsamplerate) with clock-drift
-//     estimation via a rolling-window IIR rate estimator
-//   - User-configurable parametric equalisation (biquad IIR filter bank)
-//   - Writing the output stream (s16le stereo 44100 Hz) to a named FIFO
-//     that OwnTone watches for AirPlay streaming
+// Python remains responsible for higher-level orchestration, UI, settings, and
+// playback-backend control.  At runtime it configures and polls the daemon via
+// a newline-delimited JSON socket API.
 //
-// What this program does NOT do:
-//   - Talk to OwnTone directly (Python continues to do that via HTTP)
-//   - Manage WiFi, web UI, or authentication
-//
-// Socket protocol (newline-delimited JSON):
-//
-//   Commands Python -> monitor:
-//     {"type":"list_devices"}
-//     {"type":"configure_input","input":1,"device":"hw:1,0",
-//      "silence_threshold_dbfs":-66.0,"silence_seconds":30}
-//     {"type":"set_fifo","path":"/tmp/autostream-pipes/autostream.fifo"}
-//     {"type":"start_input","input":1}
-//     {"type":"stop_input","input":1}
-//     {"type":"set_allow_capture","input":1,"allow":true}
-//     {"type":"set_eq","input":1,"bands":[{"type":"peak","freq_hz":100.0,
-//                                          "gain_db":3.0,"q":0.707}]}
-//     {"type":"set_gain","input":1,"gain_db":3.0}
-//     {"type":"set_output_eq","bands":[{"type":"peak","freq_hz":1000.0,
-//                                        "gain_db":2.0,"q":0.707}]}
-//     {"type":"set_output_gain","gain_db":-2.5}
-//     {"type":"set_output_auto_trim","enabled":true}
-//     {"type":"set_log_level","level":"warning"}
-//     {"type":"get_status"}
-//     {"type":"get_id_snapshot","input":1}               (max_seconds default 20)
-//     {"type":"get_id_snapshot","input":1,"max_seconds":10}
-//
-//   Responses monitor -> Python (one per command):
-//     {"type":"ack","command":"...", "ok":true}
-//     {"type":"ack","command":"...", "ok":false,"error":"reason"}
-//
-//   set_output_gain response:
-//     {"type":"ack","command":"set_output_gain","ok":true,
-//      "output_gain_db":-2.5,"output_auto_trim_db":-1.2,
-//      "effective_output_gain_db":-3.7}
-//
-//   set_output_auto_trim response:
-//     {"type":"ack","command":"set_output_auto_trim","ok":true,
-//      "output_auto_trim_enabled":true,"output_auto_trim_db":0.0,
-//      "effective_output_gain_db":0.0}
-//
-//   get_status response:
-//     {"type":"status","log_level":"warning","output_clip_dbfs":0.0,
-//      "output_gain_db":0.0,"output_auto_trim_enabled":true,
-//      "output_auto_trim_db":-3.4,"effective_output_gain_db":-3.4,
-//      "inputs":[
-//       {"index":1,"level_dbfs":-42.1,"poll_peak_dbfs":-38.2,"silent":false,
-//        "capturing":true,"detected_hz":44097.3,
-//        "raw_peak_dbfs":-12.3,"effective_peak_dbfs":-9.1,
-//        "started":true,"running":true},
-//       {"index":2,"level_dbfs":-90.0,"poll_peak_dbfs":-90.0,"silent":true,
-//        "capturing":false,"detected_hz":0.0,
-//        "raw_peak_dbfs":-90.0,"effective_peak_dbfs":-90.0,
-//        "started":false,"running":false}]}
-//   poll_peak_dbfs: maximum raw peak dBFS accumulated since the previous
-//   get_status() call.  Reset to -90.0 on each get_status() so each poll
-//   sees only the peak from the interval since the last poll.
-//   output_clip_dbfs: maximum dB above 0 dBFS reached by the post-output-EQ
-//   signal (after output gain is applied) since the previous get_status() call.
-//   0.0 means no clipping.  Ignored safely by older clients.
-//   output_gain_db: configured manual output gain [-10, +10].
-//   output_auto_trim_enabled: whether auto-trim is active.
-//   output_auto_trim_db: current auto-trim cut (<= 0); 0.0 when no trim has
-//   been applied.  Always reported, even when auto-trim is disabled.
-//   effective_output_gain_db: output_gain_db + output_auto_trim_db; use this
-//   value as the manual gain to preserve auto-trim results permanently.
-//
-//   get_id_snapshot response -- JSON ack line followed immediately by a raw
-//   binary payload of (frames * 2) bytes (signed 16-bit little-endian, mono,
-//   22050 Hz, no header).  The client must read exactly frames*2 bytes after
-//   the newline.  On error ("ok":false) no binary data follows.
-//     {"type":"ack","command":"get_id_snapshot","input":1,"ok":true,
-//      "format":"s16le","rate":22050,"channels":1,"frames":N}
-//     <N*2 bytes of raw PCM>
-//
-//   Python polls get_status at whatever rate the UI requires.
-//   There is no unsolicited output; all communication is request/response.
+// Documentation split:
+//   - This header documents the code-facing API, object model, and invariants.
+//   - docs/AUTOSTREAM-MONITOR.md is the canonical external protocol/reference
+//     document for commands, responses, examples, and integration behavior.
 //
 // Build dependencies:
 //   apt-get install libasound2-dev libsamplerate0-dev
-//   g++ -std=c++17 -O2 -o autostream_monitor autostream_monitor.cpp \
+//   g++ -std=c++17 -O2 -o autostream_monitor \
+//       autostream_monitor.cpp \
+//       autostream_monitor_dsp.cpp \
+//       autostream_monitor_io.cpp \
+//       autostream_monitor_utils.cpp \
 //       -lasound -lsamplerate -lpthread
 // =============================================================================
 
 #pragma once
+
+#include "autostream_monitor_utils.h"
 
 #include <string>
 #include <vector>

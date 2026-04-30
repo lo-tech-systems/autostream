@@ -1,5 +1,10 @@
 # autostream_monitor
 
+This document is the canonical external reference for the `autostream_monitor`
+daemon's socket protocol, request/response shapes, and integration behavior.
+Implementation-local invariants, concurrency notes, and code-structure details
+remain documented alongside the relevant C++ code.
+
 ## Purpose
 
 `core/monitor/autostream_monitor.cpp` is the native audio monitor daemon used by
@@ -723,9 +728,17 @@ This ordering matters:
 
 ## Source Of Truth
 
-This document summarizes the current implementation in:
+For the external contract, treat this document as the primary reference.
+
+The C++ source remains authoritative for implementation details and internal
+invariants, especially around threading, handoff sequencing, and DSP state
+management.
+
+Relevant source files:
 
 - `core/monitor/autostream_monitor.h`
 - `core/monitor/autostream_monitor.cpp`
 
-If this document and the code ever disagree, treat the code as authoritative.
+If this document and the code ever disagree about externally observable
+behavior, update one of them so there is a single clear truth again rather than
+leaving both versions in circulation.
