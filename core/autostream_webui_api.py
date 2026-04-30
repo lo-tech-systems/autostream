@@ -18,6 +18,7 @@ Contents:
   - send_update_check_json       -- GET /api/update/check
   - send_update_status_json      -- GET /api/update/status
   - send_output_eq_config_json   -- POST /api/output_eq/config
+  - send_output_eq_reset_json    -- POST /api/output_eq/reset
   - send_output_eq_status_json   -- GET /api/output_eq/status
 """
 
@@ -482,8 +483,8 @@ _OUTPUT_EQ_DB_FIELDS = frozenset({
 })
 _OUTPUT_EQ_BOOL_FIELDS = frozenset({"auto_trim_enabled"})
 _OUTPUT_EQ_ALL_FIELDS = _OUTPUT_EQ_DB_FIELDS | _OUTPUT_EQ_BOOL_FIELDS
-_OUTPUT_EQ_DB_MIN = -10.0
-_OUTPUT_EQ_DB_MAX = 10.0
+_OUTPUT_EQ_DB_MIN = -12.0
+_OUTPUT_EQ_DB_MAX = 12.0
 
 
 def send_output_eq_config_json(handler, state, body: str) -> None:
@@ -574,6 +575,30 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
         return
 
     send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
+
+
+def send_output_eq_reset_json(handler, state) -> None:
+    """POST /api/output_eq/reset — zero all EQ bands and output gain.
+
+    Sets peq1_db … peq6_db and gain_db to 0.0 in autostream.ini and
+    immediately applies the change to autostream_monitor.
+    """
+    try:
+        cfg = locked_load_config(state.config_path)
+        section = "output_eq"
+        if not cfg.has_section(section):
+            cfg.add_section(section)
+        for field in _OUTPUT_EQ_DB_FIELDS:
+            cfg.set(section, field, "0.0")
+        with CONFIG_IO_LOCK:
+            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+        set_live_output_gain(0.0)
+        set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    except Exception as e:
+        logging.exception("send_output_eq_reset_json: reset failed")
+        send_json(handler, 200, {"ok": False, "error": str(e)})
+        return
+    send_json(handler, 200, {"ok": True})
 
 
 def send_output_eq_status_json(handler) -> None:

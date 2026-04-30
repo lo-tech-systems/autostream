@@ -56,6 +56,11 @@ STYLE_CSS = """
   --color-status-danger:     #dc3545;
   --color-status-success:    #28a745;
   --color-status-warning:    #f0ad4e;
+  /* Equaliser curve display */
+  --color-eq-bg:             #e4e8ec;
+  --color-eq-grid:           rgba(0,0,0,0.12);
+  --color-eq-grid-zero:      rgba(0,0,0,0.30);
+  --color-eq-zero-line:      rgba(0,0,0,0.20);
   color-scheme: light;
 }
 
@@ -96,6 +101,11 @@ STYLE_CSS = """
   --color-status-danger:     #B23A48;
   --color-status-success:    #2F9E7E;
   --color-status-warning:    #E0A458;
+  /* Equaliser curve display */
+  --color-eq-bg:             #0d1c2b;
+  --color-eq-grid:           rgba(100,150,200,0.22);
+  --color-eq-grid-zero:      rgba(100,150,200,0.55);
+  --color-eq-zero-line:      rgba(100,150,200,0.45);
   color-scheme: dark;
 }
 
@@ -643,6 +653,196 @@ code {
   padding: 0 0.25rem;
   border-radius: 3px;
 }
+
+/* ── Equaliser page ─────────────────────────────────────────────────────── */
+.eq-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.eq-page-header h1 {
+  margin: 0;
+}
+
+.eq-back-btn {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--color-text);
+  text-decoration: none;
+  line-height: 1;
+  padding: 0.1rem 0.2rem;
+}
+
+.eq-section {
+  margin-bottom: 1.25rem;
+  padding: 1rem 0.9rem 1.1rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.eq-section-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin-bottom: 0.85rem;
+}
+
+.eq-bands-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.eq-scale {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  padding-top: 1.4rem;     /* aligns top label with slider top (below freq label) */
+  padding-bottom: 1.6rem;  /* aligns bottom label with slider bottom (above val label) */
+  min-width: 2rem;
+  text-align: right;
+  padding-right: 0.3rem;
+}
+
+.eq-bands-row {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex: 1;
+  justify-content: space-around;
+  gap: 0.15rem;
+}
+
+/* Dotted 0 dB reference line across all band sliders.
+   top = freq-label line-height (0.75rem × 1.2) + its margin-bottom (0.3rem)
+       + half the slider height (75px). */
+.eq-bands-row::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(0.9rem + 0.3rem + 75px);
+  border-top: 1px dashed var(--color-eq-zero-line);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+/* Vertical range slider for EQ bands */
+.eq-band-slider {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 30px !important;
+  height: 150px !important;
+  margin: 0 !important;
+  padding: 0;
+  cursor: pointer;
+  display: block;
+}
+
+/* Re-centre WebKit thumb on vertical track */
+.eq-band-slider::-webkit-slider-thumb {
+  margin-top: -8px;
+}
+
+.eq-band-freq {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  text-align: center;
+  margin-bottom: 0.3rem;
+  white-space: nowrap;
+}
+
+.eq-band-val {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text);
+  text-align: center;
+  min-width: 2.8rem;
+  margin-top: 0.1rem;
+}
+
+.eq-auto-trim-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.eq-auto-trim-labels {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.eq-auto-trim-title {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.eq-auto-trim-subtitle {
+  font-size: 0.88rem;
+  color: var(--color-text-secondary);
+  margin-top: 0.15rem;
+}
+
+.eq-gain-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.eq-gain-label {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.eq-gain-value {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.eq-gain-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  margin-top: 0.2rem;
+}
+
+/* Equaliser frequency-response SVG curve */
+.eq-curve-wrap {
+  margin-bottom: 0.75rem;
+  border-radius: 6px;
+  overflow: hidden;
+  line-height: 0;   /* removes inline-block gap beneath SVG */
+}
+
+.eq-curve-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* SVG element classes — used by inline SVG inside the EQ card */
+.eq-curve-bg   { fill: var(--color-eq-bg); }
+.eq-grid       { stroke: var(--color-eq-grid);      stroke-width: 0.7; fill: none; }
+.eq-grid-zero  { stroke: var(--color-eq-grid-zero); stroke-width: 0.9;
+                 stroke-dasharray: 4 3;              fill: none; }
+.eq-curve-path { stroke: var(--color-accent);       stroke-width: 1.8; fill: none; }
+.eq-handle     { fill: var(--color-accent);
+                 stroke: rgba(255,255,255,0.75);     stroke-width: 0.8; }
 
 @media (min-width: 600px) {
   .container { margin: 2rem auto; }  /* keep the roomy desktop spacing */

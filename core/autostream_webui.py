@@ -49,6 +49,7 @@ from autostream_webui_api import (
     run_updater,
     send_json,
     send_output_eq_config_json,
+    send_output_eq_reset_json,
     send_output_eq_status_json,
     send_owntone_outputs_json,
     send_owntone_outputs_state_json,
@@ -449,6 +450,9 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             send_output_eq_config_json(self, STATE, body_str)
+
+        elif path == "/api/output_eq/reset":
+            send_output_eq_reset_json(self, STATE)
 
         elif path == "/api/service/reset":
             if not body_str:
