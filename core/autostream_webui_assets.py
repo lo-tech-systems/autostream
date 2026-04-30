@@ -1383,40 +1383,78 @@ NAV_ICON_SERVICE = (
 # ── Input type icons (Now Playing card) ──────────────────────────────────────
 
 ICON_TURNTABLE = (
-    '<svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    # Rounded-square frame
-    '<rect x="2" y="2" width="40" height="40" rx="7"'
-    ' stroke="var(--color-accent)" stroke-width="1.5"/>'
-    # Record outer rim
-    '<circle cx="19" cy="23" r="13"'
-    ' stroke="var(--color-accent)" stroke-width="1.5"/>'
-    # Record groove ring (subtle)
-    '<circle cx="19" cy="23" r="8"'
-    ' stroke="var(--color-accent)" stroke-width="1" opacity="0.5"/>'
-    # Label area
-    '<circle cx="19" cy="23" r="4.5"'
-    ' stroke="var(--color-accent)" stroke-width="1.2"/>'
-    # Centre spindle (filled dot)
-    '<circle cx="19" cy="23" r="1.5" fill="var(--color-accent)"/>'
-    # Tonearm pivot (filled dot, upper right)
-    '<circle cx="37" cy="8" r="2.5" fill="var(--color-accent)"/>'
-    # Tonearm body
-    '<line x1="36" y1="10" x2="29" y2="17"'
-    ' stroke="var(--color-accent)" stroke-width="2" stroke-linecap="round"/>'
-    # Headshell
-    '<line x1="29" y1="17" x2="26.5" y2="14.5"'
-    ' stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round"/>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 206 206"'
+    ' fill="none" stroke="#0074D9" stroke-width="2.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    # Outer case
+    '<rect x="2.5" y="4.5" width="201" height="200" rx="4"/>'
+    # Record
+    '<circle cx="87" cy="95" r="69"/>'
+    '<circle cx="87" cy="95" r="26"/>'
+    '<circle cx="87" cy="95" r="3"/>'
+    # Record grooves
+    '<path d="M31 81 C38 59,56 43,80 38"/>'
+    '<path d="M43 87 C52 67,66 55,81 51"/>'
+    # Tonearm pivot
+    '<circle cx="177" cy="47" r="13"/>'
+    '<circle cx="177" cy="47" r="5"/>'
+    # Tonearm base block
+    '<rect x="169" y="21" width="14" height="14"/>'
+    # Tonearm
+    '<path d="M177 60 L177 101"/>'
+    '<path d="M177 101 C177 111,172 119,165 126"/>'
+    '<path d="M165 126 L143 148"/>'
+    '<path d="M188 59 L188 102"/>'
+    '<path d="M188 102 C188 116,181 129,171 139"/>'
+    '<path d="M171 139 L152 158"/>'
+    # Cartridge / needle
+    '<rect x="141" y="136" width="18" height="27" transform="rotate(45 141 136)"/>'
+    '<path d="M156 156 L166 166"/>'
+    # Buttons
+    '<circle cx="156" cy="178" r="8"/>'
+    '<rect x="176" y="170" width="11" height="18" rx="5.5"/>'
     '</svg>'
 )
 
 ICON_LINE_LEVEL = (
-    '<svg viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    '<rect x="10" y="4" width="9" height="24" rx="4.5" fill="currentColor" opacity="0.85"/>'
-    '<rect x="12.5" y="26" width="4" height="8" rx="2" fill="currentColor" opacity="0.75"/>'
-    '<circle cx="14.5" cy="37" r="3" fill="currentColor"/>'
-    '<rect x="25" y="4" width="9" height="24" rx="4.5" fill="#f47320" opacity="0.9"/>'
-    '<rect x="27.5" y="26" width="4" height="8" rx="2" fill="#f47320" opacity="0.8"/>'
-    '<circle cx="29.5" cy="37" r="3" fill="#f47320"/>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 258"'
+    ' fill="none" stroke="#0074D9" stroke-width="7"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    # Top cable
+    '<path d="M56 57 V14"/>'
+    '<path d="M56 14 C56 9,60 5,64 5"/>'
+    '<path d="M64 5 C69 5,72 9,72 14"/>'
+    '<path d="M72 14 V57"/>'
+    # Upper connector block
+    '<path d="M31 57 H96"/>'
+    '<path d="M96 57 C99 57,101 60,101 63"/>'
+    '<path d="M101 63 V101"/>'
+    '<path d="M31 101 V63"/>'
+    '<path d="M31 63 C31 60,34 57,37 57"/>'
+    # Main body
+    '<path d="M21 101 H107"/>'
+    '<path d="M107 101 V167"/>'
+    '<path d="M107 167 L86 191"/>'
+    '<path d="M86 191 H42"/>'
+    '<path d="M42 191 L21 167"/>'
+    '<path d="M21 167 V101"/>'
+    # Strain relief / lower grip
+    '<path d="M42 191 V245"/>'
+    '<path d="M42 245 C42 250,46 254,51 254"/>'
+    '<path d="M51 254 H77"/>'
+    '<path d="M77 254 C82 254,86 250,86 245"/>'
+    '<path d="M86 245 V191"/>'
+    # Grip grooves
+    '<path d="M42 209 H57"/>'
+    '<path d="M71 209 H86"/>'
+    '<path d="M42 226 H57"/>'
+    '<path d="M71 226 H86"/>'
+    '<path d="M42 243 H57"/>'
+    '<path d="M71 243 H86"/>'
+    # Front slots
+    '<path d="M59 122 H69"/>'
+    '<path d="M59 138 H69"/>'
+    '<path d="M59 154 H69"/>'
     '</svg>'
 )
 
