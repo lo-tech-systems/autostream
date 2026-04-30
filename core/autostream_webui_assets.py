@@ -1105,7 +1105,7 @@ body {
 }
 
 body.has-bottom-nav .container {
-  padding-bottom: 5rem;
+  padding-bottom: 2rem;
 }
 
 /* ── Bottom navigation bar ── */
@@ -1127,7 +1127,7 @@ body.has-bottom-nav .container {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 0.55rem 0 0.5rem;
+  padding: 0.6rem 0 0;
   color: var(--color-nav-inactive);
   text-decoration: none;
   font-size: 0.7rem;
