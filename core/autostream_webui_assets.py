@@ -415,7 +415,7 @@ button[type=submit] {
 }
 
 .output-toggle input:checked + .switch {
-  background: var(--color-toggle-on);
+  background: var(--color-accent);
 }
 
 .output-toggle input:checked + .switch::after {
