@@ -493,6 +493,7 @@ def get_monitor_levels_dbfs() -> list[dict]:
             "dbfs": round(mon.poll_peak_dbfs, 1),
             "detected_hz": round(mon.detected_hz, 1),
             "is_above_threshold": not mon.is_silent,
+            "vu_history": mon.vu_history,
         })
     return levels
 
@@ -1137,6 +1138,9 @@ class AudioMonitor:
         self.is_capturing: bool = False
         self._last_active_time: Optional[float] = None
         self._tracker_playback_active: bool = False
+        # Latest VU history block from the daemon (passed through as-is).
+        # Replaced atomically on each status poll; Flask thread reads under GIL.
+        self.vu_history: dict = {}
 
         # --- allow_capture: set by coordinator; synced to daemon lazily ---
         self._allow_capture: bool = True
@@ -1187,6 +1191,9 @@ class AudioMonitor:
         self.detected_hz     = float(status_entry.get("detected_hz", 0.0))
         self.is_silent       = bool(status_entry.get("silent", True))
         self.is_capturing    = bool(status_entry.get("capturing", False))
+        # Cache the whole vu_history block; Flask thread reads it as-is.
+        raw_vu = status_entry.get("vu_history")
+        self.vu_history = raw_vu if isinstance(raw_vu, dict) else {}
 
         if not self.is_silent:
             self._last_active_time = time.time()

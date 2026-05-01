@@ -623,6 +623,19 @@ bool InputChannel::start(std::string* error_out)
         _id_frames_avail = 0;
     }
 
+    // Reset the VU history ring so the new session starts with a clean
+    // sequence.  The process-thread-only fields are written here before
+    // the thread is spawned, so no lock is required for those.
+    {
+        std::lock_guard<std::mutex> lk(_vu_history_mutex);
+        _vu_history_count     = 0;
+        _vu_history_write_idx = 0;
+    }
+    _vu_bin_seq         = 0;
+    _vu_bin_left_peak   = 0.0f;
+    _vu_bin_right_peak  = 0.0f;
+    _vu_bin_start_time  = 0.0;   // initialised to real time at start of process_thread_func
+
     // Set _started before spawning threads.  stop() guards on
     // _started.exchange(false), so setting it first ensures that any
     // concurrent stop() call after this point always performs full cleanup —
@@ -933,8 +946,36 @@ void InputChannel::process_thread_func()
     // 512 samples = 256 stereo frames = ~5 ms at 48 kHz.
     const unsigned MIN_SAMPLES = 512;
 
+    // Anchor the first VU bin to the moment the process thread starts.
+    _vu_bin_start_time = get_monotonic_time();
+
     while (_running.load(std::memory_order_relaxed))
     {
+        // ── Close any elapsed VU bins ─────────────────────────────────────────
+        // Runs every iteration (including idle iterations after the condition-
+        // variable sleep) so silence bins are produced even when the channel
+        // is not capturing.  A while loop catches up if multiple bins have
+        // elapsed since the last iteration (e.g. after a long OS sleep).
+        {
+            double now = get_monotonic_time();
+            while (now - _vu_bin_start_time >= VU_BIN_SECONDS)
+            {
+                VuBin bin;
+                bin.seq        = ++_vu_bin_seq;
+                bin.left_dbfs  = linear_to_dbfs(_vu_bin_left_peak);
+                bin.right_dbfs = linear_to_dbfs(_vu_bin_right_peak);
+                _vu_bin_left_peak  = 0.0f;
+                _vu_bin_right_peak = 0.0f;
+                _vu_bin_start_time += VU_BIN_SECONDS;
+
+                std::lock_guard<std::mutex> lk(_vu_history_mutex);
+                _vu_history[_vu_history_write_idx] = bin;
+                _vu_history_write_idx = (_vu_history_write_idx + 1) % VU_HISTORY_BINS;
+                if (_vu_history_count < VU_HISTORY_BINS)
+                    ++_vu_history_count;
+            }
+        }
+
         // ── Wait for data ────────────────────────────────────────────────────
         unsigned write_pos = _ring_write_pos.load(std::memory_order_acquire);
         unsigned read_pos  = _ring_read_pos.load(std::memory_order_relaxed);
@@ -1257,6 +1298,18 @@ void InputChannel::process_thread_func()
                         // true overshoot before clamping.
                         _output_processor.apply(float_out.data(), out_frames);
 
+                        // ── Accumulate stereo peak for the current VU bin ─────
+                        // Tap here: post all output processing, pre int16 cast.
+                        // Existing playback detection logic (_current_peak_sample,
+                        // _poll_peak_sample) is left completely untouched.
+                        for (int f = 0; f < out_frames; ++f)
+                        {
+                            float l = std::fabs(float_out[f * 2]);
+                            float r = std::fabs(float_out[f * 2 + 1]);
+                            if (l > _vu_bin_left_peak)  _vu_bin_left_peak  = l;
+                            if (r > _vu_bin_right_peak) _vu_bin_right_peak = r;
+                        }
+
                         // Convert to int16.
                         src_float_to_short_array(float_out.data(), pcm_out.data(),
                                                  out_frames * 2);
@@ -1314,4 +1367,29 @@ void InputChannel::process_thread_func()
             _status.detected_hz  = _rate_estimator.estimated_input_rate();
         }
     }
+}
+
+
+// ── InputChannel::get_vu_history ──────────────────────────────────────────────
+//
+// Returns all retained VU bins, oldest first.  Thread-safe; acquires
+// _vu_history_mutex for the duration of the copy.
+//
+std::vector<VuBin> InputChannel::get_vu_history() const
+{
+    std::lock_guard<std::mutex> lk(_vu_history_mutex);
+
+    if (_vu_history_count == 0)
+        return {};
+
+    std::vector<VuBin> result;
+    result.reserve(static_cast<size_t>(_vu_history_count));
+
+    // The oldest valid bin starts at (write_idx - count), wrapping around.
+    int start = (_vu_history_write_idx - _vu_history_count + VU_HISTORY_BINS)
+                % VU_HISTORY_BINS;
+    for (int i = 0; i < _vu_history_count; ++i)
+        result.push_back(_vu_history[(start + i) % VU_HISTORY_BINS]);
+
+    return result;
 }

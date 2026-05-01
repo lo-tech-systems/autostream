@@ -19,7 +19,8 @@ from autostream_core import (
     get_monitor_levels_dbfs,
     get_playback_snapshot,
 )
-from autostream_player_service import list_outputs
+from autostream_player_service import get_setting, list_outputs
+from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_sysutils import get_system_hostname, reboot_system
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
@@ -143,6 +144,15 @@ def send_airplay_page(
     _np_signal = " \u00b7 ".join(_np_signal_parts)
     _np_icon_svg = ICON_TURNTABLE if _np_is_turntable else ICON_LINE_LEVEL
 
+    # Fetch the OwnTone start-buffer setting so the VU meter can be aligned to
+    # the AirPlay playback delay.  Fall back to the default if OwnTone is
+    # unreachable (e.g. still starting) or if the backend does not support it.
+    try:
+        _buf_result = get_setting(owntone_base_url, SETTING_START_BUFFER_MS, timeout=1)
+        vu_delay_ms = int(_buf_result.value) if _buf_result.ok else SETTING_START_BUFFER_MS_DEFAULT
+    except Exception:
+        vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
+
     outputs_result = list_outputs(owntone_base_url, timeout=3)
     outputs = list(outputs_result.outputs) if outputs_result.ok else []
     if not outputs_result.ok:
@@ -221,12 +231,18 @@ def send_airplay_page(
         f"<script>window.__CSRF='{html.escape(csrf_token)}';"
         f"window.__PRESET_VOLUME={preset_volume};"
         f"window.__SHOW_INPUT_DETAIL={'true' if show_input_detail else 'false'};"
+        f"window.__VU_DELAY_MS={int(vu_delay_ms)};"
         f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
         f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"</script>"
     )
 
-    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}"
+    _vu_stereo_css = (
+        ".vu-meter{flex-direction:row;gap:3px;width:23px;}"
+        ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
+        "width:10px;flex:0 0 10px;}"
+    )
+    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{_vu_stereo_css}"
     _head_extra = f"""{csrf_meta}
 
       <script>
@@ -532,14 +548,74 @@ def send_airplay_page(
         }}
         var VU_THRESHOLDS = [-60, -48, -36, -24, -12, -6, -3];
         var VU_COLORS = ['#2196F3','#2196F3','#2196F3','#2196F3','#f0ad4e','#fd7e14','#dc3545'];
-        function updateVuBars(dbfs){{
-          if (!window.__SHOW_INPUT_DETAIL) return;
-          var bars = document.querySelectorAll('#np-vu .vu-bar');
-          bars.forEach(function(bar, i){{
-            var lit = Number.isFinite(Number(dbfs)) && Number(dbfs) >= VU_THRESHOLDS[i];
+        var VU_BIN_MS = 100;
+        var VU_DELAY_BINS = Math.max(1, Math.round((window.__VU_DELAY_MS || 2250) / VU_BIN_MS));
+
+        // Per-input VU queue state.
+        var _vuQueue = {{}};         // inputIdx → Array of pending bins
+        var _vuLastSeq = {{}};       // inputIdx → last seq appended to queue
+        var _vuActiveIdx = -1;      // currently displayed input index (-1 = none)
+
+        function updateVuBars(left_dbfs, right_dbfs){{
+          var lBars = document.querySelectorAll('#np-vu-l .vu-bar');
+          var rBars = document.querySelectorAll('#np-vu-r .vu-bar');
+          lBars.forEach(function(bar, i){{
+            var lit = Number.isFinite(Number(left_dbfs)) && Number(left_dbfs) >= VU_THRESHOLDS[i];
+            bar.style.background = lit ? VU_COLORS[i] : '';
+          }});
+          rBars.forEach(function(bar, i){{
+            var lit = Number.isFinite(Number(right_dbfs)) && Number(right_dbfs) >= VU_THRESHOLDS[i];
             bar.style.background = lit ? VU_COLORS[i] : '';
           }});
         }}
+
+        function vuIngestHistory(activeIdx, vu_history){{
+          // If the active input changed, clear all queues immediately.
+          if (activeIdx !== _vuActiveIdx) {{
+            _vuQueue = {{}};
+            _vuLastSeq = {{}};
+            _vuActiveIdx = activeIdx;
+          }}
+          if (!vu_history || !Array.isArray(vu_history.bins) || vu_history.bins.length === 0)
+            return;
+          var bins = vu_history.bins;
+          var latestSeq = vu_history.latest_seq || 0;
+          // Only show bins that are VU_DELAY_BINS steps behind the latest
+          // so the display lags the signal by approximately __VU_DELAY_MS.
+          var cutoffSeq = latestSeq - VU_DELAY_BINS;
+          if (cutoffSeq < 0) return;
+          if (!_vuQueue[activeIdx]) _vuQueue[activeIdx] = [];
+          if (!_vuLastSeq[activeIdx]) _vuLastSeq[activeIdx] = 0;
+          var lastSeen = _vuLastSeq[activeIdx];
+          // Detect seq reset (daemon restart): clear and resync.
+          if (latestSeq < lastSeen && lastSeen > 0) {{
+            _vuQueue[activeIdx] = [];
+            _vuLastSeq[activeIdx] = 0;
+            lastSeen = 0;
+          }}
+          var added = 0;
+          for (var i = 0; i < bins.length; i++) {{
+            var b = bins[i];
+            if (b.seq > lastSeen && b.seq <= cutoffSeq) {{
+              _vuQueue[activeIdx].push(b);
+              added++;
+            }}
+          }}
+          if (added > 0)
+            _vuLastSeq[activeIdx] = cutoffSeq;
+          // Bound queue to 2× the delay window to guard against extreme fetch jitter.
+          var maxQ = VU_DELAY_BINS * 2;
+          var q = _vuQueue[activeIdx];
+          if (q.length > maxQ)
+            _vuQueue[activeIdx] = q.slice(q.length - maxQ);
+        }}
+
+        function vuRenderTick(){{
+          var q = _vuQueue[_vuActiveIdx];
+          var bin = (q && q.length > 0) ? q.shift() : null;
+          updateVuBars(bin ? bin.l : -90, bin ? bin.r : -90);
+        }}
+
         function updateNowPlayingCard(data){{
           var levels = (data && data.input_levels) || [];
           var inputs = (data && data.playback && data.playback.inputs) || {{}};
@@ -553,7 +629,12 @@ def send_airplay_page(
           var hdrEl = document.getElementById('np-hdr');
           if (card) card.classList.toggle('np-ready', !isPlaying);
           if (hdrEl) hdrEl.textContent = isPlaying ? 'Now Playing' : 'Ready';
-          if (!isPlaying) {{ updateVuBars(-90); return; }}
+          if (!isPlaying) {{
+            _vuActiveIdx = -1;
+            _vuQueue = {{}};
+            updateVuBars(-90, -90);
+            return;
+          }}
           if (!activeLevel && levels.length > 0) {{ activeLevel = levels[0]; activeIdx = 0; }}
           if (!activeLevel) return;
           var inputSnap = inputs[String(activeIdx + 1)] || {{}};
@@ -576,7 +657,7 @@ def send_airplay_page(
             iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
             iconEl.dataset.iconType = String(isTurntable);
           }}
-          updateVuBars(Number(activeLevel.dbfs || -90));
+          vuIngestHistory(activeIdx, activeLevel.vu_history);
         }}
         function refreshStatus(){{
           fetch('/api/status', {{ cache: 'no-store' }}).then(r=>r.json()).then(d=>{{
@@ -641,7 +722,8 @@ def send_airplay_page(
           }});
           reorderOutputCards();
           updateMasterVolumeCard();
-          setInterval(() => {{ refreshStatus(); refreshOutputsState(); }}, 2000);
+          setInterval(function(){{ refreshStatus(); refreshOutputsState(); }}, 1500);
+          setInterval(vuRenderTick, VU_BIN_MS);
           refreshStatus();
           refreshOutputsState();
         }});
@@ -691,10 +773,12 @@ def send_airplay_page(
 
     # Now Playing card: header, input body (hidden when ready), master volume.
     # Active (playing): accent border + surface-selected. Ready: dim via .np-ready.
+    _vu_bar_html = '<div class="vu-bar"></div>' * 7
     _vu_html = (
         f'<div class="vu-meter" id="np-vu" aria-hidden="true">'
-        + ('<div class="vu-bar"></div>' * 7)
-        + '</div>'
+        f'<div class="vu-col" id="np-vu-l">{_vu_bar_html}</div>'
+        f'<div class="vu-col" id="np-vu-r">{_vu_bar_html}</div>'
+        f'</div>'
     ) if show_input_detail else ""
     _np_card_cls = "" if _np_is_playing else " np-ready"
     _np_hdr_text = "Now Playing" if _np_is_playing else "Ready"

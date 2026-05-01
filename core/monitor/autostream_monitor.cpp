@@ -914,6 +914,9 @@ std::string AudioMonitor::api_get_status()
 
         InputChannelStatus s = _inputs[i]->get_status();
 
+        std::vector<VuBin> vu = _inputs[i]->get_vu_history();
+        uint32_t latest_seq = vu.empty() ? 0u : vu.back().seq;
+
         oss << "{"
             << "\"index\":"               << s.index                << ","
             << "\"level_dbfs\":"          << s.level_dbfs            << ","
@@ -924,8 +927,18 @@ std::string AudioMonitor::api_get_status()
             << "\"raw_peak_dbfs\":"       << s.raw_peak_dbfs         << ","
             << "\"effective_peak_dbfs\":" << s.effective_peak_dbfs   << ","
             << "\"started\":"             << (s.is_started   ? "true" : "false") << ","
-            << "\"running\":"             << (s.is_running   ? "true" : "false")
-            << "}";
+            << "\"running\":"             << (s.is_running   ? "true" : "false") << ","
+            << "\"vu_history\":{\"bin_ms\":100,\"latest_seq\":" << latest_seq << ",\"bins\":[";
+
+        for (size_t j = 0; j < vu.size(); ++j)
+        {
+            if (j > 0) oss << ",";
+            oss << "{\"seq\":"  << vu[j].seq
+                << ",\"l\":"    << vu[j].left_dbfs
+                << ",\"r\":"    << vu[j].right_dbfs << "}";
+        }
+
+        oss << "]}}";
     }
 
     oss << "]}";

@@ -518,6 +518,22 @@ private:
 
 
 // =============================================================================
+// VuBin
+//
+// One 100 ms bin of stereo peak history, produced by the process thread after
+// all output processing (gain, EQ, auto-trim) and before the float→int16
+// conversion.  Used to drive the home-page delayed VU meter display.
+// =============================================================================
+
+struct VuBin
+{
+    uint32_t seq        = 0;       // monotonically increasing; resets on channel restart
+    float    left_dbfs  = -90.0f;  // peak dBFS of the left channel in this bin
+    float    right_dbfs = -90.0f;  // peak dBFS of the right channel in this bin
+};
+
+
+// =============================================================================
 // InputChannelStatus
 //
 // A thread-safe snapshot of one input channel's current state.
@@ -633,6 +649,11 @@ public:
     // running or after it has stopped.
     unsigned get_id_snapshot(int16_t* out, unsigned max_frames) const;
 
+    // Returns all retained VU history bins, oldest first.
+    // Thread-safe; acquires _vu_history_mutex.  May return an empty vector
+    // if no bins have been produced yet since the last start().
+    std::vector<VuBin> get_vu_history() const;
+
     // Sample rate and capacity of the identification snapshot buffer.
     static constexpr unsigned ID_BUF_RATE   = 22050;
     static constexpr unsigned ID_BUF_FRAMES = 1u << 19;  // 524288 ≈ 23.7 s
@@ -739,6 +760,31 @@ private:
     mutable std::atomic<int> _poll_peak_sample{0};    // max raw peak since last get_status() call; mutable so exchange(0) is callable from const get_status()
     std::atomic<int>   _session_raw_peak_sample{0};     // session max raw peak
     std::atomic<float> _session_effective_peak_linear{0.0f}; // session max effective peak (linear, >=0)
+
+    // ── Stereo VU history (100 ms bins, post-output-processing tap) ───────────
+    //
+    // The process thread accumulates per-channel float peaks across each 100 ms
+    // window and pushes a VuBin when the window closes.  Bins are kept in a
+    // fixed-size circular buffer; the API thread reads them under _vu_history_mutex.
+    //
+    // All _vu_bin_* fields are written only by the process thread.
+    // _vu_history, _vu_history_write_idx, and _vu_history_count are written by
+    // the process thread and read by the API thread, both under _vu_history_mutex.
+    //
+    static constexpr double VU_BIN_SECONDS   = 0.1;   // one bin = 100 ms
+    static constexpr int    VU_HISTORY_BINS  = 40;    // retain 4 s of history
+
+    // Process-thread-only accumulators (no synchronisation needed):
+    float    _vu_bin_left_peak  = 0.0f;   // peak left  linear amplitude in current bin
+    float    _vu_bin_right_peak = 0.0f;   // peak right linear amplitude in current bin
+    double   _vu_bin_start_time = 0.0;    // monotonic time when current bin started
+    uint32_t _vu_bin_seq        = 0;      // sequence counter; incremented on each bin close
+
+    // Shared between process thread (writer) and API thread (reader):
+    mutable std::mutex _vu_history_mutex;
+    VuBin _vu_history[VU_HISTORY_BINS];   // circular buffer, oldest→newest on read
+    int   _vu_history_write_idx = 0;      // index of the next write slot
+    int   _vu_history_count     = 0;      // number of valid bins (saturates at VU_HISTORY_BINS)
 
     // ── Per-channel EQ filter state (process thread only) ────────────────────
     // Rebuilt lazily whenever _eq_chain publishes a new band list.
