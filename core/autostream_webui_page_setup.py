@@ -633,13 +633,15 @@ def send_setup_page(
             </div>
             {_setup_detail_header("Setup Input 2")}
             {input2_html}
-            {_audio_controls_card_html(
-              input_index=2,
-              gain_db=parsed.audio2.gain_db,
-              eq_40hz_db=parsed.audio2.eq_40hz_db,
-              eq_100hz_db=parsed.audio2.eq_100hz_db,
-              eq_10khz_db=parsed.audio2.eq_10khz_db,
-            )}
+            <div id="audio2_preamp_card" style="display:{'block' if parsed.audio2_enabled else 'none'};">
+              {_audio_controls_card_html(
+                input_index=2,
+                gain_db=parsed.audio2.gain_db,
+                eq_40hz_db=parsed.audio2.eq_40hz_db,
+                eq_100hz_db=parsed.audio2.eq_100hz_db,
+                eq_10khz_db=parsed.audio2.eq_10khz_db,
+              )}
+            </div>
           </div>
           <div class="setup-detail-panel" id="panel-playback">
             <div class="setup-detail-back">
@@ -905,11 +907,13 @@ def send_setup_page(
             : !!document.querySelector('input[name="audio2_enabled"]')?.checked;
           const turntable = !!document.querySelector('input[name="' + turntableName + '"]')?.checked;
           const settings = document.getElementById(prefix + '_settings');
+          const preampCard = inputIndex === 2 ? document.getElementById('audio2_preamp_card') : null;
           const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
           const note = document.getElementById(prefix + '_turntable_note');
           const threshold = thresholdPreset(turntable);
           const hidden = document.getElementById(thresholdId);
           if (settings) settings.style.display = enabled ? 'block' : 'none';
+          if (preampCard) preampCard.style.display = enabled ? 'block' : 'none';
           if (hidden) hidden.value = String(threshold);
           if (note) note.textContent = 'Detection threshold preset: ' + String(threshold) + ' dB';
         }}
