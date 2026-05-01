@@ -83,12 +83,55 @@ def _audio_controls_card_html(
       <div class="slider-header" style="margin-top:.75rem;align-items:center;">
         <strong>Equaliser</strong>
       </div>
-      <label><div class="slider-header"><span>40Hz:</span><span id="{prefix}_eq_40hz_db_val">{eq_40hz_db:.0f} dB</span></div>
-      <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_40hz_db" name="{prefix}_eq_40hz_db" value="{eq_40hz_db:.0f}" oninput="syncEq({input_index}, '40hz', this.value)"></label>
-      <label><div class="slider-header"><span>Bass:</span><span id="{prefix}_eq_100hz_db_val">{eq_100hz_db:.0f} dB</span></div>
-      <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_100hz_db" name="{prefix}_eq_100hz_db" value="{eq_100hz_db:.0f}" oninput="syncEq({input_index}, '100hz', this.value)"></label>
-      <label><div class="slider-header"><span>Treble:</span><span id="{prefix}_eq_10khz_db_val">{eq_10khz_db:.0f} dB</span></div>
-      <input type="range" min="-10" max="10" step="1" id="{prefix}_eq_10khz_db" name="{prefix}_eq_10khz_db" value="{eq_10khz_db:.0f}" oninput="syncEq({input_index}, '10khz', this.value)"></label>
+      <div class="eq-bands-wrap" style="margin-top:0.5rem;">
+        <div class="eq-bands-row">
+          <div class="eq-band">
+            <span class="eq-band-freq">40Hz</span>
+            <input
+              type="range"
+              class="eq-band-slider"
+              min="-10"
+              max="10"
+              step="1"
+              id="{prefix}_eq_40hz_db"
+              name="{prefix}_eq_40hz_db"
+              value="{eq_40hz_db:.0f}"
+              aria-label="40Hz equaliser"
+              oninput="syncEq({input_index}, '40hz', this.value)">
+            <span class="eq-band-val" id="{prefix}_eq_40hz_db_val">{eq_40hz_db:.0f} dB</span>
+          </div>
+          <div class="eq-band">
+            <span class="eq-band-freq">Bass</span>
+            <input
+              type="range"
+              class="eq-band-slider"
+              min="-10"
+              max="10"
+              step="1"
+              id="{prefix}_eq_100hz_db"
+              name="{prefix}_eq_100hz_db"
+              value="{eq_100hz_db:.0f}"
+              aria-label="Bass equaliser"
+              oninput="syncEq({input_index}, '100hz', this.value)">
+            <span class="eq-band-val" id="{prefix}_eq_100hz_db_val">{eq_100hz_db:.0f} dB</span>
+          </div>
+          <div class="eq-band">
+            <span class="eq-band-freq">Treble</span>
+            <input
+              type="range"
+              class="eq-band-slider"
+              min="-10"
+              max="10"
+              step="1"
+              id="{prefix}_eq_10khz_db"
+              name="{prefix}_eq_10khz_db"
+              value="{eq_10khz_db:.0f}"
+              aria-label="Treble equaliser"
+              oninput="syncEq({input_index}, '10khz', this.value)">
+            <span class="eq-band-val" id="{prefix}_eq_10khz_db_val">{eq_10khz_db:.0f} dB</span>
+          </div>
+        </div>
+      </div>
     """
     return settings_card_html(inner_html)
 
@@ -174,26 +217,6 @@ def send_setup_page(
             ) + opts
         return opts
 
-    def _preamp_card_html(input_index: int, parsed_input) -> str:
-        gain_val = int(parsed_input.gain_db)
-        gain_label = f"{gain_val:+d} dB" if gain_val != 0 else "0 dB"
-        eq_flat = (
-            parsed_input.eq_40hz_db == 0
-            and parsed_input.eq_100hz_db == 0
-            and parsed_input.eq_10khz_db == 0
-        )
-        eq_label = "Flat" if eq_flat else "Custom"
-        sub = html.escape(f"Gain {gain_label} \u00b7 EQ {eq_label}")
-        return (
-            f"<div class='setup-list-card' onclick=\"openPreamp('input{input_index}')\" style='margin-top:0.75rem;'>"
-            f"<div class='setup-list-card-body'>"
-            f"<span class='setup-list-card-title'>Pre-amp</span>"
-            f"<span class='setup-list-card-sub' id='preamp-{input_index}-card-sub'>{sub}</span>"
-            f"</div>"
-            f"<span class='setup-list-chevron'>\u203a</span>"
-            f"</div>"
-        )
-
     def input_fieldset_html(
         *,
         input_index: int,
@@ -243,7 +266,6 @@ def send_setup_page(
               Detection threshold preset: {threshold_preset:.0f} dB
             </div>
             <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
-            {_preamp_card_html(input_index, parsed_input) if not initial_setup else ""}
           {settings_close}
         """
         if initial_setup:
@@ -597,6 +619,13 @@ def send_setup_page(
             </div>
             {_setup_detail_header("Setup Input 1")}
             {input1_html}
+            {_audio_controls_card_html(
+              input_index=1,
+              gain_db=parsed.audio1.gain_db,
+              eq_40hz_db=parsed.audio1.eq_40hz_db,
+              eq_100hz_db=parsed.audio1.eq_100hz_db,
+              eq_10khz_db=parsed.audio1.eq_10khz_db,
+            )}
           </div>
           <div class="setup-detail-panel" id="panel-input2">
             <div class="setup-detail-back">
@@ -604,6 +633,13 @@ def send_setup_page(
             </div>
             {_setup_detail_header("Setup Input 2")}
             {input2_html}
+            {_audio_controls_card_html(
+              input_index=2,
+              gain_db=parsed.audio2.gain_db,
+              eq_40hz_db=parsed.audio2.eq_40hz_db,
+              eq_100hz_db=parsed.audio2.eq_100hz_db,
+              eq_10khz_db=parsed.audio2.eq_10khz_db,
+            )}
           </div>
           <div class="setup-detail-panel" id="panel-playback">
             <div class="setup-detail-back">
@@ -631,36 +667,6 @@ def send_setup_page(
               <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
             </div>
             {factory_reset_zone}
-          </div>
-        </div>
-        <div class="setup-slide-preamp">
-          <div class="setup-preamp-panel" id="preamp-input1">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePreamp()">\u2190 Back</button>
-            </div>
-            <fieldset><legend>Input 1 Pre-amp</legend>
-              {_audio_controls_card_html(
-                input_index=1,
-                gain_db=parsed.audio1.gain_db,
-                eq_40hz_db=parsed.audio1.eq_40hz_db,
-                eq_100hz_db=parsed.audio1.eq_100hz_db,
-                eq_10khz_db=parsed.audio1.eq_10khz_db,
-              )}
-            </fieldset>
-          </div>
-          <div class="setup-preamp-panel" id="preamp-input2">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePreamp()">\u2190 Back</button>
-            </div>
-            <fieldset><legend>Input 2 Pre-amp</legend>
-              {_audio_controls_card_html(
-                input_index=2,
-                gain_db=parsed.audio2.gain_db,
-                eq_40hz_db=parsed.audio2.eq_40hz_db,
-                eq_100hz_db=parsed.audio2.eq_100hz_db,
-                eq_10khz_db=parsed.audio2.eq_10khz_db,
-              )}
-            </fieldset>
           </div>
         </div>
       </div>
@@ -1107,16 +1113,6 @@ def send_setup_page(
           var gainStr = gain > 0 ? '+' + gain + ' dB' : (gain < 0 ? gain + ' dB' : '0 dB');
           return dev + ' \u00b7 ' + mode + ' \u00b7 ' + gainStr;
         }}
-        function _preampCardSub(prefix) {{
-          var gainEl = document.getElementById(prefix + '_gain_db');
-          var gain = gainEl ? parseInt(gainEl.value, 10) : 0;
-          var gainStr = gain > 0 ? '+' + gain + ' dB' : (gain < 0 ? gain + ' dB' : '0 dB');
-          var eq40 = parseFloat((document.getElementById(prefix + '_eq_40hz_db') || {{}}).value || 0);
-          var eq100 = parseFloat((document.getElementById(prefix + '_eq_100hz_db') || {{}}).value || 0);
-          var eq10k = parseFloat((document.getElementById(prefix + '_eq_10khz_db') || {{}}).value || 0);
-          var eqLabel = (eq40 === 0 && eq100 === 0 && eq10k === 0) ? 'Flat' : 'Custom';
-          return 'Gain ' + gainStr + ' \u00b7 EQ ' + eqLabel;
-        }}
         function refreshInputCardSubs() {{
           var s1 = document.getElementById('input1-card-sub');
           if (s1) s1.textContent = _inputCardSub('audio_capture_device', 'audio_turntable', 'audio1_gain_db');
@@ -1130,18 +1126,12 @@ def send_setup_page(
             }}
           }}
         }}
-        function refreshPreampCardSubs() {{
-          var p1 = document.getElementById('preamp-1-card-sub');
-          if (p1) p1.textContent = _preampCardSub('audio1');
-          var p2 = document.getElementById('preamp-2-card-sub');
-          if (p2) p2.textContent = _preampCardSub('audio2');
-        }}
         function openPanel(id) {{
           document.querySelectorAll('.setup-detail-panel').forEach(function(p) {{ p.classList.remove('active'); }});
           var panel = document.getElementById('panel-' + id);
           if (panel) panel.classList.add('active');
           var track = document.getElementById('setupSlideTrack');
-          if (track) {{ track.classList.remove('preamp-open'); track.classList.add('panel-open'); }}
+          if (track) track.classList.add('panel-open');
           window.scrollTo(0, 0);
         }}
         function refreshCustomiseCardSub() {{
@@ -1161,22 +1151,7 @@ def send_setup_page(
           refreshInputCardSubs();
           refreshCustomiseCardSub();
           var track = document.getElementById('setupSlideTrack');
-          if (track) {{ track.classList.remove('panel-open'); track.classList.remove('preamp-open'); }}
-          window.scrollTo(0, 0);
-        }}
-        function openPreamp(id) {{
-          document.querySelectorAll('.setup-preamp-panel').forEach(function(p) {{ p.classList.remove('active'); }});
-          var panel = document.getElementById('preamp-' + id);
-          if (panel) panel.classList.add('active');
-          var track = document.getElementById('setupSlideTrack');
-          if (track) track.classList.add('preamp-open');
-          window.scrollTo(0, 0);
-        }}
-        function closePreamp() {{
-          refreshPreampCardSubs();
-          refreshInputCardSubs();
-          var track = document.getElementById('setupSlideTrack');
-          if (track) track.classList.remove('preamp-open');
+          if (track) track.classList.remove('panel-open');
           window.scrollTo(0, 0);
         }}
       </script>""" if not initial_setup else ""}
