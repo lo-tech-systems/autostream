@@ -893,12 +893,55 @@ network_state_phase() {
 }
 
 #############################################
+# Watchdog safety
+#############################################
+
+# stop_watchdog_if_ram_monitored
+#
+# If the system watchdog service is enabled AND /etc/watchdog.conf has
+# min-memory set to a non-zero value, stop the watchdog before the
+# install/update begins.
+#
+# Why: the watchdog daemon will force-reboot the system if free RAM drops
+# below the configured threshold.  apt upgrades, g++ compilation, and pip
+# installs can all cause transient memory pressure that exceeds a tight
+# min-memory limit, causing a spurious mid-update reboot.  Stopping the
+# watchdog for the duration of the script is safe because the hardware
+# watchdog timer is reset during graceful stops and the OS remains running.
+stop_watchdog_if_ram_monitored() {
+  # Nothing to do if the watchdog unit is not present or not enabled.
+  if ! systemctl is-enabled watchdog &>/dev/null; then
+    return 0
+  fi
+
+  # Parse the last uncommented min-memory line from /etc/watchdog.conf.
+  # A value of 0 means the RAM check is disabled; anything else is active.
+  local conf="/etc/watchdog.conf"
+  local min_mem=""
+  if [[ -f "${conf}" ]]; then
+    min_mem="$(grep -E '^\s*min-memory\s*=' "${conf}" 2>/dev/null \
+               | tail -n1 \
+               | sed 's/[^=]*=\s*//' \
+               | tr -d '[:space:]')"
+  fi
+
+  if [[ -z "${min_mem}" || "${min_mem}" == "0" ]]; then
+    return 0
+  fi
+
+  info "Watchdog RAM monitoring is active (min-memory = ${min_mem} pages);" \
+       "stopping watchdog service to prevent a spurious reboot during update"
+  systemctl stop watchdog || true
+}
+
+#############################################
 # Orchestration
 #############################################
 run_install() {
   info ">>> Starting first-time installation <<<"
   PROMPT_REBOOT_ON_EXIT=1
 
+  stop_watchdog_if_ram_monitored
   check_network_manager
   show_warnings_and_prompt
   require_rpi_os_trixie
@@ -926,6 +969,7 @@ run_update() {
   set_phase "preflight"
   write_update_result "in_progress" "Starting update" 0
 
+  stop_watchdog_if_ram_monitored
   check_network_manager
 
   write_update_result "in_progress" "Updating system packages" 20
