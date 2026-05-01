@@ -61,6 +61,7 @@ STYLE_CSS = """
   --color-eq-grid:           rgba(0,0,0,0.12);
   --color-eq-grid-zero:      rgba(0,0,0,0.30);
   --color-eq-zero-line:      rgba(0,0,0,0.20);
+  --color-eq-axis:           rgba(0,0,0,0.30);
   color-scheme: light;
 }
 
@@ -106,6 +107,7 @@ STYLE_CSS = """
   --color-eq-grid:           rgba(100,150,200,0.22);
   --color-eq-grid-zero:      rgba(100,150,200,0.55);
   --color-eq-zero-line:      rgba(100,150,200,0.45);
+  --color-eq-axis:           rgba(100,150,200,0.55);
   color-scheme: dark;
 }
 
@@ -762,19 +764,6 @@ code {
   gap: 0.4rem;
 }
 
-.eq-scale {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  font-size: 0.78rem;
-  color: var(--color-text-secondary);
-  padding-top: 1.4rem;     /* aligns top label with slider top (below freq label) */
-  padding-bottom: 1.6rem;  /* aligns bottom label with slider bottom (above val label) */
-  min-width: 2rem;
-  text-align: right;
-  padding-right: 0.3rem;
-}
-
 .eq-bands-row {
   position: relative;
   isolation: isolate;
@@ -903,13 +892,16 @@ code {
 }
 
 /* SVG element classes — used by inline SVG inside the EQ card */
-.eq-curve-bg   { fill: var(--color-eq-bg); }
-.eq-grid       { stroke: var(--color-eq-grid);      stroke-width: 0.7; fill: none; }
-.eq-grid-zero  { stroke: var(--color-eq-grid-zero); stroke-width: 0.9;
-                 stroke-dasharray: 4 3;              fill: none; }
-.eq-curve-path { stroke: var(--color-accent);       stroke-width: 1.8; fill: none; }
-.eq-handle     { fill: var(--color-accent);
-                 stroke: rgba(255,255,255,0.75);     stroke-width: 0.8; }
+.eq-curve-bg        { fill: var(--color-eq-bg); }
+.eq-axis            { stroke: var(--color-eq-axis); fill: none; }
+.eq-axis-x          { stroke-width: 0.8; }
+.eq-axis-y          { stroke-width: 0.8; }
+.eq-curve-fill      { fill: url(#eq-glow-grad); stroke: none; }
+.eq-glow-stop-top   { stop-color: var(--color-accent); stop-opacity: 0.28; }
+.eq-glow-stop-bottom{ stop-color: var(--color-accent); stop-opacity: 0; }
+.eq-curve-path      { stroke: var(--color-accent);  stroke-width: 1.8; fill: none; }
+.eq-handle          { fill: var(--color-accent);
+                      stroke: rgba(255,255,255,0.75); stroke-width: 0.8; }
 
 @media (min-width: 600px) {
   .container { margin: 2rem auto; }  /* keep the roomy desktop spacing */

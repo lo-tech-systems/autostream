@@ -35,7 +35,7 @@ from autostream_webui_state import WebUIState
 # _EQUALISER_CURVE_JS (JavaScript evaluation).  Both must use identical values.
 # -----------------------------------------------------------------------------
 _CURVE_W        = 320      # SVG viewBox width  (px)
-_CURVE_H        = 100      # SVG viewBox height (px)
+_CURVE_H        = 120      # SVG viewBox height (px)
 _CURVE_F_MIN    = 20.0     # left edge frequency (Hz)
 _CURVE_F_MAX    = 20000.0  # right edge frequency (Hz)
 _CURVE_DB_RANGE = 12.0     # ± dB range shown
@@ -84,40 +84,41 @@ def _eq_curve_html() -> str:
     """
     W, H = _CURVE_W, _CURVE_H
 
-    lines: list[str] = []
-
-    # Horizontal grid lines at ±6 and ±12 dB (thin solid)
-    for db in (-12, -6, 6, 12):
-        y = f"{_cy(db):.1f}"
-        lines.append(f"<line x1='0' y1='{y}' x2='{W}' y2='{y}' class='eq-grid'/>")
-
-    # 0 dB centre line — dotted, slightly heavier
+    # 0 dB centre (X axis) and left edge (Y axis)
     y0 = f"{_cy(0):.1f}"
-    lines.append(
-        f"<line x1='0' y1='{y0}' x2='{W}' y2='{y0}' class='eq-grid-zero'/>"
+    axes = (
+        f"<line x1='0' y1='{y0}' x2='{W}' y2='{y0}' class='eq-axis eq-axis-x'/>"
+        f"<line x1='0' y1='0' x2='0' y2='{H}' class='eq-axis eq-axis-y'/>"
     )
 
-    # Vertical grid lines and static handle circles at each band frequency
+    # Static handle circles at each band frequency
     handles: list[str] = []
     for band in OUTPUT_PEQ_BANDS:
         x = f"{_cx(band['freq_hz']):.1f}"
-        lines.append(
-            f"<line x1='{x}' y1='0' x2='{x}' y2='{H}' class='eq-grid'/>"
-        )
         handles.append(
             f"<circle id='eq-handle-{band['key']}' cx='{x}' cy='{y0}'"
             f" r='4' class='eq-handle'/>"
         )
-
-    grid_svg  = "".join(lines)
     handle_svg = "".join(handles)
+
+    # Gradient defs for glow fill below the curve
+    defs = (
+        "<defs>"
+        "<linearGradient id='eq-glow-grad' x1='0' y1='0' x2='0' y2='1'>"
+        "<stop offset='0%' class='eq-glow-stop-top'/>"
+        "<stop offset='100%' class='eq-glow-stop-bottom'/>"
+        "</linearGradient>"
+        "</defs>"
+    )
 
     return (
         f"<div class='eq-curve-wrap'>"
         f"<svg class='eq-curve-svg' viewBox='0 0 {W} {H}'"
         f" preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'>"
+        f"{defs}"
         f"<rect width='{W}' height='{H}' class='eq-curve-bg'/>"
-        f"{grid_svg}"
+        f"{axes}"
+        f"<path id='eq-curve-fill' d='' class='eq-curve-fill'/>"
         f"<path id='eq-curve-path' d='' class='eq-curve-path'/>"
         f"{handle_svg}"
         f"</svg>"
@@ -166,7 +167,6 @@ def _eq_cards_html(output_eq) -> str:
         "<div class='eq-section-title'>Equaliser</div>"
         + _eq_curve_html()
         + "<div class='eq-bands-wrap'>"
-        "<div class='eq-scale'><span>+12 dB</span><span>-12 dB</span></div>"
         f"<div class='eq-bands-row'>{band_cols}</div>"
         "</div>"
         "</div>"
@@ -307,6 +307,12 @@ function _drawEqCurve() {{
     d += (i === 0 ? 'M' : 'L') + px.toFixed(2) + ' ' + py.toFixed(2);
   }}
   pathEl.setAttribute('d', d);
+
+  // Update glow fill — same path closed down to the bottom of the SVG.
+  var fillEl = document.getElementById('eq-curve-fill');
+  if (fillEl) {{
+    fillEl.setAttribute('d', d + ' L' + _SVG_W + ' ' + _SVG_H + ' L0 ' + _SVG_H + ' Z');
+  }}
 
   // Move each handle to the total curve magnitude at its band's centre frequency.
   _EQ_BANDS.forEach(function(b, i) {{
