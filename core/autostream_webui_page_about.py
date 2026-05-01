@@ -25,10 +25,6 @@ from autostream_core import get_playback_snapshot
 from autostream_rpi import get_cpu_temperature_c
 from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_health_percent
 
-from autostream_webui_assets import (
-    BANNER_HTML,
-)
-
 from autostream_webui_common import (
     build_page_html,
     build_top_banner_html,
@@ -40,6 +36,15 @@ from autostream_webui_common import (
 
 from autostream_webui_state import WebUIState
 
+
+def _about_detail_header(title: str) -> str:
+    return (
+        "<div class='eq-page-header'>"
+        "<div style='display:flex;align-items:center;gap:0.5rem;'>"
+        f"<h1>{html.escape(title)}</h1>"
+        "</div>"
+        "</div>"
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -108,59 +113,78 @@ def send_about_page(handler, state: WebUIState) -> None:
         ".licence-pane h2, .licence-pane h3 { margin: 0.5rem 0 0.15rem; }\n"
         ".licence-pane ul { margin: 0.1rem 0 0.3rem; padding-left: 1.4rem; }\n"
         ".licence-pane hr { margin: 0.5rem 0; border: 0; border-top: 1px solid currentColor; opacity: 0.2; }\n"
+        ".licence-pane { min-height:calc(100svh - 17rem); }\n"
+        ".about-page { min-height:calc(100svh - 9.5rem); }\n"
+        ".about-hero { text-align:center; padding:2.25rem 0 1.5rem; }\n"
+        ".about-hero-logo { display:block; width:min(100%, 250px); height:auto; margin:0 auto; }\n"
+        ".about-hero-powered-by, .about-hero-version { font-size:0.78rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--color-text-secondary); }\n"
+        ".about-hero-powered-by { display:block; margin:2.6rem 0 0.4rem; }\n"
+        ".about-hero-partner-logo { display:block; max-height:44px; width:auto; margin:0 auto; }\n"
+        ".about-hero-meta { margin:0.45rem 0 0; color:var(--color-text-secondary); }\n"
+        ".about-hero-version { margin-top:0.4rem; }\n"
         ".about-slide-viewport { overflow: hidden; width: 100%; }\n"
         ".about-slide-track { display: flex; width: 200%; transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); }\n"
         ".about-slide-track.panel-open { transform: translateX(-50%); }\n"
         ".about-slide-list, .about-slide-detail { width: 50%; flex-shrink: 0; min-width: 0; }\n"
+        ".about-slide-list { display:flex; flex-direction:column; min-height:calc(100svh - 12.5rem); }\n"
+        ".about-list-cards { margin-top:auto; padding:1rem 0 0; }\n"
+        ".about-slide-detail { padding-top:0.25rem; }\n"
+        ".about-info-card { margin-bottom:1.25rem; padding:1rem 0.9rem 1.1rem; border-radius:8px; border:1px solid var(--color-border); background:var(--color-surface-raised); }\n"
     )
 
     # System panel content
     _system_panel_parts = [
-        f"<fieldset><legend>System</legend>",
-        f"<div class='bar-label'><strong>Build</strong><span>{html.escape(version)}</span></div>",
+        f"<div class='about-info-card'>",
+        f"<div class='bar-label'><strong>Autostream Build</strong><span>{html.escape(version)}</span></div>",
+        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Autostream Monitor Build</strong><span>unknown</span></div>",
+        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>OwnTone Build</strong><span>unknown</span></div>",
         f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Total Playback Time</strong><span>{total_playback_hours:.1f} hours</span></div>",
-        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>CPU Temperature</strong><span>{html.escape(cpu_temp_text)}</span></div>",
+        f"<div class='bar-label' style='margin-top:1.3rem;'><strong>CPU Temperature</strong><span>{html.escape(cpu_temp_text)}</span></div>",
     ]
     if storage_html:
-        _system_panel_parts.append(f"<div style='margin-top:0.65rem;'>{storage_html}</div>")
+        _system_panel_parts.append(f"<div style='margin-top:1.3rem;'>{storage_html}</div>")
     if sd_html:
-        _system_panel_parts.append(f"<div style='margin-top:0.65rem;'>{sd_html}</div>")
-    _system_panel_parts.append("</fieldset>")
+        _system_panel_parts.append(f"<div style='margin-top:1.3rem;'>{sd_html}</div>")
+    _system_panel_parts.append("</div>")
     _system_panel_html = "".join(_system_panel_parts)
 
     # Copyright panel content
     _copyright_panel_html = (
-        f"<fieldset><legend>Copyright</legend>"
+        f"<div class='about-info-card'>"
         f"<p><strong>autostream</strong> is Copyright &copy; 2025&#8211;2026 Lo-tech Systems Limited."
         f" autostream and the autostream logo are trademarks of Lo-tech Systems Limited.</p>"
         f"<p>autostream uses OwnTone and ALSA, redistributed under the terms of their respective"
         f" open-source licences. AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc."
         f" All other trademarks are the property of their respective owners.</p>"
-        f"</fieldset>"
+        f"</div>"
     )
 
     # License panel content
-    _license_panel_html = (
-        f"<fieldset><legend>License</legend>"
-        f"{license_inner}"
-        f"</fieldset>"
-    )
+    _license_panel_html = license_inner
 
     _dark_mode = parsed.webui.dark_mode if parsed else False
-    _logo_src = "/lo-tech-logo-dark.png" if _dark_mode else "/lo-tech-logo.png"
-    _powered_by_html = (
-        f"<div id='about-powered-by' style='padding:4rem 0 3rem;text-align:center;'>"
-        f"<p style='font-size:0.95rem;color:var(--color-text);margin:0 0 0.5rem;'>POWERED BY</p>"
-        f"<img src='{_logo_src}' alt='Lo-tech Systems' style='max-height:40px;width:auto;'>"
+    _autostream_logo_src = (
+        "/autostream-logo-centred-dark.png"
+        if _dark_mode else
+        "/autostream-logo-centred.png"
+    )
+    _lo_tech_logo_src = "/lo-tech-logo-dark.png" if _dark_mode else "/lo-tech-logo.png"
+    _hero_html = (
+        f"<div class='about-hero'>"
+        f"<img src='{_autostream_logo_src}' alt='autostream' class='about-hero-logo'>"
+        f"<p class='about-hero-powered-by'>Powered By</p>"
+        f"<img src='{_lo_tech_logo_src}' alt='Lo-tech Systems' class='about-hero-partner-logo'>"
+        f"<p class='about-hero-meta about-hero-version'>{html.escape(version)}</p>"
         f"</div>"
     )
 
     _body_html = (
-        f"{BANNER_HTML}"
-        f"<div style='padding-top:4rem;'>"
+        f"<div class='about-page'>"
         f"<div class='about-slide-viewport'>"
         f"<div class='about-slide-track' id='aboutSlideTrack'>"
         f"<div class='about-slide-list'>"
+        f"{_hero_html}"
+        f"<div class='about-list-cards'>"
         f"<div class='setup-list-card' onclick='openAboutPanel(\"system\")'>"
         f"<div class='setup-list-card-body'><span class='setup-list-card-title'>System</span></div>"
         f"<span class='setup-list-chevron'>\u203a</span>"
@@ -178,43 +202,44 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"<span class='setup-list-chevron'>\u203a</span>"
         f"</a>"
         f"</div>"
+        f"</div>"
         f"<div class='about-slide-detail'>"
         f"<div class='setup-detail-panel' id='about-panel-system'>"
         f"<div class='setup-detail-back'>"
         f"<button type='button' class='pill-btn small' onclick='closeAboutPanel()'>\u2190 Back</button>"
         f"</div>"
+        f"{_about_detail_header('System Info')}"
         f"{_system_panel_html}"
         f"</div>"
         f"<div class='setup-detail-panel' id='about-panel-copyright'>"
         f"<div class='setup-detail-back'>"
         f"<button type='button' class='pill-btn small' onclick='closeAboutPanel()'>\u2190 Back</button>"
         f"</div>"
+        f"{_about_detail_header('Copyright Info')}"
         f"{_copyright_panel_html}"
         f"</div>"
         f"<div class='setup-detail-panel' id='about-panel-license'>"
         f"<div class='setup-detail-back'>"
         f"<button type='button' class='pill-btn small' onclick='closeAboutPanel()'>\u2190 Back</button>"
         f"</div>"
+        f"{_about_detail_header('License Info')}"
         f"{_license_panel_html}"
         f"</div>"
         f"</div>"
         f"</div>"
         f"</div>"
         f"</div>"
-        f"{_powered_by_html}"
         f"<script>"
         f"function openAboutPanel(name){{"
         f"document.querySelectorAll('.setup-detail-panel').forEach(function(p){{p.classList.remove('active');}});"
         f"var panel=document.getElementById('about-panel-'+name);"
         f"if(panel)panel.classList.add('active');"
         f"document.getElementById('aboutSlideTrack').classList.add('panel-open');"
-        f"var pb=document.getElementById('about-powered-by');if(pb)pb.style.display='none';"
         f"window.scrollTo(0,0);"
         f"}}"
         f"function closeAboutPanel(){{"
         f"document.querySelectorAll('.setup-detail-panel').forEach(function(p){{p.classList.remove('active');}});"
         f"document.getElementById('aboutSlideTrack').classList.remove('panel-open');"
-        f"var pb=document.getElementById('about-powered-by');if(pb)pb.style.display='';"
         f"window.scrollTo(0,0);"
         f"}}"
         f"</script>"
