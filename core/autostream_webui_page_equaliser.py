@@ -164,7 +164,6 @@ def _eq_cards_html(output_eq) -> str:
         )
     eq_card = (
         "<div class='eq-section'>"
-        "<div class='eq-section-title'>Equaliser</div>"
         + _eq_curve_html()
         + "<div class='eq-bands-wrap'>"
         f"<div class='eq-bands-row'>{band_cols}</div>"
