@@ -54,6 +54,20 @@ from autostream_webui_state import WebUIState
 # Helpers
 # -----------------------------------------------------------------------------
 
+def _setup_page_header(title: str) -> str:
+    return (
+        "<div class='eq-page-header'>"
+        "<div style='display:flex;align-items:center;gap:0.5rem;'>"
+        f"<h1>{html.escape(title)}</h1>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _setup_detail_header(title: str) -> str:
+    return _setup_page_header(title)
+
+
 def _audio_controls_card_html(
     *,
     input_index: int,
@@ -214,8 +228,7 @@ def send_setup_page(
         settings_open = "" if enabled_name is None else f"<div id=\"{settings_wrap_id}\" style=\"display:{wrap_style};\">"
         settings_close = "" if enabled_name is None else "</div>"
 
-        return f"""
-        <fieldset><legend>{html.escape(title)}</legend>
+        inner_html = f"""
           {enabled_html}
           {settings_open}
             <label>Input device: <select name="{capture_name}">{build_opts(parsed_input.capture_device)}</select></label>
@@ -232,8 +245,14 @@ def send_setup_page(
             <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
             {_preamp_card_html(input_index, parsed_input) if not initial_setup else ""}
           {settings_close}
+        """
+        if initial_setup:
+            return f"""
+        <fieldset><legend>{html.escape(title)}</legend>
+          {inner_html}
         </fieldset>
         """
+        return settings_card_html(inner_html, margin_top="0")
 
     owntone_outputs_html = ""
     outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
@@ -419,7 +438,7 @@ def send_setup_page(
     )
 
     # Fieldset fragments shared by both layout paths
-    playback_fieldset_html = f"""<fieldset><legend>Playback</legend>
+    playback_inner_html = f"""
           <label>Default Speakers:
             <select id="owntone_output_select" name="owntone_output_name">
               {owntone_outputs_html}
@@ -434,13 +453,23 @@ def send_setup_page(
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
           {owntone_button_html}
-        </fieldset>"""
-    system_fieldset_html = f"""<fieldset><legend>System (build: {html.escape(get_app_version())})</legend>
+        """
+    playback_fieldset_html = (
+        f"<fieldset><legend>Playback</legend>{playback_inner_html}</fieldset>"
+        if initial_setup else
+        settings_card_html(playback_inner_html, margin_top="0")
+    )
+    system_inner_html = f"""
           <label style="display:flex;align-items:center;gap:.75rem;">
             <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}">
           </label>
           {update_html}
-        </fieldset>"""
+        """
+    system_fieldset_html = (
+        f"<fieldset><legend>System (build: {html.escape(get_app_version())})</legend>{system_inner_html}</fieldset>"
+        if initial_setup else
+        settings_card_html(system_inner_html, margin_top="0")
+    )
 
     # Build the form body content — flat for initial setup, slide-panel for post-config
     if initial_setup:
@@ -480,85 +509,7 @@ def send_setup_page(
             + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
             + (" \u00b7 Hostname: On" if parsed.webui.show_hostname_on_home else " \u00b7 Hostname: Off")
         )
-        form_content_html = f"""<div class="setup-slide-viewport">
-      <div class="setup-slide-track" id="setupSlideTrack">
-        <div class="setup-slide-list">
-          <p class="actions" style="display:flex;margin-bottom:1rem;">
-            <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
-          </p>
-          <div class="setup-list-card" onclick="openPanel('input1')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Input 1</span>
-              <span class="setup-list-card-sub" id="input1-card-sub">{input1_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('input2')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Input 2</span>
-              <span class="setup-list-card-sub" id="input2-card-sub">{input2_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('playback')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Playback</span>
-              <span class="setup-list-card-sub">{playback_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('customise')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Customise</span>
-              <span class="setup-list-card-sub" id="customise-card-sub">{customise_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('system')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">System</span>
-              <span class="setup-list-card-sub">{system_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('factory-reset')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Factory Reset</span>
-              <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-        </div>
-        <div class="setup-slide-panels">
-          <div class="setup-detail-panel" id="panel-input1">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {input1_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-input2">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {input2_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-playback">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {playback_fieldset_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-system">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {system_fieldset_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-customise">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            <fieldset><legend>Customise</legend>
+        customise_card_html = settings_card_html(f"""
               <input type="hidden" name="webui_show_master_volume_present" value="1">
               <div class="setup-customise-row" style="margin-top:0.5rem;">
                 <label class="output-toggle" style="margin:0;">
@@ -588,7 +539,92 @@ def send_setup_page(
                 </label>
                 <span>Dark Mode</span>
               </div>
-            </fieldset>
+            """, margin_top="0")
+        form_content_html = f"""<div class="setup-slide-viewport">
+      <div class="setup-slide-track" id="setupSlideTrack">
+        <div class="setup-slide-list">
+          {_setup_page_header("Setup")}
+          <p class="actions" style="display:flex;margin-bottom:1rem;">
+            <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
+          </p>
+          <div class="setup-list-card" onclick="openPanel('input1')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Input 1</span>
+              <span class="setup-list-card-sub" id="input1-card-sub">{input1_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('input2')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Input 2</span>
+              <span class="setup-list-card-sub" id="input2-card-sub">{input2_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('playback')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Playback</span>
+              <span class="setup-list-card-sub">{playback_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('customise')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Personalisation</span>
+              <span class="setup-list-card-sub" id="customise-card-sub">{customise_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('system')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">System</span>
+              <span class="setup-list-card-sub">{system_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('factory-reset')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Factory Reset</span>
+              <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+        </div>
+        <div class="setup-slide-panels">
+          <div class="setup-detail-panel" id="panel-input1">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {_setup_detail_header("Setup Input 1")}
+            {input1_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-input2">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {_setup_detail_header("Setup Input 2")}
+            {input2_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-playback">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {_setup_detail_header("Setup Playback Defaults")}
+            {playback_fieldset_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-system">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {_setup_detail_header("System & Updates")}
+            {system_fieldset_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-customise">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {_setup_detail_header("Personalisation")}
+            {customise_card_html}
           </div>
           <div class="setup-detail-panel" id="panel-factory-reset">
             <div class="setup-detail-back">
@@ -646,8 +682,13 @@ def send_setup_page(
   </div>
 </div>"""
     _body_prefix = f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}"
+    _page_heading_html = (
+        f"{BANNER_HTML}<h1>{h1}</h1>"
+        if initial_setup else
+        ""
+    )
     _body_html = (
-        f"{BANNER_HTML}{('<h1>' + h1 + '</h1>') if initial_setup else ''}"
+        _page_heading_html
         + (f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else "")
         + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
