@@ -34,7 +34,7 @@ from autostream_config import (
 from autostream_core import get_playback_snapshot
 from autostream_playback_stats import InputPlaybackSnapshot
 
-from autostream_webui_assets import BANNER_HTML, SERVICE_CSS, SERVICE_JS
+from autostream_webui_assets import SERVICE_CSS, SERVICE_JS
 
 from autostream_webui_common import (
     _fallback_input_snapshot,
@@ -536,6 +536,16 @@ def _back_bar() -> str:
     )
 
 
+def _service_page_header(title: str) -> str:
+    return (
+        "<div class='eq-page-header'>"
+        "<div style='display:flex;align-items:center;gap:0.5rem;'>"
+        f"<h1>{html.escape(title)}</h1>"
+        "</div>"
+        "</div>"
+    )
+
+
 # -----------------------------------------------------------------------------
 # Page renderer
 # -----------------------------------------------------------------------------
@@ -566,6 +576,7 @@ def send_service_page(
         d1 = d2 = _UNAVAILABLE_INPUT
 
     _back = _back_bar()
+    _page_header = _service_page_header("Service")
 
     # ── Pane 1: flat card list (one per item × input, divided by input) ────────
     list_cards = ""
@@ -585,19 +596,20 @@ def send_service_page(
     for inp_idx, inp_data in ((1, d1), (2, d2)):
         for si in _SERVICE_ITEMS:
             panel_html = getattr(inp_data, f"{si.key}_html")
+            panel_title = f"Input {inp_idx} {si.card_title}"
             detail_panels += (
                 f"<div class='setup-detail-panel' id='service-detail-{si.key}-{inp_idx}'>"
-                + _back + panel_html
+                + _back + _service_page_header(panel_title) + panel_html
                 + "</div>"
             )
 
     _body_html = (
-        f"{BANNER_HTML}"
         f"{_CONFIRM_MODAL_HTML}"
         f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
         f"<div class='service-slide-viewport'>"
         f"<div class='service-slide-track' id='serviceSlideTrack'>"
         f"<div class='service-slide-list'>"
+        f"{_page_header}"
         f"<p style='margin:0.5rem 0 0.85rem;color:var(--color-text-secondary);font-size:0.95rem;'>"
         f"Autostream can keep track of maintenance items for turntables, and remind you when a service item is due."
         f"</p>"
