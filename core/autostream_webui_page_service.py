@@ -285,10 +285,11 @@ def _maintenance_item_panel_html(
     """
     if not is_turntable:
         return (
-            f"<fieldset><legend>{html.escape(legend)}</legend>"
+            f"<div class='service-control-card'>"
+            f"<div class='service-control-card-title'>{html.escape(legend)}</div>"
             f"<p style='margin:0.5rem 0;color:var(--color-text-secondary);font-size:0.95rem;'>"
             f"Set this input to Turntable in Setup to enable maintenance tracking."
-            f"</p></fieldset>"
+            f"</p></div>"
         )
 
     hours_name = f"service_{item}_life_hours_input{input_index}"
@@ -396,13 +397,14 @@ def _maintenance_item_panel_html(
     )
 
     return (
-        f"<fieldset><legend>{html.escape(legend)}</legend>"
+        f"<div class='service-control-card'>"
+        f"<div class='service-control-card-title'>{html.escape(legend)}</div>"
         f"{hours_selector}{hours_live_html}"
         f"<div style='margin-top:0.5rem;'>"
         f"{years_selector}{years_live_html}"
         f"</div>"
         f"{reset_html}"
-        f"</fieldset>"
+        f"</div>"
     )
 
 
@@ -425,10 +427,11 @@ def _stylus_panel_html(
 
     if not is_turntable:
         return (
-            f"<fieldset><legend>{panel_title}</legend>"
+            f"<div class='service-control-card'>"
+            f"<div class='service-control-card-title'>{panel_title}</div>"
             f"<p style='margin:0.5rem 0;color:var(--color-text-secondary);font-size:0.95rem;'>"
             f"Set this input to Turntable in Setup to enable maintenance tracking."
-            f"</p></fieldset>"
+            f"</p></div>"
         )
 
     hd           = _hours_display("stylus", stylus_life_hours, snapshot)
@@ -489,10 +492,11 @@ def _stylus_panel_html(
     )
 
     return (
-        f"<fieldset><legend>{panel_title}</legend>"
+        f"<div class='service-control-card'>"
+        f"<div class='service-control-card-title'>{panel_title}</div>"
         + _tracking_selector_html(life_name, stylus_life_hours, input_index=input_index)
         + live_html
-        + f"</fieldset>"
+        + f"</div>"
     )
 
 
