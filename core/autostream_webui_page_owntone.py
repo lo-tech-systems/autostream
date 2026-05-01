@@ -427,8 +427,14 @@ def send_owntone_setup_page(
         else f'<button type="submit" form="{owntone_setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>'
     )
 
+    page_heading_html = (
+        f"{BANNER_HTML}<h1>{h1}</h1>"
+        if initial_setup else
+        "<h1>Owntone Setup</h1>"
+    )
+
     _body_html = (
-        f"{BANNER_HTML}{('<h1>' + h1 + '</h1>') if initial_setup else ''}"
+        page_heading_html
         + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
