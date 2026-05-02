@@ -21,7 +21,7 @@ from __future__ import annotations
 import html
 
 from autostream_config import parse_config
-from autostream_core import get_playback_snapshot
+from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_rpi import get_cpu_temperature_c
 from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_health_percent
 
@@ -54,6 +54,10 @@ def _about_detail_header(title: str) -> str:
 def send_about_page(handler, state: WebUIState) -> None:
     """Render and send the About page."""
     version = get_app_version()
+    monitor_info = get_monitor_runtime_info()
+    monitor_build_text = monitor_info.monitor_build or "unknown"
+    if not monitor_info.connected and monitor_build_text != "unknown":
+        monitor_build_text += " (last seen)"
     lic_html, lic_spacer = build_top_banner_html()
 
     # Playback totals across both inputs (indices 1 and 2).
@@ -136,7 +140,7 @@ def send_about_page(handler, state: WebUIState) -> None:
     _system_panel_parts = [
         f"<div class='about-info-card'>",
         f"<div class='bar-label'><strong>Autostream Build</strong><span>{html.escape(version)}</span></div>",
-        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Autostream Monitor Build</strong><span>unknown</span></div>",
+        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Autostream Monitor Build</strong><span>{html.escape(monitor_build_text)}</span></div>",
         f"<div class='bar-label' style='margin-top:0.65rem;'><strong>OwnTone Build</strong><span>unknown</span></div>",
         f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Total Playback Time</strong><span>{total_playback_hours:.1f} hours</span></div>",
         f"<div class='bar-label' style='margin-top:1.3rem;'><strong>CPU Temperature</strong><span>{html.escape(cpu_temp_text)}</span></div>",

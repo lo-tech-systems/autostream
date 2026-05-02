@@ -22,6 +22,7 @@ import sys
 import time
 import signal
 import threading
+from dataclasses import dataclass
 from typing import Optional
 
 from autostream_config import (
@@ -88,6 +89,62 @@ def request_config_reload() -> None:
 all_monitors: list["AudioMonitor"] = []
 _monitors_lock = threading.Lock()
 _playback_tracker: Optional[PlaybackTracker] = None
+
+
+@dataclass(frozen=True)
+class MonitorRuntimeInfo:
+    """Latest top-level runtime metadata reported by autostream_monitor."""
+
+    monitor_build: str
+    log_level: str
+    connected: bool
+    last_seen_at: float
+
+
+_monitor_runtime_info_lock = threading.Lock()
+_monitor_runtime_info = MonitorRuntimeInfo(
+    monitor_build="unknown",
+    log_level="unknown",
+    connected=False,
+    last_seen_at=0.0,
+)
+
+
+def _set_monitor_runtime_info(
+    *,
+    monitor_build: Optional[str] = None,
+    log_level: Optional[str] = None,
+    connected: Optional[bool] = None,
+    last_seen_at: Optional[float] = None,
+) -> None:
+    """Update the cached autostream_monitor runtime metadata."""
+    global _monitor_runtime_info
+    with _monitor_runtime_info_lock:
+        cur = _monitor_runtime_info
+        _monitor_runtime_info = MonitorRuntimeInfo(
+            monitor_build=(
+                str(monitor_build).strip()
+                if monitor_build is not None
+                else cur.monitor_build
+            ) or "unknown",
+            log_level=(
+                str(log_level).strip()
+                if log_level is not None
+                else cur.log_level
+            ) or "unknown",
+            connected=bool(cur.connected if connected is None else connected),
+            last_seen_at=(
+                cur.last_seen_at
+                if last_seen_at is None
+                else float(last_seen_at)
+            ),
+        )
+
+
+def get_monitor_runtime_info() -> MonitorRuntimeInfo:
+    """Return the latest cached top-level runtime metadata from the monitor."""
+    with _monitor_runtime_info_lock:
+        return _monitor_runtime_info
 
 
 def _empty_playback_snapshot() -> PlaybackSnapshot:
@@ -1966,6 +2023,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                         continue
 
                     if not client.connect():
+                        _set_monitor_runtime_info(connected=False)
                         logging.warning(
                             "autostream_monitor unavailable; retrying in 5 s.",
                         )
@@ -1981,6 +2039,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                         cfg.owntone.base_url,
                         cfg.output_eq,
                     ):
+                        _set_monitor_runtime_info(connected=False)
                         reconnect_at = time.time() + 5.0
                         current = None
                         continue
@@ -2003,9 +2062,17 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 
                 status = client.get_status()
                 if status is None:
+                    _set_monitor_runtime_info(connected=False)
                     logging.warning("get_status() failed; will reconnect.")
                     reconnect_at = time.time() + 2.0
                     continue
+
+                _set_monitor_runtime_info(
+                    monitor_build=str(status.get("monitor_build") or "").strip() or "unknown",
+                    log_level=str(status.get("log_level") or "").strip() or "unknown",
+                    connected=True,
+                    last_seen_at=time.time(),
+                )
 
                 status_by_index = {
                     e["index"]: e for e in status.get("inputs", [])
