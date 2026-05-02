@@ -162,13 +162,15 @@ def send_about_page(handler, state: WebUIState) -> None:
 
     # Copyright panel content
     _copyright_panel_html = (
-        f"<div class='about-info-card'>"
-        f"<p><strong>autostream</strong> is Copyright &copy; 2025&#8211;2026 Lo-tech Systems Limited."
-        f" autostream and the autostream logo are trademarks of Lo-tech Systems Limited.</p>"
-        f"<p>autostream uses OwnTone and ALSA, redistributed under the terms of their respective"
-        f" open-source licences. AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc."
-        f" All other trademarks are the property of their respective owners.</p>"
-        f"</div>"
+        f"<p style='margin:0.5rem 0 0.85rem;color:var(--color-text-secondary);font-size:0.95rem;'>"
+        f"<strong>autostream</strong> is Copyright &copy; 2025&#8211;2026 Lo-tech Systems Limited. "
+        f"autostream and the autostream logo are trademarks of Lo-tech Systems Limited."
+        f"</p>"
+        f"<p style='margin:0.5rem 0 0.85rem;color:var(--color-text-secondary);font-size:0.95rem;'>"
+        f"autostream uses OwnTone and ALSA, redistributed under the terms of their respective "
+        f"open-source licences. AirPlay and AirPlay&nbsp;2 are trademarks of Apple Inc. "
+        f"All other trademarks are the property of their respective owners."
+        f"</p>"
     )
 
     # License panel content
