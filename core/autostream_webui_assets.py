@@ -1081,6 +1081,9 @@ body {
   display: block;
 }
 .setup-detail-back {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   margin-bottom: 0.75rem;
 }
 

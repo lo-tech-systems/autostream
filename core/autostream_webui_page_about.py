@@ -19,6 +19,7 @@ Shared helpers (imported from autostream_webui_common):
 from __future__ import annotations
 
 import html
+import json
 
 from autostream_config import parse_config
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
@@ -116,16 +117,17 @@ def send_about_page(handler, state: WebUIState) -> None:
 
     license_text = load_license_text()
     if license_text:
-        license_inner = f'<div class="licence-pane">{render_license_md(license_text)}</div>'
+        license_inner = f'<div class="about-license-text">{render_license_md(license_text)}</div>'
     else:
-        license_inner = "<p>License text is unavailable.</p>"
+        license_inner = "<div class='about-license-text'><p>License text is unavailable.</p></div>"
+    license_text_js = json.dumps(license_text or "")
 
     _extra_css = (
-        ".licence-pane p { margin: 0.1rem 0 0.3rem; }\n"
-        ".licence-pane h2, .licence-pane h3 { margin: 0.5rem 0 0.15rem; }\n"
-        ".licence-pane ul { margin: 0.1rem 0 0.3rem; padding-left: 1.4rem; }\n"
-        ".licence-pane hr { margin: 0.5rem 0; border: 0; border-top: 1px solid currentColor; opacity: 0.2; }\n"
-        ".licence-pane { min-height:calc(100svh - 17rem); }\n"
+        ".about-license-text { min-height:calc(100svh - 17rem); color:var(--color-text-secondary); font-size:0.95rem; padding-bottom:4.5rem; }\n"
+        ".about-license-text p { margin: 0.1rem 0 0.3rem; }\n"
+        ".about-license-text h2, .about-license-text h3 { margin: 0.5rem 0 0.15rem; }\n"
+        ".about-license-text ul { margin: 0.1rem 0 0.3rem; padding-left: 1.4rem; }\n"
+        ".about-license-text hr { margin: 0.5rem 0; border: 0; border-top: 1px solid currentColor; opacity: 0.2; }\n"
         ".about-page { min-height:calc(100svh - 9.5rem); }\n"
         ".about-hero { text-align:center; padding:2.25rem 0 1.5rem; }\n"
         ".about-hero-logo { display:block; width:min(100%, 250px); height:auto; margin:0 auto; }\n"
@@ -235,6 +237,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"<div class='setup-detail-panel' id='about-panel-license'>"
         f"<div class='setup-detail-back'>"
         f"<button type='button' class='pill-btn small' onclick='closeAboutPanel()'>\u2190 Back</button>"
+        f"<button type='button' class='pill-btn small' id='copyLicenseBtn' onclick='copyLicenseText()' style='margin-left:auto;'>Copy</button>"
         f"</div>"
         f"{_about_detail_header('License Info')}"
         f"{_license_panel_html}"
@@ -255,6 +258,30 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"document.querySelectorAll('.setup-detail-panel').forEach(function(p){{p.classList.remove('active');}});"
         f"document.getElementById('aboutSlideTrack').classList.remove('panel-open');"
         f"window.scrollTo(0,0);"
+        f"}}"
+        f"async function copyLicenseText(){{"
+        f"var btn=document.getElementById('copyLicenseBtn');"
+        f"var original=btn?btn.textContent:'Copy';"
+        f"var text={license_text_js};"
+        f"if(!text){{if(btn){{btn.textContent='Unavailable';setTimeout(function(){{btn.textContent=original;}},1200);}}return;}}"
+        f"try{{"
+        f"if(navigator.clipboard&&navigator.clipboard.writeText){{"
+        f"await navigator.clipboard.writeText(text);"
+        f"}}else{{"
+        f"var ta=document.createElement('textarea');"
+        f"ta.value=text;"
+        f"ta.setAttribute('readonly','');"
+        f"ta.style.position='fixed';"
+        f"ta.style.opacity='0';"
+        f"document.body.appendChild(ta);"
+        f"ta.select();"
+        f"document.execCommand('copy');"
+        f"document.body.removeChild(ta);"
+        f"}}"
+        f"if(btn){{btn.textContent='Copied';setTimeout(function(){{btn.textContent=original;}},1200);}}"
+        f"}}catch(e){{"
+        f"if(btn){{btn.textContent='Failed';setTimeout(function(){{btn.textContent=original;}},1200);}}"
+        f"}}"
         f"}}"
         f"</script>"
     )
