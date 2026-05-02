@@ -117,6 +117,7 @@ def send_logs_page(
 
     _extra_css = (
         "body { font-size: 14px !important; }\n"
+        ".logs-back-row { display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem; }\n"
         ".logs-level-card { border:1px solid var(--color-border); border-radius:8px; padding:0.85rem 0.9rem; background:var(--color-surface-raised); margin-bottom:1rem; }\n"
         ".logs-level-row { display:flex; align-items:center; gap:0.75rem; }\n"
         ".logs-level-row label { display:flex; align-items:center; gap:0.75rem; width:100%; }\n"
@@ -124,7 +125,7 @@ def send_logs_page(
         ".logs-level-row select { width:min(100%, 11rem); margin-left:auto; }\n"
         ".logs-level-actions { margin:0.75rem 0 0; }\n"
         ".log-wrapper { background:#111; color:#f5f5f5; padding:0.65rem; border-radius:6px;"
-        " font-family:monospace; font-size:0.65rem; max-height:60vh; overflow:auto; white-space:pre-wrap; }\n"
+        " font-family:monospace; font-size:0.65rem; max-height:48vh; overflow:auto; white-space:pre-wrap; }\n"
         "#applyingOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45);"
         " z-index:9999; align-items:center; justify-content:center; }\n"
         "#applyingOverlay.visible { display:flex; }\n"
@@ -137,7 +138,7 @@ def send_logs_page(
         "</div>"
     )
     _body_html = (
-        f"<div class='setup-detail-back'>"
+        f"<div class='logs-back-row'>"
         f"<a href='/about' class='pill-btn small'>\u2190 Back</a>"
         f"<a href='/logs' class='pill-btn small' style='margin-left:auto;'>\u21bb Refresh</a>"
         f"</div>"
