@@ -33,10 +33,6 @@ from autostream_player_service import save_log_level
 
 from autostream_sysutils import tail_lines
 
-from autostream_webui_assets import (
-    BANNER_HTML,
-)
-
 from autostream_webui_common import (
     _set_flash_cookie,
     build_page_html,
@@ -45,6 +41,20 @@ from autostream_webui_common import (
 )
 
 from autostream_webui_state import WebUIState
+
+
+# -----------------------------------------------------------------------------
+# Small view helpers
+# -----------------------------------------------------------------------------
+
+def _logs_detail_header(title: str) -> str:
+    return (
+        "<div class='eq-page-header'>"
+        "<div style='display:flex;align-items:center;gap:0.5rem;'>"
+        f"<h1>{html.escape(title)}</h1>"
+        "</div>"
+        "</div>"
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -107,6 +117,12 @@ def send_logs_page(
 
     _extra_css = (
         "body { font-size: 14px !important; }\n"
+        ".logs-level-card { border:1px solid var(--color-border); border-radius:8px; padding:0.85rem 0.9rem; background:var(--color-surface-raised); margin-bottom:1rem; }\n"
+        ".logs-level-row { display:flex; align-items:center; gap:0.75rem; }\n"
+        ".logs-level-row label { display:flex; align-items:center; gap:0.75rem; width:100%; }\n"
+        ".logs-level-row label span { color:var(--color-text); }\n"
+        ".logs-level-row select { width:min(100%, 11rem); margin-left:auto; }\n"
+        ".logs-level-actions { margin:0.75rem 0 0; }\n"
         ".log-wrapper { background:#111; color:#f5f5f5; padding:0.65rem; border-radius:6px;"
         " font-family:monospace; font-size:0.65rem; max-height:60vh; overflow:auto; white-space:pre-wrap; }\n"
         "#applyingOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45);"
@@ -121,19 +137,22 @@ def send_logs_page(
         "</div>"
     )
     _body_html = (
-        f"{BANNER_HTML}"
-        f"<p class='actions' style='display:flex;margin-bottom:1rem;'>"
+        f"<div class='setup-detail-back'>"
         f"<a href='/about' class='pill-btn small'>\u2190 Back</a>"
         f"<a href='/logs' class='pill-btn small' style='margin-left:auto;'>\u21bb Refresh</a>"
-        f"</p>"
+        f"</div>"
+        f"{_logs_detail_header('Logs')}"
         f"<form method='post' action='/logs' id='logLevelForm' onsubmit='showApplying()'>"
         f"<input type='hidden' name='csrf_token' value='{html.escape(csrf_token)}'>"
-        f"<fieldset><legend>Log Level</legend>"
-        f"<label for='log_level'>Log Level"
+        f"<div class='logs-level-card'>"
+        f"<div class='logs-level-row'>"
+        f"<label for='log_level'>"
+        f"<span>Log Level</span>"
         f"<select id='log_level' name='log_level'>{log_level_options_html}</select>"
         f"</label>"
-        f"<button type='submit' class='pill-btn' style='margin-top:0.75rem;'>Save</button>"
-        f"</fieldset>"
+        f"</div>"
+        f"<p class='logs-level-actions'><button type='submit' class='pill-btn'>Save</button></p>"
+        f"</div>"
         f"</form>"
         f"<div class='log-wrapper' id='logWrapper'><pre>{html.escape(log_content)}</pre></div>"
         f"<p class='actions'><a href='/offline/download-logs' class='pill-btn' id='logDlBtn'"
