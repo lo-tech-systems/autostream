@@ -135,7 +135,12 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
 
         if product_name == "owntone-mini":
             detail = f"OwnTone mini API detected via /api/config product_name (version={version or 'unknown'})"
-            return DetectionResult(matched=True, backend_id=self.backend_id, detail=detail)
+            return DetectionResult(
+                matched=True,
+                backend_id=self.backend_id,
+                detail=detail,
+                version=version,
+            )
 
         return DetectionResult(
             matched=False,

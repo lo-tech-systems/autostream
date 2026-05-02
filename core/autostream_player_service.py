@@ -36,7 +36,7 @@ from autostream_players import (
 _CACHE_LOCK = threading.Lock()
 _DETECTION_CACHE_SECONDS = 5.0
 _DETECTION_CACHE_MAX_ENTRIES = 16
-_DETECTION_CACHE: dict[str, tuple[float, str]] = {}
+_DETECTION_CACHE: dict[str, tuple[float, str, str, float]] = {}
 LOG = logging.getLogger(__name__)
 
 
@@ -44,6 +44,17 @@ LOG = logging.getLogger(__name__)
 class ResolvedBackend:
     backend_id: str
     backend: Any
+
+
+@dataclass(frozen=True)
+class OwnToneRuntimeInfo:
+    """Latest cached runtime metadata for the active OwnTone-compatible backend."""
+
+    base_url: str
+    backend_id: str
+    version: str
+    connected: bool
+    last_seen_at: float
 
 
 @dataclass(frozen=True)
@@ -68,6 +79,106 @@ class FifoReconcileResult:
     error: str = ""
     error_code: str = ""
     detail: str = ""
+
+
+_owntone_runtime_info_lock = threading.Lock()
+_owntone_runtime_info = OwnToneRuntimeInfo(
+    base_url="",
+    backend_id="unknown",
+    version="unknown",
+    connected=False,
+    last_seen_at=0.0,
+)
+
+
+def _set_owntone_runtime_info(
+    *,
+    base_url: Optional[str] = None,
+    backend_id: Optional[str] = None,
+    version: Optional[str] = None,
+    connected: Optional[bool] = None,
+    last_seen_at: Optional[float] = None,
+) -> None:
+    """Update the cached OwnTone runtime metadata snapshot."""
+    global _owntone_runtime_info
+    with _owntone_runtime_info_lock:
+        cur = _owntone_runtime_info
+        _owntone_runtime_info = OwnToneRuntimeInfo(
+            base_url=(
+                _normalize_base_url(base_url)
+                if base_url is not None and str(base_url).strip()
+                else ("" if base_url is not None else cur.base_url)
+            ),
+            backend_id=(
+                str(backend_id).strip()
+                if backend_id is not None
+                else cur.backend_id
+            ) or "unknown",
+            version=(
+                str(version).strip()
+                if version is not None
+                else cur.version
+            ) or "unknown",
+            connected=bool(cur.connected if connected is None else connected),
+            last_seen_at=(
+                cur.last_seen_at
+                if last_seen_at is None
+                else float(last_seen_at)
+            ),
+        )
+
+
+def _get_owntone_runtime_info_cached() -> OwnToneRuntimeInfo:
+    with _owntone_runtime_info_lock:
+        return _owntone_runtime_info
+
+
+def _detection_cache_age(base_url: str) -> Optional[float]:
+    normalized_base_url = _normalize_base_url(base_url)
+    with _CACHE_LOCK:
+        cached = _DETECTION_CACHE.get(normalized_base_url)
+        if not cached:
+            return None
+        return time.monotonic() - cached[0]
+
+
+def get_owntone_runtime_info(
+    base_url: str = "",
+    *,
+    timeout: float = 3.0,
+    refresh_if_stale: bool = True,
+) -> OwnToneRuntimeInfo:
+    """Return cached OwnTone runtime metadata, refreshing if the cache is stale.
+
+    When ``base_url`` is provided and the backend-detection cache is stale (or
+    absent), this triggers a lightweight re-probe via resolve_backend() so the
+    version can follow a restarted/upgraded OwnTone service without requiring
+    a Python process restart.
+    """
+    normalized_base_url = _normalize_base_url(base_url) if str(base_url or "").strip() else ""
+    if not normalized_base_url:
+        return OwnToneRuntimeInfo(
+            base_url="",
+            backend_id="unknown",
+            version="unknown",
+            connected=False,
+            last_seen_at=0.0,
+        )
+    cached_info = _get_owntone_runtime_info_cached()
+    if refresh_if_stale:
+        age = _detection_cache_age(base_url)
+        if (
+            age is None
+            or age > _DETECTION_CACHE_SECONDS
+            or cached_info.base_url != normalized_base_url
+        ):
+            try:
+                resolve_backend(base_url, timeout=timeout)
+            except Exception:
+                # resolve_backend() is defensive already; this is a final guard
+                # so version display never breaks page rendering.
+                LOG.debug("OwnTone runtime refresh failed for %s", base_url, exc_info=True)
+    return _get_owntone_runtime_info_cached()
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -313,11 +424,20 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
         cached = _DETECTION_CACHE.get(normalized_base_url)
         if cached and (time.monotonic() - cached[0]) <= _DETECTION_CACHE_SECONDS:
             backend_id = cached[1]
+            version = cached[2]
+            last_seen_at = cached[3]
             LOG.debug(
                 "Playback backend cache hit for %s: backend=%s age=%.2fs",
                 normalized_base_url,
                 backend_id,
                 time.monotonic() - cached[0],
+            )
+            _set_owntone_runtime_info(
+                base_url=normalized_base_url,
+                backend_id=backend_id,
+                version=version or "unknown",
+                connected=True,
+                last_seen_at=last_seen_at,
             )
             return ResolvedBackend(
                 backend_id=backend_id,
@@ -344,8 +464,19 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
             normalized_base_url,
             BACKEND_OWNTONE,
         )
+        _set_owntone_runtime_info(base_url=normalized_base_url, connected=False)
         backend = create_backend(BACKEND_OWNTONE, base_url=normalized_base_url, timeout=timeout)
     backend_id = backend.backend_id
+    selected_detection = next(
+        (d for d in detections if d.matched and d.backend_id == backend_id),
+        None,
+    )
+    detected_version = (
+        str(selected_detection.version).strip()
+        if selected_detection is not None
+        else ""
+    )
+    detected_at = time.time()
     LOG.debug(
         "Playback backend selected for %s: backend=%s",
         normalized_base_url,
@@ -362,12 +493,32 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
                 oldest_key,
             )
             del _DETECTION_CACHE[oldest_key]
-        _DETECTION_CACHE[normalized_base_url] = (time.monotonic(), backend_id)
+        _DETECTION_CACHE[normalized_base_url] = (
+            time.monotonic(),
+            backend_id,
+            detected_version,
+            detected_at,
+        )
         LOG.debug(
             "Cached playback backend selection for %s: backend=%s ttl=%.1fs",
             normalized_base_url,
             backend_id,
             _DETECTION_CACHE_SECONDS,
+        )
+
+    if selected_detection is not None:
+        _set_owntone_runtime_info(
+            base_url=normalized_base_url,
+            backend_id=backend_id,
+            version=detected_version or "unknown",
+            connected=True,
+            last_seen_at=detected_at,
+        )
+    else:
+        _set_owntone_runtime_info(
+            base_url=normalized_base_url,
+            backend_id=backend_id,
+            connected=False,
         )
 
     return ResolvedBackend(backend_id=backend_id, backend=backend)

@@ -66,6 +66,7 @@ class DetectionResult:
     matched: bool
     backend_id: str
     detail: str = ""
+    version: str = ""
 
 
 @dataclass(frozen=True)

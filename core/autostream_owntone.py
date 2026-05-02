@@ -70,7 +70,12 @@ class OwnToneBackend(OwnToneHttpBackendBase):
         if isinstance(config_payload, dict):
             version = str(config_payload.get("version") or "").strip()
         detail = f"OwnTone official API detected (version={version or 'unknown'})"
-        return DetectionResult(matched=True, backend_id=self.backend_id, detail=detail)
+        return DetectionResult(
+            matched=True,
+            backend_id=self.backend_id,
+            detail=detail,
+            version=version,
+        )
 
     def get_capabilities(self) -> BackendCapabilities:
         return BackendCapabilities(
