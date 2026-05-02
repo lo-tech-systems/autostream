@@ -880,7 +880,7 @@ InputChannel* AudioMonitor::get_input(int input_index)
 
 // ── api_get_status ────────────────────────────────────────────────────────────
 //
-// Returns a JSON status snapshot for all inputs.
+// Returns a JSON status snapshot for all inputs and top-level daemon metadata.
 // Called in response to a {"type":"get_status"} command.  Python polls this
 // at whatever rate the UI requires.
 //
@@ -898,7 +898,9 @@ std::string AudioMonitor::api_get_status()
 
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(1);
-    oss << "{\"type\":\"status\",\"log_level\":\""
+    oss << "{\"type\":\"status\",\"monitor_build\":\""
+        << json_escape(AUTOSTREAM_MONITOR_BUILD)
+        << "\",\"log_level\":\""
         << protocol_log_level_name(logger_get_level())
         << "\",\"output_clip_dbfs\":"           << clip_dbfs
         << ",\"output_gain_db\":"               << gs.manual_gain_db

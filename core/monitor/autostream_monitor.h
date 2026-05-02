@@ -48,6 +48,11 @@
 #include <alsa/asoundlib.h>
 #include <samplerate.h>
 
+// Build identifier compiled into the monitor binary and reported via the
+// socket API.  This is intentionally maintained in source so an older running
+// binary can be detected after an update if the monitor rebuild failed.
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.2.0";
+
 
 // =============================================================================
 // AlsaDeviceInfo
@@ -973,7 +978,8 @@ public:
     // Update the monitor's runtime log level.
     std::string api_set_log_level(const std::string& level_text);
 
-    // Return a status snapshot for all inputs.
+    // Return a status snapshot for all inputs plus top-level daemon metadata
+    // such as the compiled-in monitor_build identifier.
     std::string api_get_status();
 
     // Copy up to max_seconds (1..20) of recent mono 22050 Hz audio for the

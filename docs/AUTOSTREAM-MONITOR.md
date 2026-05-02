@@ -569,6 +569,7 @@ Success response:
 ```json
 {
   "type":"status",
+  "monitor_build":"0.2.0",
   "log_level":"warning",
   "output_clip_dbfs":0.0,
   "output_gain_db":0.0,
@@ -594,6 +595,10 @@ Success response:
 
 Top-level fields:
 
+- `monitor_build`
+  - build string compiled into the running `autostream_monitor` binary
+  - intended to help detect a stale monitor binary after an update if the
+    rebuild or redeploy failed
 - `log_level`
   - current runtime log level
 - `output_clip_dbfs`
