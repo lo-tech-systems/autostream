@@ -1,10 +1,10 @@
+![autostream demo](docs/autostream-vinyl-airplay-demo.gif)
+
 # autostream
 
 **Stream turntables and CD players to AirPlay speakers — automatically.**
 
-**autostream** makes it easy to play vinyl records and CDs through **AirPlay & AirPlay 2** speakers anywhere in your home. It connects your classic Hi-Fi gear to wireless multi-room speakers, without complex setup or specialist knowledge.
-
-**autostream** exists for people with real Hi-Fi gear who want it to behave like a modern source — without changing how they listen to music. No apps to install. No complex configuration. Just press play.
+**autostream** connects classic Hi-Fi gear to wireless multi-room speakers, making vinyl records and CDs play through AirPlay and AirPlay 2 speakers anywhere in your home. No apps to install. No complex configuration. Just press play.
 
 > License: Source-available. Free for personal use. Commercial licensing available.
 
@@ -13,17 +13,17 @@ One-line install on Raspberry Pi OS (Trixie):
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
 ```
 
----
-
-![autostream](docs/autostream-flyer.png)
+See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions and install options.
 
 ---
 
-## What It Does
+## Features
 
-* **Plays vinyl records and CDs on AirPlay speakers**
-* **Provides a simple, iPhone-friendly web app to control volume**
-* **Works with phono, line-level, SPDIF and USB audio inputs via low-cost USB dongles**
+* Streams vinyl, CDs, tape decks, and other line-level sources to AirPlay speakers
+* Detects audio automatically — starts and stops the stream without any interaction
+* Switches between two connected sources automatically (e.g. turntable and CD player)
+* iPhone-friendly web app for volume control and speaker selection, with PIN-protected setup
+* Runs entirely on your local network — no cloud services, accounts, or subscriptions
 
 ---
 
@@ -31,76 +31,44 @@ curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/boo
 
 * Turntables
 * CD Players
-* Tape Decks and other line-level music sources
-
-Note: **autostream** is designed for music playback and physical media. It is not suitable for video or lip-sync-critical sources such as TVs.
+* Tape decks and other line-level music sources
 
 ---
 
-## How It Works (High Level)
+## How It Works
 
-**autostream** supports one or two connected sources. It listens for audio on one or both, and when sound is detected, it automatically streams it to your AirPlay speakers. When the music stops, the stream stops. And, if you switch from vinyl to CD - **autostream** switches too. Automatically.
+**autostream** listens on one or two audio inputs. When sound is detected, it streams automatically to your AirPlay speakers. When the music stops, the stream stops. If you switch from vinyl to CD, **autostream** switches too.
 
-Everything runs locally on your network. There are no cloud services, logons, recommendations or end of year wraps. Just you, and your music.
-
----
-
-## Simple App-Style Interface
-
-**autostream** includes a lightweight web interface designed to feel like a native app on iPhone and iPad. Add it to your home screen for quick access to volume controls and speaker selection.
-
-![autostream playback control](docs/Autostream-RC6-Screenshots.png)
-
-* Mobile-friendly layout
-* PIN-protected setup screen
-* No cloud services required
-* Bass and Treble controls for each input
+Everything runs locally on your network — no cloud services, no logins, no recommendations.
 
 ---
 
 ## Platform & Requirements
 
-* Raspberry Pi - Pi ZeroW is enough (Zero-2W recommended) - with an 8GB micro-SD card
-* USB audio input device, for example:
-  * USB Turntable (e.g. Audio-Technica AT-LP60XUSBGM)
+* **Raspberry Pi** — Pi Zero W is the minimum; Zero 2W is recommended. 8GB microSD card.
+* **USB audio input**, for example:
+  * USB turntable (e.g. Audio-Technica AT-LP60XUSBGM)
   * USB ADC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
-  * SPDIF to USB dongle for CD Players (e.g. Cubilux USB C Optical Audio Capture Adapter)
-* AirPlay or AirPlay 2 speakers on the same network (also supports Chromecast and Roku)
+  * Optical audio adapter for CD players (e.g. Cubilux USB C Optical Audio Capture Adapter)
+* **AirPlay or AirPlay 2 speakers** on the same network (Chromecast and Roku also supported)
 
-Running on a Pi ZeroW or Zero2W, it consumes less than 2 Watts.
+Power consumption on a Pi Zero W or Zero 2W: under 2 Watts.
 
----
-
-## Dependencies
-
-autostream runs on Linux and uses **Owntone** for speaker discovery and streaming (AirPlay / AirPlay 2). Owntone is a separate project with its own license and is installed automatically by the autostream installation script.
-
-By default, the installer builds and installs **owntone-mini** from the Lo-tech Systems GitHub repository. If you need the packaged upstream build instead, pass `--owntone=full` (see Getting Started below).
+**autostream** automatically installs OwnTone for speaker discovery and streaming.
 
 ---
 
 ## Getting Started
 
-1. Create a Raspbian Lite microSD with Raspberry Pi imager, boot the Pi from it, and SSH to it.
-2. Run the installer:
-```sh
-curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
-```
-This downloads the latest stable release and runs the installer. By default it builds and installs `owntone-mini` from source. To use the packaged OwnTone build instead:
-```sh
-curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash -s -- --owntone=full
-```
-3. Connect one or two audio sources
-4. Reboot, then use an iPhone to browse with Safari to http://autostream.local/ (replace 'autostream' with the hostname of your Pi)
-5. Run the one-time setup (two screens)
+1. Flash a Raspberry Pi OS Lite image using Raspberry Pi Imager, boot, and SSH in.
+2. Run the one-line installer above.
+3. Connect one or two audio sources.
+4. Reboot, then open Safari on iPhone and browse to `http://autostream.local/` (replace `autostream` with your Pi's hostname if you changed it).
+5. Complete the one-time setup — it takes two screens.
 
-Detailed setup instructions are provided in the docs folder.
+From there, just drop the needle or press play. **autostream** will do the rest.
 
-From then on, just drop a needle on a record or press play on your CD player - **autostream** will do the rest.
-There is no "connect" button. **autostream** simply listens. When music starts, it plays. When it stops, it stops.
-And it's designed for continuous operation, dealing intelligently with WiFi outages automatically to ensure it's
-always ready - just like your AirPlay speakers.
-
+See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for detailed setup instructions.
 
 ---
 
@@ -108,10 +76,8 @@ always ready - just like your AirPlay speakers.
 
 **autostream** is **source-available** and free for **personal, non-commercial use**.
 
-Commercial use, redistribution, or integration into paid products requires a commercial license.
-
-See the `LICENSE` file for full terms.
+Commercial use, redistribution, or integration into paid products requires a commercial license. See the `LICENSE` file for full terms.
 
 ---
 
-**autostream** is Copyright (c) 2025-2026, **Lo-tech Systems Limited**. All rights reserved.
+**autostream** is Copyright (c) 2025–2026, **Lo-tech Systems Limited**. All rights reserved.

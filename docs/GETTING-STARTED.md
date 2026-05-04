@@ -1,20 +1,44 @@
 # Getting Started
 
-After installation, **autostream** only requires a short, one-time setup using an iPhone or iPad.
+## Installation
+
+Run the installer on a Raspberry Pi running Raspberry Pi OS (Trixie):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
+```
+
+This downloads the latest stable release and installs everything autostream needs, including OwnTone for speaker discovery and streaming.
+
+### OwnTone Install Options
+
+By default, the installer builds **owntone-mini** from source. This is a lightweight build maintained by Lo-tech Systems, optimised for the Pi Zero and low-power devices.
+
+If you prefer to use the standard packaged OwnTone build instead, pass `--owntone=full`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash -s -- --owntone=full
+```
+
+Use `--owntone=full` if you need support for protocols other than AirPlay. Otherwise, the default `owntone-mini` build is recommended.
+
+---
 
 ## Initial Setup
 
-1. Run the installer (see README.md). By default this builds and installs `owntone-mini` from source; pass `--owntone=full` only if you specifically want the packaged OwnTone build.
+After installation, **autostream** only requires a short, one-time setup using an iPhone or iPad.
 
-2. After installation, connect your input devices (turntable, SPDIF dongle, USB preamp, etc.) and then reboot the system.
+1. Connect your audio sources (turntable, CD player, etc.) and reboot the Pi.
 
-3. Using **Safari** on your iPhone or iPad, navigate to:
+2. Using **Safari** on your iPhone or iPad, navigate to:
 
    ```
    http://autostream.local/
    ```
 
-4. The system will prompt for your PIN and will then guide you through two simple setup pages.
+   Replace `autostream` with your Pi's hostname if you changed it during setup.
+
+3. The system will prompt for your PIN and will then guide you through two simple setup pages.
 
 ---
 
@@ -51,13 +75,13 @@ Next, choose:
 When the system has been idle for some time, these default speakers will automatically start playing when music is detected. Any other previously selected speakers will be muted.
 
 Tap **Done** to complete setup.
-The system will then show the autostream **Home Screen**
+The system will then show the autostream **Home Screen**.
 
 ---
 
 ## Home Screen Web App Mode
 
-autostream is designed to be used from your device’s home screen for an easy, app-like experience.
+autostream is designed to be used from your device's home screen for an easy, app-like experience.
 
 ### Add autostream to the Home Screen
 
