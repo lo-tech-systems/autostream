@@ -1099,8 +1099,14 @@ body {
   line-height: 1.25;
 }
 
+body.has-bottom-nav {
+  padding-bottom: calc(5.12rem + constant(safe-area-inset-bottom));
+  padding-bottom: calc(5.12rem + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+
 body.has-bottom-nav .container {
-  padding-bottom: 2rem;
+  padding-bottom: 5.12rem;
 }
 
 /* ── Bottom navigation bar ── */
