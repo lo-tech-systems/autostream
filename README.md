@@ -20,10 +20,12 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 ## Features
 
 * Streams vinyl, CDs, tape decks, and other line-level sources to AirPlay speakers
-* Detects audio automatically — starts and stops the stream without any interaction
-* Switches between two connected sources automatically (e.g. turntable and CD player)
+* Detects audio automatically - starts and stops the stream without any interaction
+* Supports HomePods, Stereo Paired HomePods, and third-party AirPlay and AirPlay 2 compatible speakers
 * iPhone-friendly web app for volume control and speaker selection, with PIN-protected setup
-* Runs entirely on your local network — no cloud services, accounts, or subscriptions
+* Runs entirely on your local network - no cloud services, accounts, or subscriptions
+* Switches between two connected sources automatically (e.g. turntable and CD player)
+* 6-band output equaliser and per-input 3-band equaliser
 
 ---
 
@@ -50,7 +52,7 @@ Everything runs locally on your network — no cloud services, no logins, no rec
   * USB turntable (e.g. Audio-Technica AT-LP60XUSBGM)
   * USB ADC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
   * Optical audio adapter for CD players (e.g. Cubilux USB C Optical Audio Capture Adapter)
-* **AirPlay or AirPlay 2 speakers** on the same network (Chromecast and Roku also supported)
+* **AirPlay or AirPlay 2 speakers** on the same network
 
 Power consumption on a Pi Zero W or Zero 2W: under 2 Watts.
 

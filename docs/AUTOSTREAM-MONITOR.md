@@ -510,12 +510,16 @@ Success response:
 }
 ```
 
-Recommended workflow for deriving a permanent manual gain value:
+Recommended workflow for deriving a stable manual gain baseline without losing
+ongoing clip protection:
 
 1. Set `output_gain_db` to `0.0` and enable auto-trim.
-2. Let audio play through at typical levels until the trim stabilises.
+2. Let audio play through a loud representative track until the trim stabilises.
 3. Read `effective_output_gain_db` from the next `get_status` response.
-4. Disable auto-trim and set `output_gain_db` to that value to make it permanent.
+4. Set `output_gain_db` to that value as the new manual baseline.
+5. Reset the current trim by either stopping and restarting playback, or by
+   toggling auto-trim off and on again.
+6. Leave auto-trim enabled so any future peaks can still be cut automatically.
 
 ### `set_log_level`
 
