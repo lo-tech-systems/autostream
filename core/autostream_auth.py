@@ -360,8 +360,10 @@ class AuthManager:
         PIN_PATH_CANDIDATES list). Does not consult the config-file override
         and does not use the internal cache.
 
-        Intended for display purposes only (e.g. the factory reset confirmation
-        modal). The returned value has already been validated against PIN_REGEX.
+        Used for display (e.g. the factory reset confirmation modal) and as
+        the emergency authentication fallback during the early-uptime window
+        when a user-configured PIN is in effect.
+        The returned value has already been validated against PIN_REGEX.
         """
         pin, _path, _mtime, status = self._read_pin_file()
         if status == PIN_STATUS_OK and pin and PIN_REGEX.match(pin):
@@ -617,6 +619,14 @@ class AuthManager:
         digest = hashlib.sha256((nonce + pin).encode("utf-8")).hexdigest()
         return digest
 
+    def _uptime_seconds(self) -> Optional[float]:
+        """Return system uptime in seconds, or None if unavailable (non-Linux)."""
+        try:
+            with open("/proc/uptime", "r", encoding="ascii") as f:
+                return float(f.read().split()[0])
+        except Exception:
+            return None
+
     # ------------------------
     # Session cookie
     # ------------------------
@@ -720,9 +730,26 @@ class AuthManager:
         if pin is None:
             self._send_json(handler, 500, {"ok": False, "error": "Internal error"})
             return
-        expected = self._compute_proof(nonce, pin)
 
-        if not constant_time_eq(proof, expected):
+        accepted = constant_time_eq(proof, self._compute_proof(nonce, pin))
+
+        # If a user-configured PIN is in use, also accept the factory boot-partition
+        # PIN for the first 30 minutes of uptime (recovery / forgotten-PIN window).
+        # Outside that window the user PIN is required exclusively.
+        if not accepted and self._pin_source == "config":
+            uptime = self._uptime_seconds()
+            if uptime is not None and uptime < 30 * 60:
+                boot_pin = self.get_boot_pin_value()
+                if boot_pin:
+                    accepted = constant_time_eq(proof, self._compute_proof(nonce, boot_pin))
+                    if accepted:
+                        LOG.info(
+                            "Auth accepted via factory PIN during early-uptime window "
+                            "(uptime=%.0fs < 1800s)",
+                            uptime,
+                        )
+
+        if not accepted:
             self._rate_limit_fail(handler)
             self._send_json(handler, 401, {"ok": False, "error": "Incorrect PIN"})
             return
