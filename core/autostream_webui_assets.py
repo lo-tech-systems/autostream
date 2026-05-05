@@ -1379,7 +1379,7 @@ NAV_ICON_SERVICE = (
 
 ICON_TURNTABLE = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 206 206"'
-    ' fill="none" stroke="#0074D9" stroke-width="2.5"'
+    ' fill="none" stroke="var(--color-accent)" stroke-width="2.5"'
     ' stroke-linecap="round" stroke-linejoin="round">'
     # Outer case
     '<rect x="2.5" y="4.5" width="201" height="200" rx="4"/>'
@@ -1413,7 +1413,7 @@ ICON_TURNTABLE = (
 
 ICON_LINE_LEVEL = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 258"'
-    ' fill="none" stroke="#0074D9" stroke-width="7"'
+    ' fill="none" stroke="var(--color-accent)" stroke-width="7"'
     ' stroke-linecap="round" stroke-linejoin="round">'
     # Top cable
     '<path d="M56 57 V14"/>'
