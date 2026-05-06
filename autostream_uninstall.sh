@@ -133,6 +133,7 @@ main() {
   info "Removing possible OwnTone Mini files"
   remove_path /usr/sbin/owntone
   remove_path /etc/systemd/system/owntone.service
+  remove_path /etc/systemd/system/owntone.service.d
   remove_path /etc/owntone-settings.json
   remove_path /etc/owntone.conf
   remove_path /etc/apt/sources.list.d/owntone.list
