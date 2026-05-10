@@ -422,10 +422,17 @@ def load_license_text() -> str:
 def render_license_md(text: str) -> str:
     """Convert the limited Markdown used in the LICENSE file to HTML.
 
-    Handles: # H1 (rendered as h2), ### H3, --- hr, * list items,
+    Handles: # H1 (h2), ## H2 (h3), ### H3 (h4), --- hr, * and - list
+    items, > blockquotes (rendered recursively), **bold**, *italic*,
     bare URLs, and plain paragraphs.
     """
-    def _autolink(s: str) -> str:
+    _BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
+    _ITALIC_RE = re.compile(r'\*([^*\s][^*]*?)\*')
+
+    def _inline(s: str) -> str:
+        s = html.escape(s)
+        s = _BOLD_RE.sub(r'<strong>\1</strong>', s)
+        s = _ITALIC_RE.sub(r'<em>\1</em>', s)
         return _URL_RE.sub(
             lambda m: (
                 f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">'
@@ -436,12 +443,14 @@ def render_license_md(text: str) -> str:
     lines = text.splitlines()
     out: list[str] = []
     in_ul = False
+    in_blockquote = False
+    blockquote_lines: list[str] = []
     pending: list[str] = []
 
     def flush_para() -> None:
         nonlocal pending
         if pending:
-            out.append(f"<p>{_autolink(' '.join(pending))}</p>")
+            out.append(f"<p>{_inline(' '.join(pending))}</p>")
             pending = []
 
     def close_ul() -> None:
@@ -450,28 +459,44 @@ def render_license_md(text: str) -> str:
             out.append("</ul>")
             in_ul = False
 
+    def flush_blockquote() -> None:
+        nonlocal in_blockquote, blockquote_lines
+        if in_blockquote:
+            inner = render_license_md("\n".join(blockquote_lines))
+            out.append(f"<blockquote>{inner}</blockquote>")
+            blockquote_lines = []
+            in_blockquote = False
+
     for line in lines:
-        if line.startswith("# "):
+        if line.startswith("> ") or line.strip() == ">":
             close_ul(); flush_para()
-            out.append(f"<h2>{html.escape(line[2:].strip())}</h2>")
+            in_blockquote = True
+            blockquote_lines.append(line[2:] if line.startswith("> ") else "")
+        elif line.startswith("# "):
+            flush_blockquote(); close_ul(); flush_para()
+            out.append(f"<h2>{_inline(line[2:].strip())}</h2>")
+        elif line.startswith("## "):
+            flush_blockquote(); close_ul(); flush_para()
+            out.append(f"<h3>{_inline(line[3:].strip())}</h3>")
         elif line.startswith("### "):
-            close_ul(); flush_para()
-            out.append(f"<h3>{html.escape(line[4:].strip())}</h3>")
+            flush_blockquote(); close_ul(); flush_para()
+            out.append(f"<h4>{_inline(line[4:].strip())}</h4>")
         elif line.strip() == "---":
-            close_ul(); flush_para()
+            flush_blockquote(); close_ul(); flush_para()
             out.append("<hr>")
-        elif line.startswith("* "):
-            flush_para()
+        elif line.startswith("* ") or line.startswith("- "):
+            flush_blockquote(); flush_para()
             if not in_ul:
                 out.append("<ul>")
                 in_ul = True
-            out.append(f"<li>{html.escape(line[2:].strip())}</li>")
+            out.append(f"<li>{_inline(line[2:].strip())}</li>")
         elif not line.strip():
-            close_ul(); flush_para()
+            flush_blockquote(); close_ul(); flush_para()
         else:
-            close_ul()
-            pending.append(html.escape(line.strip()))
+            flush_blockquote(); close_ul()
+            pending.append(line.strip())
 
+    flush_blockquote()
     close_ul()
     flush_para()
     return "\n".join(out)
