@@ -6,7 +6,7 @@
 
 **autostream** connects classic Hi-Fi gear to wireless multi-room speakers, making vinyl records and CDs play through AirPlay and AirPlay 2 speakers anywhere in your home. No apps to install. No complex configuration. Just press play.
 
-> License: Source-available. Free for personal use. Commercial licensing available.
+> License: Source-available. Free for personal use.
 
 One-line install on Raspberry Pi OS (Trixie):
 ```sh
@@ -21,7 +21,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 
 * Streams vinyl, CDs, tape decks, and other line-level sources to AirPlay speakers
 * Detects audio automatically - starts and stops the stream without any interaction
-* Supports HomePods, Stereo Paired HomePods, and third-party AirPlay and AirPlay 2 compatible speakers
+* Supports HomePods and Stereo Paired HomePods, as well as third-party AirPlay and AirPlay 2 compatible speakers
 * iPhone-friendly web app for volume control and speaker selection, with PIN-protected setup
 * Runs entirely on your local network - no cloud services, accounts, or subscriptions
 * Switches between two connected sources automatically (e.g. turntable and CD player)
@@ -78,7 +78,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for detailed setup instruction
 
 **autostream** is **source-available** and free for **personal, non-commercial use**.
 
-Commercial use, redistribution, or integration into paid products requires a commercial license. See the `LICENSE` file for full terms.
+See the `LICENSE` file for full terms.
 
 ---
 
