@@ -299,6 +299,11 @@ def enter_setup_mode(reason: str = "") -> None:
             # AP mode has been used up for this boot cycle (configured-device path).
             # force_setup_mode is set by apply_wifi_async on a failed config attempt
             # to allow re-entry despite the latch.
+            log_on_change(
+                "enter_setup_blocked", True,
+                "AP mode requested but ap_exhausted latch is set; ignoring until reboot",
+                logging.WARNING,
+            )
             return
         STATE.setup_mode = True
         STATE.ap_enter_time = time.monotonic()
@@ -396,10 +401,15 @@ def is_wifi_client_healthy(
         wifi_connected = is_wifi_connected()
 
     if not wifi_connected:
+        logger.debug("WiFi client health: not connected")
         return False
     if not is_local_ipv4_ready(ifname):
+        logger.debug("WiFi client health: no local IPv4 on %s", ifname)
         return False
-    return is_gateway_reachable()
+    gw_ok = is_gateway_reachable()
+    if not gw_ok:
+        logger.debug("WiFi client health: gateway unreachable")
+    return gw_ok
 
 
 def is_wired_connected() -> bool:
@@ -682,6 +692,8 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
         # (e.g., auto-activating an existing profile). Verify actual connectivity
         # before declaring failure / returning to SetupMode.
         logger.warning("nmcli failed to configure WiFi; see previous logs for details")
+        if result.stderr.strip():
+            logger.debug("nmcli stderr: %s", result.stderr.strip())
 
         # Fast-fail on obvious credential/auth problems to avoid ~10s delay.
         err = (result.stderr or "").lower()
@@ -723,6 +735,7 @@ def wait_for_connection(timeout: int = 20, interval: int = 2) -> bool:
         if is_local_ipv4_ready(AP_IFNAME):
             return True
         time.sleep(interval)
+    logger.info("Timed out waiting %ds for local IPv4 on %s", timeout, AP_IFNAME)
     return False
 
 
@@ -1389,18 +1402,21 @@ CAPTIVE_LANDING = """<!doctype html>
 @app.route("/hotspot-detect.html", methods=["GET"])
 @app.route("/library/test/success.html", methods=["GET"])
 def apple_captive_probe():
+    logger.debug("Captive portal probe (Apple): %s", request.path)
     return _captive_response(CAPTIVE_LANDING)
 
 # Android / Chrome probes
 @app.route("/generate_204", methods=["GET"])
 @app.route("/gen_204", methods=["GET"])
 def android_probe():
+    logger.debug("Captive portal probe (Android): %s", request.path)
     return _captive_response(CAPTIVE_LANDING)
 
 # Windows NCSI probe
 @app.route("/ncsi.txt", methods=["GET"])
 @app.route("/connecttest.txt", methods=["GET"])
 def windows_probe():
+    logger.debug("Captive portal probe (Windows): %s", request.path)
     return _captive_response(CAPTIVE_LANDING)
 
 
@@ -1434,6 +1450,7 @@ def request_ap_mode():
     """
     remote = request.remote_addr or ""
     if remote not in ("127.0.0.1", "127.0.1.1", "::1"):
+        logger.warning("Rejected /request_ap_mode from non-localhost: %s", remote)
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
     reason = ""
@@ -1448,6 +1465,7 @@ def request_ap_mode():
         # force-entered (i.e. no recent failed config attempt).  Without this the
         # caller would receive a success response but AP mode would never start.
         if STATE.ap_exhausted and not STATE.force_setup_mode:
+            logger.warning("AP mode request rejected: ap_exhausted latch set (reason='%s')", reason or "UserRequest")
             return jsonify({
                 "ok": False,
                 "error": "ap_exhausted",
@@ -1456,6 +1474,7 @@ def request_ap_mode():
         STATE.ap_request_reason = reason
         ap_request_event.set()
 
+    logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")
     return jsonify({"ok": True, "queued": True})
 
 
@@ -1610,11 +1629,26 @@ def network_monitor_loop():
             #   - still offline BEFORE the boot cutoff period.
             # This avoids immediately switching to AP mode before NetworkManager /
             # firmware has had a chance to come up.
+            offline = (not wifi_cfg) or (not wifi_connected) or (not client_ok)
             should_enter_ap = (
                 boot_age >= BOOT_AP_GRACE
                 and boot_age <= BOOT_AP_CUTOFF
-                and ((not wifi_cfg) or (not wifi_connected) or (not client_ok))
+                and offline
             )
+
+            if boot_age <= BOOT_AP_CUTOFF:
+                logger.debug(
+                    "Boot window: age=%.0fs/%.0fs, wifi_cfg=%s, connected=%s, client_ok=%s",
+                    boot_age, BOOT_AP_CUTOFF, wifi_cfg, wifi_connected, client_ok,
+                )
+
+            if offline and boot_age > BOOT_AP_CUTOFF:
+                log_on_change(
+                    "boot_ap_window_expired", True,
+                    f"Boot AP window expired (boot_age={boot_age:.0f}s); "
+                    f"device offline but automatic AP mode will not re-enter this boot cycle",
+                    logging.WARNING,
+                )
 
             if should_enter_ap:
                 enter_setup_mode(
@@ -1710,12 +1744,16 @@ def connect_to_configured_wifi() -> bool:
 
     # Step 1 (requested): try device disconnect/reconnect first
     logger.info("Attempting WiFi device bounce on %s (disconnect/reconnect) before bringing up '%s'", AP_IFNAME, connection_name)
-    run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
-    run_cmd(["nmcli", "device", "connect", AP_IFNAME])
+    r_disc = run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
+    r_conn = run_cmd(["nmcli", "device", "connect", AP_IFNAME])
+    if r_disc.returncode != 0 or r_conn.returncode != 0:
+        logger.debug("WiFi device bounce: disconnect rc=%d, connect rc=%d", r_disc.returncode, r_conn.returncode)
 
     # Step 2: bring up the configured connection profile as a fallback/assist
     logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
-    run_cmd(["nmcli", "connection", "up", connection_name])
+    r_up = run_cmd(["nmcli", "connection", "up", connection_name])
+    if r_up.returncode != 0:
+        logger.warning("nmcli connection up '%s' failed (rc=%d): %s", connection_name, r_up.returncode, r_up.stderr.strip())
     return True
 
 
@@ -1742,6 +1780,7 @@ def get_avahi_registered_hostname() -> Optional[str]:
         timeout=3.0,
     )
     if result.returncode != 0:
+        logger.debug("avahi D-Bus query failed (rc=%d): %s", result.returncode, result.stderr.strip())
         return None
 
     # dbus-send --print-reply output contains a line like:  string "sl-d303-2"
@@ -1797,6 +1836,8 @@ def check_and_repair_avahi_hostname() -> None:
             STATE.avahi_restart_count = 0
         if was_mismatched:
             logger.info("avahi mDNS hostname restored to expected value '%s'", avahi_host)
+        else:
+            logger.debug("avahi mDNS hostname OK: '%s'", avahi_host)
         return
 
     # --- Mismatch ---
@@ -1871,6 +1912,11 @@ if __name__ == "__main__":
     # an any associated hotspot request markers
     clear_apmode_flag()
     connect_to_configured_wifi()
+
+    logger.info(
+        "Initial state: wifi_configured=%s, wired=%s",
+        is_wifi_configured(), is_wired_connected(),
+    )
 
     # Start the network monitor in a background thread
     monitor_thread = threading.Thread(target=network_monitor_loop, daemon=True)
