@@ -102,43 +102,84 @@ AVAHI_RESTART_MIN_INTERVAL = 15 * 60    # minimum gap between avahi-daemon resta
 AVAHI_MAX_RESTART_ATTEMPTS = -1         # max avahi restarts per boot (-1 = unlimited)
 
 
-def _setup_logging() -> None:
-    """
-    Configure logging to stdout and (if possible) to a log file.
-    The service must keep running even if the log file cannot be created.
-    """
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
-    # Avoid duplicate handlers if called more than once
-    if logger.handlers:
+
+class DeduplicateFilter(logging.Filter):
+    """Suppress a log record if an identical record (same logger, level, rendered
+    message) was emitted within the last _WINDOW seconds.
+
+    Each handler carries its own instance so filtering is applied independently
+    per destination (stdout vs file).  Both instances stay in sync in practice
+    because all handlers receive the same records in the same order.
+    """
+
+    _WINDOW = 60.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        # (logger_name, levelno, rendered_message) -> last emission time (monotonic)
+        self._cache: dict[tuple, float] = {}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        key = (record.name, record.levelno, msg)
+        now = time.monotonic()
+        with self._lock:
+            last = self._cache.get(key, 0.0)
+            if now - last < self._WINDOW:
+                return False
+            self._cache[key] = now
+        return True
+
+
+def _setup_logging() -> None:
+    """Configure root-level logging to stdout and (if possible) a log file.
+
+    The log level defaults to INFO and can be overridden by setting the
+    AUTOSTREAM_WIFI_LOG_LEVEL environment variable (fatal/log/warning/info/
+    debug/spam — matching the main autostream platform level vocabulary).
+    The service keeps running even if the log file cannot be created.
+    """
+    _LEVEL_MAP: dict[str, int] = {
+        "fatal":   logging.CRITICAL,
+        "log":     logging.ERROR,
+        "warning": logging.WARNING,
+        "info":    logging.INFO,
+        "debug":   logging.DEBUG,
+        "spam":    logging.DEBUG,
+    }
+    env_level = os.environ.get("AUTOSTREAM_WIFI_LOG_LEVEL", "info").strip().lower()
+    level = _LEVEL_MAP.get(env_level, logging.INFO)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    if root.handlers:
         return
 
     formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s"
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%d-%b-%y %H:%M:%S",
     )
 
-    # Always log to stdout
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
+    stream_handler.addFilter(DeduplicateFilter())
+    root.addHandler(stream_handler)
 
-    # Try to add file logging
     try:
         log_dir = os.path.dirname(LOG_FILE) or "."
         os.makedirs(log_dir, exist_ok=True)
-
         file_handler = logging.FileHandler(LOG_FILE)
         file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
+        file_handler.addFilter(DeduplicateFilter())
+        root.addHandler(file_handler)
     except Exception as e:
         logger.error(
-            "Failed to initialise file logging (%s); continuing with stdout only.",
-            e,
+            "Failed to initialise file logging (%s); continuing with stdout only.", e
         )
-
-_setup_logging()
 
 @dataclass
 class NetworkMonitorState:
@@ -201,30 +242,15 @@ app = Flask(__name__)
 
 # ** LOGGING **
 
-_last_log_msg: str | None = None
-_last_log_time: float = 0.0
 _last_logged_values: dict[str, object] = {}
 
-def log(msg: str) -> None:
-    """Helper to log messages, suppressing identical repeats."""
-    global _last_log_msg, _last_log_time
-    now = time.monotonic()
 
-    # suppress identical messages if they occur back-to-back within 60s
-    if msg == _last_log_msg and (now - _last_log_time) < 60:
-        return
-
-    _last_log_msg = msg
-    _last_log_time = now
-    logging.info(msg)
-
-
-def log_on_change(key: str, value: object, msg: str) -> None:
-    """Log msg only when (key -> value) changes."""
+def log_on_change(key: str, value: object, msg: str, level: int = logging.INFO) -> None:
+    """Log msg at *level* only when (key -> value) changes."""
     prev = _last_logged_values.get(key, object())
     if prev != value:
         _last_logged_values[key] = value
-        log(msg)
+        logger.log(level, "%s", msg)
 
 
 # ** SETUP/AP MODE **
@@ -232,10 +258,10 @@ def log_on_change(key: str, value: object, msg: str) -> None:
 def clear_apmode_flag() -> None:
     try:
         if os.path.exists(AP_MODE_FLAG_PATH):
-            log(f"Removing stale AP flag at startup: {AP_MODE_FLAG_PATH}")
+            logger.info("Removing stale AP flag at startup: %s", AP_MODE_FLAG_PATH)
             os.remove(AP_MODE_FLAG_PATH)
     except Exception:
-        log(f"Failed to remove {AP_MODE_FLAG_PATH} at startup")
+        logger.warning("Failed to remove %s at startup", AP_MODE_FLAG_PATH)
 
 
 def update_apmode_flag(in_setup: bool) -> None:
@@ -245,13 +271,13 @@ def update_apmode_flag(in_setup: bool) -> None:
             if not os.path.exists(AP_MODE_FLAG_PATH):
                 with open(AP_MODE_FLAG_PATH, "w", encoding="utf-8") as f:
                     f.write("1\n")
-                log(f"Created AP mode flag file at {AP_MODE_FLAG_PATH}")
+                logger.info("Created AP mode flag file at %s", AP_MODE_FLAG_PATH)
         else:
             if os.path.exists(AP_MODE_FLAG_PATH):
                 os.remove(AP_MODE_FLAG_PATH)
-                log(f"Removed AP mode flag file at {AP_MODE_FLAG_PATH}")
+                logger.info("Removed AP mode flag file at %s", AP_MODE_FLAG_PATH)
     except Exception as e:
-        log(f"Error updating AP mode flag file {AP_MODE_FLAG_PATH}: {e}")
+        logger.warning("Error updating AP mode flag file %s: %s", AP_MODE_FLAG_PATH, e)
 
 
 def enter_setup_mode(reason: str = "") -> None:
@@ -277,7 +303,7 @@ def enter_setup_mode(reason: str = "") -> None:
         STATE.setup_mode = True
         STATE.ap_enter_time = time.monotonic()
 
-    log(f"Entering SetupMode. Reason: {reason}")
+    logger.info("Entering SetupMode. Reason: %s", reason)
     start_ap_mode()
     update_apmode_flag(True)
 
@@ -292,7 +318,7 @@ def leave_setup_mode(reason: str = "") -> None:
         STATE.force_setup_mode = False
         STATE.manual_ap_active = False
 
-    log(f"Leaving SetupMode. Reason: {reason}")
+    logger.info("Leaving SetupMode. Reason: %s", reason)
     # Tear down the AP before removing the flag so nginx does not route traffic
     # to the main webui while the setup SSID is still broadcasting.
     stop_ap_mode()
@@ -312,7 +338,7 @@ def get_configured_wifi_connection_name() -> Optional[str]:
             name = f.read().strip()
         return name or None
     except Exception as e:
-        log(f"Error reading {CONFIGURED_SSID}: {e}")
+        logger.error("Error reading %s: %s", CONFIGURED_SSID, e)
         return None
 
 
@@ -325,7 +351,7 @@ def is_wifi_connected() -> bool:
     """True if wlan0 is connected to a non-AP WiFi network."""
     result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
     if result.returncode != 0:
-        log(f"Error while checking WiFi connection state: {result.stderr.strip()}")
+        logger.warning("Error while checking WiFi connection state: %s", result.stderr.strip())
         return False
 
     for line in result.stdout.splitlines():
@@ -345,7 +371,7 @@ def is_wifi_connected() -> bool:
         # Ensure we are not in AP mode
         mode_result = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", conn])
         if mode_result.returncode != 0:
-            log(f"Error checking mode for connection '{conn}': {mode_result.stderr.strip()}")
+            logger.warning("Error checking mode for connection '%s': %s", conn, mode_result.stderr.strip())
             return False
 
         mode_line = mode_result.stdout.strip()
@@ -464,7 +490,7 @@ def is_gateway_reachable() -> bool:
         return False
 
     except Exception as e:
-        log(f"Kernel gateway reachability check failed: {e}")
+        logger.warning("Kernel gateway reachability check failed: %s", e)
         return False
 
 
@@ -542,7 +568,7 @@ def is_local_ipv4_ready(ifname: str = AP_IFNAME) -> bool:
 
         return False
     except Exception as e:
-        log(f"Local IPv4 readiness check failed: {e}")
+        logger.warning("Local IPv4 readiness check failed: %s", e)
         return False
 
 
@@ -555,11 +581,11 @@ def get_ap_ssid(ifname: str) -> str:
         with open(f"/sys/class/net/{ifname}/address", "r", encoding="utf-8") as f:
             mac = f.read().strip().replace(":", "")
     except OSError as e:
-        log(f"Error reading MAC address for {ifname}: {e}; using default SSID")
+        logger.warning("Error reading MAC address for %s: %s; using default SSID", ifname, e)
         return "autostream_SETUP"
     suffix = mac[-4:].upper() if len(mac) >= 4 else "0000"
     ssid = f"autostream_{suffix}"
-    log(f"Using AP SSID '{ssid}' for interface {ifname}")
+    logger.info("Using AP SSID '%s' for interface %s", ssid, ifname)
     return ssid
 
 
@@ -610,9 +636,9 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
     # Rescan...
     result = run_cmd(["nmcli", "dev", "wifi", "rescan"])
     if result.returncode == 0:
-        log("nmcli rescan successful.")
+        logger.info("nmcli rescan successful.")
     else:
-        log("nmcli rescan failed. Unable to connect to WiFi at this time.")
+        logger.warning("nmcli rescan failed. Unable to connect to WiFi at this time.")
         return False
     # Then attempt connection...
     cmd = [
@@ -630,32 +656,32 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
         cmd.extend(["password", password])
         log_cmd.extend(["password", "*" * len(password)])
     else:
-        log("WiFi configuration requested with empty password (open network)")
+        logger.info("WiFi configuration requested with empty password (open network)")
 
-    log(f"Running WiFi connect command: {' '.join(log_cmd)}")
+    logger.info("Running WiFi connect command: %s", " ".join(log_cmd))
 
     # Note: passing in log_cmd so run_cmd() warnings don't leak cleartext password
     result = run_cmd(cmd, log_cmd=log_cmd)
 
     if result.returncode == 0:
-        log("nmcli reported successful WiFi configuration")
+        logger.info("nmcli reported successful WiFi configuration")
         # Store only if the device is truly connected; avoids saving on auth failure.
         conn_name = _get_active_wifi_connection_name(AP_IFNAME)
         if not conn_name:
-            log("nmcli connect returned success but device is not connected; not saving config")
+            logger.warning("nmcli connect returned success but device is not connected; not saving config")
             return False
         try:
             with open(CONFIGURED_SSID, "w") as f:
                 f.write(f"{conn_name}\n")
-            log(f"WiFi connection name stored in {CONFIGURED_SSID}: '{conn_name}'")
+            logger.info("WiFi connection name stored in %s: '%s'", CONFIGURED_SSID, conn_name)
         except Exception as e:
-            log(f"Could not create or update {CONFIGURED_SSID}: {e}")
+            logger.error("Could not create or update %s: %s", CONFIGURED_SSID, e)
         return True
     else:
         # nmcli can report failure even if NetworkManager ultimately connects
         # (e.g., auto-activating an existing profile). Verify actual connectivity
         # before declaring failure / returning to SetupMode.
-        log("nmcli failed to configure WiFi; see previous logs for details")
+        logger.warning("nmcli failed to configure WiFi; see previous logs for details")
 
         # Fast-fail on obvious credential/auth problems to avoid ~10s delay.
         err = (result.stderr or "").lower()
@@ -666,16 +692,17 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
             active_ssid = _get_active_wifi_ssid(AP_IFNAME)
             conn_name = _get_active_wifi_connection_name(AP_IFNAME)
             if active_ssid == ssid and conn_name:
-                log(
+                logger.info(
                     "WiFi appears connected despite nmcli rc!=0 "
-                    f"(active SSID='{active_ssid}', connection='{conn_name}'); treating as success"
+                    "(active SSID='%s', connection='%s'); treating as success",
+                    active_ssid, conn_name,
                 )
                 try:
                     with open(CONFIGURED_SSID, "w") as f:
                         f.write(f"{conn_name}\n")
-                    log(f"WiFi connection name stored in {CONFIGURED_SSID}: '{conn_name}'")
+                    logger.info("WiFi connection name stored in %s: '%s'", CONFIGURED_SSID, conn_name)
                 except Exception as e:
-                    log(f"Could not create or update {CONFIGURED_SSID}: {e}")
+                    logger.error("Could not create or update %s: %s", CONFIGURED_SSID, e)
                 return True
 
         return False
@@ -714,10 +741,10 @@ def start_ap_mode() -> None:
         # run and setup_mode is False; starting AP now would leave it running unmanaged.
         with state_lock:
             if not STATE.setup_mode:
-                log("start_ap_mode: setup_mode cleared before AP could start; aborting")
+                logger.warning("start_ap_mode: setup_mode cleared before AP could start; aborting")
                 return
 
-        log("Enabling AP mode for SetupMode")
+        logger.info("Enabling AP mode for SetupMode")
 
         ssid = get_ap_ssid(AP_IFNAME)
 
@@ -729,7 +756,7 @@ def start_ap_mode() -> None:
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
 
         # Create the connection
-        log(f"Creating AP connection '{AP_CONNECTION_NAME}' with SSID '{ssid}'")
+        logger.info("Creating AP connection '%s' with SSID '%s'", AP_CONNECTION_NAME, ssid)
         run_cmd([
             "nmcli", "connection", "add",
             "type", "wifi",
@@ -750,7 +777,7 @@ def start_ap_mode() -> None:
 
         # Hostname may change at runtime; construct the portal URL dynamically.
         current_host = get_system_hostname()
-        log(f"Setup portal expected at http://{current_host}.local/setup while in AP mode")
+        logger.info("Setup portal expected at http://%s.local/setup while in AP mode", current_host)
 
 
 def stop_ap_mode() -> None:
@@ -759,7 +786,7 @@ def stop_ap_mode() -> None:
     This is primarily used when leaving SetupMode via the monitor loop.
     """
     with ap_mode_lock:
-        log("Disabling AP mode after leaving SetupMode")
+        logger.info("Disabling AP mode after leaving SetupMode")
         run_cmd(["systemctl", "stop", "autostream_dnsmasq.service"])
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
         with state_lock:
@@ -787,7 +814,7 @@ def scan_wifi_networks(ifname: str = AP_IFNAME):
 
     result = run_cmd(cmd)
     if result.returncode != 0:
-        log(f"Error scanning WiFi networks: {result.stderr.strip()}")
+        logger.warning("Error scanning WiFi networks: %s", result.stderr.strip())
         return []
 
     strongest_by_ssid: dict[str, int] = {}
@@ -828,7 +855,7 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
         with state_lock:
             STATE.last_apply_result = "applying"
             STATE.last_apply_error = ""
-        log(f"Async apply starting for SSID '{ssid}'")
+        logger.info("Async apply starting for SSID '%s'", ssid)
 
         time.sleep(0.5)
         leave_setup_mode("Applying WiFi configuration")
@@ -844,20 +871,20 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
                     STATE.last_apply_result = "ok"
                     STATE.last_apply_error = ""
                     STATE.force_setup_mode = False
-                log("WiFi configuration and connectivity verified")
+                logger.info("WiFi configuration and connectivity verified")
             else:
                 with state_lock:
                     STATE.last_apply_result = "failed"
                     STATE.last_apply_error = "no-local-ip"
                     STATE.force_setup_mode = True
-                log("Local IPv4 check failed after WiFi configuration; entering SetupMode")
+                logger.warning("Local IPv4 check failed after WiFi configuration; entering SetupMode")
                 enter_setup_mode("Local IPv4 check failed after WiFi configuration")
         else:
             with state_lock:
                 STATE.last_apply_result = "failed"
                 STATE.last_apply_error = "nmcli-failed"
                 STATE.force_setup_mode = True
-            log("WiFi configuration failed; returning to SetupMode")
+            logger.warning("WiFi configuration failed; returning to SetupMode")
             enter_setup_mode("nmcli failed to configure WiFi")
     finally:
         with state_lock:
@@ -1276,12 +1303,12 @@ def setup():
         pw = request.form.get("password") or request.form.get("k") or ""
 
         if not ssid:
-            log("WiFi configuration POST received without SSID")
+            logger.warning("WiFi configuration POST received without SSID")
             return _captive_response(render_setup_page())
 
         with state_lock:
             if STATE.apply_in_progress:
-                log("Apply already in progress; showing wait page again")
+                logger.info("Apply already in progress; showing wait page again")
                 return _captive_response(render_wait_page(ssid))
                 #return render_wait_page(ssid)
             STATE.apply_in_progress = True
@@ -1299,7 +1326,7 @@ def setup():
         if not e and STATE.last_apply_result == "failed":
             e = STATE.last_apply_error or "failed"
 
-    log(f"User requested /setup (error: {e})")
+    logger.info("User requested /setup (error: %s)", e)
 
     return _captive_response(render_setup_page(e))
 
@@ -1453,7 +1480,7 @@ def network_monitor_loop():
             If unreachable for > GW_DOWN_RECONNECT_AFTER: periodically attempt reconnect.
             If unreachable for > GW_DOWN_REBOOT_AFTER: reboot.
     """
-    log("Starting network monitor loop")
+    logger.info("Starting network monitor loop")
 
     # Record boot time on first entry
     with state_lock:
@@ -1617,13 +1644,13 @@ def network_monitor_loop():
             if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
                 with state_lock:
                     STATE.last_reconnect_attempt = now
-                log(f"Post-AP reconnect attempt (offline_for={offline_for:.0f}s)")
+                logger.info("Post-AP reconnect attempt (offline_for=%.0fs)", offline_for)
                 connect_to_configured_wifi()
 
             if offline_for >= AP_POST_CLOSE_REBOOT_AFTER:
-                log(
-                    f"Still offline {offline_for:.0f}s after AP mode closed "
-                    f"(threshold {AP_POST_CLOSE_REBOOT_AFTER}s); rebooting"
+                logger.warning(
+                    "Still offline %.0fs after AP mode closed (threshold %ss); rebooting",
+                    offline_for, AP_POST_CLOSE_REBOOT_AFTER,
                 )
                 reboot_system("NetworkDown")
 
@@ -1646,9 +1673,9 @@ def network_monitor_loop():
                 down_for = now - down_start
 
                 if down_for >= GW_DOWN_REBOOT_AFTER:
-                    log(
-                        f"Connectivity unhealthy for {down_for:.0f}s "
-                        f"(threshold {GW_DOWN_REBOOT_AFTER}s); rebooting"
+                    logger.warning(
+                        "Connectivity unhealthy for %.0fs (threshold %ss); rebooting",
+                        down_for, GW_DOWN_REBOOT_AFTER,
                     )
                     reboot_system("NetworkDown")
 
@@ -1656,10 +1683,7 @@ def network_monitor_loop():
                     if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
                         with state_lock:
                             STATE.last_reconnect_attempt = now
-                        log(
-                            f"Connectivity unhealthy for {down_for:.0f}s; "
-                            "attempting reconnect"
-                        )
+                        logger.info("Connectivity unhealthy for %.0fs; attempting reconnect", down_for)
                         connect_to_configured_wifi()
             else:
                 with state_lock:
@@ -1685,12 +1709,12 @@ def connect_to_configured_wifi() -> bool:
         return False
 
     # Step 1 (requested): try device disconnect/reconnect first
-    log(f"Attempting WiFi device bounce on {AP_IFNAME} (disconnect/reconnect) before bringing up '{connection_name}'")
+    logger.info("Attempting WiFi device bounce on %s (disconnect/reconnect) before bringing up '%s'", AP_IFNAME, connection_name)
     run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
     run_cmd(["nmcli", "device", "connect", AP_IFNAME])
 
     # Step 2: bring up the configured connection profile as a fallback/assist
-    log(f"Attempting to connect to configured WiFi connection '{connection_name}'")
+    logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
     run_cmd(["nmcli", "connection", "up", connection_name])
     return True
 
@@ -1746,6 +1770,7 @@ def check_and_repair_avahi_hostname() -> None:
         log_on_change(
             "avahi_dbus_unavailable", True,
             "dbus-send not found; avahi mDNS hostname monitoring disabled",
+            logging.WARNING,
         )
         return
 
@@ -1771,16 +1796,16 @@ def check_and_repair_avahi_hostname() -> None:
             STATE.avahi_mismatch_start = None
             STATE.avahi_restart_count = 0
         if was_mismatched:
-            log(f"avahi mDNS hostname restored to expected value '{avahi_host}'")
+            logger.info("avahi mDNS hostname restored to expected value '%s'", avahi_host)
         return
 
     # --- Mismatch ---
     with state_lock:
         if STATE.avahi_mismatch_start is None:
             STATE.avahi_mismatch_start = now
-            log(
-                f"avahi mDNS hostname mismatch detected: "
-                f"avahi='{avahi_host}', expected='{expected}'"
+            logger.warning(
+                "avahi mDNS hostname mismatch detected: avahi='%s', expected='%s'",
+                avahi_host, expected,
             )
         mismatch_duration = now - STATE.avahi_mismatch_start
         restart_count = STATE.avahi_restart_count
@@ -1793,6 +1818,7 @@ def check_and_repair_avahi_hostname() -> None:
             f"avahi mDNS hostname conflict unresolved after {restart_count} restart(s); "
             f"avahi='{avahi_host}', expected='{expected}'. "
             f"No further attempts until reboot.",
+            logging.WARNING,
         )
         return
 
@@ -1814,25 +1840,26 @@ def check_and_repair_avahi_hostname() -> None:
         if AVAHI_MAX_RESTART_ATTEMPTS >= 0
         else str(new_count)
     )
-    log(
-        f"avahi mDNS hostname mismatch persisted for {mismatch_duration:.0f}s; "
-        f"restarting avahi-daemon (attempt {attempt_str}); "
-        f"avahi='{avahi_host}', expected='{expected}'"
+    logger.warning(
+        "avahi mDNS hostname mismatch persisted for %.0fs; "
+        "restarting avahi-daemon (attempt %s); avahi='%s', expected='%s'",
+        mismatch_duration, attempt_str, avahi_host, expected,
     )
 
     result = run_cmd(["systemctl", "restart", "avahi-daemon.service"])
     if result.returncode != 0:
-        log(
-            f"avahi-daemon restart failed "
-            f"(rc={result.returncode}): {result.stderr.strip()}"
+        logger.error(
+            "avahi-daemon restart failed (rc=%d): %s",
+            result.returncode, result.stderr.strip(),
         )
     else:
-        log("avahi-daemon restarted; hostname will be verified on next check")
+        logger.info("avahi-daemon restarted; hostname will be verified on next check")
 
 
 if __name__ == "__main__":
-    log(f"**************************************************************************")
-    log(f"autostream wifi monitor starting. Copyright (c) 2025, Lo-tech Systems Ltd.")
+    _setup_logging()
+    logger.info("**************************************************************************")
+    logger.info("autostream wifi monitor starting. Copyright (c) 2025, Lo-tech Systems Ltd.")
 
     # Check CPU
     check_cpu()
