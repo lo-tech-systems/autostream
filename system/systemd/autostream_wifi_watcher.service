@@ -16,6 +16,9 @@ WorkingDirectory=/opt/autostream
 
 ExecStart=/opt/autostream/autostream_wifi_watcher
 
+# Log level for the wifi watcher. Valid values: fatal, log, warning, info, debug, spam
+#Environment=AUTOSTREAM_WIFI_LOG_LEVEL=info
+
 Restart=on-failure
 RestartSec=5
 
