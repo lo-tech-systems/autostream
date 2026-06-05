@@ -54,6 +54,7 @@ controls which web server (this or autostream_webui.py) services requests via th
 import glob
 import ipaddress
 import os
+import shutil
 import time
 import threading
 import logging
@@ -93,6 +94,12 @@ RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts
 #   - wlan0 has a non-link-local RFC1918 IPv4 address (i.e., not 169.254/16)
 WAIT_FOR_CONNECTION_TIMEOUT = 45        # Seconds to wait for local IPv4 after config
 WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for local IPv4 checks
+
+# Avahi mDNS hostname monitoring
+AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname checks
+AVAHI_MISMATCH_GRACE       = 5 * 60     # grace period before acting on a hostname mismatch
+AVAHI_RESTART_MIN_INTERVAL = 15 * 60    # minimum gap between avahi-daemon restarts
+AVAHI_MAX_RESTART_ATTEMPTS = -1         # max avahi restarts per boot (-1 = unlimited)
 
 
 def _setup_logging() -> None:
@@ -165,6 +172,12 @@ class NetworkMonitorState:
     # ---- Manual AP-mode request (from WebUI via localhost) ----
     ap_request_reason: str = ""
 
+    # ---- Avahi mDNS hostname monitoring ----
+    avahi_hostname: Optional[str] = None
+    avahi_mismatch_start: Optional[float] = None
+    last_avahi_restart: Optional[float] = None
+    avahi_restart_count: int = 0
+
 
 STATE = NetworkMonitorState()
 
@@ -180,6 +193,9 @@ ap_request_event = threading.Event()
 # AP / host configuration
 AP_IFNAME = "wlan0"
 AP_CONNECTION_NAME = "Hotspot"  # default/fixed name for our AP connection
+
+# Resolved once at startup; None disables avahi mDNS hostname monitoring.
+_DBUS_SEND: Optional[str] = shutil.which("dbus-send")
 
 app = Flask(__name__)
 
@@ -1444,6 +1460,8 @@ def network_monitor_loop():
         if STATE.boot_time is None:
             STATE.boot_time = time.monotonic()
 
+    last_avahi_check: float = 0.0
+
     while True:
         now = time.monotonic()
         with state_lock:
@@ -1454,6 +1472,12 @@ def network_monitor_loop():
             if not STATE.setup_mode:
                 STATE.manual_ap_active = False
             boot_time = STATE.boot_time or now
+            _avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
+
+        # Avahi mDNS hostname check (reduced frequency; skip during setup and WiFi apply)
+        if _avahi_ok and (now - last_avahi_check) >= AVAHI_CHECK_INTERVAL:
+            last_avahi_check = now
+            check_and_repair_avahi_hostname()
 
         # Handle manual request to enter AP mode (from the normal WebUI via localhost).
         # This overrides the boot-time auto-AP cutoff.
@@ -1670,6 +1694,140 @@ def connect_to_configured_wifi() -> bool:
     run_cmd(["nmcli", "connection", "up", connection_name])
     return True
 
+
+# ** AVAHI mDNS HOSTNAME MONITORING **
+
+def get_avahi_registered_hostname() -> Optional[str]:
+    """Query the mDNS hostname avahi-daemon is currently registered under.
+
+    Uses the avahi D-Bus interface (org.freedesktop.Avahi.Server.GetHostName).
+    Returns the bare hostname (without .local), or None on any failure.
+    """
+    if _DBUS_SEND is None:
+        return None
+
+    result = run_cmd(
+        [
+            _DBUS_SEND,
+            "--system",
+            "--print-reply",
+            "--dest=org.freedesktop.Avahi",
+            "/",
+            "org.freedesktop.Avahi.Server.GetHostName",
+        ],
+        timeout=3.0,
+    )
+    if result.returncode != 0:
+        return None
+
+    # dbus-send --print-reply output contains a line like:  string "sl-d303-2"
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('string "') and stripped.endswith('"'):
+            hostname = stripped[8:-1]
+            if hostname:
+                return hostname
+
+    return None
+
+
+def check_and_repair_avahi_hostname() -> None:
+    """Check avahi's registered mDNS hostname and restart avahi if it has drifted.
+
+    avahi renames itself (e.g. sl-d303 -> sl-d303-2) on detecting an mDNS host-name
+    conflict.  This can be a false positive — for example, after WiFi AP roaming where
+    a ghost mDNS record triggers a spurious probe conflict.  We apply a grace period
+    (AVAHI_MISMATCH_GRACE) before acting, so transient conflicts resolve themselves.
+    If the mismatch persists we restart avahi-daemon so it re-probes and reclaims the
+    correct hostname.  Restarts are rate-limited and capped at AVAHI_MAX_RESTART_ATTEMPTS
+    per boot to avoid persistent hammering when a genuine conflict cannot be resolved.
+    """
+    if _DBUS_SEND is None:
+        log_on_change(
+            "avahi_dbus_unavailable", True,
+            "dbus-send not found; avahi mDNS hostname monitoring disabled",
+        )
+        return
+
+    avahi_host = get_avahi_registered_hostname()
+    if avahi_host is None:
+        # avahi temporarily unreachable (e.g. mid-restart); skip silently
+        return
+
+    # Expected: system hostname, lower-cased (avahi normalises to lowercase for mDNS)
+    expected = get_system_hostname()
+    if expected.lower().endswith(".local"):
+        expected = expected[:-6]
+    expected = expected.lower()
+
+    now = time.monotonic()
+
+    with state_lock:
+        STATE.avahi_hostname = avahi_host
+
+    if avahi_host.lower() == expected:
+        with state_lock:
+            was_mismatched = STATE.avahi_mismatch_start is not None
+            STATE.avahi_mismatch_start = None
+            STATE.avahi_restart_count = 0
+        if was_mismatched:
+            log(f"avahi mDNS hostname restored to expected value '{avahi_host}'")
+        return
+
+    # --- Mismatch ---
+    with state_lock:
+        if STATE.avahi_mismatch_start is None:
+            STATE.avahi_mismatch_start = now
+            log(
+                f"avahi mDNS hostname mismatch detected: "
+                f"avahi='{avahi_host}', expected='{expected}'"
+            )
+        mismatch_duration = now - STATE.avahi_mismatch_start
+        restart_count = STATE.avahi_restart_count
+        last_restart = STATE.last_avahi_restart
+
+    # Give up after the maximum number of restart attempts (disabled when -1)
+    if AVAHI_MAX_RESTART_ATTEMPTS >= 0 and restart_count >= AVAHI_MAX_RESTART_ATTEMPTS:
+        log_on_change(
+            "avahi_conflict_exhausted", avahi_host,
+            f"avahi mDNS hostname conflict unresolved after {restart_count} restart(s); "
+            f"avahi='{avahi_host}', expected='{expected}'. "
+            f"No further attempts until reboot.",
+        )
+        return
+
+    # Wait for the grace period to expire before acting
+    if mismatch_duration < AVAHI_MISMATCH_GRACE:
+        return
+
+    # Rate-limit restart attempts
+    if last_restart is not None and (now - last_restart) < AVAHI_RESTART_MIN_INTERVAL:
+        return
+
+    with state_lock:
+        STATE.last_avahi_restart = now
+        STATE.avahi_restart_count += 1
+        new_count = STATE.avahi_restart_count
+
+    attempt_str = (
+        f"{new_count}/{AVAHI_MAX_RESTART_ATTEMPTS}"
+        if AVAHI_MAX_RESTART_ATTEMPTS >= 0
+        else str(new_count)
+    )
+    log(
+        f"avahi mDNS hostname mismatch persisted for {mismatch_duration:.0f}s; "
+        f"restarting avahi-daemon (attempt {attempt_str}); "
+        f"avahi='{avahi_host}', expected='{expected}'"
+    )
+
+    result = run_cmd(["systemctl", "restart", "avahi-daemon.service"])
+    if result.returncode != 0:
+        log(
+            f"avahi-daemon restart failed "
+            f"(rc={result.returncode}): {result.stderr.strip()}"
+        )
+    else:
+        log("avahi-daemon restarted; hostname will be verified on next check")
 
 
 if __name__ == "__main__":
