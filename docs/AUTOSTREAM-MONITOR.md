@@ -30,7 +30,7 @@ for higher-level orchestration, UI, settings, and playback-backend control.
 - `AudioMonitor`
   - top-level coordinator
   - owns the two `InputChannel` instances, the shared `FifoWriter`, the shared
-    `OutputProcessor`, and the `ControlServer`
+    `OutputProcessor`, the `OutputDumpWriter`, and the `ControlServer`
 - `ControlServer`
   - listens on a Unix domain socket
   - accepts newline-delimited JSON commands
@@ -43,6 +43,11 @@ for higher-level orchestration, UI, settings, and playback-backend control.
   - applies the shared output-side EQ after per-input processing
   - applies manual output gain and automatic output trim after the EQ
   - tracks post-gain clipping and exposes it via `output_clip_dbfs`
+- `OutputDumpWriter`
+  - engineering-only tap that records the final processed audio stream to a WAV
+    file on demand; controlled via the same socket API
+  - completely isolated from normal FIFO delivery; uses a bounded SPSC ring so
+    the audio thread never blocks on disk I/O
 - `EqChain` and `BiquadFilter`
   - implement the parametric EQ system
 - `RateEstimator`
@@ -71,6 +76,16 @@ The daemon listens on a Unix domain socket and speaks newline-delimited JSON.
 - Most responses are a single JSON line
 - `get_id_snapshot` is the only command that may send binary data after the JSON
   response line
+- engineering dump commands (`start_output_dump`, `stop_output_dump`) can be
+  driven from the Linux command line using `socat` or `nc -U`:
+
+  ```sh
+  printf '{"type":"start_output_dump","path":"/tmp/test.wav"}\n' \
+    | socat - /tmp/autostream_monitor.sock
+
+  printf '{"type":"stop_output_dump"}\n' \
+    | socat - /tmp/autostream_monitor.sock
+  ```
 
 ## Command-Line Options
 
@@ -521,6 +536,116 @@ ongoing clip protection:
    toggling auto-trim off and on again.
 6. Leave auto-trim enabled so any future peaks can still be cut automatically.
 
+### `start_output_dump`
+
+Begins recording the final processed audio stream to a WAV file.
+
+This is an engineering-only command intended for EQ and SRC validation directly
+from the Linux command line while the service is running.  Normal clients (Python
+controller, OwnTone) are unaffected.
+
+Request:
+
+```json
+{"type":"start_output_dump","path":"/tmp/autostream-dump.wav"}
+```
+
+Or, to overwrite an existing file:
+
+```json
+{"type":"start_output_dump","path":"/tmp/autostream-dump.wav","overwrite":true}
+```
+
+Request fields:
+
+- `path`
+  - absolute path to the output WAV file
+  - must not be empty, relative, or contain `..`
+  - must not already exist unless `overwrite` is `true`
+  - if it exists, it must be a regular file (not a directory, FIFO, etc.)
+  - the parent directory must be writable
+- `overwrite`
+  - if `true`, an existing regular file at `path` is truncated and replaced
+  - defaults to `false`
+
+Behavior:
+
+- the WAV file is opened immediately and a 44-byte placeholder header is written
+- audio frames are tapped after all processing (SRC, per-input gain/EQ, output
+  EQ, output gain, auto-trim) and after float-to-`int16` conversion — the same
+  final signal written to the FIFO
+- the tap is gated by `allow_capture`: only the input that is currently allowed
+  to feed the FIFO contributes frames; monitoring-only inputs are not recorded
+- pre-fill frames (the initial 0.5 s buffer accumulated before the first FIFO
+  write) are captured; the WAV starts from audio time zero
+- recording continues across silence gaps and FIFO stalls — it stops only when
+  `stop_output_dump` is called or the daemon shuts down
+- a bounded in-memory ring (≈ 2.97 s) decouples the audio thread from disk I/O;
+  if the ring fills (e.g. a sustained disk stall), frames are dropped and counted
+  in `dropped_frames` rather than blocking audio delivery
+
+Output format: PCM WAV, 44100 Hz, 2 channels, signed 16-bit little-endian.
+
+Success response:
+
+```json
+{"type":"ack","command":"start_output_dump","ok":true,"path":"/tmp/autostream-dump.wav"}
+```
+
+Typical errors:
+
+- `dump already active; call stop_output_dump first`
+- `path is empty`
+- `path must be absolute (start with /)`
+- `path must not contain ..`
+- `file already exists; use "overwrite":true to replace`
+- `path exists but is not a regular file`
+- `parent directory is not writable: ...`
+- `failed to open output file: ...`
+
+### `stop_output_dump`
+
+Stops the current recording, flushes buffered data, patches the WAV header with
+the final data sizes, and closes the file.  No-op if no recording is active.
+
+Request:
+
+```json
+{"type":"stop_output_dump"}
+```
+
+Success response:
+
+```json
+{
+  "type":"ack",
+  "command":"stop_output_dump",
+  "ok":true,
+  "was_active":true,
+  "frames_written":441000,
+  "dropped_frames":0
+}
+```
+
+Response fields:
+
+- `was_active`
+  - `true` if a recording was in progress before this call
+  - `false` if no recording was active (the call was a no-op)
+- `frames_written`
+  - total stereo frames written to disk for the recording that just stopped
+- `dropped_frames`
+  - total stereo frames dropped because the ring buffer was full
+  - non-zero values indicate the recording has gaps (typically caused by a disk
+    or filesystem stall on the target device)
+
+Notes:
+
+- if the daemon crashes mid-recording, the WAV header will have zero sizes but
+  the raw `s16le` audio data begins at byte offset 44 and can be recovered
+- the response always has `"ok":true`; there is no failure path for `stop_output_dump`
+
+
 ### `set_log_level`
 
 Changes the daemon log level at runtime.
@@ -580,6 +705,12 @@ Success response:
   "output_auto_trim_enabled":true,
   "output_auto_trim_db":-3.4,
   "effective_output_gain_db":-3.4,
+  "output_dump":{
+    "active":false,
+    "path":"",
+    "frames_written":0,
+    "dropped_frames":0
+  },
   "inputs":[
     {
       "index":1,
@@ -591,7 +722,15 @@ Success response:
       "raw_peak_dbfs":-12.3,
       "effective_peak_dbfs":-9.1,
       "started":true,
-      "running":true
+      "running":true,
+      "vu_history":{
+        "bin_ms":100,
+        "latest_seq":42,
+        "bins":[
+          {"seq":41,"l":-18.3,"r":-19.1},
+          {"seq":42,"l":-17.2,"r":-17.8}
+        ]
+      }
     }
   ]
 }
@@ -623,6 +762,14 @@ Top-level fields:
   - `output_gain_db + output_auto_trim_db`
   - use this value as the `gain_db` argument to `set_output_gain` to make the
     auto-derived attenuation permanent
+- `output_dump`
+  - snapshot of the engineering output dump state
+  - `active`: `true` while a `start_output_dump` recording is in progress
+  - `path`: path passed to the most recent `start_output_dump` call (empty if
+    never started)
+  - `frames_written`: stereo frames written to disk so far (or in the last
+    completed recording)
+  - `dropped_frames`: stereo frames dropped because the ring buffer was full
 
 Per-input fields:
 
@@ -648,6 +795,15 @@ Per-input fields:
     stopped/cleaned up
 - `running`
   - whether the worker threads are actively running
+- `vu_history`
+  - rolling stereo peak history for driving a delayed VU meter display
+  - `bin_ms`: bin duration in milliseconds (always `100`)
+  - `latest_seq`: sequence number of the most recent bin (resets on channel
+    restart; `0` if no bins have been produced yet)
+  - `bins`: array of up to 40 bins ordered oldest-first, each containing:
+    - `seq`: bin sequence number
+    - `l`: peak left-channel level in dBFS for that 100 ms window
+    - `r`: peak right-channel level in dBFS for that 100 ms window
 
 ### `get_id_snapshot`
 

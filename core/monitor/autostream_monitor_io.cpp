@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <system_error>
@@ -441,6 +442,291 @@ void FifoWriter::close()
 
 
 // =============================================================================
+// OutputDumpWriter
+// =============================================================================
+
+// Placeholder WAV header written at start(); sizes patched to final values at stop().
+// Format: PCM 44100 Hz, 2 channels, signed 16-bit little-endian.
+// Header layout (44 bytes):
+//   Offset  0: "RIFF"
+//   Offset  4: RIFF chunk size = 36 + data_bytes  (patched at offset  4)
+//   Offset  8: "WAVE"
+//   Offset 12: "fmt " + 16 (sub-chunk size)
+//   Offset 20: audio_format=1, channels=2, sample_rate=44100
+//   Offset 28: byte_rate=176400, block_align=4, bits_per_sample=16
+//   Offset 36: "data"
+//   Offset 40: data chunk size = frames * 4        (patched at offset 40)
+static const uint8_t WAV_PLACEHOLDER_HEADER[44] = {
+    // RIFF chunk descriptor
+    'R','I','F','F',
+    0,0,0,0,           // RIFF chunk size — patched on stop
+    'W','A','V','E',
+    // "fmt " sub-chunk (16 bytes)
+    'f','m','t',' ',
+    16,0,0,0,          // sub-chunk size
+    1,0,               // audio format = PCM
+    2,0,               // channels = 2
+    0x44,0xAC,0,0,     // sample rate = 44100 (0x0000AC44)
+    0x10,0xB1,2,0,     // byte rate  = 176400 (0x0002B110)
+    4,0,               // block align = 4 bytes
+    16,0,              // bits per sample = 16
+    // "data" sub-chunk header
+    'd','a','t','a',
+    0,0,0,0            // data chunk size — patched on stop
+};
+
+OutputDumpWriter::OutputDumpWriter()
+    : _ring(DUMP_RING_SAMPLES, 0)
+{
+}
+
+OutputDumpWriter::~OutputDumpWriter()
+{
+    stop();
+}
+
+std::string OutputDumpWriter::start(const std::string& path, bool overwrite)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    if (_active.load(std::memory_order_relaxed))
+        return "dump already active; call stop_output_dump first";
+
+    // Open the output file.  Use POSIX open() so we can pass O_EXCL for
+    // non-overwrite mode, then wrap with fdopen() for stdio buffering.
+    int flags = O_WRONLY | O_CREAT | (overwrite ? O_TRUNC : O_EXCL);
+    int fd = ::open(path.c_str(), flags, 0644);
+    if (fd < 0)
+        return std::string("failed to open output file: ") + strerror(errno);
+
+    FILE* f = fdopen(fd, "wb");
+    if (!f)
+    {
+        int saved = errno;
+        ::close(fd);
+        return std::string("fdopen failed: ") + strerror(saved);
+    }
+
+    // Write placeholder header; sizes will be patched in stop().
+    if (fwrite(WAV_PLACEHOLDER_HEADER, 1, sizeof(WAV_PLACEHOLDER_HEADER), f)
+            != sizeof(WAV_PLACEHOLDER_HEADER))
+    {
+        fclose(f);
+        return "failed to write WAV header";
+    }
+
+    // Initialise ring and counters before setting _active so submit_block()
+    // cannot observe a stale read position.
+    _file    = f;
+    _path    = path;
+    _ring_write_pos.store(0, std::memory_order_relaxed);
+    _ring_read_pos.store(0,  std::memory_order_relaxed);
+    _frames_written.store(0, std::memory_order_relaxed);
+    _dropped_frames.store(0, std::memory_order_relaxed);
+    _stop_requested.store(false, std::memory_order_relaxed);
+
+    // Release store: makes the ring initialisation visible to the writer thread
+    // before it observes _active = true via any subsequent acquire load.
+    _active.store(true, std::memory_order_release);
+
+    _writer_thread = std::thread(&OutputDumpWriter::writer_thread_func, this);
+
+    LOG_INFO("[dump] Recording started: path='%s'", path.c_str());
+    return "";
+}
+
+void OutputDumpWriter::stop(bool* was_active_out)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    if (!_active.load(std::memory_order_relaxed))
+    {
+        if (was_active_out) *was_active_out = false;
+        return;
+    }
+
+    // Clear _active first so the audio thread stops submitting new frames as
+    // soon as possible.  _stop_requested then signals the writer thread to
+    // drain whatever remains in the ring and exit.
+    _active.store(false, std::memory_order_release);
+    _stop_requested.store(true, std::memory_order_release);
+    _cv.notify_all();
+
+    if (_writer_thread.joinable())
+        _writer_thread.join();
+
+    // Patch WAV header with final data sizes.
+    if (_file)
+    {
+        uint64_t frames       = _frames_written.load(std::memory_order_relaxed);
+        uint64_t data_bytes64 = frames * 4ull;  // stereo int16 = 4 bytes/frame
+
+        // Clamp to uint32 max — the WAV data chunk is limited to ~4 GB
+        // (~6.7 hours at 176400 bytes/s), which is far beyond engineering use.
+        uint32_t data_bytes = (data_bytes64 > 0xFFFFFFFFull)
+                              ? 0xFFFFFFFFu
+                              : static_cast<uint32_t>(data_bytes64);
+        uint32_t riff_size  = (data_bytes <= 0xFFFFFFFFu - 36u)
+                              ? 36u + data_bytes
+                              : 0xFFFFFFFFu;
+
+        auto patch_u32 = [this](long offset, uint32_t val)
+        {
+            uint8_t b[4] = {
+                static_cast<uint8_t>(val),
+                static_cast<uint8_t>(val >>  8),
+                static_cast<uint8_t>(val >> 16),
+                static_cast<uint8_t>(val >> 24)
+            };
+            fseek(_file, offset, SEEK_SET);
+            fwrite(b, 1, 4, _file);
+        };
+
+        patch_u32(4,  riff_size);   // RIFF chunk size at offset 4
+        patch_u32(40, data_bytes);  // data chunk size at offset 40
+
+        fflush(_file);
+        fclose(_file);
+        _file = nullptr;
+    }
+
+    LOG_INFO("[dump] Recording stopped: path='%s', frames=%llu, dropped=%llu",
+             _path.c_str(),
+             static_cast<unsigned long long>(_frames_written.load(std::memory_order_relaxed)),
+             static_cast<unsigned long long>(_dropped_frames.load(std::memory_order_relaxed)));
+
+    if (was_active_out) *was_active_out = true;
+}
+
+void OutputDumpWriter::submit_block(const int16_t* samples, int out_frames)
+{
+    if (!_active.load(std::memory_order_relaxed))
+        return;
+
+    uint32_t n_samples = static_cast<uint32_t>(out_frames) * 2u;
+
+    // Check ring space.  _ring_read_pos is written only by the writer thread;
+    // acquire ordering synchronises with its release store so we see the most
+    // recently freed space.
+    uint32_t write_pos  = _ring_write_pos.load(std::memory_order_relaxed);
+    uint32_t read_pos   = _ring_read_pos.load(std::memory_order_acquire);
+    uint32_t used       = write_pos - read_pos;
+    uint32_t free_space = DUMP_RING_SAMPLES - used;
+
+    if (n_samples > free_space)
+    {
+        _dropped_frames.fetch_add(static_cast<uint64_t>(out_frames),
+                                   std::memory_order_relaxed);
+        return;
+    }
+
+    // Copy samples into the ring, handling the wrap-around boundary.
+    uint32_t write_idx    = write_pos & DUMP_RING_MASK;
+    uint32_t to_end       = DUMP_RING_SAMPLES - write_idx;
+    uint32_t first_chunk  = std::min(n_samples, to_end);
+    uint32_t second_chunk = n_samples - first_chunk;
+
+    memcpy(_ring.data() + write_idx, samples,
+           first_chunk * sizeof(int16_t));
+    if (second_chunk > 0)
+        memcpy(_ring.data(), samples + first_chunk,
+               second_chunk * sizeof(int16_t));
+
+    // Release store: makes the ring data visible to the writer thread.
+    _ring_write_pos.fetch_add(n_samples, std::memory_order_release);
+
+    // Wake the writer thread.  notify_one() is safe without holding _cv_mutex
+    // (same pattern as InputChannel::capture_thread_func → _ring_cv.notify_one()).
+    _cv.notify_one();
+}
+
+void OutputDumpWriter::writer_thread_func()
+{
+    while (true)
+    {
+        // Sleep until data is available or a stop is requested.
+        // The 20 ms timeout catches any notify_one() fired between the
+        // predicate check and the wait_for() entry.
+        {
+            std::unique_lock<std::mutex> lk(_cv_mutex);
+            _cv.wait_for(lk, std::chrono::milliseconds(20),
+                [this]()
+                {
+                    uint32_t wp = _ring_write_pos.load(std::memory_order_acquire);
+                    uint32_t rp = _ring_read_pos.load(std::memory_order_relaxed);
+                    return (wp - rp) > 0u
+                        || _stop_requested.load(std::memory_order_relaxed);
+                });
+        }
+
+        // Drain all available samples to disk.
+        uint32_t write_pos = _ring_write_pos.load(std::memory_order_acquire);
+        uint32_t read_pos  = _ring_read_pos.load(std::memory_order_relaxed);
+        uint32_t avail     = write_pos - read_pos;
+
+        if (avail > 0)
+        {
+            uint32_t read_idx = read_pos & DUMP_RING_MASK;
+            uint32_t to_end   = DUMP_RING_SAMPLES - read_idx;
+            uint32_t first    = std::min(avail, to_end);
+            uint32_t second   = avail - first;
+
+            bool write_ok = true;
+            size_t written = fwrite(_ring.data() + read_idx,
+                                    sizeof(int16_t), first, _file);
+            if (written < first)
+            {
+                write_ok = false;
+            }
+            else if (second > 0)
+            {
+                size_t written2 = fwrite(_ring.data(),
+                                          sizeof(int16_t), second, _file);
+                written += written2;
+                if (written2 < second)
+                    write_ok = false;
+            }
+
+            // `written` is in int16 samples; stereo frames = samples / 2.
+            _frames_written.fetch_add(written / 2u, std::memory_order_relaxed);
+
+            // Always advance the read position to consume the data, even on
+            // write error, so the audio thread is never blocked by a full ring.
+            _ring_read_pos.fetch_add(avail, std::memory_order_release);
+
+            if (!write_ok)
+            {
+                LOG_WARN("[dump] Write error; aborting dump recording");
+                break;
+            }
+        }
+
+        // Exit only after stop has been requested and the ring is fully drained.
+        if (_stop_requested.load(std::memory_order_relaxed))
+        {
+            uint32_t wp = _ring_write_pos.load(std::memory_order_acquire);
+            uint32_t rp = _ring_read_pos.load(std::memory_order_relaxed);
+            if (wp - rp == 0u)
+                break;
+        }
+    }
+}
+
+OutputDumpWriter::Status OutputDumpWriter::get_status() const
+{
+    Status s;
+    s.active         = _active.load(std::memory_order_relaxed);
+    s.frames_written = _frames_written.load(std::memory_order_relaxed);
+    s.dropped_frames = _dropped_frames.load(std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        s.path = _path;
+    }
+    return s;
+}
+
+
+// =============================================================================
 // InputChannel
 // =============================================================================
 
@@ -474,14 +760,16 @@ static float linear_to_dbfs(float peak_linear)
     return std::max(-90.0f, 20.0f * std::log10(peak_linear));
 }
 
-InputChannel::InputChannel(int              index,
-                           FifoWriter&      shared_fifo,
-                           std::mutex&      fifo_mutex,
-                           OutputProcessor& output_processor)
+InputChannel::InputChannel(int               index,
+                           FifoWriter&       shared_fifo,
+                           std::mutex&       fifo_mutex,
+                           OutputProcessor&  output_processor,
+                           OutputDumpWriter& dump_writer)
     : _index(index)
     , _shared_fifo(shared_fifo)
     , _fifo_mutex(fifo_mutex)
     , _output_processor(output_processor)
+    , _dump_writer(dump_writer)
     , _ring_buf(RING_BUF_SAMPLES, 0)
 {
     _status.index = index;
@@ -1313,6 +1601,14 @@ void InputChannel::process_thread_func()
                         // Convert to int16.
                         src_float_to_short_array(float_out.data(), pcm_out.data(),
                                                  out_frames * 2);
+
+                        // ── Engineering output dump tap ───────────────────────
+                        // First point where the signal is complete s16le after
+                        // all SRC, per-input gain/EQ, output EQ, output gain,
+                        // and auto-trim.  submit_block() is non-blocking: it
+                        // copies into a bounded SPSC ring or drops and counts
+                        // frames if the ring is full — never delays this thread.
+                        _dump_writer.submit_block(pcm_out.data(), out_frames);
 
                         if (_prefill_frames_remaining > 0)
                         {

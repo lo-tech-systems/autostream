@@ -523,6 +523,115 @@ private:
 
 
 // =============================================================================
+// OutputDumpWriter
+//
+// Engineering-only tap that records the final processed audio stream to a WAV
+// file on demand, without disturbing the normal FIFO delivery path.
+//
+// Signal tap point: inside InputChannel::process_thread_func(), immediately
+// after _output_processor.apply() and src_float_to_short_array() — the first
+// point where the signal is complete 44.1 kHz stereo s16le after all SRC,
+// per-input gain/EQ, output EQ, output gain, and auto-trim.  The tap is gated
+// by the _allow_capture flag, so the WAV reflects only the active FIFO-feeding
+// input.  Pre-fill frames (the initial 0.5 s buffer accumulated before the
+// first FIFO write) ARE captured; the WAV therefore starts from time zero even
+// though OwnTone has not yet received those frames.
+//
+// Thread model:
+//   - submit_block()    called by the audio process thread (inside _fifo_mutex)
+//   - writer thread     drains the ring to disk; owned by this object
+//   - start() / stop()  called by the control thread (ControlServer worker)
+//
+// The audio thread only copies frames into a bounded SPSC ring (never blocks).
+// If the ring fills, frames are counted in dropped_frames and discarded —
+// normal FIFO delivery is never delayed.  The writer thread drains the ring
+// to a stdio-buffered FILE* on its own schedule.
+//
+// Control via the Unix socket API:
+//   {"type":"start_output_dump","path":"/tmp/test.wav"}
+//   {"type":"start_output_dump","path":"/tmp/test.wav","overwrite":true}
+//   {"type":"stop_output_dump"}
+// =============================================================================
+
+class OutputDumpWriter
+{
+public:
+    struct Status
+    {
+        bool        active         = false;
+        std::string path;
+        uint64_t    frames_written = 0;  // stereo frames written to disk
+        uint64_t    dropped_frames = 0;  // stereo frames dropped (ring full)
+    };
+
+    OutputDumpWriter();
+    ~OutputDumpWriter();
+
+    // Open path and begin recording.  Writes a 44-byte WAV placeholder header
+    // (sizes are patched on stop()).  Returns "" on success or a non-empty
+    // error string on failure.  Must not be called while a dump is already active.
+    // overwrite: if false, rejects the call when a file already exists at path.
+    std::string start(const std::string& path, bool overwrite);
+
+    // Flush, patch WAV header, and close.  No-op if no dump is active.
+    // was_active_out (if non-null) is set to indicate whether a recording was
+    // in progress before this call.  Called automatically by ~OutputDumpWriter().
+    void stop(bool* was_active_out = nullptr);
+
+    // Submit out_frames stereo s16le samples for recording.
+    // Called from the audio process thread under AudioMonitor::_fifo_mutex.
+    // Non-blocking: drops and counts frames when the ring is full.
+    void submit_block(const int16_t* samples, int out_frames);
+
+    // True while a dump is in progress.  Safe to call from any thread.
+    bool is_active() const { return _active.load(std::memory_order_relaxed); }
+
+    // Thread-safe snapshot of the current recording state.
+    Status get_status() const;
+
+private:
+    void writer_thread_func();
+
+    // SPSC ring buffer: 2^18 stereo s16le samples ≈ 2.97 s at 44.1 kHz.
+    // submit_block() is the single producer; writer_thread_func() is the
+    // single consumer.  Both positions are atomic to satisfy the C++ memory
+    // model for inter-thread reads.
+    static constexpr uint32_t DUMP_RING_SAMPLES = 1u << 18;   // 262144
+    static constexpr uint32_t DUMP_RING_MASK    = DUMP_RING_SAMPLES - 1u;
+
+    std::vector<int16_t>    _ring;
+    std::atomic<uint32_t>   _ring_write_pos{0};  // written only by audio thread
+    std::atomic<uint32_t>   _ring_read_pos{0};   // written only by writer thread
+
+    std::thread             _writer_thread;
+    std::mutex              _cv_mutex;
+    std::condition_variable _cv;
+
+    // _active is cleared before _stop_requested is set so the audio thread
+    // stops submitting new frames as early as possible during stop().
+    std::atomic<bool>       _active{false};
+    std::atomic<bool>       _stop_requested{false};
+
+    // _file is opened by start(), owned by the writer thread during the
+    // recording session, and closed (after WAV header patch) by stop().
+    FILE*                   _file{nullptr};
+
+    // _path is written once in start() under _mutex; read in stop() and
+    // get_status() — also under _mutex.
+    std::string             _path;
+
+    std::atomic<uint64_t>   _frames_written{0};  // updated by writer thread
+    std::atomic<uint64_t>   _dropped_frames{0};  // updated by audio thread
+
+    // Serialises start()/stop() against each other and protects _path reads
+    // in get_status().  Held for the full duration of stop() (including the
+    // writer thread join), which is fast in practice because draining an
+    // in-memory ring to the stdio page cache takes microseconds.
+    mutable std::mutex      _mutex;
+};
+
+
+// =============================================================================
 // VuBin
 //
 // One 100 ms bin of stereo peak history, produced by the process thread after
@@ -588,10 +697,13 @@ public:
     // fifo_mutex:       a mutex owned by AudioMonitor that serialises FIFO writes
     // output_processor: the AudioMonitor's OutputProcessor; apply() is called
     //                   on each block after per-input EQ, before float→int16
-    InputChannel(int              index,
-                 FifoWriter&      shared_fifo,
-                 std::mutex&      fifo_mutex,
-                 OutputProcessor& output_processor);
+    // dump_writer:      the AudioMonitor's OutputDumpWriter; submit_block() is
+    //                   called after int16 conversion, before the FIFO write
+    InputChannel(int               index,
+                 FifoWriter&       shared_fifo,
+                 std::mutex&       fifo_mutex,
+                 OutputProcessor&  output_processor,
+                 OutputDumpWriter& dump_writer);
 
     ~InputChannel();
 
@@ -683,9 +795,10 @@ private:
     int         _index;
 
     // ── Shared resources (owned by AudioMonitor) ─────────────────────────────
-    FifoWriter&      _shared_fifo;
-    std::mutex&      _fifo_mutex;
-    OutputProcessor& _output_processor;
+    FifoWriter&       _shared_fifo;
+    std::mutex&       _fifo_mutex;
+    OutputProcessor&  _output_processor;
+    OutputDumpWriter& _dump_writer;
 
     // ── Per-input EQ (owned by this channel) ─────────────────────────────────
     // set_eq() publishes new bands via EqChain::set_bands().  The process thread
@@ -989,6 +1102,12 @@ public:
     std::string api_get_id_snapshot(int input_index, int max_seconds,
                                      std::vector<int16_t>* binary_out);
 
+    // Engineering output dump: record the final processed stream to a WAV file.
+    // start: opens path and begins recording; rejects if already active.
+    // stop:  flushes, patches WAV header, closes; no-op if not active.
+    std::string api_start_output_dump(const std::string& path, bool overwrite);
+    std::string api_stop_output_dump();
+
 private:
     // Returns a pointer to the InputChannel for the given 1-based index,
     // or nullptr if the index is out of range.
@@ -1002,9 +1121,10 @@ private:
 
     std::string _socket_path;
 
-    FifoWriter      _fifo_writer;
-    std::mutex      _fifo_mutex;
-    OutputProcessor _output_processor;
+    FifoWriter       _fifo_writer;
+    OutputDumpWriter _dump_writer;
+    std::mutex       _fifo_mutex;
+    OutputProcessor  _output_processor;
 
     // _inputs[0] is input 1, _inputs[1] is input 2.
     std::array<std::unique_ptr<InputChannel>, NUM_INPUTS> _inputs;

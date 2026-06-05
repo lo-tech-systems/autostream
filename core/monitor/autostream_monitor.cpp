@@ -739,6 +739,16 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         std::string level_text = json_get_string(json_command, "level");
         return _monitor.api_set_log_level(level_text);
     }
+    else if (type == "start_output_dump")
+    {
+        std::string path = json_get_string(json_command, "path");
+        bool overwrite   = json_get_bool(json_command, "overwrite", false);
+        return _monitor.api_start_output_dump(path, overwrite);
+    }
+    else if (type == "stop_output_dump")
+    {
+        return _monitor.api_stop_output_dump();
+    }
     else
     {
         std::string escaped = json_escape(type.empty() ? json_command : type);
@@ -766,7 +776,8 @@ AudioMonitor::AudioMonitor(const std::string& socket_path)
             i + 1,             // 1-based index
             _fifo_writer,
             _fifo_mutex,
-            _output_processor
+            _output_processor,
+            _dump_writer
         );
     }
 }
@@ -857,6 +868,10 @@ void AudioMonitor::stop()
             _inputs[i]->stop();
     }
 
+    // Stop any active engineering output dump.  Inputs are already stopped so
+    // no new frames will be submitted; the writer thread drains quickly.
+    _dump_writer.stop();
+
     // Stop the control server (closes the socket).
     _control_server.stop();
 
@@ -906,8 +921,18 @@ std::string AudioMonitor::api_get_status()
         << ",\"output_gain_db\":"               << gs.manual_gain_db
         << ",\"output_auto_trim_enabled\":"     << (gs.auto_trim_enabled ? "true" : "false")
         << ",\"output_auto_trim_db\":"          << gs.auto_trim_db
-        << ",\"effective_output_gain_db\":"     << gs.effective_gain_db
-        << ",\"inputs\":[";
+        << ",\"effective_output_gain_db\":"     << gs.effective_gain_db;
+
+    {
+        OutputDumpWriter::Status ds = _dump_writer.get_status();
+        oss << ",\"output_dump\":{"
+            << "\"active\":"         << (ds.active ? "true" : "false") << ","
+            << "\"path\":\""         << json_escape(ds.path)            << "\","
+            << "\"frames_written\":" << ds.frames_written               << ","
+            << "\"dropped_frames\":" << ds.dropped_frames               << "}";
+    }
+
+    oss << ",\"inputs\":[";
 
     for (int i = 0; i < NUM_INPUTS; ++i)
     {
@@ -1001,6 +1026,40 @@ static std::string validate_fifo_path(const std::string& path)
 
     if (access(path.c_str(), W_OK) != 0)
         return std::string("path is not writable: ") + strerror(errno);
+
+    return "";
+}
+
+// Return an error string if path is invalid as a WAV dump output path, or "".
+// overwrite: if false, rejects the call when a file already exists at path.
+static std::string validate_dump_path(const std::string& path, bool overwrite)
+{
+    if (path.empty())
+        return "path is empty";
+
+    if (path[0] != '/')
+        return "path must be absolute (start with /)";
+
+    if (path.find("..") != std::string::npos)
+        return "path must not contain ..";
+
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0)
+    {
+        // Path already exists — must be a regular file.
+        if (!S_ISREG(st.st_mode))
+            return "path exists but is not a regular file";
+        if (!overwrite)
+            return "file already exists; use \"overwrite\":true to replace";
+    }
+
+    // Verify the parent directory is writable so the open() in start() will
+    // not fail with EACCES.  rfind('/') always finds at least the leading '/'.
+    std::string parent = path.substr(0, path.rfind('/'));
+    if (parent.empty())
+        parent = "/";
+    if (access(parent.c_str(), W_OK) != 0)
+        return std::string("parent directory is not writable: ") + strerror(errno);
 
     return "";
 }
@@ -1503,6 +1562,65 @@ std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
         << "\"rate\":"     << InputChannel::ID_BUF_RATE << ","
         << "\"channels\":1,"
         << "\"frames\":"   << frames        << "}";
+    return oss.str();
+}
+
+
+// ── api_start_output_dump ─────────────────────────────────────────────────────
+//
+// Validates path, then delegates to OutputDumpWriter::start().  The dump tap
+// in InputChannel::process_thread_func() is gated by OutputDumpWriter::is_active(),
+// so recording begins on the next processed audio block after this returns.
+//
+std::string AudioMonitor::api_start_output_dump(const std::string& path, bool overwrite)
+{
+    std::string validation_error = validate_dump_path(path, overwrite);
+    if (!validation_error.empty())
+    {
+        LOG_WARN("[monitor] start_output_dump rejected: %s", validation_error.c_str());
+        std::ostringstream oss;
+        oss << "{\"type\":\"ack\",\"command\":\"start_output_dump\","
+            << "\"ok\":false,\"error\":\"" << json_escape(validation_error) << "\"}";
+        return oss.str();
+    }
+
+    std::string start_error = _dump_writer.start(path, overwrite);
+    if (!start_error.empty())
+    {
+        LOG_WARN("[monitor] start_output_dump failed: %s", start_error.c_str());
+        std::ostringstream oss;
+        oss << "{\"type\":\"ack\",\"command\":\"start_output_dump\","
+            << "\"ok\":false,\"error\":\"" << json_escape(start_error) << "\"}";
+        return oss.str();
+    }
+
+    std::ostringstream oss;
+    oss << "{\"type\":\"ack\",\"command\":\"start_output_dump\","
+        << "\"ok\":true,"
+        << "\"path\":\"" << json_escape(path) << "\"}";
+    return oss.str();
+}
+
+
+// ── api_stop_output_dump ──────────────────────────────────────────────────────
+//
+// Signals OutputDumpWriter to stop, waits for the writer thread to drain and
+// exit, patches the WAV header, and closes the file.  Returns a JSON ack
+// with the final frame and drop counts regardless of whether a dump was active.
+//
+std::string AudioMonitor::api_stop_output_dump()
+{
+    bool was_active = false;
+    _dump_writer.stop(&was_active);
+
+    OutputDumpWriter::Status s = _dump_writer.get_status();
+
+    std::ostringstream oss;
+    oss << "{\"type\":\"ack\",\"command\":\"stop_output_dump\","
+        << "\"ok\":true,"
+        << "\"was_active\":"     << (was_active ? "true" : "false") << ","
+        << "\"frames_written\":" << s.frames_written                << ","
+        << "\"dropped_frames\":" << s.dropped_frames                << "}";
     return oss.str();
 }
 
