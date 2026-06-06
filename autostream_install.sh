@@ -353,10 +353,6 @@ EOF
   rm -f "${tmp}"
 }
 
-set_phase() {
-  CURRENT_PHASE="$1"
-}
-
 update_progress() {
   # Write a progress update only when running in update mode.
   [[ "${INSTALL_MODE}" == "update" ]] || return 0
@@ -607,7 +603,7 @@ bootstrap_phase() {
 
 # system_upgrade_phase: refresh installed OS packages during update.
 system_upgrade_phase() {
-  set_phase "system upgrade"
+  CURRENT_PHASE="system upgrade"
   info "=== Phase: system upgrade ==="
   write_update_result "in_progress" "Refreshing package lists..." 20
   info "Updating apt metadata"
@@ -619,7 +615,7 @@ system_upgrade_phase() {
 
 # fetch_phase: clone/update the autostream source repo (install only).
 fetch_phase() {
-  set_phase "fetch"
+  CURRENT_PHASE="fetch"
   info "=== Phase: fetch ==="
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
@@ -648,7 +644,7 @@ fetch_phase() {
 
 # sdmon_phase: build and install sdmon binary (install and update).
 sdmon_phase() {
-  set_phase "sdmon"
+  CURRENT_PHASE="sdmon"
   info "=== Phase: sdmon ==="
 
   if [[ -z "${SDMON_METHOD}" ]]; then
@@ -672,7 +668,7 @@ sdmon_phase() {
 
 # deploy_phase: copy app files, build monitor binary, set up venv (install and update).
 deploy_phase() {
-  set_phase "deploy"
+  CURRENT_PHASE="deploy"
   info "=== Phase: deploy ==="
   update_progress "Deploying application files..." 40
 
@@ -732,7 +728,7 @@ deploy_phase() {
 
 # configure_phase: apply/refresh all managed system configs (install and update).
 configure_phase() {
-  set_phase "configure"
+  CURRENT_PHASE="configure"
   info "=== Phase: configure ==="
   update_progress "Applying configuration..." 62
 
@@ -740,10 +736,6 @@ configure_phase() {
   install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
   install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_admin"   /etc/sudoers.d/autostream_admin
   validate_sudoers
-
-  mkdir -p "${INSTALL_DIR}"
-  chown -R autostream:autostream "${INSTALL_DIR}"
-  chmod 0755 "${INSTALL_DIR}"
 
   provision_owntone "${INSTALL_MODE}"
   update_progress "Configuring system services..." 78
@@ -835,7 +827,7 @@ permissions_pass() {
 
 # services_phase: install and enable/reload systemd units (install and update).
 services_phase() {
-  set_phase "services"
+  CURRENT_PHASE="services"
   info "=== Phase: services ==="
   update_progress "Restarting services..." 80
 
@@ -981,7 +973,7 @@ run_update() {
   info ">>> Starting update of existing installation <<<"
   PROMPT_REBOOT_ON_EXIT=0
   UPDATE_RUN_AT="$(date -Is)"
-  set_phase "preflight"
+  CURRENT_PHASE="preflight"
   write_update_result "in_progress" "Starting update" 0
 
   stop_watchdog_if_ram_monitored
@@ -998,9 +990,9 @@ run_update() {
   configure_phase
   services_phase
 
-  set_phase "state save"
+  CURRENT_PHASE="state save"
   save_state
-  set_phase "complete"
+  CURRENT_PHASE="complete"
   write_update_result "success" "Update complete" 100
 
   info "Update complete. Scheduling reboot..."

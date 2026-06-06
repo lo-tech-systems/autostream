@@ -164,18 +164,6 @@ install_text_linux() {
   sed -i 's/\r$//' "$dest" || true
 }
 
-install_bin() {
-  # Install an executable file (binary or script). Does not modify contents.
-  # Usage: install_bin <src> <dest> <mode> [owner] [group]
-  local src="$1" dest="$2" mode="$3" owner="${4:-root}" group="${5:-root}"
-
-  if [[ ! -e "${src}" ]]; then
-    error "Missing required file: ${src}"
-    return 1
-  fi
-
-  install -m "${mode}" -o "${owner}" -g "${group}" "${src}" "${dest}"
-}
 
 #############################################
 # Git helpers
