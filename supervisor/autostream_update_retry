@@ -103,8 +103,10 @@ def _is_pre_boot(timestamp_str: str) -> bool:
         boot_time = datetime.now(tz=timezone.utc) - timedelta(seconds=uptime_s)
         return ts < boot_time
     except Exception:
-        # /proc/uptime unavailable; fall back to age-based check
-        return (datetime.now(tz=timezone.utc) - ts) > timedelta(minutes=15)
+        # /proc/uptime unavailable; fall back to age-based check.
+        # 90 min matches STALE_MINUTES in autostream_admin — covers the worst-case
+        # update duration (apt-get upgrade + OwnTone mini build on SD card).
+        return (datetime.now(tz=timezone.utc) - ts) > timedelta(minutes=90)
 
 
 def _find_installer() -> Path | None:

@@ -156,7 +156,7 @@
     var successStartedAt = 0;
     var lastKnownPercent = 0;
     var consecutiveFailures = 0;
-    var FAILURE_THRESHOLD = 6;
+    var OFFLINE_WARN_THRESHOLD = 18; // ~3 min before escalating the offline message
 
     function text(el, value) {
       if (el) el.textContent = value;
@@ -292,19 +292,14 @@
         })
         .catch(function() {
           consecutiveFailures++;
-          if (consecutiveFailures >= FAILURE_THRESHOLD) {
-            render({
-              status: 'failure',
-              message: 'Update has failed. Please power-cycle your device.',
-              percent: lastKnownPercent
-            });
-          } else {
-            render({
-              status: 'in_progress',
-              message: 'Restarting web handler...',
-              percent: lastKnownPercent
-            });
-          }
+          var offlineMsg = consecutiveFailures >= OFFLINE_WARN_THRESHOLD
+            ? 'Device has been unreachable for several minutes — it may still be recovering or retrying the update.'
+            : 'Waiting for device to come back...';
+          render({
+            status: 'in_progress',
+            message: offlineMsg,
+            percent: lastKnownPercent
+          });
         })
         .finally(function() {
           if (!successMode) {
