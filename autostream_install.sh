@@ -696,7 +696,7 @@ deploy_phase() {
     "${INSTALL_DIR}/monitor/autostream_monitor_dsp.cpp" \
     "${INSTALL_DIR}/monitor/autostream_monitor_io.cpp" \
     "${INSTALL_DIR}/monitor/autostream_monitor_utils.cpp" \
-    -lasound -lsamplerate -lpthread
+    -lasound -lsamplerate -lpthread -latomic
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 
   if [[ -f "${INSTALL_DIR}/autostream.ini" ]]; then
@@ -937,7 +937,7 @@ stop_watchdog_if_ram_monitored() {
     min_mem="$(grep -E '^\s*min-memory\s*=' "${conf}" 2>/dev/null \
                | tail -n1 \
                | sed 's/[^=]*=\s*//' \
-               | tr -d '[:space:]')"
+               | tr -d '[:space:]')" || true
   fi
 
   if [[ -z "${min_mem}" || "${min_mem}" == "0" ]]; then
