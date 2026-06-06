@@ -301,18 +301,55 @@ def read_version_info() -> int:
     return 0
 
 
+def _update_unit_active() -> bool:
+    """Return True if an autostream update installer unit is currently running."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "list-units", "--state=active", "--no-legend", "--plain",
+             "autostream-update-*.service"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _install_log_recently_modified(now: dt.datetime, within_minutes: int = 5) -> bool:
+    """Return True if the installer log was written to within the last `within_minutes`."""
+    try:
+        mtime = _INSTALL_LOG.stat().st_mtime
+        return (now.timestamp() - mtime) < (within_minutes * 60)
+    except OSError:
+        return False
+
+
 def _is_stale_in_progress(last_run_at_str: str) -> bool:
     """Return True if an in_progress update should be considered stale.
 
-    An in-progress update is stale if its start timestamp is either:
-      - more than 15 minutes ago, or
-      - before the current system boot time.
+    Liveness is determined by combining the unit-active and log-recency signals:
+      - Unit active  + log recent (< 30 min)  → healthy, not stale
+      - Unit active  + log silent (≥ 30 min)  → hung/deadlocked, stale
+      - Unit inactive + log recent (< 5 min)  → just finished, not stale
+      - Unit inactive + log silent             → fall through to age/boot checks
 
-    If the timestamp cannot be parsed we err on the side of caution and
-    treat the record as stale so the UI can offer a retry.
+    HUNG_LOG_MINUTES is intentionally generous (30 min) because the OwnTone
+    mini build is a single-threaded make that can go 20+ minutes without
+    producing any log output on a slow SD card.
     """
-    STALE_MINUTES = 90  # apt-get upgrade + OwnTone mini build can take 40+ min on SD card
+    STALE_MINUTES = 90    # apt-get upgrade + OwnTone mini build can take 40+ min on SD card
+    HUNG_LOG_MINUTES = 30 # unit active but log silent this long → hung installer
     now = dt.datetime.now(tz=dt.timezone.utc)
+
+    unit_active = _update_unit_active()
+    log_recent  = _install_log_recently_modified(now)
+    log_recent_hung = _install_log_recently_modified(now, within_minutes=HUNG_LOG_MINUTES)
+
+    if unit_active and log_recent_hung:
+        return False  # healthy: unit running and log active
+    if unit_active and not log_recent_hung:
+        return True   # hung: unit alive but log has been silent too long
+    if not unit_active and log_recent:
+        return False  # just finished: log touched in last 5 min
 
     try:
         last_run_at = dt.datetime.fromisoformat(last_run_at_str)
@@ -398,6 +435,8 @@ def read_update_status() -> int:
 
     if data["status"] == "in_progress":
         data["stale"] = _is_stale_in_progress(data["last_run_at"])
+        if data["stale"] and _update_unit_active():
+            data["hung"] = True
 
     data["log_tail"] = _read_log_tail()
 

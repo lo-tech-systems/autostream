@@ -47,6 +47,8 @@ RELEASE_TAG_FILE   = STAGING_DIR / "release_tag"
 RETRY_COUNT_FILE   = STAGING_DIR / "retry_count"
 UPDATING_FLAG      = Path("/tmp/autostream-updating")
 LOG_PATH           = Path("/var/log/autostream/update.log")
+UPDATE_LOCK_FILE   = Path("/run/autostream-update.lock")
+FLOCK_BIN          = "/usr/bin/flock"
 
 MAX_RETRIES = 3
 
@@ -185,7 +187,14 @@ def main() -> int:
     installer = _find_installer()
     if installer is None:
         _log("interrupted update detected but no staged installer found; cannot retry")
-        return 0
+        now_str = datetime.now().astimezone().isoformat(timespec="seconds")
+        _write_update_result(
+            "failure",
+            "Update was interrupted and recovery files are unavailable. Please retry from the setup page.",
+            0,
+            now_str,
+        )
+        return 1
 
     # 3. Check retry cap.
     retry_count = _read_retry_count()
@@ -243,6 +252,12 @@ def main() -> int:
         UPDATING_FLAG.unlink(missing_ok=True)
         return 1
 
+    if not (os.path.isfile(FLOCK_BIN) and os.access(FLOCK_BIN, os.X_OK)):
+        _log(f"{FLOCK_BIN} not found or not executable; cannot schedule locked retry")
+        _write_update_result("failure", "Cannot retry: flock not found", 0, run_at)
+        UPDATING_FLAG.unlink(missing_ok=True)
+        return 1
+
     unit_suffix = f"{int(time.time())}-{os.getpid()}"
     unit_name   = f"autostream-update-retry-{unit_suffix}"
 
@@ -257,6 +272,7 @@ def main() -> int:
         "--property=Wants=NetworkManager.service",
         f"--setenv=AUTOSTREAM_RELEASE_TAG={release_tag}",
         "--",
+        FLOCK_BIN, "--exclusive", str(UPDATE_LOCK_FILE),
         str(installer),
         "--update",
     ]

@@ -1009,8 +1009,16 @@ def send_setup_page(
             try {{
               const r = await fetch("/api/update/status"); const j = await r.json();
               if(j.ok && j.status === "in_progress"){{
-                // An update is already running — send the user to the progress page.
-                window.location.replace("/offline/updating");
+                if(j.stale){{
+                  if(j.hung){{
+                    msg("An update is still running but has been unresponsive for 30+ minutes. Power-cycle the device to recover — do not retry until after rebooting.");
+                  }} else {{
+                    msg("A previous update appears to have stalled. Power-cycle the device to trigger automatic recovery, or use Check for Updates to retry.");
+                  }}
+                }} else {{
+                  // An update is already running — send the user to the progress page.
+                  window.location.replace("/offline/updating");
+                }}
                 return;
               }}
               if(j.ok && j.status === "success"){{ msg("Last update: installed successfully."); }}

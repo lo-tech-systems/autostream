@@ -27,6 +27,8 @@ NOTES
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
 import re
@@ -45,6 +47,8 @@ from typing import Any, Dict, Optional, Tuple
 LOG_PATH = Path("/var/log/autostream/update.log")
 APMODE_FLAG = Path("/tmp/apmode")
 INSTALL_STATE_FILE = Path("/var/lib/autostream/install-state.env")
+UPDATE_LOCK_FILE = Path("/run/autostream-update.lock")
+FLOCK_BIN = "/usr/bin/flock"
 UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
 STAGING_DIR = Path("/var/lib/autostream/update-staging")
 
@@ -183,6 +187,22 @@ def _find_systemd_run() -> Optional[str]:
     return None
 
 
+def _update_unit_active() -> bool:
+    """Return True if an autostream update installer unit is currently running.
+
+    Raises RuntimeError on systemctl failure so callers used for admission
+    control can reject the request conservatively rather than failing open.
+    """
+    rc, out, err = _run(
+        ["systemctl", "list-units", "--state=active", "--no-legend", "--plain",
+         "autostream-update-*"],
+        timeout=10,
+    )
+    if rc != 0:
+        raise RuntimeError(f"systemctl exited rc={rc}: {err!r}")
+    return bool(out.strip())
+
+
 # ---- Commands ----
 
 def cmd_check() -> Dict[str, Any]:
@@ -251,10 +271,23 @@ def cmd_apply() -> Dict[str, Any]:
         _log("apply: refused in AP mode")
         return {"ok": False, "error": "Refusing to update while in AP mode (/tmp/apmode present)."}
 
+    # Fast-path unit check (fail-closed: any systemctl error → refuse).
+    try:
+        if _update_unit_active():
+            _log("apply: refused — an update installer unit is already active")
+            return {"ok": False, "error": "An update is already in progress. Please wait for it to complete."}
+    except Exception as e:
+        _log(f"apply: refused — unable to determine update unit status: {e}")
+        return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
+
     systemd_run = _find_systemd_run()
     if systemd_run is None:
         _log("apply: systemd-run not found; cannot schedule installer")
         return {"ok": False, "error": "systemd-run not found; cannot schedule installer"}
+
+    if not (os.path.isfile(FLOCK_BIN) and os.access(FLOCK_BIN, os.X_OK)):
+        _log(f"apply: {FLOCK_BIN} not found or not executable; cannot schedule locked installer")
+        return {"ok": False, "error": f"flock not found at {FLOCK_BIN}; cannot schedule installer"}
 
     if not _repo_exists():
         _log("apply: GitHub releases page not reachable / 404")
@@ -267,98 +300,139 @@ def cmd_apply() -> Dict[str, Any]:
 
     _log(f"apply: staging release tag={tag} tarball={tarball_url}")
 
-    # Clean up any previous staging directory so stale extracts do not accumulate.
-    if STAGING_DIR.exists():
+    # Acquire an exclusive non-blocking lock for the staging + scheduling window.
+    # The installer is launched wrapped in `flock --exclusive` so it inherits the
+    # same lock for its complete lifetime, preventing any concurrent apply() from
+    # deleting or overwriting the staging directory while the installer runs.
+    try:
+        lock_fd = os.open(str(UPDATE_LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as e:
+        _log(f"apply: failed to open update lock file: {e}")
+        return {"ok": False, "error": "Failed to open update lock."}
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        os.close(lock_fd)
+        if e.errno in (errno.EWOULDBLOCK, errno.EACCES):
+            _log("apply: refused — update lock already held by a running installer")
+            return {"ok": False, "error": "An update is already in progress. Please wait for it to complete."}
+        _log(f"apply: failed to acquire update lock: {e}")
+        return {"ok": False, "error": "Failed to acquire update lock."}
+
+    try:
+        # Recheck after acquiring the lock: a concurrent apply() may have passed the
+        # initial unit check and then scheduled a timer during the window between that
+        # check and our lock acquisition.  The timer is now active, so this catches it.
         try:
-            shutil.rmtree(str(STAGING_DIR))
-            _log(f"apply: removed previous staging dir {STAGING_DIR}")
+            if _update_unit_active():
+                _log("apply: refused after lock — unit became active during staging window")
+                return {"ok": False, "error": "An update is already in progress. Please wait for it to complete."}
         except Exception as e:
-            _log(f"apply: warning — could not remove previous staging dir: {e}")
+            _log(f"apply: refused — unable to recheck update unit status after lock: {e}")
+            return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
 
-    try:
-        STAGING_DIR.mkdir(parents=True, exist_ok=True)
-        os.chmod(str(STAGING_DIR), 0o700)
+        # Clean up any previous staging directory so stale extracts do not accumulate.
+        if STAGING_DIR.exists():
+            try:
+                shutil.rmtree(str(STAGING_DIR))
+                _log(f"apply: removed previous staging dir {STAGING_DIR}")
+            except Exception as e:
+                _log(f"apply: warning — could not remove previous staging dir: {e}")
 
-        tar_path = STAGING_DIR / "release.tgz"
-        _log("apply: downloading release tarball")
-        _download_file(tarball_url, tar_path, timeout=120)
+        try:
+            STAGING_DIR.mkdir(parents=True, exist_ok=True)
+            os.chmod(str(STAGING_DIR), 0o700)
 
-        extract_dir = STAGING_DIR / "src"
-        extract_dir.mkdir(parents=True, exist_ok=True)
+            tar_path = STAGING_DIR / "release.tgz"
+            _log("apply: downloading release tarball")
+            _download_file(tarball_url, tar_path, timeout=120)
 
-        _log("apply: extracting tarball")
-        with tarfile.open(tar_path, "r:gz") as tf:
-            # filter='data' (Python 3.12+) strips absolute paths, '../' traversal
-            # sequences, and unsafe member types (devices, setuid bits) before
-            # extraction.  Without a filter, a crafted tarball could write to
-            # arbitrary filesystem paths because this runs as root.
-            tf.extractall(extract_dir, filter="data")
+            extract_dir = STAGING_DIR / "src"
+            extract_dir.mkdir(parents=True, exist_ok=True)
 
-        # GitHub tarballs have a single top-level directory.
-        top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
-        if len(top_dirs) == 1:
-            repo_root = top_dirs[0]
-        else:
-            repo_root = extract_dir
+            _log("apply: extracting tarball")
+            with tarfile.open(tar_path, "r:gz") as tf:
+                # filter='data' (Python 3.12+) strips absolute paths, '../' traversal
+                # sequences, and unsafe member types (devices, setuid bits) before
+                # extraction.  Without a filter, a crafted tarball could write to
+                # arbitrary filesystem paths because this runs as root.
+                tf.extractall(extract_dir, filter="data")
 
-        installer = repo_root / "autostream_install.sh"
-        if not installer.exists():
-            raise FileNotFoundError(f"autostream_install.sh not found in extracted tree at {repo_root}")
+            # GitHub tarballs have a single top-level directory.
+            top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
+            if len(top_dirs) == 1:
+                repo_root = top_dirs[0]
+            else:
+                repo_root = extract_dir
 
-        # Ensure the installer is executable.
-        os.chmod(str(installer), 0o755)
+            installer = repo_root / "autostream_install.sh"
+            if not installer.exists():
+                raise FileNotFoundError(f"autostream_install.sh not found in extracted tree at {repo_root}")
 
-        # Validate the staging directory contains the expected structure.
-        if not (repo_root / "system").is_dir():
-            raise FileNotFoundError(f"Expected 'system/' directory not found in extracted tree at {repo_root}")
+            # Ensure the installer is executable.
+            os.chmod(str(installer), 0o755)
 
-        _log(f"apply: staged release at {repo_root}")
+            # Validate the staging directory contains the expected structure.
+            if not (repo_root / "system").is_dir():
+                raise FileNotFoundError(f"Expected 'system/' directory not found in extracted tree at {repo_root}")
 
-        # Write the release tag to the staging dir so the boot-time retry
-        # service can recover AUTOSTREAM_RELEASE_TAG after a watchdog reset.
-        tag_file = STAGING_DIR / "release_tag"
-        tag_file.write_text(tag + "\n", encoding="utf-8")
-        os.chmod(str(tag_file), 0o600)
-        _log(f"apply: wrote release_tag to {tag_file}")
+            _log(f"apply: staged release at {repo_root}")
 
-    except Exception as e:
-        _log(f"apply: staging failed: {e}")
-        return {"ok": False, "error": "Release staging failed", "details": str(e)}
+            # Write the release tag to the staging dir so the boot-time retry
+            # service can recover AUTOSTREAM_RELEASE_TAG after a watchdog reset.
+            tag_file = STAGING_DIR / "release_tag"
+            tag_file.write_text(tag + "\n", encoding="utf-8")
+            os.chmod(str(tag_file), 0o600)
+            _log(f"apply: wrote release_tag to {tag_file}")
 
-    # Schedule the installer as a transient systemd unit so it runs outside
-    # the autostream.service cgroup (same pattern as factory-reset).
-    unit_suffix = f"{int(time.time())}-{os.getpid()}"
-    unit_name = f"autostream-update-{unit_suffix}"
+        except Exception as e:
+            _log(f"apply: staging failed: {e}")
+            return {"ok": False, "error": "Release staging failed", "details": str(e)}
 
-    cmd = [
-        str(systemd_run),
-        "--quiet",
-        "--collect",
-        f"--unit={unit_name}",
-        "--on-active=1",           # fire 1 second after scheduling
-        "--property=Type=oneshot",
-        f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
-        "--",
-        str(installer),
-        "--update",
-    ]
+        # Schedule the installer as a transient systemd unit so it runs outside
+        # the autostream.service cgroup (same pattern as factory-reset).
+        # flock --exclusive wraps the installer so UPDATE_LOCK_FILE is held for
+        # the installer's complete lifetime; our lock is released in the finally
+        # below, at which point the flock wrapper immediately re-acquires it.
+        unit_suffix = f"{int(time.time())}-{os.getpid()}"
+        unit_name = f"autostream-update-{unit_suffix}"
 
-    rc, out, err = _run(cmd, timeout=15)
-    if rc != 0:
-        _log(f"apply: systemd-run scheduling failed rc={rc} stderr='{err}'")
-        return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
+        cmd = [
+            str(systemd_run),
+            "--quiet",
+            "--collect",
+            f"--unit={unit_name}",
+            "--on-active=1",           # fire 1 second after scheduling
+            "--property=Type=oneshot",
+            f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
+            "--",
+            FLOCK_BIN, "--exclusive", str(UPDATE_LOCK_FILE),
+            str(installer),
+            "--update",
+        ]
 
-    # Clear any stale update-result.env from the previous run so the status
-    # page does not immediately show the old "success / 100%" result before
-    # the new installer has written its first progress entry.
-    try:
-        UPDATE_RESULT_FILE.unlink(missing_ok=True)
-        _log("apply: cleared stale update-result.env")
-    except Exception as e:
-        _log(f"apply: warning — could not clear update-result.env: {e}")
+        rc, out, err = _run(cmd, timeout=15)
+        if rc != 0:
+            _log(f"apply: systemd-run scheduling failed rc={rc} stderr='{err}'")
+            return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
 
-    _log(f"apply: installer scheduled as transient unit {unit_name} tag={tag}")
-    return {"ok": True, "staged_tag": tag.lstrip("v")}
+        # Clear any stale update-result.env from the previous run so the status
+        # page does not immediately show the old "success / 100%" result before
+        # the new installer has written its first progress entry.
+        try:
+            UPDATE_RESULT_FILE.unlink(missing_ok=True)
+            _log("apply: cleared stale update-result.env")
+        except Exception as e:
+            _log(f"apply: warning — could not clear update-result.env: {e}")
+
+        _log(f"apply: installer scheduled as transient unit {unit_name} tag={tag}")
+        return {"ok": True, "staged_tag": tag.lstrip("v")}
+
+    finally:
+        # Release our staging/scheduling lock.  The installer's flock wrapper
+        # blocks on the same file and acquires it as soon as we release here.
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 # ---- Entrypoint ----

@@ -94,6 +94,14 @@
       background: linear-gradient(90deg, #111 0%, #333 100%);
     }
 
+    .status-stale .status-label {
+      color: #888;
+    }
+
+    .status-stale .progress-fill {
+      background: linear-gradient(90deg, #555 0%, #777 100%);
+    }
+
     .log-tail {
       margin-top: 1rem;
       background: #1a1a1a;
@@ -156,7 +164,9 @@
     var successStartedAt = 0;
     var lastKnownPercent = 0;
     var consecutiveFailures = 0;
-    var OFFLINE_WARN_THRESHOLD = 18; // ~3 min before escalating the offline message
+    var lastKnownData = null;
+    var OFFLINE_WARN_THRESHOLD     = 18; // ~3 min — escalate offline message
+    var OFFLINE_GUIDANCE_THRESHOLD = 60; // ~10 min — offer concrete guidance
 
     function text(el, value) {
       if (el) el.textContent = value;
@@ -186,10 +196,21 @@
       var status = (data && data.status) ? String(data.status) : 'unknown';
       var percent = safePercent(data && data.percent);
       var lastRun = (data && data.last_run_at) ? String(data.last_run_at) : 'unknown';
+      var isStale = !!(data && data.stale);
 
       var message;
       if (status === 'unknown') {
         message = 'Preparing update...';
+      } else if (isStale) {
+        var isHung = !!(data && data.hung);
+        if (isHung) {
+          message = 'The updater is still running but has been unresponsive for 30+ minutes. '
+            + 'Power-cycle the device to recover — do not retry until after rebooting.';
+        } else {
+          message = 'The update is taking longer than expected and may have stalled. '
+            + 'Power-cycling the device will trigger automatic recovery, '
+            + 'or you can retry from the setup page.';
+        }
       } else {
         message = (data && data.message) ? String(data.message) : 'Status temporarily unavailable';
       }
@@ -198,14 +219,16 @@
         return;
       }
 
-      pageEl.classList.remove('status-error', 'status-success');
-      if (status === 'failure' || status === 'error') {
+      pageEl.classList.remove('status-error', 'status-success', 'status-stale');
+      if (isStale) {
+        pageEl.classList.add('status-stale');
+      } else if (status === 'failure' || status === 'error') {
         pageEl.classList.add('status-error');
       } else if (status === 'success') {
         pageEl.classList.add('status-success');
       }
 
-      if (status === 'in_progress') {
+      if (status === 'in_progress' && !isStale) {
         fillEl.classList.add('is-active');
       } else {
         fillEl.classList.remove('is-active');
@@ -222,7 +245,7 @@
       }
 
       text(messageEl, message);
-      text(statusLabelEl, friendlyStatus(status));
+      text(statusLabelEl, isStale ? 'Possibly stalled' : friendlyStatus(status));
       text(statusPercentEl, percent + '%');
       text(lastRunEl, 'Last update run: ' + lastRun);
       fillEl.style.width = percent + '%';
@@ -287,19 +310,31 @@
         })
         .then(function(data) {
           consecutiveFailures = 0;
+          lastKnownData = data;
           lastKnownPercent = safePercent(data && data.percent);
           render(data);
         })
         .catch(function() {
           consecutiveFailures++;
-          var offlineMsg = consecutiveFailures >= OFFLINE_WARN_THRESHOLD
-            ? 'Device has been unreachable for several minutes — it may still be recovering or retrying the update.'
-            : 'Waiting for device to come back...';
-          render({
+          var offlineMsg;
+          if (consecutiveFailures >= OFFLINE_GUIDANCE_THRESHOLD) {
+            offlineMsg = 'The device has been unreachable for over 10 minutes. '
+              + 'Check that it is powered on and connected to the network. '
+              + 'If the problem persists, try power-cycling the device.';
+          } else if (consecutiveFailures >= OFFLINE_WARN_THRESHOLD) {
+            offlineMsg = 'Device has been unreachable for several minutes — '
+              + 'it may still be recovering or retrying the update.';
+          } else {
+            offlineMsg = 'Waiting for device to come back...';
+          }
+          // Merge onto last known payload so last_run_at and log_tail stay visible.
+          // Force stale:false so the offline message is not overridden by stale guidance.
+          render(Object.assign({}, lastKnownData || {}, {
             status: 'in_progress',
+            stale: false,
             message: offlineMsg,
             percent: lastKnownPercent
-          });
+          }));
         })
         .finally(function() {
           if (!successMode) {
