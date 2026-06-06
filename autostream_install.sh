@@ -357,6 +357,12 @@ set_phase() {
   CURRENT_PHASE="$1"
 }
 
+update_progress() {
+  # Write a progress update only when running in update mode.
+  [[ "${INSTALL_MODE}" == "update" ]] || return 0
+  write_update_result "in_progress" "$1" "$2"
+}
+
 
 #############################################
 # Error and exit traps
@@ -603,8 +609,10 @@ bootstrap_phase() {
 system_upgrade_phase() {
   set_phase "system upgrade"
   info "=== Phase: system upgrade ==="
+  write_update_result "in_progress" "Refreshing package lists..." 20
   info "Updating apt metadata"
   DEBIAN_FRONTEND=noninteractive apt-get update
+  write_update_result "in_progress" "Upgrading system packages (this may take several minutes)..." 22
   info "Upgrading installed system packages"
   NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 }
@@ -648,6 +656,7 @@ sdmon_phase() {
     return 0
   fi
 
+  update_progress "Installing sdmon..." 38
   info "Installing sdmon (method: ${SDMON_METHOD})"
   if [[ ! -x "/usr/local/sbin/sdmon" ]]; then
     local tmpdir
@@ -665,6 +674,7 @@ sdmon_phase() {
 deploy_phase() {
   set_phase "deploy"
   info "=== Phase: deploy ==="
+  update_progress "Deploying application files..." 40
 
   info "Deploying autostream files to ${INSTALL_DIR}"
   # Remove stale dependency lockfiles before copying — an old requirements.lock
@@ -677,6 +687,7 @@ deploy_phase() {
     cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
   fi
 
+  update_progress "Building autostream_monitor..." 50
   info "Building autostream_monitor"
   mkdir -p "${INSTALL_DIR}/monitor"
   g++ -std=c++17 -O2 \
@@ -701,6 +712,7 @@ deploy_phase() {
   info "Setting ownership to enable autostream to manage venv"
   chown autostream:autostream "${INSTALL_DIR}"
 
+  update_progress "Updating Python packages..." 57
   info "Creating/updating Python virtual environment"
   if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
     sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache python3 -m venv --system-site-packages "${INSTALL_DIR}/venv"
@@ -722,6 +734,7 @@ deploy_phase() {
 configure_phase() {
   set_phase "configure"
   info "=== Phase: configure ==="
+  update_progress "Applying configuration..." 62
 
   info "Configuring permissions and policy"
   install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
@@ -733,6 +746,7 @@ configure_phase() {
   chmod 0755 "${INSTALL_DIR}"
 
   provision_owntone "${INSTALL_MODE}"
+  update_progress "Configuring system services..." 78
 
   # nginx
   info "Configuring nginx"
@@ -823,6 +837,7 @@ permissions_pass() {
 services_phase() {
   set_phase "services"
   info "=== Phase: services ==="
+  update_progress "Restarting services..." 80
 
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_update_retry.service" /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service"       /etc/systemd/system/
@@ -972,7 +987,6 @@ run_update() {
   stop_watchdog_if_ram_monitored
   check_network_manager
 
-  write_update_result "in_progress" "Updating system packages" 20
   system_upgrade_phase
 
   info "Setting working directory to original user's home: ${ORIG_HOME}"
@@ -980,14 +994,8 @@ run_update() {
 
   fetch_phase
   sdmon_phase
-
-  write_update_result "in_progress" "Deploying application" 40
   deploy_phase
-
-  write_update_result "in_progress" "Configuring services" 60
   configure_phase
-
-  write_update_result "in_progress" "Restarting services" 80
   services_phase
 
   set_phase "state save"

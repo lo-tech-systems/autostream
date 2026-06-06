@@ -45,6 +45,7 @@ install_packaged_owntone() {
 
 install_owntone_mini_from_source() {
   info "Installing OwnTone Mini from lo-tech-systems source repository"
+  update_progress "Installing OwnTone dependencies..." 65
   apt_install nginx autotools-dev autoconf automake libtool gettext gawk \
     gperf bison flex libconfuse-dev libunistring-dev libsqlite3-dev \
     libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libavutil-dev \
@@ -68,6 +69,7 @@ install_owntone_mini_from_source() {
     cd "${tmpdir}/owntone-server"
     autoreconf -i
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --enable-install-user --enable-chromecast
+    update_progress "Building OwnTone..." 71
     make -j2
     make install
   )

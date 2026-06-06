@@ -311,7 +311,7 @@ def _is_stale_in_progress(last_run_at_str: str) -> bool:
     If the timestamp cannot be parsed we err on the side of caution and
     treat the record as stale so the UI can offer a retry.
     """
-    STALE_MINUTES = 15
+    STALE_MINUTES = 90  # apt-get upgrade + OwnTone mini build can take 40+ min on SD card
     now = dt.datetime.now(tz=dt.timezone.utc)
 
     try:
@@ -336,6 +336,33 @@ def _is_stale_in_progress(last_run_at_str: str) -> bool:
     return False
 
 
+_ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_INSTALL_LOG = Path("/var/log/autostream/autostream_install.log")
+_LOG_TAIL_LINES = 10
+_LOG_TAIL_CHUNK_BYTES = 8192
+
+
+def _read_log_tail() -> str:
+    """Return the last _LOG_TAIL_LINES lines of the installer log, ANSI-stripped.
+
+    Reads only the final _LOG_TAIL_CHUNK_BYTES from disk so this stays fast
+    even when the log file grows large during a lengthy apt-get upgrade.
+    """
+    try:
+        with _INSTALL_LOG.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            read_size = min(size, _LOG_TAIL_CHUNK_BYTES)
+            fh.seek(-read_size, 2)
+            data = fh.read()
+    except (FileNotFoundError, OSError):
+        return ""
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    tail = lines[-_LOG_TAIL_LINES:] if len(lines) > _LOG_TAIL_LINES else lines
+    return _ANSI_ESCAPE.sub("", "\n".join(tail))
+
+
 def read_update_status() -> int:
     """Emit the latest installer update status as JSON on stdout."""
     data = {
@@ -345,6 +372,7 @@ def read_update_status() -> int:
         "stale": False,
         "message": "No update status available",
         "percent": 0,
+        "log_tail": "",
     }
 
     try:
@@ -370,6 +398,8 @@ def read_update_status() -> int:
 
     if data["status"] == "in_progress":
         data["stale"] = _is_stale_in_progress(data["last_run_at"])
+
+    data["log_tail"] = _read_log_tail()
 
     print(json.dumps(data))
     return 0
