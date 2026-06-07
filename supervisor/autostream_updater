@@ -145,27 +145,41 @@ def _version_key(v: str) -> Tuple[int, int, int, str]:
     return (maj, min_, pat, v or "")
 
 
-def _github_latest_release() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Return (tag_name, tarball_url, html_url) from GitHub latest release."""
+def _sanitise_release_notes(text: str, max_len: int = 200) -> str:
+    """Return a sanitised plain-text summary from a GitHub release body.
+
+    Only printable ASCII is kept so that unexpected Unicode, control characters,
+    or binary content from the API cannot reach the UI or break JSON encoding.
+    Multiple whitespace runs are collapsed to a single space.
+    """
+    cleaned = "".join(ch for ch in text if 0x20 <= ord(ch) <= 0x7E)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:max_len].strip()
+
+
+def _github_latest_release() -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Return (tag_name, tarball_url, html_url, release_notes) from GitHub latest release."""
     try:
         status, raw = _http_get(API_LATEST, timeout=20)
         if status == 404:
-            return None, None, None
+            return None, None, None, None
         data = json.loads(raw.decode("utf-8", errors="replace"))
         tag = data.get("tag_name")
         tarball = data.get("tarball_url")
         html = data.get("html_url")
+        raw_body = data.get("body") or ""
+        notes = _sanitise_release_notes(str(raw_body)) if raw_body else None
         if not tag:
-            return None, None, html
-        return str(tag), (str(tarball) if tarball else None), (str(html) if html else None)
+            return None, None, html, notes
+        return str(tag), (str(tarball) if tarball else None), (str(html) if html else None), notes
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            return None, None, None
+            return None, None, None, None
         _log(f"github_latest_release: HTTPError {e.code}")
-        return None, None, None
+        return None, None, None, None
     except Exception as e:
         _log(f"github_latest_release: exception {e}")
-        return None, None, None
+        return None, None, None, None
 
 
 def _download_file(url: str, dst: Path, timeout: int = 120) -> None:
@@ -214,7 +228,7 @@ def cmd_check() -> Dict[str, Any]:
 
     installed = _read_installed_release_tag()
 
-    tag, _tarball_url, html_url = _github_latest_release()
+    tag, _tarball_url, html_url, notes = _github_latest_release()
     if not tag:
         update_available = installed == "missing"
         _log(f"check: repo ok but no latest release tag; installed={installed}; update_available={update_available}")
@@ -240,7 +254,7 @@ def cmd_check() -> Dict[str, Any]:
         f"check: installed={installed_out} candidate={candidate} update_available={update_available} url={html_url or RELEASES_HTML}"
     )
 
-    return {
+    result: Dict[str, Any] = {
         "ok": True,
         "installed": installed_out,
         "candidate": candidate,
@@ -248,6 +262,9 @@ def cmd_check() -> Dict[str, Any]:
         "apmode": apmode,
         "source": "github",
     }
+    if update_available and notes:
+        result["release_notes"] = notes
+    return result
 
 
 def cmd_apply() -> Dict[str, Any]:
@@ -293,7 +310,7 @@ def cmd_apply() -> Dict[str, Any]:
         _log("apply: GitHub releases page not reachable / 404")
         return {"ok": False, "error": "GitHub repo/releases not reachable (404 or network error)"}
 
-    tag, tarball_url, _html_url = _github_latest_release()
+    tag, tarball_url, _html_url, _notes = _github_latest_release()
     if not tag or not tarball_url:
         _log("apply: no latest release or tarball_url")
         return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}

@@ -183,6 +183,7 @@ def send_setup_page(
               <button type="button" class="pill-btn small" style="margin-left:auto" onclick="requestReboot()">Reboot</button>
             </div>
             <div id="updMsg" style="font-size:0.8rem;margin-top:0.3rem;"></div>
+            <div id="updNotes" style="font-size:0.75rem;color:#888;margin-top:0.2rem;font-style:italic;"></div>
           </label>
           <div style="margin-top:0.75rem;">
             <button type="button" id="btnChangePin" class="pill-btn small" style="width:100%;">Change PIN</button>
@@ -1002,6 +1003,7 @@ def send_setup_page(
         }}
         (async function(){{
           const msg = (t) => {{ document.getElementById("updMsg").textContent = t; }};
+          const notes = (t) => {{ document.getElementById("updNotes").textContent = t || ""; }};
           const bCheck = document.getElementById("btnCheck"), bInst = document.getElementById("btnInst");
           let cand = null;
           // On page load, check persisted update status so any recent result is visible.
@@ -1028,11 +1030,13 @@ def send_setup_page(
             }} catch(e) {{ /* ignore — no persisted status yet */ }}
           }}
           bCheck.onclick = async () => {{
-            msg("Checking..."); bInst.disabled=true;
+            msg("Checking..."); notes(""); bInst.disabled=true;
             try {{
               const r = await fetch("/api/update/check"); const j = await r.json();
-              if(j.ok && j.update_available){{ cand=j.candidate; msg("Update available: "+j.candidate); bInst.disabled=false; }}
-              else msg(j.ok?"No updates available.":"Check failed.");
+              if(j.ok && j.update_available){{
+                cand=j.candidate; msg("Update available: "+j.candidate);
+                notes(j.release_notes||""); bInst.disabled=false;
+              }} else {{ msg(j.ok?"No updates available.":"Check failed."); }}
             }} catch(e) {{ msg("Check failed."); }}
           }};
           bInst.onclick = async () => {{
