@@ -156,11 +156,11 @@ def send_airplay_page(
     outputs_result = list_outputs(owntone_base_url, timeout=3)
     outputs = list(outputs_result.outputs) if outputs_result.ok else []
     if not outputs_result.ok:
-        error = error or (
-            outputs_result.error
-            or outputs_result.detail
-            or f"Could not reach Owntone at {owntone_base_url}"
-        )
+        _placeholder_state = "unreachable"
+    elif not outputs:
+        _placeholder_state = "empty"
+    else:
+        _placeholder_state = "hidden"
 
     # Keep the configured default output at the top; otherwise use a stable
     # alphabetical order regardless of whether an output is currently enabled.
@@ -675,39 +675,199 @@ def send_airplay_page(
         function isActiveControl(el) {{
           return el && document.activeElement === el;
         }}
+        function buildOutputCardElement(o) {{
+          var id = String(o.id || '');
+          var name = String(o.name || ('Output ' + id));
+          var selected = !!o.selected;
+          var volume = normalizeVolume(o.volume);
+          var isDefault = !!o.is_default;
+
+          var card = document.createElement('div');
+          card.className = 'output-card ' + (selected ? 'output-card-on' : 'output-card-off');
+          card.id = 'output_card_' + id;
+          card.setAttribute('data-output-id', id);
+          card.setAttribute('data-is-default', isDefault ? '1' : '0');
+
+          var head = document.createElement('div');
+          head.className = 'output-card-head';
+
+          var meta = document.createElement('div');
+          meta.className = 'output-card-meta';
+          var nameDiv = document.createElement('div');
+          nameDiv.className = 'output-card-name';
+          nameDiv.textContent = name;
+          meta.appendChild(nameDiv);
+          if (isDefault) {{
+            var badge = document.createElement('span');
+            badge.className = 'output-card-default';
+            badge.textContent = 'Default';
+            meta.appendChild(badge);
+          }}
+          var chip = document.createElement('span');
+          chip.className = 'output-state-chip ' + (selected ? 'on' : 'off');
+          chip.id = 'output_state_' + id;
+          chip.textContent = selected ? 'On' : 'Off';
+          meta.appendChild(chip);
+          head.appendChild(meta);
+
+          var toggle = document.createElement('label');
+          toggle.className = 'output-toggle';
+          toggle.addEventListener('click', function(e) {{ e.stopPropagation(); }});
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.id = 'output_enabled_' + id;
+          cb.checked = selected;
+          cb.addEventListener('change', function() {{ onToggleOutput(id); }});
+          toggle.appendChild(cb);
+          var sw = document.createElement('span');
+          sw.className = 'switch';
+          sw.setAttribute('aria-hidden', 'true');
+          toggle.appendChild(sw);
+          head.appendChild(toggle);
+          card.appendChild(head);
+
+          var wrap = document.createElement('div');
+          wrap.className = 'output-slider-wrap';
+          wrap.id = 'output_slider_wrap_' + id;
+          wrap.addEventListener('click', function(e) {{ e.stopPropagation(); }});
+          if (!selected) wrap.hidden = true;
+          var sliderHdr = document.createElement('div');
+          sliderHdr.className = 'slider-header';
+          var volText = document.createElement('span');
+          volText.textContent = 'Volume:';
+          sliderHdr.appendChild(volText);
+          var volLbl = document.createElement('span');
+          volLbl.id = 'vol_label_' + id;
+          volLbl.setAttribute('data-volume-label-for', id);
+          sliderHdr.appendChild(volLbl);
+          wrap.appendChild(sliderHdr);
+          var sl = document.createElement('input');
+          sl.type = 'range';
+          sl.id = 'vol_slider_' + id;
+          sl.min = 0; sl.max = 100; sl.step = 1; sl.value = volume;
+          sl.addEventListener('input', function() {{ updateVolumeLabel(id, this.value); }});
+          sl.addEventListener('change', function() {{ onVolumeChange(id, this.value); }});
+          wrap.appendChild(sl);
+          card.appendChild(wrap);
+
+          return card;
+        }}
+        function getOutputIdKey(outputs) {{
+          return JSON.stringify(outputs.map(function(o) {{ return String(o.id); }}).sort());
+        }}
+        function setOutputsPlaceholder(state) {{
+          var el = document.getElementById('outputs-placeholder');
+          if (!el) return;
+          if (state === 'hidden') {{
+            el.hidden = true;
+            el.textContent = '';
+          }} else if (state === 'unreachable') {{
+            el.hidden = false;
+            el.textContent = 'Waiting for owntone';
+          }} else {{
+            el.hidden = false;
+            el.textContent = 'Waiting for device discovery';
+          }}
+        }}
+        function renderOutputList(outputs) {{
+          var list = document.getElementById('outputs-list');
+          if (!list) return;
+          while (list.firstChild) list.removeChild(list.firstChild);
+          for (var i = 0; i < outputs.length; i++) {{ list.appendChild(buildOutputCardElement(outputs[i])); }}
+          list.querySelectorAll('[data-volume-label-for]').forEach(function(s) {{
+            var id = s.getAttribute('data-volume-label-for');
+            var sl = document.getElementById('vol_slider_' + id);
+            if (sl) updateVolumeLabel(id, sl.value);
+            var cb = document.getElementById('output_enabled_' + id);
+            if (cb) updateOutputStateVisual(String(id), !!cb.checked);
+          }});
+          reorderOutputCards();
+          updateMasterVolumeCard();
+          setOutputsPlaceholder(outputs.length > 0 ? 'hidden' : 'empty');
+        }}
 
         async function refreshOutputsState() {{
-          let j = null;
+          if (window.__OUTPUTS_IN_FLIGHT) return;
+          window.__OUTPUTS_IN_FLIGHT = true;
           try {{
-            const r = await fetch("/api/owntone/outputs_state", {{ cache: "no-store" }});
-            j = await r.json();
-          }} catch (e) {{
-            return;
-          }}
-          if (!j || !j.ok || !Array.isArray(j.outputs)) return;
-
-          for (const o of j.outputs) {{
-            const id = String(o.id);
-
-            // Skip outputs with a request in flight; sendUpdate's finally block
-            // will remove the id once the request settles (or aborts after 5 s).
-            if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
-
-            const cb = document.getElementById("output_enabled_" + id);
-            const sl = document.getElementById("vol_slider_" + id);
-
-            if (cb) cb.checked = !!o.selected;
-            updateOutputStateVisual(id, !!o.selected);
-
-            if (sl && !isActiveControl(sl)) {{
-              const v = normalizeVolume(o.volume);
-              const vstr = String(v);
-              if (sl.value !== vstr) sl.value = vstr;
-              updateVolumeLabel(id, v);
+            let j = null;
+            var __ctrl = new AbortController();
+            var __ctrlTimer = setTimeout(function() {{ __ctrl.abort(); }}, 5000);
+            try {{
+              const r = await fetch("/api/owntone/outputs_state", {{ cache: "no-store", signal: __ctrl.signal }});
+              j = await r.json();
+            }} catch (e) {{
+              return;
+            }} finally {{
+              clearTimeout(__ctrlTimer);
             }}
+            var __list = document.getElementById('outputs-list');
+            var __domIds = __list ? Array.from(__list.querySelectorAll('.output-card[data-output-id]')).map(function(c) {{ return c.getAttribute('data-output-id'); }}) : [];
+            var domKey = __domIds.length > 0 ? JSON.stringify(__domIds.sort()) : '';
+            if (!j || !j.ok) {{
+              if (domKey === '') {{ setOutputsPlaceholder('unreachable'); }}
+              return;
+            }}
+            var outputs = Array.isArray(j.outputs) ? j.outputs : [];
+            var targetKey = outputs.length > 0 ? getOutputIdKey(outputs) : '';
+            if (outputs.length === 0 && domKey !== '') {{
+              window.__OUTPUTS_EMPTY_COUNT = (window.__OUTPUTS_EMPTY_COUNT || 0) + 1;
+              if (window.__OUTPUTS_EMPTY_COUNT < 3) {{ return; }}
+            }} else {{
+              window.__OUTPUTS_EMPTY_COUNT = 0;
+            }}
+            if (targetKey === domKey) {{
+              if (targetKey === '') {{
+                setOutputsPlaceholder('empty');
+              }} else {{
+                setOutputsPlaceholder('hidden');
+                for (const o of outputs) {{
+                  const id = String(o.id);
+                  if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
+                  const cb = document.getElementById("output_enabled_" + id);
+                  const sl = document.getElementById("vol_slider_" + id);
+                  if (cb) cb.checked = !!o.selected;
+                  updateOutputStateVisual(id, !!o.selected);
+                  if (sl && !isActiveControl(sl)) {{
+                    const v = normalizeVolume(o.volume);
+                    const vstr = String(v);
+                    if (sl.value !== vstr) sl.value = vstr;
+                    updateVolumeLabel(id, v);
+                  }}
+                }}
+                reorderOutputCards();
+                if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
+              }}
+              return;
+            }}
+            var hasPending = window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.size > 0;
+            var masterActive = isActiveControl(document.getElementById('master_vol_slider'));
+            var pinVisible = !!(document.getElementById('pinModal') && document.getElementById('pinModal').classList.contains('show'));
+            var anySliderActive = !!(document.activeElement && document.activeElement.id && document.activeElement.id.startsWith('vol_slider_'));
+            if (!hasPending && !masterActive && !pinVisible && !anySliderActive) {{
+              renderOutputList(outputs);
+              return;
+            }}
+            if (domKey !== '') {{ setOutputsPlaceholder('hidden'); }}
+            for (const o of outputs) {{
+              const id = String(o.id);
+              if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
+              const cb = document.getElementById("output_enabled_" + id);
+              const sl = document.getElementById("vol_slider_" + id);
+              if (cb) cb.checked = !!o.selected;
+              updateOutputStateVisual(id, !!o.selected);
+              if (sl && !isActiveControl(sl)) {{
+                const v = normalizeVolume(o.volume);
+                const vstr = String(v);
+                if (sl.value !== vstr) sl.value = vstr;
+                updateVolumeLabel(id, v);
+              }}
+            }}
+            reorderOutputCards();
+            if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
+          }} finally {{
+            window.__OUTPUTS_IN_FLIGHT = false;
           }}
-          reorderOutputCards();
-          if(!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
         }}
 
         window.addEventListener('DOMContentLoaded',function(){{
@@ -722,6 +882,7 @@ def send_airplay_page(
           }});
           reorderOutputCards();
           updateMasterVolumeCard();
+          window.__OUTPUTS_IN_FLIGHT = false;
           setInterval(function(){{ refreshStatus(); refreshOutputsState(); }}, 1500);
           setInterval(vuRenderTick, VU_BIN_MS);
           refreshStatus();
@@ -808,6 +969,15 @@ def send_airplay_page(
         "color:var(--color-text);font-size:0.99rem;"
         "text-align:center;text-decoration:none;"
     )
+    _placeholder_text = {
+        "unreachable": "Waiting for owntone",
+        "empty": "Waiting for device discovery",
+    }.get(_placeholder_state, "")
+    _placeholder_html = (
+        f"<p id='outputs-placeholder'{' hidden' if _placeholder_state == 'hidden' else ''}"
+        f" style='text-align:center;color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>"
+        f"{html.escape(_placeholder_text)}</p>"
+    )
     _body_html = (
         # Full-width logo
         f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
@@ -829,6 +999,7 @@ def send_airplay_page(
         f"margin:0.35rem 0 0.35rem;{_warn_style_base}'>"
         f"{html.escape(bearing_banner_text)}</a>"
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
+        + _placeholder_html
         + A2HS_PROMPT_HTML
         + f"<div id='outputs-list'>{outputs_html}</div>"
     )

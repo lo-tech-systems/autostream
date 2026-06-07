@@ -188,7 +188,7 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
         send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
 
-    outputs_result = list_outputs(parsed.owntone.base_url, timeout=2)
+    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
     if not outputs_result.ok:
         send_json(
             handler,

@@ -159,7 +159,13 @@ is_valid_owntone_mode() {
 detect_install_version() {
   local raw=""
 
-  if [[ -n "${AUTOSTREAM_RELEASE_TAG:-}" ]]; then
+  # A source fetch installs origin/main rather than the release tarball that
+  # launched the installer, so do not record that release's tag. FETCH_AUTOSTREAM
+  # persists in install-state.env; restrict this override to fresh installs so a
+  # later release update records its actual tag.
+  if [[ "${INSTALL_MODE:-install}" == "install" && "${FETCH_AUTOSTREAM:-0}" -eq 1 ]]; then
+    raw="test"
+  elif [[ -n "${AUTOSTREAM_RELEASE_TAG:-}" ]]; then
     raw="${AUTOSTREAM_RELEASE_TAG}"
   fi
 
