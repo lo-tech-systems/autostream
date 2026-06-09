@@ -416,3 +416,69 @@ def tail_lines(path: str, n: int = 100) -> list[str]:
             return data.decode("utf-8", errors="replace").splitlines()[-n:]
     except Exception as e:
         return [f"[Error reading log file: {e}]"]
+
+
+# ---------------------------------------------------------------------------
+# Install state helpers
+# ---------------------------------------------------------------------------
+
+def get_install_state(path) -> dict:
+    """Parse a KEY=VALUE env file without sourcing it.
+
+    Strips surrounding single/double quotes from values; skips blank lines
+    and lines beginning with '#'.  Returns a plain str→str dict.
+    Silent on FileNotFoundError.
+    """
+    result: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
+                if key:
+                    result[key] = value
+    except FileNotFoundError:
+        pass
+    except Exception:
+        logger.warning("get_install_state: could not read %s", path)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Avahi playing-state helpers (mDNS service file lifecycle)
+# ---------------------------------------------------------------------------
+
+def write_avahi_playing_service(version: str) -> bool:
+    """Call sudo autostream_admin write-playing-service <version>.
+
+    Returns True on success.  Logs at WARNING on failure; never raises.
+    """
+    p = run_admin_cmd(["write-playing-service", version], timeout=10.0)
+    if p.returncode == 0:
+        return True
+    logger.warning(
+        "write_avahi_playing_service: admin call failed (rc=%s)", p.returncode
+    )
+    return False
+
+
+def remove_avahi_playing_service() -> bool:
+    """Call sudo autostream_admin remove-playing-service.
+
+    Returns True on success.  Logs at WARNING on failure; never raises.
+    """
+    p = run_admin_cmd(["remove-playing-service"], timeout=10.0)
+    if p.returncode == 0:
+        return True
+    logger.warning(
+        "remove_avahi_playing_service: admin call failed (rc=%s)", p.returncode
+    )
+    return False

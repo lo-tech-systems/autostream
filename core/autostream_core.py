@@ -23,6 +23,7 @@ import time
 import signal
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from autostream_config import (
@@ -63,6 +64,11 @@ from autostream_playback_stats import (
     PlaybackTracker,
     input_label,
 )
+from autostream_sysutils import (
+    get_install_state,
+    write_avahi_playing_service,
+    remove_avahi_playing_service,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -89,6 +95,48 @@ def request_config_reload() -> None:
 all_monitors: list["AudioMonitor"] = []
 _monitors_lock = threading.Lock()
 _playback_tracker: Optional[PlaybackTracker] = None
+
+# ---------------------------------------------------------------------------
+# mDNS playing-state lifecycle
+# ---------------------------------------------------------------------------
+
+_AVAHI_PLAYING_PATH = Path("/etc/avahi/services/autostream-playing.service")
+_playing_lock = threading.Lock()
+_playing_announced: bool = False
+_reconcile_started: bool = False
+
+
+def _sync_playing_announcement(monitors: list, version: str) -> None:
+    """Idempotently sync the _autostream-playing._tcp mDNS announcement.
+
+    Writes the avahi service file when any monitor is capturing and the
+    service is not yet announced; removes it when no monitor is capturing
+    and the service is currently announced.  Updates _playing_announced only
+    after a successful admin call.  Thread-safe; never raises.
+    """
+    global _playing_announced
+    is_any = any(m.is_capturing for m in monitors)
+    with _playing_lock:
+        if is_any and not _playing_announced:
+            if write_avahi_playing_service(version):
+                _playing_announced = True
+        elif not is_any and _playing_announced:
+            if remove_avahi_playing_service():
+                _playing_announced = False
+
+
+def _start_playing_reconciliation(get_monitors_fn, version: str) -> None:
+    """Start a daemon thread that periodically re-syncs the playing announcement.
+
+    Recovers from transient admin failures and reflects config reloads that
+    rebuild the monitor list.  get_monitors_fn() is called fresh each tick.
+    """
+    def _reconcile() -> None:
+        while True:
+            time.sleep(60)
+            _sync_playing_announcement(get_monitors_fn(), version)
+
+    threading.Thread(target=_reconcile, daemon=True, name="playing-reconcile").start()
 
 
 @dataclass(frozen=True)
@@ -1908,10 +1956,13 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     If start_webui is provided it is called with config_path to start the
     optional web UI in a background thread.
     """
+    global _playing_announced, _reconcile_started
     _install_signal_handlers()
     cfg = load_and_parse(config_path)
     setup_logging(cfg.general.log_file, cfg.general.log_level)
     _ensure_playback_tracker(cfg)
+    _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))
+    version = _install_state.get("AUTOSTREAM_RELEASE_TAG", "")
 
     # Optionally start the web UI.
     if start_webui is not None:
@@ -1923,6 +1974,12 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     socket_path = get_monitor_socket_path()
     POLL_INTERVAL = 0.5          # seconds between get_status() polls
     SWITCH_SILENCE_SECONDS = 5.0 # how long current input must be silent before switching
+
+    # Remove any stale playing announcement from a previous crash, then
+    # sync _playing_announced to filesystem truth so _sync_playing_announcement
+    # does not attempt a redundant remove on the first poll.
+    remove_avahi_playing_service()
+    _playing_announced = _AVAHI_PLAYING_PATH.exists()
 
     # Outer loop: runs once normally; repeats after a config reload.
     while not stop_flag.is_set():
@@ -2000,6 +2057,13 @@ def run_autostream(config_path: str, start_webui=None) -> None:
             "autostream_core is now running with %d input(s). Press Ctrl+C to exit.",
             len(monitors),
         )
+
+        if not _reconcile_started:
+            def _get_current_monitors() -> list:
+                with _monitors_lock:
+                    return list(all_monitors)
+            _start_playing_reconciliation(_get_current_monitors, version)
+            _reconcile_started = True
 
         current: Optional[AudioMonitor] = None
         reconnect_at: float = 0.0
@@ -2108,6 +2172,9 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                 for m in started:
                     m._on_capture_started(was_idle)
 
+                if started or stopped:
+                    _sync_playing_announcement(monitors, version)
+
                 # ── Multi-input coordination ──────────────────────────────────
                 if len(monitors) == 1:
                     monitors[0].allow_capture = True
@@ -2184,6 +2251,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                 tracker.save()
             with _monitors_lock:
                 all_monitors.clear()
+            _sync_playing_announcement([], version)
             client.close()
             if not _reloading:
                 logging.info("Stopped cleanly.")

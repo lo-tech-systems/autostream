@@ -297,3 +297,42 @@ def _write_cpu_info(serial: str) -> None:
     except Exception:
         logger.exception("Failed writing %s", CPU_INFO)
 
+
+# ---------------------------------------------------------------------------
+# GPIO helpers for dial hardware
+# ---------------------------------------------------------------------------
+
+def setup_rotary_encoder(clk: int, dt: int, on_cw, on_ccw):
+    """Attach interrupt-driven callbacks to a rotary encoder.
+
+    Returns the gpiozero.RotaryEncoder instance (caller must retain a
+    reference to prevent garbage collection).  Returns None if gpiozero is
+    unavailable or the GPIO cannot be initialised.
+    """
+    try:
+        from gpiozero import RotaryEncoder
+        enc = RotaryEncoder(clk, dt, wrap=False, max_steps=0)
+        enc.when_rotated_clockwise = on_cw
+        enc.when_rotated_counter_clockwise = on_ccw
+        return enc
+    except Exception as e:
+        logger.warning("setup_rotary_encoder: GPIO init failed: %s", e)
+        return None
+
+
+def setup_button(gpio: int, on_press):
+    """Attach an interrupt-driven press callback to a GPIO button.
+
+    Returns the gpiozero.Button instance (caller must retain a reference to
+    prevent garbage collection).  Returns None if gpiozero is unavailable or
+    the GPIO cannot be initialised.
+    """
+    try:
+        from gpiozero import Button
+        btn = Button(gpio, pull_up=True)
+        btn.when_pressed = on_press
+        return btn
+    except Exception as e:
+        logger.warning("setup_button: GPIO init failed: %s", e)
+        return None
+
