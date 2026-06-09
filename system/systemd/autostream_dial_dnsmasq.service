@@ -1,0 +1,25 @@
+# /etc/systemd/system/autostream_dial_dnsmasq.service
+#
+# Captive-portal DNS for the autostream dial AP mode.
+# Started by platform/wifi_watcher (via APP_DNSMASQ_SERVICE env var).
+# The system dnsmasq.service is masked during install to avoid port conflicts.
+#
+# This file is part of autostream dial.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=autostream dial captive-portal DNS
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/autostream-dial-dnsmasq.pid
+ExecStart=/usr/sbin/dnsmasq \
+    --conf-file=/etc/dnsmasq.d/autostream-dial-setup.conf \
+    --pid-file=/run/autostream-dial-dnsmasq.pid
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

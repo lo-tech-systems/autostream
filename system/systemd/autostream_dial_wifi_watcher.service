@@ -1,0 +1,31 @@
+# /etc/systemd/system/autostream_dial_wifi_watcher.service
+#
+# This file is part of autostream dial.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=WiFi Setup State Machine for autostream dial
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+UMask=022
+WorkingDirectory=/opt/autostream
+ExecStart=/opt/autostream/autostream_wifi_watcher
+
+Environment=APP_AP_PREFIX=autostream-dial
+Environment=APP_APMODE_FLAG=/tmp/autostream-dial-apmode
+Environment=APP_DNSMASQ_SERVICE=autostream_dial_dnsmasq.service
+Environment="APP_TITLE=autostream dial"
+Environment=APP_CHECK_CPU=no
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autostream-dial-wifi
+
+[Install]
+WantedBy=multi-user.target

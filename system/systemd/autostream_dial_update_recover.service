@@ -1,0 +1,31 @@
+# /etc/systemd/system/autostream_dial_update_recover.service
+#
+# Boot-time oneshot that checks for a STATUS=running left by an interrupted
+# update (power loss or unexpected exit).  Runs before autostream_dial.service
+# and autostream_dial_updater.service so a stale running status is corrected
+# before the HTTP server or a new update attempt can see it.
+#
+# After=local-fs.target ensures /var/lib/autostream-dial/ is mounted.
+# Enabled unconditionally by the installer.
+#
+# This file is part of autostream dial.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=Recover any interrupted autostream dial update
+DefaultDependencies=no
+After=local-fs.target
+Before=autostream_dial.service autostream_dial_updater.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/autostream/venv/bin/python \
+    /usr/local/libexec/autostream/autostream_dial_updater recover
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autostream-dial-recover
+
+[Install]
+WantedBy=multi-user.target

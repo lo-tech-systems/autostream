@@ -1,0 +1,22 @@
+# /etc/systemd/system/autostream_dial_updater.timer
+#
+# Weekly opt-in update timer for autostream dial.
+# NOT enabled by default — enable via 'autostream_admin toggle-dial-update-timer enable'.
+#
+# Persistent=true catches any missed Monday run (e.g. device was off that week).
+# OnBootSec is deliberately omitted to avoid firing on every boot.
+#
+# This file is part of autostream dial.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=autostream dial weekly update timer
+
+[Timer]
+OnCalendar=Mon *-*-* 03:30:00
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

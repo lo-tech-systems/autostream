@@ -1,0 +1,9 @@
+# dial/requirements.txt — pinned Python dependencies for the dial package.
+#
+# python3-lgpio is installed via apt (system package).
+# The venv is created with --system-site-packages so gpiozero can find lgpio.
+#
+# Regenerate dial/requirements.lock via:
+#   pip-compile --generate-hashes dial/requirements.txt -o dial/requirements.lock
+#
+gpiozero==2.0.1

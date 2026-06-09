@@ -34,6 +34,7 @@ Exactly one of:
   remove-playing-service
   update-dial-service VERSION UUID NAME [--pin-recovery]
   run-updater
+  toggle-dial-update-timer enable|disable
 
 Notes:
   - [reason] is optional for reboot.
@@ -986,9 +987,13 @@ def _update_dial_service(args) -> int:
 
 
 def _run_updater(_args) -> int:
+    systemd_run = find_systemd_run()
+    if systemd_run is None:
+        log("ERROR", "run-updater: systemd-run not found")
+        return 1
     unit_suffix = f"{int(time.time())}-{os.getpid()}"
     r = subprocess.run([
-        "systemd-run", "--quiet", "--collect",
+        systemd_run, "--quiet", "--collect",
         f"--unit=autostream-dial-manual-update-{unit_suffix}",
         "--on-active=1",
         "--property=Type=oneshot",
@@ -1000,6 +1005,19 @@ def _run_updater(_args) -> int:
         log("ERROR", f"run-updater: systemd-run failed (rc={r.returncode})")
         return 1
     log("INFO", "run-updater: scheduled autostream_dial_updater apply unit")
+    return 0
+
+
+def _toggle_dial_update_timer(args) -> int:
+    verb = args.verb  # "enable" or "disable"
+    r = subprocess.run(
+        ["systemctl", verb, "--now", "autostream_dial_updater.timer"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        log("ERROR", f"toggle-dial-update-timer {verb}: systemctl failed (rc={r.returncode}): {r.stderr.strip()!r}")
+        return 1
+    log("INFO", f"toggle-dial-update-timer: autostream_dial_updater.timer {verb}d")
     return 0
 
 
@@ -1103,6 +1121,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Schedule autostream_dial_updater apply as a transient systemd unit.",
     )
 
+    p_tdt = subparsers.add_parser(
+        "toggle-dial-update-timer",
+        help="Enable or disable the autostream_dial_updater.timer systemd unit.",
+    )
+    p_tdt.add_argument("verb", choices=["enable", "disable"],
+                       help="'enable' or 'disable' the update timer.")
+
     args = parser.parse_args(argv)
     return args
 
@@ -1152,6 +1177,9 @@ def main(argv: list[str]) -> int:
 
         if args.command == "run-updater":
             return _run_updater(args)
+
+        if args.command == "toggle-dial-update-timer":
+            return _toggle_dial_update_timer(args)
 
         log("ERROR", "no action specified")
         return 2

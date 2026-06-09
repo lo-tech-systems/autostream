@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+"""autostream-dial-updater
+
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+Root-only update helper for the autostream dial.  Standalone: no imports
+from the dial/ package.
+
+COMMANDS
+--------
+  check    Check whether a newer release is available on GitHub.
+           Outputs JSON: {ok, installed, candidate, update_available}
+
+  apply    Stage the latest GitHub release and invoke autostream_dial_install.sh
+           --update via a transient systemd unit.
+           Outputs JSON: {ok, staged_tag} on success, {ok:false, error} on failure.
+           The installer owns all status reporting via update-result.env.
+
+  recover  Safely recover an interrupted update (STATUS=running left by a
+           power-loss or unexpected exit).  Invoked only by the boot-time
+           autostream_dial_update_recover.service — never from cmd_apply.
+"""
+from __future__ import annotations
+
+import errno
+import fcntl
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+# ---- Paths / constants -------------------------------------------------------
+
+LOG_PATH    = Path("/var/log/autostream/dial-update.log")
+STATE_DIR   = Path("/var/lib/autostream-dial")
+CONFIG_PATH = Path("/etc/autostream-dial/dial.json")
+LOCK_PATH   = Path("/run/autostream-dial-update.lock")
+APMODE_FLAG = Path("/tmp/autostream-dial-apmode")
+STAGING_DIR = Path("/var/lib/autostream-dial/update-staging")
+FLOCK_BIN   = "/usr/bin/flock"
+
+REPO_OWNER = "lo-tech-systems"
+REPO_NAME  = "autostream"
+API_LATEST = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
+RELEASES_HTML = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases"
+
+UA = "autostream-dial-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
+
+SYSTEMDRUN_CANDIDATES = ("/bin/systemd-run", "/usr/bin/systemd-run")
+
+# ---- Helpers -----------------------------------------------------------------
+
+def _log(msg: str) -> None:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}\n"
+    with LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(line)
+    logging.info("%s", msg)
+
+
+def _run(cmd: list[str], timeout: int = 60) -> Tuple[int, str, str]:
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+
+
+def _http_get(url: str, timeout: int = 20) -> Tuple[int, bytes]:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": UA, "Accept": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return getattr(resp, "status", 200), resp.read()
+
+
+def _read_env_file(path: Path) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip(); value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            data[key] = value
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        _log(f"read_env_file({path}): {e}")
+    return data
+
+
+def write_update_result(status: str, message: str) -> None:
+    content = f"STATUS={status}\nMESSAGE={message}\n"
+    (STATE_DIR / "update-result.env").write_text(content, encoding="utf-8")
+
+
+def _read_installed_tag() -> str:
+    try:
+        env = _read_env_file(STATE_DIR / "install-state.env")
+        v = str(env.get("AUTOSTREAM_RELEASE_TAG") or "").strip()
+        if v:
+            return v
+    except FileNotFoundError:
+        return "missing"
+    except Exception as e:
+        _log(f"read_installed_tag: {e}")
+        return "unknown"
+    return "unknown"
+
+
+_semver_re = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$")
+
+
+def _version_key(v: str) -> Tuple[int, int, int, str]:
+    m = _semver_re.match((v or "").strip())
+    if not m:
+        return (0, 0, 0, v or "")
+    return (int(m.group(1) or 0), int(m.group(2) or 0), int(m.group(3) or 0), v or "")
+
+
+def _sanitise_release_notes(text: str, max_len: int = 200) -> str:
+    cleaned = "".join(ch for ch in text if 0x20 <= ord(ch) <= 0x7E)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:max_len].strip()
+
+
+def _github_latest_release() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Return (tag_name, tarball_url, release_notes) from GitHub latest release."""
+    try:
+        status, raw = _http_get(API_LATEST, timeout=20)
+        if status == 404:
+            return None, None, None
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        tag = data.get("tag_name")
+        tarball = data.get("tarball_url")
+        raw_body = data.get("body") or ""
+        notes = _sanitise_release_notes(str(raw_body)) if raw_body else None
+        return (str(tag) if tag else None,
+                str(tarball) if tarball else None,
+                notes)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, None, None
+        _log(f"github_latest_release: HTTPError {e.code}")
+        return None, None, None
+    except Exception as e:
+        _log(f"github_latest_release: {e}")
+        return None, None, None
+
+
+def _repo_exists() -> bool:
+    try:
+        req = urllib.request.Request(RELEASES_HTML, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return getattr(resp, "status", 200) < 400
+    except Exception:
+        return False
+
+
+def _download_file(url: str, dst: Path, timeout: int = 120) -> None:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": UA, "Accept": "application/vnd.github+json"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with dst.open("wb") as f:
+            shutil.copyfileobj(resp, f)
+
+
+def _find_systemd_run() -> Optional[str]:
+    for path in SYSTEMDRUN_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    p = shutil.which("systemd-run")
+    if p and os.path.isabs(p) and os.access(p, os.X_OK):
+        return p
+    return None
+
+
+# ---- Active-unit guard -------------------------------------------------------
+
+def _dial_update_unit_active() -> bool:
+    """Return True if an autostream-dial update unit is active (running or waiting).
+
+    Fail-closed: raises RuntimeError on systemctl error so callers reject
+    the request rather than proceeding with a potentially concurrent install.
+    """
+    rc, out, err = _run(
+        ["systemctl", "list-units", "--state=active", "--no-legend", "--plain",
+         "autostream-dial-update-*"],
+        timeout=10,
+    )
+    if rc != 0:
+        raise RuntimeError(f"systemctl exited rc={rc}: {err!r}")
+    return bool(out.strip())
+
+
+# ---- Commands ----------------------------------------------------------------
+
+def cmd_check() -> Dict[str, Any]:
+    if not _repo_exists():
+        _log("check: GitHub releases page not reachable")
+        return {"ok": False, "error": "GitHub repo/releases not reachable (404 or network error)"}
+
+    installed = _read_installed_tag()
+    tag, _tarball, notes = _github_latest_release()
+
+    if not tag:
+        update_available = (installed == "missing")
+        _log(f"check: repo ok but no latest tag; installed={installed}; update_available={update_available}")
+        return {
+            "ok": True,
+            "installed": installed if installed != "missing" else "unknown",
+            "candidate": "unknown",
+            "update_available": update_available,
+        }
+
+    candidate = tag.lstrip("v")
+    if installed == "missing":
+        update_available = True
+        installed_out = "unknown"
+    else:
+        installed_out = installed
+        update_available = _version_key(candidate) > _version_key(installed)
+
+    _log(f"check: installed={installed_out} candidate={candidate} update_available={update_available}")
+    result: Dict[str, Any] = {
+        "ok": True,
+        "installed": installed_out,
+        "candidate": candidate,
+        "update_available": update_available,
+    }
+    if update_available and notes:
+        result["release_notes"] = notes
+    return result
+
+
+def cmd_apply(auto: bool = False) -> Dict[str, Any]:
+    """Stage the latest release and schedule the installer via systemd-run."""
+
+    # AP-mode guard
+    if APMODE_FLAG.exists():
+        _log("apply: deferred — dial is in AP (setup) mode; updates require network connectivity")
+        return {"ok": False, "error": "Dial is in AP mode; connect to a network first."}
+
+    # auto_update flag check
+    if auto:
+        try:
+            import json as _json
+            settings_path = STATE_DIR / "settings" / "dial-settings.json"
+            s = _json.loads(settings_path.read_text(encoding="utf-8"))
+            if not s.get("auto_update", False):
+                _log("apply --auto: auto_update=false in settings — no-op")
+                return {"ok": True}
+        except Exception as e:
+            _log(f"apply --auto: could not read auto_update setting ({e}) — skipping (fail-closed)")
+            return {"ok": True}
+
+    # Version guard
+    check = cmd_check()
+    if not check.get("ok"):
+        _log(f"apply: aborting — check failed: {check.get('error', 'unknown')}")
+        return {"ok": False, "error": check.get("error", "Update check failed")}
+    if not check.get("update_available"):
+        _log("already at latest — no-op")
+        return {"ok": True}
+
+    # Pre-lock unit check (fail-closed)
+    try:
+        if _dial_update_unit_active():
+            _log("apply: refused — a dial update unit is already active")
+            return {"ok": False, "error": "An update is already in progress."}
+    except Exception as e:
+        _log(f"apply: refused — unable to determine update unit status: {e}")
+        return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
+
+    systemd_run = _find_systemd_run()
+    if systemd_run is None:
+        _log("apply: systemd-run not found")
+        return {"ok": False, "error": "systemd-run not found; cannot schedule installer"}
+
+    if not (os.path.isfile(FLOCK_BIN) and os.access(FLOCK_BIN, os.X_OK)):
+        _log(f"apply: {FLOCK_BIN} not found or not executable")
+        return {"ok": False, "error": f"flock not found at {FLOCK_BIN}"}
+
+    tag, tarball_url, _notes = _github_latest_release()
+    if not tag or not tarball_url:
+        _log("apply: no latest release or tarball_url")
+        return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
+
+    _log(f"apply: staging release tag={tag} tarball={tarball_url}")
+
+    try:
+        lock_fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as e:
+        _log(f"apply: failed to open lock file: {e}")
+        return {"ok": False, "error": "Failed to open update lock."}
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        os.close(lock_fd)
+        if e.errno in (errno.EWOULDBLOCK, errno.EACCES):
+            _log("apply: refused — lock held by running installer")
+            return {"ok": False, "error": "An update is already in progress."}
+        return {"ok": False, "error": f"Lock error: {e}"}
+
+    try:
+        # Post-lock recheck
+        try:
+            if _dial_update_unit_active():
+                _log("apply: refused after lock — unit became active during staging window")
+                return {"ok": False, "error": "An update is already in progress."}
+        except Exception as e:
+            _log(f"apply: refused — unable to recheck update unit status after lock: {e}")
+            return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
+
+        # Clean up previous staging dir
+        if STAGING_DIR.exists():
+            try:
+                shutil.rmtree(str(STAGING_DIR))
+                _log(f"apply: removed previous staging dir {STAGING_DIR}")
+            except Exception as e:
+                _log(f"apply: warning — could not remove previous staging dir: {e}")
+
+        try:
+            STAGING_DIR.mkdir(parents=True, exist_ok=True)
+            os.chmod(str(STAGING_DIR), 0o700)
+
+            tar_path = STAGING_DIR / "release.tgz"
+            _log("apply: downloading release tarball")
+            _download_file(tarball_url, tar_path, timeout=120)
+
+            extract_dir = STAGING_DIR / "src"
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
+            _log("apply: extracting tarball")
+            with tarfile.open(tar_path, "r:gz") as tf:
+                # filter="data" requires Python 3.12+; fall back gracefully on 3.11
+                if sys.version_info >= (3, 12):
+                    tf.extractall(extract_dir, filter="data")
+                else:
+                    tf.extractall(extract_dir)
+
+            top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
+            repo_root = top_dirs[0] if len(top_dirs) == 1 else extract_dir
+
+            installer = repo_root / "autostream_dial_install.sh"
+            if not installer.exists():
+                raise FileNotFoundError(
+                    f"autostream_dial_install.sh not found in extracted tree at {repo_root}"
+                )
+            os.chmod(str(installer), 0o755)
+
+            tag_file = STAGING_DIR / "release_tag"
+            tag_file.write_text(tag + "\n", encoding="utf-8")
+            os.chmod(str(tag_file), 0o600)
+            _log(f"apply: staged release at {repo_root}")
+
+        except Exception as e:
+            _log(f"apply: staging failed: {e}")
+            try:
+                shutil.rmtree(str(STAGING_DIR), ignore_errors=True)
+            except Exception:
+                pass
+            return {"ok": False, "error": "Release staging failed", "details": str(e)}
+
+        write_update_result("running", f"Installing {tag}...")
+        _log(f"apply: written STATUS=running")
+
+        unit_suffix = f"{int(time.time())}-{os.getpid()}"
+        unit_name   = f"autostream-dial-update-{unit_suffix}"
+
+        cmd = [
+            str(systemd_run), "--quiet", "--collect",
+            f"--unit={unit_name}",
+            "--on-active=1",
+            "--property=Type=oneshot",
+            f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
+            "--setenv=AUTOSTREAM_DIAL_LOCKED=1",
+            "--",
+            FLOCK_BIN, "--exclusive", str(LOCK_PATH),
+            str(installer), "--update",
+        ]
+
+        rc, out, err = _run(cmd, timeout=15)
+        if rc != 0:
+            write_update_result("failed", f"systemd-run failed scheduling {tag}")
+            _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")
+            return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
+
+        _log(f"apply: installer scheduled as {unit_name} tag={tag}")
+        return {"ok": True, "staged_tag": tag.lstrip("v")}
+
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def cmd_recover() -> Dict[str, Any]:
+    """Safe interrupted-update recovery — invoked at boot before dial services start.
+
+    Writes STATUS=failed only after confirming both that no update unit is active
+    AND the lock file is free.  After a clean reboot both conditions are always
+    true (LOCK_PATH is in /run/, tmpfs emptied on every boot).  Fail-closed on
+    any check failure.
+    """
+    env = _read_env_file(STATE_DIR / "update-result.env")
+    if env.get("STATUS", "").lower() != "running":
+        return {"ok": True}
+
+    # Confirm no update unit is active (fail-closed)
+    try:
+        if _dial_update_unit_active():
+            _log("recover: STATUS=running and update unit is active — leaving unchanged")
+            return {"ok": True}
+    except Exception as e:
+        _log(f"recover: unit check failed ({e}) — leaving STATUS unchanged")
+        return {"ok": False, "error": str(e)}
+
+    # Confirm lock is free (non-blocking probe; immediately released)
+    try:
+        fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            os.close(fd)
+            _log("recover: STATUS=running and lock is held — leaving unchanged")
+            return {"ok": True}
+        os.close(fd)
+    except OSError as e:
+        _log(f"recover: lock open failed ({e}) — leaving STATUS unchanged")
+        return {"ok": False, "error": str(e)}
+
+    # Both guards passed: safe to mark as interrupted
+    write_update_result("failed", "Update was interrupted (power loss or unexpected exit).")
+    _log("recover: STATUS was 'running' with no active unit or lock — written 'failed'")
+    return {"ok": True}
+
+
+# ---- Entrypoint --------------------------------------------------------------
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+
+    if os.geteuid() != 0:
+        print(json.dumps({"ok": False, "error": "Must be run as root"}))
+        return 2
+
+    import argparse
+    ap = argparse.ArgumentParser(prog="autostream_dial_updater")
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("check")
+    apply_p = sub.add_parser("apply")
+    apply_p.add_argument("--auto", action="store_true",
+                         help="Honour auto_update setting; skip if disabled")
+    sub.add_parser("recover")
+    args = ap.parse_args()
+
+    if args.cmd == "check":
+        result = cmd_check()
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
+
+    if args.cmd == "apply":
+        result = cmd_apply(auto=args.auto)
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
+
+    if args.cmd == "recover":
+        result = cmd_recover()
+        print(json.dumps(result))
+        return 0 if result.get("ok") else 1
+
+    ap.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

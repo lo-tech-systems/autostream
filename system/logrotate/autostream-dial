@@ -1,0 +1,31 @@
+# /etc/logrotate.d/autostream-dial
+#
+# Log rotation policy for autostream dial.
+# Files are created root:adm 0640 by init_service_dirs() before logrotate
+# first runs (see installer/dial/helpers.sh).
+#
+# This file is part of autostream dial.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+/var/log/autostream/dial-install.log
+/var/log/autostream/dial-update.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+}
+
+/var/log/autostream/wifi_setup.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 root adm
+}
