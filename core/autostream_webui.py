@@ -47,6 +47,8 @@ from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
 from autostream_webui_state import WebUIState
 from autostream_webui_api import (
     run_updater,
+    send_audio_status_json,
+    send_dial_volume_post_json,
     send_json,
     send_output_eq_config_json,
     send_output_eq_reset_json,
@@ -58,6 +60,13 @@ from autostream_webui_api import (
     send_status_json,
     send_update_check_json,
     send_update_status_json,
+)
+from autostream_webui_dials import (
+    dispatch_dial_management_post,
+    handle_dial_configure_get,
+    handle_dial_pin_recovery_status,
+    handle_dial_update_post,
+    handle_dial_update_status,
 )
 from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page
@@ -330,6 +339,23 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_owntone_restarting_page(self, STATE)
         elif path == "/rebooting":
             send_rebooting_page(self, STATE, AUTH)
+        elif path == "/api/audio/status":
+            send_audio_status_json(self, STATE)
+        elif path.startswith("/api/dial/configure/"):
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
+            handle_dial_configure_get(self, path.rsplit("/", 1)[-1])
+        elif path.startswith("/api/dial/pin_recovery/status/"):
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
+            handle_dial_pin_recovery_status(self, path.rsplit("/", 1)[-1])
+        elif path.startswith("/api/dial/update/status/"):
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
+            handle_dial_update_status(self, path.rsplit("/", 1)[-1])
         else:
             self.send_error(404, "Not found")
 
@@ -381,6 +407,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             else:
                 # Unknown content type; leave as raw body_str
                 pass
+
+        # ── UUID-auth dial volume (no session/CSRF required) ──────────────
+        if path == "/api/dial/volume":
+            send_dial_volume_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
+            return
 
         # --- 4) CSRF: accept header OR body (form/json) ---
         token_from_header = self.headers.get("X-CSRF-Token", "") or ""
@@ -504,6 +535,19 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 return
             handle_factory_reset_post(self, STATE, AUTH)
 
+        elif path in ("/api/dial/authorize", "/api/dial/revoke", "/api/dial/configure",
+                      "/api/dial/pin_recovery/complete"):
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
+            dispatch_dial_management_post(self, path, json_obj)
+
+        elif path.startswith("/api/dial/update/") and len(path) > len("/api/dial/update/"):
+            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
+                self.send_error(403, "Authentication required")
+                return
+            handle_dial_update_post(self, path.rsplit("/", 1)[-1])
+
         else:
             self.send_error(404, "Not found")
 
@@ -538,6 +582,9 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
 
     def _serve() -> None:
         try:
+            from autostream_dials import start_dial_scanner
+            start_dial_scanner()
+
             scanner_thread = threading.Thread(
                 target=_scan_monitor_devices_loop, daemon=True,
             )

@@ -91,6 +91,7 @@ ALLOWLIST_PATHS = {
     "/api/output_eq/status",
     "/api/service/reset",
     "/api/service/config",
+    "/api/audio/status",
 }
 
 # Static asset extensions that must never trigger an auth redirect.

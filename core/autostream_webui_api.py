@@ -27,11 +27,13 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import threading
 
 from typing import Optional
 
 from autostream_config import (
     CONFIG_IO_LOCK,
+    is_dial_authorized,
     parse_config,
 )
 from autostream_core import (
@@ -47,7 +49,7 @@ from autostream_core import (
     set_live_output_gain,
     update_playback_input_config,
 )
-from autostream_player_service import list_outputs
+from autostream_player_service import list_outputs, update_output
 from autostream_sysutils import atomic_write_file, run_admin_cmd
 from autostream_webui_common import locked_load_config, _fallback_input_snapshot
 from autostream_webui_service_schema import (
@@ -617,3 +619,119 @@ def send_output_eq_status_json(handler) -> None:
         send_json(handler, 200, {"ok": False, "error": "Monitor unavailable"})
         return
     send_json(handler, 200, {"ok": True, **status})
+
+
+# ---------------------------------------------------------------------------
+# Dial API handlers
+# ---------------------------------------------------------------------------
+
+_audio_status_fail_count = 0
+
+
+def send_audio_status_json(handler, state: WebUIState) -> None:
+    """GET /api/audio/status — unauthenticated, read-only.
+
+    Returns a fresh snapshot of currently selected OwnTone output names and
+    playing state.  Both exceptions and result.ok == False increment the
+    failure counter; it only resets on a true success.  WARNING on the 1st
+    and every 10th failure; DEBUG between.
+    """
+    global _audio_status_fail_count
+    playing = any_monitor_capturing()
+    try:
+        cfg = locked_load_config(state.config_path)
+        parsed = parse_config(cfg)
+    except Exception as e:
+        logging.warning("audio/status: config load failed: %s", e)
+        send_json(handler, 200, {"playing": playing, "outputs": None,
+                                 "error": "backend_unavailable"})
+        return
+    try:
+        result = list_outputs(parsed.owntone.base_url, timeout=2)
+    except Exception as e:
+        _audio_status_fail_count += 1
+        n = _audio_status_fail_count
+        if n == 1 or n % 10 == 0:
+            logging.warning("audio/status: list_outputs failed (call #%d): %s", n, e)
+        else:
+            logging.debug("audio/status: list_outputs failed: %s", e)
+        send_json(handler, 200, {"playing": playing, "outputs": None,
+                                 "error": "backend_unavailable"})
+        return
+    if not result.ok:
+        _audio_status_fail_count += 1
+        n = _audio_status_fail_count
+        if n == 1 or n % 10 == 0:
+            logging.warning("audio/status: list_outputs not ok (call #%d): %s",
+                            n, result.error or result.error_code)
+        else:
+            logging.debug("audio/status: list_outputs not ok: %s",
+                          result.error or result.error_code)
+        send_json(handler, 200, {"playing": playing, "outputs": None,
+                                 "error": "backend_unavailable"})
+        return
+    _audio_status_fail_count = 0
+    names = [o.name for o in result.outputs if o.selected]
+    send_json(handler, 200, {"playing": playing, "outputs": names})
+
+
+_volume_lock = threading.Lock()
+
+
+def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/volume — UUID-auth only (no session/CSRF required).
+
+    Applies a volume delta to all selected OwnTone outputs proportionally.
+    Returns {"ok": true, "volume": <new_master>} on success.
+    """
+    dial_id = json_obj.get("dial_id", "")
+    delta = json_obj.get("delta")
+
+    if not isinstance(dial_id, str) or not dial_id:
+        send_json(handler, 403, {})
+        return
+    if not is_dial_authorized(dial_id):
+        send_json(handler, 403, {})
+        return
+    if not isinstance(delta, int) or isinstance(delta, bool):
+        send_json(handler, 200, {"ok": False, "error": "invalid_delta"})
+        return
+    delta = max(-100, min(100, delta))
+
+    try:
+        raw = locked_load_config(state.config_path)
+        parsed = parse_config(raw)
+        base_url = parsed.owntone.base_url
+    except Exception as e:
+        logging.warning("dial volume: config load failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+
+    with _volume_lock:
+        result = list_outputs(base_url, timeout=3)
+        if not result.ok:
+            send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
+            return
+        selected = [o for o in result.outputs if o.selected]
+        if not selected:
+            send_json(handler, 200, {"ok": False, "error": "no_active_outputs"})
+            return
+        current_master = round(sum(o.volume_percent for o in selected) / len(selected))
+        new_master = max(0, min(100, current_master + delta))
+        failed = 0
+        for output in selected:
+            new_vol = (new_master if current_master == 0
+                       else max(0, min(100,
+                           round(output.volume_percent * new_master / current_master))))
+            r = update_output(base_url, output.id, volume_percent=new_vol, timeout=3)
+            if not r.ok:
+                logging.warning("update_output %s: %s", output.id, r.error)
+                failed += 1
+
+    if failed == len(selected):
+        send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
+        return
+    if failed:
+        send_json(handler, 200, {"ok": True, "volume": new_master, "partial": True})
+        return
+    send_json(handler, 200, {"ok": True, "volume": new_master})

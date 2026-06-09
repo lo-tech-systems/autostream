@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import logging
 
+from datetime import datetime
 from typing import Optional
 from urllib.parse import parse_qs
 
@@ -22,8 +23,16 @@ from autostream_config import (
     CONFIG_IO_LOCK,
     mark_configured,
     parse_config,
+    parse_dial_entries,
     unconfigured,
 )
+
+try:
+    from autostream_dials import get_all_sightings as _get_dial_sightings
+except ImportError:
+    def _get_dial_sightings() -> list:  # type: ignore[misc]
+        return []
+
 from autostream_core import (
     update_live_owntone_runtime,
     update_playback_input_config,
@@ -135,6 +144,147 @@ def _audio_controls_card_html(
     """
     return settings_card_html(inner_html)
 
+
+# -----------------------------------------------------------------------------
+# Dial card helpers
+# -----------------------------------------------------------------------------
+
+def _relative_time(iso_str: str) -> str:
+    if not iso_str:
+        return "never seen"
+    try:
+        delta = datetime.utcnow() - datetime.fromisoformat(iso_str)
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return "just now"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except (ValueError, TypeError):
+        return "unknown"
+
+
+def _dial_card_new_html(sighting) -> str:
+    """Card for a dial seen on the network but not yet authorized."""
+    su = html.escape(sighting.uuid)
+    nv = html.escape(sighting.name or "")
+    return settings_card_html(f"""
+          <div class="dial-card" data-dial-uuid="{su}" data-pin-set="false">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
+            <span style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;">UUID: {su}</span>
+            <span class="dial-badge dial-badge-new">New</span>
+          </div>
+          <label style="display:block;margin-top:0.5rem;">Name
+            <input type="text" class="dial-name" value="{nv}"
+                   placeholder="e.g. Hallway Dial" style="margin-top:0.25rem;">
+          </label>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" class="dial-allow" data-dial-action="toggle-allow">
+              <span class="switch"></span>
+            </label>
+            <span>Allow control</span>
+          </div>
+          <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
+          </div>
+        """, margin_top="0")
+
+
+def _dial_card_offline_html(entry) -> str:
+    """Card for an authorized dial that is currently offline."""
+    su = html.escape(entry.uuid)
+    dn = html.escape(entry.current_name or entry.name)
+    ls = html.escape(_relative_time(entry.last_seen))
+    return settings_card_html(f"""
+          <div class="dial-card" data-dial-uuid="{su}" data-pin-set="false">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+            <span class="dial-card-title">{dn}</span>
+            <span class="dial-badge dial-badge-offline">Offline</span>
+          </div>
+          <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.25rem;">
+            Last seen: {ls}
+          </div>
+          <div style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;margin-top:0.25rem;">
+            UUID: {su}
+          </div>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" class="dial-allow" data-dial-action="toggle-allow" checked>
+              <span class="switch"></span>
+            </label>
+            <span>Allow control</span>
+            <button type="button" class="pill-btn small" style="margin-left:auto;"
+                    data-dial-action="revoke">Revoke</button>
+          </div>
+          <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
+          </div>
+        """, margin_top="0")
+
+
+def _dial_card_online_html(entry, sighting, app_version: str) -> str:
+    """Card for an authorized dial that is currently online."""
+    su = html.escape(entry.uuid)
+    dn = html.escape(entry.current_name or entry.name or sighting.name)
+    fw = html.escape(sighting.version or "")
+    nv = html.escape(entry.current_name or entry.name or sighting.name)
+    needs_update = bool(sighting.version and app_version and sighting.version != app_version)
+    update_btn = (
+        f'<button type="button" class="pill-btn small" style="flex-shrink:0;"'
+        f' data-dial-action="update">Update firmware</button>'
+    ) if needs_update else ""
+    fw_span = (
+        f'<span style="font-size:0.75rem;color:var(--color-text-muted);'
+        f'margin-left:0.4rem;">· Firmware {fw}</span>'
+    ) if fw else ""
+    return settings_card_html(f"""
+          <div class="dial-card" data-dial-uuid="{su}" data-pin-set="false">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
+            <div><span class="dial-card-title">{dn}</span>{fw_span}</div>
+            <div style="display:flex;gap:0.4rem;align-items:center;flex-shrink:0;">
+              {update_btn}<span class="dial-badge dial-badge-online">Online</span>
+            </div>
+          </div>
+          <div style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;margin-top:0.25rem;">
+            UUID: {su}
+          </div>
+          <label style="display:block;margin-top:0.5rem;">Name
+            <input type="text" class="dial-name" value="{nv}"
+                   placeholder="Display name" style="margin-top:0.25rem;"
+                   data-dial-action="save-config">
+          </label>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+            Step
+            <input type="number" class="dial-step" min="1" max="10" value="2"
+                   style="width:3.5rem;" data-dial-action="save-config">
+            <span>% per click</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" class="dial-allow" data-dial-action="toggle-allow" checked>
+              <span class="switch"></span>
+            </label>
+            <span>Allow control</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" class="dial-autoupdate" data-dial-action="save-config">
+              <span class="switch"></span>
+            </label>
+            <span>Auto-update</span>
+          </div>
+          <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
+            <button type="button" class="pill-btn small"
+                    data-dial-action="change-pin">Change PIN</button>
+            <button type="button" class="pill-btn small"
+                    data-dial-action="recover-pin">Reset lost PIN</button>
+            <button type="button" class="pill-btn small" style="margin-left:auto;"
+                    data-dial-action="revoke">Revoke</button>
+          </div>
+          <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
+          </div>
+        """, margin_top="0")
 
 
 # -----------------------------------------------------------------------------
@@ -494,6 +644,8 @@ def send_setup_page(
         settings_card_html(system_inner_html, margin_top="0")
     )
 
+    _dial_onload_js = ""  # populated in the else branch below
+
     # Build the form body content — flat for initial setup, slide-panel for post-config
     if initial_setup:
         form_content_html = f"""{input1_html}
@@ -563,6 +715,45 @@ def send_setup_page(
                 <span>Dark Mode</span>
               </div>
             """, margin_top="0")
+
+        # Build dial cards data
+        _all_sightings = _get_dial_sightings()
+        _authorized_entries = parse_dial_entries()
+        _sightings_by_uuid = {s.uuid: s for s in _all_sightings}
+        _authorized_uuids = {e.uuid for e in _authorized_entries}
+        _n_auth = len(_authorized_entries)
+        _n_online = sum(1 for e in _authorized_entries if e.uuid in _sightings_by_uuid)
+        _n_new = sum(1 for s in _all_sightings if s.uuid not in _authorized_uuids)
+        if _n_auth == 0 and _n_new == 0:
+            _dials_summary = "No dials"
+        elif _n_auth == 0:
+            _dials_summary = f"{_n_new} new"
+        elif _n_new > 0:
+            _dials_summary = f"{_n_auth} authorized · {_n_new} new"
+        else:
+            _dials_summary = f"{_n_auth} authorized" + (f" · {_n_online} online" if _n_online else "")
+        _dials_summary = html.escape(_dials_summary)
+        _app_ver = get_app_version()
+        _dial_cards_html = ""
+        for _entry in _authorized_entries:
+            _sighting = _sightings_by_uuid.get(_entry.uuid)
+            if _sighting:
+                _dial_cards_html += _dial_card_online_html(_entry, _sighting, _app_ver)
+            else:
+                _dial_cards_html += _dial_card_offline_html(_entry)
+        for _sighting in _all_sightings:
+            if _sighting.uuid not in _authorized_uuids:
+                _dial_cards_html += _dial_card_new_html(_sighting)
+        if not _dial_cards_html:
+            _dial_cards_html = (
+                "<p style='color:var(--color-text-muted);font-style:italic;margin-top:0.5rem;'>"
+                "No dials found on the network.</p>"
+            )
+        _dial_onload_js = (
+            "document.querySelectorAll('.dial-card .dial-step').forEach(function(el) { "
+            "dialLoadConfig(el.closest('.dial-card')); });"
+        )
+
         form_content_html = f"""<div class="setup-slide-viewport">
       <div class="setup-slide-track" id="setupSlideTrack">
         <div class="setup-slide-list">
@@ -602,6 +793,13 @@ def send_setup_page(
             <div class="setup-list-card-body">
               <span class="setup-list-card-title">System</span>
               <span class="setup-list-card-sub">{system_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('dials')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Dials</span>
+              <span class="setup-list-card-sub">{_dials_summary}</span>
             </div>
             <span class="setup-list-chevron">\u203a</span>
           </div>
@@ -671,11 +869,30 @@ def send_setup_page(
             </div>
             {factory_reset_zone}
           </div>
+          <div class="setup-detail-panel" id="panel-dials">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {_setup_detail_header("Dials")}
+            {_dial_cards_html}
+          </div>
         </div>
       </div>
     </div>"""
 
-    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}\n{factory_reset_modal_css}"
+    _dial_badge_css = """
+.dial-badge{display:inline-flex;align-items:center;font-size:0.65rem;font-weight:600;
+  padding:0.1rem 0.45rem;border-radius:0.75rem;letter-spacing:0.02em;white-space:nowrap;}
+.dial-badge-new{background:var(--color-accent,#007bff);color:#fff;}
+.dial-badge-online{background:var(--color-status-success,#28a745);color:#fff;}
+.dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
+.dial-card-title{font-weight:600;font-size:0.9rem;}
+.dial-card-msg{font-size:0.8rem;}
+"""
+    _extra_css = (
+        f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}"
+        f"\n{factory_reset_modal_css}\n{_dial_badge_css}"
+    )
     _pin_modal_div = """\
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
   <div class="panel modal-panel">
@@ -690,7 +907,25 @@ def send_setup_page(
     </div>
   </div>
 </div>"""
-    _body_prefix = f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}"
+    _dial_pin_modal_div = ("""\
+<div id="dialPinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialPinModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="dialPinModalTitle">Change PIN</div>
+    <div class="bd modal-bd">
+      <p id="dialPinModalMsg"></p>
+      <input type="password" id="dialPinModalCurrentInput" placeholder="Current PIN"
+             autocomplete="current-password" style="margin-top:0.5rem;">
+      <input type="password" id="dialPinModalInput" placeholder="New PIN"
+             autocomplete="new-password" style="margin-top:0.5rem;">
+      <p id="dialPinModalError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="dialPinModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinModalOk">Apply</button>
+    </div>
+  </div>
+</div>""" if not initial_setup else "")
+    _body_prefix = f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_dial_pin_modal_div}"
     _page_heading_html = (
         f"{BANNER_HTML}<h1>{h1}</h1>"
         if initial_setup else
@@ -1170,6 +1405,272 @@ def send_setup_page(
           if (track) track.classList.remove('panel-open');
           window.scrollTo(0, 0);
         }}
+      </script>
+      <script>
+        // ── Dial management ────────────────────────────────────────────────
+        var _dialPinRecoveryTimer = null;
+        var _dialPinModalCard = null;
+        var _dialPinModalMode = null; // 'change' | 'recovery-wait' | 'recovery-set'
+
+        function dialUUID(card) {{
+          return card ? (card.dataset.dialUuid || '') : '';
+        }}
+
+        function dialMsg(card, msg, ok) {{
+          var el = card ? card.querySelector('.dial-card-msg') : null;
+          if (!el) return;
+          el.textContent = msg;
+          el.style.color = ok ? 'var(--color-status-success)' : 'var(--color-status-danger)';
+          el.style.display = msg ? '' : 'none';
+        }}
+
+        async function _dialFetch(path, opts) {{
+          var headers = Object.assign({{'X-CSRF-Token': window.__CSRF || ''}}, (opts.headers || {{}}));
+          var r = await fetch(path, Object.assign({{}}, opts, {{headers: headers}}));
+          return r.json();
+        }}
+
+        async function _dialPost(path, body) {{
+          return _dialFetch(path, {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify(body),
+          }});
+        }}
+
+        async function dialToggleAllow(card, checked) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          if (checked) {{
+            var nameEl = card.querySelector('.dial-name');
+            var name = ((nameEl ? nameEl.value : '') || uuid.slice(0, 8)).trim();
+            try {{
+              var j = await _dialPost('/api/dial/authorize', {{uuid: uuid, name: name}});
+              if (j.ok) {{ dialMsg(card, 'Authorized', true); setTimeout(function(){{ location.reload(); }}, 800); }}
+              else {{
+                dialMsg(card, j.error || 'Authorization failed', false);
+                var cb = card.querySelector('.dial-allow');
+                if (cb) cb.checked = false;
+              }}
+            }} catch(e) {{
+              dialMsg(card, 'Network error', false);
+              var cb2 = card.querySelector('.dial-allow');
+              if (cb2) cb2.checked = false;
+            }}
+          }} else {{
+            if (confirm('Remove authorization for this dial?')) {{
+              await dialRevoke(card);
+            }} else {{
+              var cb3 = card.querySelector('.dial-allow');
+              if (cb3) cb3.checked = true;
+            }}
+          }}
+        }}
+
+        async function dialRevoke(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          try {{
+            var j = await _dialPost('/api/dial/revoke', {{uuid: uuid}});
+            if (j.ok) {{ dialMsg(card, 'Revoked', true); setTimeout(function(){{ location.reload(); }}, 800); }}
+            else dialMsg(card, j.error || 'Failed', false);
+          }} catch(e) {{ dialMsg(card, 'Network error', false); }}
+        }}
+
+        async function dialSaveConfig(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var nameEl = card.querySelector('.dial-name');
+          var stepEl = card.querySelector('.dial-step');
+          var autoEl = card.querySelector('.dial-autoupdate');
+          var body = {{uuid: uuid}};
+          if (nameEl) body.name = nameEl.value.trim();
+          if (stepEl) {{
+            var step = parseInt(stepEl.value, 10);
+            if (!Number.isInteger(step) || step < 1 || step > 10) {{
+              dialMsg(card, 'Step must be between 1 and 10', false);
+              return;
+            }}
+            body.step_percent = step;
+          }}
+          if (autoEl) body.auto_update = autoEl.checked;
+          if (card.dataset.pinSet === 'true') {{
+            var currentPin = window.prompt('Enter the current dial PIN to save this change:');
+            if (currentPin === null) return;
+            body.current_pin = currentPin.trim();
+          }}
+          try {{
+            var j = await _dialPost('/api/dial/configure', body);
+            if (j.ok) {{ dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000); }}
+            else dialMsg(card, j.error || 'Failed', false);
+          }} catch(e) {{ dialMsg(card, 'Network error', false); }}
+        }}
+
+        async function dialLoadConfig(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          try {{
+            var r = await fetch('/api/dial/configure/' + encodeURIComponent(uuid), {{
+              cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
+            }});
+            if (!r.ok) return;
+            var j = await r.json();
+            var stepEl = card.querySelector('.dial-step');
+            var autoEl = card.querySelector('.dial-autoupdate');
+            if (stepEl && j.step_percent != null) stepEl.value = j.step_percent;
+            if (autoEl && j.auto_update != null) autoEl.checked = !!j.auto_update;
+            card.dataset.pinSet = j.pin_set ? 'true' : 'false';
+          }} catch(e) {{}}
+        }}
+
+        async function dialUpdateFirmware(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          if (!confirm('Start firmware update? The dial will restart.')) return;
+          try {{
+            var r = await fetch('/api/dial/update/' + encodeURIComponent(uuid), {{
+              method: 'POST', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
+            }});
+            var j = await r.json();
+            if (j.ok) dialMsg(card, 'Update started', true);
+            else dialMsg(card, j.error || 'Failed', false);
+          }} catch(e) {{ dialMsg(card, 'Network error', false); }}
+        }}
+
+        function _openDialPinModal(card, mode, title, message) {{
+          _dialPinModalCard = card;
+          _dialPinModalMode = mode;
+          var modal = document.getElementById('dialPinModal');
+          if (!modal) return;
+          document.getElementById('dialPinModalTitle').textContent = title;
+          document.getElementById('dialPinModalMsg').textContent = message;
+          var errEl = document.getElementById('dialPinModalError');
+          errEl.style.display = 'none'; errEl.textContent = '';
+          var currentInputEl = document.getElementById('dialPinModalCurrentInput');
+          currentInputEl.value = '';
+          currentInputEl.style.display = (
+            mode === 'change' && card.dataset.pinSet === 'true'
+          ) ? '' : 'none';
+          var inputEl = document.getElementById('dialPinModalInput');
+          inputEl.value = '';
+          inputEl.style.display = mode === 'recovery-wait' ? 'none' : '';
+          var okBtn = document.getElementById('dialPinModalOk');
+          okBtn.disabled = mode === 'recovery-wait';
+          document.getElementById('dialPinModalCancel').disabled = false;
+          modal.classList.add('show');
+          if (mode !== 'recovery-wait') setTimeout(function(){{
+            (currentInputEl.style.display === 'none' ? inputEl : currentInputEl).focus();
+          }}, 50);
+        }}
+
+        function _closeDialPinModal() {{
+          _dialPinModalCard = null; _dialPinModalMode = null;
+          if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
+          var modal = document.getElementById('dialPinModal');
+          if (modal) modal.classList.remove('show');
+        }}
+
+        function dialChangePIN(card) {{
+          _openDialPinModal(card, 'change', 'Change Dial PIN', 'Enter a new PIN (leave blank to remove):');
+        }}
+
+        function dialStartPINRecovery(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          _openDialPinModal(card, 'recovery-wait', 'Reset Lost PIN', 'Turn the dial clockwise to confirm…');
+          _dialPinRecoveryTimer = setInterval(async function() {{
+            try {{
+              var r = await fetch('/api/dial/pin_recovery/status/' + encodeURIComponent(uuid), {{
+                cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
+              }});
+              if (r.status === 200) {{
+                var status = await r.json();
+                if (status.volume_confirmed === true) {{
+                  clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null;
+                  _dialPinModalMode = 'recovery-set';
+                  document.getElementById('dialPinModalMsg').textContent = 'Confirmed. Enter your new PIN:';
+                  var inp = document.getElementById('dialPinModalInput');
+                  inp.style.display = ''; inp.focus();
+                  document.getElementById('dialPinModalOk').disabled = false;
+                }}
+              }}
+            }} catch(e) {{}}
+          }}, 2000);
+        }}
+
+        async function _handleDialPinModalOk() {{
+          var card = _dialPinModalCard;
+          var uuid = dialUUID(card);
+          var mode = _dialPinModalMode;
+          if (!uuid || mode === 'recovery-wait') return;
+          var currentInputEl = document.getElementById('dialPinModalCurrentInput');
+          var inputEl = document.getElementById('dialPinModalInput');
+          var errEl = document.getElementById('dialPinModalError');
+          var okBtn = document.getElementById('dialPinModalOk');
+          var currentPin = (currentInputEl ? currentInputEl.value : '').trim();
+          var pin = (inputEl ? inputEl.value : '').trim();
+          okBtn.disabled = true; errEl.style.display = 'none';
+          try {{
+            var j;
+            if (mode === 'change') {{
+              var body = {{uuid: uuid, new_pin: pin}};
+              if (card.dataset.pinSet === 'true') body.current_pin = currentPin;
+              j = await _dialPost('/api/dial/configure', body);
+            }} else {{
+              j = await _dialPost('/api/dial/pin_recovery/complete', {{uuid: uuid, new_pin: pin, pin_recovery: true}});
+            }}
+            if (j.ok) {{
+              card.dataset.pinSet = pin ? 'true' : 'false';
+              dialMsg(card, mode === 'change' ? (pin ? 'PIN changed' : 'PIN removed') : 'PIN reset', true);
+              _closeDialPinModal();
+            }} else {{
+              errEl.textContent = j.error || 'Failed'; errEl.style.display = '';
+              okBtn.disabled = false;
+            }}
+          }} catch(e) {{
+            errEl.textContent = 'Network error'; errEl.style.display = '';
+            okBtn.disabled = false;
+          }}
+        }}
+
+        document.addEventListener('DOMContentLoaded', function() {{
+          var ok = document.getElementById('dialPinModalOk');
+          var cancel = document.getElementById('dialPinModalCancel');
+          if (ok) ok.addEventListener('click', _handleDialPinModalOk);
+          if (cancel) cancel.addEventListener('click', _closeDialPinModal);
+          document.querySelectorAll('.dial-card').forEach(function(card) {{
+            card.addEventListener('change', function(ev) {{
+              var action = ev.target.dataset.dialAction;
+              if (action === 'toggle-allow') dialToggleAllow(card, ev.target.checked);
+              if (action === 'save-config' && ev.target.classList.contains('dial-autoupdate')) {{
+                dialSaveConfig(card);
+              }}
+            }});
+            card.addEventListener('focusout', function(ev) {{
+              if (
+                ev.target.dataset.dialAction === 'save-config'
+                && !ev.target.classList.contains('dial-autoupdate')
+              ) {{
+                dialSaveConfig(card);
+              }}
+            }});
+            card.addEventListener('click', function(ev) {{
+              var target = ev.target.closest('[data-dial-action]');
+              if (!target || target.tagName === 'INPUT') return;
+              var action = target.dataset.dialAction;
+              if (action === 'revoke') dialRevoke(card);
+              if (action === 'update') dialUpdateFirmware(card);
+              if (action === 'change-pin') dialChangePIN(card);
+              if (action === 'recover-pin') dialStartPINRecovery(card);
+            }});
+          }});
+          document.addEventListener('keydown', function(ev) {{
+            var m = document.getElementById('dialPinModal');
+            if (ev.key === 'Escape' && m && m.classList.contains('show')) _closeDialPinModal();
+          }});
+          // Load current config for each online authorized dial
+          {_dial_onload_js}
+        }});
       </script>""" if not initial_setup else ""}
       {factory_reset_js}"""
     html_body = build_page_html(

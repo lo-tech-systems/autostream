@@ -832,6 +832,14 @@ permissions_pass() {
     chmod 0644 "${INSTALL_DIR}/ssid"
   fi
 
+  # Create dial authorization store if absent.
+  # Runs on both fresh install and --update; the ! -f guard preserves existing authorizations.
+  if [[ ! -f "${INSTALL_DIR}/dials.json" ]]; then
+    echo '{}' > "${INSTALL_DIR}/dials.json"
+    chown autostream:autostream "${INSTALL_DIR}/dials.json"
+    chmod 0600 "${INSTALL_DIR}/dials.json"
+  fi
+
   chown autostream:autostream "${INSTALL_DIR}"
 }
 
