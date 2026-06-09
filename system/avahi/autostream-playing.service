@@ -1,0 +1,12 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">autostream on %h</name>
+  <service>
+    <type>_autostream-playing._tcp</type>
+    <port>80</port>
+    <txt-record>version=__AUTOSTREAM_RELEASE_TAG__</txt-record>
+    <txt-record>dial_api=v1</txt-record>
+    <txt-record>audio_status=v1</txt-record>
+  </service>
+</service-group>

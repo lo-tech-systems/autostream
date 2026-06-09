@@ -67,14 +67,37 @@ from dataclasses import dataclass
 
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
 
-from autostream_rpi import check_cpu
+APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 
-from autostream_webui_assets import STYLE_CSS, BANNER_HTML
+BANNER_HTML = f'<div class="app-title">{html.escape(APP_TITLE)}</div>'
+
+STYLE_CSS = """
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 0; background: #f5f5f5; color: #333; }
+.container { max-width: 420px; margin: 2rem auto; padding: 1rem 1.5rem; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
+.app-title { font-size: 1.2rem; font-weight: 700; color: #555; margin: 0 0 1rem 0; padding-bottom: 0.5rem; border-bottom: 1px solid #e0e0e0; }
+h1 { font-size: 1.4rem; margin: 0.5rem 0 1rem 0; }
+label { display: block; margin-top: 0.75rem; font-size: 0.85rem; font-weight: 600; color: #555; }
+input, select { display: block; width: 100%; padding: 0.55rem 0.75rem; margin-top: 0.25rem; border: 1px solid #ccc; border-radius: 8px; font-size: 1rem; background: #fff; color: #333; }
+input:focus, select:focus { outline: 2px solid #0070f3; border-color: transparent; }
+.pill-btn { display: inline-block; padding: 0.55rem 1.25rem; background: #0070f3; color: #fff; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; }
+.pill-btn.small { padding: 0.4rem 0.75rem; font-size: 0.85rem; background: #6c757d; }
+.pill-btn:disabled { opacity: 0.55; cursor: default; }
+.alert { margin: 0.75rem 0; padding: 0.75rem 1rem; background: #fff0f0; border: 1px solid #f5c6cb; border-radius: 8px; color: #721c24; font-size: 0.9rem; }
+.hint { font-size: 0.8rem; color: #777; margin-top: 0.25rem; }
+.status { font-size: 0.8rem; text-align: center; color: #666; margin-top: 0.5rem; }
+.row { display: flex; align-items: stretch; gap: 0.5rem; }
+.row .grow { flex: 1 1 auto; min-width: 0; }
+.row input, .row button { margin-top: 0.25rem; }
+.masked { -webkit-text-security: disc; text-security: disc; }
+"""
 
 # File locations
 LOG_FILE = "/var/log/autostream/wifi_setup.log"
 CONFIGURED_SSID = "/opt/autostream/ssid"
-AP_MODE_FLAG_PATH = "/tmp/apmode"
+AP_MODE_FLAG_PATH = os.environ.get('APP_APMODE_FLAG', '/tmp/apmode')
+AP_PREFIX = os.environ.get('APP_AP_PREFIX', 'autostream')
+DNSMASQ_SERVICE = os.environ.get('APP_DNSMASQ_SERVICE', 'autostream_dnsmasq.service')
 
 # Timers (all in seconds)
 NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
@@ -585,16 +608,16 @@ def is_local_ipv4_ready(ifname: str = AP_IFNAME) -> bool:
 def get_ap_ssid(ifname: str) -> str:
     """Generate an SSID for the AP based on the interface MAC address.
 
-    Format: autostream_XXXX where XXXX are the last four hex digits of the MAC.
+    Format: <AP_PREFIX>_XXXX where XXXX are the last four hex digits of the MAC.
     """
     try:
         with open(f"/sys/class/net/{ifname}/address", "r", encoding="utf-8") as f:
             mac = f.read().strip().replace(":", "")
     except OSError as e:
         logger.warning("Error reading MAC address for %s: %s; using default SSID", ifname, e)
-        return "autostream_SETUP"
+        return f"{AP_PREFIX}_SETUP"
     suffix = mac[-4:].upper() if len(mac) >= 4 else "0000"
-    ssid = f"autostream_{suffix}"
+    ssid = f"{AP_PREFIX}_{suffix}"
     logger.info("Using AP SSID '%s' for interface %s", ssid, ifname)
     return ssid
 
@@ -786,7 +809,7 @@ def start_ap_mode() -> None:
 
         # Bring up the AP connection
         run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME])
-        run_cmd(["systemctl", "start", "autostream_dnsmasq.service"])
+        run_cmd(["systemctl", "start", DNSMASQ_SERVICE])
 
         # Hostname may change at runtime; construct the portal URL dynamically.
         current_host = get_system_hostname()
@@ -800,7 +823,7 @@ def stop_ap_mode() -> None:
     """
     with ap_mode_lock:
         logger.info("Disabling AP mode after leaving SetupMode")
-        run_cmd(["systemctl", "stop", "autostream_dnsmasq.service"])
+        run_cmd(["systemctl", "stop", DNSMASQ_SERVICE])
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
         with state_lock:
             STATE.ap_exhausted = True
@@ -1902,8 +1925,10 @@ if __name__ == "__main__":
     logger.info("**************************************************************************")
     logger.info("autostream wifi monitor starting. Copyright (c) 2025, Lo-tech Systems Ltd.")
 
-    # Check CPU
-    check_cpu()
+    # Check CPU (gated: dial sets APP_CHECK_CPU=no; autostream defaults to yes)
+    if os.environ.get('APP_CHECK_CPU', 'yes') == 'yes':
+        from autostream_rpi import check_cpu
+        check_cpu()
 
     # First, remove any lingering Hotspot connections configured that would otherwise
     # force the Pi to setup mode even though the WiFi is probably OK, and connect to

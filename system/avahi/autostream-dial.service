@@ -1,0 +1,12 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">autostream-dial on %h</name>
+  <service>
+    <type>_autostream-dial._tcp</type>
+    <port>7842</port>
+    <txt-record>id=__DIAL_UUID__</txt-record>
+    <txt-record>name=__DIAL_NAME__</txt-record>
+    <txt-record>version=__AUTOSTREAM_RELEASE_TAG__</txt-record>
+  </service>
+</service-group>

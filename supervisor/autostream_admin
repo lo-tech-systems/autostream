@@ -27,8 +27,13 @@ Exactly one of:
   reboot [--delay SECONDS] [reason]
   restart-owntone
   update-status
+  version-info
   sethostname HOSTNAME
   factory-reset
+  write-playing-service VERSION
+  remove-playing-service
+  update-dial-service VERSION UUID NAME [--pin-recovery]
+  run-updater
 
 Notes:
   - [reason] is optional for reboot.
@@ -87,6 +92,8 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import html as _html
+import re as _re
 import shutil
 import datetime as dt
 import json
@@ -908,6 +915,94 @@ def factory_reset(execute: bool = False) -> bool:
     return _schedule_factory_reset()
 
 
+# ---------------------------------------------------------------------------
+# Avahi / mDNS service management
+# ---------------------------------------------------------------------------
+
+_AVAHI_SERVICES_DIR = Path("/etc/avahi/services")
+_PLAYING_SERVICE    = _AVAHI_SERVICES_DIR / "autostream-playing.service"
+_DIAL_SERVICE       = _AVAHI_SERVICES_DIR / "autostream-dial.service"
+_DIAL_TEMPLATE      = Path("/usr/local/share/autostream/avahi/autostream-dial.service")
+
+# Printable ASCII only (0x20–0x7e); reject ; | which break TXT parsing.
+# NOTE: this definition is deliberately duplicated in autostream_webui_dials.py.
+# autostream_admin is an extensionless privileged executable outside Python's module path;
+# it cannot be imported. Both copies enforce the same policy independently.
+_SAFE_NAME = _re.compile(r'^[\x20-\x7e]*$')
+_BAD_CHARS = _re.compile(r'[;|]')
+
+
+def _validate_dial_name(name: str) -> None:
+    if not _SAFE_NAME.match(name) or _BAD_CHARS.search(name):
+        raise ValueError(f"Dial name contains disallowed characters: {name!r}")
+
+
+def _write_playing_service(args) -> int:
+    content = f"""<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">autostream on %h</name>
+  <service>
+    <type>_autostream-playing._tcp</type>
+    <port>80</port>
+    <txt-record>version={_html.escape(args.version)}</txt-record>
+    <txt-record>dial_api=v1</txt-record>
+    <txt-record>audio_status=v1</txt-record>
+  </service>
+</service-group>
+"""
+    _AVAHI_SERVICES_DIR.mkdir(parents=True, exist_ok=True)
+    _PLAYING_SERVICE.write_text(content)
+    log("INFO", f"write-playing-service: wrote {_PLAYING_SERVICE}")
+    return 0
+
+
+def _remove_playing_service(_args) -> int:
+    if _PLAYING_SERVICE.exists():
+        _PLAYING_SERVICE.unlink()
+        log("INFO", f"remove-playing-service: deleted {_PLAYING_SERVICE}")
+    else:
+        log("INFO", "remove-playing-service: file not present, nothing to do")
+    return 0
+
+
+def _update_dial_service(args) -> int:
+    _validate_dial_name(args.name)
+    if not _DIAL_TEMPLATE.exists():
+        log("ERROR", f"update-dial-service: template not found: {_DIAL_TEMPLATE}")
+        return 1
+    content = (_DIAL_TEMPLATE.read_text()
+               .replace("__AUTOSTREAM_RELEASE_TAG__", args.version)
+               .replace("__DIAL_UUID__", args.uuid)
+               .replace("__DIAL_NAME__", _html.escape(args.name)))
+    if args.pin_recovery:
+        content = content.replace(
+            "</service>",
+            "    <txt-record>pin_recovery=1</txt-record>\n  </service>")
+    _AVAHI_SERVICES_DIR.mkdir(parents=True, exist_ok=True)
+    _DIAL_SERVICE.write_text(content)
+    log("INFO", f"update-dial-service: wrote {_DIAL_SERVICE}")
+    return 0
+
+
+def _run_updater(_args) -> int:
+    unit_suffix = f"{int(time.time())}-{os.getpid()}"
+    r = subprocess.run([
+        "systemd-run", "--quiet", "--collect",
+        f"--unit=autostream-dial-manual-update-{unit_suffix}",
+        "--on-active=1",
+        "--property=Type=oneshot",
+        "/opt/autostream/venv/bin/python",
+        "/usr/local/libexec/autostream/autostream_dial_updater",
+        "apply",   # no --auto: manual update ignores auto_update flag
+    ])
+    if r.returncode != 0:
+        log("ERROR", f"run-updater: systemd-run failed (rc={r.returncode})")
+        return 1
+    log("INFO", "run-updater: scheduled autostream_dial_updater apply unit")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AutoStream admin helper (run via sudo)."
@@ -982,6 +1077,32 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
 
+    p_wps = subparsers.add_parser(
+        "write-playing-service",
+        help="Write _autostream-playing._tcp avahi service file.",
+    )
+    p_wps.add_argument("version", help="autostream version string.")
+
+    subparsers.add_parser(
+        "remove-playing-service",
+        help="Delete _autostream-playing._tcp avahi service file.",
+    )
+
+    p_uds = subparsers.add_parser(
+        "update-dial-service",
+        help="Write _autostream-dial._tcp avahi service file from template.",
+    )
+    p_uds.add_argument("version", help="Dial firmware version string.")
+    p_uds.add_argument("uuid",    help="Dial UUID.")
+    p_uds.add_argument("name",    help="Dial display name (printable ASCII, no ; or |).")
+    p_uds.add_argument("--pin-recovery", action="store_true",
+                       help="Add pin_recovery=1 TXT record.")
+
+    subparsers.add_parser(
+        "run-updater",
+        help="Schedule autostream_dial_updater apply as a transient systemd unit.",
+    )
+
     args = parser.parse_args(argv)
     return args
 
@@ -1015,6 +1136,22 @@ def main(argv: list[str]) -> int:
         if args.command == "factory-reset":
             ok = factory_reset(execute=args.execute)
             return 0 if ok else 1
+
+        if args.command == "write-playing-service":
+            return _write_playing_service(args)
+
+        if args.command == "remove-playing-service":
+            return _remove_playing_service(args)
+
+        if args.command == "update-dial-service":
+            try:
+                return _update_dial_service(args)
+            except ValueError as e:
+                log("ERROR", f"update-dial-service: {e}")
+                return 1
+
+        if args.command == "run-updater":
+            return _run_updater(args)
 
         log("ERROR", "no action specified")
         return 2

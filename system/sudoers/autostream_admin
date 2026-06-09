@@ -48,6 +48,10 @@ Defaults!AUTOSTREAM_ADMIN !requiretty
 
 AUTOSTREAM_WEB ALL=(root) NOPASSWD: AUTOSTREAM_ADMIN
 
+# Dial mDNS service management (playing-state announcement)
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin write-playing-service *
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin remove-playing-service
+
 # Also allow the NGINX user to reboot the host and trigger factory reset
 # and read the latest update status for the offline updating page
 AUTOSTREAM_NGINX ALL=(root) NOPASSWD: AUTOSTREAM_ADMIN_REBOOT_URSE_DELAY, AUTOSTREAM_ADMIN_FACTORY_RESET, AUTOSTREAM_ADMIN_UPDATE_STATUS

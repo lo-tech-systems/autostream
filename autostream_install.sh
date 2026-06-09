@@ -277,6 +277,7 @@ save_state() {
   cat > "${STATE_FILE}" <<EOF
 # autostream install state — written by ${SCRIPT_NAME}
 # Do not edit manually.
+AUTOSTREAM_PRODUCT=autostream
 AUTOSTREAM_RELEASE_TAG="${release_tag}"
 INSTALL_TIMESTAMP="$(date -Is)"
 INSTALL_DIR="${INSTALL_DIR}"
@@ -285,7 +286,7 @@ OWNTONE_MODE="${OWNTONE_MODE}"
 SDMON_METHOD="${SDMON_METHOD}"
 FETCH_AUTOSTREAM="${FETCH_AUTOSTREAM}"
 EOF
-  chmod 0600 "${STATE_FILE}"
+  chmod 0644 "${STATE_FILE}"
   chown root:root "${STATE_FILE}"
   info "Saved install state to ${STATE_FILE}"
 }

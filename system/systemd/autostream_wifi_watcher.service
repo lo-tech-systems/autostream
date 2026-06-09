@@ -16,6 +16,13 @@ WorkingDirectory=/opt/autostream
 
 ExecStart=/opt/autostream/autostream_wifi_watcher
 
+Environment=APP_AP_PREFIX=autostream
+Environment=APP_TITLE=autostream
+Environment=APP_CHECK_CPU=yes
+# APP_APMODE_FLAG and APP_DNSMASQ_SERVICE are intentionally unset here so the
+# defaults (/tmp/apmode and autostream_dnsmasq.service) are used, preserving
+# existing nginx and autostream_updater AP-mode check behaviour.
+
 # Log level for the wifi watcher. Valid values: fatal, log, warning, info, debug, spam
 #Environment=AUTOSTREAM_WIFI_LOG_LEVEL=info
 
