@@ -31,6 +31,10 @@ from autostream_config import (
     unconfigured,
 )
 from autostream_players import (
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
     SETTING_START_BUFFER_MS,
     SETTING_START_BUFFER_MS_DEFAULT,
     SETTING_START_BUFFER_MS_MAX,
@@ -315,6 +319,25 @@ def send_owntone_setup_page(
         start_buffer_ms = SETTING_START_BUFFER_MS_DEFAULT
     start_buffer_available = bool(start_buffer_result.ok)
 
+    grace_period_result = get_setting(
+        parsed.owntone.base_url,
+        SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
+        timeout=3,
+    )
+    if grace_period_result.ok:
+        try:
+            _gp_raw = int(grace_period_result.value)
+            grace_period_minutes = max(
+                SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
+                min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, round(_gp_raw / 60)),
+            )
+        except Exception:
+            grace_period_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
+        grace_period_available = True
+    else:
+        grace_period_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
+        grace_period_available = False
+
     speakers_html = ""
     for i, row in enumerate(row_specs):
         spk = str(row["name"])
@@ -414,6 +437,20 @@ def send_owntone_setup_page(
           </fieldset>
         """
 
+    _grace_period_html = (
+        '<label style="display:block;margin-top:0.75rem;">'
+        '<div class="slider-header">'
+        '<span>mDNS Grace Period (minutes):</span>'
+        f'<span id="grace_period_val">{grace_period_minutes}</span>'
+        '</div>'
+        f'<input type="range" name="device_removal_grace_period_minutes"'
+        f' min="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES}"'
+        f' max="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES}"'
+        f' step="1" value="{grace_period_minutes}"'
+        " oninput=\"document.getElementById('grace_period_val').textContent=this.value;\">"
+        '</label>'
+    ) if grace_period_available else ""
+
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
 
@@ -454,6 +491,7 @@ def send_owntone_setup_page(
         + f"</div>"
         + ('<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else '')
         + ('<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(SETTING_START_BUFFER_MS_MIN) + '" max="' + str(SETTING_START_BUFFER_MS_MAX) + '" step="' + str(SETTING_START_BUFFER_MS_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else '<div class="storage-meta" style="margin-top:0.75rem;">This backend does not currently expose start-buffer control.</div>')
+        + _grace_period_html
         + f"</fieldset>"
         + (f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else '')
         + f"</form>"

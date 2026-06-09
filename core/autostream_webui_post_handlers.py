@@ -41,6 +41,10 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_players import (
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
     SETTING_START_BUFFER_MS,
     SETTING_START_BUFFER_MS_DEFAULT,
     SETTING_START_BUFFER_MS_MAX,
@@ -566,6 +570,25 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             if not save_buffer_result.ok and not save_buffer_result.unsupported:
                 raise RuntimeError("Could not update OwnTone start_buffer_ms via API")
             restart_required = restart_required or bool(save_buffer_result.restart_required)
+
+        if "device_removal_grace_period_minutes" in form:
+            try:
+                want_grace_minutes = int(fld("device_removal_grace_period_minutes", str(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES)).strip())
+            except (ValueError, TypeError):
+                want_grace_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
+            want_grace_minutes = max(
+                SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
+                min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, want_grace_minutes),
+            )
+            save_grace_result = save_setting(
+                base_url,
+                SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
+                want_grace_minutes * 60,
+                timeout=3,
+            )
+            if not save_grace_result.ok and not save_grace_result.unsupported:
+                raise RuntimeError("Could not update OwnTone device_removal_grace_period via API")
+            restart_required = restart_required or bool(save_grace_result.restart_required)
 
         with CONFIG_IO_LOCK:
             atomic_write_file(state.config_path, cfg.write, preserve_mode=False)

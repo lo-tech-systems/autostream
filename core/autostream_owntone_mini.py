@@ -30,6 +30,7 @@ from autostream_players import (
     SaveSettingResult,
     SettingDescriptor,
     SettingValueResult,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
     SETTING_IPV6,
     SETTING_LOG_LEVEL,
     SETTING_PIPE_AUTOSTART,
@@ -100,6 +101,14 @@ _SETTING_SPECS: dict[str, _MiniSettingSpec] = {
         option="uncompressed_alac",
         value_type="bool",
         requires_restart_on_change=True,
+    ),
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD: _MiniSettingSpec(
+        category="player",
+        option="device_removal_grace_period",
+        value_type="int",
+        requires_restart_on_change=False,
+        min_value=60,
+        max_value=900,
     ),
 }
 
@@ -554,6 +563,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             SETTING_START_BUFFER_MS: "Start Buffer",
             SETTING_UNCOMPRESSED_ALAC: "Uncompressed ALAC",
             SETTING_IPV6: "IPv6",
+            SETTING_DEVICE_REMOVAL_GRACE_PERIOD: "mDNS Grace Period",
         }
         return labels.get(key, key)
 
