@@ -222,7 +222,7 @@ After changing it, confirm the active name:
 
 **autostream** stores the “configured SSID” marker at:
 
-* `/opt/autostream/ssid` (see `core/autostream_wifi_watcher.py`)
+* `/opt/autostream/ssid` (see `platform/wifi_watcher`)
 
 If your Wi-Fi name or password changes, the device may no longer be able to connect. **autostream**’s Wi-Fi watcher will attempt recovery by entering **AP mode** under specific conditions.
 

@@ -19,3 +19,6 @@ dist/
 .vscode/
 .idea/
 .claude/
+
+# Temporary working docs
+docs/dial/IMPLEMENTATION-PLAN.md
