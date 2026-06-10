@@ -35,6 +35,7 @@ Exactly one of:
   update-dial-service VERSION UUID NAME [--pin-recovery]
   run-updater
   toggle-dial-update-timer enable|disable
+  toggle-update-timer enable|disable
 
 Notes:
   - [reason] is optional for reboot.
@@ -1021,6 +1022,19 @@ def _toggle_dial_update_timer(args) -> int:
     return 0
 
 
+def _toggle_update_timer(args) -> int:
+    verb = args.verb  # "enable" or "disable"
+    r = subprocess.run(
+        ["systemctl", verb, "--now", "autostream_updater.timer"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        log("ERROR", f"toggle-update-timer {verb}: systemctl failed (rc={r.returncode}): {r.stderr.strip()!r}")
+        return 1
+    log("INFO", f"toggle-update-timer: autostream_updater.timer {verb}d")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AutoStream admin helper (run via sudo)."
@@ -1128,6 +1142,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p_tdt.add_argument("verb", choices=["enable", "disable"],
                        help="'enable' or 'disable' the update timer.")
 
+    p_tut = subparsers.add_parser(
+        "toggle-update-timer",
+        help="Enable or disable the autostream_updater.timer systemd unit.",
+    )
+    p_tut.add_argument("verb", choices=["enable", "disable"],
+                       help="'enable' or 'disable' the autostream update timer.")
+
     args = parser.parse_args(argv)
     return args
 
@@ -1180,6 +1201,9 @@ def main(argv: list[str]) -> int:
 
         if args.command == "toggle-dial-update-timer":
             return _toggle_dial_update_timer(args)
+
+        if args.command == "toggle-update-timer":
+            return _toggle_update_timer(args)
 
         log("ERROR", "no action specified")
         return 2

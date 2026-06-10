@@ -60,7 +60,7 @@ from autostream_player_service import (
     update_output,
 )
 from autostream_playback_stats import suggested_silence_threshold_dbfs
-from autostream_sysutils import atomic_write_file, factory_reset_system, get_system_hostname, set_system_hostname
+from autostream_sysutils import atomic_write_file, factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
     _set_flash_cookie,
@@ -246,6 +246,14 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             new_show_hostname_on_home = "webui_show_hostname_on_home" in form
             cfg.set("webui", "show_hostname_on_home", "yes" if new_show_hostname_on_home else "no")
 
+        # Persist auto_update when the updates panel was rendered (initial setup omits it).
+        old_auto_update = p.updates.auto_update
+        new_auto_update = old_auto_update  # default: no change
+        if "updates_auto_update_present" in form:
+            new_auto_update = "updates_auto_update" in form
+            if not cfg.has_section("updates"): cfg.add_section("updates")
+            cfg.set("updates", "auto_update", "yes" if new_auto_update else "no")
+
         # Persist defaults into the INI the first time it is created (or if missing)
         if not cfg.get("general", "log_file", fallback="").strip():
             cfg.set("general", "log_file", p.general.log_file)
@@ -257,6 +265,27 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         with CONFIG_IO_LOCK:
             atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
             mark_configured(state.config_path)
+
+        # Sync the autostream update timer when auto_update changed.
+        if new_auto_update != old_auto_update:
+            verb = "enable" if new_auto_update else "disable"
+            result = run_admin_cmd(["toggle-update-timer", verb], timeout=5.0)
+            if result.returncode != 0:
+                # Roll back: revert auto_update in the INI to the previous value.
+                cfg.set("updates", "auto_update", "yes" if old_auto_update else "no")
+                try:
+                    with CONFIG_IO_LOCK:
+                        atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+                except Exception:
+                    logging.warning("toggle-update-timer rollback write failed")
+                logging.warning(
+                    "toggle-update-timer %s failed (rc=%d): %s",
+                    verb, result.returncode, (result.stderr or "").strip(),
+                )
+                send_setup_page(handler, state, auth,
+                                flash_msg="Auto-update toggle failed; timer could not be updated.",
+                                flash_type="error")
+                return
 
         update_live_owntone_runtime(
             output_name=fld("owntone_output_name", p.owntone.output_name),

@@ -322,6 +322,12 @@ class OutputEqConfig:
 
 
 @dataclass(frozen=True)
+class UpdatesConfig:
+    """Autonomous update settings (INI section [updates])."""
+    auto_update: bool
+
+
+@dataclass(frozen=True)
 class AutostreamConfig:
     general: GeneralConfig
     audio1: AudioInputConfig
@@ -330,6 +336,7 @@ class AutostreamConfig:
     owntone: OwntoneConfig
     webui: WebUIConfig
     output_eq: OutputEqConfig
+    updates: UpdatesConfig
 
 
 def _split_list(raw: str | None) -> tuple[str, ...]:
@@ -485,6 +492,10 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         peq6_db=cfg.getfloat("output_eq", "peq6_db", fallback=0.0),
     )
 
+    updates = UpdatesConfig(
+        auto_update=cfg.getboolean("updates", "auto_update", fallback=False),
+    )
+
     return AutostreamConfig(
         general=general,
         audio1=audio1,
@@ -493,6 +504,7 @@ def parse_config(cfg: configparser.ConfigParser) -> AutostreamConfig:
         owntone=owntone,
         webui=webui,
         output_eq=output_eq,
+        updates=updates,
     )
 
 

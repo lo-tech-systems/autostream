@@ -1,0 +1,22 @@
+# /etc/systemd/system/autostream_updater.service
+#
+# Triggered by autostream_updater.timer (opt-in, not enabled by default).
+# Use --auto flag so the service respects the [updates] auto_update setting.
+#
+# This file is part of autostream.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=autostream software updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/autostream/venv/bin/python \
+    /usr/local/libexec/autostream/autostream_updater apply --auto
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autostream-updater

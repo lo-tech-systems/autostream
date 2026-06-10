@@ -1,0 +1,23 @@
+# /etc/systemd/system/autostream_updater.timer
+#
+# Weekly opt-in update timer for autostream.
+# NOT enabled by default — enable via 'autostream_admin toggle-update-timer enable'.
+#
+# Persistent=true catches any missed Monday run (e.g. device was off that week).
+# OnBootSec is deliberately omitted to avoid firing on every boot.
+# Offset from dial timer (03:30) to avoid concurrent GitHub API calls.
+#
+# This file is part of autostream.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=autostream weekly update timer
+
+[Timer]
+OnCalendar=Mon *-*-* 03:00:00
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

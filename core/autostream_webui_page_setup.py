@@ -325,7 +325,9 @@ def send_setup_page(
             More Owntone Settings
           </button>
         """
-    update_html = "" if initial_setup else """
+    _auto_update_checked = " checked" if parsed.updates.auto_update else ""
+    update_html = "" if initial_setup else f"""
+          <input type="hidden" name="updates_auto_update_present" value="1">
           <label>Updates:
             <div style="display:flex;align-items:center;margin-top:.5rem">
               <button type="button" id="btnCheck" class="pill-btn small" style="margin-right:auto">Check</button>
@@ -335,6 +337,13 @@ def send_setup_page(
             <div id="updMsg" style="font-size:0.8rem;margin-top:0.3rem;"></div>
             <div id="updNotes" style="font-size:0.75rem;color:#888;margin-top:0.2rem;font-style:italic;"></div>
           </label>
+          <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked}>
+              <span class="switch"></span>
+            </label>
+            <span>Automatic updates</span>
+          </div>
           <div style="margin-top:0.75rem;">
             <button type="button" id="btnChangePin" class="pill-btn small" style="width:100%;">Change PIN</button>
           </div>
@@ -677,7 +686,8 @@ def send_setup_page(
             input2_summary = html.escape(f"{dev2} \u00b7 {mode2} \u00b7 {gain2_str}")
         speaker = str(parsed.owntone.output_name or "No speaker selected")
         playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
-        system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()}")
+        _au_state = "Auto-update: On" if parsed.updates.auto_update else "Auto-update: Off"
+        system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
         customise_summary = html.escape(
             ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
             + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")

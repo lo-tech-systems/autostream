@@ -113,6 +113,8 @@ main() {
 
   info "Stopping services"
   stop_and_disable_service autostream_update_retry.service
+  stop_and_disable_service autostream_updater.timer
+  stop_and_disable_service autostream_updater.service
   stop_and_disable_service autostream.service
   stop_and_disable_service autostream_monitor.service
   stop_and_disable_service autostream_wifi_watcher.service
@@ -146,6 +148,8 @@ main() {
 
   info "Removing autostream systemd units"
   remove_path /etc/systemd/system/autostream_update_retry.service
+  remove_path /etc/systemd/system/autostream_updater.service
+  remove_path /etc/systemd/system/autostream_updater.timer
   remove_path /etc/systemd/system/autostream.service
   remove_path /etc/systemd/system/autostream_monitor.service
   remove_path /etc/systemd/system/autostream_wifi_watcher.service

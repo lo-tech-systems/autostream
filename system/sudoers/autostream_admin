@@ -29,6 +29,10 @@ Cmnd_Alias AUTOSTREAM_ADMIN_HOST        = /usr/local/libexec/autostream/autostre
 # allow factory reset (scheduling only — no arguments, no --execute flag)
 Cmnd_Alias AUTOSTREAM_ADMIN_FACTORY_RESET = /usr/local/libexec/autostream/autostream_admin factory-reset
 
+# allow toggling the autostream auto-update timer
+Cmnd_Alias AUTOSTREAM_ADMIN_TOGGLE_TIMER_EN = /usr/local/libexec/autostream/autostream_admin toggle-update-timer enable
+Cmnd_Alias AUTOSTREAM_ADMIN_TOGGLE_TIMER_DI = /usr/local/libexec/autostream/autostream_admin toggle-update-timer disable
+
 # Full list of allowed actions for autostream user:
 Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URN,        \
@@ -40,7 +44,9 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_UPDATE_STATUS,     \
                               AUTOSTREAM_ADMIN_VERSION_INFO,      \
                               AUTOSTREAM_ADMIN_HOST,              \
-                              AUTOSTREAM_ADMIN_FACTORY_RESET
+                              AUTOSTREAM_ADMIN_FACTORY_RESET,     \
+                              AUTOSTREAM_ADMIN_TOGGLE_TIMER_EN,   \
+                              AUTOSTREAM_ADMIN_TOGGLE_TIMER_DI
 
 Defaults!AUTOSTREAM_ADMIN env_reset
 Defaults!AUTOSTREAM_ADMIN secure_path="/usr/sbin:/usr/bin:/sbin:/bin"

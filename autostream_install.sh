@@ -862,6 +862,8 @@ services_phase() {
 
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream.service"              /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_wifi_watcher.service" /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_updater.service"      /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_updater.timer"        /etc/systemd/system/
 
   systemctl daemon-reload
 

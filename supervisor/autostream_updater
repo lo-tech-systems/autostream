@@ -27,6 +27,7 @@ NOTES
 
 from __future__ import annotations
 
+import configparser
 import errno
 import fcntl
 import json
@@ -51,6 +52,8 @@ UPDATE_LOCK_FILE = Path("/run/autostream-update.lock")
 FLOCK_BIN = "/usr/bin/flock"
 UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
 STAGING_DIR = Path("/var/lib/autostream/update-staging")
+CONFIG_PATH = Path("/opt/autostream/autostream.ini")
+PLAYING_SERVICE = Path("/etc/avahi/services/autostream-playing.service")
 
 # GitHub repo
 REPO_OWNER = "lo-tech-systems"
@@ -217,6 +220,18 @@ def _update_unit_active() -> bool:
     return bool(out.strip())
 
 
+# ---- Auto-update config helper ----
+
+def _read_auto_update_config() -> bool:
+    """Return True if [updates] auto_update = yes in autostream.ini."""
+    p = configparser.ConfigParser()
+    try:
+        p.read(str(CONFIG_PATH))
+        return p.getboolean("updates", "auto_update", fallback=False)
+    except Exception:
+        return False
+
+
 # ---- Commands ----
 
 def cmd_check() -> Dict[str, Any]:
@@ -267,23 +282,33 @@ def cmd_check() -> Dict[str, Any]:
     return result
 
 
-def cmd_apply() -> Dict[str, Any]:
+def cmd_apply(auto: bool = False) -> Dict[str, Any]:
     """Stage the latest GitHub release and schedule the installer via systemd-run.
 
     Sequence:
-      1. Refuse if in AP mode.
-      2. Resolve the latest release tag from GitHub.
-      3. Clean up any previous staging directory.
-      4. Download and extract the release tarball to the staging directory.
-      5. Locate autostream_install.sh in the extracted tree.
-      6. Schedule autostream_install.sh --update as a transient systemd unit,
+      1. If auto=True: skip if auto_update disabled in config, playback active,
+         or no update available.
+      2. Refuse if in AP mode.
+      3. Resolve the latest release tag from GitHub.
+      4. Clean up any previous staging directory.
+      5. Download and extract the release tarball to the staging directory.
+      6. Locate autostream_install.sh in the extracted tree.
+      7. Schedule autostream_install.sh --update as a transient systemd unit,
          exporting AUTOSTREAM_RELEASE_TAG into the installer environment.
-      7. Return {ok: True, staged_tag: <tag>} immediately.
+      8. Return {ok: True, staged_tag: <tag>} immediately.
 
     The installer owns all further progress reporting via update-result.env.
     The installer restarts autostream.service on completion; no explicit reboot
     is required for the update to take effect.
     """
+    if auto and not _read_auto_update_config():
+        _log("apply: auto mode — auto_update disabled in config, skipping")
+        return {"ok": True, "skipped": True, "reason": "auto_update_disabled"}
+
+    if auto and PLAYING_SERVICE.exists():
+        _log("apply: auto mode — playback active, skipping")
+        return {"ok": True, "skipped": True, "reason": "playback_active"}
+
     if APMODE_FLAG.exists():
         _log("apply: refused in AP mode")
         return {"ok": False, "error": "Refusing to update while in AP mode (/tmp/apmode present)."}
@@ -296,6 +321,15 @@ def cmd_apply() -> Dict[str, Any]:
     except Exception as e:
         _log(f"apply: refused — unable to determine update unit status: {e}")
         return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
+
+    # Version guard — skip if already at latest (all runs, including manual).
+    check = cmd_check()
+    if not check.get("ok"):
+        _log(f"apply: version check failed: {check.get('error', 'unknown')}")
+        return {"ok": False, "error": f"Version check failed: {check.get('error', 'unknown')}"}
+    if not check.get("update_available"):
+        _log(f"apply: already at latest ({check.get('installed')!r}) — no-op")
+        return {"ok": True, "staged_tag": None}
 
     systemd_run = _find_systemd_run()
     if systemd_run is None:
@@ -470,7 +504,8 @@ def main() -> int:
         return 0 if result.get("ok") else 1
 
     if cmd in ("apply", "install", "update"):
-        result = cmd_apply()
+        auto = "--auto" in sys.argv[2:]
+        result = cmd_apply(auto=auto)
         print(json.dumps(result))
         return 0 if result.get("ok") else 1
 
