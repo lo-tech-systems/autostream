@@ -30,7 +30,7 @@ class DialConfig:
     uuid:         str        = ''
     step_percent: int        = 2
     name:         str        = ''
-    pin_hash:     str        = ''
+    pin:          str        = ''
     auto_update:  bool       = False
 
 
@@ -73,7 +73,7 @@ def load_config() -> DialConfig:
         s = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
         cfg.step_percent = s.get('step_percent', cfg.step_percent)
         cfg.name         = s.get('name',         cfg.name)
-        cfg.pin_hash     = s.get('pin_hash',      cfg.pin_hash)
+        cfg.pin          = s.get('pin',             cfg.pin)
         cfg.auto_update  = s.get('auto_update',   cfg.auto_update)
 
     if not cfg.uuid:
@@ -100,7 +100,7 @@ def save_config(cfg: DialConfig) -> None:
     data = {
         'step_percent': cfg.step_percent,
         'name':         cfg.name,
-        'pin_hash':     cfg.pin_hash,
+        'pin':          cfg.pin,
         'auto_update':  cfg.auto_update,
     }
     with _save_lock:

@@ -13,13 +13,10 @@ Stage 5 scaffold:
 from __future__ import annotations
 
 import copy
-import hashlib
 import http.server
 import json
 import logging
-import os
 import re
-import secrets
 import subprocess
 import threading
 import time
@@ -69,25 +66,9 @@ def _validate_dial_name(name: str) -> None:
         raise ValueError(f"Dial name contains disallowed characters: {name!r}")
 
 
-# ---- PIN helpers ------------------------------------------------------------
-
-def hash_pin(pin: str) -> str:
-    salt = os.urandom(16)
-    dk = hashlib.pbkdf2_hmac('sha256', pin.encode(), salt, iterations=100_000)
-    return salt.hex() + ':' + dk.hex()
-
-
-def verify_pin(pin: str, stored_hash: str) -> bool:
-    try:
-        salt_hex, dk_hex = stored_hash.split(':', 1)
-        salt = bytes.fromhex(salt_hex)
-        dk = hashlib.pbkdf2_hmac('sha256', pin.encode(), salt, iterations=100_000)
-        return secrets.compare_digest(dk.hex(), dk_hex)
-    except Exception:
-        return False
-
-
-# ---- PIN brute-force throttling (per-IP) ------------------------------------
+# ---- PIN rate limiting (per-IP) ---------------------------------------------
+# PIN is stored in plaintext in the 0600 settings file — adequate for a home
+# LAN appliance. Rate limiting prevents casual brute-force from the browser.
 
 _PIN_MAX_ATTEMPTS = 5
 _PIN_BACKOFF_BASE = 5       # seconds
@@ -248,9 +229,22 @@ class DialHTTPServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _send_429(self, wait_secs: int) -> None:
+                body = json.dumps({'ok': False, 'error': 'too_many_attempts'}).encode()
+                self.send_response(429)
+                self.send_header('Retry-After', str(wait_secs))
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def _read_body(self) -> bytes | None:
-                content_length = int(self.headers.get('Content-Length', 0))
-                if content_length > MAX_BODY:
+                try:
+                    content_length = int(self.headers.get('Content-Length', 0))
+                except (ValueError, TypeError):
+                    self.send_error(400)
+                    return None
+                if not (0 <= content_length <= MAX_BODY):
                     self.send_error(413)
                     return None
                 return self.rfile.read(content_length)
@@ -270,7 +264,7 @@ class DialHTTPServer:
                         cfg = dial_server._cfg
                     self._send_json(200, {
                         'step_percent': cfg.step_percent,
-                        'pin_set':      bool(cfg.pin_hash),
+                        'pin_set':      bool(cfg.pin),
                         'name':         cfg.name,
                         'version':      VERSION,
                         'auto_update':  cfg.auto_update,
@@ -291,6 +285,9 @@ class DialHTTPServer:
                         'state':   _read_update_state(),
                         'version': VERSION,
                     })
+
+                elif self.path == '/update/check':
+                    self._handle_update_check()
 
                 else:
                     self.send_error(404)
@@ -326,38 +323,31 @@ class DialHTTPServer:
                 changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update'))
 
                 # PIN auth
-                if cfg.pin_hash and changing_protected:
+                if cfg.pin and changing_protected:
                     if obj.get('pin_recovery') is True:
                         # Recovery requires a new_pin to replace the forgotten one
                         p = obj.get('new_pin', '')
                         if not isinstance(p, str) or not re.fullmatch(r'\d{4,8}', p):
                             self._send_json(400, {'ok': False, 'error': 'new_pin_required_for_recovery'})
                             return
-                        # Server-side recovery check (full server-side enforcement in Stage 6)
                         rw = dial_server._recovery_window
                         if not rw._active or not rw._volume_confirmed:
                             self._send_json(403, {'ok': False, 'error': 'recovery_not_confirmed'})
                             return
                     else:
-                        # Check rate limit
                         blocked, wait_secs = _pin_check_rate_limit(ip)
                         if blocked:
-                            self.send_response(429)
-                            self.send_header('Retry-After', str(wait_secs))
-                            self.send_header('Content-Type', 'application/json')
-                            self.end_headers()
-                            self.wfile.write(json.dumps(
-                                {'ok': False, 'error': 'too_many_attempts'}
-                            ).encode())
+                            self._send_429(wait_secs)
                             return
                         current_pin = obj.get('current_pin', '')
-                        if not isinstance(current_pin, str) or len(current_pin) > 8:
+                        if not isinstance(current_pin, str) or current_pin != cfg.pin:
                             _pin_record_failure(ip)
-                            self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
-                            return
-                        if not verify_pin(current_pin, cfg.pin_hash):
-                            _pin_record_failure(ip)
-                            self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
+                            # Return 429 immediately if this failure hit the threshold
+                            blocked, wait_secs = _pin_check_rate_limit(ip)
+                            if blocked:
+                                self._send_429(wait_secs)
+                            else:
+                                self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
                             return
                         _pin_clear_attempts(ip)
 
@@ -393,9 +383,9 @@ class DialHTTPServer:
                         if not re.fullmatch(r'\d{4,8}', p):
                             self._send_json(400, {'ok': False, 'error': 'invalid_new_pin'})
                             return
-                        new_cfg.pin_hash = hash_pin(p)
+                        new_cfg.pin = p
                     elif isinstance(p, str) and p == '':
-                        new_cfg.pin_hash = ''
+                        new_cfg.pin = ''
                     else:
                         self._send_json(400, {'ok': False, 'error': 'invalid_new_pin'})
                         return
@@ -418,7 +408,7 @@ class DialHTTPServer:
                 if name_changed:
                     dial_server._on_announce(False)
 
-                if pin_recovery and cfg.pin_hash:
+                if pin_recovery and cfg.pin:
                     dial_server._recovery_window.complete()
 
                 if 'auto_update' in obj and new_cfg.auto_update != cfg.auto_update:
@@ -445,6 +435,15 @@ class DialHTTPServer:
                     new_cfg.name, new_cfg.step_percent, new_cfg.auto_update,
                 )
                 self._send_json(200, {'ok': True})
+
+            def _handle_update_check(self) -> None:
+                try:
+                    from autostream_dial_updater import cmd_check
+                    result = cmd_check()
+                    self._send_json(200, result)
+                except Exception as e:
+                    logging.warning("update check failed: %s", e)
+                    self._send_json(200, {'ok': False, 'error': 'check_failed'})
 
             def _handle_update(self) -> None:
                 r = subprocess.run(

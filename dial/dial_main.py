@@ -77,7 +77,7 @@ def main() -> None:
     http_server = DialHTTPServer(cfg)
     http_server.start()
 
-    if cfg.pin_hash:
+    if cfg.pin:
         http_server.begin_recovery_window()
 
     start_playing_browser()

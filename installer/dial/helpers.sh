@@ -91,7 +91,7 @@ import json, os
 path = '/var/lib/autostream-dial/settings/dial-settings.json'
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, 'w') as f:
-    json.dump({'step_percent': 2, 'name': '', 'pin_hash': '', 'auto_update': False}, f, indent=2)
+    json.dump({'step_percent': 2, 'name': '', 'pin': '', 'auto_update': False}, f, indent=2)
 "
     chown autostream-dial:autostream-dial /var/lib/autostream-dial/settings/dial-settings.json
 }

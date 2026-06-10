@@ -129,7 +129,8 @@ SETUP_PAGE_HTML = """\
     <div class="row">
       <div class="lbl">Update</div>
       <div class="val" style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
-        <button class="btn" id="b-upd" onclick="triggerUpdate()">Check for update</button>
+        <button class="btn" id="b-chk" onclick="checkForUpdate()">Check for update</button>
+        <button class="btn" id="b-inst" onclick="installUpdate()" style="display:none">Install update</button>
         <span id="upd-st" style="font-size:.8rem;color:var(--muted)"></span>
       </div>
     </div>
@@ -304,20 +305,42 @@ async function applyPin() {
   } catch(e) { err.textContent = 'Network error'; }
 }
 
-async function triggerUpdate() {
-  var btn = document.getElementById('b-upd'), st = document.getElementById('upd-st');
-  btn.disabled = true;
+async function checkForUpdate() {
+  var btn = document.getElementById('b-chk'), inst = document.getElementById('b-inst');
+  var st = document.getElementById('upd-st');
+  btn.disabled = true; inst.style.display = 'none';
+  st.textContent = 'Checking…'; st.style.color = 'var(--accent)';
+  try {
+    var r = await fetch('/update/check'), d = await r.json();
+    if (!d.ok) {
+      st.textContent = d.error || 'Check failed'; st.style.color = 'var(--err)';
+    } else if (d.update_available) {
+      st.textContent = 'Update available' + (d.candidate ? ': v' + d.candidate : '');
+      st.style.color = 'var(--ok)';
+      inst.style.display = '';
+    } else {
+      st.textContent = 'Already up to date'; st.style.color = 'var(--muted)';
+    }
+  } catch(e) { st.textContent = 'Network error'; st.style.color = 'var(--err)'; }
+  btn.disabled = false;
+}
+
+async function installUpdate() {
+  var btn = document.getElementById('b-inst'), chk = document.getElementById('b-chk');
+  var st = document.getElementById('upd-st');
+  btn.disabled = true; chk.disabled = true;
   st.textContent = 'Starting…'; st.style.color = 'var(--accent)';
   try {
     var [s, d] = await _post('/update', {});
     if (d.ok) {
       msg('m-fw', 'Update scheduled', true);
+      btn.style.display = 'none';
       _poll = setInterval(loadUpdSt, 3000);
     } else {
       st.textContent = d.error || 'Failed'; st.style.color = 'var(--err)';
-      btn.disabled = false;
+      btn.disabled = false; chk.disabled = false;
     }
-  } catch(e) { st.textContent = 'Network error'; st.style.color = 'var(--err)'; btn.disabled = false; }
+  } catch(e) { st.textContent = 'Network error'; st.style.color = 'var(--err)'; btn.disabled = false; chk.disabled = false; }
 }
 
 document.addEventListener('keydown', function(ev) {
