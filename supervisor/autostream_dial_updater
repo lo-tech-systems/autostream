@@ -61,11 +61,13 @@ SYSTEMDRUN_CANDIDATES = ("/bin/systemd-run", "/usr/bin/systemd-run")
 # ---- Helpers -----------------------------------------------------------------
 
 def _log(msg: str) -> None:
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}\n"
-    with LOG_PATH.open("a", encoding="utf-8") as f:
-        f.write(line)
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except OSError:
+        pass
     logging.info("%s", msg)
 
 
@@ -348,11 +350,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
 
             _log("apply: extracting tarball")
             with tarfile.open(tar_path, "r:gz") as tf:
-                # filter="data" requires Python 3.12+; fall back gracefully on 3.11
-                if sys.version_info >= (3, 12):
-                    tf.extractall(extract_dir, filter="data")
-                else:
-                    tf.extractall(extract_dir)
+                tf.extractall(extract_dir, filter="data")
 
             top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
             repo_root = top_dirs[0] if len(top_dirs) == 1 else extract_dir
@@ -460,10 +458,6 @@ def main() -> int:
         stream=sys.stderr,
     )
 
-    if os.geteuid() != 0:
-        print(json.dumps({"ok": False, "error": "Must be run as root"}))
-        return 2
-
     import argparse
     ap = argparse.ArgumentParser(prog="autostream_dial_updater")
     sub = ap.add_subparsers(dest="cmd")
@@ -473,6 +467,10 @@ def main() -> int:
                          help="Honour auto_update setting; skip if disabled")
     sub.add_parser("recover")
     args = ap.parse_args()
+
+    if args.cmd != "check" and os.geteuid() != 0:
+        print(json.dumps({"ok": False, "error": "Must be run as root"}))
+        return 2
 
     if args.cmd == "check":
         result = cmd_check()

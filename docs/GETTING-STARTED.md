@@ -2,7 +2,7 @@
 
 ## Installation
 
-Run the installer on a Raspberry Pi running Raspberry Pi OS (Trixie):
+Run the installer on a Raspberry Pi running **Raspberry Pi OS Lite (Trixie, 32-bit)**. Both the autostream host and dial are tested on 32-bit Trixie; 64-bit is untested.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash

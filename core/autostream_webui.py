@@ -73,7 +73,7 @@ from autostream_webui_page_about import send_about_page
 from autostream_webui_page_equaliser import send_equaliser_page
 from autostream_webui_page_airplay import send_airplay_page
 from autostream_webui_page_license import send_license_page
-from autostream_webui_page_logs import handle_logs_post, send_logs_page
+from autostream_webui_page_logs import handle_logs_download, handle_logs_post, send_logs_page
 from autostream_webui_page_owntone import (
     send_owntone_ready_json,
     send_owntone_restarting_page,
@@ -126,9 +126,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
     def _read_post_body_bytes(self) -> Optional[bytes]:
         try:
             length = int(self.headers.get("Content-Length", 0))
-            if length > self.MAX_POST_SIZE:
-                self.send_error(413, "Request body too large")
-                return None
+        except (ValueError, TypeError):
+            self.send_error(400, "Invalid Content-Length")
+            return None
+        if not (0 <= length <= self.MAX_POST_SIZE):
+            self.send_error(413, "Request body too large")
+            return None
+        try:
             return self.rfile.read(length)
         except Exception as e:
             logging.error("Error reading POST body: %s", e)
@@ -321,6 +325,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_license_page(self, STATE)
         elif path == "/logs":
             send_logs_page(self, STATE, flash_msg=msg)
+        elif path == "/logs/download":
+            handle_logs_download(self)
         elif path == "/api/output_eq/status":
             send_output_eq_status_json(self)
         elif path == "/api/status":

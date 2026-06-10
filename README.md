@@ -8,7 +8,7 @@
 
 > License: Source-available. Free for personal use.
 
-One-line install on Raspberry Pi OS (Trixie):
+One-line install on **Raspberry Pi OS Lite (Trixie, 32-bit)**:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
 ```
@@ -48,6 +48,7 @@ Everything runs locally on your network — no cloud services, no logins, no rec
 ## Platform & Requirements
 
 * **Raspberry Pi** — Pi Zero W is the minimum; Zero 2W is recommended. 8GB microSD card.
+* **OS** — **Raspberry Pi OS Lite (Trixie, 32-bit)**. Both autostream host and dial are tested on 32-bit Trixie; 64-bit is untested.
 * **USB audio input**, for example:
   * USB turntable (e.g. Audio-Technica AT-LP60XUSBGM)
   * USB ADC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
@@ -62,7 +63,7 @@ Power consumption on a Pi Zero W or Zero 2W: under 2 Watts.
 
 ## Getting Started
 
-1. Flash a Raspberry Pi OS Lite image using Raspberry Pi Imager, boot, and SSH in.
+1. Flash **Raspberry Pi OS Lite (Trixie, 32-bit)** using Raspberry Pi Imager, boot, and SSH in.
 2. Run the one-line installer above.
 3. Connect one or two audio sources.
 4. Reboot, then open Safari on iPhone and browse to `http://autostream.local/` (replace `autostream` with your Pi's hostname if you changed it).

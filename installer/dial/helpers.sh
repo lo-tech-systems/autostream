@@ -104,6 +104,16 @@ check_pi_model() {
     fi
 }
 
+require_trixie_os() {
+    local codename
+    codename="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_CODENAME:-}")"
+    if [[ "${codename}" != "trixie" ]]; then
+        echo "ERROR: Raspberry Pi OS Trixie is required (detected: ${codename:-unknown})." >&2
+        echo "ERROR: Bookworm installations require re-imaging; unattended OS upgrades are not supported." >&2
+        exit 1
+    fi
+}
+
 setup_venv() {
     # --system-site-packages: exposes apt-installed python3-lgpio to the venv.
     python3 -m venv --system-site-packages /opt/autostream/venv

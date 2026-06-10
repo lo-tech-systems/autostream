@@ -307,12 +307,13 @@ There are two ways to access the autostream logs:
 
      * `/var/log/autostream/*.log`
 
-2. **Logs page → Download (single log file)**
+2. **Logs page → Download Log Bundle (authenticated ZIP)**
 
-   * The main UI has a Logs page that can download the configured log file via:
+   * The main UI Logs page has a **Download Log Bundle** button that requests:
 
-     * `/api/log_file`
-   * The file path comes from config (`general.log_file`) parsed by `core/autostream_config.py`.
+     * `GET /logs/download`
+   * This is served by the Python web UI and requires authentication (PIN). It returns a ZIP
+     containing all files from `/var/log/autostream/` and `/var/log/owntone.log`.
 
 Browser note (important):
 

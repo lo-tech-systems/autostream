@@ -974,8 +974,8 @@ def _update_dial_service(args) -> int:
         log("ERROR", f"update-dial-service: template not found: {_DIAL_TEMPLATE}")
         return 1
     content = (_DIAL_TEMPLATE.read_text()
-               .replace("__AUTOSTREAM_RELEASE_TAG__", args.version)
-               .replace("__DIAL_UUID__", args.uuid)
+               .replace("__AUTOSTREAM_RELEASE_TAG__", _html.escape(args.version))
+               .replace("__DIAL_UUID__", _html.escape(args.uuid))
                .replace("__DIAL_NAME__", _html.escape(args.name)))
     if args.pin_recovery:
         content = content.replace(

@@ -227,17 +227,18 @@ def read_pin_override(path: str) -> tuple[Optional[str], bool]:
 
 def write_pin_override(path: str, pin: str) -> None:
     """Persist a PIN override to the main INI."""
+    from autostream_sysutils import atomic_write_file
     with CONFIG_IO_LOCK:
         cfg = load_config(path)
         if not cfg.has_section("auth"):
             cfg.add_section("auth")
         cfg.set("auth", "pin_override", str(pin).strip())
-        with open(path, "w", encoding="utf-8") as f:
-            cfg.write(f)
+        atomic_write_file(path, cfg.write, preserve_mode=False)
 
 
 def clear_pin_override(path: str) -> None:
     """Remove any persisted PIN override from the main INI."""
+    from autostream_sysutils import atomic_write_file
     with CONFIG_IO_LOCK:
         cfg = load_config(path)
         if not cfg.has_section("auth"):
@@ -246,8 +247,7 @@ def clear_pin_override(path: str) -> None:
             cfg.remove_option("auth", "pin_override")
         if not list(cfg.items("auth")):
             cfg.remove_section("auth")
-        with open(path, "w", encoding="utf-8") as f:
-            cfg.write(f)
+        atomic_write_file(path, cfg.write, preserve_mode=False)
 
 
 # -----------------------------

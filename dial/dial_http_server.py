@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
+_UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
 _INSTALL_STATE_PATH = Path('/var/lib/autostream-dial/install-state.env')
 _UPDATE_RESULT_PATH = Path('/var/lib/autostream-dial/update-result.env')
 
@@ -438,8 +439,11 @@ class DialHTTPServer:
 
             def _handle_update_check(self) -> None:
                 try:
-                    from autostream_dial_updater import cmd_check
-                    result = cmd_check()
+                    r = subprocess.run(
+                        [_UPDATER_CMD, "check"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    result = json.loads(r.stdout) if r.returncode == 0 else {'ok': False, 'error': 'check_failed'}
                     self._send_json(200, result)
                 except Exception as e:
                     logging.warning("update check failed: %s", e)

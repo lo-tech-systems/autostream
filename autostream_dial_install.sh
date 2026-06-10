@@ -50,6 +50,9 @@ fi
 _install_success=false
 trap '[[ "$_install_success" = true ]] || write_update_result "failed" "Installer exited unexpectedly at line $LINENO"' EXIT
 
+# ---- OS version check (fresh install and update) ----------------------------
+require_trixie_os
+
 # ---- Fresh-install only steps -----------------------------------------------
 if ! $UPDATE; then
     check_pi_model

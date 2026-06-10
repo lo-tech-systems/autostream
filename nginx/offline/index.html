@@ -74,8 +74,8 @@
 
     <div class="btn-row">
       <a class="pill-btn" href="__BASEURL__">Retry</a>
-      <a class="pill-btn" href="/offline/download-logs">Download Logs</a>
-      <a class="pill-btn" href="/offline/reboot">Reboot</a>
+      <button class="pill-btn" onclick="downloadLogs()">Download Logs</button>
+      <button class="pill-btn" onclick="doReboot()">Reboot</button>
     </div>
 
     <div style="margin-top:1.25rem;text-align:center;">
@@ -93,14 +93,67 @@
             onclick="document.getElementById('fr-confirm').style.display='none';document.getElementById('fr-trigger').style.display='block';">
             Cancel
           </button>
-          <a class="pill-btn" href="/offline/factory-reset"
-            style="flex:1;text-align:center;background:#c00000;color:#fff;font-weight:700;">
+          <button class="pill-btn"
+            style="flex:1;background:#c00000;color:#fff;font-weight:700;"
+            onclick="doFactoryReset()">
             Continue
-          </a>
+          </button>
         </div>
       </div>
     </div>
 
   </div>
+
+  <script>
+    function _ajaxPost(url, redirect) {
+      fetch(url, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      }).then(function(r) {
+        if (r.ok) {
+          window.location.replace(redirect);
+        } else {
+          alert('Action failed (HTTP ' + r.status + '). Try power-cycling the device.');
+        }
+      }).catch(function() {
+        // Network error: device is likely already shutting down
+        window.location.replace(redirect);
+      });
+    }
+
+    function doReboot() {
+      _ajaxPost('/offline/reboot', '/offline/rebooting');
+    }
+
+    function doFactoryReset() {
+      _ajaxPost('/offline/factory-reset', '/offline/resetting');
+    }
+
+    function downloadLogs() {
+      fetch('/offline/download-logs', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      }).then(function(r) {
+        if (!r.ok) {
+          alert('Download failed (HTTP ' + r.status + ').');
+          return;
+        }
+        var disp = r.headers.get('Content-Disposition') || '';
+        var fname = 'autostream-logs.zip';
+        var m = disp.match(/filename="([^"]+)"/);
+        if (m) fname = m[1];
+        return r.blob().then(function(blob) {
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = fname;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        });
+      }).catch(function() {
+        alert('Download failed. Check your network connection.');
+      });
+    }
+  </script>
 </body>
 </html>

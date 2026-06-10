@@ -63,8 +63,9 @@ for the Pi itself, but follow local electrical codes for in-wall installations.
 
 ## OS Preparation
 
-1. Flash **Raspberry Pi OS Lite (Bookworm, 64-bit)** to a microSD card using
-   Raspberry Pi Imager.
+1. Flash **Raspberry Pi OS Lite (Trixie, 32-bit)** to a microSD card using
+   Raspberry Pi Imager. Use 32-bit for Pi Zero W (ARMv6); 32-bit also runs
+   correctly on Zero 2W.
 2. In Imager's advanced settings:
    - Set hostname (e.g. `dial-hallway`)
    - Enable SSH with your public key

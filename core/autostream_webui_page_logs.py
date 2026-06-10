@@ -15,6 +15,11 @@ from __future__ import annotations
 
 import html
 import logging
+import os
+import shutil
+import tempfile
+import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs
@@ -26,6 +31,7 @@ from autostream_config import (
     normalize_log_level,
     parse_config,
 )
+from autostream_sysutils import atomic_write_file
 
 from autostream_core import update_live_platform_log_level
 
@@ -155,7 +161,7 @@ def send_logs_page(
         f"</div>"
         f"</form>"
         f"<div class='log-wrapper' id='logWrapper'><pre>{html.escape(log_content)}</pre></div>"
-        f"<p class='actions'><a href='/offline/download-logs' class='pill-btn' id='logDlBtn'"
+        f"<p class='actions'><a href='/logs/download' class='pill-btn' id='logDlBtn'"
         f" style='display:block;width:100%;text-align:center;box-sizing:border-box;'>"
         f"Download Log Bundle</a></p>"
     )
@@ -220,8 +226,7 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
             if not cfg.has_section("general"):
                 cfg.add_section("general")
             cfg.set("general", "log_level", new_log_level)
-            with open(state.config_path, "w", encoding="utf-8") as fh:
-                cfg.write(fh)
+            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
 
         applied_log_level, monitor_updated = update_live_platform_log_level(new_log_level)
         player_setting_res = None
@@ -255,3 +260,39 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
     except Exception:
         logging.exception("Failed saving log level from Logs page.")
         send_logs_page(handler, state, flash_msg="Save failed", flash_type="error")
+
+
+def handle_logs_download(handler) -> None:
+    """Build and stream a zip bundle of autostream log files."""
+    fname = f"autostream-logs-{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="autostream-logs-", suffix=".zip")
+    try:
+        os.close(tmp_fd)
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in sorted(Path("/var/log/autostream").glob("*")):
+                if p.is_file():
+                    try:
+                        zf.write(p, f"autostream/{p.name}")
+                    except OSError:
+                        pass
+            owntone_log = Path("/var/log/owntone.log")
+            if owntone_log.is_file():
+                try:
+                    zf.write(owntone_log, "owntone/owntone.log")
+                except OSError:
+                    pass
+        size = os.path.getsize(tmp_path)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/octet-stream")
+        handler.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+        handler.send_header("Content-Length", str(size))
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.end_headers()
+        with open(tmp_path, "rb") as fh:
+            shutil.copyfileobj(fh, handler.wfile, length=65536)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
