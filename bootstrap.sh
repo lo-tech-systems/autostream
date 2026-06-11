@@ -52,11 +52,10 @@ release_json=$(curl -fsSL \
   -H "User-Agent: ${UA}" \
   "${API_LATEST}")
 
-# Parse tag_name and tarball_url without jq.
-# Compact whitespace first so "key":"value" matching is reliable.
-release_compact=$(printf '%s' "${release_json}" | tr -d ' \t')
-AUTOSTREAM_RELEASE_TAG=$(printf '%s' "${release_compact}" | grep -o '"tag_name":"[^"]*"' | cut -d'"' -f4)
-tarball_url=$(printf '%s'          "${release_compact}" | grep -o '"tarball_url":"[^"]*"' | cut -d'"' -f4)
+# Parse tag_name and tarball_url using Python stdlib JSON — robust against
+# whitespace and escaping variations in the API response.
+AUTOSTREAM_RELEASE_TAG=$(printf '%s' "${release_json}" | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")
+tarball_url=$(printf '%s'           "${release_json}" | python3 -c "import json,sys; print(json.load(sys.stdin)['tarball_url'])")
 
 if [[ -z "${AUTOSTREAM_RELEASE_TAG}" || -z "${tarball_url}" ]]; then
   error "Could not parse latest release from GitHub API response."
