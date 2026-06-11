@@ -241,7 +241,9 @@ def find_hostnamectl():
 
 def validate_hostname(hostname: str) -> Tuple[bool, str]:
     """Validate a single-label hostname matching the <name>.local appliance contract."""
-    h = hostname.strip()
+    if hostname != hostname.strip():
+        return False, "hostname must not contain leading or trailing whitespace"
+    h = hostname
     if not h:
         return False, "hostname is empty"
     if "." in h:

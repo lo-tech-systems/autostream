@@ -26,11 +26,6 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-# Stub 'requests' before triggering the import chain:
-#   autostream_webui → autostream_core → autostream_player_service
-#   → autostream_players → requests
-sys.modules.setdefault("requests", MagicMock())
-
 try:
     from autostream_webui import ConfigWebHandler
     import autostream_webui as _webui

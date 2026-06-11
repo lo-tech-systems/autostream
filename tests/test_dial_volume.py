@@ -24,10 +24,6 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-# Stub requests before triggering the import chain:
-#   autostream_webui_api → autostream_player_service → autostream_players → requests
-sys.modules.setdefault("requests", MagicMock())
-
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 from autostream_webui_api import send_dial_volume_post_json
 from autostream_webui_state import WebUIState
