@@ -100,6 +100,19 @@ _SNAP_TIME_ATTRS: dict[str, tuple[str, str]] = {
     "bearing": ("bearing_elapsed_days", "last_bearing_service_at"),
 }
 
+# item key → (warning flag attr, overdue flag attr) for the hours dimension
+_SNAP_HOURS_WARN_ATTR: dict[str, tuple[str, str]] = {
+    "stylus":  ("stylus_warning",        "stylus_overdue"),
+    "belt":    ("belt_hours_warning",    "belt_hours_overdue"),
+    "bearing": ("bearing_hours_warning", "bearing_hours_overdue"),
+}
+
+# item key → (warning flag attr, overdue flag attr) for the time dimension
+_SNAP_TIME_WARN_ATTR: dict[str, tuple[str, str]] = {
+    "belt":    ("belt_time_warning",    "belt_time_overdue"),
+    "bearing": ("bearing_time_warning", "bearing_time_overdue"),
+}
+
 
 # -----------------------------------------------------------------------------
 # Formatting helpers
@@ -191,7 +204,8 @@ def _hours_display(item: str, life_hours: int, snap: InputPlaybackSnapshot) -> d
     Keys: hours_live, hours_bar_pct, hours_bar_status, hours_used,
           hours_remaining, hours_remaining_warn.
 
-    Threshold: remaining ≤ 20 % → warning colour; ≤ 10 % → critical bar status.
+    Bar fill width uses the remaining-percentage; bar colour and warning flag
+    use the pre-computed tracker flags so there is one authoritative source.
     When life_hours == 0 (tracking off) returns hours_live: False with neutral
     placeholder values so callers never need to branch on missing keys.
     """
@@ -208,9 +222,13 @@ def _hours_display(item: str, life_hours: int, snap: InputPlaybackSnapshot) -> d
             "hours_remaining_warn": False,
         }
 
-    rem_secs   = max(0, (life_hours * 3600) - playback_seconds)
-    rem_pct    = min(100.0, (rem_secs / max(1, life_hours * 3600)) * 100.0)
-    bar_status = "critical" if rem_pct <= 10.0 else ("warning" if rem_pct <= 20.0 else "healthy")
+    rem_secs = max(0, (life_hours * 3600) - playback_seconds)
+    rem_pct  = min(100.0, (rem_secs / max(1, life_hours * 3600)) * 100.0)
+
+    warn_attr, overdue_attr = _SNAP_HOURS_WARN_ATTR.get(item, ("", ""))
+    h_overdue  = bool(getattr(snap, overdue_attr, False))
+    h_warn     = bool(getattr(snap, warn_attr, False))
+    bar_status = "critical" if h_overdue else ("warning" if h_warn else "healthy")
 
     return {
         "hours_live":           True,
@@ -218,7 +236,7 @@ def _hours_display(item: str, life_hours: int, snap: InputPlaybackSnapshot) -> d
         "hours_bar_status":     bar_status,
         "hours_used":           f"{format_hours(playback_seconds)} / {life_hours} h",
         "hours_remaining":      "Due now" if rem_secs <= 0 else format_hours(rem_secs),
-        "hours_remaining_warn": rem_pct <= 20.0,
+        "hours_remaining_warn": h_warn,
     }
 
 
@@ -232,7 +250,8 @@ def _time_display(item: str, life_years: int, snap: InputPlaybackSnapshot) -> di
     life_years == 0 (tracking off).  Placeholder values are provided for all keys
     so callers never need to branch on missing keys.
 
-    Threshold: remaining ≤ 20 % → warning colour; ≤ 10 % → critical bar status.
+    Bar fill width uses the remaining-percentage; bar colour and warning flag
+    use the pre-computed tracker flags so there is one authoritative source.
     """
     if item not in _SNAP_TIME_ATTRS or life_years == 0:
         return {
@@ -249,22 +268,25 @@ def _time_display(item: str, life_years: int, snap: InputPlaybackSnapshot) -> di
     elapsed_days    = getattr(snap, ed_attr,  None)
     last_service_at = getattr(snap, svc_attr, None)
 
+    warn_attr, overdue_attr = _SNAP_TIME_WARN_ATTR.get(item, ("", ""))
+    t_overdue = bool(getattr(snap, overdue_attr, False))
+    t_warn    = bool(getattr(snap, warn_attr, False))
+
     if elapsed_days is not None:
         total_days      = life_years * 365
         rem_days        = max(0, total_days - elapsed_days)
         time_rem_pct    = min(100.0, (rem_days / max(1, total_days)) * 100.0)
-        time_bar_status = "critical" if time_rem_pct <= 10.0 else ("warning" if time_rem_pct <= 20.0 else "healthy")
+        time_bar_status = "critical" if t_overdue else ("warning" if t_warn else "healthy")
         age             = _format_age_months(elapsed_days)
         due             = _format_due_date(last_service_at, life_years)
         remaining       = "Overdue" if rem_days == 0 else _format_elapsed_days(rem_days) + " remaining"
-        warn            = time_rem_pct <= 20.0
     else:
         time_rem_pct    = 100.0
         time_bar_status = "healthy"
         age             = "Not recorded"
         due             = "Not set"
         remaining       = f"{life_years} year{'s' if life_years != 1 else ''} remaining"
-        warn            = False
+        t_warn          = False
 
     return {
         "time_live":       True,
@@ -272,7 +294,7 @@ def _time_display(item: str, life_years: int, snap: InputPlaybackSnapshot) -> di
         "time_bar_status": time_bar_status,
         "age":             age,
         "remaining":       remaining,
-        "remaining_warn":  warn,
+        "remaining_warn":  t_warn,
         "due":             due,
     }
 
