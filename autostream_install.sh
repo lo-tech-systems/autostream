@@ -684,9 +684,9 @@ deploy_phase() {
   # can survive repo upgrades and reinstall packages no longer in the project.
   rm -f "${INSTALL_DIR}/requirements.lock"
   cp -a "${AUTOSTREAM_DIR}/core/."     "${INSTALL_DIR}/"
-  cp -a "${AUTOSTREAM_DIR}/platform/." "${INSTALL_DIR}/"
+  cp    "${AUTOSTREAM_DIR}/platform/wifi_watcher" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
-  # platform/wifi_watcher must be renamed — systemd unit and nginx reference autostream_wifi_watcher
+  # wifi_watcher must be renamed — systemd unit and nginx reference autostream_wifi_watcher
   mv "${INSTALL_DIR}/wifi_watcher" "${INSTALL_DIR}/autostream_wifi_watcher"
   chmod +x "${INSTALL_DIR}/autostream_wifi_watcher"
   if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" ]]; then
