@@ -23,9 +23,9 @@ from autostream_config import (
     CONFIG_IO_LOCK,
     mark_configured,
     parse_config,
-    parse_dial_entries,
     unconfigured,
 )
+from autostream_dials import parse_dial_entries
 
 try:
     from autostream_dials import get_all_sightings as _get_dial_sightings

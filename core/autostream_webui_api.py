@@ -33,9 +33,9 @@ from typing import Optional
 
 from autostream_config import (
     CONFIG_IO_LOCK,
-    is_dial_authorized,
     parse_config,
 )
+from autostream_dials import is_dial_authorized
 from autostream_core import (
     any_monitor_capturing,
     get_live_output_eq_status,

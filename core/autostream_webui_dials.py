@@ -15,12 +15,12 @@ import http.client
 import json as _json
 import logging
 
-from autostream_config import (
-    write_dial_entry,
+from autostream_dials import (
+    get_dial_sighting,
     remove_dial_entry,
     validate_dial_name,
+    write_dial_entry,
 )
-from autostream_dials import get_dial_sighting
 from autostream_webui_api import send_json
 
 _PROXY_TIMEOUT = 4  # seconds — short; dial is on the same LAN
