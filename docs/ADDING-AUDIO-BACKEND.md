@@ -322,7 +322,7 @@ A new backend should consider these operations especially carefully:
 - `refresh_runtime_state()`
   - used after reconnect/restart to re-apply transient state
 - `push_metadata()`
-  - used for now-playing information when supported
+  - extension point for roadmap metadata backends; not currently called at runtime
 - `stop()` and `set_selected_outputs([])`
   - used during teardown and input handoff
 

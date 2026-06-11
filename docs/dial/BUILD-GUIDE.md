@@ -78,7 +78,7 @@ for the Pi itself, but follow local electrical codes for in-wall installations.
 ## First-Boot WiFi Setup
 
 1. Connect your phone or laptop to `autostream-dial_SETUP`.
-   Password: `autostream` (default; set in `/etc/hostapd/hostapd.conf` if changed).
+   The hotspot is open (no password required).
 2. A captive-portal page opens automatically (or browse to `http://192.168.4.1`).
 3. Enter your home WiFi credentials and tap **Save**.
 4. The dial reboots, joins your home network, and announces

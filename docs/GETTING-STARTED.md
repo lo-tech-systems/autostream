@@ -20,7 +20,7 @@ If you prefer to use the standard packaged OwnTone build instead, pass `--ownton
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash -s -- --owntone=full
 ```
 
-Use `--owntone=full` if you need support for protocols other than AirPlay. Otherwise, the default `owntone-mini` build is recommended.
+The default `owntone-mini` build supports AirPlay and Chromecast. Use `--owntone=full` if you need support for other protocols.
 
 ---
 

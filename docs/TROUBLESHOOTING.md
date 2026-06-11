@@ -233,7 +233,7 @@ If your Wi-Fi name or password changes, the device may no longer be able to conn
 **autostream**’s AP mode:
 
 * Starts if Wi-Fi is **unconfigured** or still **offline after ~60 seconds** after boot
-* Runs for **up to 15 minutes**
+* Stays active **indefinitely** for unconfigured devices; runs for **up to 30 minutes** for previously-configured devices
 * Is **suppressed if wired Ethernet is connected**
 * Uses an SSID derived from the Wi-Fi MAC address:
   * `autostream_XXXX` (last 4 hex digits), or fallback `autostream_SETUP`
@@ -262,7 +262,7 @@ and 'forget' the network, and try again. As last resource, navigate using Safari
 
 If you miss the AP window:
 
-* AP mode is only available **once per boot** for ~15 minutes.
+* For previously-configured devices, AP mode is available **once per boot for up to 30 minutes**. For unconfigured devices, it stays active until a network is configured.
 * Power-cycle/reboot and try again.
 
 ---
@@ -325,7 +325,6 @@ Where logs live on disk:
 * `/var/log/autostream/autostream.log` (common main log file path in this repo)
 * `/var/log/autostream/wifi_setup.log` (Wi-Fi/AP mode state machine)
 * `/var/log/autostream/update.log` (updater)
-* `/var/log/autostream/autostream_rebooter.log` (rebooter service)
 
 ---
 
@@ -383,7 +382,6 @@ sudo systemctl restart autostream_dnsmasq.service
 
 Other repo-provided units you may see enabled (depending on install):
 
-* `autostream_rebooter.service` / `.path`
 * `autostream_sdcardhealth.service` + `.timer`
 * (see `system/systemd/`)
 

@@ -22,7 +22,7 @@ Before the dial can control an autostream appliance, it must be authorized from
 the **autostream web interface** (not from the dial's own setup page):
 
 1. Open the autostream web UI (e.g. `http://autostream.local/`).
-2. Go to **Settings → Dials**.
+2. Go to **Setup** and open the **Dials** panel.
 3. The dial appears under *Discovered dials* with its UUID.
 4. Enter a friendly name (e.g. "Hallway") and tick **Allow control**.
 5. Click **Save**.
