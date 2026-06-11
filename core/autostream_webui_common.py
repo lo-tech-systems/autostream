@@ -3,10 +3,8 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-Shared helpers for the autostream Web UI.  These are kept separate from
-autostream_webui_pages so that other webui modules (e.g. per-page modules)
-can import them without pulling in the full page-rendering layer or
-creating circular dependencies.
+Shared helpers for the autostream Web UI, imported by per-page modules and
+the main web handler to avoid circular dependencies.
 
 Contents:
   - CONFIG_IO_LOCK / locked_load_config  -- serialise config file I/O across
@@ -367,10 +365,7 @@ def _format_reset_date(raw: Optional[str]) -> str:
     that non-standard or truncated timestamps still render something useful
     rather than exposing a raw exception or the raw string.
 
-    Compare with ``_format_reset_timestamp`` in autostream_webui_pages, which
-    produces a locale-aware full date (e.g. "01/23/2024") for use in richer
-    playback summary panels.
-    """
+"""
     if not raw:
         return "Never"
     try:

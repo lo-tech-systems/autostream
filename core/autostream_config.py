@@ -236,20 +236,6 @@ def write_pin_override(path: str, pin: str) -> None:
         atomic_write_file(path, cfg.write, preserve_mode=False)
 
 
-def clear_pin_override(path: str) -> None:
-    """Remove any persisted PIN override from the main INI."""
-    from autostream_sysutils import atomic_write_file
-    with CONFIG_IO_LOCK:
-        cfg = load_config(path)
-        if not cfg.has_section("auth"):
-            return
-        if cfg.has_option("auth", "pin_override"):
-            cfg.remove_option("auth", "pin_override")
-        if not list(cfg.items("auth")):
-            cfg.remove_section("auth")
-        atomic_write_file(path, cfg.write, preserve_mode=False)
-
-
 # -----------------------------
 # Parsed / typed config
 # -----------------------------
@@ -534,20 +520,6 @@ def mark_configured(path: str) -> None:
 
     with _unconfigured_lock:
         _unconfigured_cache[path] = (sig, False)
-
-
-def _is_minimally_valid_ini(path: str) -> bool:
-    """
-    Return True if INI can be parsed and contains at least one section.
-    Keep this lightweight; you can strengthen it later (required keys, etc.).
-    """
-    p = configparser.ConfigParser()
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            p.read_file(f)
-    except Exception:
-        return False
-    return len(p.sections()) > 0
 
 
 def _get_nonempty(cfg: configparser.ConfigParser, section: str, key: str) -> str:

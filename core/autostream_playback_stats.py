@@ -646,13 +646,6 @@ class PlaybackTracker:
             if self._dirty:
                 self._save_best_effort_locked(force=True, context="playback stop")
 
-    def sync_playback_state(self, input_index: int, active: bool) -> None:
-        """Convenience wrapper for callers that already know the target state."""
-        if active:
-            self.on_playback_started(input_index)
-        else:
-            self.on_playback_stopped(input_index)
-
     def _reset_item_locked(
         self,
         idx: int,
