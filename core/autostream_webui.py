@@ -345,18 +345,15 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/audio/status":
             send_audio_status_json(self, STATE)
         elif path.startswith("/api/dial/configure/"):
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_dial_configure_get(self, path.rsplit("/", 1)[-1])
         elif path.startswith("/api/dial/pin_recovery/status/"):
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_dial_pin_recovery_status(self, path.rsplit("/", 1)[-1])
         elif path.startswith("/api/dial/update/status/"):
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_dial_update_status(self, path.rsplit("/", 1)[-1])
         else:
@@ -374,14 +371,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             body = self._read_post_body_bytes()
             if body:
                 AUTH.handle_auth_verify(self, body)
-            return
-
-        if (
-            path == "/logs"
-            and AUTH.get_pin_if_enabled() is not None
-            and not AUTH.is_authenticated(self.headers)
-        ):
-            self._redirect_with_error_flash("Settings not saved, please try again")
             return
 
         # --- 2) Read body once (may be empty) ---
@@ -443,18 +432,24 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             handle_output_update(self, STATE, body_str)
 
         elif path == "/api/input_eq":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
             handle_live_input_eq_update(self, STATE, body_str)
 
         elif path == "/api/input_gain":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
             handle_live_input_gain_update(self, STATE, body_str)
 
         elif path == "/setup":
+            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/setup"):
+                return
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
@@ -463,6 +458,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 initial_setup = 0
 
         elif path == "/owntone-setup":
+            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/owntone-setup"):
+                return
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
@@ -472,6 +469,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                     initial_setup = 2
 
         elif path == "/logs":
+            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/logs"):
+                return
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
@@ -499,14 +498,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_service_config_json(self, STATE, body_str)
 
         elif path == "/api/update/apply":
-            # Requires authentication when a PIN is configured.
-            # CSRF alone does not enforce authentication — unauthenticated
-            # sessions also carry a CSRF token, so an explicit auth check
-            # is needed here just as it is for /api/factory-reset.
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
-            # Body optional
             self._start_update_apply()
 
         elif path == "/api/pin/change":
@@ -516,36 +509,24 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             AUTH.handle_pin_change(self, body_bytes)
 
         elif path == "/api/reboot":
-            # Requires authentication when a PIN is configured.
-            # CSRF alone does not enforce authentication — unauthenticated
-            # sessions also carry a CSRF token, so an explicit auth check
-            # is needed here just as it is for /api/factory-reset.
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
-            # Body optional
-            # Goes via autostream-admin (sudo) through autostream_sysutils.reboot_system()
-            # Use helper's delayed reboot so the rebooting page has time to render.
             reboot_system("UserRequestNormal", delay_s=3)
             send_json(self, 200, {"ok": True})
 
         elif path == "/api/factory-reset":
-            # Requires authentication when a PIN is configured.
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_factory_reset_post(self, STATE, AUTH)
 
         elif path in ("/api/dial/authorize", "/api/dial/revoke", "/api/dial/configure",
                       "/api/dial/pin_recovery/complete"):
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             dispatch_dial_management_post(self, path, json_obj)
 
         elif path.startswith("/api/dial/update/") and len(path) > len("/api/dial/update/"):
-            if AUTH.get_pin_if_enabled() is not None and not AUTH.is_authenticated(self.headers):
-                self.send_error(403, "Authentication required")
+            if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_dial_update_post(self, path.rsplit("/", 1)[-1])
 

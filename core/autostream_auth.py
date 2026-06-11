@@ -478,6 +478,26 @@ class AuthManager:
 
         return sess.authenticated
 
+    def require_authenticated_if_pin_enabled(
+        self, handler, *, redirect_path: Optional[str] = None
+    ) -> bool:
+        """Return True if the request may proceed.
+
+        When a PIN is configured and the session is not authenticated:
+        - If redirect_path is given, redirect to /auth?next=<redirect_path> (form pages).
+        - Otherwise send a 401 JSON response (API endpoints).
+        Returns False after sending a response; callers must return immediately.
+        """
+        if self.get_pin_if_enabled() is None:
+            return True
+        if self.is_authenticated(handler.headers):
+            return True
+        if redirect_path:
+            self.redirect_to_auth(handler, next_path=redirect_path)
+        else:
+            self._send_json(handler, 401, {"ok": False, "error": "Authentication required"})
+        return False
+
     # ------------------------
     # CSRF & UI Sessions
     # ------------------------
@@ -578,12 +598,11 @@ class AuthManager:
         # Prefer proxy-provided client IP if present (e.g. nginx).
         xff = handler.headers.get("X-Forwarded-For", "")
         if xff:
-            ip = xff.split(",")[0].strip()
-        else:
-            ip = (handler.headers.get("X-Real-IP", "") or "").strip()
-        if not ip:
-            ip = getattr(handler, "client_address", ("", 0))[0] or ""
-        return hashlib.sha256(ip.encode("utf-8")).hexdigest()
+            return xff.split(",")[0].strip()
+        ip = (handler.headers.get("X-Real-IP", "") or "").strip()
+        if ip:
+            return ip
+        return getattr(handler, "client_address", ("", 0))[0] or ""
 
     def _issue_nonce(self, handler) -> str:
         key = self._client_key(handler)
