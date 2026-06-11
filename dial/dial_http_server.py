@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from dial_config import _read_env_file
+
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
 _INSTALL_STATE_PATH = Path('/var/lib/autostream-dial/install-state.env')
@@ -27,23 +29,6 @@ _UPDATE_RESULT_PATH = Path('/var/lib/autostream-dial/update-result.env')
 MAX_BODY = 4096  # bytes — rejects oversized bodies before JSON parsing
 
 # ---- Version ----------------------------------------------------------------
-
-def _read_env_file(path: Path) -> dict[str, str]:
-    data: dict[str, str] = {}
-    try:
-        for raw in path.read_text(encoding='utf-8').splitlines():
-            line = raw.strip()
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            k, _, v = line.partition('=')
-            k = k.strip(); v = v.strip()
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-                v = v[1:-1]
-            data[k] = v
-    except OSError:
-        pass
-    return data
-
 
 def _load_version() -> str:
     env = _read_env_file(_INSTALL_STATE_PATH)
