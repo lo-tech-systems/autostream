@@ -137,6 +137,9 @@ write_update_result() {
 }
 
 deploy_admin() {
+    install -m 0644 -o root -g root \
+        "$DEPLOY/supervisor/autostream_update_support.py" \
+        /usr/local/libexec/autostream/autostream_update_support.py
     install -m 0755 -o root -g root \
         "$DEPLOY/supervisor/autostream_admin" \
         /usr/local/libexec/autostream/autostream_admin

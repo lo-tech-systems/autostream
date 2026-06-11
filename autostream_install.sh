@@ -711,9 +711,10 @@ deploy_phase() {
   fi
 
   info "Installing supervisor and helper scripts"
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater"      "${LIBEXEC_DIR}/autostream_updater"      0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"        "${LIBEXEC_DIR}/autostream_admin"        0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry" "${LIBEXEC_DIR}/autostream_update_retry" 0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_support.py" "${LIBEXEC_DIR}/autostream_update_support.py" 0644 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater"           "${LIBEXEC_DIR}/autostream_updater"           0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"             "${LIBEXEC_DIR}/autostream_admin"             0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry"      "${LIBEXEC_DIR}/autostream_update_retry"      0755 root root
 
   info "Setting ownership to enable autostream to manage venv"
   chown autostream:autostream "${INSTALL_DIR}"

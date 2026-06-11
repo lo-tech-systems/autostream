@@ -27,17 +27,23 @@ import fcntl
 import json
 import logging
 import os
-import re
 import shutil
-import subprocess
 import sys
 import tarfile
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from autostream_update_support import (
+    FLOCK_BIN,
+    _download_file, _find_systemd_run, _github_latest_release,
+    _read_env_file, _run, _version_key,
+)
 
 # ---- Paths / constants -------------------------------------------------------
 
@@ -47,16 +53,8 @@ CONFIG_PATH = Path("/etc/autostream-dial/dial.json")
 LOCK_PATH   = Path("/run/autostream-dial-update.lock")
 APMODE_FLAG = Path("/tmp/autostream-dial-apmode")
 STAGING_DIR = Path("/var/lib/autostream-dial/update-staging")
-FLOCK_BIN   = "/usr/bin/flock"
-
-REPO_OWNER = "lo-tech-systems"
-REPO_NAME  = "autostream"
-API_LATEST = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
-RELEASES_HTML = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases"
 
 UA = "autostream-dial-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
-
-SYSTEMDRUN_CANDIDATES = ("/bin/systemd-run", "/usr/bin/systemd-run")
 
 # ---- Helpers -----------------------------------------------------------------
 
@@ -71,39 +69,6 @@ def _log(msg: str) -> None:
     logging.info("%s", msg)
 
 
-def _run(cmd: list[str], timeout: int = 60) -> Tuple[int, str, str]:
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
-
-
-def _http_get(url: str, timeout: int = 20) -> Tuple[int, bytes]:
-    req = urllib.request.Request(
-        url, headers={"User-Agent": UA, "Accept": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return getattr(resp, "status", 200), resp.read()
-
-
-def _read_env_file(path: Path) -> Dict[str, str]:
-    data: Dict[str, str] = {}
-    try:
-        text = path.read_text(encoding="utf-8")
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip(); value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
-            data[key] = value
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        _log(f"read_env_file({path}): {e}")
-    return data
-
-
 def write_update_result(status: str, message: str) -> None:
     content = f"STATUS={status}\nMESSAGE={message}\n"
     (STATE_DIR / "update-result.env").write_text(content, encoding="utf-8")
@@ -115,81 +80,10 @@ def _read_installed_tag() -> str:
         v = str(env.get("AUTOSTREAM_RELEASE_TAG") or "").strip()
         if v:
             return v
-    except FileNotFoundError:
-        return "missing"
     except Exception as e:
         _log(f"read_installed_tag: {e}")
         return "unknown"
     return "unknown"
-
-
-_semver_re = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$")
-
-
-def _version_key(v: str) -> Tuple[int, int, int, str]:
-    m = _semver_re.match((v or "").strip())
-    if not m:
-        return (0, 0, 0, v or "")
-    return (int(m.group(1) or 0), int(m.group(2) or 0), int(m.group(3) or 0), v or "")
-
-
-def _sanitise_release_notes(text: str, max_len: int = 200) -> str:
-    cleaned = "".join(ch for ch in text if 0x20 <= ord(ch) <= 0x7E)
-    cleaned = " ".join(cleaned.split())
-    return cleaned[:max_len].strip()
-
-
-def _github_latest_release() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Return (tag_name, tarball_url, release_notes) from GitHub latest release."""
-    try:
-        status, raw = _http_get(API_LATEST, timeout=20)
-        if status == 404:
-            return None, None, None
-        data = json.loads(raw.decode("utf-8", errors="replace"))
-        tag = data.get("tag_name")
-        tarball = data.get("tarball_url")
-        raw_body = data.get("body") or ""
-        notes = _sanitise_release_notes(str(raw_body)) if raw_body else None
-        return (str(tag) if tag else None,
-                str(tarball) if tarball else None,
-                notes)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None, None, None
-        _log(f"github_latest_release: HTTPError {e.code}")
-        return None, None, None
-    except Exception as e:
-        _log(f"github_latest_release: {e}")
-        return None, None, None
-
-
-def _repo_exists() -> bool:
-    try:
-        req = urllib.request.Request(RELEASES_HTML, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return getattr(resp, "status", 200) < 400
-    except Exception:
-        return False
-
-
-def _download_file(url: str, dst: Path, timeout: int = 120) -> None:
-    req = urllib.request.Request(
-        url, headers={"User-Agent": UA, "Accept": "application/vnd.github+json"}
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        with dst.open("wb") as f:
-            shutil.copyfileobj(resp, f)
-
-
-def _find_systemd_run() -> Optional[str]:
-    for path in SYSTEMDRUN_CANDIDATES:
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-    p = shutil.which("systemd-run")
-    if p and os.path.isabs(p) and os.access(p, os.X_OK):
-        return p
-    return None
 
 
 # ---- Active-unit guard -------------------------------------------------------
@@ -213,16 +107,12 @@ def _dial_update_unit_active() -> bool:
 # ---- Commands ----------------------------------------------------------------
 
 def cmd_check() -> Dict[str, Any]:
-    if not _repo_exists():
-        _log("check: GitHub releases page not reachable")
-        return {"ok": False, "error": "GitHub repo/releases not reachable (404 or network error)"}
-
     installed = _read_installed_tag()
-    tag, _tarball, notes = _github_latest_release()
+    tag, _tarball, _html_url, notes = _github_latest_release(UA)
 
     if not tag:
         update_available = (installed == "missing")
-        _log(f"check: repo ok but no latest tag; installed={installed}; update_available={update_available}")
+        _log(f"check: no latest tag; installed={installed}; update_available={update_available}")
         return {
             "ok": True,
             "installed": installed if installed != "missing" else "unknown",
@@ -298,7 +188,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: {FLOCK_BIN} not found or not executable")
         return {"ok": False, "error": f"flock not found at {FLOCK_BIN}"}
 
-    tag, tarball_url, _notes = _github_latest_release()
+    tag, tarball_url, _html_url, _notes = _github_latest_release(UA)
     if not tag or not tarball_url:
         _log("apply: no latest release or tarball_url")
         return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
@@ -343,7 +233,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
 
             tar_path = STAGING_DIR / "release.tgz"
             _log("apply: downloading release tarball")
-            _download_file(tarball_url, tar_path, timeout=120)
+            _download_file(tarball_url, tar_path, UA, timeout=120)
 
             extract_dir = STAGING_DIR / "src"
             extract_dir.mkdir(parents=True, exist_ok=True)
