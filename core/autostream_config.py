@@ -389,7 +389,7 @@ def _parse_audio_input_config(
         belt_life_years=normalize_maintenance_life_years(
             cfg.get(section, "belt_life_years", fallback="0"),
         ),
-        bearing_life_hours=normalize_maintenance_life_hours(
+        bearing_life_hours=normalize_bearing_life_hours(
             cfg.get(section, "bearing_life_hours", fallback="0"),
         ),
         bearing_life_years=normalize_maintenance_life_years(

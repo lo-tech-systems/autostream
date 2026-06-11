@@ -32,6 +32,7 @@ from autostream_config import (
     VALID_MAINTENANCE_LIFE_YEARS,
     normalize_stylus_life_hours,
     normalize_maintenance_life_hours,
+    normalize_bearing_life_hours,
     normalize_maintenance_life_years,
 )
 from autostream_sysutils import atomic_write_file
@@ -212,7 +213,7 @@ class PlaybackInputConfig:
             stylus_life_hours=normalize_stylus_life_hours(stylus_life_hours),
             belt_life_hours=normalize_maintenance_life_hours(belt_life_hours),
             belt_life_years=normalize_maintenance_life_years(belt_life_years),
-            bearing_life_hours=normalize_maintenance_life_hours(bearing_life_hours),
+            bearing_life_hours=normalize_bearing_life_hours(bearing_life_hours),
             bearing_life_years=normalize_maintenance_life_years(bearing_life_years),
         )
 
