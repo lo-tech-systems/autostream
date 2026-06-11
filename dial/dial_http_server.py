@@ -2,8 +2,9 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-Endpoints: POST /configure (setup and PIN), POST /volume (fan-out to autostream
-outputs), GET /update-check, POST /update, GET /setup, GET /status, GET /health.
+Routes: GET / (setup page), GET /configure (setup JSON), POST /configure (save
+setup and PIN), GET /recovery_status, GET /update/status, GET /update/check,
+POST /update.
 """
 from __future__ import annotations
 

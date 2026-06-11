@@ -407,7 +407,7 @@ ls -l /opt/autostream/autostream.ini
 If the UI is up but behavior is wrong, inspect `autostream.ini` and compare against what the code expects in:
 
 * `core/autostream_config.py` (parsing + defaults)
-* `core/autostream_wifi_watcher.py` (hostname + Wi-Fi provisioning)
+* `platform/wifi_watcher` (hostname + Wi-Fi provisioning)
 
 Hostname (device name) check:
 

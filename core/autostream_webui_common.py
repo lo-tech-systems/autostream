@@ -342,8 +342,7 @@ def _format_reset_date(raw: Optional[str]) -> str:
     produced by the monitor), then falls back to a manual split-and-map so
     that non-standard or truncated timestamps still render something useful
     rather than exposing a raw exception or the raw string.
-
-"""
+    """
     if not raw:
         return "Never"
     try:
