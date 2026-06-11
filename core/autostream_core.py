@@ -14,6 +14,7 @@ and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
 variable.
 """
 
+import contextlib
 import os
 import json
 import logging
@@ -412,36 +413,34 @@ def update_live_silence_seconds(
     if not snapshot:
         return True
 
-    client = MonitorClient(socket_path or get_monitor_socket_path())
     try:
-        if not client.connect():
-            logging.warning(
-                "Could not connect to monitor daemon for live silence timeout update.",
-            )
-            return False
-
-        for monitor in snapshot:
-            if not client.configure_input(
-                monitor.input_index,
-                monitor.input_device,
-                monitor.silence_threshold_dbfs,
-                live_silence_seconds,
-            ):
+        with _connected_monitor(socket_path) as client:
+            if client is None:
                 logging.warning(
-                    "Live silence timeout update failed for input %d.",
-                    monitor.input_index,
+                    "Could not connect to monitor daemon for live silence timeout update.",
                 )
                 return False
 
-        with _monitors_lock:
-            for monitor in all_monitors:
-                monitor.silence_seconds = live_silence_seconds
-        return True
+            for monitor in snapshot:
+                if not client.configure_input(
+                    monitor.input_index,
+                    monitor.input_device,
+                    monitor.silence_threshold_dbfs,
+                    live_silence_seconds,
+                ):
+                    logging.warning(
+                        "Live silence timeout update failed for input %d.",
+                        monitor.input_index,
+                    )
+                    return False
+
+            with _monitors_lock:
+                for monitor in all_monitors:
+                    monitor.silence_seconds = live_silence_seconds
+            return True
     except Exception as e:
         logging.warning("Could not update live silence timeout: %s", e)
         return False
-    finally:
-        client.close()
 
 
 def any_monitor_capturing() -> bool:
@@ -523,13 +522,10 @@ def set_live_monitor_log_level(
 ) -> bool:
     """Apply the platform log level immediately to the running monitor daemon."""
     normalized = normalize_log_level(log_level)
-    client = MonitorClient(socket_path or get_monitor_socket_path())
-    try:
-        if not client.connect():
+    with _connected_monitor(socket_path) as client:
+        if client is None:
             return False
         return client.set_log_level(normalized)
-    finally:
-        client.close()
 
 
 def update_live_platform_log_level(
@@ -568,6 +564,16 @@ def get_monitor_socket_path() -> str:
         os.environ.get("AUTOSTREAM_MONITOR_SOCKET", "").strip()
         or MonitorClient.DEFAULT_SOCKET_PATH
     )
+
+
+@contextlib.contextmanager
+def _connected_monitor(socket_path: Optional[str] = None):
+    """Context manager yielding a connected MonitorClient, or None if unavailable."""
+    client = MonitorClient(socket_path or get_monitor_socket_path())
+    try:
+        yield client if client.connect() else None
+    finally:
+        client.close()
 
 
 def normalize_monitor_devices(devices: Optional[list[dict]]) -> list[dict]:
@@ -614,16 +620,14 @@ def get_available_monitor_devices(
     coordinator loop can safely query available ALSA capture devices.
     Returns an empty list if the daemon is unavailable or the command fails.
     """
-    client = MonitorClient(socket_path or get_monitor_socket_path())
     try:
-        if not client.connect():
-            return []
-        return normalize_monitor_devices(client.list_devices())
+        with _connected_monitor(socket_path) as client:
+            if client is None:
+                return []
+            return normalize_monitor_devices(client.list_devices())
     except Exception as e:
         logging.warning("Could not query autostream_monitor devices: %s", e)
         return []
-    finally:
-        client.close()
 
 
 # Fixed output PEQ band definitions.  The stored field names (peq1_db … peq6_db)
@@ -695,17 +699,10 @@ def set_live_input_eq(
     Also updates any matching in-process AudioMonitor cache so reconnect replay
     continues to use the most recent live values until the INI is saved.
     """
-    client = MonitorClient(socket_path or get_monitor_socket_path())
-    try:
-        if not client.connect():
+    with _connected_monitor(socket_path) as client:
+        if client is None:
             return False
-        ok = apply_input_eq(
-            client,
-            input_index,
-            eq_40hz_db,
-            eq_100hz_db,
-            eq_10khz_db,
-        )
+        ok = apply_input_eq(client, input_index, eq_40hz_db, eq_100hz_db, eq_10khz_db)
         if ok:
             with _monitors_lock:
                 for mon in all_monitors:
@@ -714,8 +711,6 @@ def set_live_input_eq(
                         mon.eq_100hz_db = float(eq_100hz_db)
                         mon.eq_10khz_db = float(eq_10khz_db)
         return ok
-    finally:
-        client.close()
 
 
 def set_live_input_gain(
@@ -724,9 +719,8 @@ def set_live_input_gain(
     socket_path: Optional[str] = None,
 ) -> bool:
     """Apply one input's gain immediately to the running autostream_monitor."""
-    client = MonitorClient(socket_path or get_monitor_socket_path())
-    try:
-        if not client.connect():
+    with _connected_monitor(socket_path) as client:
+        if client is None:
             return False
         ok = apply_input_gain(client, input_index, gain_db)
         if ok:
@@ -735,8 +729,6 @@ def set_live_input_gain(
                     if mon.input_index == input_index:
                         mon.gain_db = float(gain_db)
         return ok
-    finally:
-        client.close()
 
 
 def build_output_eq_bands(
@@ -816,13 +808,10 @@ def set_live_output_eq(
     socket_path: Optional[str] = None,
 ) -> bool:
     """Apply shared output EQ immediately to the running autostream_monitor."""
-    client = MonitorClient(socket_path or get_monitor_socket_path())
-    try:
-        if not client.connect():
+    with _connected_monitor(socket_path) as client:
+        if client is None:
             return False
         return apply_output_eq(client, peq1_db, peq2_db, peq3_db, peq4_db, peq5_db, peq6_db)
-    finally:
-        client.close()
 
 
 def set_live_output_gain(
@@ -830,13 +819,10 @@ def set_live_output_gain(
     socket_path: Optional[str] = None,
 ) -> bool:
     """Apply shared output gain immediately to the running autostream_monitor."""
-    client = MonitorClient(socket_path or get_monitor_socket_path())
-    try:
-        if not client.connect():
+    with _connected_monitor(socket_path) as client:
+        if client is None:
             return False
         return apply_output_gain(client, gain_db)
-    finally:
-        client.close()
 
 
 def set_live_output_auto_trim(
@@ -844,13 +830,10 @@ def set_live_output_auto_trim(
     socket_path: Optional[str] = None,
 ) -> bool:
     """Apply shared output auto-trim enable state immediately to the running monitor."""
-    client = MonitorClient(socket_path or get_monitor_socket_path())
-    try:
-        if not client.connect():
+    with _connected_monitor(socket_path) as client:
+        if client is None:
             return False
         return apply_output_auto_trim(client, enabled)
-    finally:
-        client.close()
 
 
 def get_live_output_eq_status(
@@ -863,23 +846,21 @@ def get_live_output_eq_status(
       output_auto_trim_db       float  (current accumulated trim; 0.0 or negative)
       effective_output_gain_db  float
     """
-    client = MonitorClient(socket_path or get_monitor_socket_path())
     try:
-        if not client.connect():
-            return None
-        status = client.get_status()
-        if not status:
-            return None
-        return {
-            "output_auto_trim_enabled": bool(status.get("output_auto_trim_enabled", False)),
-            "output_auto_trim_db": float(status.get("output_auto_trim_db", 0.0)),
-            "effective_output_gain_db": float(status.get("effective_output_gain_db", 0.0)),
-        }
+        with _connected_monitor(socket_path) as client:
+            if client is None:
+                return None
+            status = client.get_status()
+            if not status:
+                return None
+            return {
+                "output_auto_trim_enabled": bool(status.get("output_auto_trim_enabled", False)),
+                "output_auto_trim_db": float(status.get("output_auto_trim_db", 0.0)),
+                "effective_output_gain_db": float(status.get("effective_output_gain_db", 0.0)),
+            }
     except Exception as e:
         logging.warning("Could not get live output EQ status: %s", e)
         return None
-    finally:
-        client.close()
 
 
 # --------------------------------------------------------------------------- #
