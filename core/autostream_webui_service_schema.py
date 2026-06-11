@@ -5,25 +5,9 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Shared domain logic for the Service page and its JSON API endpoints.
 
-This module is the single source of truth for:
-  - _ServiceItem / _SERVICE_ITEMS   — maintenance-item schema (keys, config keys,
-                                       normalizers, option sets)
-  - _SNAP_HOURS_PLAYBACK_ATTR       — snapshot attr map for per-item playback seconds
-  - _SNAP_TIME_ATTRS                — snapshot attr map for per-item elapsed days /
-                                       last-service-at
-  - _format_reset_timestamp         — format a service ISO timestamp for display
-  - _format_elapsed_days            — human-readable day count (remaining-time labels)
-  - _format_age_months              — month count string for the Age row
-  - _format_due_date                — approximate due-date string from service time
-  - _hours_display                  — compute the hours-dimension display dict
-  - _time_display                   — compute the time-dimension display dict
-  - _card_display                   — compute list-card subtitle and warning flag
-
-Imported by:
-  autostream_webui_page_service  — initial HTML render
-  autostream_webui_api           — live JSON update payloads (config-save, reset)
-
-Neither importer depends on the other, so there is no circular import risk.
+Shared display-computation helpers for the Service page and its live JSON API.
+The initial HTML render and the live update payloads call the same functions so
+the browser always sees consistent maintenance state regardless of how data arrives.
 """
 
 from __future__ import annotations

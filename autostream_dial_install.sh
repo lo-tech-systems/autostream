@@ -98,7 +98,7 @@ install -m 0644 "$DEPLOY"/system/systemd/autostream_dial_updater.timer          
 install -m 0644 "$DEPLOY"/system/systemd/autostream_dial_update_recover.service   /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable autostream_dial autostream_dial_wifi_watcher autostream_dial_update_recover
-# Note: autostream_dial_updater.timer is NOT enabled here (Stage 7, opt-in).
+# autostream_dial_updater.timer is not enabled by default; users opt in via the Setup page.
 
 # ---- nginx ------------------------------------------------------------------
 rm -f /etc/nginx/sites-enabled/default

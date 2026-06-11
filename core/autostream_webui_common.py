@@ -6,28 +6,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Shared helpers for the autostream Web UI, imported by per-page modules and
 the main web handler to avoid circular dependencies.
 
-Contents:
-  - CONFIG_IO_LOCK / locked_load_config  -- serialise config file I/O across
-                                            concurrent HTTP handler threads
-  - _set_flash_cookie                    -- write a short-lived status banner
-                                            cookie to an HTTP response
-  - build_top_banner_html                -- render the top-of-page banner HTML
-                                            (flash messages, PSU warnings,
-                                            licence state)
-  - build_nav_bar_html                   -- render the shared fixed bottom
-                                            navigation bar (Home/Setup/Logs/About)
-  - build_page_html                      -- render a complete HTML page using the
-                                            shared scaffold (head, container, nav)
-  - get_app_version                      -- read the installed application
-                                            version via the privileged helper
-  - _fallback_input_snapshot             -- construct a zero-valued
-                                            InputPlaybackSnapshot from config
-                                            when no live snapshot is available
-  - _format_reset_date                   -- format a stylus-reset ISO timestamp
-                                            as a short "Mon-YY" date string for
-                                            compact display (e.g. the About page)
-  - load_license_text                    -- read the LICENSE / LICENCE file
-  - render_license_md                    -- convert LICENSE Markdown to HTML
 """
 
 from __future__ import annotations

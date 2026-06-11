@@ -3,7 +3,7 @@
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 LED is optional; pass gpio=None (or leave led_gpio blank in config) for
-a fully no-op instance.  RGB LED support is deferred to a future release.
+a fully no-op instance.
 """
 from __future__ import annotations
 

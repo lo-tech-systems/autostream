@@ -369,7 +369,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         path = self._normalized_path()
 
 
-        # --- 1) Special-case auth verify (kept close to your original) ---
+        # --- 1) Auth verify ---
         if path == "/api/auth/verify":
             body = self._read_post_body_bytes()
             if body:
@@ -436,8 +436,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         # --- 5) Route: enforce body only where needed ---
         if path == "/api/output":
-            # If your frontend sends JSON for /api/output, enforce it.
-            # If you still sometimes send form bodies, you can relax this.
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return

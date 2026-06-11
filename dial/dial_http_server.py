@@ -2,13 +2,8 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-Stage 5 scaffold:
-  - _announce_self() calls autostream_admin — fully implemented.
-  - DialHTTPServer and RecoveryWindow are fully specified.
-  - POST /configure validates name/step/auto_update/pin fields and saves.
-  - POST /configure PIN verification is partially implemented (Stage 6
-    adds full brute-force throttling / recovery-window server-side checks).
-  - All other endpoints are complete.
+Endpoints: POST /configure (setup and PIN), POST /volume (fan-out to autostream
+outputs), GET /update-check, POST /update, GET /setup, GET /status, GET /health.
 """
 from __future__ import annotations
 

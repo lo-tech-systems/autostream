@@ -1,5 +1,5 @@
 [Unit]
-Description=Autostream Owntone bridge
+Description=Autostream audio coordinator
 After=sound.target autostream_monitor.service
 Wants=autostream_monitor.service
 Requires=autostream_monitor.service
@@ -12,7 +12,6 @@ Group=autostream
 # Project directory
 WorkingDirectory=/opt/autostream
 
-# Adjust the Python path if needed
 ExecStart=/opt/autostream/venv/bin/python3 /opt/autostream/autostream_webui.py /opt/autostream/autostream.ini
 
 # Restart if it crashes
