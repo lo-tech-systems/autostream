@@ -20,7 +20,7 @@ from typing import Optional
 
 from autostream_auth import FLASH_COOKIE_NAME
 from autostream_config import CONFIG_IO_LOCK, DEFAULT_STYLUS_LIFE_HOURS, load_config
-from autostream_playback_stats import InputPlaybackSnapshot
+from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
 from autostream_webui_assets import (
     BANNER_HTML,
@@ -164,58 +164,16 @@ def _fallback_input_snapshot(
     All playback counters are set to zero; stylus metadata is derived from
     the config so the About page can still render sensible defaults.
     """
-    is_turntable = bool(getattr(parsed_input, "is_turntable", False))
-    stylus_life_hours = int(getattr(parsed_input, "stylus_life_hours", DEFAULT_STYLUS_LIFE_HOURS))
-    belt_life_hours = int(getattr(parsed_input, "belt_life_hours", 0))
-    belt_life_years = int(getattr(parsed_input, "belt_life_years", 0))
-    bearing_life_hours = int(getattr(parsed_input, "bearing_life_hours", 0))
-    bearing_life_years = int(getattr(parsed_input, "bearing_life_years", 0))
-    return InputPlaybackSnapshot(
-        input_index=input_index,
-        label=f"Input {input_index}",
-        active=False,
+    return make_fallback_input_snapshot(
+        input_index,
+        f"Input {input_index}",
         enabled=bool(enabled),
-        is_turntable=is_turntable,
-        total_playback_seconds=0,
-        total_playback_hours=0.0,
-        stylus_playback_seconds=0,
-        stylus_playback_hours=0.0,
-        stylus_life_hours=stylus_life_hours,
-        stylus_remaining_seconds=(stylus_life_hours * 3600 if is_turntable else None),
-        stylus_remaining_hours=(float(stylus_life_hours) if is_turntable else None),
-        stylus_warning=False,
-        stylus_overdue=False,
-        last_stylus_reset_at=None,
-        belt_life_hours=belt_life_hours,
-        belt_playback_seconds=0,
-        belt_playback_hours=0.0,
-        belt_hours_remaining=(
-            belt_life_hours * 3600 if is_turntable and belt_life_hours > 0 else None
-        ),
-        belt_hours_overdue=False,
-        belt_hours_warning=False,
-        belt_life_years=belt_life_years,
-        belt_elapsed_days=None,
-        belt_time_overdue=False,
-        belt_time_warning=False,
-        belt_overdue=False,
-        belt_warning=False,
-        last_belt_service_at=None,
-        bearing_life_hours=bearing_life_hours,
-        bearing_playback_seconds=0,
-        bearing_playback_hours=0.0,
-        bearing_hours_remaining=(
-            bearing_life_hours * 3600 if is_turntable and bearing_life_hours > 0 else None
-        ),
-        bearing_hours_overdue=False,
-        bearing_hours_warning=False,
-        bearing_life_years=bearing_life_years,
-        bearing_elapsed_days=None,
-        bearing_time_overdue=False,
-        bearing_time_warning=False,
-        bearing_overdue=False,
-        bearing_warning=False,
-        last_bearing_service_at=None,
+        is_turntable=bool(getattr(parsed_input, "is_turntable", False)),
+        stylus_life_hours=int(getattr(parsed_input, "stylus_life_hours", DEFAULT_STYLUS_LIFE_HOURS)),
+        belt_life_hours=int(getattr(parsed_input, "belt_life_hours", 0)),
+        belt_life_years=int(getattr(parsed_input, "belt_life_years", 0)),
+        bearing_life_hours=int(getattr(parsed_input, "bearing_life_hours", 0)),
+        bearing_life_years=int(getattr(parsed_input, "bearing_life_years", 0)),
     )
 
 

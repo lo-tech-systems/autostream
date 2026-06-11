@@ -413,6 +413,76 @@ class InputPlaybackSnapshot:
         }
 
 
+def make_fallback_input_snapshot(
+    input_index: int,
+    label: str,
+    *,
+    enabled: bool = True,
+    is_turntable: bool = False,
+    stylus_life_hours: int = DEFAULT_STYLUS_LIFE_HOURS,
+    belt_life_hours: int = 0,
+    belt_life_years: int = 0,
+    bearing_life_hours: int = 0,
+    bearing_life_years: int = 0,
+) -> InputPlaybackSnapshot:
+    """Return an all-zeros InputPlaybackSnapshot with config-derived lifetime metadata."""
+    return InputPlaybackSnapshot(
+        input_index=input_index,
+        label=label,
+        active=False,
+        enabled=enabled,
+        is_turntable=is_turntable,
+        total_playback_seconds=0,
+        total_playback_hours=0.0,
+        stylus_playback_seconds=0,
+        stylus_playback_hours=0.0,
+        stylus_life_hours=stylus_life_hours,
+        stylus_remaining_seconds=(
+            int(stylus_life_hours * 3600)
+            if is_turntable and stylus_life_hours > 0 else None
+        ),
+        stylus_remaining_hours=(
+            float(stylus_life_hours)
+            if is_turntable and stylus_life_hours > 0 else None
+        ),
+        stylus_warning=False,
+        stylus_overdue=False,
+        last_stylus_reset_at=None,
+        belt_life_hours=belt_life_hours,
+        belt_playback_seconds=0,
+        belt_playback_hours=0.0,
+        belt_hours_remaining=(
+            int(belt_life_hours * 3600)
+            if is_turntable and belt_life_hours > 0 else None
+        ),
+        belt_hours_overdue=False,
+        belt_hours_warning=False,
+        belt_life_years=belt_life_years,
+        belt_elapsed_days=None,
+        belt_time_overdue=False,
+        belt_time_warning=False,
+        belt_overdue=False,
+        belt_warning=False,
+        last_belt_service_at=None,
+        bearing_life_hours=bearing_life_hours,
+        bearing_playback_seconds=0,
+        bearing_playback_hours=0.0,
+        bearing_hours_remaining=(
+            int(bearing_life_hours * 3600)
+            if is_turntable and bearing_life_hours > 0 else None
+        ),
+        bearing_hours_overdue=False,
+        bearing_hours_warning=False,
+        bearing_life_years=bearing_life_years,
+        bearing_elapsed_days=None,
+        bearing_time_overdue=False,
+        bearing_time_warning=False,
+        bearing_overdue=False,
+        bearing_warning=False,
+        last_bearing_service_at=None,
+    )
+
+
 @dataclass(frozen=True)
 class PlaybackSnapshot:
     """Combined playback snapshot for all tracked inputs."""
@@ -893,64 +963,15 @@ class PlaybackTracker:
             return snap
 
         cfg = self._configs.get(idx, PlaybackInputConfig())
-        return InputPlaybackSnapshot(
-            input_index=idx,
-            label=input_label(idx),
-            active=False,
+        return make_fallback_input_snapshot(
+            idx, input_label(idx),
             enabled=cfg.enabled,
             is_turntable=cfg.is_turntable,
-            total_playback_seconds=0,
-            total_playback_hours=0.0,
-            stylus_playback_seconds=0,
-            stylus_playback_hours=0.0,
             stylus_life_hours=cfg.stylus_life_hours,
-            stylus_remaining_seconds=(
-                int(cfg.stylus_life_hours * 3600)
-                if cfg.is_turntable and cfg.stylus_life_hours > 0
-                else None
-            ),
-            stylus_remaining_hours=(
-                float(cfg.stylus_life_hours)
-                if cfg.is_turntable and cfg.stylus_life_hours > 0
-                else None
-            ),
-            stylus_warning=False,
-            stylus_overdue=False,
-            last_stylus_reset_at=None,
             belt_life_hours=cfg.belt_life_hours,
-            belt_playback_seconds=0,
-            belt_playback_hours=0.0,
-            belt_hours_remaining=(
-                int(cfg.belt_life_hours * 3600)
-                if cfg.is_turntable and cfg.belt_life_hours > 0
-                else None
-            ),
-            belt_hours_overdue=False,
-            belt_hours_warning=False,
             belt_life_years=cfg.belt_life_years,
-            belt_elapsed_days=None,
-            belt_time_overdue=False,
-            belt_time_warning=False,
-            belt_overdue=False,
-            belt_warning=False,
-            last_belt_service_at=None,
             bearing_life_hours=cfg.bearing_life_hours,
-            bearing_playback_seconds=0,
-            bearing_playback_hours=0.0,
-            bearing_hours_remaining=(
-                int(cfg.bearing_life_hours * 3600)
-                if cfg.is_turntable and cfg.bearing_life_hours > 0
-                else None
-            ),
-            bearing_hours_overdue=False,
-            bearing_hours_warning=False,
             bearing_life_years=cfg.bearing_life_years,
-            bearing_elapsed_days=None,
-            bearing_time_overdue=False,
-            bearing_time_warning=False,
-            bearing_overdue=False,
-            bearing_warning=False,
-            last_bearing_service_at=None,
         )
 
     def public_snapshot_dict(self) -> dict:

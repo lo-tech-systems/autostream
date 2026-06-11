@@ -63,6 +63,7 @@ from autostream_playback_stats import (
     PlaybackSnapshot,
     PlaybackTracker,
     input_label,
+    make_fallback_input_snapshot,
 )
 from autostream_sysutils import (
     get_install_state,
@@ -264,49 +265,7 @@ def get_input_playback_snapshot(input_index: int) -> InputPlaybackSnapshot:
     if snap is not None:
         return snap
 
-    return InputPlaybackSnapshot(
-        input_index=idx,
-        label=input_label(idx),
-        active=False,
-        enabled=True,
-        is_turntable=False,
-        total_playback_seconds=0,
-        total_playback_hours=0.0,
-        stylus_playback_seconds=0,
-        stylus_playback_hours=0.0,
-        stylus_life_hours=DEFAULT_STYLUS_LIFE_HOURS,
-        stylus_remaining_seconds=None,
-        stylus_remaining_hours=None,
-        stylus_warning=False,
-        stylus_overdue=False,
-        last_stylus_reset_at=None,
-        belt_life_hours=0,
-        belt_playback_seconds=0,
-        belt_playback_hours=0.0,
-        belt_hours_remaining=None,
-        belt_hours_overdue=False,
-        belt_hours_warning=False,
-        belt_life_years=0,
-        belt_elapsed_days=None,
-        belt_time_overdue=False,
-        belt_time_warning=False,
-        belt_overdue=False,
-        belt_warning=False,
-        last_belt_service_at=None,
-        bearing_life_hours=0,
-        bearing_playback_seconds=0,
-        bearing_playback_hours=0.0,
-        bearing_hours_remaining=None,
-        bearing_hours_overdue=False,
-        bearing_hours_warning=False,
-        bearing_life_years=0,
-        bearing_elapsed_days=None,
-        bearing_time_overdue=False,
-        bearing_time_warning=False,
-        bearing_overdue=False,
-        bearing_warning=False,
-        last_bearing_service_at=None,
-    )
+    return make_fallback_input_snapshot(idx, input_label(idx))
 
 
 def _reset_input(input_index: int, method_name: str, item_name: str) -> MaintenanceResetResult:
