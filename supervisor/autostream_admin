@@ -79,8 +79,9 @@ Best-effort sync before deletion:
 HOSTNAME
 --------
 Valid hostnames:
+  - Must be a single label (no dots); used as <name>.local via Avahi/mDNS
   - Must be 1..63 characters
-  - Must be a valid hostname label (letters/digits/hyphen; not start/end hyphen; 1..63 chars)
+  - Must be a valid hostname label (letters/digits/hyphen; not start/end hyphen)
   - Must not contain leading/trailing whitespace
 
 NOTES
@@ -106,12 +107,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple
-
-# Throw if not root
-if os.geteuid() != 0:
-    print("This program must be run as root", file=sys.stderr)
-    sys.exit(1)
-
 
 # Persistent stamp file for rate limiting NetworkDown reboots
 STAMP_DIR = Path("/var/lib/autostream")
@@ -245,19 +240,16 @@ def find_hostnamectl():
 
 
 def validate_hostname(hostname: str) -> Tuple[bool, str]:
-    """Validate hostname for Linux/DNS expectations."""
+    """Validate a single-label hostname matching the <name>.local appliance contract."""
     h = hostname.strip()
     if not h:
         return False, "hostname is empty"
-    if len(h) > 253:
-        return False, "hostname is too long (>253 chars)"
-
-    labels = h.split(".")
-    for label in labels:
-        if not (1 <= len(label) <= 63):
-            return False, f"label '{label}' length must be 1..63"
-        if not HOSTNAME_LABEL_RE.match(label):
-            return False, f"label '{label}' has invalid characters/format"
+    if "." in h:
+        return False, "hostname must be a single label (no dots)"
+    if len(h) > 63:
+        return False, "hostname is too long (>63 chars)"
+    if not HOSTNAME_LABEL_RE.match(h):
+        return False, "hostname must start and end with a letter or digit and contain only letters, digits, or hyphens"
     return True, ""
 
 
