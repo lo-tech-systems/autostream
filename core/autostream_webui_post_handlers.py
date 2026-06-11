@@ -212,7 +212,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         cfg.set("audio1", "gain_db", fld("audio1_gain_db", str(p.audio1.gain_db)))
         cfg.set("audio1", "eq_40hz_db", fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
         cfg.set("audio1", "eq_100hz_db", fld("audio1_eq_100hz_db", str(p.audio1.eq_100hz_db)))
-        cfg.set("audio1", "eq_10khz_db", fld("audio1_eq_10khz_db", str(p.audio1.eq_10khz_db)))
+        cfg.set("audio1", "eq_8khz_db", fld("audio1_eq_8khz_db", str(p.audio1.eq_8khz_db)))
+        cfg.remove_option("audio1", "eq_10khz_db")
 
         if not cfg.has_section("audio2"): cfg.add_section("audio2")
         cfg.set("audio2", "enabled", "yes" if new_audio2_enabled else "no")
@@ -222,7 +223,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         cfg.set("audio2", "gain_db", fld("audio2_gain_db", str(p.audio2.gain_db)))
         cfg.set("audio2", "eq_40hz_db", fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
         cfg.set("audio2", "eq_100hz_db", fld("audio2_eq_100hz_db", str(p.audio2.eq_100hz_db)))
-        cfg.set("audio2", "eq_10khz_db", fld("audio2_eq_10khz_db", str(p.audio2.eq_10khz_db)))
+        cfg.set("audio2", "eq_8khz_db", fld("audio2_eq_8khz_db", str(p.audio2.eq_8khz_db)))
+        cfg.remove_option("audio2", "eq_10khz_db")
 
         if not cfg.has_section("owntone"): cfg.add_section("owntone")
         cfg.set("owntone", "output_name", fld("owntone_output_name", p.owntone.output_name))
@@ -413,7 +415,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         input_index = int(payload.get("input", 0))
         eq_40hz_db = float(payload.get("eq_40hz_db", 0.0))
         eq_100hz_db = float(payload.get("eq_100hz_db", 0.0))
-        eq_10khz_db = float(payload.get("eq_10khz_db", 0.0))
+        eq_8khz_db = float(payload.get("eq_8khz_db", 0.0))
     except Exception:
         send_json(handler, 400, {"ok": False, "error": "Invalid EQ payload"})
         return
@@ -422,7 +424,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
         return
 
-    for val in (eq_40hz_db, eq_100hz_db, eq_10khz_db):
+    for val in (eq_40hz_db, eq_100hz_db, eq_8khz_db):
         if val < -10.0 or val > 10.0:
             send_json(handler, 400, {"ok": False, "error": "EQ gain must be between -10 and 10 dB"})
             return
@@ -431,7 +433,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         input_index=input_index,
         eq_40hz_db=eq_40hz_db,
         eq_100hz_db=eq_100hz_db,
-        eq_10khz_db=eq_10khz_db,
+        eq_8khz_db=eq_8khz_db,
     )
     if not ok:
         send_json(handler, 200, {"ok": False, "error": "Could not update live EQ"})
@@ -442,7 +444,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         "input": input_index,
         "eq_40hz_db": eq_40hz_db,
         "eq_100hz_db": eq_100hz_db,
-        "eq_10khz_db": eq_10khz_db,
+        "eq_8khz_db": eq_8khz_db,
     })
 
 

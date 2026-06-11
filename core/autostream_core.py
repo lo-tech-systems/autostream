@@ -647,7 +647,7 @@ OUTPUT_PEQ_BANDS: list[dict] = [
 def build_monitor_eq_bands(
     eq_40hz_db: float,
     eq_100hz_db: float,
-    eq_10khz_db: float,
+    eq_8khz_db: float,
 ) -> list[dict]:
     """Return the fixed three-band EQ definition expected by autostream_monitor.
 
@@ -658,7 +658,7 @@ def build_monitor_eq_bands(
     return [
         {"type": "peak", "freq_hz": 40.0, "gain_db": float(eq_40hz_db), "q": 0.707},
         {"type": "low_shelf", "freq_hz": 100.0, "gain_db": float(eq_100hz_db), "q": 0.5},
-        {"type": "high_shelf", "freq_hz": 8000.0, "gain_db": float(eq_10khz_db), "q": 0.5},
+        {"type": "high_shelf", "freq_hz": 8000.0, "gain_db": float(eq_8khz_db), "q": 0.5},
     ]
 
 
@@ -667,12 +667,12 @@ def apply_input_eq(
     input_index: int,
     eq_40hz_db: float,
     eq_100hz_db: float,
-    eq_10khz_db: float,
+    eq_8khz_db: float,
 ) -> bool:
     """Push one input's EQ settings to autostream_monitor."""
     return client.set_eq(
         input_index,
-        build_monitor_eq_bands(eq_40hz_db, eq_100hz_db, eq_10khz_db),
+        build_monitor_eq_bands(eq_40hz_db, eq_100hz_db, eq_8khz_db),
     )
 
 
@@ -689,7 +689,7 @@ def set_live_input_eq(
     input_index: int,
     eq_40hz_db: float,
     eq_100hz_db: float,
-    eq_10khz_db: float,
+    eq_8khz_db: float,
     socket_path: Optional[str] = None,
 ) -> bool:
     """Apply one input's EQ immediately to the running autostream_monitor.
@@ -702,14 +702,14 @@ def set_live_input_eq(
     with _connected_monitor(socket_path) as client:
         if client is None:
             return False
-        ok = apply_input_eq(client, input_index, eq_40hz_db, eq_100hz_db, eq_10khz_db)
+        ok = apply_input_eq(client, input_index, eq_40hz_db, eq_100hz_db, eq_8khz_db)
         if ok:
             with _monitors_lock:
                 for mon in all_monitors:
                     if mon.input_index == input_index:
                         mon.eq_40hz_db = float(eq_40hz_db)
                         mon.eq_100hz_db = float(eq_100hz_db)
-                        mon.eq_10khz_db = float(eq_10khz_db)
+                        mon.eq_8khz_db = float(eq_8khz_db)
         return ok
 
 
@@ -1136,7 +1136,7 @@ class AudioMonitor:
         gain_db: float = 0.0,
         eq_40hz_db: float = 0.0,
         eq_100hz_db: float = 0.0,
-        eq_10khz_db: float = 0.0,
+        eq_8khz_db: float = 0.0,
     ) -> None:
         self.input_index = input_index
         self.input_device = input_device
@@ -1151,7 +1151,7 @@ class AudioMonitor:
         self.gain_db = gain_db
         self.eq_40hz_db = eq_40hz_db
         self.eq_100hz_db = eq_100hz_db
-        self.eq_10khz_db = eq_10khz_db
+        self.eq_8khz_db = eq_8khz_db
 
         # --- Now-playing metadata helpers ---
         self._nowplaying_cache = PersistentNowPlayingCache()
@@ -1726,7 +1726,7 @@ def _resync_monitor_daemon(
             m.input_index,
             m.eq_40hz_db,
             m.eq_100hz_db,
-            m.eq_10khz_db,
+            m.eq_8khz_db,
         ):
             logging.warning(
                 "set_eq(%d) failed after reconnect; will retry full resync.",
@@ -1797,7 +1797,7 @@ def _configure_startup_monitors(
         1,
         cfg.audio1.eq_40hz_db,
         cfg.audio1.eq_100hz_db,
-        cfg.audio1.eq_10khz_db,
+        cfg.audio1.eq_8khz_db,
     ):
         logging.warning("set_eq(1) failed during startup; will retry.")
         return None
@@ -1816,7 +1816,7 @@ def _configure_startup_monitors(
         gain_db=cfg.audio1.gain_db,
         eq_40hz_db=cfg.audio1.eq_40hz_db,
         eq_100hz_db=cfg.audio1.eq_100hz_db,
-        eq_10khz_db=cfg.audio1.eq_10khz_db,
+        eq_8khz_db=cfg.audio1.eq_8khz_db,
     )]
 
     if (
@@ -1851,7 +1851,7 @@ def _configure_startup_monitors(
             2,
             cfg.audio2.eq_40hz_db,
             cfg.audio2.eq_100hz_db,
-            cfg.audio2.eq_10khz_db,
+            cfg.audio2.eq_8khz_db,
         ):
             logging.error("set_eq(2) failed; skipping second input.")
             audio2_ok = False
@@ -1871,7 +1871,7 @@ def _configure_startup_monitors(
                 gain_db=cfg.audio2.gain_db,
                 eq_40hz_db=cfg.audio2.eq_40hz_db,
                 eq_100hz_db=cfg.audio2.eq_100hz_db,
-                eq_10khz_db=cfg.audio2.eq_10khz_db,
+                eq_8khz_db=cfg.audio2.eq_8khz_db,
             ))
 
     if len(monitors) > 1:

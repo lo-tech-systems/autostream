@@ -83,7 +83,7 @@ def _audio_controls_card_html(
     gain_db: float,
     eq_40hz_db: float,
     eq_100hz_db: float,
-    eq_10khz_db: float,
+    eq_8khz_db: float,
 ) -> str:
     prefix = f"audio{input_index}"
     inner_html = f"""
@@ -132,12 +132,12 @@ def _audio_controls_card_html(
               min="-10"
               max="10"
               step="1"
-              id="{prefix}_eq_10khz_db"
-              name="{prefix}_eq_10khz_db"
-              value="{eq_10khz_db:.0f}"
+              id="{prefix}_eq_8khz_db"
+              name="{prefix}_eq_8khz_db"
+              value="{eq_8khz_db:.0f}"
               aria-label="Treble equaliser"
-              oninput="syncEq({input_index}, '10khz', this.value)">
-            <span class="eq-band-val" id="{prefix}_eq_10khz_db_val">{eq_10khz_db:.0f} dB</span>
+              oninput="syncEq({input_index}, '8khz', this.value)">
+            <span class="eq-band-val" id="{prefix}_eq_8khz_db_val">{eq_8khz_db:.0f} dB</span>
           </div>
         </div>
       </div>
@@ -833,7 +833,7 @@ def send_setup_page(
               gain_db=parsed.audio1.gain_db,
               eq_40hz_db=parsed.audio1.eq_40hz_db,
               eq_100hz_db=parsed.audio1.eq_100hz_db,
-              eq_10khz_db=parsed.audio1.eq_10khz_db,
+              eq_8khz_db=parsed.audio1.eq_8khz_db,
             )}
           </div>
           <div class="setup-detail-panel" id="panel-input2">
@@ -848,7 +848,7 @@ def send_setup_page(
                 gain_db=parsed.audio2.gain_db,
                 eq_40hz_db=parsed.audio2.eq_40hz_db,
                 eq_100hz_db=parsed.audio2.eq_100hz_db,
-                eq_10khz_db=parsed.audio2.eq_10khz_db,
+                eq_8khz_db=parsed.audio2.eq_8khz_db,
               )}
             </div>
           </div>
@@ -1210,7 +1210,7 @@ def send_setup_page(
             input: inputIndex,
             eq_40hz_db: Number(document.getElementById(prefix + '_eq_40hz_db').value),
             eq_100hz_db: Number(document.getElementById(prefix + '_eq_100hz_db').value),
-            eq_10khz_db: Number(document.getElementById(prefix + '_eq_10khz_db').value),
+            eq_8khz_db: Number(document.getElementById(prefix + '_eq_8khz_db').value),
           }};
         }}
         async function sendEqUpdate(inputIndex){{

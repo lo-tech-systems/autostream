@@ -26,7 +26,7 @@ stylus_life_hours = 500        ; reminder threshold for stylus replacement
 gain_db = 0                    ; input gain before EQ
 eq_40hz_db = 0                 ; sub-bass bell at 40 Hz (Q=0.707)
 eq_100hz_db = 0                ; bass shelf at 100 Hz
-eq_10khz_db = 0                ; treble shelf at 10 kHz
+eq_8khz_db = 0                 ; treble shelf at 8 kHz
 
 [audio2]
 enabled = no                   ; set to yes to enable this channel
@@ -37,7 +37,7 @@ stylus_life_hours = 500        ; reminder threshold for stylus replacement
 gain_db = 0                    ; input gain before EQ
 eq_40hz_db = 0                 ; sub-bass bell at 40 Hz (Q=0.707)
 eq_100hz_db = 0                ; bass shelf at 100 Hz
-eq_10khz_db = 0                ; treble shelf at 10 kHz
+eq_8khz_db = 0                 ; treble shelf at 8 kHz
 
 [owntone]
 base_url = http://localhost:3689
@@ -254,7 +254,7 @@ class AudioInputConfig:
     gain_db: float
     eq_40hz_db: float
     eq_100hz_db: float
-    eq_10khz_db: float
+    eq_8khz_db: float
 
 
 @dataclass(frozen=True)
@@ -384,7 +384,10 @@ def _parse_audio_input_config(
         gain_db=cfg.getfloat(section, "gain_db", fallback=0.0),
         eq_40hz_db=cfg.getfloat(section, "eq_40hz_db", fallback=0.0),
         eq_100hz_db=cfg.getfloat(section, "eq_100hz_db", fallback=0.0),
-        eq_10khz_db=cfg.getfloat(section, "eq_10khz_db", fallback=0.0),
+        eq_8khz_db=cfg.getfloat(
+            section, "eq_8khz_db",
+            fallback=cfg.getfloat(section, "eq_10khz_db", fallback=0.0),
+        ),
     )
 
 
