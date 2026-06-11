@@ -121,7 +121,10 @@ def cmd_check() -> Dict[str, Any]:
 
     installed = _read_installed_release_tag()
 
-    tag, _tarball_url, html_url, notes = _github_latest_release(UA)
+    reachable, tag, _tarball_url, html_url, notes = _github_latest_release(UA)
+    if not reachable:
+        _log("check: GitHub API not reachable")
+        return {"ok": False, "error": "GitHub API not reachable (network or HTTP error)", "apmode": apmode}
     if not tag:
         update_available = installed == "missing"
         _log(f"check: no latest release tag; installed={installed}; update_available={update_available}")
@@ -218,8 +221,8 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: {FLOCK_BIN} not found or not executable; cannot schedule locked installer")
         return {"ok": False, "error": f"flock not found at {FLOCK_BIN}; cannot schedule installer"}
 
-    tag, tarball_url, _html_url, _notes = _github_latest_release(UA)
-    if not tag or not tarball_url:
+    reachable, tag, tarball_url, _html_url, _notes = _github_latest_release(UA)
+    if not reachable or not tag or not tarball_url:
         _log("apply: no latest release or tarball_url")
         return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
 

@@ -75,8 +75,11 @@ def write_update_result(status: str, message: str) -> None:
 
 
 def _read_installed_tag() -> str:
+    state_file = STATE_DIR / "install-state.env"
+    if not state_file.exists():
+        return "missing"
     try:
-        env = _read_env_file(STATE_DIR / "install-state.env")
+        env = _read_env_file(state_file)
         v = str(env.get("AUTOSTREAM_RELEASE_TAG") or "").strip()
         if v:
             return v
@@ -108,8 +111,11 @@ def _dial_update_unit_active() -> bool:
 
 def cmd_check() -> Dict[str, Any]:
     installed = _read_installed_tag()
-    tag, _tarball, _html_url, notes = _github_latest_release(UA)
+    reachable, tag, _tarball, _html_url, notes = _github_latest_release(UA)
 
+    if not reachable:
+        _log("check: GitHub API not reachable")
+        return {"ok": False, "error": "GitHub API not reachable (network or HTTP error)"}
     if not tag:
         update_available = (installed == "missing")
         _log(f"check: no latest tag; installed={installed}; update_available={update_available}")
@@ -188,8 +194,8 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: {FLOCK_BIN} not found or not executable")
         return {"ok": False, "error": f"flock not found at {FLOCK_BIN}"}
 
-    tag, tarball_url, _html_url, _notes = _github_latest_release(UA)
-    if not tag or not tarball_url:
+    reachable, tag, tarball_url, _html_url, _notes = _github_latest_release(UA)
+    if not reachable or not tag or not tarball_url:
         _log("apply: no latest release or tarball_url")
         return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
 

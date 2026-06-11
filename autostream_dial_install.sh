@@ -70,7 +70,8 @@ if ! $UPDATE; then
 fi
 
 # ---- Deploy Python files ----------------------------------------------------
-cp -a "$DEPLOY/platform/." /opt/autostream/
+install -m 0644 "$DEPLOY/core/autostream_rpi.py"      /opt/autostream/autostream_rpi.py
+install -m 0644 "$DEPLOY/core/autostream_sysutils.py" /opt/autostream/autostream_sysutils.py
 cp -a "$DEPLOY/dial/."     /opt/autostream/
 install -m 0755 "$DEPLOY/platform/wifi_watcher" /opt/autostream/autostream_wifi_watcher
 

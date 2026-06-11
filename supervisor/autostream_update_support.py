@@ -76,12 +76,18 @@ def _sanitise_release_notes(text: str, max_len: int = 200) -> str:
 
 def _github_latest_release(
     ua: str,
-) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """Return (tag_name, tarball_url, html_url, release_notes) from GitHub latest release."""
+) -> Tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Return (reachable, tag_name, tarball_url, html_url, release_notes).
+
+    reachable is False when the API call itself fails (network error or a
+    non-404 HTTP error).  reachable is True when the API responded, even if
+    there is no published release (404 or empty tag_name).  Callers must
+    check reachable before treating a missing tag as "no releases yet".
+    """
     try:
         status, raw = _http_get(API_LATEST, ua, timeout=20)
         if status == 404:
-            return None, None, None, None
+            return True, None, None, None, None
         data = json.loads(raw.decode("utf-8", errors="replace"))
         tag      = data.get("tag_name")
         tarball  = data.get("tarball_url")
@@ -89,8 +95,9 @@ def _github_latest_release(
         raw_body = data.get("body") or ""
         notes    = _sanitise_release_notes(str(raw_body)) if raw_body else None
         if not tag:
-            return None, None, (str(html) if html else None), notes
+            return True, None, None, (str(html) if html else None), notes
         return (
+            True,
             str(tag),
             (str(tarball) if tarball else None),
             (str(html) if html else None),
@@ -98,10 +105,10 @@ def _github_latest_release(
         )
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            return None, None, None, None
-        return None, None, None, None
+            return True, None, None, None, None
+        return False, None, None, None, None
     except Exception:
-        return None, None, None, None
+        return False, None, None, None, None
 
 
 def _download_file(url: str, dst: Path, ua: str, timeout: int = 120) -> None:
