@@ -35,7 +35,6 @@ from autostream_players import (
 
 _CACHE_LOCK = threading.Lock()
 _DETECTION_CACHE_SECONDS = 5.0
-_DETECTION_CACHE_MAX_ENTRIES = 16
 _DETECTION_CACHE: dict[str, tuple[float, str, str, float]] = {}
 LOG = logging.getLogger(__name__)
 
@@ -65,20 +64,21 @@ class FifoEnsureResult:
     error: str = ""
     error_code: str = ""
 
+    @property
+    def message(self) -> str:
+        return self.error or self.error_code
+
 
 @dataclass(frozen=True)
 class FifoReconcileResult:
     ok: bool
-    created_dir: bool = False
-    created_fifo: bool = False
-    backend_setting_checked: bool = False
-    backend_setting_supported: bool = False
-    backend_setting_changed: bool = False
-    refresh_attempted: bool = False
-    refresh_succeeded: bool = False
     error: str = ""
     error_code: str = ""
     detail: str = ""
+
+    @property
+    def message(self) -> str:
+        return self.error or self.detail or self.error_code
 
 
 _owntone_runtime_info_lock = threading.Lock()
@@ -278,8 +278,6 @@ def reconcile_fifo_with_backend(
     if not fifo_result.ok:
         return FifoReconcileResult(
             ok=False,
-            created_dir=fifo_result.created_dir,
-            created_fifo=fifo_result.created_fifo,
             error=fifo_result.error,
             error_code=fifo_result.error_code,
         )
@@ -291,32 +289,23 @@ def reconcile_fifo_with_backend(
 
     base_url_text = str(base_url or "").strip()
     if not base_url_text:
-        return FifoReconcileResult(
-            ok=True,
-            created_dir=fifo_result.created_dir,
-            created_fifo=fifo_result.created_fifo,
-        )
+        return FifoReconcileResult(ok=True)
 
     resolved = resolve_backend(base_url_text, timeout=timeout)
     backend = resolved.backend
     setting_changed = False
-    setting_checked = False
-    setting_supported = False
     warning_error = ""
     warning_error_code = ""
     warning_detail = ""
 
     setting_result = backend.get_setting(SETTING_PIPE_PATH)
     if setting_result.unsupported or setting_result.error_code == "unsupported":
-        setting_checked = True
         LOG.debug(
             "Playback backend %s does not expose pipe-path inspection at %s; continuing.",
             resolved.backend_id,
             base_url_text,
         )
     elif setting_result.ok:
-        setting_checked = True
-        setting_supported = True
         backend_fifo_path = str(setting_result.value or "").strip()
         wanted_fifo_path = str(fifo_path or "").strip()
         if backend_fifo_path == wanted_fifo_path:
@@ -332,11 +321,10 @@ def reconcile_fifo_with_backend(
                     "Could not update playback backend %s pipe path at %s: %s",
                     resolved.backend_id,
                     base_url_text,
-                    save_result.error or save_result.error_code or "save failed",
+                    save_result.message or "save failed",
                 )
                 warning_error = save_result.error or "Failed to save backend FIFO path"
                 warning_error_code = save_result.error_code or "save_failed"
-                warning_detail = save_result.detail
             else:
                 setting_changed = True
                 LOG.info(
@@ -357,7 +345,7 @@ def reconcile_fifo_with_backend(
             "Could not read playback backend %s pipe path at %s: %s",
             resolved.backend_id,
             base_url_text,
-            setting_result.error or setting_result.error_code or "read failed",
+            setting_result.message or "read failed",
         )
         warning_error = setting_result.error or "Failed to read backend FIFO path"
         warning_error_code = setting_result.error_code or "read_failed"
@@ -366,11 +354,6 @@ def reconcile_fifo_with_backend(
     if not should_refresh:
         return FifoReconcileResult(
             ok=True,
-            created_dir=fifo_result.created_dir,
-            created_fifo=fifo_result.created_fifo,
-            backend_setting_checked=setting_checked,
-            backend_setting_supported=setting_supported,
-            backend_setting_changed=setting_changed,
             error=warning_error,
             error_code=warning_error_code,
             detail=warning_detail,
@@ -386,17 +369,10 @@ def reconcile_fifo_with_backend(
         LOG.warning(
             "Could not request playback backend update for %s: %s",
             base_url_text,
-            update_result.error or update_result.detail or update_result.error_code or "update failed",
+            update_result.message or "update failed",
         )
         return FifoReconcileResult(
             ok=True,
-            created_dir=fifo_result.created_dir,
-            created_fifo=fifo_result.created_fifo,
-            backend_setting_checked=setting_checked,
-            backend_setting_supported=setting_supported,
-            backend_setting_changed=setting_changed,
-            refresh_attempted=True,
-            refresh_succeeded=False,
             error=update_result.error or warning_error or "Failed to request backend update",
             error_code=update_result.error_code or warning_error_code or "update_failed",
             detail=update_result.detail or warning_detail,
@@ -404,13 +380,6 @@ def reconcile_fifo_with_backend(
 
     return FifoReconcileResult(
         ok=True,
-        created_dir=fifo_result.created_dir,
-        created_fifo=fifo_result.created_fifo,
-        backend_setting_checked=setting_checked,
-        backend_setting_supported=setting_supported,
-        backend_setting_changed=setting_changed,
-        refresh_attempted=True,
-        refresh_succeeded=update_result.ok,
         error=warning_error,
         error_code=warning_error_code,
         detail=update_result.detail or warning_detail,
@@ -484,15 +453,6 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
     )
 
     with _CACHE_LOCK:
-        if len(_DETECTION_CACHE) >= _DETECTION_CACHE_MAX_ENTRIES:
-            # Evict the oldest entry to keep the dict bounded.
-            # Dict insertion order is guaranteed (Python 3.7+), so the first key is oldest.
-            oldest_key = next(iter(_DETECTION_CACHE))
-            LOG.debug(
-                "Evicting playback backend cache entry for %s to keep cache bounded",
-                oldest_key,
-            )
-            del _DETECTION_CACHE[oldest_key]
         _DETECTION_CACHE[normalized_base_url] = (
             time.monotonic(),
             backend_id,

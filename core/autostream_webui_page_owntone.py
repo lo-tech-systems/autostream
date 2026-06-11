@@ -68,7 +68,7 @@ def wait_for_owntone_api(base_url: str, timeout_s: float = 10.0) -> tuple[bool, 
         result = list_outputs(base_url, timeout=1)
         if result.ok:
             return True, ""
-        last_err = result.error or result.detail or result.error_code or "unavailable"
+        last_err = result.message or "unavailable"
         time.sleep(0.5)
     return False, f"Owntone is still starting ({last_err})"
 
@@ -78,7 +78,7 @@ def _owntone_ready_quick(base_url: str, timeout_s: float = 0.6) -> tuple[bool, s
     result = list_outputs(base_url, timeout=timeout_s)
     if result.ok:
         return True, "Owntone is responding"
-    return False, result.error or result.detail or result.error_code or "unavailable"
+    return False, result.message or "unavailable"
 
 
 # -----------------------------------------------------------------------------

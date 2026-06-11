@@ -111,14 +111,14 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
                     "ok": False,
                     "id": out_id_text,
                     "pin_invalid": True,
-                    "error": pin_result.error or pin_result.detail or pin_result.error_code,
+                    "error": pin_result.message,
                 })
                 return
             if not pin_result.ok:
                 send_json(handler, 200, {
                     "ok": False,
                     "id": out_id_text,
-                    "error": pin_result.error or pin_result.detail or pin_result.error_code,
+                    "error": pin_result.message,
                 })
                 return
             send_json(handler, 200, {"ok": True, "id": out_id_text})
@@ -143,14 +143,14 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
                     "pin_required": True,
                     "id": out_id_text,
                     "output_name": str(payload.get("name") or ""),
-                    "error": update_result.error or update_result.detail or update_result.error_code,
+                    "error": update_result.message,
                 })
                 return
             if not update_result.ok:
                 send_json(handler, 200, {
                     "ok": False,
                     "id": out_id_text,
-                    "error": update_result.error or update_result.detail or update_result.error_code,
+                    "error": update_result.message,
                     "pin_invalid": False,
                 })
                 return
@@ -163,7 +163,7 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
             send_json(handler, 200, {
                 "ok": False,
                 "id": out_id_text,
-                "error": disable_result.error or disable_result.detail or disable_result.error_code,
+                "error": disable_result.message,
             })
             return
         send_json(handler, 200, {"ok": True, "id": out_id_text})

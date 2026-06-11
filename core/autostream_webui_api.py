@@ -158,7 +158,7 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
     if not outputs_result.ok:
         logging.error(
             "Owntone outputs request failed: %s",
-            outputs_result.error or outputs_result.detail or outputs_result.error_code,
+            outputs_result.message,
         )
     outputs = list(outputs_result.outputs) if outputs_result.ok else []
 
@@ -197,7 +197,7 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
             200,
             {
                 "ok": False,
-                "error": outputs_result.error or outputs_result.detail or outputs_result.error_code,
+                "error": outputs_result.message,
                 "outputs": [],
             },
         )
@@ -663,10 +663,10 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
         n = _audio_status_fail_count
         if n == 1 or n % 10 == 0:
             logging.warning("audio/status: list_outputs not ok (call #%d): %s",
-                            n, result.error or result.error_code)
+                            n, result.message)
         else:
             logging.debug("audio/status: list_outputs not ok: %s",
-                          result.error or result.error_code)
+                          result.message)
         send_json(handler, 200, {"playing": playing, "outputs": None,
                                  "error": "backend_unavailable"})
         return

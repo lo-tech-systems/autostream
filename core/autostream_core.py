@@ -460,7 +460,7 @@ def _stop_and_disable_owntone(base_url: str, reason: str) -> None:
     logging.warning(
         "OwnTone stop/disable request failed (%s): %s",
         reason,
-        result.error or result.detail or result.error_code or "unknown error",
+        result.message or "unknown error",
     )
 
 
@@ -1428,7 +1428,7 @@ class AudioMonitor:
                 now,
                 logging.WARNING,
                 "Skipping OwnTone recovery while FIFO/backend reconciliation failed: %s",
-                fifo_result.error or fifo_result.detail or fifo_result.error_code or "reconcile failed",
+                fifo_result.message or "reconcile failed",
             )
             return
 
@@ -1560,7 +1560,7 @@ class AudioMonitor:
                 "Failed to apply default output settings for '%s' (%s): %s",
                 default_name,
                 reason,
-                update_result.error or update_result.detail or update_result.error_code,
+                update_result.message,
             )
             return False
 
@@ -1586,14 +1586,14 @@ class AudioMonitor:
             if not set_result.ok:
                 logging.warning(
                     "Failed to refresh selected OwnTone outputs: %s",
-                    set_result.error or set_result.detail or set_result.error_code,
+                    set_result.message,
                 )
                 return False
             refresh_result = refresh_runtime_state(self.owntone_base_url, timeout=3)
             if not refresh_result.ok and refresh_result.error_code != "unsupported":
                 logging.warning(
                     "Failed to refresh OwnTone runtime state: %s",
-                    refresh_result.error or refresh_result.detail or refresh_result.error_code,
+                    refresh_result.message,
                 )
                 return False
             outputs_by_id = {str(output.id): output for output in outputs if output.id}
@@ -1620,7 +1620,7 @@ class AudioMonitor:
                     logging.warning(
                         "Failed to refresh OwnTone output %s settings: %s",
                         out_id,
-                        update_result.error or update_result.detail or update_result.error_code,
+                        update_result.message,
                     )
                     return False
             logging.info("Refreshed selected OwnTone outputs: %s", selected_ids)
@@ -1658,7 +1658,7 @@ def _resync_monitor_daemon(
     if not fifo_result.ok:
         logging.error(
             "Could not reconcile audio FIFO/backend during monitor-daemon reconnect: %s",
-            fifo_result.error or fifo_result.detail or fifo_result.error_code or "reconcile failed",
+            fifo_result.message or "reconcile failed",
         )
         client.close()
         return False
@@ -1959,7 +1959,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
             if not fifo_result.ok:
                 logging.error(
                     "Could not reconcile audio FIFO/backend during startup: %s",
-                    fifo_result.error or fifo_result.detail or fifo_result.error_code or "reconcile failed",
+                    fifo_result.message or "reconcile failed",
                 )
                 client.close()
                 time.sleep(5.0)
@@ -1979,7 +1979,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                     logging.warning(
                         "OwnTone pipe source is not indexed yet; "
                         "playback start may fail until backend refresh succeeds (%s).",
-                        pipe_ready_result.error or pipe_ready_result.detail or pipe_ready_result.error_code or "not ready",
+                        pipe_ready_result.message or "not ready",
                     )
 
             monitors = _configure_startup_monitors(client, cfg, fifo_path)
@@ -2057,7 +2057,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                             logging.warning(
                                 "OwnTone pipe source is not indexed yet after reconnect; "
                                 "playback recovery may lag until backend refresh succeeds (%s).",
-                                pipe_ready_result.error or pipe_ready_result.detail or pipe_ready_result.error_code or "not ready",
+                                pipe_ready_result.message or "not ready",
                             )
 
                     for m in monitors:

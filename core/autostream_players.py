@@ -86,6 +86,10 @@ class ActionResult:
     restart_required: bool = False
     detail: str = ""
 
+    @property
+    def message(self) -> str:
+        return self.error or self.detail or self.error_code
+
 
 @dataclass(frozen=True)
 class SettingValueResult:
@@ -96,6 +100,10 @@ class SettingValueResult:
     unsupported: bool = False
     error: str = ""
     error_code: str = ""
+
+    @property
+    def message(self) -> str:
+        return self.error or self.error_code
 
 
 @dataclass(frozen=True)
@@ -109,6 +117,10 @@ class SaveSettingResult:
     unsupported: bool = False
     error: str = ""
     error_code: str = ""
+
+    @property
+    def message(self) -> str:
+        return self.error or self.error_code
 
 
 @dataclass(frozen=True)
