@@ -236,7 +236,7 @@ def _hours_display(item: str, life_hours: int, snap: InputPlaybackSnapshot) -> d
         "hours_bar_status":     bar_status,
         "hours_used":           f"{format_hours(playback_seconds)} / {life_hours} h",
         "hours_remaining":      "Due now" if rem_secs <= 0 else format_hours(rem_secs),
-        "hours_remaining_warn": h_warn,
+        "hours_remaining_warn": h_warn or h_overdue,
     }
 
 
@@ -287,6 +287,7 @@ def _time_display(item: str, life_years: int, snap: InputPlaybackSnapshot) -> di
         due             = "Not set"
         remaining       = f"{life_years} year{'s' if life_years != 1 else ''} remaining"
         t_warn          = False
+        t_overdue       = False
 
     return {
         "time_live":       True,
@@ -294,7 +295,7 @@ def _time_display(item: str, life_years: int, snap: InputPlaybackSnapshot) -> di
         "time_bar_status": time_bar_status,
         "age":             age,
         "remaining":       remaining,
-        "remaining_warn":  t_warn,
+        "remaining_warn":  t_warn or t_overdue,
         "due":             due,
     }
 

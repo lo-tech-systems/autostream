@@ -384,9 +384,9 @@ def _parse_audio_input_config(
         gain_db=cfg.getfloat(section, "gain_db", fallback=0.0),
         eq_40hz_db=cfg.getfloat(section, "eq_40hz_db", fallback=0.0),
         eq_100hz_db=cfg.getfloat(section, "eq_100hz_db", fallback=0.0),
-        eq_8khz_db=cfg.getfloat(
-            section, "eq_8khz_db",
-            fallback=cfg.getfloat(section, "eq_10khz_db", fallback=0.0),
+        eq_8khz_db=(
+            cfg.getfloat(section, "eq_8khz_db") if cfg.has_option(section, "eq_8khz_db")
+            else cfg.getfloat(section, "eq_10khz_db", fallback=0.0)
         ),
     )
 
