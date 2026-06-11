@@ -82,7 +82,6 @@ ALLOWLIST_PATHS = {
     "/equaliser",
     "/logs",
     "/service",
-    "/license",
     "/auth",
     "/api/status",
     "/api/auth/verify",

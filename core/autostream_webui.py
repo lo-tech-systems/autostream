@@ -72,7 +72,6 @@ from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page
 from autostream_webui_page_equaliser import send_equaliser_page
 from autostream_webui_page_airplay import send_airplay_page
-from autostream_webui_page_license import send_license_page
 from autostream_webui_page_logs import handle_logs_download, handle_logs_post, send_logs_page
 from autostream_webui_page_owntone import (
     send_owntone_ready_json,
@@ -321,8 +320,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_about_page(self, STATE)
         elif path == "/service":
             send_service_page(self, STATE, flash_msg=msg, flash_type=flash_type)
-        elif path == "/license":
-            send_license_page(self, STATE)
         elif path == "/logs":
             send_logs_page(self, STATE, flash_msg=msg)
         elif path == "/logs/download":
