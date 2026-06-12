@@ -4,8 +4,8 @@
 Playback-hours tracking for autostream inputs.
 
 This module keeps runtime playback counters in a small JSON file, separate
-from autostream.ini. User-editable settings such as "turntable" and
-"stylus_life_hours" should remain in the INI and be supplied to the tracker
+from autostream.json. User-editable settings such as "turntable" and
+"stylus_life_hours" should remain in the config and be supplied to the tracker
 at runtime. Counters are driven by audible playback activity, not by the
 full capture window, so trailing silence used to detect end-of-playback is
 not counted.
@@ -47,7 +47,7 @@ DEFAULT_FLUSH_INTERVAL_SECONDS = 300.0
 DEFAULT_PLAYBACK_STATS_PATH = Path(
     os.environ.get(
         "AUTOSTREAM_PLAYBACK_STATS_PATH",
-        "/opt/autostream/playback_stats.json",
+        "/var/lib/autostream/playback_stats.json",
     )
 ).expanduser()
 
@@ -185,7 +185,7 @@ def _read_json_object(path: Path) -> dict:
 
 @dataclass(frozen=True)
 class PlaybackInputConfig:
-    """Runtime configuration supplied by autostream.ini."""
+    """Runtime configuration supplied by autostream.json."""
 
     enabled: bool = True
     is_turntable: bool = False

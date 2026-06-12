@@ -23,8 +23,8 @@ from dial_config import _read_env_file
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
-_INSTALL_STATE_PATH = Path('/var/lib/autostream-dial/install-state.env')
-_UPDATE_RESULT_PATH = Path('/var/lib/autostream-dial/update-result.env')
+_INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
+_UPDATE_RESULT_PATH = Path('/var/lib/autostream/update-result.env')
 
 MAX_BODY = 4096  # bytes — rejects oversized bodies before JSON parsing
 

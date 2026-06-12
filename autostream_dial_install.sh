@@ -85,9 +85,19 @@ if ! $UPDATE; then
     write_dial_hw_config "$DIAL_UUID"
     write_dial_settings
 else
+    # On --update, ensure user, dirs, and permissions are current-layout before
+    # reading the UUID (handles first-time install of a fresh release).
+    create_service_user
+    create_dirs
+    init_service_dirs
+
     # Parse without source — never execute env file contents.
     DIAL_UUID=$(grep '^DIAL_UUID=' \
-        /var/lib/autostream-dial/install-state.env | cut -d= -f2-)
+        /var/lib/autostream/install-state.env 2>/dev/null | cut -d= -f2-)
+    if [[ -z "$DIAL_UUID" ]]; then
+        echo "ERROR: DIAL_UUID not found in /var/lib/autostream/install-state.env" >&2
+        exit 1
+    fi
 fi
 
 # ---- systemd ----------------------------------------------------------------
@@ -115,7 +125,7 @@ if $UPDATE; then
     DIAL_NAME=$(python3 -c "
 import json, sys
 try:
-    d = json.load(open('/var/lib/autostream-dial/settings/dial-settings.json'))
+    d = json.load(open('/var/lib/autostream/dial-settings.json'))
     print(d.get('name', ''))
 except Exception:
     pass
@@ -140,12 +150,9 @@ write_install_state "$DIAL_UUID"
 # On --update the file already contains STATUS=running written by the updater;
 # do not overwrite.
 if ! $UPDATE; then
-    cat > /var/lib/autostream-dial/update-result.env <<'EOF'
-STATUS=
-MESSAGE=
-EOF
-    chown root:root /var/lib/autostream-dial/update-result.env
-    chmod 0644 /var/lib/autostream-dial/update-result.env
+    printf 'STATUS=\nMESSAGE=\n' > /var/lib/autostream/update-result.env
+    chown root:autostream /var/lib/autostream/update-result.env
+    chmod 0644 /var/lib/autostream/update-result.env
 fi
 
 # ---- Start / restart services -----------------------------------------------

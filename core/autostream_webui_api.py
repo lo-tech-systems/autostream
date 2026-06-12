@@ -33,7 +33,9 @@ from typing import Optional
 
 from autostream_config import (
     CONFIG_IO_LOCK,
+    load_config,
     parse_config,
+    save_config,
 )
 from autostream_dials import is_dial_authorized
 from autostream_core import (
@@ -50,7 +52,7 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_player_service import list_outputs, update_output
-from autostream_sysutils import atomic_write_file, run_admin_cmd
+from autostream_sysutils import run_admin_cmd
 from autostream_webui_common import locked_load_config, _fallback_input_snapshot
 from autostream_webui_service_schema import (
     _SERVICE_ITEMS,
@@ -294,15 +296,11 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         return
 
     try:
-        cfg = locked_load_config(state.config_path)
-        p = parse_config(cfg)
-
-        if not cfg.has_section(section):
-            cfg.add_section(section)
-        cfg.set(section, key, str(normalised))
-
         with CONFIG_IO_LOCK:
-            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+            cfg = load_config(state.config_path)
+            p = parse_config(cfg)
+            cfg.setdefault(section, {})[key] = normalised
+            save_config(state.config_path, cfg)
 
         # Build live-update args from the pre-write parse, substituting the one
         # changed key. This avoids a second parse_config call on the same object.
@@ -498,7 +496,7 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
     Accepted fields:
         gain_db, auto_trim_enabled, peq1_db … peq6_db
 
-    Each save atomically writes autostream.ini and immediately applies the
+    Each save atomically writes autostream.json and immediately applies the
     live change to autostream_monitor.  For PEQ band changes, all six bands
     are re-sent to the monitor so the output EQ state stays consistent.
     """
@@ -520,12 +518,10 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
         normalised_bool = value_raw.lower() in ("true", "1", "yes")
         normalised_str = "true" if normalised_bool else "false"
         try:
-            cfg = locked_load_config(state.config_path)
-            if not cfg.has_section(section):
-                cfg.add_section(section)
-            cfg.set(section, field, normalised_str)
             with CONFIG_IO_LOCK:
-                atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+                cfg = load_config(state.config_path)
+                cfg.setdefault(section, {})[field] = normalised_bool
+                save_config(state.config_path, cfg)
             set_live_output_auto_trim(normalised_bool)
         except Exception as e:
             logging.exception("send_output_eq_config_json: save failed")
@@ -545,14 +541,11 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
     normalised_str = f"{value:.1f}"
 
     try:
-        cfg = locked_load_config(state.config_path)
-        p = parse_config(cfg)
-
-        if not cfg.has_section(section):
-            cfg.add_section(section)
-        cfg.set(section, field, normalised_str)
         with CONFIG_IO_LOCK:
-            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+            cfg = load_config(state.config_path)
+            p = parse_config(cfg)
+            cfg.setdefault(section, {})[field] = value
+            save_config(state.config_path, cfg)
 
         # Apply the live change.  For any PEQ band change, rebuild the full
         # six-band array from the pre-write parsed config, substituting the
@@ -582,18 +575,17 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
 def send_output_eq_reset_json(handler, state) -> None:
     """POST /api/output_eq/reset — zero all EQ bands and output gain.
 
-    Sets peq1_db … peq6_db and gain_db to 0.0 in autostream.ini and
+    Sets peq1_db … peq6_db and gain_db to 0.0 in autostream.json and
     immediately applies the change to autostream_monitor.
     """
     try:
-        cfg = locked_load_config(state.config_path)
-        section = "output_eq"
-        if not cfg.has_section(section):
-            cfg.add_section(section)
-        for field in _OUTPUT_EQ_DB_FIELDS:
-            cfg.set(section, field, "0.0")
         with CONFIG_IO_LOCK:
-            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+            cfg = load_config(state.config_path)
+            section = "output_eq"
+            eq = cfg.setdefault(section, {})
+            for field in _OUTPUT_EQ_DB_FIELDS:
+                eq[field] = 0.0
+            save_config(state.config_path, cfg)
         set_live_output_gain(0.0)
         set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     except Exception as e:

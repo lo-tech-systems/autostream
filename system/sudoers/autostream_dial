@@ -1,6 +1,6 @@
 # /etc/sudoers.d/autostream_dial
 #
-# Enumerated sudo privileges for the autostream-dial service user.
+# Enumerated sudo privileges for the autostream service user.
 # Four verbs only.  write-playing-service and remove-playing-service are NOT
 # included — those manage the autostream appliance's playing announcement and
 # are not needed on a dial-only device (co-installation is unsupported).
@@ -9,7 +9,7 @@
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 #
 
-autostream-dial ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin update-dial-service * * *
-autostream-dial ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin run-updater
-autostream-dial ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer enable
-autostream-dial ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer disable
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin update-dial-service * * *
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin run-updater
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer enable
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer disable

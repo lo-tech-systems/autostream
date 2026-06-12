@@ -2204,7 +2204,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 def main() -> None:
     """CLI entry point for running autostream without the web UI."""
     if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} PATH_TO_CONFIG.ini")
+        print(f"Usage: {sys.argv[0]} PATH_TO_CONFIG.json")
         sys.exit(1)
 
     run_autostream(sys.argv[1])

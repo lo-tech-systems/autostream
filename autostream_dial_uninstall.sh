@@ -41,9 +41,9 @@ systemctl unmask dnsmasq.service 2>/dev/null || true
 rm -rf /usr/local/libexec/autostream
 rm -rf /usr/local/share/autostream
 
-rm -rf /opt/autostream        # dial-only; confirmed by absence of /var/lib/autostream
-rm -rf /etc/autostream-dial
-rm -rf /var/lib/autostream-dial
+rm -rf /opt/autostream         # dial-only device; no autostream appliance present
+rm -rf /etc/autostream
+rm -rf /var/lib/autostream
 
-userdel autostream-dial 2>/dev/null || true
+userdel autostream 2>/dev/null || true
 echo "autostream dial uninstalled."

@@ -48,11 +48,11 @@ from autostream_update_support import (
 # ---- Paths / constants -------------------------------------------------------
 
 LOG_PATH    = Path("/var/log/autostream/dial-update.log")
-STATE_DIR   = Path("/var/lib/autostream-dial")
-CONFIG_PATH = Path("/etc/autostream-dial/dial.json")
+STATE_DIR   = Path("/var/lib/autostream")
+CONFIG_PATH = Path("/etc/autostream/autostream-dial.json")
 LOCK_PATH   = Path("/run/autostream-dial-update.lock")
 APMODE_FLAG = Path("/tmp/autostream-dial-apmode")
-STAGING_DIR = Path("/var/lib/autostream-dial/update-staging")
+STAGING_DIR = Path("/var/lib/autostream/update-staging")
 
 UA = "autostream-dial-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
 
@@ -158,7 +158,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
     if auto:
         try:
             import json as _json
-            settings_path = STATE_DIR / "settings" / "dial-settings.json"
+            settings_path = STATE_DIR / "dial-settings.json"
             s = _json.loads(settings_path.read_text(encoding="utf-8"))
             if not s.get("auto_update", False):
                 _log("apply --auto: auto_update=false in settings — no-op")

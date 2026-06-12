@@ -26,25 +26,26 @@ install_os_packages() {
 
 create_dirs() {
     mkdir -p /opt/autostream
-    mkdir -p /etc/autostream-dial
-    mkdir -p /var/lib/autostream-dial
-    mkdir -p /var/lib/autostream-dial/settings   # service-user-writable subdirectory
+    mkdir -p /etc/autostream
+    mkdir -p /var/lib/autostream
     mkdir -p /var/log/autostream
     mkdir -p /usr/local/libexec/autostream
     mkdir -p /usr/local/share/autostream/avahi
-    # Note: settings/ ownership is set in init_service_dirs(), called after create_service_user()
+    # Ownership is applied in init_service_dirs(), called after create_service_user()
 }
 
 create_service_user() {
-    id autostream-dial &>/dev/null && return
-    useradd --system --no-create-home --shell /usr/sbin/nologin autostream-dial
+    id autostream &>/dev/null && return
+    useradd --system --no-create-home --shell /usr/sbin/nologin autostream
 }
 
 init_service_dirs() {
     # Called AFTER create_service_user() so the user exists when chown runs.
-    # settings/ is owned by service user so save_config() can write without privilege.
-    chown autostream-dial:autostream-dial /var/lib/autostream-dial/settings
-    chmod 0700 /var/lib/autostream-dial/settings
+    # /etc/autostream/ is root-owned so the service cannot rename autostream-dial.json.
+    chown root:root /etc/autostream
+    chmod 0755 /etc/autostream
+    chown autostream:autostream /var/lib/autostream
+    chmod 0750 /var/lib/autostream
     # Create initial log files with correct owner/mode before logrotate's first rotation.
     install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-install.log
     install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-update.log
@@ -52,7 +53,7 @@ init_service_dirs() {
 }
 
 add_gpio_group() {
-    usermod -aG gpio autostream-dial 2>/dev/null || true
+    usermod -aG gpio autostream 2>/dev/null || true
 }
 
 disable_system_dnsmasq() {
@@ -70,7 +71,7 @@ write_dial_hw_config() {
     python3 - "$uuid" <<'PYEOF'
 import json, sys
 uuid = sys.argv[1]
-with open('/etc/autostream-dial/dial.json', 'w') as f:
+with open('/etc/autostream/autostream-dial.json', 'w') as f:
     json.dump({
         "clk_gpio": 17,
         "dt_gpio":  27,
@@ -80,20 +81,20 @@ with open('/etc/autostream-dial/dial.json', 'w') as f:
         "uuid":     uuid
     }, f, indent=2)
 PYEOF
-    chown root:autostream-dial /etc/autostream-dial/dial.json
-    chmod 0640 /etc/autostream-dial/dial.json
+    chown root:autostream /etc/autostream/autostream-dial.json
+    chmod 0640 /etc/autostream/autostream-dial.json
 }
 
 write_dial_settings() {
-    # Runtime-mutable settings inside the service-user-owned settings/ subdirectory.
+    # Runtime-mutable settings owned by the service user.
     python3 -c "
 import json, os
-path = '/var/lib/autostream-dial/settings/dial-settings.json'
+path = '/var/lib/autostream/dial-settings.json'
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, 'w') as f:
     json.dump({'step_percent': 2, 'name': '', 'pin': '', 'auto_update': False}, f, indent=2)
 "
-    chown autostream-dial:autostream-dial /var/lib/autostream-dial/settings/dial-settings.json
+    chown autostream:autostream /var/lib/autostream/dial-settings.json
 }
 
 check_pi_model() {
@@ -133,7 +134,7 @@ setup_venv() {
 write_update_result() {
     local status="$1" message="$2"
     printf 'STATUS=%s\nMESSAGE=%s\n' "$status" "$message" \
-        > /var/lib/autostream-dial/update-result.env
+        > /var/lib/autostream/update-result.env
 }
 
 deploy_admin() {
@@ -156,12 +157,12 @@ deploy_avahi_template() {
 
 write_install_state() {
     local uuid="$1"
-    # root-owned 0644: root writes, all can read (including autostream-dial for UUID fallback).
-    cat > /var/lib/autostream-dial/install-state.env <<EOF
+    # root-owned 0644: root writes, all can read (including autostream for UUID fallback).
+    cat > /var/lib/autostream/install-state.env <<EOF
 AUTOSTREAM_PRODUCT=autostream-dial
 DIAL_UUID=${uuid}
 AUTOSTREAM_RELEASE_TAG=${AUTOSTREAM_RELEASE_TAG}
 EOF
-    chown root:root /var/lib/autostream-dial/install-state.env
-    chmod 0644 /var/lib/autostream-dial/install-state.env
+    chown root:root /var/lib/autostream/install-state.env
+    chmod 0644 /var/lib/autostream/install-state.env
 }

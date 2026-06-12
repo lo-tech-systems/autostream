@@ -27,9 +27,13 @@ from urllib.parse import parse_qs, quote, urlparse
 from autostream_config import (
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
+    load_config,
+    load_state,
     mark_configured,
     normalize_airplay_mode,
     parse_config,
+    save_config,
+    save_state,
     unconfigured,
 )
 from autostream_core import (
@@ -60,7 +64,7 @@ from autostream_player_service import (
     update_output,
 )
 from autostream_playback_stats import suggested_silence_threshold_dbfs
-from autostream_sysutils import atomic_write_file, factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
+from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
     _set_flash_cookie,
@@ -180,92 +184,86 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
     form = parse_qs(body)
     def fld(n, d=""): return _fld(form, n, d)
     try:
-        cfg = locked_load_config(state.config_path)
-        p = parse_config(cfg)
-
-        # Snapshot daemon-relevant values before any changes so we can decide
-        # whether a full coordinator reload is needed after saving.
-        old_audio1_device    = p.audio1.capture_device
-        old_audio1_threshold = p.audio1.silence_threshold_dbfs
-        old_audio2_enabled   = p.audio2_enabled
-        old_audio2_device    = p.audio2.capture_device
-        old_audio2_threshold = p.audio2.silence_threshold_dbfs
-        old_silence_seconds  = p.general.silence_seconds
-        new_audio2_enabled   = "audio2_enabled" in form
-        new_audio1_turntable = "audio_turntable" in form
-        new_audio2_turntable = "audio2_turntable" in form
-        new_audio1_threshold = suggested_silence_threshold_dbfs(new_audio1_turntable)
-        new_audio2_threshold = suggested_silence_threshold_dbfs(new_audio2_turntable)
-
-        # Hostname
-        old_hn = get_system_hostname()
-        nh = fld("system_hostname").strip()
-        hostname_changed = bool(nh and nh != old_hn)
-        if hostname_changed:
-            set_system_hostname(nh)
-
-        # Config updates
-        if not cfg.has_section("audio1"): cfg.add_section("audio1")
-        cfg.set("audio1", "capture_device", fld("audio_capture_device", p.audio1.capture_device))
-        cfg.set("audio1", "silence_threshold", str(new_audio1_threshold))
-        cfg.set("audio1", "turntable", "yes" if new_audio1_turntable else "no")
-        cfg.set("audio1", "gain_db", fld("audio1_gain_db", str(p.audio1.gain_db)))
-        cfg.set("audio1", "eq_40hz_db", fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
-        cfg.set("audio1", "eq_100hz_db", fld("audio1_eq_100hz_db", str(p.audio1.eq_100hz_db)))
-        cfg.set("audio1", "eq_8khz_db", fld("audio1_eq_8khz_db", str(p.audio1.eq_8khz_db)))
-        cfg.remove_option("audio1", "eq_10khz_db")
-
-        if not cfg.has_section("audio2"): cfg.add_section("audio2")
-        cfg.set("audio2", "enabled", "yes" if new_audio2_enabled else "no")
-        cfg.set("audio2", "capture_device", fld("audio2_capture_device", p.audio2.capture_device))
-        cfg.set("audio2", "silence_threshold", str(new_audio2_threshold))
-        cfg.set("audio2", "turntable", "yes" if new_audio2_turntable else "no")
-        cfg.set("audio2", "gain_db", fld("audio2_gain_db", str(p.audio2.gain_db)))
-        cfg.set("audio2", "eq_40hz_db", fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
-        cfg.set("audio2", "eq_100hz_db", fld("audio2_eq_100hz_db", str(p.audio2.eq_100hz_db)))
-        cfg.set("audio2", "eq_8khz_db", fld("audio2_eq_8khz_db", str(p.audio2.eq_8khz_db)))
-        cfg.remove_option("audio2", "eq_10khz_db")
-
-        if not cfg.has_section("owntone"): cfg.add_section("owntone")
-        cfg.set("owntone", "output_name", fld("owntone_output_name", p.owntone.output_name))
-        cfg.set("owntone", "volume_percent", fld("owntone_volume_percent", str(p.owntone.volume_percent)))
-
-        if not cfg.has_section("general"): cfg.add_section("general")
-        cfg.set("general", "silence_seconds", fld("silence_seconds", str(p.general.silence_seconds)))
-
-        # Only persist show_master_volume / show_input_detail when the Customise
-        # panel was rendered (sentinel field present). During initial setup the
-        # panel is absent and the checkboxes are never submitted; leaving the
-        # keys absent lets parse_config use its defaults (True / False).
-        if "webui_show_master_volume_present" in form:
-            if not cfg.has_section("webui"): cfg.add_section("webui")
-            new_show_master_volume = "webui_show_master_volume" in form
-            cfg.set("webui", "show_master_volume", "yes" if new_show_master_volume else "no")
-            new_show_input_detail = "webui_show_input_detail" in form
-            cfg.set("webui", "show_input_detail", "yes" if new_show_input_detail else "no")
-            new_dark_mode = "webui_dark_mode" in form
-            cfg.set("webui", "dark_mode", "yes" if new_dark_mode else "no")
-            new_show_hostname_on_home = "webui_show_hostname_on_home" in form
-            cfg.set("webui", "show_hostname_on_home", "yes" if new_show_hostname_on_home else "no")
-
-        # Persist auto_update when the updates panel was rendered (initial setup omits it).
-        old_auto_update = p.updates.auto_update
-        new_auto_update = old_auto_update  # default: no change
-        if "updates_auto_update_present" in form:
-            new_auto_update = "updates_auto_update" in form
-            if not cfg.has_section("updates"): cfg.add_section("updates")
-            cfg.set("updates", "auto_update", "yes" if new_auto_update else "no")
-
-        # Persist defaults into the INI the first time it is created (or if missing)
-        if not cfg.get("general", "log_file", fallback="").strip():
-            cfg.set("general", "log_file", p.general.log_file)
-
-        if not cfg.get("general", "fifo_path", fallback="").strip():
-            cfg.set("general", "fifo_path", p.general.fifo_path)
-
-        # Atomicity across concurrent requests/tabs:
         with CONFIG_IO_LOCK:
-            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+            cfg = load_config(state.config_path)
+            p = parse_config(cfg)
+
+            # Snapshot daemon-relevant values before any changes so we can decide
+            # whether a full coordinator reload is needed after saving.
+            old_audio1_device    = p.audio1.capture_device
+            old_audio1_threshold = p.audio1.silence_threshold_dbfs
+            old_audio2_enabled   = p.audio2_enabled
+            old_audio2_device    = p.audio2.capture_device
+            old_audio2_threshold = p.audio2.silence_threshold_dbfs
+            old_silence_seconds  = p.general.silence_seconds
+            new_audio2_enabled   = "audio2_enabled" in form
+            new_audio1_turntable = "audio_turntable" in form
+            new_audio2_turntable = "audio2_turntable" in form
+            new_audio1_threshold = suggested_silence_threshold_dbfs(new_audio1_turntable)
+            new_audio2_threshold = suggested_silence_threshold_dbfs(new_audio2_turntable)
+
+            # Hostname
+            old_hn = get_system_hostname()
+            nh = fld("system_hostname").strip()
+            hostname_changed = bool(nh and nh != old_hn)
+            if hostname_changed:
+                set_system_hostname(nh)
+
+            # Config updates
+            a1 = cfg.setdefault("audio1", {})
+            a1["capture_device"] = fld("audio_capture_device", p.audio1.capture_device)
+            a1["silence_threshold"] = new_audio1_threshold
+            a1["turntable"] = bool(new_audio1_turntable)
+            a1["gain_db"] = float(fld("audio1_gain_db", str(p.audio1.gain_db)))
+            a1["eq_40hz_db"] = float(fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
+            a1["eq_100hz_db"] = float(fld("audio1_eq_100hz_db", str(p.audio1.eq_100hz_db)))
+            a1["eq_8khz_db"] = float(fld("audio1_eq_8khz_db", str(p.audio1.eq_8khz_db)))
+            a1.pop("eq_10khz_db", None)
+
+            a2 = cfg.setdefault("audio2", {})
+            a2["enabled"] = bool(new_audio2_enabled)
+            a2["capture_device"] = fld("audio2_capture_device", p.audio2.capture_device)
+            a2["silence_threshold"] = new_audio2_threshold
+            a2["turntable"] = bool(new_audio2_turntable)
+            a2["gain_db"] = float(fld("audio2_gain_db", str(p.audio2.gain_db)))
+            a2["eq_40hz_db"] = float(fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
+            a2["eq_100hz_db"] = float(fld("audio2_eq_100hz_db", str(p.audio2.eq_100hz_db)))
+            a2["eq_8khz_db"] = float(fld("audio2_eq_8khz_db", str(p.audio2.eq_8khz_db)))
+            a2.pop("eq_10khz_db", None)
+
+            owntone = cfg.setdefault("owntone", {})
+            owntone["output_name"] = fld("owntone_output_name", p.owntone.output_name)
+            owntone["volume_percent"] = int(fld("owntone_volume_percent", str(p.owntone.volume_percent)))
+
+            general = cfg.setdefault("general", {})
+            general["silence_seconds"] = int(fld("silence_seconds", str(p.general.silence_seconds)))
+
+            # Only persist show_master_volume / show_input_detail when the Customise
+            # panel was rendered (sentinel field present). During initial setup the
+            # panel is absent and the checkboxes are never submitted; leaving the
+            # keys absent lets parse_config use its defaults (True / False).
+            if "webui_show_master_volume_present" in form:
+                webui = cfg.setdefault("webui", {})
+                webui["show_master_volume"] = bool("webui_show_master_volume" in form)
+                webui["show_input_detail"] = bool("webui_show_input_detail" in form)
+                webui["dark_mode"] = bool("webui_dark_mode" in form)
+                webui["show_hostname_on_home"] = bool("webui_show_hostname_on_home" in form)
+
+            # Persist auto_update when the updates panel was rendered (initial setup omits it).
+            old_auto_update = p.updates.auto_update
+            new_auto_update = old_auto_update  # default: no change
+            if "updates_auto_update_present" in form:
+                new_auto_update = "updates_auto_update" in form
+                cfg.setdefault("updates", {})["auto_update"] = bool(new_auto_update)
+
+            # Persist defaults into the JSON the first time it is created (or if missing).
+            if not str(general.get("log_file", "") or "").strip():
+                general["log_file"] = p.general.log_file
+
+            if not str(general.get("fifo_path", "") or "").strip():
+                general["fifo_path"] = p.general.fifo_path
+
+            save_config(state.config_path, cfg)
             mark_configured(state.config_path)
 
         # Sync the autostream update timer when auto_update changed.
@@ -273,11 +271,11 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             verb = "enable" if new_auto_update else "disable"
             result = run_admin_cmd(["toggle-update-timer", verb], timeout=5.0)
             if result.returncode != 0:
-                # Roll back: revert auto_update in the INI to the previous value.
-                cfg.set("updates", "auto_update", "yes" if old_auto_update else "no")
+                # Roll back: revert auto_update to the previous value.
+                cfg.setdefault("updates", {})["auto_update"] = bool(old_auto_update)
                 try:
                     with CONFIG_IO_LOCK:
-                        atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+                        save_config(state.config_path, cfg)
                 except Exception:
                     logging.warning("toggle-update-timer rollback write failed")
                 logging.warning(
@@ -495,6 +493,7 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
     def fld(n, d=""): return _fld(form, n, d)
     try:
         cfg = locked_load_config(state.config_path)
+        state_data = load_state(state.state_path)
 
         speakers: list[tuple[str, str, bool, str, Optional[int]]] = []
         valid_airplay_modes = {DEFAULT_AIRPLAY_MODE, "raop", "airplay2"}
@@ -525,16 +524,11 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
             for (_spk_id, spk_name, show, _mode, _offset) in speakers
             if not show
         ]
-        if not cfg.has_section("webui"):
-            cfg.add_section("webui")
-        if hidden:
-            cfg.set("webui", "hidden_outputs", "\n    " + "\n    ".join(hidden))
-        else:
-            cfg.set("webui", "hidden_outputs", "")
+        cfg.setdefault("webui", {})["hidden_outputs"] = hidden
 
-        base_url = cfg.get("owntone", "base_url", fallback="http://localhost:3689")
+        base_url = str((cfg.get("owntone") or {}).get("base_url") or "http://localhost:3689")
 
-        existing_parsed = parse_config(cfg)
+        existing_parsed = parse_config(cfg, state_data)
         offsets_by_id = dict(existing_parsed.owntone.output_offsets_ms)
         runtime_airplay_modes_by_id = dict(existing_parsed.owntone.output_airplay_modes)
         known_outputs = dict(existing_parsed.owntone.known_outputs)
@@ -547,26 +541,11 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
                     offsets_by_id[out_id] = offset_ms
                 runtime_airplay_modes_by_id[out_id] = normalize_airplay_mode(mode)
 
-        if cfg.has_section("owntone_offsets"):
-            cfg.remove_section("owntone_offsets")
-        cfg.add_section("owntone_offsets")
-        for oid, off in sorted(offsets_by_id.items(), key=lambda kv: kv[0]):
-            try:
-                cfg.set("owntone_offsets", str(oid), str(int(off)))
-            except Exception:
-                cfg.set("owntone_offsets", str(oid), "0")
-
-        if cfg.has_section("owntone_airplay_modes"):
-            cfg.remove_section("owntone_airplay_modes")
-        cfg.add_section("owntone_airplay_modes")
-        for oid, mode in sorted(runtime_airplay_modes_by_id.items(), key=lambda kv: kv[0]):
-            cfg.set("owntone_airplay_modes", str(oid), mode)
-
-        if cfg.has_section("owntone_known_outputs"):
-            cfg.remove_section("owntone_known_outputs")
-        cfg.add_section("owntone_known_outputs")
-        for oid, name in sorted(known_outputs.items(), key=lambda kv: kv[0]):
-            cfg.set("owntone_known_outputs", str(oid), str(name))
+        # offsets and airplay_modes stay in the config file
+        cfg.setdefault("owntone", {})["offsets"] = offsets_by_id
+        cfg.setdefault("owntone", {})["airplay_modes"] = runtime_airplay_modes_by_id
+        # known_outputs moves to the state file
+        state_data.setdefault("owntone", {})["known_outputs"] = known_outputs
 
         restart_required = False
         want_uncompressed_audio = ("uncompressed_alac" in form)
@@ -621,13 +600,20 @@ def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> No
                 raise RuntimeError("Could not update OwnTone device_removal_grace_period via API")
             restart_required = restart_required or bool(save_grace_result.restart_required)
 
+        # Write both files under a single lock. Re-load state inside the lock so
+        # that a concurrent PIN change made while OwnTone API calls were in flight
+        # is not overwritten with the stale snapshot loaded at the start of the handler.
         with CONFIG_IO_LOCK:
-            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+            save_config(state.config_path, cfg)
+            live_state = load_state(state.state_path)
+            live_state.setdefault("owntone", {})["known_outputs"] = known_outputs
+            save_state(state.state_path, live_state)
 
-        saved_parsed = parse_config(cfg)
+        saved_parsed = parse_config(cfg, live_state)
+        owntone_d = cfg.get("owntone") or {}
         update_live_owntone_runtime(
-            output_name=cfg.get("owntone", "output_name", fallback=""),
-            volume_percent=cfg.get("owntone", "volume_percent", fallback="20"),
+            output_name=str(owntone_d.get("output_name", "") or ""),
+            volume_percent=owntone_d.get("volume_percent", 20),
             output_offsets_ms=saved_parsed.owntone.output_offsets_ms,
             output_airplay_modes=saved_parsed.owntone.output_airplay_modes,
         )

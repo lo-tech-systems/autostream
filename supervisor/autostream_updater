@@ -27,7 +27,6 @@ NOTES
 
 from __future__ import annotations
 
-import configparser
 import errno
 import fcntl
 import json
@@ -57,7 +56,7 @@ INSTALL_STATE_FILE = Path("/var/lib/autostream/install-state.env")
 UPDATE_LOCK_FILE = Path("/run/autostream-update.lock")
 UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
 STAGING_DIR = Path("/var/lib/autostream/update-staging")
-CONFIG_PATH = Path("/opt/autostream/autostream.ini")
+CONFIG_PATH = Path("/etc/autostream/autostream.json")
 PLAYING_SERVICE = Path("/etc/avahi/services/autostream-playing.service")
 
 UA = "autostream-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
@@ -105,11 +104,11 @@ def _update_unit_active() -> bool:
 # ---- Auto-update config helper ----
 
 def _read_auto_update_config() -> bool:
-    """Return True if [updates] auto_update = yes in autostream.ini."""
-    p = configparser.ConfigParser()
+    """Return True if updates.auto_update is true in autostream.json."""
     try:
-        p.read(str(CONFIG_PATH))
-        return p.getboolean("updates", "auto_update", fallback=False)
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return bool((data.get("updates") or {}).get("auto_update", False))
     except Exception:
         return False
 

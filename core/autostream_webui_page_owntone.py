@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
+    load_state,
     parse_config,
     unconfigured,
 )
@@ -222,7 +223,8 @@ def send_owntone_setup_page(
     """Render Owntone setup."""
     try:
         cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        state_data = load_state(state.state_path)
+        parsed = parse_config(cfg, state_data)
     except Exception:
         try:
             handler.send_response(302)
@@ -379,7 +381,7 @@ def send_owntone_setup_page(
             or out_id in parsed.owntone.output_offsets_ms
         ):
             try:
-                cur_off = cfg.getint("owntone_offsets", out_id, fallback=0)
+                cur_off = parsed.owntone.output_offsets_ms.get(out_id, 0)
             except Exception:
                 cur_off = 0
             cur_off = max(-2000, min(2000, int(cur_off)))

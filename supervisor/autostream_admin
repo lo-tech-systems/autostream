@@ -18,7 +18,7 @@ Ownership/permissions (example):
 LOGGING
 -------
 This script logs ONLY to journald via stdout/stderr (systemd captures it).
-Do NOT read /opt/autostream/autostream.ini from here; treat /opt/autostream as
+Do NOT read /etc/autostream/autostream.json from here; treat /opt/autostream as
 untrusted because it is writable by the web server and update mechanism.
 
 COMMANDS
@@ -62,14 +62,15 @@ FACTORY RESET
 -------------
 Preserved on reset:
   /boot/firmware/pin.txt (or /boot/pin.txt)
-  /opt/autostream/cpuinfo
+  /var/lib/autostream/cpuinfo
 
 Deleted on reset (fixed allowlist — no wildcards):
-  /opt/autostream/autostream.ini
+  /etc/autostream/autostream.json
+  /var/lib/autostream/autostream-state.json
   /opt/autostream/ssid
-  /opt/autostream/playback_stats.json
-  /opt/autostream/nowplaying_hints.json
-  /opt/autostream/sdcardhealth.json
+  /var/lib/autostream/playback_stats.json
+  /etc/autostream/nowplaying_hints.json
+  /var/lib/autostream/sdcardhealth.json
   /var/cache/owntone/songs3.db
   /etc/owntone-settings.json
 
@@ -131,11 +132,12 @@ FACTORY_RESET_LOCK_FILE = FACTORY_RESET_LOCK_DIR / "factory-reset.lock"
 
 # Factory reset: fixed allowlist of files to delete — no wildcards, no /opt path construction
 FACTORY_RESET_DELETE_FILES = (
-    Path("/opt/autostream/autostream.ini"),
+    Path("/etc/autostream/autostream.json"),
+    Path("/var/lib/autostream/autostream-state.json"),
     Path("/opt/autostream/ssid"),
-    Path("/opt/autostream/playback_stats.json"),
-    Path("/opt/autostream/nowplaying_hints.json"),
-    Path("/opt/autostream/sdcardhealth.json"),
+    Path("/var/lib/autostream/playback_stats.json"),
+    Path("/etc/autostream/nowplaying_hints.json"),
+    Path("/var/lib/autostream/sdcardhealth.json"),
     Path("/var/cache/owntone/songs3.db"),
     Path("/etc/owntone-settings.json"),
 )
@@ -1091,7 +1093,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Schedules a factory reset as a transient systemd unit and returns immediately.\n\n"
             "The reset sequence stops services, rotates logs, deletes runtime configuration,\n"
             "removes all saved Wi-Fi connections, and reboots into AP-based setup mode.\n\n"
-            "Preserved: /boot/firmware/pin.txt (or /boot/pin.txt), /opt/autostream/cpuinfo."
+            "Preserved: /boot/firmware/pin.txt (or /boot/pin.txt), /var/lib/autostream/cpuinfo."
         ),
     )
     # --execute is used internally by the transient systemd unit. It is not

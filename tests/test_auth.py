@@ -25,6 +25,7 @@ from autostream_auth import (
     AuthManager,
     MAX_FAILED_ATTEMPTS,
     PIN_STATUS_MISSING,
+    PIN_STATUS_UNREADABLE,
     SESSION_COOKIE_NAME,
 )
 
@@ -299,3 +300,32 @@ class TestPostAuthPreservesSession:
 
         handler = _make_handler(session_token=old_token)
         assert mgr.is_authenticated(handler.headers) is False
+
+
+# ---------------------------------------------------------------------------
+# 7. Malformed state file — graceful degradation
+# ---------------------------------------------------------------------------
+
+class TestMalformedStateFile:
+
+    def test_get_pin_if_enabled_treats_malformed_state_as_unreadable(self, tmp_path):
+        """JSONDecodeError from load_state is caught; result is None and status UNREADABLE."""
+        state = tmp_path / "state.json"
+        state.write_text("{not valid json}")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        result = mgr.get_pin_if_enabled()
+        assert result is None
+        assert mgr.get_pin_status() == PIN_STATUS_UNREADABLE
+
+    def test_set_pin_returns_500_on_malformed_state(self, tmp_path):
+        """JSONDecodeError inside write_pin_override is caught and returns HTTP 500."""
+        state = tmp_path / "state.json"
+        state.write_text("{not valid json}")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        # Pre-load a valid PIN so the format check passes before the write attempt.
+        mgr._pin_loaded = True
+        mgr._pin_value = "currentpin"
+        mgr._pin_status = "ok"
+        code, body = mgr.set_pin("newpin1234")
+        assert code == 500
+        assert body["ok"] is False

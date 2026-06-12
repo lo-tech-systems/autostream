@@ -12,7 +12,7 @@ Group=autostream
 # Project directory
 WorkingDirectory=/opt/autostream
 
-ExecStart=/opt/autostream/venv/bin/python3 /opt/autostream/autostream_webui.py /opt/autostream/autostream.ini
+ExecStart=/opt/autostream/venv/bin/python3 /opt/autostream/autostream_webui.py /etc/autostream/autostream.json
 
 # Restart if it crashes
 Restart=on-failure

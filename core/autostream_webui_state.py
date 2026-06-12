@@ -13,8 +13,9 @@ import time
 class WebUIState:
     """Holds shared state and locks for the Web UI components."""
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, state_path: str):
         self.config_path = config_path
+        self.state_path = state_path
 
         # Audio device list as reported by autostream_monitor.
         # Each entry is a dict containing at least:

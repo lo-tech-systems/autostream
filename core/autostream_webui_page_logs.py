@@ -30,8 +30,8 @@ from autostream_config import (
     load_config,
     normalize_log_level,
     parse_config,
+    save_config,
 )
-from autostream_sysutils import atomic_write_file
 
 from autostream_core import update_live_platform_log_level
 
@@ -223,10 +223,8 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
         with CONFIG_IO_LOCK:
             cfg = load_config(state.config_path)
             parsed = parse_config(cfg)
-            if not cfg.has_section("general"):
-                cfg.add_section("general")
-            cfg.set("general", "log_level", new_log_level)
-            atomic_write_file(state.config_path, cfg.write, preserve_mode=False)
+            cfg.setdefault("general", {})["log_level"] = new_log_level
+            save_config(state.config_path, cfg)
 
         applied_log_level, monitor_updated = update_live_platform_log_level(new_log_level)
         player_setting_res = None

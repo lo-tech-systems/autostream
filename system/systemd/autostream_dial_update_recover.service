@@ -5,7 +5,7 @@
 # and autostream_dial_updater.service so a stale running status is corrected
 # before the HTTP server or a new update attempt can see it.
 #
-# After=local-fs.target ensures /var/lib/autostream-dial/ is mounted.
+# After=local-fs.target ensures /var/lib/autostream/ is mounted.
 # Enabled unconditionally by the installer.
 #
 # This file is part of autostream dial.

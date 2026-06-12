@@ -11,7 +11,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=autostream-dial
+User=autostream
 WorkingDirectory=/opt/autostream
 ExecStart=/opt/autostream/venv/bin/python /opt/autostream/dial_main.py
 Restart=on-failure

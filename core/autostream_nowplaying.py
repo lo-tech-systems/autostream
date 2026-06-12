@@ -21,7 +21,7 @@ from typing import Optional
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_HINTS_PATH = "/opt/autostream/nowplaying_hints.json"
+DEFAULT_HINTS_PATH = "/etc/autostream/nowplaying_hints.json"
 PIPE_METADATA_ENV = "AUTOSTREAM_ENABLE_PIPE_METADATA"
 
 
@@ -45,7 +45,7 @@ class PersistentNowPlayingCache:
         self._hints_cache: dict = {}
 
     def get_manual_hint(self, input_name: str) -> Optional[NowPlayingMetadata]:
-        """Optional manual overrides from /opt/autostream/nowplaying_hints.json.
+        """Optional manual overrides from /etc/autostream/nowplaying_hints.json.
 
         File format examples:
         {

@@ -4,10 +4,9 @@ WP1: bearing_life_hours was normalized using normalize_maintenance_life_hours
 (valid values: 0, 1000, 2000, 3000) instead of normalize_bearing_life_hours
 (valid values: 0, 200, 500, 1000, 2000).  Values of 200 and 500 were silently
 discarded.  These tests cover every supported value for each maintenance item and
-verify the regression at the INI-parse and PlaybackInputConfig.normalized() call
+verify the regression at the config-parse and PlaybackInputConfig.normalized() call
 sites.
 """
-import configparser
 import sys
 from pathlib import Path
 
@@ -120,37 +119,35 @@ class TestNormalizeMaintenanceLifeYears:
 
 
 # ---------------------------------------------------------------------------
-# INI config parsing — bearing_life_hours regression
+# Config section parsing — bearing_life_hours regression
 # ---------------------------------------------------------------------------
 
-def _ini_cfg(bearing_life_hours: str = "0", belt_life_hours: str = "0") -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    cfg.add_section("audio1")
-    cfg.set("audio1", "bearing_life_hours", bearing_life_hours)
-    cfg.set("audio1", "belt_life_hours", belt_life_hours)
-    return cfg
+def _section(bearing_life_hours=0, belt_life_hours=0) -> dict:
+    """Build a minimal audio section dict for parse testing."""
+    return {
+        "bearing_life_hours": bearing_life_hours,
+        "belt_life_hours": belt_life_hours,
+    }
 
 
 class TestConfigParseBearingLifeHours:
     @pytest.mark.parametrize("value", VALID_BEARING_LIFE_HOURS)
     def test_all_bearing_values_survive_parse(self, value):
-        result = _parse_audio_input_config(_ini_cfg(bearing_life_hours=str(value)), "audio1")
+        result = _parse_audio_input_config(_section(bearing_life_hours=value))
         assert result.bearing_life_hours == value
 
     @pytest.mark.parametrize("value", VALID_MAINTENANCE_LIFE_HOURS)
     def test_all_belt_values_survive_parse(self, value):
-        result = _parse_audio_input_config(_ini_cfg(belt_life_hours=str(value)), "audio1")
+        result = _parse_audio_input_config(_section(belt_life_hours=value))
         assert result.belt_life_hours == value
 
     def test_belt_200_rejected_in_belt_field(self):
         # 200 is a valid bearing value but not a valid belt value
-        result = _parse_audio_input_config(_ini_cfg(belt_life_hours="200"), "audio1")
+        result = _parse_audio_input_config(_section(belt_life_hours=200))
         assert result.belt_life_hours == 0
 
     def test_bearing_fields_independent_of_belt_fields(self):
-        result = _parse_audio_input_config(
-            _ini_cfg(bearing_life_hours="500", belt_life_hours="1000"), "audio1"
-        )
+        result = _parse_audio_input_config(_section(bearing_life_hours=500, belt_life_hours=1000))
         assert result.bearing_life_hours == 500
         assert result.belt_life_hours == 1000
 

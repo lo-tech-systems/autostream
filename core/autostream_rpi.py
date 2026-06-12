@@ -21,7 +21,7 @@ from autostream_sysutils import run_cmd
 
 logger = logging.getLogger(__name__)
 
-CPU_INFO = Path("/opt/autostream/cpuinfo")
+CPU_INFO = Path("/var/lib/autostream/cpuinfo")
 LICENSE_CHECK = False
 
 

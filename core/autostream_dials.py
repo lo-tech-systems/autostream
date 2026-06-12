@@ -24,7 +24,7 @@ from pathlib import Path
 # Dial authorization storage
 # ---------------------------------------------------------------------------
 
-DIALS_PATH = Path("/opt/autostream/dials.json")
+DIALS_PATH = Path("/var/lib/autostream/dials.json")
 _DIALS_LOCK = threading.Lock()
 _SIGHTING_THROTTLE_SECS = 60
 

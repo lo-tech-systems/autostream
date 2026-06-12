@@ -11,7 +11,7 @@ on the network generally e.g. on port 80.
 
 Usage:
 
-# python3 autostream_webui.py /location/to/autostream.ini
+# python3 autostream_webui.py /location/to/autostream.json
 
 """
 
@@ -90,7 +90,7 @@ from autostream_webui_post_handlers import (
     handle_setup_post,
 )
 
-from autostream_config import unconfigured
+from autostream_config import unconfigured, STATE_PATH
 
 # Global state
 STATE: Optional[WebUIState] = None
@@ -106,7 +106,7 @@ _setup_lock = threading.Lock()
 
 
 class ConfigWebHandler(BaseHTTPRequestHandler):
-    """Simple HTTP interface (port 8080) to view and edit autostream.ini."""
+    """Simple HTTP interface (port 8080) to view and edit autostream.json."""
 
     protocol_version = "HTTP/1.1"
     MAX_POST_SIZE: int = 64 * 1024
@@ -553,9 +553,10 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
     """Start the configuration web UI on a background thread."""
     global STATE, AUTH
 
-    STATE = WebUIState(config_path)
+    STATE = WebUIState(config_path, STATE_PATH)
     AUTH = AuthManager(
         config_path=config_path,
+        state_path=STATE_PATH,
         style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
         banner_html=BANNER_HTML,
         nav_html=build_nav_bar_html("setup"),
@@ -583,14 +584,15 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} PATH_TO_CONFIG.ini")
+        print(f"Usage: {sys.argv[0]} PATH_TO_CONFIG.json")
         sys.exit(1)
 
     config_path = sys.argv[1]
     # Initialize globals for local execution
-    STATE = WebUIState(config_path)
+    STATE = WebUIState(config_path, STATE_PATH)
     AUTH = AuthManager(
         config_path=config_path,
+        state_path=STATE_PATH,
         style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
         banner_html=BANNER_HTML,
         nav_html=build_nav_bar_html("setup"),

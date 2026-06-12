@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import logging
-from autostream_config import load_config, parse_config, read_pin_override, write_pin_override
+from autostream_config import load_config, parse_config, read_pin_override, write_pin_override, STATE_PATH
 LOG = logging.getLogger(__name__)
 
 # ----------------------------
@@ -176,12 +176,14 @@ class AuthManager:
     def __init__(
         self,
         config_path: str,
+        state_path: str = STATE_PATH,
         style_css: str = "",
         banner_html: str = "",
         nav_html: str = "",
         title: str = "Autostream",
     ) -> None:
         self._config_path = config_path
+        self._state_path = state_path
         self.style_css = style_css
         self.banner_html = banner_html
         self.nav_html = nav_html
@@ -238,20 +240,20 @@ class AuthManager:
     def _read_pin_override(self) -> Tuple[Optional[str], Optional[str], Optional[float], str, bool]:
         """Return (pin, path, mtime, status, present) for config override."""
         try:
-            pin, present = read_pin_override(self._config_path)
-        except OSError:
-            return None, self._config_path, None, PIN_STATUS_UNREADABLE, True
+            pin, present = read_pin_override(self._state_path)
+        except (OSError, ValueError):
+            return None, self._state_path, None, PIN_STATUS_UNREADABLE, True
 
         if not present:
-            return None, self._config_path, None, PIN_STATUS_MISSING, False
+            return None, self._state_path, None, PIN_STATUS_MISSING, False
 
         try:
-            st = os.stat(self._config_path)
+            st = os.stat(self._state_path)
             mtime = st.st_mtime
         except OSError:
             mtime = None
 
-        return pin, self._config_path, mtime, PIN_STATUS_OK, True
+        return pin, self._state_path, mtime, PIN_STATUS_OK, True
 
 
     def get_pin_if_enabled(self) -> Optional[str]:
@@ -394,16 +396,16 @@ class AuthManager:
             }
 
         try:
-            write_pin_override(self._config_path, new_pin)
+            write_pin_override(self._state_path, new_pin)
 
             try:
-                st = os.stat(self._config_path)
+                st = os.stat(self._state_path)
                 mtime = st.st_mtime
             except OSError:
                 mtime = None
 
             self._pin_value = new_pin
-            self._pin_path = self._config_path
+            self._pin_path = self._state_path
             self._pin_mtime = mtime
             self._pin_source = "config"
             self._pin_status = PIN_STATUS_OK
@@ -415,7 +417,7 @@ class AuthManager:
 
             LOG.info(
                 "PIN updated at %s source=%s (pin_len=%s, mtime=%r); all sessions invalidated",
-                self._config_path,
+                self._state_path,
                 self._pin_source,
                 len(new_pin),
                 mtime,
@@ -424,12 +426,12 @@ class AuthManager:
             return 200, {
                 "ok": True,
                 "pin_status": self._pin_status,
-                "path": self._config_path,
+                "path": self._state_path,
                 "source": self._pin_source,
             }
 
-        except OSError as e:
-            LOG.warning("Failed to update PIN override at %s: %s", self._config_path, e)
+        except (OSError, ValueError) as e:
+            LOG.warning("Failed to update PIN override at %s: %s", self._state_path, e)
             return 500, {
                 "ok": False,
                 "error": "Failed to write PIN",

@@ -80,7 +80,7 @@ def atomic_write_file(
             pass
         raise
 
-SDCARD_HEALTH_JSON_FILE = Path("/opt/autostream/sdcardhealth.json")
+SDCARD_HEALTH_JSON_FILE = Path("/var/lib/autostream/sdcardhealth.json")
 
 # Privileged helper (installed outside /opt/autostream)
 AUTOSTREAM_ADMIN_BIN = os.environ.get("AUTOSTREAM_ADMIN_BIN", "/usr/local/libexec/autostream/autostream_admin")

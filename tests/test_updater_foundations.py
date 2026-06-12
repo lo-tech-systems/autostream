@@ -155,6 +155,48 @@ class TestGithubLatestRelease:
 # 3. cmd_check returns ok: False when the API is unreachable
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 3. cmd_apply --auto respects the auto_update flag in dial-settings.json
+# ---------------------------------------------------------------------------
+
+class TestDialUpdaterAutoFlag:
+    """cmd_apply(auto=True) reads auto_update from the correct path and gates accordingly."""
+
+    def _load(self, tmp_path):
+        mod = _load_script("autostream_dial_updater")
+        mod.STATE_DIR = tmp_path
+        # Keep APMODE_FLAG pointing at a path that will never exist in tmp_path.
+        mod.APMODE_FLAG = tmp_path / "_apmode_absent"
+        return mod
+
+    def _write_settings(self, tmp_path, auto_update: bool):
+        import json as _json
+        (tmp_path / "dial-settings.json").write_text(
+            _json.dumps({"auto_update": auto_update}), encoding="utf-8"
+        )
+
+    def test_auto_update_false_returns_noop(self, tmp_path):
+        """auto_update: false → ok:True without proceeding to version check."""
+        mod = self._load(tmp_path)
+        self._write_settings(tmp_path, auto_update=False)
+        result = mod.cmd_apply(auto=True)
+        assert result == {"ok": True}
+
+    def test_auto_update_true_proceeds_past_gate(self, tmp_path):
+        """auto_update: true → passes the settings gate and reaches cmd_check."""
+        mod = self._load(tmp_path)
+        self._write_settings(tmp_path, auto_update=True)
+        # Stub cmd_check to return "no update available" so we exit cleanly.
+        with patch.object(mod, "cmd_check", return_value={"ok": True, "update_available": False}) as mock_check:
+            result = mod.cmd_apply(auto=True)
+        assert result.get("ok") is True
+        mock_check.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 4. cmd_check returns ok: False when the API is unreachable
+# ---------------------------------------------------------------------------
+
 class TestCmdCheckFailsOnNetworkError:
     """Both updater scripts must return {"ok": False} when the API is down,
     not {"ok": True, "update_available": False}."""

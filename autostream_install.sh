@@ -576,14 +576,9 @@ bootstrap_phase() {
   info "Creating directories"
   mkdir -p "${AUTOSTREAM_DIR}" || true
   mkdir -p "${INSTALL_DIR}" "${APP_LOG_DIR}"
-
   mkdir -p "${STAMP_DIR}"
-  chown root:root "${STAMP_DIR}"
-  chmod 0700 "${STAMP_DIR}"
-
+  mkdir -p /etc/autostream
   mkdir -p "${LIBEXEC_DIR}"
-  chown root:root "${LIBEXEC_DIR}"
-  chmod 0755 "${LIBEXEC_DIR}"
 
   info "Updating apt metadata"
   DEBIAN_FRONTEND=noninteractive apt-get update
@@ -600,12 +595,24 @@ bootstrap_phase() {
 
   apt_install --soft python3-requests
 
+  # Create user and group before applying ownership — chown fails if the user
+  # does not yet exist and set -e aborts the install.
   ensure_group autostream
   ensure_user autostream autostream
   ensure_user_in_group autostream netdev
   ensure_user_in_group autostream audio
   # video group required to allow autostream to query PSU status via vcgencmd
   ensure_user_in_group autostream video
+
+  # Apply directory ownership now that the user exists.
+  chown autostream:autostream "${STAMP_DIR}"
+  chmod 0750 "${STAMP_DIR}"
+
+  chown autostream:autostream /etc/autostream
+  chmod 0755 /etc/autostream
+
+  chown root:root "${LIBEXEC_DIR}"
+  chmod 0755 "${LIBEXEC_DIR}"
 }
 
 # system_upgrade_phase: refresh installed OS packages during update.
@@ -689,8 +696,14 @@ deploy_phase() {
   # wifi_watcher must be renamed — systemd unit and nginx reference autostream_wifi_watcher
   mv "${INSTALL_DIR}/wifi_watcher" "${INSTALL_DIR}/autostream_wifi_watcher"
   chmod +x "${INSTALL_DIR}/autostream_wifi_watcher"
-  if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" ]]; then
-    cp -a "${AUTOSTREAM_DIR}/nowplaying_hints.json" "${INSTALL_DIR}/nowplaying_hints.json"
+  # Only deploy the bundled hints file when neither the new location nor the old
+  # (to-be-migrated) location exists.  This prevents the repo defaults from
+  # overwriting a user-customized file that migration will later copy into place.
+  if [[ -f "${AUTOSTREAM_DIR}/nowplaying_hints.json" && \
+        ! -f /etc/autostream/nowplaying_hints.json && \
+        ! -f /opt/autostream/nowplaying_hints.json ]]; then
+    install -m 0644 -o root -g root \
+        "${AUTOSTREAM_DIR}/nowplaying_hints.json" /etc/autostream/nowplaying_hints.json
   fi
 
   update_progress "Building autostream_monitor..." 50
@@ -705,16 +718,12 @@ deploy_phase() {
     -lasound -lsamplerate -lpthread -latomic
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 
-  if [[ -f "${INSTALL_DIR}/autostream.ini" ]]; then
-    sed -i -E 's|^[[:space:]]*fifo_path[[:space:]]*=.*$|fifo_path = /tmp/autostream-pipes/autostream.fifo|' \
-      "${INSTALL_DIR}/autostream.ini"
-  fi
-
   info "Installing supervisor and helper scripts"
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_support.py" "${LIBEXEC_DIR}/autostream_update_support.py" 0644 root root
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater"           "${LIBEXEC_DIR}/autostream_updater"           0755 root root
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"             "${LIBEXEC_DIR}/autostream_admin"             0755 root root
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry"      "${LIBEXEC_DIR}/autostream_update_retry"      0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/tools/autostream_migrate.py"             "${LIBEXEC_DIR}/autostream_migrate.py"        0755 root root
 
   info "Setting ownership to enable autostream to manage venv"
   chown autostream:autostream "${INSTALL_DIR}"
@@ -747,6 +756,9 @@ configure_phase() {
   install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
   install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_admin"   /etc/sudoers.d/autostream_admin
   validate_sudoers
+
+  info "Running config layout migration (idempotent)"
+  python3 "${LIBEXEC_DIR}/autostream_migrate.py"
 
   provision_owntone "${INSTALL_MODE}"
   update_progress "Configuring system services..." 78
@@ -833,12 +845,12 @@ permissions_pass() {
     chmod 0644 "${INSTALL_DIR}/ssid"
   fi
 
-  # Create dial authorization store if absent.
+  # Create dial authorization store if absent (under /var/lib/autostream/).
   # Runs on both fresh install and --update; the ! -f guard preserves existing authorizations.
-  if [[ ! -f "${INSTALL_DIR}/dials.json" ]]; then
-    echo '{}' > "${INSTALL_DIR}/dials.json"
-    chown autostream:autostream "${INSTALL_DIR}/dials.json"
-    chmod 0600 "${INSTALL_DIR}/dials.json"
+  if [[ ! -f "${STAMP_DIR}/dials.json" ]]; then
+    echo '{}' > "${STAMP_DIR}/dials.json"
+    chown autostream:autostream "${STAMP_DIR}/dials.json"
+    chmod 0600 "${STAMP_DIR}/dials.json"
   fi
 
   chown autostream:autostream "${INSTALL_DIR}"

@@ -41,7 +41,7 @@ Use BCM (Broadcom) pin numbering throughout.
 Internal pull-ups are enabled by `gpiozero`/`lgpio` — no external resistors
 needed on the encoder signal lines.
 
-GPIO assignments can be changed in `/etc/autostream-dial/dial.json` after
+GPIO assignments can be changed in `/etc/autostream/autostream-dial.json` after
 install. The default values (CLK=17, DT=27) match the wiring above.
 
 ---
@@ -106,10 +106,10 @@ sudo bash autostream_dial_install.sh
 ```
 
 The installer:
-- Creates the `autostream-dial` service user
+- Creates the `autostream` service user
 - Installs OS packages (`avahi-daemon`, `nginx`, `dnsmasq`, `gpiozero`, etc.)
 - Deploys the dial Python application to `/opt/autostream/`
-- Generates a UUID and writes `/etc/autostream-dial/dial.json`
+- Generates a UUID and writes `/etc/autostream/autostream-dial.json`
 - Configures systemd, nginx, logrotate, and sudoers
 - Starts the `autostream-dial` service
 

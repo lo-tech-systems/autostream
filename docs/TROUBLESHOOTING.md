@@ -43,7 +43,7 @@ Factory Reset is PIN-protected, so the first question is whether you can still g
 Important PIN behavior:
 
 * If you have **not** set your own PIN, the appliance uses the "factory PIN" (set at initial install) from `/boot/firmware/pin.txt`.
-* If you **have** set your own PIN, it is stored in `autostream.ini`.
+* If you **have** set your own PIN, it is stored in `/var/lib/autostream/autostream-state.json`.
 * When a user PIN exists, the Setup PIN prompt will accept either:
   * the user PIN, or
   * the factory PIN from `/boot/firmware/pin.txt`, but only for the first 30 minutes after boot
@@ -389,20 +389,17 @@ Other repo-provided units you may see enabled (depending on install):
 
 ### Validate configuration
 
-The main service launches:
-
-* `autostream_webui.py` with:
-
-  * `/opt/autostream/autostream.ini`
-  * (from `ExecStart=` in `system/systemd/autostream.service`)
+The main service launches `autostream_webui.py` (see `ExecStart=` in
+`system/systemd/autostream.service`). Configuration is stored as JSON under
+`/etc/autostream/`.
 
 So the first thing to verify is that the config exists and is readable:
 
 ```bash
-ls -l /opt/autostream/autostream.ini
+ls -l /etc/autostream/autostream.json
 ```
 
-If the UI is up but behavior is wrong, inspect `autostream.ini` and compare against what the code expects in:
+If the UI is up but behavior is wrong, inspect `autostream.json` and compare against what the code expects in:
 
 * `core/autostream_config.py` (parsing + defaults)
 * `platform/wifi_watcher` (hostname + Wi-Fi provisioning)

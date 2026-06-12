@@ -10,4 +10,4 @@ After=local-fs.target
 [Service]
 Type=oneshot
 User=root
-ExecStart=/bin/sh -c 'tmp=/opt/autostream/sdcardhealth.json.tmp; trap "rm -f \"$tmp\"" EXIT; /usr/local/sbin/sdmon -q /dev/mmcblk0 > "$tmp" && /bin/mv "$tmp" /opt/autostream/sdcardhealth.json'
+ExecStart=/bin/sh -c 'tmp=/var/lib/autostream/sdcardhealth.json.tmp; trap "rm -f \"$tmp\"" EXIT; /usr/local/sbin/sdmon -q /dev/mmcblk0 > "$tmp" && /bin/mv "$tmp" /var/lib/autostream/sdcardhealth.json'

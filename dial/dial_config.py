@@ -3,8 +3,8 @@
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Two-file split:
-  /etc/autostream-dial/dial.json          — hardware + UUID, root:autostream-dial 0640
-  /var/lib/autostream-dial/settings/dial-settings.json — mutable settings, autostream-dial 0600
+  /etc/autostream/autostream-dial.json    — hardware + UUID, root:autostream 0640
+  /var/lib/autostream/dial-settings.json — mutable settings, autostream 0600
 """
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-HW_CONFIG_PATH     = Path('/etc/autostream-dial/dial.json')
-SETTINGS_PATH      = Path('/var/lib/autostream-dial/settings/dial-settings.json')
-INSTALL_STATE_PATH = Path('/var/lib/autostream-dial/install-state.env')
+HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
+SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
+INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 
 
 @dataclass

@@ -70,7 +70,7 @@ def _invoke(
     config_error: bool = False,
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_volume_post_json and return (status, body, update_mock)."""
-    state = WebUIState(config_path="dummy.ini")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
     if list_result is None:
         list_result = _ok_list()
