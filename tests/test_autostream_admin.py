@@ -613,3 +613,116 @@ class TestExecuteFactoryReset:
         with patch.object(m, "_acquire_reset_lock", return_value=None):
             result = m._execute_factory_reset()
         assert result is False
+
+    def test_full_stop_sync_delete_reboot_order(self, tmp_path):
+        """All six operations must occur in the documented sequence."""
+        order = []
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_rotate_logs"), \
+             patch.object(m, "_stop_service",
+                          side_effect=lambda name: order.append(name) or True), \
+             patch.object(m, "_stop_owntone",
+                          side_effect=lambda: order.append("_stop_owntone")), \
+             patch.object(m, "_sync_owntone_conf",
+                          side_effect=lambda: order.append("_sync_owntone_conf")), \
+             patch.object(m, "_delete_reset_files",
+                          side_effect=lambda: order.append("_delete_reset_files")), \
+             patch.object(m, "_delete_wifi_connections",
+                          side_effect=lambda: order.append("_delete_wifi_connections")), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")), \
+             patch("pathlib.Path.exists", return_value=True):
+            m._execute_factory_reset()
+
+        # Expected relative order:
+        # autostream.service → wifi_watcher.service → _stop_owntone
+        #   → _sync_owntone_conf → _delete_reset_files → _delete_wifi_connections
+        assert order.index("autostream.service") < order.index("autostream_wifi_watcher.service")
+        assert order.index("autostream_wifi_watcher.service") < order.index("_stop_owntone")
+        assert order.index("_stop_owntone") < order.index("_sync_owntone_conf")
+        assert order.index("_sync_owntone_conf") < order.index("_delete_reset_files")
+        assert order.index("_delete_reset_files") < order.index("_delete_wifi_connections")
+
+
+# ---------------------------------------------------------------------------
+# _is_stale_in_progress: decision matrix
+# ---------------------------------------------------------------------------
+
+import datetime as _dt
+
+
+def _recent_ts(minutes_ago: float = 1) -> str:
+    """Return an ISO timestamp `minutes_ago` minutes in the past."""
+    ts = _dt.datetime.now(tz=_dt.timezone.utc) - _dt.timedelta(minutes=minutes_ago)
+    return ts.isoformat()
+
+
+def _old_ts(minutes_ago: float = 200) -> str:
+    return _recent_ts(minutes_ago)
+
+
+class TestIsStaleInProgress:
+    """Matrix from the docstring of _is_stale_in_progress."""
+
+    def test_unit_active_log_recent_not_stale(self):
+        # Unit active + log recent (< 30 min) → healthy, not stale
+        with patch.object(m, "_update_unit_active", return_value=True), \
+             patch.object(m, "_install_log_recently_modified", return_value=True):
+            result = m._is_stale_in_progress(_recent_ts())
+        assert result is False
+
+    def test_unit_active_log_silent_stale(self):
+        # Unit active + log silent (≥ 30 min) → hung, stale
+        with patch.object(m, "_update_unit_active", return_value=True), \
+             patch.object(m, "_install_log_recently_modified", return_value=False):
+            result = m._is_stale_in_progress(_recent_ts())
+        assert result is True
+
+    def test_unit_inactive_log_recent_not_stale(self):
+        # Unit inactive + log recent (< 5 min) → just finished, not stale
+        # The second call to _install_log_recently_modified (5 min) must return True
+        call_count = {"n": 0}
+
+        def log_recent(now, within_minutes=5):
+            call_count["n"] += 1
+            return True  # recent in both 30-min and 5-min windows
+
+        with patch.object(m, "_update_unit_active", return_value=False), \
+             patch.object(m, "_install_log_recently_modified", side_effect=log_recent):
+            result = m._is_stale_in_progress(_recent_ts())
+        assert result is False
+
+    def test_unit_inactive_log_silent_old_timestamp_stale(self):
+        # Unit inactive + log silent + timestamp > STALE_MINUTES → stale
+        with patch.object(m, "_update_unit_active", return_value=False), \
+             patch.object(m, "_install_log_recently_modified", return_value=False), \
+             patch("pathlib.Path.read_text", return_value="99999.0 0.0"):
+            result = m._is_stale_in_progress(_old_ts(200))
+        assert result is True
+
+    def test_unit_inactive_log_silent_recent_timestamp_not_stale(self):
+        # Unit inactive + log silent + timestamp < STALE_MINUTES (90) and after boot → not stale.
+        # uptime = 7200s (2 hours) → boot was 2 hours ago;
+        # last_run_at = 10 min ago → is after boot → not pre-boot, and < 90 min → not old.
+        with patch.object(m, "_update_unit_active", return_value=False), \
+             patch.object(m, "_install_log_recently_modified", return_value=False), \
+             patch("pathlib.Path.read_text", return_value="7200.0 0.0"):
+            result = m._is_stale_in_progress(_recent_ts(10))
+        assert result is False
+
+    def test_pre_boot_timestamp_stale(self):
+        # last_run_at before boot time → stale.
+        # uptime = 1800s (30 min) → boot was 30 min ago;
+        # last_run_at = 60 min ago → is BEFORE boot → pre-boot stale.
+        # Age check: 60 min < 90 min STALE_MINUTES → doesn't trigger age-check stale.
+        with patch.object(m, "_update_unit_active", return_value=False), \
+             patch.object(m, "_install_log_recently_modified", return_value=False), \
+             patch("pathlib.Path.read_text", return_value="1800.0 0.0"):
+            result = m._is_stale_in_progress(_recent_ts(60))
+        assert result is True
+
+    def test_malformed_timestamp_stale(self):
+        # Unparseable timestamp → treat as stale
+        with patch.object(m, "_update_unit_active", return_value=False), \
+             patch.object(m, "_install_log_recently_modified", return_value=False):
+            result = m._is_stale_in_progress("not-a-timestamp")
+        assert result is True

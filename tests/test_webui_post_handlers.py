@@ -686,12 +686,256 @@ class TestSetupPost:
     def test_save_failure_calls_error_page(self, tmp_path):
         form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
                 "owntone_output_name": "S", "owntone_volume_percent": "50"}
-        # save_config raises OSError — we expect an exception or send_setup_page call.
-        # Current impl: the exception propagates out of the with CONFIG_IO_LOCK block,
-        # which means the rest of the success path is skipped.
-        try:
-            result = _call_setup_post(form, tmp_path, save_failure=True)
-            # If handler catches it and calls send_setup_page — that's fine too.
-            assert not result["saved"]
-        except OSError:
-            pass  # propagation is also acceptable behavior
+        result = _call_setup_post(form, tmp_path, save_failure=True)
+        # The handler catches the OSError and calls send_setup_page with "Save failed"
+        assert result["flash_calls"], "send_setup_page must be called on save failure"
+        flash = result["flash_calls"][0]
+        assert flash.get("flash_type") == "error"
+
+    def test_hostname_failure_calls_error_page(self, tmp_path):
+        # set_system_hostname raises → exception caught → send_setup_page "Save failed"
+        form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
+                "owntone_output_name": "S", "owntone_volume_percent": "50",
+                "system_hostname": "new-hostname"}  # triggers hostname change
+        result = _call_setup_post(form, tmp_path, hostname_failure=True)
+        assert result["flash_calls"], "send_setup_page must be called on hostname failure"
+        flash = result["flash_calls"][0]
+        assert flash.get("flash_type") == "error"
+
+    def test_mark_configured_failure_calls_error_page(self, tmp_path):
+        form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        from unittest.mock import patch as _patch
+        flash_calls = []
+        cfg = _minimal_config()
+
+        with _patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
+             _patch("autostream_webui_post_handlers.parse_config") as mp, \
+             _patch("autostream_webui_post_handlers.save_config"), \
+             _patch("autostream_webui_post_handlers.mark_configured",
+                    side_effect=OSError("permission denied")), \
+             _patch("autostream_webui_post_handlers.get_system_hostname", return_value="host"), \
+             _patch("autostream_webui_post_handlers.set_system_hostname"), \
+             _patch("autostream_webui_post_handlers.run_admin_cmd",
+                    return_value=MagicMock(returncode=0, stderr="")), \
+             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
+             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_webui_post_handlers.send_setup_page",
+                    side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
+             _patch("autostream_webui_post_handlers._set_flash_cookie"), \
+             _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
+             _patch("autostream_webui_post_handlers.request_config_reload"):
+            p = mp.return_value
+            p.audio1.capture_device = "hw:0,0"
+            p.audio1.silence_threshold_dbfs = -50.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio1, attr, 0.0)
+            p.audio2.capture_device = "hw:1,0"
+            p.audio2.silence_threshold_dbfs = -50.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio2, attr, 0.0)
+            p.audio2_enabled = False
+            p.owntone.output_name = "S"
+            p.owntone.volume_percent = 50
+            p.owntone.base_url = "http://localhost:3689"
+            p.owntone.output_offsets_ms = {}
+            p.owntone.output_airplay_modes = {}
+            p.general.silence_seconds = 10
+            p.general.log_file = "/var/log/autostream.log"
+            p.general.fifo_path = "/run/autostream/audio.fifo"
+            p.updates.auto_update = False
+            handle_setup_post(MagicMock(), MagicMock(), MagicMock(), urlencode(form))
+
+        assert flash_calls, "send_setup_page must be called when mark_configured fails"
+        assert flash_calls[0].get("flash_type") == "error"
+
+    def test_updates_panel_absent_does_not_overwrite_auto_update(self, tmp_path):
+        # Without updates_auto_update_present, the auto_update config key must not change.
+        form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        # (no updates_auto_update_present)
+        result = _call_setup_post(form, tmp_path)
+        if result["saved"]:
+            saved = result["saved"][0]
+            # auto_update should remain False (the initial value in _minimal_config)
+            updates = saved.get("updates", {})
+            if "auto_update" in updates:
+                assert updates["auto_update"] is False
+
+    def test_timer_rollback_writes_old_auto_update_value(self, tmp_path):
+        # Timer fails → rollback must write old (False) auto_update back, not new (True) value.
+        form = {
+            "audio_capture_device": "hw:0,0", "silence_seconds": "10",
+            "owntone_output_name": "S", "owntone_volume_percent": "50",
+            "updates_auto_update_present": "1",
+            "updates_auto_update": "1",  # toggles to True
+        }
+        result = _call_setup_post(form, tmp_path, admin_rc=1)
+        # saved[0] is the initial save (auto_update=True), saved[1] is the rollback (auto_update=False)
+        assert len(result["saved"]) >= 2, "rollback must write a second save_config call"
+        rollback_cfg = result["saved"][1]
+        assert rollback_cfg.get("updates", {}).get("auto_update") is False
+
+    def test_device_change_triggers_config_reload(self, tmp_path):
+        # Changing audio_capture_device must trigger request_config_reload()
+        form = {"audio_capture_device": "hw:2,0",  # different from default hw:0,0
+                "silence_seconds": "10",
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        from unittest.mock import patch as _patch
+        reload_calls = []
+        cfg = _minimal_config()
+
+        with _patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
+             _patch("autostream_webui_post_handlers.parse_config") as mp, \
+             _patch("autostream_webui_post_handlers.save_config"), \
+             _patch("autostream_webui_post_handlers.mark_configured"), \
+             _patch("autostream_webui_post_handlers.get_system_hostname", return_value="host"), \
+             _patch("autostream_webui_post_handlers.set_system_hostname"), \
+             _patch("autostream_webui_post_handlers.run_admin_cmd",
+                    return_value=MagicMock(returncode=0, stderr="")), \
+             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
+             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_webui_post_handlers.send_setup_page"), \
+             _patch("autostream_webui_post_handlers._set_flash_cookie"), \
+             _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
+             _patch("autostream_webui_post_handlers.request_config_reload",
+                    side_effect=lambda: reload_calls.append(True)):
+            p = mp.return_value
+            p.audio1.capture_device = "hw:0,0"   # old device
+            p.audio1.silence_threshold_dbfs = -50.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio1, attr, 0.0)
+            p.audio2.capture_device = "hw:1,0"
+            p.audio2.silence_threshold_dbfs = -50.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio2, attr, 0.0)
+            p.audio2_enabled = False
+            p.owntone.output_name = "S"
+            p.owntone.volume_percent = 50
+            p.owntone.base_url = "http://localhost:3689"
+            p.owntone.output_offsets_ms = {}
+            p.owntone.output_airplay_modes = {}
+            p.general.silence_seconds = 10
+            p.general.log_file = "/var/log/autostream.log"
+            p.general.fifo_path = "/run/autostream/audio.fifo"
+            p.updates.auto_update = False
+            handle_setup_post(MagicMock(), MagicMock(), MagicMock(), urlencode(form))
+
+        assert reload_calls, "request_config_reload must be called when device changes"
+
+    def test_silence_seconds_only_change_triggers_live_update_not_reload(self, tmp_path):
+        # Only silence_seconds changed — should call update_live_silence_seconds, not reload.
+        # threshold must match LINE_LEVEL_SILENCE_THRESHOLD_DBFS (-60.0) so daemon_changed=False.
+        form = {"audio_capture_device": "hw:0,0",  # same device
+                "silence_seconds": "30",             # changed from 10
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        from unittest.mock import patch as _patch
+        silence_calls = []
+        reload_calls = []
+        cfg = _minimal_config()
+
+        with _patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
+             _patch("autostream_webui_post_handlers.parse_config") as mp, \
+             _patch("autostream_webui_post_handlers.save_config"), \
+             _patch("autostream_webui_post_handlers.mark_configured"), \
+             _patch("autostream_webui_post_handlers.get_system_hostname", return_value="host"), \
+             _patch("autostream_webui_post_handlers.set_system_hostname"), \
+             _patch("autostream_webui_post_handlers.run_admin_cmd",
+                    return_value=MagicMock(returncode=0, stderr="")), \
+             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
+             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_webui_post_handlers.send_setup_page"), \
+             _patch("autostream_webui_post_handlers._set_flash_cookie"), \
+             _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
+             _patch("autostream_webui_post_handlers.update_live_silence_seconds",
+                    side_effect=lambda s: silence_calls.append(s) or True), \
+             _patch("autostream_webui_post_handlers.request_config_reload",
+                    side_effect=lambda: reload_calls.append(True)):
+            p = mp.return_value
+            p.audio1.capture_device = "hw:0,0"
+            p.audio1.silence_threshold_dbfs = -60.0  # must match LINE_LEVEL_SILENCE_THRESHOLD_DBFS
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio1, attr, 0.0)
+            p.audio2.capture_device = "hw:1,0"
+            p.audio2.silence_threshold_dbfs = -60.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio2, attr, 0.0)
+            p.audio2_enabled = False
+            p.owntone.output_name = "S"
+            p.owntone.volume_percent = 50
+            p.owntone.base_url = "http://localhost:3689"
+            p.owntone.output_offsets_ms = {}
+            p.owntone.output_airplay_modes = {}
+            p.general.silence_seconds = 10   # old value
+            p.general.log_file = "/var/log/autostream.log"
+            p.general.fifo_path = "/run/autostream/audio.fifo"
+            p.updates.auto_update = False
+            handle_setup_post(MagicMock(), MagicMock(), MagicMock(), urlencode(form))
+
+        assert silence_calls, "update_live_silence_seconds must be called"
+        assert not reload_calls, "request_config_reload must NOT be called when only silence_seconds changed and live update succeeds"
+
+    def test_silence_seconds_live_update_failure_triggers_reload(self, tmp_path):
+        # update_live_silence_seconds returns False → fallback to request_config_reload
+        form = {"audio_capture_device": "hw:0,0",
+                "silence_seconds": "30",
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        from unittest.mock import patch as _patch
+        reload_calls = []
+        cfg = _minimal_config()
+
+        with _patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
+             _patch("autostream_webui_post_handlers.parse_config") as mp, \
+             _patch("autostream_webui_post_handlers.save_config"), \
+             _patch("autostream_webui_post_handlers.mark_configured"), \
+             _patch("autostream_webui_post_handlers.get_system_hostname", return_value="host"), \
+             _patch("autostream_webui_post_handlers.set_system_hostname"), \
+             _patch("autostream_webui_post_handlers.run_admin_cmd",
+                    return_value=MagicMock(returncode=0, stderr="")), \
+             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
+             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_webui_post_handlers.send_setup_page"), \
+             _patch("autostream_webui_post_handlers._set_flash_cookie"), \
+             _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
+             _patch("autostream_webui_post_handlers.update_live_silence_seconds",
+                    return_value=False), \
+             _patch("autostream_webui_post_handlers.request_config_reload",
+                    side_effect=lambda: reload_calls.append(True)):
+            p = mp.return_value
+            p.audio1.capture_device = "hw:0,0"
+            p.audio1.silence_threshold_dbfs = -60.0  # must match LINE_LEVEL_SILENCE_THRESHOLD_DBFS
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio1, attr, 0.0)
+            p.audio2.capture_device = "hw:1,0"
+            p.audio2.silence_threshold_dbfs = -60.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio2, attr, 0.0)
+            p.audio2_enabled = False
+            p.owntone.output_name = "S"
+            p.owntone.volume_percent = 50
+            p.owntone.base_url = "http://localhost:3689"
+            p.owntone.output_offsets_ms = {}
+            p.owntone.output_airplay_modes = {}
+            p.general.silence_seconds = 10   # old value
+            p.general.log_file = "/var/log/autostream.log"
+            p.general.fifo_path = "/run/autostream/audio.fifo"
+            p.updates.auto_update = False
+            handle_setup_post(MagicMock(), MagicMock(), MagicMock(), urlencode(form))
+
+        assert reload_calls, "request_config_reload must be called when update_live_silence_seconds fails"

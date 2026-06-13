@@ -597,3 +597,327 @@ class TestSetLiveOutputAutoTrim:
         with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
             core.set_live_output_auto_trim(True)
         mock_client.set_output_auto_trim.assert_called_once_with(True)
+
+
+# ---------------------------------------------------------------------------
+# update_live_silence_seconds
+# ---------------------------------------------------------------------------
+
+class TestUpdateLiveSilenceSeconds:
+    def test_returns_true_with_no_monitors(self):
+        result = core.update_live_silence_seconds(30)
+        assert result is True
+
+    def test_invalid_value_returns_false(self):
+        result = core.update_live_silence_seconds("not-a-number")
+        assert result is False
+
+    def test_calls_configure_input_for_each_monitor(self):
+        mon1 = _make_monitor(input_index=0)
+        mon2 = _make_monitor(input_index=1)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_silence_seconds(45)
+        assert result is True
+        assert mock_client.configure_input.call_count == 2
+
+    def test_returns_false_when_client_unavailable(self):
+        mon = _make_monitor(input_index=0)
+        with patch.object(core, "_connected_monitor", _fake_connected(None)):
+            result = core.update_live_silence_seconds(30)
+        assert result is False
+
+    def test_returns_false_when_configure_input_fails(self):
+        mon = _make_monitor(input_index=0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = False
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_silence_seconds(30)
+        assert result is False
+
+    def test_updates_monitor_silence_seconds_on_success(self):
+        mon = _make_monitor(input_index=0, silence_seconds=5)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_silence_seconds(60)
+        assert mon.silence_seconds == 60
+
+    def test_silence_seconds_clamped_to_range(self):
+        mon = _make_monitor(input_index=0, silence_seconds=5)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_silence_seconds(99999)
+        assert mon.silence_seconds == 3600  # clamped to max
+
+
+# ---------------------------------------------------------------------------
+# set_live_monitor_log_level / update_live_platform_log_level
+# ---------------------------------------------------------------------------
+
+class TestSetLiveMonitorLogLevel:
+    def test_returns_false_when_client_unavailable(self):
+        with patch.object(core, "_connected_monitor", _fake_connected(None)):
+            result = core.set_live_monitor_log_level("info")
+        assert result is False
+
+    def test_calls_set_log_level_with_normalized_level(self):
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.set_log_level.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.set_live_monitor_log_level("WARNING")
+        assert result is True
+        mock_client.set_log_level.assert_called_once()
+        called_level = mock_client.set_log_level.call_args[0][0]
+        assert called_level in ("warning", "WARNING", "warn")  # normalized form
+
+    def test_propagates_client_failure(self):
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.set_log_level.return_value = False
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.set_live_monitor_log_level("debug")
+        assert result is False
+
+
+class TestUpdateLivePlatformLogLevel:
+    def test_returns_normalized_level_and_monitor_bool(self):
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.set_log_level.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            normalized, monitor_ok = core.update_live_platform_log_level("DEBUG")
+        assert isinstance(normalized, str)
+        assert monitor_ok is True
+
+    def test_monitor_fail_still_returns_normalized(self):
+        with patch.object(core, "_connected_monitor", _fake_connected(None)):
+            normalized, monitor_ok = core.update_live_platform_log_level("info")
+        assert isinstance(normalized, str)
+        assert monitor_ok is False
+
+    def test_python_log_level_updated(self):
+        import logging as _logging
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.set_log_level.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_platform_log_level("DEBUG")
+        assert _logging.getLogger().level == _logging.DEBUG
+
+
+# ---------------------------------------------------------------------------
+# _auto_select_default_output: default-output fallback
+# ---------------------------------------------------------------------------
+
+def _make_output(name="Test Speaker", out_id="1", selected=False):
+    out = MagicMock()
+    out.name = name
+    out.id = out_id
+    out.selected = selected
+    return out
+
+
+class TestAutoSelectDefaultOutput:
+    def test_returns_false_when_no_base_url(self):
+        mon = _make_monitor(owntone_base_url="")
+        result = mon._auto_select_default_output(time.time())
+        assert result is False
+
+    def test_returns_true_when_output_already_selected(self):
+        mon = _make_monitor()
+        selected_out = _make_output(selected=True)
+        with patch.object(mon, "_get_owntone_outputs", return_value=[selected_out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=True):
+            result = mon._auto_select_default_output(time.time())
+        assert result is True
+
+    def test_returns_false_when_outputs_fetch_fails(self):
+        mon = _make_monitor()
+        with patch.object(mon, "_get_owntone_outputs", return_value=None):
+            result = mon._auto_select_default_output(time.time())
+        assert result is False
+
+    def test_returns_false_when_no_default_name_configured(self):
+        mon = _make_monitor(owntone_output_name="")
+        out = _make_output(selected=False)
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False):
+            result = mon._auto_select_default_output(time.time())
+        assert result is False
+
+    def test_returns_false_when_named_output_not_found(self):
+        mon = _make_monitor(owntone_output_name="Missing Speaker")
+        out = _make_output(name="Other Speaker", selected=False)
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False):
+            result = mon._auto_select_default_output(time.time())
+        assert result is False
+
+    def test_calls_update_output_for_default(self):
+        mon = _make_monitor(owntone_output_name="Test Speaker", owntone_volume_percent=42)
+        out = _make_output(name="Test Speaker", out_id="77", selected=False)
+        ok_result = MagicMock()
+        ok_result.ok = True
+        ok_result.message = ""
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
+             patch.object(core, "update_output", return_value=ok_result) as mock_update:
+            result = mon._auto_select_default_output(time.time())
+        assert result is True
+        mock_update.assert_called_once()
+        call_kwargs = mock_update.call_args[1]
+        assert call_kwargs["enabled"] is True
+        assert call_kwargs["volume_percent"] == 42
+
+    def test_returns_false_when_update_output_fails(self):
+        mon = _make_monitor(owntone_output_name="Test Speaker")
+        out = _make_output(name="Test Speaker", out_id="77", selected=False)
+        fail_result = MagicMock()
+        fail_result.ok = False
+        fail_result.message = "timeout"
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
+             patch.object(core, "update_output", return_value=fail_result):
+            result = mon._auto_select_default_output(time.time())
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _on_capture_started / _on_capture_stopped: side-effect ordering
+# ---------------------------------------------------------------------------
+
+class TestCaptureStartOrdering:
+    def test_started_from_idle_calls_stop_then_retry(self):
+        mon = _make_monitor(owntone_base_url="http://localhost:3689")
+        order = []
+        mock_client = MagicMock(spec=MonitorClient)
+
+        with patch.object(core, "_stop_and_disable_owntone",
+                          side_effect=lambda url, reason: order.append("stop")), \
+             patch.object(mon, "_maybe_retry_owntone",
+                          side_effect=lambda now: order.append("retry")):
+            mon._on_capture_started(was_idle=True)
+
+        assert order.index("stop") < order.index("retry"), \
+            "_stop_and_disable_owntone must be called before _maybe_retry_owntone"
+
+    def test_started_not_idle_skips_stop(self):
+        mon = _make_monitor(owntone_base_url="http://localhost:3689")
+        stop_called = []
+        with patch.object(core, "_stop_and_disable_owntone",
+                          side_effect=lambda url, reason: stop_called.append(True)), \
+             patch.object(mon, "_maybe_retry_owntone"):
+            mon._on_capture_started(was_idle=False)
+        assert not stop_called
+
+    def test_started_resets_recognition_state(self):
+        mon = _make_monitor()
+        mon._recognition_inflight = True
+        mon._recognition_attempt_count = 5
+        with patch.object(mon, "_maybe_retry_owntone"):
+            mon._on_capture_started(was_idle=False)
+        assert mon._recognition_inflight is False
+        assert mon._recognition_attempt_count == 0
+
+
+class TestCaptureStopOrdering:
+    def test_stopped_calls_recognition_before_publish_end(self):
+        mon = _make_monitor(owntone_base_url="http://localhost:3689")
+        order = []
+        mock_client = MagicMock(spec=MonitorClient)
+
+        with patch.object(mon, "_trigger_recognition",
+                          side_effect=lambda client: order.append("recognition")), \
+             patch.object(mon._nowplaying_publisher, "publish_end",
+                          side_effect=lambda: order.append("publish_end")), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(mock_client)
+
+        assert order.index("recognition") < order.index("publish_end"), \
+            "_trigger_recognition must come before publish_end"
+
+    def test_stopped_requests_owntone_stop_when_no_other_capturing(self):
+        mon = _make_monitor(owntone_base_url="http://localhost:3689")
+        mock_client = MagicMock(spec=MonitorClient)
+        stop_calls = []
+
+        with patch.object(mon, "_trigger_recognition"), \
+             patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone",
+                          side_effect=lambda url, reason: stop_calls.append(url)):
+            mon._on_capture_stopped(mock_client)
+
+        assert stop_calls, "OwnTone stop must be requested when no other monitor is capturing"
+
+    def test_stopped_skips_owntone_stop_when_another_is_capturing(self):
+        mon = _make_monitor(owntone_base_url="http://localhost:3689")
+        mock_client = MagicMock(spec=MonitorClient)
+        stop_calls = []
+
+        with patch.object(mon, "_trigger_recognition"), \
+             patch.object(core, "any_monitor_capturing", return_value=True), \
+             patch.object(core, "_stop_and_disable_owntone",
+                          side_effect=lambda url, reason: stop_calls.append(url)):
+            mon._on_capture_stopped(mock_client)
+
+        assert not stop_calls, "OwnTone stop must be skipped when another monitor is still capturing"
+
+
+# ---------------------------------------------------------------------------
+# _sync_playing_announcement: mDNS zero-to-one and one-to-zero transitions
+# ---------------------------------------------------------------------------
+
+class TestSyncPlayingAnnouncement:
+    def setup_method(self):
+        core._playing_announced = False
+
+    def teardown_method(self):
+        core._playing_announced = False
+
+    def test_zero_to_one_writes_avahi_service(self):
+        mon = _make_monitor()
+        mon.is_capturing = True
+        with patch.object(core, "write_avahi_playing_service", return_value=True) as mock_write:
+            core._sync_playing_announcement([mon], "v1")
+        mock_write.assert_called_once_with("v1")
+        assert core._playing_announced is True
+
+    def test_write_failure_leaves_announced_false(self):
+        mon = _make_monitor()
+        mon.is_capturing = True
+        with patch.object(core, "write_avahi_playing_service", return_value=False):
+            core._sync_playing_announcement([mon], "v1")
+        assert core._playing_announced is False
+
+    def test_one_to_zero_removes_avahi_service(self):
+        core._playing_announced = True
+        mon = _make_monitor()
+        mon.is_capturing = False
+        with patch.object(core, "remove_avahi_playing_service", return_value=True) as mock_remove:
+            core._sync_playing_announcement([mon], "v1")
+        mock_remove.assert_called_once()
+        assert core._playing_announced is False
+
+    def test_remove_failure_leaves_announced_true(self):
+        core._playing_announced = True
+        mon = _make_monitor()
+        mon.is_capturing = False
+        with patch.object(core, "remove_avahi_playing_service", return_value=False):
+            core._sync_playing_announcement([mon], "v1")
+        assert core._playing_announced is True
+
+    def test_already_announced_skips_write(self):
+        core._playing_announced = True
+        mon = _make_monitor()
+        mon.is_capturing = True
+        with patch.object(core, "write_avahi_playing_service") as mock_write:
+            core._sync_playing_announcement([mon], "v1")
+        mock_write.assert_not_called()
+
+    def test_not_announced_and_not_capturing_skips_remove(self):
+        core._playing_announced = False
+        mon = _make_monitor()
+        mon.is_capturing = False
+        with patch.object(core, "remove_avahi_playing_service") as mock_remove:
+            core._sync_playing_announcement([mon], "v1")
+        mock_remove.assert_not_called()

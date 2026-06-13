@@ -433,20 +433,54 @@ class TestCommandEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestGetIdSnapshotLengths:
-    def test_negative_frames_returns_empty(self):
-        # frames <= 0 should return b"" (the production guard uses frames <= 0)
+    def test_negative_frames_disconnects(self):
         ack = json.dumps({"ok": True, "frames": -1}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0)
-        assert result == b""
+        assert result is None
+        assert not c.is_connected()
+
+    def test_string_frames_disconnects(self):
+        ack = json.dumps({"ok": True, "frames": "100"}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_bool_frames_disconnects(self):
+        ack = json.dumps({"ok": True, "frames": True}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_frames_exceeding_max_seconds_bound_disconnects(self):
+        # 22050 frames/s * 5 seconds = 110250; one more should reject
+        max_seconds = 5
+        frames = max_seconds * 22050 + 1
+        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0, max_seconds=max_seconds)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_frames_at_max_seconds_bound_accepted(self):
+        # Exactly at the bound is allowed
+        max_seconds = 5
+        frames = max_seconds * 22050
+        pcm = b"\x00\x01" * frames
+        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        c = _client(FakeSocket(ack.encode(), pcm))
+        result = c.get_id_snapshot(0, max_seconds=max_seconds)
+        assert result == pcm
 
     def test_excessive_frames_truncated_to_available_bytes(self):
-        # If the daemon claims more frames than it actually sends, _readbytes returns
-        # None on EOF. The caller gets None back.
-        ack = json.dumps({"ok": True, "frames": 10000}) + "\n"
-        # Only supply 4 bytes instead of 20000 (frames * 2)
+        # Daemon claims more frames than max_seconds allows: rejected before read
+        max_seconds = 1
+        frames = max_seconds * 22050 + 1000
+        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
         c = _client(FakeSocket(ack.encode(), b"\x00\x01\x00\x01"))
-        result = c.get_id_snapshot(0)
+        result = c.get_id_snapshot(0, max_seconds=max_seconds)
         assert result is None
         assert not c.is_connected()
 

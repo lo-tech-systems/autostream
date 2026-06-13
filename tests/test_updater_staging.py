@@ -487,6 +487,63 @@ def _make_traversal_tarball(tmp_path: Path) -> Path:
     return tar_path
 
 
+def _make_absolute_path_tarball(tmp_path: Path) -> Path:
+    """Build a tarball with a member whose name is an absolute path."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="/absolute/injected.sh")
+        content = b"#!/bin/sh\nexit 0\n"
+        info.size = len(content)
+        info.mode = 0o755
+        tf.addfile(info, io.BytesIO(content))
+    buf.seek(0)
+    tar_path = tmp_path / "abspath.tgz"
+    tar_path.write_bytes(buf.getvalue())
+    return tar_path
+
+
+def _make_symlink_tarball(tmp_path: Path) -> Path:
+    """Build a tarball containing a symlink member pointing outside."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="evil_link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        info.size = 0
+        tf.addfile(info)
+    buf.seek(0)
+    tar_path = tmp_path / "symlink.tgz"
+    tar_path.write_bytes(buf.getvalue())
+    return tar_path
+
+
+def _make_device_tarball(tmp_path: Path) -> Path:
+    """Build a tarball containing a block-device member."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="evil_dev")
+        info.type = tarfile.BLKTYPE
+        info.size = 0
+        tf.addfile(info)
+    buf.seek(0)
+    tar_path = tmp_path / "device.tgz"
+    tar_path.write_bytes(buf.getvalue())
+    return tar_path
+
+
+def _with_dial_lock(mod):
+    """Context manager that sets up the fcntl mock for the dial updater."""
+    @contextmanager
+    def _ctx():
+        with patch.object(mod, "fcntl") as mk:
+            mk.LOCK_EX = 2
+            mk.LOCK_NB = 4
+            mk.LOCK_UN = 8
+            mk.flock.return_value = None
+            yield mk
+    return _ctx()
+
+
 def _with_host_lock(mod):
     """Context manager that sets up the fcntl mock and tracks flock calls."""
     @contextmanager
@@ -505,6 +562,57 @@ class TestHostTraversalRejected:
         """A tarball with '../' path traversal must not be staged."""
         mod = _load_host(tmp_path)
         tar = _make_traversal_tarball(tmp_path)
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_update_unit_active", return_value=False), \
+             _with_host_lock(mod):
+            result = mod.cmd_apply(auto=False)
+        assert result["ok"] is False
+        assert result.get("error") == "Release staging failed"
+
+    def test_absolute_path_tarball_returns_staging_error(self, tmp_path):
+        """A tarball with absolute-path members must not be staged."""
+        mod = _load_host(tmp_path)
+        tar = _make_absolute_path_tarball(tmp_path)
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_update_unit_active", return_value=False), \
+             _with_host_lock(mod):
+            result = mod.cmd_apply(auto=False)
+        assert result["ok"] is False
+        assert result.get("error") == "Release staging failed"
+
+    def test_symlink_member_tarball_returns_staging_error(self, tmp_path):
+        """A tarball containing a symlink must not be staged."""
+        mod = _load_host(tmp_path)
+        tar = _make_symlink_tarball(tmp_path)
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_update_unit_active", return_value=False), \
+             _with_host_lock(mod):
+            result = mod.cmd_apply(auto=False)
+        assert result["ok"] is False
+        assert result.get("error") == "Release staging failed"
+
+    def test_device_member_tarball_returns_staging_error(self, tmp_path):
+        """A tarball containing a block device must not be staged."""
+        mod = _load_host(tmp_path)
+        tar = _make_device_tarball(tmp_path)
         with _unit_inactive(mod), \
              patch.object(mod, "_resolve_release", return_value=_fake_release()), \
              _no_installed(mod), \
@@ -594,6 +702,52 @@ class TestHostLockRelease:
         assert result["ok"] is False
         assert 8 in flock_calls, "LOCK_UN (8) must be called even on scheduling failure"
 
+    def _run_tracking_close(self, mod, tar_path, run_rc=0):
+        """Run cmd_apply tracking os.close() calls."""
+        FAKE_FD = 777
+        close_calls = []
+
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
+             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(mod, "_update_unit_active", return_value=False), \
+             patch.object(mod, "fcntl") as mk_fcntl, \
+             patch("os.open", return_value=FAKE_FD), \
+             patch("os.close", side_effect=lambda fd: close_calls.append(fd)):
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.return_value = None
+            result = mod.cmd_apply(auto=False)
+
+        return result, FAKE_FD, close_calls
+
+    def test_lock_fd_closed_on_success(self, tmp_path):
+        mod = _load_host(tmp_path)
+        tar = _make_tarball(tmp_path)
+        result, fake_fd, close_calls = self._run_tracking_close(mod, tar, run_rc=0)
+        assert result["ok"] is True
+        assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on success"
+
+    def test_lock_fd_closed_on_staging_failure(self, tmp_path):
+        mod = _load_host(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="wrong.sh")
+        result, fake_fd, close_calls = self._run_tracking_close(mod, tar, run_rc=0)
+        assert result["ok"] is False
+        assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on staging failure"
+
+    def test_lock_fd_closed_on_scheduling_failure(self, tmp_path):
+        mod = _load_host(tmp_path)
+        tar = _make_tarball(tmp_path)
+        result, fake_fd, close_calls = self._run_tracking_close(mod, tar, run_rc=1)
+        assert result["ok"] is False
+        assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on scheduling failure"
+
 
 # ---------------------------------------------------------------------------
 # Dial: happy path
@@ -621,3 +775,107 @@ class TestDialApplySuccess:
             result = mod.cmd_apply(auto=False)
         assert result["ok"] is True
         assert result.get("staged_tag") == "1.2.3"
+
+
+# ---------------------------------------------------------------------------
+# Dial: path traversal and absolute-path tarballs rejected
+# ---------------------------------------------------------------------------
+
+class TestDialTraversalRejected:
+    def _run_dial_staging(self, mod, tar):
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_dial_update_unit_active", return_value=False), \
+             _with_dial_lock(mod):
+            return mod.cmd_apply(auto=False)
+
+    def test_traversal_tarball_returns_staging_error(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_traversal_tarball(tmp_path)
+        result = self._run_dial_staging(mod, tar)
+        assert result["ok"] is False
+
+    def test_absolute_path_tarball_returns_staging_error(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_absolute_path_tarball(tmp_path)
+        result = self._run_dial_staging(mod, tar)
+        assert result["ok"] is False
+
+    def test_symlink_member_tarball_returns_staging_error(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_symlink_tarball(tmp_path)
+        result = self._run_dial_staging(mod, tar)
+        assert result["ok"] is False
+
+    def test_device_member_tarball_returns_staging_error(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_device_tarball(tmp_path)
+        result = self._run_dial_staging(mod, tar)
+        assert result["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Dial: lock release (LOCK_UN + os.close) on success and error paths
+# ---------------------------------------------------------------------------
+
+class TestDialLockRelease:
+    def _run_tracking_close(self, mod, tar_path, run_rc=0):
+        FAKE_FD = 888
+        close_calls = []
+        flock_calls = []
+
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
+             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(mod, "_dial_update_unit_active", return_value=False), \
+             patch.object(mod, "fcntl") as mk_fcntl, \
+             patch("os.open", return_value=FAKE_FD), \
+             patch("os.close", side_effect=lambda fd: close_calls.append(fd)):
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.side_effect = lambda fd, flags: flock_calls.append(flags)
+            result = mod.cmd_apply(auto=False)
+
+        return result, FAKE_FD, flock_calls, close_calls
+
+    def test_lock_released_with_LOCK_UN_on_success(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        result, _, flock_calls, _ = self._run_tracking_close(mod, tar, run_rc=0)
+        assert result["ok"] is True
+        assert 8 in flock_calls, "LOCK_UN (8) must be called on dial success"
+
+    def test_lock_fd_closed_on_success(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        result, fake_fd, _, close_calls = self._run_tracking_close(mod, tar, run_rc=0)
+        assert result["ok"] is True
+        assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on dial success"
+
+    def test_lock_fd_closed_on_staging_failure(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="wrong.sh", include_system=False)
+        result, fake_fd, _, close_calls = self._run_tracking_close(mod, tar, run_rc=0)
+        assert result["ok"] is False
+        assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on dial staging failure"
+
+    def test_lock_fd_closed_on_scheduling_failure(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        result, fake_fd, _, close_calls = self._run_tracking_close(mod, tar, run_rc=1)
+        assert result["ok"] is False
+        assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on dial scheduling failure"

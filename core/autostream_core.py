@@ -1101,8 +1101,18 @@ class MonitorClient:
             if not resp or not resp.get("ok"):
                 return None
             frames = resp.get("frames", 0)
-            if frames <= 0:
+            if not isinstance(frames, int) or isinstance(frames, bool):
+                self.close()
+                return None
+            if frames < 0:
+                self.close()
+                return None
+            if frames == 0:
                 return b""
+            max_frames = max_seconds * 22050
+            if frames > max_frames:
+                self.close()
+                return None
             return self._readbytes(frames * 2)
 
 
