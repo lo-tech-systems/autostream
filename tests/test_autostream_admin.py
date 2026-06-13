@@ -433,6 +433,39 @@ class TestReadUpdateStatus:
         data = json.loads(out.strip())
         assert data["percent"] == 100
 
+    def test_log_tail_bounded_to_configured_lines(self, tmp_path):
+        """_read_log_tail returns at most _LOG_TAIL_LINES lines."""
+        log_file = tmp_path / "install.log"
+        # Write more lines than the limit
+        n_lines = m._LOG_TAIL_LINES + 20
+        log_file.write_bytes(b"\n".join(f"line {i}".encode() for i in range(n_lines)))
+        with patch.object(m, "_INSTALL_LOG", log_file):
+            result = m._read_log_tail()
+        actual_lines = [l for l in result.splitlines() if l]
+        assert len(actual_lines) <= m._LOG_TAIL_LINES
+
+    def test_log_tail_strips_ansi_escape_sequences(self, tmp_path):
+        log_file = tmp_path / "install.log"
+        log_file.write_bytes(b"\x1b[32mGreen text\x1b[0m\nPlain text\n")
+        with patch.object(m, "_INSTALL_LOG", log_file):
+            result = m._read_log_tail()
+        assert "\x1b" not in result
+        assert "Green text" in result
+        assert "Plain text" in result
+
+    def test_log_tail_tolerates_invalid_utf8(self, tmp_path):
+        log_file = tmp_path / "install.log"
+        log_file.write_bytes(b"valid line\n\xff\xfe invalid bytes\nfinal line\n")
+        with patch.object(m, "_INSTALL_LOG", log_file):
+            result = m._read_log_tail()
+        assert "valid line" in result
+        assert "final line" in result
+
+    def test_log_tail_missing_file_returns_empty(self, tmp_path):
+        with patch.object(m, "_INSTALL_LOG", tmp_path / "nonexistent.log"):
+            result = m._read_log_tail()
+        assert result == ""
+
     def test_malformed_percent_defaults_to_zero(self, tmp_path, capsys):
         result_file = tmp_path / "update-result.env"
         result_file.write_text(
@@ -446,3 +479,137 @@ class TestReadUpdateStatus:
         out = capsys.readouterr().out
         data = json.loads(out.strip())
         assert data["percent"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Factory reset scheduling: _schedule_factory_reset
+# ---------------------------------------------------------------------------
+
+class TestScheduleFactoryReset:
+    def test_no_systemd_run_returns_false(self):
+        with patch.object(m, "find_systemd_run", return_value=None):
+            result = m._schedule_factory_reset()
+        assert result is False
+
+    def test_systemd_run_success_returns_true(self):
+        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")):
+            result = m._schedule_factory_reset()
+        assert result is True
+
+    def test_systemd_run_failure_returns_false(self):
+        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch.object(m, "run_cmd", return_value=(1, "", "permission denied")):
+            result = m._schedule_factory_reset()
+        assert result is False
+
+    def test_command_includes_execute_flag(self):
+        captured_cmds = []
+
+        def fake_run_cmd(cmd, *a, **kw):
+            captured_cmds.append(cmd)
+            return (0, "", "")
+
+        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch.object(m, "run_cmd", side_effect=fake_run_cmd):
+            m._schedule_factory_reset()
+
+        assert captured_cmds
+        cmd_str = " ".join(captured_cmds[0])
+        assert "--execute" in cmd_str or "factory-reset" in cmd_str
+
+    def test_command_includes_systemd_run_path(self):
+        captured_cmds = []
+
+        def fake_run_cmd(cmd, *a, **kw):
+            captured_cmds.append(cmd)
+            return (0, "", "")
+
+        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch.object(m, "run_cmd", side_effect=fake_run_cmd):
+            m._schedule_factory_reset()
+
+        assert captured_cmds[0][0] == "/usr/bin/systemd-run"
+
+
+# ---------------------------------------------------------------------------
+# _execute_factory_reset: stop ordering and best-effort failures
+# ---------------------------------------------------------------------------
+
+class TestExecuteFactoryReset:
+    def _base_patches(self, tmp_path, reboot_ok=True):
+        """Return a context-manager dict that patches away all side-effects."""
+        reboot_bin = tmp_path / "reboot"
+        reboot_bin.write_text("#!/bin/sh\n")
+
+        return {
+            "_acquire_reset_lock": patch.object(m, "_acquire_reset_lock",
+                                                return_value=object()),  # non-None
+            "_rotate_logs": patch.object(m, "_rotate_logs"),
+            "_stop_service": patch.object(m, "_stop_service", return_value=True),
+            "_stop_owntone": patch.object(m, "_stop_owntone"),
+            "_sync_owntone_conf": patch.object(m, "_sync_owntone_conf"),
+            "_delete_reset_files": patch.object(m, "_delete_reset_files"),
+            "_delete_wifi_connections": patch.object(m, "_delete_wifi_connections"),
+            "reboot_bin": patch.object(m.Path("/sbin/reboot"), "exists",
+                                       return_value=True) if hasattr(m.Path, "exists") else None,
+            "run_cmd": patch.object(m, "run_cmd",
+                                    return_value=(0 if reboot_ok else 1, "", "")),
+        }
+
+    def test_stop_service_autostream_called_first(self, tmp_path):
+        order = []
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_rotate_logs"), \
+             patch.object(m, "_stop_service",
+                          side_effect=lambda name: order.append(name) or True), \
+             patch.object(m, "_stop_owntone",
+                          side_effect=lambda: order.append("_stop_owntone")), \
+             patch.object(m, "_sync_owntone_conf"), \
+             patch.object(m, "_delete_reset_files"), \
+             patch.object(m, "_delete_wifi_connections"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")), \
+             patch("pathlib.Path.exists", return_value=True):
+            m._execute_factory_reset()
+
+        # autostream.service must be stopped before wifi_watcher
+        assert "autostream.service" in order
+        assert "autostream_wifi_watcher.service" in order
+        assert order.index("autostream.service") < order.index("autostream_wifi_watcher.service")
+        # Both must precede _stop_owntone
+        assert "_stop_owntone" in order
+        assert order.index("autostream_wifi_watcher.service") < order.index("_stop_owntone")
+
+    def test_no_reboot_binary_returns_false(self):
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_rotate_logs"), \
+             patch.object(m, "_stop_service", return_value=True), \
+             patch.object(m, "_stop_owntone"), \
+             patch.object(m, "_sync_owntone_conf"), \
+             patch.object(m, "_delete_reset_files"), \
+             patch.object(m, "_delete_wifi_connections"), \
+             patch("pathlib.Path.exists", return_value=False):
+            result = m._execute_factory_reset()
+        assert result is False
+
+    def test_continues_despite_best_effort_stop_failure(self, tmp_path):
+        """Even when _stop_service fails, the sequence continues to reboot."""
+        delete_called = []
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_rotate_logs"), \
+             patch.object(m, "_stop_service", return_value=False), \
+             patch.object(m, "_stop_owntone"), \
+             patch.object(m, "_sync_owntone_conf"), \
+             patch.object(m, "_delete_reset_files",
+                          side_effect=lambda: delete_called.append(True)), \
+             patch.object(m, "_delete_wifi_connections"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")), \
+             patch("pathlib.Path.exists", return_value=True):
+            result = m._execute_factory_reset()
+        # _delete_reset_files must still be called even if stop failed
+        assert delete_called, "_delete_reset_files must be called despite stop failure"
+
+    def test_lock_not_held_aborts(self):
+        with patch.object(m, "_acquire_reset_lock", return_value=None):
+            result = m._execute_factory_reset()
+        assert result is False
