@@ -26,10 +26,17 @@ if _tools not in sys.path:
 
 # pwd and grp are Unix-only; stub them before importing the migration script
 # so tests run on any platform (the real calls are patched out in fixtures).
-if "pwd" not in sys.modules:
+# The stub is removed from sys.modules immediately after import so that
+# tarfile (imported later by test_updater_staging) doesn't pick up a MagicMock
+# as its `pwd` reference and corrupt tar header assembly.
+_pwd_injected = "pwd" not in sys.modules
+if _pwd_injected:
     sys.modules["pwd"] = MagicMock()
 
 import autostream_migrate as m
+
+if _pwd_injected:
+    sys.modules.pop("pwd", None)
 
 
 # ---------------------------------------------------------------------------
