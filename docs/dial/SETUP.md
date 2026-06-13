@@ -86,6 +86,30 @@ service and repeat from step 2.
 
 ---
 
+## Offline Recovery
+
+If the dial's main service (`autostream_dial`) is unavailable — due to a crash,
+an in-progress firmware update, or a reboot triggered from the setup page — the
+browser shows a branded **offline recovery page** instead of an error.
+
+The recovery page offers four actions:
+
+| Button | Effect |
+|--------|--------|
+| **Retry** | Refreshes the page to check whether the service has restarted. |
+| **Download Logs** | Downloads a ZIP of the dial and Wi-Fi setup logs (`dial-*.log`, `wifi_setup.log`) to help diagnose the problem. |
+| **Reboot** | Triggers a graceful reboot. The page transitions to a *rebooting* holding page and polls until the dial service returns. |
+| **Factory Reset** | Shows a confirmation step, then performs a factory reset — erasing Wi-Fi credentials and dial settings — before rebooting. After reboot, reconnect to the `autostream-dial_XXXX` hotspot to reconfigure. |
+
+### During a firmware update
+
+While a firmware update is in progress, the browser is automatically redirected
+to an **updating** page that polls the update state and shows progress. The page
+redirects back to the setup page automatically once the update completes and the
+service restarts.
+
+---
+
 ## Firmware Updates
 
 The **Firmware** card on the setup page shows the installed version and lets you
