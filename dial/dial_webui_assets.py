@@ -14,6 +14,9 @@ SETUP_PAGE_HTML = """\
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>autostream dial</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
   <style>
     :root {
       --bg:       #0f0f13;
@@ -71,6 +74,8 @@ SETUP_PAGE_HTML = """\
 </head>
 <body>
 <div class="hdr">
+  <img src="/autostream-dial-badge.png" alt="autostream dial"
+       style="height:32px;display:block;margin-bottom:0.4rem;">
   <div class="hdr-t">autostream dial</div>
   <div class="hdr-s" id="hdr-s">Loading…</div>
 </div>
