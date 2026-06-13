@@ -22,9 +22,16 @@ import pytest
 try:
     import requests as _requests_real  # noqa: F401
 except ImportError:
-    # Real package not installed: provide a minimal stub so modules that
-    # import requests at module level don't crash during collection.
-    sys.modules.setdefault("requests", MagicMock())
+    # Real package not installed: provide a stub that is safe for both normal
+    # use (return-value mocking) and exception-path tests.  The exception
+    # classes must inherit from BaseException so that `except requests.Foo`
+    # clauses work correctly in the production code under test.
+    _stub = MagicMock()
+    _stub.RequestException = type("RequestException", (IOError,), {})
+    _stub.ConnectionError = type("ConnectionError", (_stub.RequestException,), {})
+    _stub.Timeout = type("Timeout", (_stub.RequestException,), {})
+    _stub.HTTPError = type("HTTPError", (_stub.RequestException,), {})
+    sys.modules.setdefault("requests", _stub)
 
 
 # ---------------------------------------------------------------------------
