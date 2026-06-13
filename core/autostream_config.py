@@ -274,10 +274,21 @@ class OutputEqConfig:
     peq6_db: float
 
 
+def normalize_update_channel(value: object) -> str:
+    """Return 'dev' only when *value* normalises to 'dev'; otherwise 'stable'.
+
+    Identical semantics to the private normaliser in autostream_update_support
+    but lives here so application code can use it without importing the
+    root-only supervisor module.
+    """
+    return "dev" if str(value or "").strip().lower() == "dev" else "stable"
+
+
 @dataclass(frozen=True)
 class UpdatesConfig:
     """Autonomous update settings (JSON section updates)."""
     auto_update: bool
+    update_channel: str
 
 
 @dataclass(frozen=True)
@@ -406,6 +417,7 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
     updates_d = data.get("updates") or {}
     updates = UpdatesConfig(
         auto_update=bool(updates_d.get("auto_update", False)),
+        update_channel=normalize_update_channel(updates_d.get("update_channel")),
     )
 
     return AutostreamConfig(

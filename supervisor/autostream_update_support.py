@@ -20,13 +20,34 @@ from typing import Optional, Tuple
 
 REPO_OWNER = "lo-tech-systems"
 REPO_NAME  = "autostream"
-API_LATEST    = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
+API_LATEST    = (
+    "https://api.github.com/repos/"
+    f"{REPO_OWNER}/{REPO_NAME}/releases/latest"
+)
+API_RELEASES  = (
+    "https://api.github.com/repos/"
+    f"{REPO_OWNER}/{REPO_NAME}/releases?per_page=1"
+)
 RELEASES_HTML = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases"
 
 FLOCK_BIN             = "/usr/bin/flock"
 SYSTEMDRUN_CANDIDATES = ("/bin/systemd-run", "/usr/bin/systemd-run")
 
-_semver_re = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$")
+# Matches vMAJOR[.MINOR[.PATCH]][-LABEL[.N]][+build] — groups:
+#   1=major, 2=minor, 3=patch, 4=prerelease-label, 5=prerelease-number
+_semver_re = re.compile(
+    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?"
+    r"(?:-([a-zA-Z][a-zA-Z0-9]*)(?:\.(\d+))?)?(?:\+.*)?$"
+)
+
+# Ordered label → rank; unknown labels get 0 (below all recognised labels
+# and below final releases).
+_LABEL_RANK: dict[str, int] = {"alpha": 1, "beta": 2, "rc": 3}
+
+
+def _normalise_update_channel(value: object) -> str:
+    """Return 'dev' only when *value* normalises to 'dev'; otherwise 'stable'."""
+    return "dev" if str(value or "").strip().lower() == "dev" else "stable"
 
 
 def _run(cmd: list[str], timeout: int = 60) -> Tuple[int, str, str]:
@@ -59,12 +80,40 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return data
 
 
-def _version_key(v: str) -> Tuple[int, int, int, str]:
-    """Return a comparison key for vMAJOR.MINOR.PATCH style tags."""
-    m = _semver_re.match((v or "").strip())
+def _version_key(v: str) -> Tuple[int, int, int, int, int, int, str]:
+    """Return a 7-element comparison key with correct prerelease ordering.
+
+    Shape: (major, minor, patch, final_rank, label_rank, prerelease_number, suffix)
+
+    - final_rank=1 for a final release, 0 for a prerelease — ensures final
+      releases sort above any prerelease of the same version.
+    - label_rank orders alpha(1) < beta(2) < rc(3); unknown labels get 0,
+      sorting below the recognised progression and below the final release.
+    - prerelease_number is the integer after the label dot (e.g. beta.10 → 10),
+      defaulting to 0 when absent.  This ensures beta.2 < beta.10.
+    - suffix is the raw normalised tag used only as a deterministic tie-break.
+    - Build metadata after '+' does not affect ordering.
+    - Missing minor/patch components are treated as 0.
+    - Malformed tags return (0, 0, 0, 0, 0, 0, raw_tag) — safe and ordered
+      below every well-formed tag.
+    """
+    tag = (v or "").strip()
+    m = _semver_re.match(tag)
     if not m:
-        return (0, 0, 0, v or "")
-    return (int(m.group(1) or 0), int(m.group(2) or 0), int(m.group(3) or 0), v or "")
+        return (0, 0, 0, 0, 0, 0, tag)
+    major = int(m.group(1) or 0)
+    minor = int(m.group(2) or 0)
+    patch = int(m.group(3) or 0)
+    label = (m.group(4) or "").lower()
+    pre_n = int(m.group(5) or 0)
+    # Build a canonical suffix from the parsed components so that v1.3.0, 1.3.0,
+    # and 1.3 all produce the same tuple (equal for ordering purposes).
+    if not label:
+        norm_suffix = f"{major}.{minor}.{patch}"
+        return (major, minor, patch, 1, 0, 0, norm_suffix)
+    label_rank = _LABEL_RANK.get(label, 0)
+    norm_suffix = f"{major}.{minor}.{patch}-{label}.{pre_n}"
+    return (major, minor, patch, 0, label_rank, pre_n, norm_suffix)
 
 
 def _sanitise_release_notes(text: str, max_len: int = 200) -> str:
@@ -74,35 +123,64 @@ def _sanitise_release_notes(text: str, max_len: int = 200) -> str:
     return cleaned[:max_len].strip()
 
 
+def _parse_release_object(
+    data: dict,
+) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Parse a GitHub release JSON object into (tag, tarball_url, html_url, notes)."""
+    tag     = data.get("tag_name")
+    tarball = data.get("tarball_url")
+    html    = data.get("html_url")
+    raw_body = data.get("body") or ""
+    notes   = _sanitise_release_notes(str(raw_body)) if raw_body else None
+    return (
+        str(tag)     if tag     else None,
+        str(tarball) if tarball else None,
+        str(html)    if html    else None,
+        notes,
+    )
+
+
 def _github_latest_release(
     ua: str,
-) -> Tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    channel: str = "stable",
+) -> Tuple[
+    bool,
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+]:
     """Return (reachable, tag_name, tarball_url, html_url, release_notes).
 
     reachable is False when the API call itself fails (network error or a
     non-404 HTTP error).  reachable is True when the API responded, even if
-    there is no published release (404 or empty tag_name).  Callers must
-    check reachable before treating a missing tag as "no releases yet".
+    there is no published release (404 or empty tag_name/list).  Callers
+    must check reachable before treating a missing tag as "no releases yet".
+
+    channel is normalised before use:
+      stable → uses /releases/latest (JSON object)
+      dev    → uses /releases?per_page=1 (JSON list, first item)
     """
+    channel = _normalise_update_channel(channel)
     try:
-        status, raw = _http_get(API_LATEST, ua, timeout=20)
-        if status == 404:
-            return True, None, None, None, None
-        data = json.loads(raw.decode("utf-8", errors="replace"))
-        tag      = data.get("tag_name")
-        tarball  = data.get("tarball_url")
-        html     = data.get("html_url")
-        raw_body = data.get("body") or ""
-        notes    = _sanitise_release_notes(str(raw_body)) if raw_body else None
+        if channel == "dev":
+            _status, raw = _http_get(API_RELEASES, ua, timeout=20)
+            data_list = json.loads(raw.decode("utf-8", errors="replace"))
+            if not isinstance(data_list, list):
+                return False, None, None, None, None
+            if not data_list:
+                # API reachable but no published release exists.
+                return True, None, None, None, None
+            tag, tarball, html, notes = _parse_release_object(data_list[0])
+        else:
+            _status, raw = _http_get(API_LATEST, ua, timeout=20)
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+            tag, tarball, html, notes = _parse_release_object(data)
+
         if not tag:
-            return True, None, None, (str(html) if html else None), notes
-        return (
-            True,
-            str(tag),
-            (str(tarball) if tarball else None),
-            (str(html) if html else None),
-            notes,
-        )
+            return True, None, None, html, notes
+        return True, tag, tarball, html, notes
+
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return True, None, None, None, None

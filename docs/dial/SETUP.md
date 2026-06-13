@@ -145,3 +145,30 @@ playback on the network, not whether volume is changing.
 sudo systemctl start autostream_dial_wifi_watcher
 ```
 Connect to `autostream-dial_SETUP` and enter the new credentials.
+
+---
+
+## Update Channels
+
+Each dial has its own update channel setting — it is independent of the main appliance and of any other dials on the network.
+
+### Channels
+
+- **stable** (default) — only full GitHub releases.
+- **dev** — the most recently published release, including pre-releases.
+
+### Changing the channel
+
+You can change the dial's update channel in two ways:
+
+**From the dial's own Setup page:**
+Open `http://<dial-hostname>.local/` in a browser, scroll to the **Device** card, and toggle **Pre-release updates**. Tap **Save**.
+
+**From the main appliance Setup page:**
+Open the main autostream Setup page, find the online dial card, and toggle **Pre-release updates** for that dial. The change is saved through the same PIN-protected configuration flow used for all other dial settings.
+
+### Behaviour
+
+- The setting persists locally on the dial and continues to work while the main appliance is offline.
+- Manual and automatic checks both use the dial's locally configured channel.
+- Switching to stable does not automatically downgrade an installed pre-release. A later numerically newer stable release will be offered normally.

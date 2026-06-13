@@ -20,18 +20,24 @@ SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
 INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 
 
+def _normalise_dial_channel(value: object) -> str:
+    """Return 'dev' only when *value* normalises to 'dev'; otherwise 'stable'."""
+    return "dev" if str(value or "").strip().lower() == "dev" else "stable"
+
+
 @dataclass
 class DialConfig:
-    clk_gpio:     int        = 17
-    dt_gpio:      int        = 27
-    sw_gpio:      int | None = None
-    led_gpio:     int | None = None
-    port:         int        = 7842
-    uuid:         str        = ''
-    step_percent: int        = 2
-    name:         str        = ''
-    pin:          str        = ''
-    auto_update:  bool       = False
+    clk_gpio:       int        = 17
+    dt_gpio:        int        = 27
+    sw_gpio:        int | None = None
+    led_gpio:       int | None = None
+    port:           int        = 7842
+    uuid:           str        = ''
+    step_percent:   int        = 2
+    name:           str        = ''
+    pin:            str        = ''
+    auto_update:    bool       = False
+    update_channel: str        = 'stable'
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -71,10 +77,11 @@ def load_config() -> DialConfig:
 
     if SETTINGS_PATH.exists():
         s = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
-        cfg.step_percent = s.get('step_percent', cfg.step_percent)
-        cfg.name         = s.get('name',         cfg.name)
-        cfg.pin          = s.get('pin',             cfg.pin)
-        cfg.auto_update  = s.get('auto_update',   cfg.auto_update)
+        cfg.step_percent   = s.get('step_percent',   cfg.step_percent)
+        cfg.name           = s.get('name',           cfg.name)
+        cfg.pin            = s.get('pin',            cfg.pin)
+        cfg.auto_update    = s.get('auto_update',    cfg.auto_update)
+        cfg.update_channel = _normalise_dial_channel(s.get('update_channel', cfg.update_channel))
 
     if not cfg.uuid:
         state = _read_env_file(INSTALL_STATE_PATH)
@@ -98,10 +105,11 @@ def save_config(cfg: DialConfig) -> None:
     each get a unique temp file; chmod 0600 before any data is written.
     """
     data = {
-        'step_percent': cfg.step_percent,
-        'name':         cfg.name,
-        'pin':          cfg.pin,
-        'auto_update':  cfg.auto_update,
+        'step_percent':   cfg.step_percent,
+        'name':           cfg.name,
+        'pin':            cfg.pin,
+        'auto_update':    cfg.auto_update,
+        'update_channel': cfg.update_channel,
     }
     with _save_lock:
         fd, tmp_path = tempfile.mkstemp(dir=SETTINGS_PATH.parent, suffix='.tmp')

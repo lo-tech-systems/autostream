@@ -245,11 +245,12 @@ class DialHTTPServer:
                     with dial_server._cfg_lock:
                         cfg = dial_server._cfg
                     self._send_json(200, {
-                        'step_percent': cfg.step_percent,
-                        'pin_set':      bool(cfg.pin),
-                        'name':         cfg.name,
-                        'version':      VERSION,
-                        'auto_update':  cfg.auto_update,
+                        'step_percent':   cfg.step_percent,
+                        'pin_set':        bool(cfg.pin),
+                        'name':           cfg.name,
+                        'version':        VERSION,
+                        'auto_update':    cfg.auto_update,
+                        'update_channel': cfg.update_channel,
                     })
 
                 elif self.path == '/recovery_status':
@@ -302,7 +303,7 @@ class DialHTTPServer:
                     cfg = dial_server._cfg
                 new_cfg = copy.copy(cfg)
 
-                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update'))
+                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel'))
 
                 # PIN auth
                 if cfg.pin and changing_protected:
@@ -359,6 +360,17 @@ class DialHTTPServer:
                         return
                     new_cfg.auto_update = v
 
+                if 'update_channel' in obj:
+                    v = obj['update_channel']
+                    if not isinstance(v, str):
+                        self._send_json(400, {'ok': False, 'error': 'invalid_update_channel'})
+                        return
+                    v_norm = v.strip().lower()
+                    if v_norm not in ('stable', 'dev'):
+                        self._send_json(400, {'ok': False, 'error': 'invalid_update_channel'})
+                        return
+                    new_cfg.update_channel = v_norm
+
                 if 'new_pin' in obj:
                     p = obj['new_pin']
                     if isinstance(p, str) and p:
@@ -413,8 +425,8 @@ class DialHTTPServer:
                         return
 
                 logging.info(
-                    "config updated: name=%r step=%d auto_update=%s",
-                    new_cfg.name, new_cfg.step_percent, new_cfg.auto_update,
+                    "config updated: name=%r step=%d auto_update=%s update_channel=%s",
+                    new_cfg.name, new_cfg.step_percent, new_cfg.auto_update, new_cfg.update_channel,
                 )
                 self._send_json(200, {'ok': True})
 

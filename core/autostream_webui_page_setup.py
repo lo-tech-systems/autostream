@@ -274,6 +274,13 @@ def _dial_card_online_html(entry, sighting, app_version: str) -> str:
             </label>
             <span>Auto-update</span>
           </div>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" class="dial-channel" data-dial-action="save-config">
+              <span class="switch"></span>
+            </label>
+            <span>Pre-release updates</span>
+          </div>
           <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
             <button type="button" class="pill-btn small"
                     data-dial-action="change-pin">Change PIN</button>
@@ -326,8 +333,10 @@ def send_setup_page(
           </button>
         """
     _auto_update_checked = " checked" if parsed.updates.auto_update else ""
+    _prerelease_checked = " checked" if parsed.updates.update_channel == "dev" else ""
     update_html = "" if initial_setup else f"""
           <input type="hidden" name="updates_auto_update_present" value="1">
+          <input type="hidden" name="updates_channel_present" value="1">
           <label>Updates:
             <div style="display:flex;align-items:center;margin-top:.5rem">
               <button type="button" id="btnCheck" class="pill-btn small" style="margin-right:auto">Check</button>
@@ -344,6 +353,14 @@ def send_setup_page(
             </label>
             <span>Automatic updates</span>
           </div>
+          <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked}>
+              <span class="switch"></span>
+            </label>
+            <span>Enable pre-release updates</span>
+          </div>
+          <div style="font-size:0.75rem;color:#888;margin-top:0.25rem;">Pre-release versions may be less stable.</div>
           <div style="margin-top:0.75rem;">
             <button type="button" id="btnChangePin" class="pill-btn small" style="width:100%;">Change PIN</button>
           </div>
@@ -687,6 +704,8 @@ def send_setup_page(
         speaker = str(parsed.owntone.output_name or "No speaker selected")
         playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
         _au_state = "Auto-update: On" if parsed.updates.auto_update else "Auto-update: Off"
+        if parsed.updates.update_channel == "dev":
+            _au_state += " - Pre-release channel"
         system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
         customise_summary = html.escape(
             ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
@@ -1279,7 +1298,9 @@ def send_setup_page(
             try {{
               const r = await fetch("/api/update/check"); const j = await r.json();
               if(j.ok && j.update_available){{
-                cand=j.candidate; msg("Update available: "+j.candidate);
+                cand=j.candidate;
+                var chanNote = j.channel === "dev" ? " (pre-release channel)" : "";
+                msg("Update available: " + j.candidate + chanNote);
                 notes(j.release_notes||""); bInst.disabled=false;
               }} else {{ msg(j.ok?"No updates available.":"Check failed."); }}
             }} catch(e) {{ msg("Check failed."); }}
@@ -1493,6 +1514,7 @@ def send_setup_page(
           var nameEl = card.querySelector('.dial-name');
           var stepEl = card.querySelector('.dial-step');
           var autoEl = card.querySelector('.dial-autoupdate');
+          var chanEl = card.querySelector('.dial-channel');
           var body = {{uuid: uuid}};
           if (nameEl) body.name = nameEl.value.trim();
           if (stepEl) {{
@@ -1504,6 +1526,7 @@ def send_setup_page(
             body.step_percent = step;
           }}
           if (autoEl) body.auto_update = autoEl.checked;
+          if (chanEl) body.update_channel = chanEl.checked ? 'dev' : 'stable';
           if (card.dataset.pinSet === 'true') {{
             var currentPin = window.prompt('Enter the current dial PIN to save this change:');
             if (currentPin === null) return;
@@ -1527,8 +1550,10 @@ def send_setup_page(
             var j = await r.json();
             var stepEl = card.querySelector('.dial-step');
             var autoEl = card.querySelector('.dial-autoupdate');
+            var chanEl = card.querySelector('.dial-channel');
             if (stepEl && j.step_percent != null) stepEl.value = j.step_percent;
             if (autoEl && j.auto_update != null) autoEl.checked = !!j.auto_update;
+            if (chanEl && j.update_channel != null) chanEl.checked = (j.update_channel === 'dev');
             card.dataset.pinSet = j.pin_set ? 'true' : 'false';
           }} catch(e) {{}}
         }}
@@ -1652,7 +1677,10 @@ def send_setup_page(
             card.addEventListener('change', function(ev) {{
               var action = ev.target.dataset.dialAction;
               if (action === 'toggle-allow') dialToggleAllow(card, ev.target.checked);
-              if (action === 'save-config' && ev.target.classList.contains('dial-autoupdate')) {{
+              if (action === 'save-config' && (
+                ev.target.classList.contains('dial-autoupdate') ||
+                ev.target.classList.contains('dial-channel')
+              )) {{
                 dialSaveConfig(card);
               }}
             }});
@@ -1660,6 +1688,7 @@ def send_setup_page(
               if (
                 ev.target.dataset.dialAction === 'save-config'
                 && !ev.target.classList.contains('dial-autoupdate')
+                && !ev.target.classList.contains('dial-channel')
               ) {{
                 dialSaveConfig(card);
               }}

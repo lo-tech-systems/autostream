@@ -8,7 +8,7 @@ Root-only helper used by the Autostream web UI.
 COMMANDS
 --------
   check   Check whether a newer release is available on GitHub.
-          Outputs JSON: {ok, installed, candidate, update_available, apmode}
+          Outputs JSON: {ok, installed, candidate, update_available, apmode, channel}
 
   apply   Stage the latest GitHub release and invoke autostream_install.sh
           --update via a transient systemd unit (escaping the service cgroup).
@@ -46,7 +46,7 @@ if _HERE not in sys.path:
 from autostream_update_support import (
     FLOCK_BIN, RELEASES_HTML,
     _download_file, _find_systemd_run, _github_latest_release,
-    _read_env_file, _run, _version_key,
+    _normalise_update_channel, _read_env_file, _run, _version_key,
 )
 
 # ---- Paths / constants ----
@@ -101,7 +101,7 @@ def _update_unit_active() -> bool:
     return bool(out.strip())
 
 
-# ---- Auto-update config helper ----
+# ---- Config helpers ----
 
 def _read_auto_update_config() -> bool:
     """Return True if updates.auto_update is true in autostream.json."""
@@ -113,14 +113,37 @@ def _read_auto_update_config() -> bool:
         return False
 
 
+def _read_update_channel() -> str:
+    """Return the configured update channel from autostream.json, defaulting to 'stable'."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return "stable"
+        return _normalise_update_channel(
+            (data.get("updates") or {}).get("update_channel")
+        )
+    except Exception:
+        return "stable"
+
+
+# ---- Private release helper ----
+
+def _resolve_release(
+    channel: str,
+) -> tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Single channel-aware GitHub release lookup for this appliance."""
+    return _github_latest_release(UA, channel)
+
+
 # ---- Commands ----
 
 def cmd_check() -> Dict[str, Any]:
     apmode = APMODE_FLAG.exists()
-
     installed = _read_installed_release_tag()
+    channel = _read_update_channel()
 
-    reachable, tag, _tarball_url, html_url, notes = _github_latest_release(UA)
+    reachable, tag, _tarball_url, html_url, notes = _resolve_release(channel)
     if not reachable:
         _log("check: GitHub API not reachable")
         return {"ok": False, "error": "GitHub API not reachable (network or HTTP error)", "apmode": apmode}
@@ -134,6 +157,7 @@ def cmd_check() -> Dict[str, Any]:
             "update_available": update_available,
             "apmode": apmode,
             "source": "github",
+            "channel": channel,
         }
 
     candidate = tag.lstrip("v")
@@ -146,7 +170,9 @@ def cmd_check() -> Dict[str, Any]:
         update_available = _version_key(candidate) > _version_key(installed)
 
     _log(
-        f"check: installed={installed_out} candidate={candidate} update_available={update_available} url={html_url or RELEASES_HTML}"
+        f"check: installed={installed_out} candidate={candidate} "
+        f"update_available={update_available} channel={channel} "
+        f"url={html_url or RELEASES_HTML}"
     )
 
     result: Dict[str, Any] = {
@@ -156,6 +182,7 @@ def cmd_check() -> Dict[str, Any]:
         "update_available": update_available,
         "apmode": apmode,
         "source": "github",
+        "channel": channel,
     }
     if update_available and notes:
         result["release_notes"] = notes
@@ -169,13 +196,14 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
       1. If auto=True: skip if auto_update disabled in config, playback active,
          or no update available.
       2. Refuse if in AP mode.
-      3. Resolve the latest release tag from GitHub.
-      4. Clean up any previous staging directory.
-      5. Download and extract the release tarball to the staging directory.
-      6. Locate autostream_install.sh in the extracted tree.
-      7. Schedule autostream_install.sh --update as a transient systemd unit,
+      3. Resolve the channel and perform one channel-aware release lookup.
+      4. Version-guard: skip if already at latest.
+      5. Clean up any previous staging directory.
+      6. Download and extract the release tarball to the staging directory.
+      7. Locate autostream_install.sh in the extracted tree.
+      8. Schedule autostream_install.sh --update as a transient systemd unit,
          exporting AUTOSTREAM_RELEASE_TAG into the installer environment.
-      8. Return {ok: True, staged_tag: <tag>} immediately.
+      9. Return {ok: True, staged_tag: <tag>} immediately.
 
     The installer owns all further progress reporting via update-result.env.
     The installer restarts autostream.service on completion; no explicit reboot
@@ -202,14 +230,28 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: refused — unable to determine update unit status: {e}")
         return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
 
-    # Version guard — skip if already at latest (all runs, including manual).
-    check = cmd_check()
-    if not check.get("ok"):
-        _log(f"apply: version check failed: {check.get('error', 'unknown')}")
-        return {"ok": False, "error": f"Version check failed: {check.get('error', 'unknown')}"}
-    if not check.get("update_available"):
-        _log(f"apply: already at latest ({check.get('installed')!r}) — no-op")
+    # Single channel-aware release lookup — used for both the version guard
+    # and the tarball staged below.  This ensures the release that is staged
+    # is exactly the one that was compared with the installed version.
+    channel = _read_update_channel()
+    reachable, tag, tarball_url, _html_url, _notes = _resolve_release(channel)
+    if not reachable:
+        _log("apply: GitHub API not reachable")
+        return {"ok": False, "error": "GitHub API not reachable (network or HTTP error)"}
+    if not tag:
+        _log("apply: no release available for channel")
         return {"ok": True, "staged_tag": None}
+
+    installed = _read_installed_release_tag()
+    candidate = tag.lstrip("v")
+    if installed != "missing":
+        if not (_version_key(candidate) > _version_key(installed)):
+            _log(f"apply: already at latest ({installed!r}) — no-op")
+            return {"ok": True, "staged_tag": None}
+
+    if not tarball_url:
+        _log("apply: no tarball URL for release")
+        return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
 
     systemd_run = _find_systemd_run()
     if systemd_run is None:
@@ -220,12 +262,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: {FLOCK_BIN} not found or not executable; cannot schedule locked installer")
         return {"ok": False, "error": f"flock not found at {FLOCK_BIN}; cannot schedule installer"}
 
-    reachable, tag, tarball_url, _html_url, _notes = _github_latest_release(UA)
-    if not reachable or not tag or not tarball_url:
-        _log("apply: no latest release or tarball_url")
-        return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
-
-    _log(f"apply: staging release tag={tag} tarball={tarball_url}")
+    _log(f"apply: staging release tag={tag} tarball={tarball_url} channel={channel}")
 
     # Acquire an exclusive non-blocking lock for the staging + scheduling window.
     # The installer is launched wrapped in `flock --exclusive` so it inherits the
@@ -249,7 +286,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
     try:
         # Recheck after acquiring the lock: a concurrent apply() may have passed the
         # initial unit check and then scheduled a timer during the window between that
-        # check and our lock acquisition.  The timer is now active, so this catches it.
+        # check and our lock acquisition.
         try:
             if _update_unit_active():
                 _log("apply: refused after lock — unit became active during staging window")

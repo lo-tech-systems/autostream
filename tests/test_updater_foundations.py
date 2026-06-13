@@ -183,14 +183,17 @@ class TestDialUpdaterAutoFlag:
         assert result == {"ok": True}
 
     def test_auto_update_true_proceeds_past_gate(self, tmp_path):
-        """auto_update: true → passes the settings gate and reaches cmd_check."""
+        """auto_update: true → passes the settings gate and reaches the release lookup."""
         mod = self._load(tmp_path)
         self._write_settings(tmp_path, auto_update=True)
-        # Stub cmd_check to return "no update available" so we exit cleanly.
-        with patch.object(mod, "cmd_check", return_value={"ok": True, "update_available": False}) as mock_check:
+        # Stub the single-lookup helper to return "already at latest" so we exit cleanly.
+        installed_tag = "1.0.0"
+        with patch.object(mod, "_resolve_dial_release",
+                          return_value=(True, "v1.0.0", None, None, None)) as mock_resolve, \
+             patch.object(mod, "_read_installed_tag", return_value=installed_tag):
             result = mod.cmd_apply(auto=True)
         assert result.get("ok") is True
-        mock_check.assert_called_once()
+        mock_resolve.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

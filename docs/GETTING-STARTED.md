@@ -96,3 +96,27 @@ autostream is designed to be used from your device's home screen for an easy, ap
 ![IOS Add to Home Screen Prompt](add-to-home-screen-2.png)
 
 Once added, autostream behaves like a regular app — providing quick access to volume controls and speaker selection without opening Safari manually.
+
+---
+
+## Update Channels
+
+autostream supports two update channels:
+
+- **stable** — only full GitHub releases. This is the default.
+- **dev** — the most recently published GitHub release, including pre-releases (alpha, beta, RC). Use this to test upcoming versions.
+
+### Enabling the pre-release channel
+
+1. Open the autostream **Setup page** (`/setup`).
+2. Scroll to the **Updates** card.
+3. Toggle **Enable pre-release updates** on.
+4. Tap **Save**.
+
+Manual checks and automatic updates both use the selected channel. The toggle is visible whether automatic updates are enabled or not.
+
+### Switching back to stable
+
+Toggle **Enable pre-release updates** off and save. autostream will no longer check for or install pre-releases.
+
+**Switching to stable does not automatically downgrade an installed pre-release.** If you are already running `v1.3.0-beta.2` and switch to stable, the next offered update will be a numerically newer stable release (e.g. `v1.3.0` or later). If you need to return to a known stable build immediately, use the console reinstall route described in the Troubleshooting guide.

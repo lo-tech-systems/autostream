@@ -98,6 +98,16 @@ SETUP_PAGE_HTML = """\
         </label>
       </div>
     </div>
+    <div class="row">
+      <div class="lbl">Pre-release</div>
+      <div class="val">
+        <label class="tog">
+          <input type="checkbox" id="c-pre">
+          <span>Pre-release updates</span>
+        </label>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.25rem">Pre-release versions may be less stable.</div>
+      </div>
+    </div>
     <div class="row" style="justify-content:flex-end">
       <button class="btn sec" onclick="saveConfig()">Save</button>
     </div>
@@ -170,6 +180,7 @@ async function loadCfg() {
     document.getElementById('c-name').value  = d.name         || '';
     document.getElementById('c-step').value  = d.step_percent || 2;
     document.getElementById('c-auto').checked = !!d.auto_update;
+    document.getElementById('c-pre').checked  = d.update_channel === 'dev';
     document.getElementById('fw-ver').textContent = d.version || 'unknown';
     document.getElementById('hdr-s').textContent =
       (d.name || 'unnamed') + ' · ' + (d.version || 'unknown');
@@ -229,8 +240,9 @@ async function saveConfig() {
   var name = document.getElementById('c-name').value.trim();
   var step = parseInt(document.getElementById('c-step').value, 10);
   var au   = document.getElementById('c-auto').checked;
+  var pre  = document.getElementById('c-pre').checked;
   if (!(step >= 1 && step <= 10)) { msg('m-cfg', 'Step must be 1–10', false); return; }
-  var body = {name: name, step_percent: step, auto_update: au};
+  var body = {name: name, step_percent: step, auto_update: au, update_channel: pre ? 'dev' : 'stable'};
   if (_pinSet) { _pinMode = 'save'; _pend = body; openPin('save'); return; }
   await _doSave(body);
 }
@@ -315,7 +327,8 @@ async function checkForUpdate() {
     if (!d.ok) {
       st.textContent = d.error || 'Check failed'; st.style.color = 'var(--err)';
     } else if (d.update_available) {
-      st.textContent = 'Update available' + (d.candidate ? ': v' + d.candidate : '');
+      var chanNote = d.channel === 'dev' ? ' (pre-release channel)' : '';
+      st.textContent = 'Update available' + (d.candidate ? ': v' + d.candidate : '') + chanNote;
       st.style.color = 'var(--ok)';
       inst.style.display = '';
     } else {

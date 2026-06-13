@@ -9,7 +9,7 @@ from the dial/ package.
 COMMANDS
 --------
   check    Check whether a newer release is available on GitHub.
-           Outputs JSON: {ok, installed, candidate, update_available}
+           Outputs JSON: {ok, installed, candidate, update_available, channel}
 
   apply    Stage the latest GitHub release and invoke autostream_dial_install.sh
            --update via a transient systemd unit.
@@ -42,7 +42,7 @@ if _HERE not in sys.path:
 from autostream_update_support import (
     FLOCK_BIN,
     _download_file, _find_systemd_run, _github_latest_release,
-    _read_env_file, _run, _version_key,
+    _normalise_update_channel, _read_env_file, _run, _version_key,
 )
 
 # ---- Paths / constants -------------------------------------------------------
@@ -89,6 +89,27 @@ def _read_installed_tag() -> str:
     return "unknown"
 
 
+# ---- Config helpers ----------------------------------------------------------
+
+def _read_dial_channel() -> str:
+    """Return the configured update channel from dial-settings.json, defaulting to 'stable'."""
+    try:
+        settings_path = STATE_DIR / "dial-settings.json"
+        s = json.loads(settings_path.read_text(encoding="utf-8"))
+        return _normalise_update_channel(s.get("update_channel"))
+    except Exception:
+        return "stable"
+
+
+# ---- Private release helper --------------------------------------------------
+
+def _resolve_dial_release(
+    channel: str,
+) -> tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Single channel-aware GitHub release lookup for this dial."""
+    return _github_latest_release(UA, channel)
+
+
 # ---- Active-unit guard -------------------------------------------------------
 
 def _dial_update_unit_active() -> bool:
@@ -111,7 +132,8 @@ def _dial_update_unit_active() -> bool:
 
 def cmd_check() -> Dict[str, Any]:
     installed = _read_installed_tag()
-    reachable, tag, _tarball, _html_url, notes = _github_latest_release(UA)
+    channel = _read_dial_channel()
+    reachable, tag, _tarball, _html_url, notes = _resolve_dial_release(channel)
 
     if not reachable:
         _log("check: GitHub API not reachable")
@@ -124,6 +146,7 @@ def cmd_check() -> Dict[str, Any]:
             "installed": installed if installed != "missing" else "unknown",
             "candidate": "unknown",
             "update_available": update_available,
+            "channel": channel,
         }
 
     candidate = tag.lstrip("v")
@@ -134,12 +157,16 @@ def cmd_check() -> Dict[str, Any]:
         installed_out = installed
         update_available = _version_key(candidate) > _version_key(installed)
 
-    _log(f"check: installed={installed_out} candidate={candidate} update_available={update_available}")
+    _log(
+        f"check: installed={installed_out} candidate={candidate} "
+        f"update_available={update_available} channel={channel}"
+    )
     result: Dict[str, Any] = {
         "ok": True,
         "installed": installed_out,
         "candidate": candidate,
         "update_available": update_available,
+        "channel": channel,
     }
     if update_available and notes:
         result["release_notes"] = notes
@@ -157,9 +184,8 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
     # auto_update flag check
     if auto:
         try:
-            import json as _json
             settings_path = STATE_DIR / "dial-settings.json"
-            s = _json.loads(settings_path.read_text(encoding="utf-8"))
+            s = json.loads(settings_path.read_text(encoding="utf-8"))
             if not s.get("auto_update", False):
                 _log("apply --auto: auto_update=false in settings — no-op")
                 return {"ok": True}
@@ -167,14 +193,27 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             _log(f"apply --auto: could not read auto_update setting ({e}) — skipping (fail-closed)")
             return {"ok": True}
 
-    # Version guard
-    check = cmd_check()
-    if not check.get("ok"):
-        _log(f"apply: aborting — check failed: {check.get('error', 'unknown')}")
-        return {"ok": False, "error": check.get("error", "Update check failed")}
-    if not check.get("update_available"):
-        _log("already at latest — no-op")
+    # Single channel-aware release lookup — used for both the version guard
+    # and the tarball staged below.
+    channel = _read_dial_channel()
+    reachable, tag, tarball_url, _html_url, _notes = _resolve_dial_release(channel)
+    if not reachable:
+        _log("apply: GitHub API not reachable")
+        return {"ok": False, "error": "GitHub API not reachable (network or HTTP error)"}
+    if not tag:
+        _log("apply: no release available for channel")
         return {"ok": True}
+
+    installed = _read_installed_tag()
+    candidate = tag.lstrip("v")
+    if installed != "missing":
+        if not (_version_key(candidate) > _version_key(installed)):
+            _log("already at latest — no-op")
+            return {"ok": True}
+
+    if not tarball_url:
+        _log("apply: no tarball URL for release")
+        return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
 
     # Pre-lock unit check (fail-closed)
     try:
@@ -194,12 +233,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: {FLOCK_BIN} not found or not executable")
         return {"ok": False, "error": f"flock not found at {FLOCK_BIN}"}
 
-    reachable, tag, tarball_url, _html_url, _notes = _github_latest_release(UA)
-    if not reachable or not tag or not tarball_url:
-        _log("apply: no latest release or tarball_url")
-        return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
-
-    _log(f"apply: staging release tag={tag} tarball={tarball_url}")
+    _log(f"apply: staging release tag={tag} tarball={tarball_url} channel={channel}")
 
     try:
         lock_fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
@@ -272,7 +306,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             return {"ok": False, "error": "Release staging failed", "details": str(e)}
 
         write_update_result("running", f"Installing {tag}...")
-        _log(f"apply: written STATUS=running")
+        _log("apply: written STATUS=running")
 
         unit_suffix = f"{int(time.time())}-{os.getpid()}"
         unit_name   = f"autostream-dial-update-{unit_suffix}"

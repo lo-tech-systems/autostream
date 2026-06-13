@@ -419,3 +419,26 @@ cat /opt/autostream/ssid
 ```
 
 > If you suspect the Wi-Fi configuration state is “stuck”, the most reliable recovery path supported by the code is still: **reboot → join the `autostream_XXXX` hotspot → re-provision at `/setup`**.
+
+---
+
+## Recovering from a problem pre-release
+
+If a pre-release update causes issues:
+
+1. Open the autostream **Setup page** (`/setup`) and toggle **Enable pre-release updates** off. Save.
+2. Tap **Check** in the Updates card to run a manual update check.
+3. If a newer stable release is available it will be offered immediately. Install it.
+
+**Why is an older stable release not offered as an automatic downgrade?**
+autostream's version comparison only offers updates — versions strictly newer than the currently installed build. If you are running `v1.3.0-beta.2` and the latest stable is `v1.3.0`, that stable release is numerically newer so it will be offered. If the latest stable is `v1.2.9` (older than your pre-release), no update will be offered because that would be a downgrade.
+
+**Returning immediately to a known stable build (console):**
+
+If you cannot use the web UI, reinstall from the console:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
+```
+
+This downloads and installs the latest stable release, replacing the pre-release build.

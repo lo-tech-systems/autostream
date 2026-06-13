@@ -256,6 +256,12 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 new_auto_update = "updates_auto_update" in form
                 cfg.setdefault("updates", {})["auto_update"] = bool(new_auto_update)
 
+            # Persist update_channel when the updates panel was rendered.
+            # Channel changes require no timer operation or service restart.
+            if "updates_channel_present" in form:
+                new_channel = "dev" if "updates_prerelease_channel" in form else "stable"
+                cfg.setdefault("updates", {})["update_channel"] = new_channel
+
             # Persist defaults into the JSON the first time it is created (or if missing).
             if not str(general.get("log_file", "") or "").strip():
                 general["log_file"] = p.general.log_file
