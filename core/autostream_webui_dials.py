@@ -39,10 +39,13 @@ def _proxy_call(method: str, ip: str, port: int, path: str,
     """
     conn = http.client.HTTPConnection(ip, port, timeout=_PROXY_TIMEOUT)
     headers = {"Content-Type": "application/json"} if body else {}
-    conn.request(method, path, body=body, headers=headers)
-    resp = conn.getresponse()
-    raw = resp.read()
-    return resp.status, _json.loads(raw)
+    try:
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, _json.loads(raw)
+    finally:
+        conn.close()
 
 
 def _get_sighting_or_404(handler, uuid: str):
