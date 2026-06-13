@@ -87,6 +87,34 @@ deploy_admin
 deploy_avahi_template
 setup_venv   # pip install gpiozero into /opt/autostream/venv
 
+# ---- Recovery infrastructure (fresh install and --update) -------------------
+# install_recovery_packages() installs fcgiwrap+zip and grants www-data adm
+# group membership so the CGI log-download endpoint can read dial logs.
+# Called unconditionally so --update runs gain these dependencies without
+# requiring a re-image.
+install_recovery_packages
+
+# ---- Deploy images ----------------------------------------------------------
+mkdir -p /opt/autostream/images
+install -m 0644 "$DEPLOY/images/autostream-dial-badge.png" /opt/autostream/images/
+install -m 0644 "$DEPLOY/images/favicon.ico"               /opt/autostream/images/
+install -m 0644 "$DEPLOY/images/favicon-16x16.png"         /opt/autostream/images/
+install -m 0644 "$DEPLOY/images/favicon-32x32.png"         /opt/autostream/images/
+
+# ---- Deploy offline recovery pages ------------------------------------------
+mkdir -p /opt/autostream/nginx/offline
+install -m 0644 "$DEPLOY"/nginx/offline/*.html /opt/autostream/nginx/offline/
+
+# ---- Deploy shared CGI scripts ----------------------------------------------
+mkdir -p /opt/autostream/nginx/cgi
+install -m 0755 "$DEPLOY/nginx/cgi/reboot.cgi"        /opt/autostream/nginx/cgi/
+install -m 0755 "$DEPLOY/nginx/cgi/factory-reset.cgi" /opt/autostream/nginx/cgi/
+install -m 0755 "$DEPLOY/nginx/cgi/update-status.cgi" /opt/autostream/nginx/cgi/
+
+# Enable and restart fcgiwrap so the worker picks up the new adm group membership.
+systemctl enable fcgiwrap
+systemctl restart fcgiwrap
+
 # ---- UUID and config handling -----------------------------------------------
 if ! $UPDATE; then
     DIAL_UUID=$(generate_uuid)

@@ -13,3 +13,9 @@ autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin u
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin run-updater
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer enable
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer disable
+
+# CGI scripts (run as www-data by fcgiwrap) call autostream_admin for offline recovery.
+# update-status needs sudo because /var/lib/autostream is 0750 (www-data cannot traverse it).
+www-data ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin reboot --delay 3 UserRequestSystemError
+www-data ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin factory-reset
+www-data ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin update-status

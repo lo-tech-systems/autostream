@@ -21,7 +21,18 @@ install_os_packages() {
     # Flask is system Python (outside venv) — see wifi_watcher source comment line 13.
     apt-get install -y --no-install-recommends \
         avahi-daemon avahi-utils nginx dnsmasq curl \
-        python3-venv python3-flask python3-lgpio
+        python3-venv python3-flask python3-lgpio \
+        fcgiwrap zip
+}
+
+install_recovery_packages() {
+    # Install offline-recovery dependencies idempotently.
+    # Called on both fresh install and --update so that upgraded devices
+    # gain fcgiwrap and zip without requiring a re-image.
+    apt-get install -y --no-install-recommends fcgiwrap zip
+    # Dial logs are root:adm 0640; www-data needs adm membership to read them
+    # for the CGI log-download endpoint.
+    usermod -aG adm www-data
 }
 
 create_dirs() {
