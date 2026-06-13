@@ -7,12 +7,17 @@ Verifies that:
 - A well-formed same-origin POST passes all validation gates (no 4xx from guards).
 - No 403 is returned for any valid POST (no PIN / credential gate).
 
-Tests are skipped when bash is not available (e.g. Windows CI without Git Bash).
+Tests are skipped when bash cannot execute a script at a Windows-style path.
+Running `bash -c :` is insufficient: the WSL launcher satisfies that probe but
+fails when given a Windows path like C:\\...  We verify bash using a temporary
+script file at a native path, matching how the tests actually invoke the CGIs.
 """
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from conftest import bash_can_run_script_at_windows_path
 
 REPO_ROOT = Path(__file__).parent.parent
 CGI_DIR = REPO_ROOT / "nginx" / "cgi"
@@ -20,27 +25,9 @@ CGI_DIR = REPO_ROOT / "nginx" / "cgi"
 SCRIPTS = ["reboot.cgi", "factory-reset.cgi", "download-logs.cgi"]
 
 
-def _bash_available() -> bool:
-    """Return True only if bash can actually execute a trivial command.
-
-    shutil.which() is insufficient on Windows: the Windows Store provides a
-    bash.exe shim that resolves on the PATH but raises E_ACCESSDENIED when
-    executed.  Running a harmless no-op command confirms bash is functional.
-    """
-    try:
-        subprocess.run(
-            ["bash", "-c", ":"],
-            capture_output=True,
-            check=True,
-            timeout=5,
-        )
-        return True
-    except Exception:
-        return False
-
-
 skip_no_bash = pytest.mark.skipif(
-    not _bash_available(), reason="bash not available or not executable"
+    not bash_can_run_script_at_windows_path(),
+    reason="bash cannot execute a script at a Windows path (WSL launcher or bash absent)",
 )
 
 
