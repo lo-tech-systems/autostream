@@ -42,9 +42,10 @@ Notes:
   - With --delay, the reboot is scheduled using a transient systemd timer
     (systemd-run) and this command returns immediately.
   - factory-reset schedules the full reset sequence as a transient systemd unit
-    (to escape the autostream.service cgroup) and returns immediately.
-    The reset sequence stops services, rotates logs, deletes runtime state,
-    removes Wi-Fi connections, and reboots.
+    (to escape the service cgroup) and returns immediately.
+    The reset sequence is product-specific: it stops the appropriate services,
+    rotates logs, deletes product-specific runtime state, removes Wi-Fi
+    connections, and reboots.
 
 REBOOT REASONS
 --------------
@@ -60,11 +61,14 @@ Rate limiting:
 
 FACTORY RESET
 -------------
-Preserved on reset:
+Product is read from /var/lib/autostream/install-state.env (AUTOSTREAM_PRODUCT).
+Missing, empty, or unknown product values fail closed for destructive operations.
+
+autostream product — preserved:
   /boot/firmware/pin.txt (or /boot/pin.txt)
   /var/lib/autostream/cpuinfo
 
-Deleted on reset (fixed allowlist — no wildcards):
+autostream product — deleted (fixed allowlist, no wildcards):
   /etc/autostream/autostream.json
   /var/lib/autostream/autostream-state.json
   /opt/autostream/ssid
@@ -74,8 +78,16 @@ Deleted on reset (fixed allowlist — no wildcards):
   /var/cache/owntone/songs3.db
   /etc/owntone-settings.json
 
-Best-effort sync before deletion:
+autostream product — best-effort sync before deletion:
   /etc/owntone.conf -> /opt/autostream/owntone/owntone.conf (if both exist)
+
+autostream-dial product — preserved:
+  /etc/autostream/autostream-dial.json  (hardware config and UUID)
+  DIAL_UUID in /var/lib/autostream/install-state.env
+
+autostream-dial product — deleted (fixed allowlist, no wildcards):
+  /var/lib/autostream/dial-settings.json
+  /opt/autostream/ssid
 
 HOSTNAME
 --------
@@ -130,7 +142,8 @@ HOSTNAME_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", re.IGNOR
 FACTORY_RESET_LOCK_DIR = Path("/run/autostream")
 FACTORY_RESET_LOCK_FILE = FACTORY_RESET_LOCK_DIR / "factory-reset.lock"
 
-# Factory reset: fixed allowlist of files to delete — no wildcards, no /opt path construction
+# Factory reset: fixed allowlists of files to delete — no wildcards, no /opt path construction
+# Main autostream product files
 FACTORY_RESET_DELETE_FILES = (
     Path("/etc/autostream/autostream.json"),
     Path("/var/lib/autostream/autostream-state.json"),
@@ -141,6 +154,21 @@ FACTORY_RESET_DELETE_FILES = (
     Path("/var/cache/owntone/songs3.db"),
     Path("/etc/owntone-settings.json"),
 )
+
+# autostream-dial product files deleted on factory reset
+FACTORY_RESET_DIAL_DELETE_FILES = (
+    Path("/var/lib/autostream/dial-settings.json"),
+    Path("/opt/autostream/ssid"),
+)
+
+# Valid AUTOSTREAM_PRODUCT values
+VALID_PRODUCTS = {"autostream", "autostream-dial"}
+
+# Product-specific installer logs for update-status
+_INSTALL_LOG_BY_PRODUCT = {
+    "autostream":      Path("/var/log/autostream/autostream_install.log"),
+    "autostream-dial": Path("/var/log/autostream/dial-install.log"),
+}
 
 # Systemctl candidates
 SYSTEMCTL_CANDIDATES = (
@@ -319,16 +347,19 @@ def _update_unit_active() -> bool:
         return False
 
 
-def _install_log_recently_modified(now: dt.datetime, within_minutes: int = 5) -> bool:
+def _install_log_recently_modified(now: dt.datetime, within_minutes: int = 5,
+                                    log_path: Optional[Path] = None) -> bool:
     """Return True if the installer log was written to within the last `within_minutes`."""
+    path = log_path if log_path is not None else _INSTALL_LOG
     try:
-        mtime = _INSTALL_LOG.stat().st_mtime
+        mtime = path.stat().st_mtime
         return (now.timestamp() - mtime) < (within_minutes * 60)
     except OSError:
         return False
 
 
-def _is_stale_in_progress(last_run_at_str: str) -> bool:
+def _is_stale_in_progress(last_run_at_str: str,
+                           log_path: Optional[Path] = None) -> bool:
     """Return True if an in_progress update should be considered stale.
 
     Liveness is determined by combining the unit-active and log-recency signals:
@@ -346,8 +377,9 @@ def _is_stale_in_progress(last_run_at_str: str) -> bool:
     now = dt.datetime.now(tz=dt.timezone.utc)
 
     unit_active = _update_unit_active()
-    log_recent  = _install_log_recently_modified(now)
-    log_recent_hung = _install_log_recently_modified(now, within_minutes=HUNG_LOG_MINUTES)
+    log_recent  = _install_log_recently_modified(now, log_path=log_path)
+    log_recent_hung = _install_log_recently_modified(now, within_minutes=HUNG_LOG_MINUTES,
+                                                      log_path=log_path)
 
     if unit_active and log_recent_hung:
         return False  # healthy: unit running and log active
@@ -379,19 +411,51 @@ def _is_stale_in_progress(last_run_at_str: str) -> bool:
 
 
 _ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+# Default installer log (overridden per-call in _read_log_tail when product is known).
 _INSTALL_LOG = Path("/var/log/autostream/autostream_install.log")
 _LOG_TAIL_LINES = 10
 _LOG_TAIL_CHUNK_BYTES = 8192
 
 
-def _read_log_tail() -> str:
+def _read_product() -> str:
+    """Return the AUTOSTREAM_PRODUCT value from install-state.env.
+
+    Returns "autostream" or "autostream-dial".
+    Raises ValueError for missing, empty, or unknown product values so callers
+    can fail closed rather than guessing.
+    """
+    try:
+        env = read_env_file(INSTALL_STATE_FILE)
+    except FileNotFoundError:
+        raise ValueError("install-state.env not found; cannot determine product")
+    except Exception as e:
+        raise ValueError(f"Failed to read install-state.env: {e!r}")
+
+    product = str(env.get("AUTOSTREAM_PRODUCT") or "").strip()
+    if not product:
+        raise ValueError("AUTOSTREAM_PRODUCT is missing or empty in install-state.env")
+    if product not in VALID_PRODUCTS:
+        raise ValueError(
+            f"Unknown AUTOSTREAM_PRODUCT={product!r}; expected one of {sorted(VALID_PRODUCTS)}"
+        )
+    return product
+
+
+def _install_log_for_product(product: str) -> Path:
+    """Return the installer log path for the given product."""
+    return _INSTALL_LOG_BY_PRODUCT.get(product, _INSTALL_LOG)
+
+
+def _read_log_tail(log_path: Optional[Path] = None) -> str:
     """Return the last _LOG_TAIL_LINES lines of the installer log, ANSI-stripped.
 
     Reads only the final _LOG_TAIL_CHUNK_BYTES from disk so this stays fast
     even when the log file grows large during a lengthy apt-get upgrade.
+    Uses log_path if provided, otherwise falls back to the module-level _INSTALL_LOG.
     """
+    path = log_path if log_path is not None else _INSTALL_LOG
     try:
-        with _INSTALL_LOG.open("rb") as fh:
+        with path.open("rb") as fh:
             fh.seek(0, 2)
             size = fh.tell()
             read_size = min(size, _LOG_TAIL_CHUNK_BYTES)
@@ -406,7 +470,12 @@ def _read_log_tail() -> str:
 
 
 def read_update_status() -> int:
-    """Emit the latest installer update status as JSON on stdout."""
+    """Emit the latest installer update status as JSON on stdout.
+
+    Selects the correct installer log based on AUTOSTREAM_PRODUCT in
+    install-state.env. Falls back to the default log if the product cannot
+    be determined (e.g., during initial install before state is written).
+    """
     data = {
         "ok": True,
         "last_run_at": "",
@@ -416,6 +485,13 @@ def read_update_status() -> int:
         "percent": 0,
         "log_tail": "",
     }
+
+    # Determine installer log from product; fall back silently if state is absent.
+    try:
+        product = _read_product()
+        log_path: Optional[Path] = _install_log_for_product(product)
+    except ValueError:
+        log_path = None  # use module-level default
 
     try:
         env = read_env_file(UPDATE_RESULT_FILE)
@@ -439,11 +515,11 @@ def read_update_status() -> int:
     data["percent"] = max(0, min(100, percent))
 
     if data["status"] == "in_progress":
-        data["stale"] = _is_stale_in_progress(data["last_run_at"])
+        data["stale"] = _is_stale_in_progress(data["last_run_at"], log_path=log_path)
         if data["stale"] and _update_unit_active():
             data["hung"] = True
 
-    data["log_tail"] = _read_log_tail()
+    data["log_tail"] = _read_log_tail(log_path=log_path)
 
     print(json.dumps(data))
     return 0
@@ -679,13 +755,23 @@ def schedule_delayed_reboot(delay_s: int, reason: Optional[str]) -> bool:
 # Factory reset helpers
 # ---------------------------------------------------------------------------
 
-def _rotate_logs() -> None:
-    """Force log rotation for autostream and owntone log policies (best-effort)."""
+def _rotate_logs(product: str) -> None:
+    """Force log rotation for the appropriate log policies (best-effort).
+
+    autostream:      rotates /etc/logrotate.d/autostream and /etc/logrotate.d/owntone.
+    autostream-dial: rotates only /etc/logrotate.d/autostream-dial.
+    """
     logrotate = find_logrotate()
     if not logrotate:
         log("WARN", "factory-reset: logrotate not found; skipping log rotation")
         return
-    for policy in ("/etc/logrotate.d/autostream", "/etc/logrotate.d/owntone"):
+
+    if product == "autostream-dial":
+        policies = ["/etc/logrotate.d/autostream-dial"]
+    else:
+        policies = ["/etc/logrotate.d/autostream", "/etc/logrotate.d/owntone"]
+
+    for policy in policies:
         if not os.path.exists(policy):
             log("WARN", f"factory-reset: logrotate policy not found: {policy}; skipping")
             continue
@@ -808,12 +894,24 @@ def _acquire_reset_lock() -> Optional[object]:
 def _schedule_factory_reset() -> bool:
     """Schedule factory-reset as a transient systemd unit to escape the service cgroup.
 
-    The autostream web UI runs inside autostream.service. Stopping that service
+    Validates AUTOSTREAM_PRODUCT before scheduling so the CGI cannot report
+    success for a reset that will be rejected at execution time.
+
+    The web UI or CGI runs inside the service cgroup. Stopping that service
     while still inside its cgroup would cause a deadlock. This function uses
     systemd-run to schedule the actual reset execution as a separate transient
     unit (with its own cgroup), then returns immediately so the caller can
     respond to the HTTP request before the reset begins.
     """
+    # Validate product before scheduling — fail closed for unknown products.
+    try:
+        product = _read_product()
+    except ValueError as e:
+        log("ERROR", f"factory-reset: {e}; cannot schedule reset")
+        return False
+
+    log("INFO", f"factory-reset: product={product!r}; scheduling transient unit")
+
     systemd_run = find_systemd_run()
     if systemd_run is None:
         log("ERROR", "factory-reset: systemd-run not found; cannot schedule reset")
@@ -843,25 +941,82 @@ def _schedule_factory_reset() -> bool:
     return False
 
 
-def _execute_factory_reset() -> bool:
-    """Execute the factory reset sequence.
-
-    Called by the transient systemd unit (--execute flag). Runs outside the
-    autostream.service cgroup so it survives stopping that service.
+def _execute_factory_reset_autostream(lock_fd: object) -> bool:
+    """Execute the main autostream product factory reset sequence.
 
     Sequence:
+      1. Rotate logs (autostream + owntone policies)
+      2. Stop autostream.service
+      3. Stop autostream_wifi_watcher.service
+      4. Stop owntone
+      5. Sync owntone.conf (best-effort)
+      6. Delete allowlisted runtime/config files
+      7. Delete Wi-Fi connections
+      8. Reboot
+    """
+    _rotate_logs("autostream")
+
+    _stop_service("autostream.service")
+    _stop_service("autostream_wifi_watcher.service")
+    _stop_owntone()
+
+    _sync_owntone_conf()
+    _delete_reset_files()
+    _delete_wifi_connections()
+    return True
+
+
+def _execute_factory_reset_dial(lock_fd: object) -> bool:
+    """Execute the autostream-dial factory reset sequence.
+
+    Preserved: /etc/autostream/autostream-dial.json (hardware config + UUID),
+               DIAL_UUID in install-state.env.
+
+    Sequence:
+      1. Rotate logs (autostream-dial policy only)
+      2. Stop autostream_dial.service
+      3. Stop autostream_dial_wifi_watcher.service
+      4. Stop autostream_dial_dnsmasq.service
+      5. Delete dial-specific runtime files (fixed allowlist, no wildcards)
+      6. Delete Wi-Fi connections
+      7. Reboot
+    """
+    _rotate_logs("autostream-dial")
+
+    _stop_service("autostream_dial.service")
+    _stop_service("autostream_dial_wifi_watcher.service")
+    _stop_service("autostream_dial_dnsmasq.service")
+
+    for path in FACTORY_RESET_DIAL_DELETE_FILES:
+        try:
+            path.unlink()
+            log("INFO", f"factory-reset: deleted {path}")
+        except FileNotFoundError:
+            log("INFO", f"factory-reset: {path} not present, skipping")
+        except Exception as e:
+            log("WARN", f"factory-reset: could not delete {path}: {e!r}")
+
+    _delete_wifi_connections()
+    return True
+
+
+def _execute_factory_reset() -> bool:
+    """Execute the factory reset sequence for the detected product.
+
+    Called by the transient systemd unit (--execute flag). Runs outside the
+    service cgroup so it survives stopping the product service.
+
+    Re-validates AUTOSTREAM_PRODUCT here (second check) to guard against the
+    state file being removed or changed between scheduling and execution.
+    Missing, malformed, or unsupported product identity fails without performing
+    destructive actions.
+
+    Common sequence (all products):
       1. Acquire reset lock (serialises concurrent attempts)
-      2. Log reset request
-      3. Rotate logs
-      4. Stop autostream.service
-         NOTE: this kills the web UI, but we are in a separate cgroup at this point.
-      5. Stop autostream_wifi_watcher.service
-         NOTE: if in AP mode this drops the hotspot — expected behavior.
-      6. Stop owntone
-      7. Sync owntone.conf (best-effort)
-      8. Delete allowlisted runtime/config files
-      9. Delete Wi-Fi connections
-     10. Reboot
+      2. Re-validate AUTOSTREAM_PRODUCT (fail closed)
+      3. Product-specific stop/delete sequence
+      4. Delete Wi-Fi connections
+      5. Reboot
     """
     lock_fd = _acquire_reset_lock()
     if lock_fd is None:
@@ -874,15 +1029,26 @@ def _execute_factory_reset() -> bool:
 
     log("INFO", "factory-reset: executing reset sequence")
 
-    _rotate_logs()
+    # Re-validate product inside the transient unit; the state file could have
+    # changed or been removed between scheduling and execution.
+    try:
+        product = _read_product()
+    except ValueError as e:
+        log("ERROR", f"factory-reset: product re-validation failed: {e}; aborting reset")
+        return False
 
-    _stop_service("autostream.service")
-    _stop_service("autostream_wifi_watcher.service")
-    _stop_owntone()
+    log("INFO", f"factory-reset: confirmed product={product!r}")
 
-    _sync_owntone_conf()
-    _delete_reset_files()
-    _delete_wifi_connections()
+    if product == "autostream":
+        ok = _execute_factory_reset_autostream(lock_fd)
+    elif product == "autostream-dial":
+        ok = _execute_factory_reset_dial(lock_fd)
+    else:
+        log("ERROR", f"factory-reset: unsupported product={product!r}; aborting")
+        return False
+
+    if not ok:
+        return False
 
     log("INFO", "factory-reset: sequence complete; rebooting")
     reboot_bin = Path("/sbin/reboot")
@@ -903,10 +1069,12 @@ def factory_reset(execute: bool = False) -> bool:
     """Factory reset entry point.
 
     When execute=False (default, called via sudo from the web UI or CGI):
-      Schedules the reset as a transient systemd unit and returns immediately.
+      Validates the product identity and schedules the reset as a transient
+      systemd unit; returns immediately.
 
     When execute=True (called by the transient unit itself):
-      Runs the full reset sequence.
+      Re-validates the product identity and runs the full product-specific
+      reset sequence.
     """
     if execute:
         return _execute_factory_reset()

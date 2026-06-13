@@ -1,7 +1,10 @@
 """Priority 8 — autostream_admin privileged helper tests.
 
 Covers hostname update, NetworkDown rate limiting, delayed reboot scheduling,
-factory reset lock/allowlist/wifi, Avahi XML escaping, and update status parsing.
+product detection, product-specific factory reset (service stopping, file
+deletion, log rotation), two-stage product validation (schedule + execute),
+log rotation policy selection, update-status installer-log selection,
+Avahi XML escaping, and update status parsing.
 """
 from __future__ import annotations
 
@@ -487,18 +490,21 @@ class TestReadUpdateStatus:
 
 class TestScheduleFactoryReset:
     def test_no_systemd_run_returns_false(self):
-        with patch.object(m, "find_systemd_run", return_value=None):
+        with patch.object(m, "_read_product", return_value="autostream"), \
+             patch.object(m, "find_systemd_run", return_value=None):
             result = m._schedule_factory_reset()
         assert result is False
 
     def test_systemd_run_success_returns_true(self):
-        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+        with patch.object(m, "_read_product", return_value="autostream"), \
+             patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch.object(m, "run_cmd", return_value=(0, "", "")):
             result = m._schedule_factory_reset()
         assert result is True
 
     def test_systemd_run_failure_returns_false(self):
-        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+        with patch.object(m, "_read_product", return_value="autostream"), \
+             patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch.object(m, "run_cmd", return_value=(1, "", "permission denied")):
             result = m._schedule_factory_reset()
         assert result is False
@@ -510,7 +516,8 @@ class TestScheduleFactoryReset:
             captured_cmds.append(cmd)
             return (0, "", "")
 
-        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+        with patch.object(m, "_read_product", return_value="autostream"), \
+             patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch.object(m, "run_cmd", side_effect=fake_run_cmd):
             m._schedule_factory_reset()
 
@@ -525,11 +532,34 @@ class TestScheduleFactoryReset:
             captured_cmds.append(cmd)
             return (0, "", "")
 
-        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+        with patch.object(m, "_read_product", return_value="autostream"), \
+             patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch.object(m, "run_cmd", side_effect=fake_run_cmd):
             m._schedule_factory_reset()
 
         assert captured_cmds[0][0] == "/usr/bin/systemd-run"
+
+    def test_unknown_product_returns_false_without_scheduling(self):
+        """_schedule_factory_reset must fail closed for unknown product values."""
+        with patch.object(m, "_read_product",
+                          side_effect=ValueError("Unknown AUTOSTREAM_PRODUCT")):
+            result = m._schedule_factory_reset()
+        assert result is False
+
+    def test_missing_product_returns_false_without_scheduling(self):
+        """_schedule_factory_reset must fail closed when install-state.env is absent."""
+        with patch.object(m, "_read_product",
+                          side_effect=ValueError("install-state.env not found")):
+            result = m._schedule_factory_reset()
+        assert result is False
+
+    def test_dial_product_schedules_successfully(self):
+        """_schedule_factory_reset must succeed for the autostream-dial product."""
+        with patch.object(m, "_read_product", return_value="autostream-dial"), \
+             patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")):
+            result = m._schedule_factory_reset()
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -537,29 +567,13 @@ class TestScheduleFactoryReset:
 # ---------------------------------------------------------------------------
 
 class TestExecuteFactoryReset:
-    def _base_patches(self, tmp_path, reboot_ok=True):
-        """Return a context-manager dict that patches away all side-effects."""
-        reboot_bin = tmp_path / "reboot"
-        reboot_bin.write_text("#!/bin/sh\n")
-
-        return {
-            "_acquire_reset_lock": patch.object(m, "_acquire_reset_lock",
-                                                return_value=object()),  # non-None
-            "_rotate_logs": patch.object(m, "_rotate_logs"),
-            "_stop_service": patch.object(m, "_stop_service", return_value=True),
-            "_stop_owntone": patch.object(m, "_stop_owntone"),
-            "_sync_owntone_conf": patch.object(m, "_sync_owntone_conf"),
-            "_delete_reset_files": patch.object(m, "_delete_reset_files"),
-            "_delete_wifi_connections": patch.object(m, "_delete_wifi_connections"),
-            "reboot_bin": patch.object(m.Path("/sbin/reboot"), "exists",
-                                       return_value=True) if hasattr(m.Path, "exists") else None,
-            "run_cmd": patch.object(m, "run_cmd",
-                                    return_value=(0 if reboot_ok else 1, "", "")),
-        }
+    """Tests for the main autostream product reset sequence via _execute_factory_reset()."""
 
     def test_stop_service_autostream_called_first(self, tmp_path):
+        """For autostream product: autostream.service stops before wifi_watcher.service."""
         order = []
         with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product", return_value="autostream"), \
              patch.object(m, "_rotate_logs"), \
              patch.object(m, "_stop_service",
                           side_effect=lambda name: order.append(name) or True), \
@@ -581,7 +595,9 @@ class TestExecuteFactoryReset:
         assert order.index("autostream_wifi_watcher.service") < order.index("_stop_owntone")
 
     def test_no_reboot_binary_returns_false(self):
+        """Missing /sbin/reboot returns False after product-specific sequence completes."""
         with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product", return_value="autostream"), \
              patch.object(m, "_rotate_logs"), \
              patch.object(m, "_stop_service", return_value=True), \
              patch.object(m, "_stop_owntone"), \
@@ -593,9 +609,10 @@ class TestExecuteFactoryReset:
         assert result is False
 
     def test_continues_despite_best_effort_stop_failure(self, tmp_path):
-        """Even when _stop_service fails, the sequence continues to reboot."""
+        """For autostream product: _delete_reset_files is called even when stop fails."""
         delete_called = []
         with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product", return_value="autostream"), \
              patch.object(m, "_rotate_logs"), \
              patch.object(m, "_stop_service", return_value=False), \
              patch.object(m, "_stop_owntone"), \
@@ -606,18 +623,19 @@ class TestExecuteFactoryReset:
              patch.object(m, "run_cmd", return_value=(0, "", "")), \
              patch("pathlib.Path.exists", return_value=True):
             result = m._execute_factory_reset()
-        # _delete_reset_files must still be called even if stop failed
         assert delete_called, "_delete_reset_files must be called despite stop failure"
 
     def test_lock_not_held_aborts(self):
+        """Lock contention aborts before product validation and any destructive action."""
         with patch.object(m, "_acquire_reset_lock", return_value=None):
             result = m._execute_factory_reset()
         assert result is False
 
     def test_full_stop_sync_delete_reboot_order(self, tmp_path):
-        """All six operations must occur in the documented sequence."""
+        """For autostream product: all six operations occur in documented sequence."""
         order = []
         with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product", return_value="autostream"), \
              patch.object(m, "_rotate_logs"), \
              patch.object(m, "_stop_service",
                           side_effect=lambda name: order.append(name) or True), \
@@ -633,7 +651,7 @@ class TestExecuteFactoryReset:
              patch("pathlib.Path.exists", return_value=True):
             m._execute_factory_reset()
 
-        # Expected relative order:
+        # Expected relative order for autostream product:
         # autostream.service → wifi_watcher.service → _stop_owntone
         #   → _sync_owntone_conf → _delete_reset_files → _delete_wifi_connections
         assert order.index("autostream.service") < order.index("autostream_wifi_watcher.service")
@@ -641,6 +659,297 @@ class TestExecuteFactoryReset:
         assert order.index("_stop_owntone") < order.index("_sync_owntone_conf")
         assert order.index("_sync_owntone_conf") < order.index("_delete_reset_files")
         assert order.index("_delete_reset_files") < order.index("_delete_wifi_connections")
+
+    def test_invalid_product_at_execution_aborts_without_destructive_actions(self):
+        """Product re-validation inside the transient unit must abort if product changed."""
+        delete_called = []
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product",
+                          side_effect=ValueError("install-state.env not found")), \
+             patch.object(m, "_delete_reset_files",
+                          side_effect=lambda: delete_called.append(True)), \
+             patch.object(m, "_delete_wifi_connections",
+                          side_effect=lambda: delete_called.append(True)):
+            result = m._execute_factory_reset()
+        assert result is False
+        assert not delete_called, "No destructive action must run when product is invalid"
+
+
+# ---------------------------------------------------------------------------
+# Product detection
+# ---------------------------------------------------------------------------
+
+class TestProductDetection:
+    def test_autostream_product_parsed(self, tmp_path):
+        """AUTOSTREAM_PRODUCT=autostream is returned as-is."""
+        state = tmp_path / "install-state.env"
+        state.write_text("AUTOSTREAM_PRODUCT=autostream\n")
+        with patch.object(m, "INSTALL_STATE_FILE", state):
+            product = m._read_product()
+        assert product == "autostream"
+
+    def test_dial_product_parsed(self, tmp_path):
+        """AUTOSTREAM_PRODUCT=autostream-dial is returned as-is."""
+        state = tmp_path / "install-state.env"
+        state.write_text("AUTOSTREAM_PRODUCT=autostream-dial\nDIAL_UUID=abc\n")
+        with patch.object(m, "INSTALL_STATE_FILE", state):
+            product = m._read_product()
+        assert product == "autostream-dial"
+
+    def test_missing_file_raises_value_error(self, tmp_path):
+        """Missing install-state.env raises ValueError (fail-closed)."""
+        state = tmp_path / "nonexistent-state.env"
+        with patch.object(m, "INSTALL_STATE_FILE", state):
+            with pytest.raises(ValueError, match="not found"):
+                m._read_product()
+
+    def test_empty_product_raises_value_error(self, tmp_path):
+        """Empty AUTOSTREAM_PRODUCT raises ValueError (fail-closed)."""
+        state = tmp_path / "install-state.env"
+        state.write_text("AUTOSTREAM_PRODUCT=\n")
+        with patch.object(m, "INSTALL_STATE_FILE", state):
+            with pytest.raises(ValueError, match="missing or empty"):
+                m._read_product()
+
+    def test_unknown_product_raises_value_error(self, tmp_path):
+        """An unrecognised AUTOSTREAM_PRODUCT value raises ValueError (fail-closed)."""
+        state = tmp_path / "install-state.env"
+        state.write_text("AUTOSTREAM_PRODUCT=autostream-speaker\n")
+        with patch.object(m, "INSTALL_STATE_FILE", state):
+            with pytest.raises(ValueError, match="Unknown AUTOSTREAM_PRODUCT"):
+                m._read_product()
+
+    def test_missing_key_raises_value_error(self, tmp_path):
+        """A state file without AUTOSTREAM_PRODUCT key raises ValueError."""
+        state = tmp_path / "install-state.env"
+        state.write_text("DIAL_UUID=abc\nAUTOSTREAM_RELEASE_TAG=1.0\n")
+        with patch.object(m, "INSTALL_STATE_FILE", state):
+            with pytest.raises(ValueError, match="missing or empty"):
+                m._read_product()
+
+
+# ---------------------------------------------------------------------------
+# Product-specific factory reset: dial sequence
+# ---------------------------------------------------------------------------
+
+class TestDialFactoryReset:
+    def _dial_reset(self, stop_calls, delete_calls, run_ok=True):
+        """Run _execute_factory_reset() as autostream-dial and capture side-effects."""
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product", return_value="autostream-dial"), \
+             patch.object(m, "_rotate_logs"), \
+             patch.object(m, "_stop_service",
+                          side_effect=lambda name: stop_calls.append(name) or True), \
+             patch.object(m, "_stop_owntone",
+                          side_effect=lambda: stop_calls.append("_stop_owntone")), \
+             patch.object(m, "_sync_owntone_conf",
+                          side_effect=lambda: stop_calls.append("_sync_owntone_conf")), \
+             patch.object(m, "_delete_reset_files",
+                          side_effect=lambda: delete_calls.append("_delete_reset_files")), \
+             patch.object(m, "_delete_wifi_connections"), \
+             patch.object(m, "run_cmd", return_value=(0 if run_ok else 1, "", "")), \
+             patch("pathlib.Path.exists", return_value=True):
+            return m._execute_factory_reset()
+
+    def test_dial_stops_dial_service(self):
+        """autostream-dial reset stops autostream_dial.service."""
+        stops = []
+        self._dial_reset(stops, [])
+        assert "autostream_dial.service" in stops
+
+    def test_dial_stops_wifi_watcher_service(self):
+        """autostream-dial reset stops autostream_dial_wifi_watcher.service."""
+        stops = []
+        self._dial_reset(stops, [])
+        assert "autostream_dial_wifi_watcher.service" in stops
+
+    def test_dial_stops_dnsmasq_service(self):
+        """autostream-dial reset stops autostream_dial_dnsmasq.service."""
+        stops = []
+        self._dial_reset(stops, [])
+        assert "autostream_dial_dnsmasq.service" in stops
+
+    def test_dial_does_not_stop_owntone(self):
+        """autostream-dial reset must not stop OwnTone (not installed on dial)."""
+        stops = []
+        self._dial_reset(stops, [])
+        assert "_stop_owntone" not in stops
+
+    def test_dial_does_not_sync_owntone_conf(self):
+        """autostream-dial reset must not run _sync_owntone_conf."""
+        stops = []
+        self._dial_reset(stops, [])
+        assert "_sync_owntone_conf" not in stops
+
+    def test_dial_does_not_call_delete_reset_files(self):
+        """autostream-dial reset must not call _delete_reset_files (main-product allowlist)."""
+        deletes = []
+        self._dial_reset([], deletes)
+        assert "_delete_reset_files" not in deletes
+
+    def test_dial_deletes_dial_settings_json(self, tmp_path):
+        """autostream-dial reset deletes /var/lib/autostream/dial-settings.json."""
+        settings = tmp_path / "dial-settings.json"
+        settings.write_text('{"name": "test"}')
+        ssid = tmp_path / "ssid"
+        ssid.write_text("MyNetwork")
+
+        dial_files = (settings, ssid)
+
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product", return_value="autostream-dial"), \
+             patch.object(m, "_rotate_logs"), \
+             patch.object(m, "_stop_service", return_value=True), \
+             patch.object(m, "_delete_wifi_connections"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")), \
+             patch.object(m, "FACTORY_RESET_DIAL_DELETE_FILES", dial_files), \
+             patch("pathlib.Path.exists", return_value=True):
+            m._execute_factory_reset()
+
+        assert not settings.exists(), "dial-settings.json must be deleted"
+        assert not ssid.exists(), "/opt/autostream/ssid must be deleted"
+
+    def test_dial_reset_returns_true_on_success(self):
+        """autostream-dial reset returns True on successful execution."""
+        result = self._dial_reset([], [])
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Two-stage product validation: state-change between schedule and execute
+# ---------------------------------------------------------------------------
+
+class TestFactoryResetTwoStageValidation:
+    def test_valid_at_schedule_invalid_at_execute_aborts(self):
+        """Product validity at schedule time does not excuse invalid state at execute time."""
+        # Scheduling succeeds; execution is refused because product is now unknown.
+        with patch.object(m, "_read_product", return_value="autostream"), \
+             patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")):
+            schedule_ok = m._schedule_factory_reset()
+        assert schedule_ok is True
+
+        # Simulate state-file removal between scheduling and execution.
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product",
+                          side_effect=ValueError("install-state.env not found")):
+            execute_ok = m._execute_factory_reset()
+        assert execute_ok is False
+
+
+# ---------------------------------------------------------------------------
+# Log rotation policy selection
+# ---------------------------------------------------------------------------
+
+class TestLogRotateProductSelection:
+    def _capture_logrotate_policies(self, product):
+        """Run _rotate_logs(product) and return the list of policy paths attempted."""
+        policies_used = []
+
+        def fake_run_cmd(cmd):
+            # Last arg is the policy file path
+            if len(cmd) >= 3 and "logrotate" in cmd[0]:
+                policies_used.append(cmd[-1])
+            return (0, "", "")
+
+        with patch.object(m, "find_logrotate", return_value="/usr/sbin/logrotate"), \
+             patch("os.path.exists", return_value=True), \
+             patch.object(m, "run_cmd", side_effect=fake_run_cmd):
+            m._rotate_logs(product)
+        return policies_used
+
+    def test_autostream_rotates_autostream_and_owntone(self):
+        """autostream product rotates /etc/logrotate.d/autostream and owntone."""
+        policies = self._capture_logrotate_policies("autostream")
+        assert "/etc/logrotate.d/autostream" in policies
+        assert "/etc/logrotate.d/owntone" in policies
+
+    def test_autostream_does_not_rotate_dial_policy(self):
+        """autostream product must not rotate the dial logrotate policy."""
+        policies = self._capture_logrotate_policies("autostream")
+        assert not any("autostream-dial" in p for p in policies)
+
+    def test_dial_rotates_only_dial_policy(self):
+        """autostream-dial product rotates only /etc/logrotate.d/autostream-dial."""
+        policies = self._capture_logrotate_policies("autostream-dial")
+        assert policies == ["/etc/logrotate.d/autostream-dial"]
+
+    def test_dial_does_not_rotate_owntone(self):
+        """autostream-dial product must not rotate the owntone logrotate policy."""
+        policies = self._capture_logrotate_policies("autostream-dial")
+        assert not any("owntone" in p for p in policies)
+
+    def test_no_logrotate_binary_skips_rotation(self):
+        """Missing logrotate binary logs a warning and returns without error."""
+        with patch.object(m, "find_logrotate", return_value=None):
+            m._rotate_logs("autostream")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# update-status: product-specific installer log selection
+# ---------------------------------------------------------------------------
+
+class TestUpdateStatusLogSelection:
+    def _run_update_status(self, tmp_path, product_env_content, *, install_log_name):
+        """Write install-state.env and update-result.env, run read_update_status()."""
+        state_file = tmp_path / "install-state.env"
+        state_file.write_text(product_env_content)
+        result_file = tmp_path / "update-result.env"
+        result_file.write_text("STATUS=success\nMESSAGE=done\nPERCENT_COMPLETE=100\n")
+        log_file = tmp_path / install_log_name
+        log_file.write_text("last log line\n")
+
+        read_tail_calls = []
+
+        def fake_read_tail(log_path=None):
+            read_tail_calls.append(log_path)
+            if log_path is not None and log_path.exists():
+                return log_path.read_text().strip()
+            return ""
+
+        with patch.object(m, "INSTALL_STATE_FILE", state_file), \
+             patch.object(m, "UPDATE_RESULT_FILE", result_file), \
+             patch.object(m, "_read_log_tail", side_effect=fake_read_tail), \
+             patch.object(m, "_is_stale_in_progress", return_value=False):
+            m.read_update_status()
+
+        return read_tail_calls
+
+    def test_autostream_product_uses_main_install_log(self, tmp_path):
+        """autostream product reads /var/log/autostream/autostream_install.log."""
+        calls = self._run_update_status(
+            tmp_path,
+            "AUTOSTREAM_PRODUCT=autostream\n",
+            install_log_name="autostream_install.log",
+        )
+        assert calls, "read_log_tail must be called"
+        log_path = calls[0]
+        assert log_path is not None
+        assert "autostream_install.log" in str(log_path)
+
+    def test_dial_product_uses_dial_install_log(self, tmp_path):
+        """autostream-dial product reads /var/log/autostream/dial-install.log."""
+        calls = self._run_update_status(
+            tmp_path,
+            "AUTOSTREAM_PRODUCT=autostream-dial\n",
+            install_log_name="dial-install.log",
+        )
+        assert calls, "read_log_tail must be called"
+        log_path = calls[0]
+        assert log_path is not None
+        assert "dial-install.log" in str(log_path)
+
+    def test_missing_product_falls_back_to_default(self, tmp_path):
+        """Missing install-state.env falls back to default log without crashing."""
+        result_file = tmp_path / "update-result.env"
+        result_file.write_text("STATUS=success\nPERCENT_COMPLETE=100\n")
+
+        with patch.object(m, "INSTALL_STATE_FILE", tmp_path / "nonexistent.env"), \
+             patch.object(m, "UPDATE_RESULT_FILE", result_file), \
+             patch.object(m, "_read_log_tail", return_value=""), \
+             patch.object(m, "_is_stale_in_progress", return_value=False):
+            rc = m.read_update_status()
+        assert rc == 0  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -682,7 +991,7 @@ class TestIsStaleInProgress:
         # The second call to _install_log_recently_modified (5 min) must return True
         call_count = {"n": 0}
 
-        def log_recent(now, within_minutes=5):
+        def log_recent(now, within_minutes=5, log_path=None):
             call_count["n"] += 1
             return True  # recent in both 30-min and 5-min windows
 
