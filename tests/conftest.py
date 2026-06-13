@@ -161,11 +161,14 @@ def _reset_dial_pin_attempts():
 
 @pytest.fixture(autouse=True)
 def _reset_core_monitors():
-    """Clear the core audio-monitor list after each test."""
+    """Clear the core audio-monitor list and save/restore _playback_tracker after each test."""
+    m = _mod("autostream_core")
+    saved_tracker = m._playback_tracker if m is not None else None
     yield
     m = _mod("autostream_core")
     if m is not None:
         m.all_monitors.clear()
+        m._playback_tracker = saved_tracker
 
 
 @pytest.fixture(autouse=True)
