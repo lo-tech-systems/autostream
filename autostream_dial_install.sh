@@ -110,6 +110,7 @@ mkdir -p /opt/autostream/nginx/cgi
 install -m 0755 "$DEPLOY/nginx/cgi/reboot.cgi"        /opt/autostream/nginx/cgi/
 install -m 0755 "$DEPLOY/nginx/cgi/factory-reset.cgi" /opt/autostream/nginx/cgi/
 install -m 0755 "$DEPLOY/nginx/cgi/update-status.cgi" /opt/autostream/nginx/cgi/
+install -m 0755 "$DEPLOY/dial/cgi/download-logs.cgi"  /opt/autostream/nginx/cgi/
 
 # Enable and restart fcgiwrap so the worker picks up the new adm group membership.
 systemctl enable fcgiwrap
