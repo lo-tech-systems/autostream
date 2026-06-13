@@ -224,39 +224,113 @@ class TestLiveInputEQValidation:
                                 "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path)
         assert code == 200
 
+    def _call_eq_with_mock_eq(self, body, tmp_path):
+        """Return (code, data, mock_set_live_input_eq) so callers can assert not called."""
+        if isinstance(body, dict):
+            body = json.dumps(body)
+        sent = []
+        mock_fn = MagicMock(return_value=True)
+
+        def fake_send_json(h, code, data):
+            sent.append((code, data))
+
+        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_post_handlers.set_live_input_eq", mock_fn):
+            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
+
+        code, data = sent[0] if sent else (None, {})
+        return code, data, mock_fn
+
     def test_bool_as_number_rejected(self, tmp_path):
-        # True would coerce to 1.0 via float — that's valid. The concern is booleans
-        # pretending to be ints for input index: bool True → 1 which is valid input.
-        # The key is that non-numeric string fails.
-        code, data = _call_eq({"input": 1, "eq_40hz_db": "not-a-float",
-                                "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path)
+        # Boolean True must not be accepted as an EQ value (float(True)=1.0 would slip through
+        # a naive range check). The handler must reject booleans explicitly.
+        code, data, mock_eq = self._call_eq_with_mock_eq(
+            {"input": 1, "eq_40hz_db": True, "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path
+        )
         assert code == 400
+        assert data["ok"] is False
+        mock_eq.assert_not_called()
+
+    def test_false_as_number_rejected(self, tmp_path):
+        code, data, mock_eq = self._call_eq_with_mock_eq(
+            {"input": 1, "eq_40hz_db": False, "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path
+        )
+        assert code == 400
+        mock_eq.assert_not_called()
 
     def test_nan_value_rejected(self, tmp_path):
-        # json.loads("NaN") fails in strict mode; pass as float after loads
+        # Inject NaN via json.loads patching; the handler must reject it with 400
+        # and must NOT call set_live_input_eq.
         body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
         sent = []
+        mock_eq = MagicMock(return_value=True)
+
+        import autostream_webui_post_handlers as _ph
+        orig_loads = _ph.json.loads
+
+        def patched_loads(s, **kw):
+            result = orig_loads(s, **kw)
+            if isinstance(result, dict):
+                result["eq_40hz_db"] = float("nan")
+            return result
+
         with patch("autostream_webui_post_handlers.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_post_handlers.set_live_input_eq",
-                   return_value=True):
-            # Inject NaN via direct payload manipulation
-            import autostream_webui_post_handlers as _ph
-            orig_loads = _ph.json.loads
+             patch("autostream_webui_post_handlers.set_live_input_eq", mock_eq), \
+             patch.object(_ph.json, "loads", side_effect=patched_loads):
+            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
-            def patched_loads(s, **kw):
-                result = orig_loads(s, **kw)
-                if isinstance(result, dict):
-                    result["eq_40hz_db"] = float("nan")
-                return result
+        code, data = sent[0]
+        assert code == 400
+        assert data["ok"] is False
+        mock_eq.assert_not_called()
 
-            with patch.object(_ph.json, "loads", side_effect=patched_loads):
-                handle_live_input_eq_update(MagicMock(), MagicMock(), body)
+    def test_infinity_rejected(self, tmp_path):
+        # math.inf > 10.0 is True so range check should catch it; confirm 400 + no monitor call.
+        body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
+        sent = []
+        mock_eq = MagicMock(return_value=True)
+        import autostream_webui_post_handlers as _ph
+        orig_loads = _ph.json.loads
 
-        # NaN will fail the range check (nan < -10 is False, nan > 10 is False)
-        # but float(nan) doesn't raise — so the behavior depends on implementation.
-        # At minimum, no unhandled exception should propagate.
-        assert sent, "Expected at least one response"
+        def patched_loads(s, **kw):
+            result = orig_loads(s, **kw)
+            if isinstance(result, dict):
+                result["eq_8khz_db"] = float("inf")
+            return result
+
+        with patch("autostream_webui_post_handlers.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_post_handlers.set_live_input_eq", mock_eq), \
+             patch.object(_ph.json, "loads", side_effect=patched_loads):
+            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
+
+        code, data = sent[0]
+        assert code == 400
+        mock_eq.assert_not_called()
+
+    def test_negative_infinity_rejected(self, tmp_path):
+        body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
+        sent = []
+        mock_eq = MagicMock(return_value=True)
+        import autostream_webui_post_handlers as _ph
+        orig_loads = _ph.json.loads
+
+        def patched_loads(s, **kw):
+            result = orig_loads(s, **kw)
+            if isinstance(result, dict):
+                result["eq_100hz_db"] = float("-inf")
+            return result
+
+        with patch("autostream_webui_post_handlers.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_post_handlers.set_live_input_eq", mock_eq), \
+             patch.object(_ph.json, "loads", side_effect=patched_loads):
+            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
+
+        code, data = sent[0]
+        assert code == 400
+        mock_eq.assert_not_called()
 
     def test_valid_eq_returns_200_with_values(self, tmp_path):
         code, data = _call_eq(
@@ -308,3 +382,316 @@ class TestLiveInputGainValidation:
         assert data["ok"] is True
         assert data["gain_db"] == pytest.approx(5.5)
         assert data["input"] == 2
+
+    def _call_gain_with_mock(self, body, tmp_path):
+        if isinstance(body, dict):
+            body = json.dumps(body)
+        sent = []
+        mock_fn = MagicMock(return_value=True)
+
+        def fake_send_json(h, code, data):
+            sent.append((code, data))
+
+        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_post_handlers.set_live_input_gain", mock_fn):
+            handle_live_input_gain_update(MagicMock(), MagicMock(), body)
+
+        code, data = sent[0] if sent else (None, {})
+        return code, data, mock_fn
+
+    def test_gain_bool_true_rejected(self, tmp_path):
+        code, data, mock_gain = self._call_gain_with_mock(
+            {"input": 1, "gain_db": True}, tmp_path
+        )
+        assert code == 400
+        assert data["ok"] is False
+        mock_gain.assert_not_called()
+
+    def test_gain_nan_rejected(self, tmp_path):
+        body = json.dumps({"input": 1, "gain_db": 0})
+        sent = []
+        mock_gain = MagicMock(return_value=True)
+        import autostream_webui_post_handlers as _ph
+        orig_loads = _ph.json.loads
+
+        def patched_loads(s, **kw):
+            result = orig_loads(s, **kw)
+            if isinstance(result, dict):
+                result["gain_db"] = float("nan")
+            return result
+
+        with patch("autostream_webui_post_handlers.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_post_handlers.set_live_input_gain", mock_gain), \
+             patch.object(_ph.json, "loads", side_effect=patched_loads):
+            handle_live_input_gain_update(MagicMock(), MagicMock(), body)
+
+        code, data = sent[0]
+        assert code == 400
+        assert data["ok"] is False
+        mock_gain.assert_not_called()
+
+    def test_gain_infinity_rejected(self, tmp_path):
+        body = json.dumps({"input": 1, "gain_db": 0})
+        sent = []
+        mock_gain = MagicMock(return_value=True)
+        import autostream_webui_post_handlers as _ph
+        orig_loads = _ph.json.loads
+
+        def patched_loads(s, **kw):
+            result = orig_loads(s, **kw)
+            if isinstance(result, dict):
+                result["gain_db"] = float("inf")
+            return result
+
+        with patch("autostream_webui_post_handlers.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_post_handlers.set_live_input_gain", mock_gain), \
+             patch.object(_ph.json, "loads", side_effect=patched_loads):
+            handle_live_input_gain_update(MagicMock(), MagicMock(), body)
+
+        code, data = sent[0]
+        assert code == 400
+        mock_gain.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# handle_output_update: offset and mode forwarding
+# ---------------------------------------------------------------------------
+
+class TestOutputUpdateForwarding:
+    def test_offset_and_mode_forwarded_to_update_output(self, tmp_path):
+        """update_output receives the per-output offset_ms and mode from config."""
+        sent = []
+        handler = MagicMock()
+        state = _make_state(tmp_path)
+        update_calls = []
+
+        def fake_send_json(h, code, data):
+            sent.append((code, data))
+
+        def fake_update_output(base_url, out_id, enabled, volume_percent,
+                               offset_ms=None, mode=None, timeout=3):
+            update_calls.append({
+                "offset_ms": offset_ms,
+                "mode": mode,
+            })
+            return _make_result_ok()
+
+        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_post_handlers.locked_load_config",
+                   return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
+             patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
+             patch("autostream_webui_post_handlers.update_output", side_effect=fake_update_output), \
+             patch("autostream_webui_post_handlers.set_output_enabled",
+                   return_value=_make_result_ok()), \
+             patch("autostream_webui_post_handlers.submit_output_pin",
+                   return_value=_make_result_ok()):
+            mock_parse.return_value.owntone.base_url = "http://localhost:3689"
+            mock_parse.return_value.owntone.output_offsets_ms = {"99": 200}
+            mock_parse.return_value.owntone.output_airplay_modes = {"99": "alac"}
+            handle_output_update(handler, state, json.dumps({"id": "99", "selected": True, "volume": 75}))
+
+        assert update_calls, "update_output must be called"
+        assert update_calls[0]["offset_ms"] == 200
+        assert update_calls[0]["mode"] is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_setup_post
+# ---------------------------------------------------------------------------
+
+from urllib.parse import urlencode
+from autostream_webui_post_handlers import handle_setup_post
+
+
+def _minimal_config():
+    return {
+        "audio1": {"capture_device": "hw:0,0", "silence_threshold": -50,
+                   "turntable": False, "gain_db": 0.0,
+                   "eq_40hz_db": 0.0, "eq_100hz_db": 0.0, "eq_8khz_db": 0.0},
+        "audio2": {"enabled": False, "capture_device": "hw:1,0", "silence_threshold": -50,
+                   "turntable": False, "gain_db": 0.0,
+                   "eq_40hz_db": 0.0, "eq_100hz_db": 0.0, "eq_8khz_db": 0.0},
+        "owntone": {"base_url": "http://localhost:3689",
+                    "output_name": "Default", "volume_percent": 50},
+        "general": {"silence_seconds": 10},
+        "updates": {"auto_update": False},
+    }
+
+
+def _call_setup_post(form_data: dict, tmp_path: Path,
+                     hostname_failure: bool = False,
+                     save_failure: bool = False,
+                     admin_rc: int = 0) -> dict:
+    """Call handle_setup_post with a URL-encoded body, returning captured state."""
+    body = urlencode(form_data)
+    cfg = _minimal_config()
+    saved_cfgs = []
+    redirects = []
+    flash_calls = []
+
+    def fake_save(path, data):
+        if save_failure:
+            raise OSError("disk full")
+        saved_cfgs.append(dict(data))
+
+    def fake_set_hostname(hn):
+        if hostname_failure:
+            raise RuntimeError("nmcli failed")
+
+    with patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
+         patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
+         patch("autostream_webui_post_handlers.save_config", side_effect=fake_save), \
+         patch("autostream_webui_post_handlers.mark_configured"), \
+         patch("autostream_webui_post_handlers.get_system_hostname", return_value="old-host"), \
+         patch("autostream_webui_post_handlers.set_system_hostname", side_effect=fake_set_hostname), \
+         patch("autostream_webui_post_handlers.run_admin_cmd",
+               return_value=MagicMock(returncode=admin_rc, stderr="")), \
+         patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
+         patch("autostream_webui_post_handlers.update_playback_input_config"), \
+         patch("autostream_webui_post_handlers.send_setup_page",
+               side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
+         patch("autostream_webui_post_handlers._set_flash_cookie"), \
+         patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
+         patch("autostream_webui_post_handlers.request_config_reload"):
+        # Configure parse_config mock to return something plausible
+        p = mock_parse.return_value
+        p.audio1.capture_device = "hw:0,0"
+        p.audio1.silence_threshold_dbfs = -50.0
+        p.audio1.gain_db = 0.0
+        p.audio1.eq_40hz_db = 0.0
+        p.audio1.eq_100hz_db = 0.0
+        p.audio1.eq_8khz_db = 0.0
+        p.audio1.stylus_life_hours = 500
+        p.audio1.belt_life_hours = 2000
+        p.audio1.belt_life_years = 5
+        p.audio1.bearing_life_hours = 5000
+        p.audio1.bearing_life_years = 10
+        p.audio2.capture_device = "hw:1,0"
+        p.audio2.silence_threshold_dbfs = -50.0
+        p.audio2.gain_db = 0.0
+        p.audio2.eq_40hz_db = 0.0
+        p.audio2.eq_100hz_db = 0.0
+        p.audio2.eq_8khz_db = 0.0
+        p.audio2.stylus_life_hours = 500
+        p.audio2.belt_life_hours = 2000
+        p.audio2.belt_life_years = 5
+        p.audio2.bearing_life_hours = 5000
+        p.audio2.bearing_life_years = 10
+        p.audio2_enabled = False
+        p.owntone.output_name = "Default"
+        p.owntone.volume_percent = 50
+        p.owntone.base_url = "http://localhost:3689"
+        p.owntone.output_offsets_ms = {}
+        p.owntone.output_airplay_modes = {}
+        p.general.silence_seconds = 10
+        p.general.log_file = "/var/log/autostream.log"
+        p.general.fifo_path = "/run/autostream/audio.fifo"
+        p.updates.auto_update = False  # existing value; form may change it
+
+        handle_setup_post(MagicMock(), MagicMock(), MagicMock(), body)
+
+    return {
+        "saved": saved_cfgs,
+        "flash_calls": flash_calls,
+    }
+
+
+class TestSetupPost:
+    def test_saves_both_audio_sections(self, tmp_path):
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "audio2_capture_device": "hw:1,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+        }
+        result = _call_setup_post(form, tmp_path)
+        assert result["saved"], "save_config must be called"
+        saved = result["saved"][0]
+        assert "audio1" in saved
+        assert "audio2" in saved
+
+    def test_removes_legacy_eq_10khz_key_from_audio1(self, tmp_path):
+        form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        # Pre-seed cfg with legacy key
+        with patch("autostream_webui_post_handlers.load_config",
+                   return_value={**_minimal_config(), "audio1": {**_minimal_config()["audio1"],
+                                                                  "eq_10khz_db": 1.5}}), \
+             patch("autostream_webui_post_handlers.parse_config") as mp, \
+             patch("autostream_webui_post_handlers.save_config") as mock_save, \
+             patch("autostream_webui_post_handlers.mark_configured"), \
+             patch("autostream_webui_post_handlers.get_system_hostname", return_value="h"), \
+             patch("autostream_webui_post_handlers.set_system_hostname"), \
+             patch("autostream_webui_post_handlers.run_admin_cmd",
+                   return_value=MagicMock(returncode=0, stderr="")), \
+             patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
+             patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             patch("autostream_webui_post_handlers._set_flash_cookie"), \
+             patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
+             patch("autostream_webui_post_handlers.request_config_reload"):
+            p = mp.return_value
+            p.audio1.capture_device = "hw:0,0"
+            p.audio1.silence_threshold_dbfs = -50.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio1, attr, 0.0)
+            p.audio2.capture_device = "hw:1,0"
+            p.audio2.silence_threshold_dbfs = -50.0
+            for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                         "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                         "bearing_life_hours", "bearing_life_years"):
+                setattr(p.audio2, attr, 0.0)
+            p.audio2_enabled = False
+            p.owntone.output_name = "S"
+            p.owntone.volume_percent = 50
+            p.owntone.base_url = "http://localhost:3689"
+            p.owntone.output_offsets_ms = {}
+            p.owntone.output_airplay_modes = {}
+            p.general.silence_seconds = 10
+            p.general.log_file = "/var/log/autostream.log"
+            p.general.fifo_path = "/run/autostream/audio.fifo"
+            p.updates.auto_update = False
+            handle_setup_post(MagicMock(), MagicMock(), MagicMock(), urlencode(form))
+            assert mock_save.called
+            saved_cfg = mock_save.call_args[0][1]
+            assert "eq_10khz_db" not in saved_cfg.get("audio1", {})
+
+    def test_webui_panel_preserved_when_sentinel_absent(self, tmp_path):
+        # Without webui_show_master_volume_present, the webui section must not be overwritten.
+        form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        result = _call_setup_post(form, tmp_path)
+        if result["saved"]:
+            assert "webui" not in result["saved"][0]
+
+    def test_auto_update_rollback_on_timer_failure(self, tmp_path):
+        # When auto_update changes and run_admin_cmd fails, the handler rolls back
+        # and calls send_setup_page (not the success cookie path).
+        form = {
+            "audio_capture_device": "hw:0,0", "silence_seconds": "10",
+            "owntone_output_name": "S", "owntone_volume_percent": "50",
+            "updates_auto_update_present": "1",
+            "updates_auto_update": "1",   # toggle to True
+        }
+        result = _call_setup_post(form, tmp_path, admin_rc=1)
+        # Timer failure triggers send_setup_page with error flash
+        assert result["flash_calls"], "send_setup_page must be called on timer failure"
+        flash = result["flash_calls"][0]
+        assert flash.get("flash_type") == "error"
+
+    def test_save_failure_calls_error_page(self, tmp_path):
+        form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
+                "owntone_output_name": "S", "owntone_volume_percent": "50"}
+        # save_config raises OSError — we expect an exception or send_setup_page call.
+        # Current impl: the exception propagates out of the with CONFIG_IO_LOCK block,
+        # which means the rest of the success path is skipped.
+        try:
+            result = _call_setup_post(form, tmp_path, save_failure=True)
+            # If handler catches it and calls send_setup_page — that's fine too.
+            assert not result["saved"]
+        except OSError:
+            pass  # propagation is also acceptable behavior

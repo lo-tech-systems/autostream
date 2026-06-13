@@ -409,6 +409,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
 def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
     """Apply live per-input EQ changes to autostream_monitor."""
+    import math
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
@@ -416,7 +417,14 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         return
 
     try:
-        input_index = int(payload.get("input", 0))
+        raw_index = payload.get("input", 0)
+        if isinstance(raw_index, bool):
+            raise TypeError("bool")
+        input_index = int(raw_index)
+        eq_fields = ("eq_40hz_db", "eq_100hz_db", "eq_8khz_db")
+        for field in eq_fields:
+            if isinstance(payload.get(field), bool):
+                raise TypeError("bool")
         eq_40hz_db = float(payload.get("eq_40hz_db", 0.0))
         eq_100hz_db = float(payload.get("eq_100hz_db", 0.0))
         eq_8khz_db = float(payload.get("eq_8khz_db", 0.0))
@@ -429,7 +437,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         return
 
     for val in (eq_40hz_db, eq_100hz_db, eq_8khz_db):
-        if val < -10.0 or val > 10.0:
+        if not math.isfinite(val) or val < -10.0 or val > 10.0:
             send_json(handler, 400, {"ok": False, "error": "EQ gain must be between -10 and 10 dB"})
             return
 
@@ -454,6 +462,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
 
 def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None:
     """Apply live per-input gain changes to autostream_monitor."""
+    import math
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
@@ -461,7 +470,12 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
         return
 
     try:
-        input_index = int(payload.get("input", 0))
+        raw_index = payload.get("input", 0)
+        if isinstance(raw_index, bool):
+            raise TypeError("bool")
+        input_index = int(raw_index)
+        if isinstance(payload.get("gain_db"), bool):
+            raise TypeError("bool")
         gain_db = float(payload.get("gain_db", 0.0))
     except Exception:
         send_json(handler, 400, {"ok": False, "error": "Invalid gain payload"})
@@ -471,7 +485,7 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
         send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
         return
 
-    if gain_db < -10.0 or gain_db > 10.0:
+    if not math.isfinite(gain_db) or gain_db < -10.0 or gain_db > 10.0:
         send_json(handler, 400, {"ok": False, "error": "Gain must be between -10 and 10 dB"})
         return
 
