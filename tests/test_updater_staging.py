@@ -17,9 +17,10 @@ import json
 import os
 import sys
 import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -461,6 +462,137 @@ class TestDialSchedulingFailure:
         assert result_file.exists()
         content = result_file.read_text()
         assert "failed" in content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Dial: happy path
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Host: path traversal and absolute-path tarballs rejected
+# ---------------------------------------------------------------------------
+
+def _make_traversal_tarball(tmp_path: Path) -> Path:
+    """Build a tarball whose only member has a path-traversal component."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="../injected_evil.sh")
+        content = b"#!/bin/sh\nexit 0\n"
+        info.size = len(content)
+        info.mode = 0o755
+        tf.addfile(info, io.BytesIO(content))
+    buf.seek(0)
+    tar_path = tmp_path / "traversal.tgz"
+    tar_path.write_bytes(buf.getvalue())
+    return tar_path
+
+
+def _with_host_lock(mod):
+    """Context manager that sets up the fcntl mock and tracks flock calls."""
+    @contextmanager
+    def _ctx():
+        with patch.object(mod, "fcntl") as mk:
+            mk.LOCK_EX = 2
+            mk.LOCK_NB = 4
+            mk.LOCK_UN = 8
+            mk.flock.return_value = None
+            yield mk
+    return _ctx()
+
+
+class TestHostTraversalRejected:
+    def test_traversal_tarball_returns_staging_error(self, tmp_path):
+        """A tarball with '../' path traversal must not be staged."""
+        mod = _load_host(tmp_path)
+        tar = _make_traversal_tarball(tmp_path)
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_update_unit_active", return_value=False), \
+             _with_host_lock(mod):
+            result = mod.cmd_apply(auto=False)
+        assert result["ok"] is False
+        assert result.get("error") == "Release staging failed"
+
+
+# ---------------------------------------------------------------------------
+# Host: post-lock unit-active recheck
+# ---------------------------------------------------------------------------
+
+class TestHostPostLockUnitActive:
+    def test_post_lock_active_returns_error(self, tmp_path):
+        """If the unit becomes active *after* the lock is acquired, refuse."""
+        mod = _load_host(tmp_path)
+        calls = [0]
+
+        def _unit_check():
+            calls[0] += 1
+            return calls[0] > 1  # False on first (pre-lock), True on second (post-lock)
+
+        with patch.object(mod, "_update_unit_active", side_effect=_unit_check), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             _with_host_lock(mod):
+            result = mod.cmd_apply(auto=False)
+
+        assert result["ok"] is False
+        assert "progress" in result.get("error", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Host: lock release (LOCK_UN + close) on success and every error path
+# ---------------------------------------------------------------------------
+
+class TestHostLockRelease:
+    def _run_with_tracking(self, mod, tar_path, run_rc=0):
+        """Run cmd_apply and return (result, flock_call_args_list)."""
+        flock_calls = []
+
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
+             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(mod, "_update_unit_active", return_value=False), \
+             patch.object(mod, "fcntl") as mk_fcntl:
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.side_effect = lambda fd, flags: flock_calls.append(flags)
+            result = mod.cmd_apply(auto=False)
+
+        return result, flock_calls
+
+    def test_lock_released_with_LOCK_UN_on_success(self, tmp_path):
+        mod = _load_host(tmp_path)
+        tar = _make_tarball(tmp_path)
+        result, flock_calls = self._run_with_tracking(mod, tar, run_rc=0)
+        assert result["ok"] is True
+        assert 8 in flock_calls, "LOCK_UN (8) must be called on success"
+
+    def test_lock_released_with_LOCK_UN_on_staging_failure(self, tmp_path):
+        mod = _load_host(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="wrong.sh")  # staging fails
+        result, flock_calls = self._run_with_tracking(mod, tar, run_rc=0)
+        assert result["ok"] is False
+        assert 8 in flock_calls, "LOCK_UN (8) must be called even on staging failure"
+
+    def test_lock_released_with_LOCK_UN_on_scheduling_failure(self, tmp_path):
+        mod = _load_host(tmp_path)
+        tar = _make_tarball(tmp_path)
+        result, flock_calls = self._run_with_tracking(mod, tar, run_rc=1)
+        assert result["ok"] is False
+        assert 8 in flock_calls, "LOCK_UN (8) must be called even on scheduling failure"
 
 
 # ---------------------------------------------------------------------------
