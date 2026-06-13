@@ -14,11 +14,28 @@ COMMANDS
   apply    Stage the latest GitHub release and invoke autostream_dial_install.sh
            --update via a transient systemd unit.
            Outputs JSON: {ok, staged_tag} on success, {ok:false, error} on failure.
-           The installer owns all status reporting via update-result.env.
+           The installer owns success/failure status reporting via update-result.env.
 
-  recover  Safely recover an interrupted update (STATUS=running left by a
+  recover  Safely recover an interrupted update (STATUS=in_progress left by a
            power-loss or unexpected exit).  Invoked only by the boot-time
            autostream_dial_update_recover.service — never from cmd_apply.
+
+UPDATE STATUS SCHEMA
+--------------------
+update-result.env uses the canonical schema shared with autostream_admin
+update-status and the offline updating.html page:
+
+  STATUS          in_progress | success | failure
+  PERCENT_COMPLETE  0 (in_progress/failure) | 100 (success)
+  MESSAGE         human-readable status message
+  LAST_RUN_AT     ISO-8601 UTC timestamp
+
+UPDATING FLAG
+-------------
+/tmp/autostream-dial-updating is created immediately before writing
+STATUS=in_progress and removed on every exit (success, failure, or boot
+recovery). nginx uses this flag to redirect requests to /offline/updating
+while an update is in progress.
 """
 from __future__ import annotations
 
@@ -47,12 +64,13 @@ from autostream_update_support import (
 
 # ---- Paths / constants -------------------------------------------------------
 
-LOG_PATH    = Path("/var/log/autostream/dial-update.log")
-STATE_DIR   = Path("/var/lib/autostream")
-CONFIG_PATH = Path("/etc/autostream/autostream-dial.json")
-LOCK_PATH   = Path("/run/autostream-dial-update.lock")
-APMODE_FLAG = Path("/tmp/autostream-dial-apmode")
-STAGING_DIR = Path("/var/lib/autostream/update-staging")
+LOG_PATH       = Path("/var/log/autostream/dial-update.log")
+STATE_DIR      = Path("/var/lib/autostream")
+CONFIG_PATH    = Path("/etc/autostream/autostream-dial.json")
+LOCK_PATH      = Path("/run/autostream-dial-update.lock")
+APMODE_FLAG    = Path("/tmp/autostream-dial-apmode")
+UPDATING_FLAG  = Path("/tmp/autostream-dial-updating")
+STAGING_DIR    = Path("/var/lib/autostream/update-staging")
 
 UA = "autostream-dial-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
 
@@ -69,8 +87,22 @@ def _log(msg: str) -> None:
     logging.info("%s", msg)
 
 
-def write_update_result(status: str, message: str) -> None:
-    content = f"STATUS={status}\nMESSAGE={message}\n"
+def write_update_result(status: str, message: str, percent: int = 0) -> None:
+    """Write the canonical update-result.env schema.
+
+    Schema shared with autostream_admin update-status and offline/updating.html:
+      STATUS          in_progress | success | failure
+      PERCENT_COMPLETE  0 for in_progress/failure, 100 for success
+      MESSAGE         human-readable status message
+      LAST_RUN_AT     ISO-8601 UTC timestamp
+    """
+    last_run_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    content = (
+        f"STATUS={status}\n"
+        f"PERCENT_COMPLETE={percent}\n"
+        f"MESSAGE={message}\n"
+        f"LAST_RUN_AT={last_run_at}\n"
+    )
     (STATE_DIR / "update-result.env").write_text(content, encoding="utf-8")
 
 
@@ -113,14 +145,16 @@ def _resolve_dial_release(
 # ---- Active-unit guard -------------------------------------------------------
 
 def _dial_update_unit_active() -> bool:
-    """Return True if an autostream-dial update unit is active (running or waiting).
+    """Return True if a dial update installer unit is active (running or waiting).
 
+    Uses the shared autostream-update-*.service glob, which matches the
+    standardised unit name autostream-update-dial-<timestamp>-<pid>.
     Fail-closed: raises RuntimeError on systemctl error so callers reject
     the request rather than proceeding with a potentially concurrent install.
     """
     rc, out, err = _run(
         ["systemctl", "list-units", "--state=active", "--no-legend", "--plain",
-         "autostream-dial-update-*"],
+         "autostream-update-*.service"],
         timeout=10,
     )
     if rc != 0:
@@ -305,11 +339,18 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
                 pass
             return {"ok": False, "error": "Release staging failed", "details": str(e)}
 
-        write_update_result("running", f"Installing {tag}...")
-        _log("apply: written STATUS=running")
+        # Create the updating flag before writing STATUS=in_progress so nginx
+        # can redirect to /offline/updating as soon as the flag appears.
+        try:
+            UPDATING_FLAG.touch()
+        except OSError as e:
+            _log(f"apply: warning — could not create UPDATING_FLAG: {e}")
+
+        write_update_result("in_progress", f"Installing {tag}...", percent=0)
+        _log("apply: written STATUS=in_progress")
 
         unit_suffix = f"{int(time.time())}-{os.getpid()}"
-        unit_name   = f"autostream-dial-update-{unit_suffix}"
+        unit_name   = f"autostream-update-dial-{unit_suffix}"
 
         cmd = [
             str(systemd_run), "--quiet", "--collect",
@@ -325,8 +366,12 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
 
         rc, out, err = _run(cmd, timeout=15)
         if rc != 0:
-            write_update_result("failed", f"systemd-run failed scheduling {tag}")
+            write_update_result("failure", f"systemd-run failed scheduling {tag}", percent=0)
             _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")
+            try:
+                UPDATING_FLAG.unlink(missing_ok=True)
+            except OSError as e:
+                _log(f"apply: warning — could not remove UPDATING_FLAG after scheduling failure: {e}")
             return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
 
         _log(f"apply: installer scheduled as {unit_name} tag={tag}")
@@ -340,19 +385,27 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
 def cmd_recover() -> Dict[str, Any]:
     """Safe interrupted-update recovery — invoked at boot before dial services start.
 
-    Writes STATUS=failed only after confirming both that no update unit is active
+    Writes STATUS=failure only after confirming both that no update unit is active
     AND the lock file is free.  After a clean reboot both conditions are always
-    true (LOCK_PATH is in /run/, tmpfs emptied on every boot).  Fail-closed on
-    any check failure.
+    true (LOCK_PATH and UPDATING_FLAG are in /tmp or /run, cleared on every boot).
+    Also removes any stale UPDATING_FLAG so nginx does not redirect to the updating
+    page after an interrupted update is resolved.  Fail-closed on any check failure.
     """
-    env = _read_env_file(STATE_DIR / "update-result.env")
-    if env.get("STATUS", "").lower() != "running":
+    try:
+        env = _read_env_file(STATE_DIR / "update-result.env")
+    except FileNotFoundError:
+        return {"ok": True}
+    except Exception as e:
+        _log(f"recover: could not read update-result.env ({e}) — leaving unchanged")
+        return {"ok": False, "error": str(e)}
+
+    if env.get("STATUS", "").lower() != "in_progress":
         return {"ok": True}
 
     # Confirm no update unit is active (fail-closed)
     try:
         if _dial_update_unit_active():
-            _log("recover: STATUS=running and update unit is active — leaving unchanged")
+            _log("recover: STATUS=in_progress and update unit is active — leaving unchanged")
             return {"ok": True}
     except Exception as e:
         _log(f"recover: unit check failed ({e}) — leaving STATUS unchanged")
@@ -366,16 +419,21 @@ def cmd_recover() -> Dict[str, Any]:
             fcntl.flock(fd, fcntl.LOCK_UN)
         except OSError:
             os.close(fd)
-            _log("recover: STATUS=running and lock is held — leaving unchanged")
+            _log("recover: STATUS=in_progress and lock is held — leaving unchanged")
             return {"ok": True}
         os.close(fd)
     except OSError as e:
         _log(f"recover: lock open failed ({e}) — leaving STATUS unchanged")
         return {"ok": False, "error": str(e)}
 
-    # Both guards passed: safe to mark as interrupted
-    write_update_result("failed", "Update was interrupted (power loss or unexpected exit).")
-    _log("recover: STATUS was 'running' with no active unit or lock — written 'failed'")
+    # Both guards passed: safe to mark as interrupted and remove updating flag.
+    write_update_result("failure", "Update was interrupted (power loss or unexpected exit).",
+                        percent=0)
+    try:
+        UPDATING_FLAG.unlink(missing_ok=True)
+    except OSError as e:
+        _log(f"recover: warning — could not remove UPDATING_FLAG: {e}")
+    _log("recover: STATUS was 'in_progress' with no active unit or lock — written 'failure'")
     return {"ok": True}
 
 

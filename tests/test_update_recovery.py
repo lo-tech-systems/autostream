@@ -3,6 +3,10 @@
 Covers autostream_update_retry.main() (host boot-time recovery) and
 autostream_dial_updater.cmd_recover() (dial recovery).
 
+Dial recovery: checks STATUS=in_progress (canonical schema); writes
+STATUS=failure and removes UPDATING_FLAG when both the unit-active and
+lock-free guards pass.
+
 Both modules are loaded via load_supervisor_script() so fcntl is stubbed
 on Windows.  Path constants are redirected to tmp_path after load.
 """
@@ -56,6 +60,7 @@ def _load_dial(tmp_path: Path) -> ModuleType:
     mod.STATE_DIR = tmp_path
     mod.LOCK_PATH = tmp_path / "dial.lock"
     mod.LOG_PATH = tmp_path / "dial-update.log"
+    mod.UPDATING_FLAG = tmp_path / "autostream-dial-updating"
     return mod
 
 
@@ -327,38 +332,41 @@ class TestRetrySchedulingFailure:
 
 class TestDialRecover:
     def test_no_result_file_returns_ok_noop(self, tmp_path):
+        """Missing update-result.env is a no-op (no prior update recorded)."""
         mod = _load_dial(tmp_path)
         result = mod.cmd_recover()
         assert result.get("ok") is True
 
-    def test_status_not_running_is_noop(self, tmp_path):
+    def test_status_not_in_progress_is_noop(self, tmp_path):
+        """STATUS=success is not an interrupted update — leave unchanged."""
         mod = _load_dial(tmp_path)
         (tmp_path / "update-result.env").write_text("STATUS=success\n")
         result = mod.cmd_recover()
         assert result.get("ok") is True
 
     def test_active_unit_leaves_unchanged(self, tmp_path):
+        """STATUS=in_progress with an active update unit is a live update — leave unchanged."""
         mod = _load_dial(tmp_path)
-        (tmp_path / "update-result.env").write_text("STATUS=running\n")
+        (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
         with patch.object(mod, "_dial_update_unit_active", return_value=True):
             result = mod.cmd_recover()
         assert result.get("ok") is True
-        # STATUS must not have been changed to failed
         content = (tmp_path / "update-result.env").read_text()
-        assert "running" in content
+        assert "in_progress" in content
 
     def test_unit_check_error_returns_ok_false(self, tmp_path):
+        """Unit check failure is fail-closed; STATUS is left unchanged."""
         mod = _load_dial(tmp_path)
-        (tmp_path / "update-result.env").write_text("STATUS=running\n")
+        (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
         with patch.object(mod, "_dial_update_unit_active",
                           side_effect=RuntimeError("systemctl broke")):
             result = mod.cmd_recover()
         assert result.get("ok") is False
 
     def test_lock_held_leaves_unchanged(self, tmp_path):
+        """Lock held by a running installer leaves STATUS=in_progress unchanged."""
         mod = _load_dial(tmp_path)
-        (tmp_path / "update-result.env").write_text("STATUS=running\n")
-        # Make flock throw EWOULDBLOCK
+        (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
         import errno as _errno
         with patch.object(mod, "_dial_update_unit_active", return_value=False):
             mod.fcntl.flock.side_effect = OSError(_errno.EWOULDBLOCK, "held")
@@ -366,15 +374,29 @@ class TestDialRecover:
             mod.fcntl.flock.side_effect = None
         assert result.get("ok") is True
         content = (tmp_path / "update-result.env").read_text()
-        assert "running" in content
+        assert "in_progress" in content
 
-    def test_both_guards_pass_writes_failed(self, tmp_path):
+    def test_both_guards_pass_writes_failure(self, tmp_path):
+        """Both guards pass: write STATUS=failure to record the interrupted update."""
         mod = _load_dial(tmp_path)
-        (tmp_path / "update-result.env").write_text("STATUS=running\n")
+        (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
         with patch.object(mod, "_dial_update_unit_active", return_value=False):
             mod.fcntl.flock.side_effect = None
             mod.fcntl.flock.return_value = None
             result = mod.cmd_recover()
         assert result.get("ok") is True
         content = (tmp_path / "update-result.env").read_text()
-        assert "failed" in content.lower()
+        assert "STATUS=failure" in content
+
+    def test_both_guards_pass_removes_updating_flag(self, tmp_path):
+        """Boot recovery removes the stale UPDATING_FLAG so nginx stops redirecting."""
+        mod = _load_dial(tmp_path)
+        (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
+        flag = tmp_path / "autostream-dial-updating"
+        flag.touch()
+        with patch.object(mod, "_dial_update_unit_active", return_value=False):
+            mod.fcntl.flock.side_effect = None
+            mod.fcntl.flock.return_value = None
+            result = mod.cmd_recover()
+        assert result.get("ok") is True
+        assert not flag.exists(), "UPDATING_FLAG must be removed by boot recovery"

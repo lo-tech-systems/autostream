@@ -132,8 +132,14 @@ setup_venv() {
 }
 
 write_update_result() {
-    local status="$1" message="$2"
-    printf 'STATUS=%s\nMESSAGE=%s\n' "$status" "$message" \
+    # Write the canonical update-result.env schema shared with autostream_admin
+    # update-status and the offline/updating.html page.
+    # Usage: write_update_result STATUS MESSAGE [PERCENT_COMPLETE]
+    local status="$1" message="$2" percent="${3:-0}"
+    local last_run_at
+    last_run_at="$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')"
+    printf 'STATUS=%s\nPERCENT_COMPLETE=%s\nMESSAGE=%s\nLAST_RUN_AT=%s\n' \
+        "$status" "$percent" "$message" "$last_run_at" \
         > /var/lib/autostream/update-result.env
 }
 

@@ -47,8 +47,16 @@ fi
 # LOCK_PATH in autostream_dial_updater must match /run/autostream-dial-update.lock exactly.
 
 # ---- Exit trap ---------------------------------------------------------------
+# The UPDATING_FLAG (/tmp/autostream-dial-updating) was created by the updater
+# immediately before scheduling this installer. Remove it on every exit so that
+# nginx stops redirecting requests to /offline/updating after this process ends.
+UPDATING_FLAG=/tmp/autostream-dial-updating
 _install_success=false
-trap '[[ "$_install_success" = true ]] || write_update_result "failed" "Installer exited unexpectedly at line $LINENO"' EXIT
+trap '_exit_rc=$?
+    [[ "$_install_success" = true ]] || \
+        write_update_result "failure" "Installer exited unexpectedly at line $LINENO"
+    rm -f "$UPDATING_FLAG"
+    exit $_exit_rc' EXIT
 
 # ---- OS version check (fresh install and update) ----------------------------
 require_trixie_os
@@ -160,8 +168,9 @@ systemctl restart autostream_dial autostream_dial_wifi_watcher
 
 # write_update_result only on --update: fresh install leaves status=idle (no update occurred).
 # Set _install_success AFTER the write — if write_update_result fails, the EXIT trap fires
-# and writes "failed", which is correct.
-$UPDATE && write_update_result "success" "Installed ${AUTOSTREAM_RELEASE_TAG}"
+# and writes "failure", which is correct.
+# PERCENT_COMPLETE=100 signals the updating.html page to start its restart-and-redirect flow.
+$UPDATE && write_update_result "success" "Installed ${AUTOSTREAM_RELEASE_TAG}" 100
 _install_success=true   # disarm EXIT trap only after status is safely written
 
 echo "autostream dial installation complete."

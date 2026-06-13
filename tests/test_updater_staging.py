@@ -4,7 +4,12 @@ Covers cmd_apply for both host (autostream_updater) and dial
 (autostream_dial_updater): tarball staging/extraction, AP-mode guard,
 unit-active guard, lock contention, missing installer, missing system/,
 systemd-run and flock guards, scheduling failures, auto-update gates, and
-per-product side-effects (host clears result file; dial writes running status).
+per-product side-effects (host clears result file; dial writes in_progress
+status with canonical schema and creates UPDATING_FLAG; scheduling failure
+writes STATUS=failure and removes UPDATING_FLAG).
+
+Dial transient unit names match the pattern autostream-update-dial-<ts>-<pid>
+which is covered by the shared autostream-update-*.service active-unit glob.
 
 Uses load_supervisor_script() from conftest to stub fcntl on Windows.
 All path constants are redirected to tmp_path after module load.
@@ -82,6 +87,7 @@ def _load_dial(tmp_path: Path) -> ModuleType:
     mod.STATE_DIR = tmp_path
     mod.LOG_PATH = tmp_path / "dial-update.log"
     mod.APMODE_FLAG = tmp_path / "_dial_apmode_absent"
+    mod.UPDATING_FLAG = tmp_path / "autostream-dial-updating"
     return mod
 
 
@@ -433,11 +439,12 @@ class TestDialAutoUpdateGate:
 
 
 # ---------------------------------------------------------------------------
-# Dial: scheduling failure writes STATUS=failed
+# Dial: scheduling failure writes STATUS=failure and removes UPDATING_FLAG
 # ---------------------------------------------------------------------------
 
 class TestDialSchedulingFailure:
-    def test_scheduling_failure_writes_failed_status(self, tmp_path):
+    def test_scheduling_failure_writes_failure_status(self, tmp_path):
+        """systemd-run failure writes STATUS=failure (canonical schema)."""
         mod = _load_dial(tmp_path)
         tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
                             include_system=False)
@@ -458,10 +465,32 @@ class TestDialSchedulingFailure:
             mk_fcntl.flock.return_value = None
             result = mod.cmd_apply(auto=False)
         assert result["ok"] is False
-        # Dial writes STATUS=failed to STATE_DIR/update-result.env
         assert result_file.exists()
         content = result_file.read_text()
-        assert "failed" in content.lower()
+        assert "STATUS=failure" in content
+
+    def test_scheduling_failure_removes_updating_flag(self, tmp_path):
+        """UPDATING_FLAG created before scheduling must be removed on scheduling failure."""
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_run", return_value=(1, "", "unit fail")), \
+             patch.object(mod, "fcntl") as mk_fcntl, \
+             patch.object(mod, "_dial_update_unit_active", return_value=False):
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.return_value = None
+            mod.cmd_apply(auto=False)
+        assert not mod.UPDATING_FLAG.exists(), \
+            "UPDATING_FLAG must be removed after scheduling failure"
 
 
 # ---------------------------------------------------------------------------
@@ -879,3 +908,132 @@ class TestDialLockRelease:
         result, fake_fd, _, close_calls = self._run_tracking_close(mod, tar, run_rc=1)
         assert result["ok"] is False
         assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on dial scheduling failure"
+
+
+# ---------------------------------------------------------------------------
+# Dial: UPDATING_FLAG lifecycle and canonical status schema
+# ---------------------------------------------------------------------------
+
+class TestDialUpdatingFlag:
+    def _run_dial_apply(self, mod, tar, run_rc=0):
+        """Run cmd_apply and return the result."""
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(mod, "fcntl") as mk_fcntl:
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.return_value = None
+            return mod.cmd_apply(auto=False)
+
+    def test_success_creates_updating_flag(self, tmp_path):
+        """UPDATING_FLAG is created before scheduling the installer on success."""
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        created_flags = []
+
+        orig_write = mod.write_update_result
+        def tracking_write(status, *a, **kw):
+            # On in_progress write: flag should already exist
+            if status == "in_progress" and mod.UPDATING_FLAG.exists():
+                created_flags.append(True)
+            return orig_write(status, *a, **kw)
+
+        with patch.object(mod, "write_update_result", side_effect=tracking_write):
+            result = self._run_dial_apply(mod, tar, run_rc=0)
+        assert result["ok"] is True
+        assert created_flags, "UPDATING_FLAG must exist before STATUS=in_progress is written"
+
+    def test_success_writes_in_progress_status(self, tmp_path):
+        """Successful scheduling writes STATUS=in_progress (not 'running')."""
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        self._run_dial_apply(mod, tar, run_rc=0)
+        result_text = (tmp_path / "update-result.env").read_text()
+        assert "STATUS=in_progress" in result_text
+
+    def test_success_writes_percent_complete(self, tmp_path):
+        """Successful scheduling writes PERCENT_COMPLETE=0."""
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        self._run_dial_apply(mod, tar, run_rc=0)
+        result_text = (tmp_path / "update-result.env").read_text()
+        assert "PERCENT_COMPLETE=0" in result_text
+
+    def test_success_writes_last_run_at(self, tmp_path):
+        """Successful scheduling writes a LAST_RUN_AT timestamp."""
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        self._run_dial_apply(mod, tar, run_rc=0)
+        result_text = (tmp_path / "update-result.env").read_text()
+        assert "LAST_RUN_AT=" in result_text
+
+    def test_success_writes_message(self, tmp_path):
+        """Successful scheduling writes a non-empty MESSAGE field."""
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        self._run_dial_apply(mod, tar, run_rc=0)
+        result_text = (tmp_path / "update-result.env").read_text()
+        assert "MESSAGE=" in result_text
+
+
+# ---------------------------------------------------------------------------
+# Dial: transient unit name matches shared glob
+# ---------------------------------------------------------------------------
+
+class TestDialUnitNaming:
+    def test_unit_name_matches_shared_glob_prefix(self, tmp_path):
+        """Transient unit name starts with 'autostream-update-dial-' (shared glob prefix)."""
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        captured_cmds = []
+
+        def fake_run(cmd, **kw):
+            captured_cmds.append(list(cmd))
+            return (0, "", "")
+
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file",
+                          side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_run", side_effect=fake_run), \
+             patch.object(mod, "fcntl") as mk_fcntl:
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.return_value = None
+            mod.cmd_apply(auto=False)
+
+        # Find the systemd-run call (last captured command)
+        unit_args = [a for cmd in captured_cmds for a in cmd if a.startswith("--unit=")]
+        assert unit_args, "No --unit= argument found in systemd-run call"
+        unit_name = unit_args[-1].split("=", 1)[1]
+        assert unit_name.startswith("autostream-update-dial-"), (
+            f"Unit name {unit_name!r} must start with 'autostream-update-dial-' "
+            "to match the shared autostream-update-*.service active-unit glob"
+        )
+
+    def test_active_unit_glob_uses_shared_pattern(self, tmp_path):
+        """_dial_update_unit_active() uses the shared autostream-update-*.service glob."""
+        mod = load_supervisor_script("autostream_dial_updater", "unit_glob_test")
+        import inspect
+        src = inspect.getsource(mod._dial_update_unit_active)
+        assert "autostream-update-*.service" in src, (
+            "_dial_update_unit_active must query the shared autostream-update-*.service glob"
+        )
