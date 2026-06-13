@@ -963,8 +963,16 @@ class MonitorClient:
             line = self._readline()
             if line is None:
                 return None
-            return json.loads(line)
-        except (OSError, json.JSONDecodeError) as e:
+            parsed = json.loads(line)
+            if not isinstance(parsed, dict):
+                logging.warning(
+                    "MonitorClient: command %r returned non-object response",
+                    cmd.get("type"),
+                )
+                self.close()
+                return None
+            return parsed
+        except (OSError, json.JSONDecodeError, ValueError) as e:
             logging.warning("MonitorClient: command %r failed: %s", cmd.get("type"), e)
             self.close()
             return None

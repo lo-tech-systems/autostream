@@ -391,6 +391,198 @@ class TestGetIdSnapshot:
 # Thread safety: lock prevents interleaving
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# _command: malformed and edge-case responses
+# ---------------------------------------------------------------------------
+
+class TestCommandEdgeCases:
+    def test_invalid_utf8_returns_none_and_disconnects(self):
+        # json.loads(b"\xff\xfe") raises JSONDecodeError/ValueError; _command catches it.
+        c = _client(FakeSocket(b"\xff\xfe\n"))
+        resp = c._command({"type": "get_status"})
+        assert resp is None
+        assert not c.is_connected()
+
+    def test_non_object_list_response_returns_none_and_disconnects(self):
+        c = _client(FakeSocket(b'["not", "an", "object"]\n'))
+        resp = c._command({"type": "foo"})
+        assert resp is None
+        assert not c.is_connected()
+
+    def test_non_object_string_response_returns_none_and_disconnects(self):
+        c = _client(FakeSocket(b'"just a string"\n'))
+        resp = c._command({"type": "foo"})
+        assert resp is None
+        assert not c.is_connected()
+
+    def test_non_object_number_response_returns_none_and_disconnects(self):
+        c = _client(FakeSocket(b"42\n"))
+        resp = c._command({"type": "foo"})
+        assert resp is None
+        assert not c.is_connected()
+
+    def test_null_response_returns_none_and_disconnects(self):
+        c = _client(FakeSocket(b"null\n"))
+        resp = c._command({"type": "foo"})
+        assert resp is None
+        assert not c.is_connected()
+
+
+# ---------------------------------------------------------------------------
+# get_id_snapshot: length validation
+# ---------------------------------------------------------------------------
+
+class TestGetIdSnapshotLengths:
+    def test_negative_frames_returns_empty(self):
+        # frames <= 0 should return b"" (the production guard uses frames <= 0)
+        ack = json.dumps({"ok": True, "frames": -1}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0)
+        assert result == b""
+
+    def test_excessive_frames_truncated_to_available_bytes(self):
+        # If the daemon claims more frames than it actually sends, _readbytes returns
+        # None on EOF. The caller gets None back.
+        ack = json.dumps({"ok": True, "frames": 10000}) + "\n"
+        # Only supply 4 bytes instead of 20000 (frames * 2)
+        c = _client(FakeSocket(ack.encode(), b"\x00\x01\x00\x01"))
+        result = c.get_id_snapshot(0)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_truncated_payload_returns_none_and_disconnects(self):
+        frames = 100
+        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        # Only half the expected bytes provided
+        partial_pcm = b"\x00\x01" * (frames // 2)
+        c = _client(FakeSocket(ack.encode(), partial_pcm))
+        result = c.get_id_snapshot(0)
+        assert result is None
+        assert not c.is_connected()
+
+
+# ---------------------------------------------------------------------------
+# Public command methods: send correct type + field contract
+# ---------------------------------------------------------------------------
+
+class TestPublicCommands:
+    def _ok(self):
+        return (json.dumps({"ok": True}) + "\n").encode()
+
+    def _fail(self):
+        return (json.dumps({"ok": False, "error": "nope"}) + "\n").encode()
+
+    def test_set_fifo_sends_path(self):
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.set_fifo("/tmp/audio.fifo")
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "set_fifo"
+        assert cmd["path"] == "/tmp/audio.fifo"
+
+    def test_set_fifo_returns_false_on_failure(self):
+        c = _client(FakeSocket(self._fail()))
+        assert c.set_fifo("/tmp/bad.fifo") is False
+
+    def test_start_input_sends_index(self):
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.start_input(1)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "start_input"
+        assert cmd["input"] == 1
+
+    def test_stop_input_sends_index(self):
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.stop_input(2)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "stop_input"
+        assert cmd["input"] == 2
+
+    def test_set_allow_capture_sends_bool(self):
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.set_allow_capture(1, True)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "set_allow_capture"
+        assert cmd["allow"] is True
+
+    def test_set_eq_sends_bands(self):
+        bands = [{"type": "Peak", "freq_hz": 1000.0, "gain_db": 3.0, "q": 0.707}]
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.set_eq(1, bands)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "set_eq"
+        assert cmd["input"] == 1
+        assert cmd["bands"] == bands
+
+    def test_set_gain_sends_gain_db(self):
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.set_gain(2, -3.5)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "set_gain"
+        assert cmd["input"] == 2
+        assert cmd["gain_db"] == pytest.approx(-3.5)
+
+    def test_set_output_eq_sends_bands(self):
+        bands = [{"type": "LowShelf", "freq_hz": 200.0, "gain_db": 1.0, "q": 0.7}]
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.set_output_eq(bands)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "set_output_eq"
+        assert cmd["bands"] == bands
+
+    def test_set_output_gain_sends_gain_db(self):
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.set_output_gain(2.0)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "set_output_gain"
+        assert cmd["gain_db"] == pytest.approx(2.0)
+
+    def test_set_output_auto_trim_sends_bool(self):
+        sock = FakeSocket(self._ok())
+        c = _client(sock)
+        ok = c.set_output_auto_trim(True)
+        assert ok is True
+        cmd = json.loads(b"".join(sock.sent).strip())
+        assert cmd["type"] == "set_output_auto_trim"
+        assert cmd["enabled"] is True
+
+    def test_get_status_returns_dict(self):
+        payload = {"ok": True, "inputs": []}
+        c = _client(FakeSocket((json.dumps(payload) + "\n").encode()))
+        result = c.get_status()
+        assert result == payload
+
+    def test_get_status_returns_none_on_failure(self):
+        c = _client(FakeSocket(self._fail()))
+        result = c.get_status()
+        # get_status returns the raw response dict (ok or not); check it's a dict or None
+        assert result is not None  # ok=False response is still returned as dict
+        assert result["ok"] is False
+
+    def test_start_input_returns_false_on_failure(self):
+        c = _client(FakeSocket(self._fail()))
+        assert c.start_input(1) is False
+
+
+# ---------------------------------------------------------------------------
+# Thread safety: lock prevents interleaving
+# ---------------------------------------------------------------------------
+
 class TestThreadSafety:
     def test_concurrent_list_devices_return_own_results(self):
         """Two threads calling list_devices on separate clients don't interfere."""
