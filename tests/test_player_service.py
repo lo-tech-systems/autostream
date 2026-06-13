@@ -196,3 +196,126 @@ class TestStopAndDisableAll:
                           return_value=svc.ResolvedBackend(backend_id="owntone", backend=b)):
             result = svc.stop_and_disable_all("http://localhost:3689")
         assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# reconcile_fifo_with_backend
+# ---------------------------------------------------------------------------
+
+class TestReconcileFifoWithBackend:
+    def setup_method(self):
+        _clear_cache()
+
+    def _make_backend(self, *, pipe_path=None, get_ok=True, save_ok=True,
+                      unsupported=False, refresh_ok=True):
+        b = MagicMock()
+        b.backend_id = "owntone"
+        get_result = MagicMock()
+        get_result.ok = get_ok and not unsupported
+        get_result.unsupported = unsupported
+        get_result.error_code = "unsupported" if unsupported else ("" if get_ok else "read_failed")
+        get_result.value = pipe_path
+        get_result.message = "" if (get_ok or unsupported) else "read failed"
+        get_result.error = "" if (get_ok or unsupported) else "read failed"
+        b.get_setting.return_value = get_result
+
+        save_result = MagicMock()
+        save_result.ok = save_ok
+        save_result.restart_required = False
+        save_result.error = "" if save_ok else "save failed"
+        save_result.error_code = "" if save_ok else "save_failed"
+        save_result.message = "" if save_ok else "save failed"
+        b.save_setting.return_value = save_result
+
+        refresh_result = MagicMock()
+        refresh_result.ok = refresh_ok
+        refresh_result.error_code = "" if refresh_ok else "update_failed"
+        refresh_result.error = "" if refresh_ok else "update failed"
+        refresh_result.message = "" if refresh_ok else "update failed"
+        refresh_result.detail = ""
+        b.update_library.return_value = refresh_result
+        return b
+
+    def _resolved(self, backend):
+        return svc.ResolvedBackend(backend_id="owntone", backend=backend)
+
+    def test_fifo_ensure_failure_returns_error(self, tmp_path):
+        f = tmp_path / "notfifo"
+        f.write_text("x")  # regular file, not a FIFO
+        result = svc.reconcile_fifo_with_backend("http://localhost:3689", str(f))
+        assert result.ok is False
+        assert result.error_code == "not_fifo"
+
+    def test_empty_base_url_skips_backend(self, tmp_path):
+        fifo = tmp_path / "a.fifo"
+        try:
+            os.mkfifo(str(fifo))
+        except (AttributeError, OSError):
+            pytest.skip("os.mkfifo not available")
+        result = svc.reconcile_fifo_with_backend("", str(fifo))
+        assert result.ok is True
+
+    def test_matching_path_no_save_called(self, tmp_path):
+        fifo = tmp_path / "a.fifo"
+        try:
+            os.mkfifo(str(fifo))
+        except (AttributeError, OSError):
+            pytest.skip("os.mkfifo not available")
+        b = self._make_backend(pipe_path=str(fifo))
+        with patch.object(svc, "resolve_backend", return_value=self._resolved(b)):
+            result = svc.reconcile_fifo_with_backend("http://localhost:3689", str(fifo))
+        assert result.ok is True
+        b.save_setting.assert_not_called()
+
+    def test_changed_path_saves_new_fifo_path(self, tmp_path):
+        fifo = tmp_path / "a.fifo"
+        try:
+            os.mkfifo(str(fifo))
+        except (AttributeError, OSError):
+            pytest.skip("os.mkfifo not available")
+        b = self._make_backend(pipe_path="/old/path.fifo")
+        with patch.object(svc, "resolve_backend", return_value=self._resolved(b)), \
+             patch.object(svc, "_request_library_update_with_retry",
+                          return_value=MagicMock(ok=True, error="", error_code="", detail="")):
+            result = svc.reconcile_fifo_with_backend("http://localhost:3689", str(fifo))
+        assert result.ok is True
+        b.save_setting.assert_called_once()
+        args = b.save_setting.call_args[0]
+        assert str(fifo) in str(args)
+
+    def test_save_failure_returns_ok_with_warning(self, tmp_path):
+        fifo = tmp_path / "a.fifo"
+        try:
+            os.mkfifo(str(fifo))
+        except (AttributeError, OSError):
+            pytest.skip("os.mkfifo not available")
+        b = self._make_backend(pipe_path="/different/path", save_ok=False)
+        with patch.object(svc, "resolve_backend", return_value=self._resolved(b)):
+            result = svc.reconcile_fifo_with_backend("http://localhost:3689", str(fifo))
+        # save failure is non-fatal: ok=True but error info present
+        assert result.ok is True
+        assert result.error or result.error_code
+
+    def test_unsupported_setting_skips_save(self, tmp_path):
+        fifo = tmp_path / "a.fifo"
+        try:
+            os.mkfifo(str(fifo))
+        except (AttributeError, OSError):
+            pytest.skip("os.mkfifo not available")
+        b = self._make_backend(unsupported=True)
+        with patch.object(svc, "resolve_backend", return_value=self._resolved(b)):
+            result = svc.reconcile_fifo_with_backend("http://localhost:3689", str(fifo))
+        assert result.ok is True
+        b.save_setting.assert_not_called()
+
+    def test_get_failure_returns_ok_with_warning(self, tmp_path):
+        fifo = tmp_path / "a.fifo"
+        try:
+            os.mkfifo(str(fifo))
+        except (AttributeError, OSError):
+            pytest.skip("os.mkfifo not available")
+        b = self._make_backend(get_ok=False)
+        with patch.object(svc, "resolve_backend", return_value=self._resolved(b)):
+            result = svc.reconcile_fifo_with_backend("http://localhost:3689", str(fifo))
+        assert result.ok is True
+        assert result.error or result.error_code
