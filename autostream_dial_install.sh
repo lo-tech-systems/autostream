@@ -53,8 +53,9 @@ fi
 UPDATING_FLAG=/tmp/autostream-dial-updating
 _install_success=false
 trap '_exit_rc=$?
-    [[ "$_install_success" = true ]] || \
+    if [[ "$_install_success" != true ]] && $UPDATE; then
         write_update_result "failure" "Installer exited unexpectedly at line $LINENO"
+    fi
     rm -f "$UPDATING_FLAG"
     exit $_exit_rc' EXIT
 
@@ -184,7 +185,7 @@ install -m 0644 "$DEPLOY/system/logrotate/autostream-dial" \
 write_install_state "$DIAL_UUID"
 
 # ---- Initialize update-result.env on fresh install only ---------------------
-# On --update the file already contains STATUS=running written by the updater;
+# On --update the file already contains STATUS=in_progress written by the updater;
 # do not overwrite.
 if ! $UPDATE; then
     printf 'STATUS=\nMESSAGE=\n' > /var/lib/autostream/update-result.env

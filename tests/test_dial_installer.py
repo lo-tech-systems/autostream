@@ -6,6 +6,8 @@ Covers:
 - autostream_dial_updater check subcommand does not require root privileges.
   Regression: the root check was originally before arg parsing, blocking the
   check command when run as a non-root service user.
+- EXIT trap only calls write_update_result when $UPDATE is true so fresh
+  installs do not write spurious failure status.
 - Recovery infrastructure: install_recovery_packages() installs fcgiwrap+zip,
   grants www-data adm group membership, is called unconditionally so --update
   runs gain these dependencies without re-imaging.
@@ -148,8 +150,8 @@ class TestRecoveryHelpers:
     def test_install_recovery_packages_installs_fcgiwrap(self):
         """install_recovery_packages() must install fcgiwrap."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("install_recovery_packages()")
-        assert start != -1
+        start = content.find("install_recovery_packages() {")
+        assert start != -1, "install_recovery_packages() definition not found"
         body = content[start: start + 600]
         assert "fcgiwrap" in body, (
             "install_recovery_packages() must install fcgiwrap"
@@ -158,8 +160,8 @@ class TestRecoveryHelpers:
     def test_install_recovery_packages_installs_zip(self):
         """install_recovery_packages() must install zip."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("install_recovery_packages()")
-        assert start != -1
+        start = content.find("install_recovery_packages() {")
+        assert start != -1, "install_recovery_packages() definition not found"
         body = content[start: start + 600]
         assert "zip" in body, (
             "install_recovery_packages() must install zip"
@@ -168,31 +170,71 @@ class TestRecoveryHelpers:
     def test_install_recovery_packages_adds_www_data_to_adm(self):
         """install_recovery_packages() must add www-data to adm group."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("install_recovery_packages()")
-        assert start != -1
+        start = content.find("install_recovery_packages() {")
+        assert start != -1, "install_recovery_packages() definition not found"
         body = content[start: start + 600]
         assert "www-data" in body and "adm" in body, (
             "install_recovery_packages() must run usermod -aG adm www-data"
         )
 
-    def test_install_os_packages_includes_fcgiwrap(self):
-        """install_os_packages() must include fcgiwrap for fresh installs."""
+    def test_install_os_packages_does_not_include_fcgiwrap(self):
+        """install_os_packages() must NOT include fcgiwrap.
+
+        install_recovery_packages() is called unconditionally (fresh install
+        and --update) and is the single install site, avoiding double
+        installation on fresh installs.
+        """
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("install_os_packages()")
-        assert start != -1
-        body = content[start: start + 500]
-        assert "fcgiwrap" in body, (
-            "install_os_packages() must include fcgiwrap so fresh installs get it"
+        start = content.find("install_os_packages() {")
+        assert start != -1, "install_os_packages() definition not found"
+        # Find end of this function (closing top-level brace)
+        next_func = content.find("\n}", start)
+        body = content[start: next_func + 2] if next_func != -1 else content[start:]
+        assert "fcgiwrap" not in body, (
+            "fcgiwrap must not be in install_os_packages(); "
+            "install_recovery_packages() is the single install site"
         )
 
-    def test_install_os_packages_includes_zip(self):
-        """install_os_packages() must include zip for fresh installs."""
+    def test_install_recovery_packages_is_single_fcgiwrap_install_site(self):
+        """install_recovery_packages() must include fcgiwrap (single source for both paths)."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("install_os_packages()")
-        assert start != -1
-        body = content[start: start + 500]
-        assert "zip" in body, (
-            "install_os_packages() must include zip so fresh installs get it"
+        start = content.find("install_recovery_packages() {")
+        assert start != -1, "install_recovery_packages() definition not found"
+        body = content[start: start + 600]
+        assert "fcgiwrap" in body, (
+            "install_recovery_packages() is the single install site for fcgiwrap"
+        )
+
+
+class TestInstallerExitTrap:
+    def test_exit_trap_guards_write_update_result_with_update_flag(self):
+        """EXIT trap must only call write_update_result when $UPDATE is true.
+
+        On fresh installs the updater has not written STATUS=in_progress and the
+        UPDATING_FLAG was never created; calling write_update_result unconditionally
+        would write spurious failure status to an update-result.env that belongs to
+        a previous update run.
+        """
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        trap_pos = content.find("trap '")
+        assert trap_pos != -1, "EXIT trap not found in installer"
+        # The trap body ends at the matching closing quote; grab enough context.
+        trap_body = content[trap_pos: trap_pos + 400]
+        # write_update_result must be conditional on $UPDATE inside the trap.
+        # Accept either 'if ... $UPDATE' or '&& $UPDATE' patterns.
+        assert "$UPDATE" in trap_body, (
+            "EXIT trap must guard write_update_result with $UPDATE so fresh "
+            "installs do not write spurious failure status"
+        )
+
+    def test_exit_trap_always_removes_updating_flag(self):
+        """EXIT trap must always remove UPDATING_FLAG regardless of $UPDATE."""
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        trap_pos = content.find("trap '")
+        assert trap_pos != -1
+        trap_body = content[trap_pos: trap_pos + 400]
+        assert "rm -f" in trap_body and "UPDATING_FLAG" in trap_body, (
+            "EXIT trap must always run rm -f UPDATING_FLAG"
         )
 
 

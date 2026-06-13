@@ -47,6 +47,20 @@ def _load_script(name: str) -> ModuleType:
     return mod
 
 
+def _make_dial_tarball(tmp_path: Path, tag: str = "v1.3.0") -> Path:
+    """Build a minimal real dial release tarball for staging tests."""
+    import tarfile as tf_mod
+    src = tmp_path / "build" / f"repo-{tag}"
+    src.mkdir(parents=True, exist_ok=True)
+    installer = src / "autostream_dial_install.sh"
+    installer.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(str(installer), 0o755)
+    tar_path = tmp_path / "fake-dial.tgz"
+    with tf_mod.open(tar_path, "w:gz") as tf:
+        tf.add(str(src), arcname=f"repo-{tag}")
+    return tar_path
+
+
 def _mock_response(payload: bytes, status: int = 200) -> MagicMock:
     r = MagicMock()
     r.__enter__ = lambda s: s
@@ -273,6 +287,7 @@ class TestDialUpdaterCmdApply:
         mod.LOG_PATH = tmp_path / "dial-update.log"
         mod.LOCK_PATH = tmp_path / "dial-update.lock"
         mod.STAGING_DIR = tmp_path / "staging"
+        mod.UPDATING_FLAG = tmp_path / "autostream-dial-updating"
         settings = tmp_path / "dial-settings.json"
         settings.write_text(
             json.dumps({"auto_update": False, "update_channel": channel}),
@@ -362,6 +377,10 @@ class TestDialUpdaterCmdApply:
         staging_dir = tmp_path / "staging"
         mod.STAGING_DIR = staging_dir
 
+        # Build a real tarball so the staging extraction step succeeds without
+        # patching tarfile.open (which is unreliable across import styles).
+        real_tar = _make_dial_tarball(tmp_path / "tarball_build", tag=FAKE_TAG)
+
         resolved_calls = []
         downloaded_urls = []
         run_cmds = []
@@ -371,19 +390,10 @@ class TestDialUpdaterCmdApply:
             return (True, FAKE_TAG, FAKE_TARBALL, None, None)
 
         def fake_download(url, dst, ua, timeout=120):
+            import shutil
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_bytes(b"placeholder")
+            shutil.copy2(str(real_tar), str(dst))
             downloaded_urls.append(url)
-
-        @contextmanager
-        def fake_taropen(path, mode):
-            extract_dir = staging_dir / "src"
-            repo_dir = extract_dir / "repo-v1.3.0"
-            repo_dir.mkdir(parents=True, exist_ok=True)
-            installer = repo_dir / "autostream_dial_install.sh"
-            installer.write_text("#!/bin/bash\n", encoding="utf-8")
-            os.chmod(str(installer), 0o755)
-            yield MagicMock()
 
         def fake_run(cmd, timeout=60):
             run_cmds.append(list(cmd))
@@ -395,8 +405,7 @@ class TestDialUpdaterCmdApply:
              patch.object(mod, "_dial_update_unit_active", return_value=False), \
              patch.object(mod, "_download_file", side_effect=fake_download), \
              patch.object(mod, "_find_systemd_run", return_value="/fake/systemd-run"), \
-             patch.object(mod, "_run", side_effect=fake_run), \
-             patch("tarfile.open", fake_taropen):
+             patch.object(mod, "_run", side_effect=fake_run):
             result = mod.cmd_apply()
 
         assert result.get("ok") is True, f"Expected ok:True, got {result}"

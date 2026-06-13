@@ -987,6 +987,80 @@ class TestDialUpdatingFlag:
         result_text = (tmp_path / "update-result.env").read_text()
         assert "MESSAGE=" in result_text
 
+    def test_updating_flag_creation_failure_is_fatal(self, tmp_path):
+        """cmd_apply must return ok=False if UPDATING_FLAG cannot be created.
+
+        Regression: previously a flag-creation OSError was logged as a warning
+        and installation proceeded silently without the updating-redirect
+        behaviour.  This test ensures the code now fails closed.
+        """
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+
+        def _touch_raises():
+            raise OSError("permission denied")
+
+        # Point UPDATING_FLAG at a path whose parent does not exist so the real
+        # .touch() raises FileNotFoundError (a subclass of OSError) — avoids
+        # patching Path.touch at instance level, which is read-only on Windows.
+        mod.UPDATING_FLAG = tmp_path / "nonexistent_subdir" / "updating"
+
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "fcntl") as mk_fcntl:
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.return_value = None
+            result = mod.cmd_apply(auto=False)
+
+        assert result["ok"] is False
+        assert "updating marker" in result.get("error", "").lower() or \
+               "flag" in result.get("error", "").lower() or \
+               "Failed" in result.get("error", ""), (
+            f"Expected flag-creation failure error, got: {result}"
+        )
+
+    def test_unexpected_exception_after_flag_removes_flag(self, tmp_path):
+        """Any unexpected exception after UPDATING_FLAG creation must remove the flag.
+
+        Regression: previously an exception between flag creation and scheduling
+        would leave the flag permanently, causing nginx to redirect indefinitely.
+        """
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "fcntl") as mk_fcntl:
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.return_value = None
+            # Raise an unexpected exception in write_update_result after the flag
+            # has been created (simulates e.g. disk full on the state file)
+            with patch.object(mod, "write_update_result",
+                               side_effect=OSError("disk full")):
+                result = mod.cmd_apply(auto=False)
+
+        assert result["ok"] is False
+        assert not mod.UPDATING_FLAG.exists(), (
+            "UPDATING_FLAG must be removed after an unexpected exception "
+            "(rollback required so nginx does not redirect indefinitely)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Dial: transient unit name matches shared glob

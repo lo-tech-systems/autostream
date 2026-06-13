@@ -340,42 +340,60 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             return {"ok": False, "error": "Release staging failed", "details": str(e)}
 
         # Create the updating flag before writing STATUS=in_progress so nginx
-        # can redirect to /offline/updating as soon as the flag appears.
+        # redirects to /offline/updating as soon as the flag appears.
+        # Fail closed: if the flag cannot be created we abort rather than
+        # proceeding silently without the updating-redirect behaviour.
         try:
             UPDATING_FLAG.touch()
         except OSError as e:
-            _log(f"apply: warning — could not create UPDATING_FLAG: {e}")
+            _log(f"apply: could not create UPDATING_FLAG — aborting: {e}")
+            return {"ok": False, "error": "Failed to create updating marker", "details": str(e)}
 
-        write_update_result("in_progress", f"Installing {tag}...", percent=0)
-        _log("apply: written STATUS=in_progress")
+        # Treat status-write and scheduling as a single transaction.
+        # Any unexpected exception after the flag is created triggers rollback
+        # so the flag is never left permanently.
+        try:
+            write_update_result("in_progress", f"Installing {tag}...", percent=0)
+            _log("apply: written STATUS=in_progress")
 
-        unit_suffix = f"{int(time.time())}-{os.getpid()}"
-        unit_name   = f"autostream-update-dial-{unit_suffix}"
+            unit_suffix = f"{int(time.time())}-{os.getpid()}"
+            unit_name   = f"autostream-update-dial-{unit_suffix}"
 
-        cmd = [
-            str(systemd_run), "--quiet", "--collect",
-            f"--unit={unit_name}",
-            "--on-active=1",
-            "--property=Type=oneshot",
-            f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
-            "--setenv=AUTOSTREAM_DIAL_LOCKED=1",
-            "--",
-            FLOCK_BIN, "--exclusive", str(LOCK_PATH),
-            str(installer), "--update",
-        ]
+            cmd = [
+                str(systemd_run), "--quiet", "--collect",
+                f"--unit={unit_name}",
+                "--on-active=1",
+                "--property=Type=oneshot",
+                f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
+                "--setenv=AUTOSTREAM_DIAL_LOCKED=1",
+                "--",
+                FLOCK_BIN, "--exclusive", str(LOCK_PATH),
+                str(installer), "--update",
+            ]
 
-        rc, out, err = _run(cmd, timeout=15)
-        if rc != 0:
-            write_update_result("failure", f"systemd-run failed scheduling {tag}", percent=0)
-            _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")
+            rc, out, err = _run(cmd, timeout=15)
+            if rc != 0:
+                write_update_result("failure", f"systemd-run failed scheduling {tag}", percent=0)
+                _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")
+                UPDATING_FLAG.unlink(missing_ok=True)
+                return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
+
+            _log(f"apply: installer scheduled as {unit_name} tag={tag}")
+            return {"ok": True, "staged_tag": tag.lstrip("v")}
+
+        except Exception as e:
+            # Unexpected failure after the flag was created — roll back so nginx
+            # does not redirect to /offline/updating indefinitely.
+            _log(f"apply: unexpected error after creating UPDATING_FLAG, rolling back: {e}")
+            try:
+                write_update_result("failure", f"Unexpected scheduling error: {e}", percent=0)
+            except Exception:
+                pass
             try:
                 UPDATING_FLAG.unlink(missing_ok=True)
-            except OSError as e:
-                _log(f"apply: warning — could not remove UPDATING_FLAG after scheduling failure: {e}")
-            return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
-
-        _log(f"apply: installer scheduled as {unit_name} tag={tag}")
-        return {"ok": True, "staged_tag": tag.lstrip("v")}
+            except OSError:
+                pass
+            return {"ok": False, "error": "Unexpected scheduling error", "details": str(e)}
 
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)

@@ -11,6 +11,7 @@ Covers:
 - nginx config validity check (skipped if nginx is absent).
 """
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -385,7 +386,7 @@ class TestOfflineHandler:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(
-    subprocess.run(["which", "nginx"], capture_output=True).returncode != 0,
+    shutil.which("nginx") is None,
     reason="nginx binary not available",
 )
 class TestNginxValidity:
