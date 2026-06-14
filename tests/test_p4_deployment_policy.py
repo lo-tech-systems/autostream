@@ -758,6 +758,41 @@ visudo_available = pytest.mark.skipif(
 )
 
 
+NGINX_SNIPPETS = [
+    NGINX_DIR / "autostream-nginxd.conf",
+    NGINX_DIR / "autostream-nginx.conf",
+    NGINX_DIR / "autostream-dial-nginx.conf",
+]
+
+
+class TestNginxSyntax:
+    """nginx -t validates every nginx config snippet via a minimal wrapper."""
+
+    @linux_only
+    @nginx_available
+    @pytest.mark.parametrize("snippet", NGINX_SNIPPETS, ids=[p.name for p in NGINX_SNIPPETS])
+    def test_nginx_t_validates_snippet(self, snippet, tmp_path):
+        if not snippet.exists():
+            pytest.skip(f"{snippet.name} not found")
+        # Wrap the snippet in a minimal nginx.conf so nginx -t can parse it.
+        # All three snippets contain http-context directives (map{} or server{}).
+        wrapper = tmp_path / "nginx.conf"
+        wrapper.write_text(
+            'events {}\n'
+            'http {\n'
+            f'    include "{snippet.as_posix()}";\n'
+            '}\n',
+            encoding="utf-8",
+        )
+        r = subprocess.run(
+            ["nginx", "-t", "-c", str(wrapper)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0, (
+            f"nginx -t failed for {snippet.name}:\n{r.stdout}\n{r.stderr}"
+        )
+
+
 class TestLinuxServiceValidation:
     @linux_only
     @systemd_available

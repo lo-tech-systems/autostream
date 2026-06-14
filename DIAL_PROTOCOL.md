@@ -156,8 +156,10 @@ Triggers a firmware update. Returns immediately:
 ### `GET /update/status`
 
 ```json
-{"state": "idle"|"running"|"complete"|"failed", "version": "1.0.0"}
+{"state": "idle", "version": "1.0.0"}
 ```
+
+`state` is one of `"idle"`, `"running"`, `"complete"`, `"failed"`.
 
 ---
 

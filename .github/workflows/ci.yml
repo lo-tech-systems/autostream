@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Offline suite — deterministic, unprivileged, no external tools required.
+  # Runs on every push/PR.  Environment-dependent tests are skipped here.
+  # -----------------------------------------------------------------------
+  offline-tests:
+    name: Offline test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install pytest flask requests
+
+      - name: Run offline test suite
+        run: python -m pytest tests/ -q --ignore=tests/playwright
+
+  # -----------------------------------------------------------------------
+  # Environment-dependent suite — requires system tools that are absent on
+  # Windows and macOS.  Installs: nginx, nodejs, shellcheck, systemd tools.
+  # Tests marked node_available, nginx_available, systemd_available,
+  # visudo_available, shellcheck_available, and bash_capable now run.
+  # -----------------------------------------------------------------------
+  env-dependent-tests:
+    name: Environment-dependent tests (Linux tools)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            shellcheck \
+            nginx \
+            nodejs \
+            build-essential \
+            systemd
+
+      - name: Install Python dependencies
+        run: pip install pytest flask requests
+
+      - name: Run full test suite (env-dependent tests now active)
+        run: python -m pytest tests/ -q --ignore=tests/playwright
+
+  # -----------------------------------------------------------------------
+  # Playwright browser tests — run against production-rendered HTML served
+  # by the stub fixture in tests/playwright/test_ui_flows.py.
+  # Set AUTOSTREAM_URL in repository variables to target a real appliance.
+  # -----------------------------------------------------------------------
+  playwright:
+    name: Playwright browser tests
+    runs-on: ubuntu-latest
+    # When AUTOSTREAM_URL is unset, test_ui_flows.py starts a local stub
+    # server automatically so browser tests always execute.  Set AUTOSTREAM_URL
+    # in repository variables to run the same tests against a real appliance.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install pytest flask requests pytest-playwright
+
+      - name: Install Playwright browsers
+        run: playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        run: python -m pytest tests/playwright/ -q
+        env:
+          AUTOSTREAM_URL: ${{ vars.AUTOSTREAM_URL }}

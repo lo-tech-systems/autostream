@@ -11,8 +11,8 @@ What runs here (offline, no browser):
 What is environment-dependent:
   - Full Playwright browser tests (full page rendering, form submission,
     polling, accessibility) require Playwright + a running server.
-    These are in tests/playwright/ (separate suite, not imported here).
-    CI: ubuntu-latest, `playwright install`, separate pytest run.
+    These live in tests/playwright/test_ui_flows.py and run in the
+    playwright CI job (.github/workflows/ci.yml).
 
 Acceptance criterion for JS syntax: every file referenced in the 'node'
 skip message must be tested when node becomes available.

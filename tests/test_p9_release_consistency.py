@@ -221,10 +221,6 @@ class TestDialProtocolDocJson:
         )
     ])
     def test_json_block_is_valid(self, idx, block):
-        # DIAL_PROTOCOL.md uses pipe notation "a"|"b"|"c" as a documentation
-        # shorthand for enumerated values — not valid JSON. Skip these blocks.
-        if "|" in block:
-            pytest.skip(f"Block #{idx} uses pipe-notation enum shorthand (doc convention)")
         try:
             json.loads(block)
         except json.JSONDecodeError as e:

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import subprocess
 import sys
 from io import StringIO
 from pathlib import Path
@@ -32,7 +34,37 @@ sys.path.insert(0, str(REPO_ROOT / "dial"))
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 import dial_http_server as dhs
-from conftest import load_supervisor_script
+from conftest import load_supervisor_script, bash_can_run_script_at_windows_path
+
+bash_capable = pytest.mark.skipif(
+    not bash_can_run_script_at_windows_path(),
+    reason="bash cannot execute scripts at this path (MSYS2 limitation on Windows)",
+)
+
+# The shell installer only targets Linux; its bash invocation uses POSIX paths.
+real_shell_writer = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="shell write_update_result() requires POSIX-native bash (Linux CI only)",
+)
+
+
+def _extract_shell_function(src: str, name: str) -> str:
+    """Return the complete text of a top-level bash function from *src*.
+
+    Finds `name()` at column 0, collects lines until it sees `}` alone on a
+    line (the closing brace of the top-level function).
+    """
+    lines = src.splitlines()
+    result: list[str] = []
+    in_func = False
+    for line in lines:
+        if not in_func and re.match(rf'^{re.escape(name)}\s*\(\)', line):
+            in_func = True
+        if in_func:
+            result.append(line)
+            if len(result) > 1 and line.rstrip() == '}':
+                break
+    return '\n'.join(result)
 
 # Required keys in every well-formed update-result.env file.
 REQUIRED_KEYS = {"STATUS", "PERCENT_COMPLETE", "MESSAGE", "LAST_RUN_AT"}
@@ -182,10 +214,11 @@ class TestMessageEdgeCases:
         result_file = tmp_path / "update-result.env"
         with patch.object(dhs, "_UPDATE_RESULT_PATH", result_file):
             public = dhs._read_update_state()
-        # As long as the STATUS line is first and intact the consumer should work.
-        # If a defect is introduced where STATUS is corrupted, this will fail.
-        assert public in {"failed", "idle"}, (
-            f"Unexpected public state after newline-in-message: {public!r}"
+        # The dial updater writes STATUS before MESSAGE, so a newline in the
+        # message body appends an extra line after MESSAGE but leaves STATUS
+        # intact. The consumer must preserve "failed", not silently drop to "idle".
+        assert public == "failed", (
+            f"Newline in message corrupted or lost STATUS=failure: got {public!r}"
         )
 
 
@@ -246,6 +279,10 @@ class TestMalformedFiles:
 class TestCrossUpdaterSchemaConsistency:
     """Both updaters produce files that satisfy the same parsing contract."""
 
+    # ------------------------------------------------------------------
+    # Dial updater (Python, unquoted values, STATUS first)
+    # ------------------------------------------------------------------
+
     def test_dial_updater_file_readable_by_admin(self, tmp_path):
         dial_mod = _load_dial_updater(tmp_path)
         dial_mod.write_update_result("success", "All done", percent=100)
@@ -266,6 +303,115 @@ class TestCrossUpdaterSchemaConsistency:
         result_file = tmp_path / "update-result.env"
         with patch.object(dhs, "_UPDATE_RESULT_PATH", result_file):
             assert dhs._read_update_state() == "running"
+
+    # ------------------------------------------------------------------
+    # Shell installer (bash, quoted values, LAST_RUN_AT first)
+    # The shell write_update_result() requires root for `install -o root`,
+    # so we simulate its exact output format rather than executing it.
+    # bash -n syntax and shellcheck are verified in test_p3_installer.py.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_shell_format(tmp_path: Path, status: str, message: str, percent: int) -> Path:
+        """Emit the shell installer's write_update_result() output verbatim."""
+        result_file = tmp_path / "update-result.env"
+        result_file.write_text(
+            f'LAST_RUN_AT="2026-01-01T00:00:00+00:00"\n'
+            f'STATUS="{status}"\n'
+            f'MESSAGE="{message}"\n'
+            f'PERCENT_COMPLETE="{percent}"\n',
+            encoding="utf-8",
+        )
+        return result_file
+
+    def test_shell_installer_failure_readable_by_dial_http(self, tmp_path):
+        """Shell installer quoted format (failure) maps to 'failed' in dial HTTP."""
+        result_file = self._write_shell_format(
+            tmp_path, "failure", "Update failed at configure phase", 0
+        )
+        with patch.object(dhs, "_UPDATE_RESULT_PATH", result_file):
+            assert dhs._read_update_state() == "failed"
+
+    def test_shell_installer_success_readable_by_admin(self, tmp_path):
+        """Shell installer quoted format (success) is fully parsed by autostream_admin."""
+        result_file = self._write_shell_format(
+            tmp_path, "success", "Update complete", 100
+        )
+        admin_mod = _load_admin(tmp_path)
+        with patch.object(admin_mod, "_read_log_tail", return_value=""), \
+             patch.object(admin_mod, "_is_stale_in_progress", return_value=False):
+            data = _run_admin_update_status(admin_mod)
+        assert data["ok"] is True
+        assert data["status"] == "success"
+        assert data["percent"] == 100
+
+    def test_shell_installer_in_progress_readable_by_dial_http(self, tmp_path):
+        """Shell installer quoted format (in_progress) maps to 'running' in dial HTTP."""
+        result_file = self._write_shell_format(
+            tmp_path, "in_progress", "Starting update", 0
+        )
+        with patch.object(dhs, "_UPDATE_RESULT_PATH", result_file):
+            assert dhs._read_update_state() == "running"
+
+    # ------------------------------------------------------------------
+    # Execute the real shell write_update_result() function
+    # Requires bash (skipped on Windows where bash cannot handle the path).
+    # The function uses `install -o root` — stub it with a portable cp wrapper.
+    # ------------------------------------------------------------------
+
+    def _run_real_shell_writer(self, tmp_path: Path, status: str, message: str, percent: int) -> Path:
+        """Run write_update_result() extracted from autostream_install.sh via bash."""
+        installer = REPO_ROOT / "autostream_install.sh"
+        if not installer.exists():
+            pytest.skip("autostream_install.sh not found")
+        func_src = _extract_shell_function(installer.read_text(encoding="utf-8"), "write_update_result")
+        if not func_src:
+            pytest.fail("write_update_result() not found in autostream_install.sh")
+        result_file = tmp_path / "update-result.env"
+        harness = tmp_path / "harness.sh"
+        harness.write_text(
+            "set -euo pipefail\n"
+            f"STAMP_DIR={shlex.quote(str(tmp_path))}\n"
+            f"UPDATE_RESULT_FILE={shlex.quote(str(result_file))}\n"
+            "UPDATE_RUN_AT='2026-01-01T00:00:00+00:00'\n"
+            # Portable install stub: copy second-to-last arg → last arg.
+            # Initialise _p/_l to '' so set -u does not fire on the first iteration.
+            "install() { local _p='' _l=''; for _a; do _p=$_l; _l=$_a; done; cp -- \"$_p\" \"$_l\"; }\n"
+            f"{func_src}\n"
+            f"write_update_result {shlex.quote(status)} {shlex.quote(message)} {percent}\n",
+            encoding="utf-8",
+        )
+        r = subprocess.run(
+            ["bash", str(harness)], capture_output=True, text=True, timeout=15,
+        )
+        assert r.returncode == 0, (
+            f"bash write_update_result({status!r}) failed:\n{r.stderr}"
+        )
+        return result_file
+
+    @real_shell_writer
+    @pytest.mark.parametrize("status,expected_public", [
+        ("failure",     "failed"),
+        ("success",     "complete"),
+        ("in_progress", "running"),
+    ])
+    def test_real_shell_writer_readable_by_dial_http(self, tmp_path, status, expected_public):
+        """Execute write_update_result() from autostream_install.sh; verify dial HTTP reads it."""
+        result_file = self._run_real_shell_writer(tmp_path, status, "Test message", 0)
+        with patch.object(dhs, "_UPDATE_RESULT_PATH", result_file):
+            assert dhs._read_update_state() == expected_public
+
+    @real_shell_writer
+    def test_real_shell_writer_success_readable_by_admin(self, tmp_path):
+        """Execute write_update_result(success) from autostream_install.sh; verify admin reads it."""
+        result_file = self._run_real_shell_writer(tmp_path, "success", "Update complete", 100)
+        admin_mod = _load_admin(tmp_path)
+        with patch.object(admin_mod, "_read_log_tail", return_value=""), \
+             patch.object(admin_mod, "_is_stale_in_progress", return_value=False):
+            data = _run_admin_update_status(admin_mod)
+        assert data["ok"] is True
+        assert data["status"] == "success"
+        assert data["percent"] == 100
 
 
 # ---------------------------------------------------------------------------
