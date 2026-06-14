@@ -273,8 +273,8 @@ class TestInstallerExitTrap:
         )
 
     @pytest.mark.skipif(
-        __import__("shutil").which("bash") is None,
-        reason="bash not available",
+        __import__("shutil").which("bash") is None or __import__("sys").platform == "win32",
+        reason="bash not available or not compatible on Windows",
     )
     def test_exit_trap_flag_removed_when_status_write_fails(self, tmp_path):
         """Execution test: flag is removed even when write_update_result returns 1.

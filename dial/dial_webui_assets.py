@@ -292,11 +292,11 @@ async function applyPin() {
   err.textContent = '';
   var body;
   if (_pinMode === 'set') {
-    if (!/^\d{4,8}$/.test(nw)) { err.textContent = 'PIN must be 4–8 digits'; return; }
+    if (!/^\\d{4,8}$/.test(nw)) { err.textContent = 'PIN must be 4–8 digits'; return; }
     body = {new_pin: nw};
   } else if (_pinMode === 'change') {
     if (!cur) { err.textContent = 'Enter current PIN'; return; }
-    if (!/^\d{4,8}$/.test(nw)) { err.textContent = 'New PIN must be 4–8 digits'; return; }
+    if (!/^\\d{4,8}$/.test(nw)) { err.textContent = 'New PIN must be 4–8 digits'; return; }
     body = {current_pin: cur, new_pin: nw};
   } else if (_pinMode === 'remove') {
     if (!cur) { err.textContent = 'Enter current PIN'; return; }

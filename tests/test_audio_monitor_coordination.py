@@ -682,6 +682,19 @@ class TestSetLiveMonitorLogLevel:
 
 
 class TestUpdateLivePlatformLogLevel:
+    @pytest.fixture(autouse=True)
+    def _restore_logging_state(self):
+        import logging as _logging
+        root = _logging.getLogger()
+        saved_level = root.level
+        saved_handler_levels = [h.level for h in root.handlers]
+        saved_platform_level = core._live_platform_log_level
+        yield
+        root.setLevel(saved_level)
+        for h, lvl in zip(root.handlers, saved_handler_levels):
+            h.setLevel(lvl)
+        core._live_platform_log_level = saved_platform_level
+
     def test_returns_normalized_level_and_monitor_bool(self):
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_log_level.return_value = True

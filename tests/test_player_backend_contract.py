@@ -515,36 +515,43 @@ class TestSetVolumeContract:
     def test_volume_clamped_to_100(self, backend):
         r = _resp(status=204, content=b"")
         with patch("autostream_players.requests.put", return_value=r) as mock_put:
-            backend.set_output_volume("1", 9999)
-        call_json = mock_put.call_args[1].get("json") or mock_put.call_args[0][1] if mock_put.call_args[0] else None
-        # Just verify no exception and a sensible call was made
-        mock_put.assert_called_once()
+            result = backend.set_output_volume("1", 9999)
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
+        assert mock_put.call_args[1].get("json") == {"volume": 100}
 
     def test_volume_clamped_to_0(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
             result = backend.set_output_volume("1", -100)
-        assert isinstance(result.ok, bool)
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
+        assert mock_put.call_args[1].get("json") == {"volume": 0}
 
-    def test_non_numeric_volume_does_not_raise(self, backend):
+    def test_non_numeric_volume_defaults_to_0(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
             result = backend.set_output_volume("1", "bad")
-        assert isinstance(result.ok, bool)
+        assert result.ok is True
+        assert mock_put.call_args[1].get("json") == {"volume": 0}
 
 
 class TestSetOffsetContract:
     def test_offset_clamped_high(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
             result = backend.set_output_offset("1", 99999)
-        assert isinstance(result.ok, bool)
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
+        assert mock_put.call_args[1].get("json") == {"offset_ms": 2000}
 
     def test_offset_clamped_low(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
             result = backend.set_output_offset("1", -99999)
-        assert isinstance(result.ok, bool)
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
+        assert mock_put.call_args[1].get("json") == {"offset_ms": -2000}
 
 
 class TestSubmitPinContract:
@@ -553,11 +560,48 @@ class TestSubmitPinContract:
         assert result.ok is False
         assert result.error_code == "missing_pin"
 
-    def test_valid_pin_calls_backend(self, backend):
+    def test_valid_pin_sends_exact_payload(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
             result = backend.submit_output_pin("1", "1234")
-        assert isinstance(result.ok, bool)
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
+        assert mock_put.call_args[1].get("json") == {"pin": "1234"}
+
+
+class TestSetOutputEnabledContract:
+    def test_enable_sends_selected_true(self, backend):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+            result = backend.set_output_enabled("1", True)
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
+        assert mock_put.call_args[1].get("json") == {"selected": True}
+
+    def test_disable_sends_selected_false(self, backend):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+            result = backend.set_output_enabled("1", False)
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
+        assert mock_put.call_args[1].get("json") == {"selected": False}
+
+
+class TestSetSelectedOutputsContract:
+    def test_selected_outputs_sends_ids_list(self, backend):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+            result = backend.set_selected_outputs(["id1", "id2"])
+        assert result.ok is True
+        assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/set"
+        assert mock_put.call_args[1].get("json") == {"outputs": ["id1", "id2"]}
+
+    def test_empty_ids_sends_empty_list(self, backend):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+            result = backend.set_selected_outputs([])
+        assert result.ok is True
+        assert mock_put.call_args[1].get("json") == {"outputs": []}
 
 
 # ---------------------------------------------------------------------------

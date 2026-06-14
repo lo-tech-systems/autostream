@@ -498,7 +498,7 @@ class TestDialSchedulingFailure:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Host: path traversal and absolute-path tarballs rejected
+# Host: path traversal rejected; absolute-path members normalized in-place
 # ---------------------------------------------------------------------------
 
 def _make_traversal_tarball(tmp_path: Path) -> Path:
@@ -516,18 +516,35 @@ def _make_traversal_tarball(tmp_path: Path) -> Path:
     return tar_path
 
 
-def _make_absolute_path_tarball(tmp_path: Path) -> Path:
-    """Build a tarball with a member whose name is an absolute path."""
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name="/absolute/injected.sh")
+def _make_tarball_with_absolute_member(
+    tmp_path: Path,
+    installer_name: str = "autostream_install.sh",
+    include_system: bool = True,
+) -> Path:
+    """Valid release tarball that also contains an absolute-path extra member.
+
+    The absolute member /myrepo-v1.2.3/absolute/injected.sh is normalised by
+    data_filter to myrepo-v1.2.3/absolute/injected.sh — staying inside the
+    single top-level directory so staging still succeeds.  Without data_filter
+    it would attempt to write to /myrepo-v1.2.3/absolute/ on the root filesystem.
+    """
+    src = tmp_path / "build_abspath" / "myrepo-v1.2.3"
+    src.mkdir(parents=True)
+    script = src / installer_name
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+    if include_system:
+        (src / "system").mkdir()
+    tar_path = tmp_path / "abspath_valid.tgz"
+    with tarfile.open(tar_path, "w:gz") as tf:
+        tf.add(str(src), arcname="myrepo-v1.2.3")
+        # Absolute-path member: leading '/' would escape to / on a real system.
+        # data_filter strips it, landing safely under myrepo-v1.2.3/.
+        info = tarfile.TarInfo(name="/myrepo-v1.2.3/absolute/injected.sh")
         content = b"#!/bin/sh\nexit 0\n"
         info.size = len(content)
         info.mode = 0o755
         tf.addfile(info, io.BytesIO(content))
-    buf.seek(0)
-    tar_path = tmp_path / "abspath.tgz"
-    tar_path.write_bytes(buf.getvalue())
     return tar_path
 
 
@@ -604,10 +621,12 @@ class TestHostTraversalRejected:
         assert result["ok"] is False
         assert result.get("error") == "Release staging failed"
 
-    def test_absolute_path_tarball_returns_staging_error(self, tmp_path):
-        """A tarball with absolute-path members must not be staged."""
+    def test_absolute_path_member_normalized_inside_staging(self, tmp_path):
+        """data_filter strips the leading '/' from /myrepo-v1.2.3/absolute/injected.sh
+        and places it at staging/src/myrepo-v1.2.3/absolute/injected.sh. Staging and
+        scheduling both succeed, proving the file is contained inside the staging dir."""
         mod = _load_host(tmp_path)
-        tar = _make_absolute_path_tarball(tmp_path)
+        tar = _make_tarball_with_absolute_member(tmp_path)
         with _unit_inactive(mod), \
              patch.object(mod, "_resolve_release", return_value=_fake_release()), \
              _no_installed(mod), \
@@ -616,10 +635,12 @@ class TestHostTraversalRejected:
              patch("os.access", return_value=True), \
              patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "_update_unit_active", return_value=False), \
+             patch.object(mod, "_run", return_value=(0, "", "")), \
              _with_host_lock(mod):
             result = mod.cmd_apply(auto=False)
-        assert result["ok"] is False
-        assert result.get("error") == "Release staging failed"
+        assert result["ok"] is True
+        normalized = mod.STAGING_DIR / "src" / "myrepo-v1.2.3" / "absolute" / "injected.sh"
+        assert normalized.exists(), "absolute member must be extracted inside staging, not at /"
 
     def test_symlink_member_tarball_returns_staging_error(self, tmp_path):
         """A tarball containing a symlink must not be staged."""
@@ -807,7 +828,7 @@ class TestDialApplySuccess:
 
 
 # ---------------------------------------------------------------------------
-# Dial: path traversal and absolute-path tarballs rejected
+# Dial: path traversal rejected; absolute-path members normalized in-place
 # ---------------------------------------------------------------------------
 
 class TestDialTraversalRejected:
@@ -829,11 +850,28 @@ class TestDialTraversalRejected:
         result = self._run_dial_staging(mod, tar)
         assert result["ok"] is False
 
-    def test_absolute_path_tarball_returns_staging_error(self, tmp_path):
+    def test_absolute_path_member_normalized_inside_staging(self, tmp_path):
+        """data_filter strips the leading '/' from /myrepo-v1.2.3/absolute/injected.sh
+        and places it at staging/src/myrepo-v1.2.3/absolute/injected.sh. Staging and
+        scheduling both succeed, proving the file is contained inside the staging dir."""
         mod = _load_dial(tmp_path)
-        tar = _make_absolute_path_tarball(tmp_path)
-        result = self._run_dial_staging(mod, tar)
-        assert result["ok"] is False
+        tar = _make_tarball_with_absolute_member(
+            tmp_path, installer_name="autostream_dial_install.sh", include_system=False
+        )
+        with _unit_inactive_dial(mod), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(mod, "_dial_update_unit_active", return_value=False), \
+             patch.object(mod, "_run", return_value=(0, "", "")), \
+             _with_dial_lock(mod):
+            result = mod.cmd_apply(auto=False)
+        assert result["ok"] is True
+        normalized = mod.STAGING_DIR / "src" / "myrepo-v1.2.3" / "absolute" / "injected.sh"
+        assert normalized.exists(), "absolute member must be extracted inside staging, not at /"
 
     def test_symlink_member_tarball_returns_staging_error(self, tmp_path):
         mod = _load_dial(tmp_path)
@@ -886,6 +924,21 @@ class TestDialLockRelease:
         assert result["ok"] is True
         assert 8 in flock_calls, "LOCK_UN (8) must be called on dial success"
 
+    def test_lock_released_with_LOCK_UN_on_staging_failure(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="wrong.sh", include_system=False)
+        result, _, flock_calls, _ = self._run_tracking_close(mod, tar, run_rc=0)
+        assert result["ok"] is False
+        assert 8 in flock_calls, "LOCK_UN (8) must be called even on dial staging failure"
+
+    def test_lock_released_with_LOCK_UN_on_scheduling_failure(self, tmp_path):
+        mod = _load_dial(tmp_path)
+        tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
+                            include_system=False)
+        result, _, flock_calls, _ = self._run_tracking_close(mod, tar, run_rc=1)
+        assert result["ok"] is False
+        assert 8 in flock_calls, "LOCK_UN (8) must be called even on dial scheduling failure"
+
     def test_lock_fd_closed_on_success(self, tmp_path):
         mod = _load_dial(tmp_path)
         tar = _make_tarball(tmp_path, installer_name="autostream_dial_install.sh",
@@ -908,6 +961,33 @@ class TestDialLockRelease:
         result, fake_fd, _, close_calls = self._run_tracking_close(mod, tar, run_rc=1)
         assert result["ok"] is False
         assert fake_fd in close_calls, f"os.close({fake_fd}) must be called on dial scheduling failure"
+
+
+# ---------------------------------------------------------------------------
+# Dial: post-lock unit-active recheck
+# ---------------------------------------------------------------------------
+
+class TestDialPostLockUnitActive:
+    def test_post_lock_active_returns_error(self, tmp_path):
+        """If the dial unit becomes active *after* the lock is acquired, refuse."""
+        mod = _load_dial(tmp_path)
+        calls = [0]
+
+        def _unit_check():
+            calls[0] += 1
+            return calls[0] > 1  # False on first (pre-lock), True on second (post-lock)
+
+        with patch.object(mod, "_dial_update_unit_active", side_effect=_unit_check), \
+             patch.object(mod, "_resolve_dial_release", return_value=_fake_release()), \
+             _no_installed_dial(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             _with_dial_lock(mod):
+            result = mod.cmd_apply(auto=False)
+
+        assert result["ok"] is False
+        assert "progress" in result.get("error", "").lower()
 
 
 # ---------------------------------------------------------------------------

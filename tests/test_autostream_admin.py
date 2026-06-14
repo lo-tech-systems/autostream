@@ -647,18 +647,21 @@ class TestExecuteFactoryReset:
                           side_effect=lambda: order.append("_delete_reset_files")), \
              patch.object(m, "_delete_wifi_connections",
                           side_effect=lambda: order.append("_delete_wifi_connections")), \
-             patch.object(m, "run_cmd", return_value=(0, "", "")), \
+             patch.object(m, "run_cmd",
+                          side_effect=lambda cmd, **kw: order.append("reboot") or (0, "", "")), \
              patch("pathlib.Path.exists", return_value=True):
-            m._execute_factory_reset()
+            result = m._execute_factory_reset()
 
         # Expected relative order for autostream product:
         # autostream.service → wifi_watcher.service → _stop_owntone
-        #   → _sync_owntone_conf → _delete_reset_files → _delete_wifi_connections
+        #   → _sync_owntone_conf → _delete_reset_files → _delete_wifi_connections → reboot
         assert order.index("autostream.service") < order.index("autostream_wifi_watcher.service")
         assert order.index("autostream_wifi_watcher.service") < order.index("_stop_owntone")
         assert order.index("_stop_owntone") < order.index("_sync_owntone_conf")
         assert order.index("_sync_owntone_conf") < order.index("_delete_reset_files")
         assert order.index("_delete_reset_files") < order.index("_delete_wifi_connections")
+        assert order.index("_delete_wifi_connections") < order.index("reboot")
+        assert result is True
 
     def test_invalid_product_at_execution_aborts_without_destructive_actions(self):
         """Product re-validation inside the transient unit must abort if product changed."""
