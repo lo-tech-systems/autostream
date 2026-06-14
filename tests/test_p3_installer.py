@@ -1,0 +1,306 @@
+"""P3 — Installer / upgrade / uninstall lifecycle tests.
+
+What runs here:
+  - bash -n syntax check for every installer/uninstaller/library script
+    (bash is available on Windows via Git for Windows)
+  - shellcheck (skipped when not installed; run in CI: apt-get install shellcheck)
+  - detect_install_version() function (installer/dial/helpers.sh)
+  - Main installer write_update_result() schema is compatible with all consumers:
+    the installer quotes its values; consumers must strip quotes correctly.
+  - Quoted vs unquoted schema round-trip: both formats reach all readers correctly.
+
+Environment-dependent (not run here):
+  - Installer helper unit tests with stub binaries in PATH: require bash that
+    can execute scripts at POSIX paths (i.e. Linux CI, not MSYS2 on Windows).
+    CI mechanism: ubuntu-latest GitHub Actions runner.
+  - Image-level tests: fresh install, repeated update, factory reset, uninstall
+    in a Raspberry Pi OS-compatible container/VM. CI: dedicated Pi OS image job.
+    Reason cannot run here: requires systemd, apt-get, root access, Pi OS image.
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from types import ModuleType
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+REPO_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+
+from conftest import load_supervisor_script, bash_can_run_script_at_windows_path
+
+# All shell scripts that should pass `bash -n`
+INSTALLER_SCRIPTS = [
+    REPO_ROOT / "autostream_install.sh",
+    REPO_ROOT / "autostream_dial_install.sh",
+    REPO_ROOT / "autostream_uninstall.sh",
+    REPO_ROOT / "autostream_dial_uninstall.sh",
+    REPO_ROOT / "bootstrap.sh",
+    REPO_ROOT / "installer" / "lib" / "helpers.sh",
+    REPO_ROOT / "installer" / "lib" / "owntone.sh",
+    REPO_ROOT / "installer" / "lib" / "hardware.sh",
+    REPO_ROOT / "installer" / "dial" / "helpers.sh",
+    REPO_ROOT / "nginx" / "cgi" / "update-status.cgi",
+]
+
+bash_capable = pytest.mark.skipif(
+    not bash_can_run_script_at_windows_path(),
+    reason="bash cannot execute scripts at this path (MSYS2 limitation on Windows)",
+)
+
+def _shellcheck_ok() -> bool:
+    try:
+        return subprocess.run(
+            ["shellcheck", "--version"], capture_output=True, timeout=5
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+shellcheck_available = pytest.mark.skipif(
+    not _shellcheck_ok(),
+    reason="shellcheck not installed — run in CI (apt-get install shellcheck)",
+)
+
+
+# ---------------------------------------------------------------------------
+# bash -n syntax checks
+# ---------------------------------------------------------------------------
+
+class TestShellSyntax:
+    """Every installer shell script must pass `bash -n` (syntax only, no execution)."""
+
+    @pytest.mark.parametrize("script", INSTALLER_SCRIPTS, ids=[p.name for p in INSTALLER_SCRIPTS])
+    def test_bash_n_syntax(self, script):
+        if not script.exists():
+            pytest.skip(f"{script.name} does not exist in this checkout")
+        result = subprocess.run(
+            ["bash", "-n", str(script)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, (
+            f"bash -n failed for {script.name}:\n{result.stderr.strip()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# shellcheck (skipped when not installed)
+# ---------------------------------------------------------------------------
+
+class TestShellCheck:
+    @shellcheck_available
+    @pytest.mark.parametrize("script", INSTALLER_SCRIPTS, ids=[p.name for p in INSTALLER_SCRIPTS])
+    def test_shellcheck(self, script):
+        if not script.exists():
+            pytest.skip(f"{script.name} does not exist")
+        result = subprocess.run(
+            ["shellcheck", "--severity=error", str(script)],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"shellcheck errors in {script.name}:\n{result.stdout}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# detect_install_version — installer/dial/helpers.sh
+# ---------------------------------------------------------------------------
+
+class TestDetectInstallVersion:
+    """detect_install_version() strips refs/tags/ prefix and v prefix."""
+
+    def _detect(self, tag: str | None) -> str:
+        env_extra = f'AUTOSTREAM_RELEASE_TAG={tag!r} ' if tag is not None else ''
+        script = f"""
+set -euo pipefail
+source "{(REPO_ROOT / 'installer' / 'dial' / 'helpers.sh').as_posix()}"
+{f'AUTOSTREAM_RELEASE_TAG={tag!r}' if tag is not None else 'unset AUTOSTREAM_RELEASE_TAG'}
+detect_install_version
+"""
+        r = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0:
+            pytest.fail(f"bash script failed: {r.stderr}")
+        return r.stdout.strip()
+
+    @bash_capable
+    def test_refs_tags_prefix_stripped(self):
+        assert self._detect("refs/tags/v2.1.0") == "2.1.0"
+
+    @bash_capable
+    def test_v_prefix_stripped(self):
+        assert self._detect("v2.1.0") == "2.1.0"
+
+    @bash_capable
+    def test_plain_version_unchanged(self):
+        assert self._detect("2.1.0") == "2.1.0"
+
+    @bash_capable
+    def test_unset_tag_returns_unknown(self):
+        assert self._detect(None) == "unknown"
+
+    @bash_capable
+    def test_empty_tag_returns_unknown(self):
+        assert self._detect("") == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Schema compatibility: installer writes quoted values, consumers strip quotes
+# ---------------------------------------------------------------------------
+
+def _load_dial_updater(tmp_path: Path) -> ModuleType:
+    mod = load_supervisor_script("autostream_dial_updater", "dial_updater_p3")
+    mod.STATE_DIR = tmp_path
+    return mod
+
+
+def _load_admin(tmp_path: Path) -> ModuleType:
+    import io
+    mod = load_supervisor_script("autostream_admin", "admin_p3")
+    mod.UPDATE_RESULT_FILE = tmp_path / "update-result.env"
+    mod.STAMP_DIR = tmp_path
+    mod._INSTALL_LOG = tmp_path / "autostream_install.log"
+    return mod
+
+
+def _run_admin_update_status(mod) -> dict:
+    import io
+    from io import StringIO
+    buf = StringIO()
+    with patch("builtins.print", side_effect=lambda s, **_: buf.write(s + "\n")):
+        mod.read_update_status()
+    return json.loads(buf.getvalue().strip())
+
+
+sys.path.insert(0, str(REPO_ROOT / "dial"))
+import dial_http_server as dhs
+
+
+class TestInstallerWriteUpdateResultSchema:
+    """Main installer uses quoted KEY="value" format.
+    All consumers must correctly strip those quotes.
+    """
+
+    def _write_installer_format(self, tmp_path: Path, status: str, message: str,
+                                percent: int) -> Path:
+        """Mimic the installer's write_update_result quoting style."""
+        result_file = tmp_path / "update-result.env"
+        result_file.write_text(
+            f'LAST_RUN_AT="2026-01-01T00:00:00+00:00"\n'
+            f'STATUS="{status}"\n'
+            f'MESSAGE="{message}"\n'
+            f'PERCENT_COMPLETE="{percent}"\n',
+            encoding="utf-8",
+        )
+        return result_file
+
+    @pytest.mark.parametrize("status,expected_public", [
+        ("in_progress", "running"),
+        ("success",     "complete"),
+        ("failure",     "failed"),
+    ])
+    def test_quoted_status_readable_by_dial_http(self, tmp_path, status, expected_public):
+        result_file = self._write_installer_format(tmp_path, status, "msg", 0)
+        with patch.object(dhs, "_UPDATE_RESULT_PATH", result_file):
+            public = dhs._read_update_state()
+        assert public == expected_public, (
+            f'Quoted STATUS="{status}" should map to {expected_public!r}, got {public!r}'
+        )
+
+    @pytest.mark.parametrize("status", ["in_progress", "success", "failure"])
+    def test_quoted_status_readable_by_admin(self, tmp_path, status):
+        result_file = self._write_installer_format(tmp_path, status, "Test message", 50)
+        mod = _load_admin(tmp_path)
+        with patch.object(mod, "_read_log_tail", return_value=""), \
+             patch.object(mod, "_is_stale_in_progress", return_value=False):
+            data = _run_admin_update_status(mod)
+        assert data["ok"] is True
+        assert data["status"] == status
+
+    def test_quoted_percent_is_parsed_as_integer(self, tmp_path):
+        result_file = self._write_installer_format(tmp_path, "success", "done", 100)
+        mod = _load_admin(tmp_path)
+        with patch.object(mod, "_read_log_tail", return_value=""), \
+             patch.object(mod, "_is_stale_in_progress", return_value=False):
+            data = _run_admin_update_status(mod)
+        assert data["percent"] == 100
+
+    def test_quoted_message_with_spaces_is_preserved(self, tmp_path):
+        msg = "Installing new version 2.1.0"
+        result_file = self._write_installer_format(tmp_path, "in_progress", msg, 25)
+        mod = _load_admin(tmp_path)
+        with patch.object(mod, "_read_log_tail", return_value=""), \
+             patch.object(mod, "_is_stale_in_progress", return_value=False):
+            data = _run_admin_update_status(mod)
+        assert data["message"] == msg
+
+    def test_unquoted_and_quoted_formats_produce_same_status(self, tmp_path):
+        """Both formats must reach the same public state for in_progress."""
+        # Unquoted (dial updater style)
+        unquoted = tmp_path / "unquoted.env"
+        unquoted.write_text(
+            "STATUS=in_progress\nPERCENT_COMPLETE=0\nMESSAGE=msg\nLAST_RUN_AT=2026-01-01T00:00:00+00:00\n",
+            encoding="utf-8",
+        )
+        # Quoted (main installer style)
+        quoted = tmp_path / "quoted.env"
+        quoted.write_text(
+            'STATUS="in_progress"\nPERCENT_COMPLETE="0"\nMESSAGE="msg"\nLAST_RUN_AT="2026-01-01T00:00:00+00:00"\n',
+            encoding="utf-8",
+        )
+        with patch.object(dhs, "_UPDATE_RESULT_PATH", unquoted):
+            unquoted_public = dhs._read_update_state()
+        with patch.object(dhs, "_UPDATE_RESULT_PATH", quoted):
+            quoted_public = dhs._read_update_state()
+        assert unquoted_public == quoted_public == "running", (
+            f"Quoted and unquoted formats diverged: {unquoted_public!r} vs {quoted_public!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CGI script existence and executability
+# ---------------------------------------------------------------------------
+
+class TestCgiScripts:
+    def test_update_status_cgi_exists(self):
+        cgi = REPO_ROOT / "nginx" / "cgi" / "update-status.cgi"
+        assert cgi.exists(), "update-status.cgi not found"
+
+    def test_update_status_cgi_has_bash_shebang(self):
+        cgi = REPO_ROOT / "nginx" / "cgi" / "update-status.cgi"
+        first_line = cgi.read_text(encoding="utf-8").splitlines()[0]
+        assert first_line.startswith("#!"), "CGI script must have a shebang line"
+        assert "bash" in first_line or "sh" in first_line, (
+            f"CGI shebang must reference bash or sh: {first_line!r}"
+        )
+
+    def test_cgi_script_passes_bash_n(self):
+        cgi = REPO_ROOT / "nginx" / "cgi" / "update-status.cgi"
+        result = subprocess.run(
+            ["bash", "-n", str(cgi)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, (
+            f"bash -n failed for update-status.cgi:\n{result.stderr}"
+        )
+
+    def test_cgi_references_autostream_admin(self):
+        cgi = REPO_ROOT / "nginx" / "cgi" / "update-status.cgi"
+        content = cgi.read_text(encoding="utf-8")
+        assert "autostream_admin" in content, (
+            "update-status.cgi must reference autostream_admin"
+        )
+
+    def test_cgi_uses_sudo_n_for_unprivileged_execution(self):
+        cgi = REPO_ROOT / "nginx" / "cgi" / "update-status.cgi"
+        content = cgi.read_text(encoding="utf-8")
+        assert "sudo" in content and ("-n" in content or "--non-interactive" in content), (
+            "CGI must use sudo -n to run autostream_admin without a password"
+        )
