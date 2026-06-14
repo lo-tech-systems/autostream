@@ -314,6 +314,145 @@ static void test_output_processor_clip_detected_for_over_unity()
 }
 
 // ---------------------------------------------------------------------------
+// BiquadFilter — extreme and non-finite inputs (P8 robustness)
+// ---------------------------------------------------------------------------
+
+static void test_biquad_nan_input_does_not_crash()
+{
+    // Feeding NaN propagates NaN through the filter (IEEE 754 arithmetic) but
+    // must not trigger an assert or crash.  After reset() the filter state is
+    // cleared and normal inputs produce finite outputs again.
+    BiquadFilter f;
+    EqBand band;
+    band.type    = EqBand::Type::Peak;
+    band.freq_hz = 1000.0f;
+    band.gain_db = 6.0f;
+    band.q       = 0.707f;
+    f.configure(band, 44100.0f);
+
+    std::vector<float> nan_samples = {
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::quiet_NaN()
+    };
+    f.process(nan_samples.data(), 1);   // must not crash / assert
+
+    // After reset, the delay state is cleared — the filter must produce finite
+    // output for a finite input even after having processed NaN.
+    f.reset();
+    std::vector<float> clean = {0.5f, 0.5f};
+    f.process(clean.data(), 1);
+    CHECK(std::isfinite(clean[0]), "BiquadFilter: finite output after NaN + reset (left)");
+    CHECK(std::isfinite(clean[1]), "BiquadFilter: finite output after NaN + reset (right)");
+}
+
+static void test_biquad_inf_input_does_not_crash()
+{
+    BiquadFilter f;
+    EqBand band;
+    band.type    = EqBand::Type::Peak;
+    band.freq_hz = 500.0f;
+    band.gain_db = 3.0f;
+    band.q       = 1.0f;
+    f.configure(band, 44100.0f);
+
+    float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> inf_samples = {inf, -inf};
+    f.process(inf_samples.data(), 1);   // must not crash / assert
+
+    // Same as NaN: after reset the filter recovers for finite inputs.
+    f.reset();
+    std::vector<float> clean = {1.0f, 1.0f};
+    f.process(clean.data(), 1);
+    CHECK(std::isfinite(clean[0]), "BiquadFilter: finite output after Inf + reset (left)");
+    CHECK(std::isfinite(clean[1]), "BiquadFilter: finite output after Inf + reset (right)");
+}
+
+static void test_biquad_extreme_positive_gain_does_not_crash()
+{
+    // +120 dB is an extreme but valid configuration value.  The filter must
+    // configure without crashing.  We do not assert on the output value
+    // (it may be ±Infinity for large inputs) — only that no assert/exception
+    // is triggered.
+    BiquadFilter f;
+    EqBand band;
+    band.type    = EqBand::Type::Peak;
+    band.freq_hz = 1000.0f;
+    band.gain_db = 120.0f;
+    band.q       = 0.707f;
+    f.configure(band, 44100.0f);   // must not crash
+
+    std::vector<float> samples = {1.0f, 1.0f};
+    f.process(samples.data(), 1);  // may overflow to Inf — acceptable
+    CHECK(true, "+120 dB configure and process completed without crash");
+}
+
+static void test_biquad_extreme_negative_gain_does_not_crash()
+{
+    BiquadFilter f;
+    EqBand band;
+    band.type    = EqBand::Type::Peak;
+    band.freq_hz = 1000.0f;
+    band.gain_db = -120.0f;
+    band.q       = 0.707f;
+    f.configure(band, 44100.0f);
+
+    std::vector<float> samples = {1.0f, 1.0f};
+    f.process(samples.data(), 1);
+    // -120 dB attenuation → output should be very small (or exactly zero).
+    CHECK(std::isfinite(samples[0]), "-120 dB output is finite (left)");
+    CHECK(std::isfinite(samples[1]), "-120 dB output is finite (right)");
+}
+
+// ---------------------------------------------------------------------------
+// EqChain — sample-rate change (P8 robustness)
+// ---------------------------------------------------------------------------
+
+static void test_eq_chain_sample_rate_change_updates_rate()
+{
+    EqChain chain;
+    std::vector<EqBand> bands(1);
+    bands[0].type    = EqBand::Type::Peak;
+    bands[0].freq_hz = 1000.0f;
+    bands[0].gain_db = 3.0f;
+    bands[0].q       = 0.707f;
+
+    chain.set_bands(bands, 44100.0f);
+    CHECK_CLOSE(chain.sample_rate(), 44100.0f, 1.0f, "initial rate 44100");
+
+    chain.set_bands(bands, 48000.0f);
+    CHECK_CLOSE(chain.sample_rate(), 48000.0f, 1.0f, "rate updated to 48000 after set_bands");
+}
+
+static void test_eq_chain_sample_rate_change_recomputes_coefficients()
+{
+    // Verifies that a coefficient-sensitive measurement differs between
+    // 44100 and 48000 Hz — i.e. reconfiguration actually changed something.
+    EqBand band;
+    band.type    = EqBand::Type::Peak;
+    band.freq_hz = 8000.0f;   // well above Nyquist/2 at 8 kHz, far from it at 24 kHz
+    band.gain_db = 12.0f;
+    band.q       = 1.0f;
+
+    EqChain chain44, chain48;
+    std::vector<EqBand> bands = {band};
+    chain44.set_bands(bands, 44100.0f);
+    chain48.set_bands(bands, 48000.0f);
+
+    // Process the same impulse through each chain and compare outputs.
+    std::vector<float> imp44 = {1.0f, 1.0f};
+    std::vector<float> imp48 = {1.0f, 1.0f};
+    chain44.process(imp44.data(), 1);
+    chain48.process(imp48.data(), 1);
+
+    // The filter coefficients differ with sample rate, so outputs differ.
+    // We only assert that processing completed without crash and that at
+    // least one output value makes the chains distinguishable.
+    bool differ = std::fabs(imp44[0] - imp48[0]) > 1e-4f ||
+                  std::fabs(imp44[1] - imp48[1]) > 1e-4f;
+    CHECK(differ, "EqChain at 44100 and 48000 Hz produce different impulse responses");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -329,10 +468,18 @@ int main()
     test_biquad_low_shelf_zero_gain_passthrough();
     test_biquad_set_coefficients_identity();
 
+    // BiquadFilter — extreme and non-finite inputs (P8 robustness)
+    test_biquad_nan_input_does_not_crash();
+    test_biquad_inf_input_does_not_crash();
+    test_biquad_extreme_positive_gain_does_not_crash();
+    test_biquad_extreme_negative_gain_does_not_crash();
+
     // EqChain
     test_eq_chain_empty_on_construction();
     test_eq_chain_set_and_get_bands();
     test_eq_chain_sample_rate_stored();
+    test_eq_chain_sample_rate_change_updates_rate();
+    test_eq_chain_sample_rate_change_recomputes_coefficients();
 
     // RateEstimator
     test_rate_estimator_initial_ratio();

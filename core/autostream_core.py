@@ -1080,6 +1080,36 @@ class MonitorClient:
                 )
             return ok
 
+    def start_output_dump(self, path: str, overwrite: bool = False) -> bool:
+        """Begin recording output PCM to a WAV file at *path*.
+
+        Returns True if the daemon accepted the request.  The C++ dispatcher
+        rejects the call if a dump is already active; call stop_output_dump()
+        first.
+        """
+        with self._lock:
+            resp = self._command({
+                "type": "start_output_dump",
+                "path": path,
+                "overwrite": overwrite,
+            })
+            ok = bool(resp and resp.get("ok"))
+            if not ok:
+                logging.error(
+                    "MonitorClient: start_output_dump(%r) failed: %s",
+                    path, (resp or {}).get("error", "no response"),
+                )
+            return ok
+
+    def stop_output_dump(self) -> Optional[dict]:
+        """Stop an active output dump and return the result dict.
+
+        The result always has ok=True and includes was_active, frames_written,
+        and frames_dropped.  Returns None only if the socket fails.
+        """
+        with self._lock:
+            return self._command({"type": "stop_output_dump"})
+
     def get_status(self) -> Optional[dict]:
         """Return the parsed status dict, or None on failure."""
         with self._lock:
