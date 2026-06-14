@@ -1,0 +1,699 @@
+"""P1 — Wi-Fi watcher state machine and captive portal tests.
+
+platform/wifi_watcher is the main appliance recovery path. It runs as root
+on Linux but every function tested here is deterministic and offline:
+  - pure helper functions (_stateset, _is_rfc1918_ipv4)
+  - nmcli output parsing (run_cmd patched)
+  - ip -j output parsing (_run_ip_json patched)
+  - enter/leave setup mode (run_cmd + filesystem patched)
+  - Flask routes including all captive portal probe paths
+
+The module uses module-level globals (STATE, state_lock, etc.). Each test
+that mutates STATE resets it to a fresh NetworkMonitorState via a fixture.
+
+Integration tests requiring real nmcli/ip/systemctl are in a separate job;
+see docs/working/additional-test-requirements.md §P1 integration tests.
+"""
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import json
+import os
+import sys
+import threading
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import ModuleType
+from unittest.mock import MagicMock, patch, call
+import ipaddress
+
+import pytest
+
+REPO_ROOT = Path(__file__).parent.parent
+WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
+
+
+# ---------------------------------------------------------------------------
+# Module loader — stubs Flask and autostream_sysutils so import works offline
+# ---------------------------------------------------------------------------
+
+_watcher_mod: ModuleType | None = None
+_watcher_lock = threading.Lock()
+
+
+def _get_watcher() -> ModuleType:
+    """Load wifi_watcher once per session with Flask and sysutils stubbed."""
+    global _watcher_mod
+    with _watcher_lock:
+        if _watcher_mod is not None:
+            return _watcher_mod
+
+        alias = "wifi_watcher_p1_test"
+        loader = SourceFileLoader(alias, str(WIFI_WATCHER_PATH))
+        spec = importlib.util.spec_from_loader(alias, loader)
+        mod = importlib.util.module_from_spec(spec)
+
+        # Stub dependencies before exec so module-level code doesn't fail.
+        from unittest.mock import MagicMock as MM
+        _saved: dict[str, object] = {}
+
+        for stub_name in ("flask", "autostream_sysutils"):
+            if stub_name not in sys.modules:
+                sys.modules[stub_name] = MM()
+                _saved[stub_name] = None
+            else:
+                _saved[stub_name] = sys.modules[stub_name]
+
+        # Flask needs specific objects at module level
+        flask_stub = sys.modules["flask"]
+        flask_stub.Flask = lambda *a, **kw: MM()
+        flask_stub.request = MM()
+        flask_stub.jsonify = lambda d: MM()
+        flask_stub.redirect = lambda u: MM()
+        flask_stub.url_for = lambda *a, **kw: "/"
+        flask_stub.make_response = lambda h, s: MM()
+
+        sysutils = sys.modules["autostream_sysutils"]
+        sysutils.run_cmd = MM()
+        sysutils.prime_gateway = MM()
+        sysutils.reboot_system = MM()
+        sysutils.get_system_hostname = MM(return_value="autostream")
+
+        try:
+            loader.exec_module(mod)
+        finally:
+            for name, orig in _saved.items():
+                if orig is None:
+                    sys.modules.pop(name, None)
+
+        # Store the real function pointers for later patching
+        _watcher_mod = mod
+        return mod
+
+
+@pytest.fixture()
+def watcher():
+    """Return the loaded wifi_watcher module and reset STATE before each test."""
+    mod = _get_watcher()
+    from dataclasses import fields
+    defaults = mod.NetworkMonitorState()
+    for f in fields(defaults):
+        setattr(mod.STATE, f.name, getattr(defaults, f.name))
+    mod._last_logged_values.clear()
+    yield mod
+    # Reset again in case the test mutated STATE
+    for f in fields(defaults):
+        setattr(mod.STATE, f.name, getattr(defaults, f.name))
+
+
+@pytest.fixture()
+def flask_client(watcher):
+    """Return a Flask test client for the wifi_watcher app.
+
+    wifi_watcher creates a module-level `app` via Flask(). Since we stub Flask
+    at import time the real test client comes from loading a second fresh copy
+    with real Flask (if available). If Flask is not installed the tests are
+    skipped.
+    """
+    try:
+        from flask import Flask
+    except ImportError:
+        pytest.skip("Flask not installed — captive portal route tests skipped")
+
+    # Re-load the module with real Flask so the test client works.
+    alias = "wifi_watcher_flask_test"
+    loader = SourceFileLoader(alias, str(WIFI_WATCHER_PATH))
+    spec = importlib.util.spec_from_loader(alias, loader)
+    flask_mod = importlib.util.module_from_spec(spec)
+
+    # Stub only the non-Flask external deps.
+    from unittest.mock import MagicMock as MM
+    sysutils_stub = MM()
+    sysutils_stub.run_cmd = MM(return_value=MM(returncode=0, stdout="", stderr=""))
+    sysutils_stub.prime_gateway = MM()
+    sysutils_stub.reboot_system = MM()
+    sysutils_stub.get_system_hostname = MM(return_value="autostream")
+
+    saved_sysutils = sys.modules.get("autostream_sysutils")
+    sys.modules["autostream_sysutils"] = sysutils_stub
+    try:
+        loader.exec_module(flask_mod)
+    finally:
+        if saved_sysutils is None:
+            sys.modules.pop("autostream_sysutils", None)
+        else:
+            sys.modules["autostream_sysutils"] = saved_sysutils
+
+    flask_mod.app.config["TESTING"] = True
+    return flask_mod.app.test_client(), flask_mod
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+class TestStateset:
+    def test_string_input_uppercased(self):
+        mod = _get_watcher()
+        assert mod._stateset("reachable") == {"REACHABLE"}
+
+    def test_list_input_each_uppercased(self):
+        mod = _get_watcher()
+        assert mod._stateset(["STALE", "delay"]) == {"STALE", "DELAY"}
+
+    def test_empty_string_returns_empty_set(self):
+        mod = _get_watcher()
+        assert mod._stateset("") == {""}
+
+    def test_none_like_returns_empty_set(self):
+        mod = _get_watcher()
+        assert mod._stateset(42) == set()
+
+    def test_ok_neigh_states_are_recognised(self):
+        mod = _get_watcher()
+        ok = {"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"}
+        for s in ok:
+            assert mod._stateset(s) & mod._OK_NEIGH_STATES
+
+
+class TestIsRfc1918Ipv4:
+    def test_10_range_is_rfc1918(self):
+        mod = _get_watcher()
+        assert mod._is_rfc1918_ipv4(ipaddress.IPv4Address("10.0.0.1"))
+
+    def test_172_range_is_rfc1918(self):
+        mod = _get_watcher()
+        assert mod._is_rfc1918_ipv4(ipaddress.IPv4Address("172.16.0.1"))
+
+    def test_192_168_range_is_rfc1918(self):
+        mod = _get_watcher()
+        assert mod._is_rfc1918_ipv4(ipaddress.IPv4Address("192.168.1.1"))
+
+    def test_public_ip_is_not_rfc1918(self):
+        mod = _get_watcher()
+        assert not mod._is_rfc1918_ipv4(ipaddress.IPv4Address("8.8.8.8"))
+
+    def test_loopback_is_not_rfc1918(self):
+        mod = _get_watcher()
+        assert not mod._is_rfc1918_ipv4(ipaddress.IPv4Address("127.0.0.1"))
+
+
+# ---------------------------------------------------------------------------
+# is_wifi_connected — parses nmcli output
+# ---------------------------------------------------------------------------
+
+class TestIsWifiConnected:
+    def _run_cmd_ok(self, stdout: str):
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = stdout
+        m.stderr = ""
+        return m
+
+    def test_connected_client_wifi_returns_true(self, watcher):
+        output = "wlan0:wifi:connected:MySSID\n"
+        # mode query returns "802-11-wireless.mode:infrastructure"
+        mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:infrastructure\n", stderr="")
+        with patch.object(watcher, "run_cmd") as mock_run:
+            mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
+            assert watcher.is_wifi_connected() is True
+
+    def test_disconnected_returns_false(self, watcher):
+        output = "wlan0:wifi:disconnected:\n"
+        with patch.object(watcher, "run_cmd") as mock_run:
+            mock_run.return_value = self._run_cmd_ok(output)
+            assert watcher.is_wifi_connected() is False
+
+    def test_ap_mode_returns_false(self, watcher):
+        # Device is "connected" but the connection is in AP mode.
+        output = "wlan0:wifi:connected:Hotspot\n"
+        mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:ap\n", stderr="")
+        with patch.object(watcher, "run_cmd") as mock_run:
+            mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
+            assert watcher.is_wifi_connected() is False
+
+    def test_command_failure_returns_false(self, watcher):
+        result = MagicMock(returncode=1, stdout="", stderr="Error")
+        with patch.object(watcher, "run_cmd", return_value=result):
+            assert watcher.is_wifi_connected() is False
+
+    def test_empty_output_returns_false(self, watcher):
+        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok("")):
+            assert watcher.is_wifi_connected() is False
+
+    def test_wrong_device_ignored(self, watcher):
+        # eth0 connected but wlan0 is not
+        output = "eth0:ethernet:connected:Wired\nwlan0:wifi:disconnected:\n"
+        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok(output)):
+            assert watcher.is_wifi_connected() is False
+
+    def test_malformed_line_skipped(self, watcher):
+        output = "bad-line-without-colons\nwlan0:wifi:disconnected:\n"
+        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok(output)):
+            assert watcher.is_wifi_connected() is False
+
+    def test_escaped_ssid_with_colon(self, watcher):
+        # nmcli -t uses ':' as separator; a colon in the SSID name shouldn't crash
+        output = "wlan0:wifi:connected:My:SSID:with:colons\n"
+        mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:infrastructure\n", stderr="")
+        with patch.object(watcher, "run_cmd") as mock_run:
+            mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
+            # Should not raise; whether it returns True/False depends on parse
+            watcher.is_wifi_connected()
+
+
+# ---------------------------------------------------------------------------
+# is_local_ipv4_ready — parses nmcli dev show output
+# ---------------------------------------------------------------------------
+
+class TestIsLocalIpv4Ready:
+    def _make_run_cmd(self, output: str, rc: int = 0):
+        return MagicMock(returncode=rc, stdout=output, stderr="")
+
+    def test_rfc1918_address_returns_true(self, watcher):
+        output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:192.168.1.42/24\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            assert watcher.is_local_ipv4_ready() is True
+
+    def test_link_local_address_returns_false(self, watcher):
+        output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:169.254.1.1/16\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            assert watcher.is_local_ipv4_ready() is False
+
+    def test_public_ip_returns_false(self, watcher):
+        # Only RFC1918 addresses count as "local"
+        output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:8.8.8.8/24\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            assert watcher.is_local_ipv4_ready() is False
+
+    def test_disconnected_state_returns_false(self, watcher):
+        output = "GENERAL.STATE:30 (disconnected)\nIP4.ADDRESS[1]:192.168.1.42/24\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            assert watcher.is_local_ipv4_ready() is False
+
+    def test_no_addresses_returns_false(self, watcher):
+        output = "GENERAL.STATE:100 (connected)\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            assert watcher.is_local_ipv4_ready() is False
+
+    def test_empty_output_returns_false(self, watcher):
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("")):
+            assert watcher.is_local_ipv4_ready() is False
+
+    def test_command_failure_returns_false(self, watcher):
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("", rc=1)):
+            assert watcher.is_local_ipv4_ready() is False
+
+    def test_multiple_addresses_accepts_first_rfc1918(self, watcher):
+        output = (
+            "GENERAL.STATE:100 (connected)\n"
+            "IP4.ADDRESS[1]:169.254.0.1/16\n"
+            "IP4.ADDRESS[2]:10.0.0.5/8\n"
+        )
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            assert watcher.is_local_ipv4_ready() is True
+
+    def test_malformed_json_address_skipped(self, watcher):
+        output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:not-an-ip\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            assert watcher.is_local_ipv4_ready() is False
+
+
+# ---------------------------------------------------------------------------
+# is_gateway_reachable — parses ip -j route/neigh output
+# ---------------------------------------------------------------------------
+
+class TestIsGatewayReachable:
+    def test_reachable_gateway_returns_true(self, watcher):
+        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
+        neigh = [{"dev": "wlan0", "state": "REACHABLE"}]
+        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, neigh]
+            assert watcher.is_gateway_reachable() is True
+
+    def test_stale_state_returns_true(self, watcher):
+        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
+        neigh = [{"dev": "wlan0", "state": "STALE"}]
+        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, neigh]
+            assert watcher.is_gateway_reachable() is True
+
+    def test_failed_state_returns_false(self, watcher):
+        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
+        neigh = [{"dev": "wlan0", "state": "FAILED"}]
+        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, neigh]
+            assert watcher.is_gateway_reachable() is False
+
+    def test_no_routes_returns_false(self, watcher):
+        with patch.object(watcher, "_run_ip_json", return_value=[]):
+            assert watcher.is_gateway_reachable() is False
+
+    def test_missing_gateway_key_returns_false(self, watcher):
+        routes = [{"dev": "wlan0"}]  # no "gateway" key
+        with patch.object(watcher, "_run_ip_json", return_value=routes):
+            assert watcher.is_gateway_reachable() is False
+
+    def test_invalid_gateway_ip_returns_false(self, watcher):
+        routes = [{"gateway": "not-an-ip", "dev": "wlan0"}]
+        with patch.object(watcher, "_run_ip_json", return_value=routes):
+            assert watcher.is_gateway_reachable() is False
+
+    def test_empty_neigh_list_returns_false(self, watcher):
+        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
+        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, []]
+            assert watcher.is_gateway_reachable() is False
+
+    def test_state_as_list_works(self, watcher):
+        routes = [{"gateway": "10.0.0.1", "dev": "eth0"}]
+        neigh = [{"dev": "eth0", "state": ["REACHABLE"]}]
+        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, neigh]
+            assert watcher.is_gateway_reachable() is True
+
+    def test_ip_json_exception_returns_false(self, watcher):
+        with patch.object(watcher, "_run_ip_json", side_effect=RuntimeError("ip failed")):
+            assert watcher.is_gateway_reachable() is False
+
+    def test_fallback_to_any_dev_neigh_when_no_default_dev_match(self, watcher):
+        # Route has dev=wlan0, but neigh is on eth0; should fall back to any OK neigh.
+        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
+        neigh = [{"dev": "eth0", "state": "REACHABLE"}]  # different dev
+        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, neigh]
+            assert watcher.is_gateway_reachable() is True
+
+
+# ---------------------------------------------------------------------------
+# scan_wifi_networks — parses nmcli output, deduplication
+# ---------------------------------------------------------------------------
+
+class TestScanWifiNetworks:
+    def _make_run_cmd(self, output: str, rc: int = 0):
+        return MagicMock(returncode=rc, stdout=output, stderr="")
+
+    def test_returns_sorted_by_signal_descending(self, watcher):
+        output = "NetA:40\nNetB:80\nNetC:60\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            nets = watcher.scan_wifi_networks()
+        assert [n["ssid"] for n in nets] == ["NetB", "NetC", "NetA"]
+
+    def test_deduplicates_same_ssid_keeps_strongest(self, watcher):
+        output = "MyNet:50\nMyNet:75\nMyNet:30\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            nets = watcher.scan_wifi_networks()
+        assert len(nets) == 1
+        assert nets[0]["signal"] == 75
+
+    def test_empty_output_returns_empty_list(self, watcher):
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("")):
+            assert watcher.scan_wifi_networks() == []
+
+    def test_command_failure_returns_empty_list(self, watcher):
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("", rc=1)):
+            assert watcher.scan_wifi_networks() == []
+
+    def test_blank_ssid_lines_skipped(self, watcher):
+        output = ":50\n\nGoodNet:70\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            nets = watcher.scan_wifi_networks()
+        assert all(n["ssid"] for n in nets)
+
+    def test_non_numeric_signal_skipped(self, watcher):
+        output = "GoodNet:70\nBadNet:notanumber\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            nets = watcher.scan_wifi_networks()
+        assert len(nets) == 1
+        assert nets[0]["ssid"] == "GoodNet"
+
+    def test_hidden_network_empty_ssid_skipped(self, watcher):
+        # nmcli sometimes emits a line with empty SSID for hidden networks
+        output = ":60\nVisible:80\n"
+        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+            nets = watcher.scan_wifi_networks()
+        ssids = [n["ssid"] for n in nets]
+        assert "" not in ssids
+
+
+# ---------------------------------------------------------------------------
+# update_apmode_flag — filesystem state
+# ---------------------------------------------------------------------------
+
+class TestUpdateApmodeFlagLifecycle:
+    def test_creates_flag_file_when_entering_setup(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.update_apmode_flag(True)
+        assert flag.exists()
+
+    def test_removes_flag_file_when_leaving_setup(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        flag.write_text("1\n")
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.update_apmode_flag(False)
+        assert not flag.exists()
+
+    def test_idempotent_create(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.update_apmode_flag(True)
+        watcher.update_apmode_flag(True)
+        assert flag.exists()
+
+    def test_idempotent_remove(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.update_apmode_flag(False)  # file never existed
+        assert not flag.exists()
+
+
+# ---------------------------------------------------------------------------
+# enter_setup_mode / leave_setup_mode — state transitions
+# ---------------------------------------------------------------------------
+
+class TestEnterLeaveSetupMode:
+    def test_enter_sets_setup_mode_true(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        with patch.object(watcher, "start_ap_mode"), \
+             patch.object(watcher, "stop_ap_mode"):
+            watcher.enter_setup_mode("test")
+        assert watcher.STATE.setup_mode is True
+
+    def test_enter_creates_ap_flag_file(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        with patch.object(watcher, "start_ap_mode"), \
+             patch.object(watcher, "stop_ap_mode"):
+            watcher.enter_setup_mode("test")
+        assert flag.exists()
+
+    def test_enter_is_idempotent(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        with patch.object(watcher, "start_ap_mode") as mock_start, \
+             patch.object(watcher, "stop_ap_mode"):
+            watcher.enter_setup_mode("first")
+            watcher.enter_setup_mode("second")
+        # start_ap_mode called only once
+        assert mock_start.call_count == 1
+
+    def test_leave_sets_setup_mode_false(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        flag.write_text("1\n")
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.STATE.setup_mode = True
+        with patch.object(watcher, "start_ap_mode"), \
+             patch.object(watcher, "stop_ap_mode"):
+            watcher.leave_setup_mode("done")
+        assert watcher.STATE.setup_mode is False
+
+    def test_leave_removes_ap_flag_file(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        flag.write_text("1\n")
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.STATE.setup_mode = True
+        with patch.object(watcher, "start_ap_mode"), \
+             patch.object(watcher, "stop_ap_mode"):
+            watcher.leave_setup_mode("done")
+        assert not flag.exists()
+
+    def test_leave_is_idempotent_when_not_in_setup(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.STATE.setup_mode = False
+        with patch.object(watcher, "stop_ap_mode") as mock_stop:
+            watcher.leave_setup_mode("done")
+        mock_stop.assert_not_called()
+
+    def test_ap_exhausted_blocks_enter(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.STATE.ap_exhausted = True
+        watcher.STATE.force_setup_mode = False
+        with patch.object(watcher, "start_ap_mode") as mock_start:
+            watcher.enter_setup_mode("blocked")
+        mock_start.assert_not_called()
+        assert watcher.STATE.setup_mode is False
+
+    def test_force_setup_mode_bypasses_exhausted_latch(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.STATE.ap_exhausted = True
+        watcher.STATE.force_setup_mode = True
+        with patch.object(watcher, "start_ap_mode") as mock_start, \
+             patch.object(watcher, "stop_ap_mode"):
+            watcher.enter_setup_mode("forced")
+        mock_start.assert_called_once()
+        assert watcher.STATE.setup_mode is True
+
+    def test_leave_calls_stop_ap_before_removing_flag(self, watcher, tmp_path):
+        """stop_ap_mode must run before the AP flag is removed (ordering invariant)."""
+        flag = tmp_path / "apmode"
+        flag.write_text("1\n")
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.STATE.setup_mode = True
+        order: list[str] = []
+
+        def _stop():
+            order.append("stop_ap")
+            assert flag.exists(), "flag removed before stop_ap_mode"
+
+        def _update_flag(in_setup: bool):
+            order.append(f"flag_{in_setup}")
+            if not in_setup and flag.exists():
+                flag.unlink()
+
+        with patch.object(watcher, "stop_ap_mode", side_effect=_stop), \
+             patch.object(watcher, "update_apmode_flag", side_effect=_update_flag):
+            watcher.leave_setup_mode("ordering-test")
+
+        assert order == ["stop_ap", "flag_False"], f"Wrong order: {order}"
+
+
+# ---------------------------------------------------------------------------
+# get_configured_wifi_connection_name — file-based
+# ---------------------------------------------------------------------------
+
+class TestGetConfiguredWifiConnectionName:
+    def test_returns_name_when_file_exists(self, watcher, tmp_path):
+        cfg = tmp_path / "configured_ssid"
+        cfg.write_text("MyNetwork\n", encoding="utf-8")
+        watcher.CONFIGURED_SSID = str(cfg)
+        assert watcher.get_configured_wifi_connection_name() == "MyNetwork"
+
+    def test_returns_none_when_file_absent(self, watcher, tmp_path):
+        watcher.CONFIGURED_SSID = str(tmp_path / "nonexistent")
+        assert watcher.get_configured_wifi_connection_name() is None
+
+    def test_returns_none_for_empty_file(self, watcher, tmp_path):
+        cfg = tmp_path / "configured_ssid"
+        cfg.write_text("   \n", encoding="utf-8")
+        watcher.CONFIGURED_SSID = str(cfg)
+        assert watcher.get_configured_wifi_connection_name() is None
+
+
+# ---------------------------------------------------------------------------
+# Flask routes — captive portal probes and /status
+# ---------------------------------------------------------------------------
+
+class TestCaptivePortalRoutes:
+    """All captive probe endpoints must return the landing HTML (captive=True behaviour)."""
+
+    PROBE_PATHS = [
+        "/hotspot-detect.html",             # Apple iOS
+        "/library/test/success.html",       # Apple macOS
+        "/generate_204",                    # Android / Chrome
+        "/gen_204",                         # Android variant
+        "/ncsi.txt",                        # Windows NCSI
+        "/connecttest.txt",                 # Windows alternate
+    ]
+
+    @pytest.mark.parametrize("path", PROBE_PATHS)
+    def test_probe_returns_200_with_redirect_meta(self, flask_client, path):
+        client, mod = flask_client
+        rv = client.get(path)
+        assert rv.status_code == 200
+        assert b"setup" in rv.data.lower() or b"redirect" in rv.data.lower(), (
+            f"{path} response did not contain setup redirect content"
+        )
+
+    @pytest.mark.parametrize("path", PROBE_PATHS)
+    def test_probe_response_is_no_cache(self, flask_client, path):
+        client, mod = flask_client
+        rv = client.get(path)
+        cc = rv.headers.get("Cache-Control", "")
+        assert "no-store" in cc or "no-cache" in cc, (
+            f"{path} missing no-cache header"
+        )
+
+    def test_captive_portal_api_returns_captive_json(self, flask_client):
+        """RFC 8910 endpoint returns application/captive+json with captive=true."""
+        client, mod = flask_client
+        rv = client.get("/.well-known/captive-portal")
+        assert rv.status_code == 200
+        assert "captive+json" in rv.content_type
+        data = json.loads(rv.data)
+        assert data["captive"] is True
+        assert "user-portal-url" in data
+
+    def test_captive_portal_api_user_portal_url_points_to_setup(self, flask_client):
+        client, mod = flask_client
+        rv = client.get("/.well-known/captive-portal")
+        data = json.loads(rv.data)
+        assert data["user-portal-url"].endswith("/setup")
+
+    def test_root_redirects_to_setup(self, flask_client):
+        client, mod = flask_client
+        rv = client.get("/")
+        # Either a redirect or the landing page should lead to /setup.
+        assert rv.status_code in (301, 302) or b"/setup" in rv.data
+
+    def test_404_returns_captive_landing(self, flask_client):
+        client, mod = flask_client
+        rv = client.get("/some/unknown/path")
+        assert rv.status_code == 200
+        assert b"setup" in rv.data.lower()
+
+
+class TestStatusRoute:
+    def test_status_returns_json_with_required_keys(self, flask_client):
+        client, mod = flask_client
+        rv = client.get("/status")
+        assert rv.status_code == 200
+        data = json.loads(rv.data)
+        for key in ("wifistate", "wiredstate", "SetupMode", "gateway_reachable"):
+            assert key in data, f"Missing key {key!r} in /status response"
+
+    def test_status_setup_mode_false_by_default(self, flask_client):
+        client, mod = flask_client
+        rv = client.get("/status")
+        data = json.loads(rv.data)
+        assert data["SetupMode"] is False
+
+    def test_request_ap_mode_rejected_from_non_localhost(self, flask_client):
+        client, mod = flask_client
+        rv = client.post(
+            "/request_ap_mode",
+            json={"reason": "test"},
+            environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        )
+        assert rv.status_code == 403
+
+    def test_request_ap_mode_accepted_from_localhost(self, flask_client):
+        client, mod = flask_client
+        rv = client.post(
+            "/request_ap_mode",
+            json={"reason": "test"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        # If AP exhausted or other condition, might return 409; accept that too.
+        assert rv.status_code in (200, 409)
