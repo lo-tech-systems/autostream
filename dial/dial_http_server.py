@@ -89,7 +89,7 @@ def _pin_clear_attempts(ip: str) -> None:
 def _read_update_state() -> str:
     env = _read_env_file(_UPDATE_RESULT_PATH)
     status = env.get('STATUS', '').lower()
-    return {'success': 'complete', 'failed': 'failed', 'running': 'running'}.get(
+    return {'success': 'complete', 'failure': 'failed', 'in_progress': 'running'}.get(
         status, 'idle'
     )
 
