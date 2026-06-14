@@ -53,10 +53,10 @@ fi
 UPDATING_FLAG=/tmp/autostream-dial-updating
 _install_success=false
 trap '_exit_rc=$?
-    if [[ "$_install_success" != true ]] && $UPDATE; then
-        write_update_result "failure" "Installer exited unexpectedly at line $LINENO"
-    fi
     rm -f "$UPDATING_FLAG"
+    if [[ "$_install_success" != true ]] && $UPDATE; then
+        write_update_result "failure" "Installer exited unexpectedly at line $LINENO" || true
+    fi
     exit $_exit_rc' EXIT
 
 # ---- OS version check (fresh install and update) ----------------------------
