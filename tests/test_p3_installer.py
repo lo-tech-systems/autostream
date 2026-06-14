@@ -75,6 +75,7 @@ shellcheck_available = pytest.mark.skipif(
 class TestShellSyntax:
     """Every installer shell script must pass `bash -n` (syntax only, no execution)."""
 
+    @bash_capable
     @pytest.mark.parametrize("script", INSTALLER_SCRIPTS, ids=[p.name for p in INSTALLER_SCRIPTS])
     def test_bash_n_syntax(self, script):
         if not script.exists():
@@ -281,6 +282,7 @@ class TestCgiScripts:
             f"CGI shebang must reference bash or sh: {first_line!r}"
         )
 
+    @bash_capable
     def test_cgi_script_passes_bash_n(self):
         cgi = REPO_ROOT / "nginx" / "cgi" / "update-status.cgi"
         result = subprocess.run(

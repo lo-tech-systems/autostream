@@ -75,6 +75,12 @@ def _get_watcher() -> ModuleType:
         flask_stub.make_response = lambda h, s: MM()
 
         sysutils = sys.modules["autostream_sysutils"]
+        # Save and restore original attrs to avoid permanently mutating the
+        # real autostream_sysutils module when it's already imported.
+        _sysutils_saved_attrs: dict[str, object] = {}
+        for attr in ("run_cmd", "prime_gateway", "reboot_system", "get_system_hostname"):
+            if hasattr(sysutils, attr):
+                _sysutils_saved_attrs[attr] = getattr(sysutils, attr)
         sysutils.run_cmd = MM()
         sysutils.prime_gateway = MM()
         sysutils.reboot_system = MM()
@@ -86,6 +92,10 @@ def _get_watcher() -> ModuleType:
             for name, orig in _saved.items():
                 if orig is None:
                     sys.modules.pop(name, None)
+            # Restore the real sysutils attributes if we mutated the real module.
+            if "autostream_sysutils" not in _saved or _saved.get("autostream_sysutils") is not None:
+                for attr, orig_val in _sysutils_saved_attrs.items():
+                    setattr(sysutils, attr, orig_val)
 
         # Store the real function pointers for later patching
         _watcher_mod = mod
