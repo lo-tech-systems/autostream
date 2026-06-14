@@ -1091,6 +1091,32 @@ def send_setup_page(
           setPinModalBusy(false);
           els.modal.classList.add('show');
         }}
+        // Parse a fetch Response into a discriminated result object.
+        // Does NOT catch a rejected fetch() promise — network failures propagate.
+        // Returns: {{ok, transportStatus, body, error}}
+        async function _parseDialResponse(response) {{
+          var transportStatus = response.status;
+          var ct = response.headers.get('Content-Type') || '';
+          if (ct.toLowerCase().indexOf('application/json') === -1) {{
+            try {{ await response.text(); }} catch(e) {{}}
+            return {{ok: false, transportStatus: transportStatus, body: null, error: 'invalid_response'}};
+          }}
+          var body;
+          try {{ body = await response.json(); }} catch(e) {{
+            return {{ok: false, transportStatus: transportStatus, body: null, error: 'invalid_response'}};
+          }}
+          if (!body || typeof body !== 'object' || Array.isArray(body)) {{
+            return {{ok: false, transportStatus: transportStatus, body: null, error: 'invalid_response'}};
+          }}
+          if (body.ok === false) {{
+            return {{ok: false, transportStatus: transportStatus, body: body, error: String(body.error || 'unknown_error')}};
+          }}
+          if (transportStatus < 200 || transportStatus > 299) {{
+            return {{ok: false, transportStatus: transportStatus, body: body, error: String(body.error || 'http_error')}};
+          }}
+          return {{ok: true, transportStatus: transportStatus, body: body, error: null}};
+        }}
+
         async function submitPinChange(newPin, newPinCheck) {{
           const resp = await fetch('/api/pin/change', {{
             method: 'POST',
@@ -1100,8 +1126,7 @@ def send_setup_page(
             }},
             body: JSON.stringify({{ new_pin: newPin, new_pin_check: newPinCheck }})
           }});
-          const body = await resp.json().catch(() => ({{ ok: false, error: 'Unable to change PIN' }}));
-          return {{ status: resp.status, body: body }};
+          return _parseDialResponse(resp);
         }}
         function friendlyPinChangeError(message) {{
           const text = String(message || '').trim();
@@ -1135,7 +1160,7 @@ def send_setup_page(
           setPinModalBusy(true);
           try {{
             const result = await submitPinChange(newVal, repeatVal);
-            if (result.status === 200 && result.body.ok) {{
+            if (result.ok) {{
               if (els.newInput) {{ els.newInput.value = ''; els.newInput.style.display = 'none'; }}
               if (els.repeatInput) {{ els.repeatInput.value = ''; els.repeatInput.style.display = 'none'; }}
               showPinModalError(null);
@@ -1146,7 +1171,7 @@ def send_setup_page(
               window.setTimeout(() => {{ window.location.href = '/'; }}, 900);
               return;
             }}
-            showPinModalError(friendlyPinChangeError(result.body.error || 'Unable to change PIN.'));
+            showPinModalError(friendlyPinChangeError(result.error || 'Unable to change PIN.'));
           }} catch (e) {{
             showPinModalError('Unable to change PIN.');
           }} finally {{
@@ -1455,10 +1480,24 @@ def send_setup_page(
           el.style.display = msg ? '' : 'none';
         }}
 
+        function _dialErrorMessage(error) {{
+          var map = {{
+            'dial_offline': 'Dial is offline',
+            'dial_unreachable': 'Dial could not be reached',
+            'dial_bad_response': 'Dial returned an invalid response',
+            'dial_unavailable': 'Dial is temporarily unavailable',
+            'dial_timeout': 'Dial did not respond in time',
+            'invalid_response': 'Appliance returned an unexpected response',
+            'wrong_pin': 'Incorrect PIN',
+            'too_many_attempts': 'Too many attempts; try again later',
+          }};
+          return map[String(error || '')] || String(error || 'Unknown error');
+        }}
+
         async function _dialFetch(path, opts) {{
           var headers = Object.assign({{'X-CSRF-Token': window.__CSRF || ''}}, (opts.headers || {{}}));
           var r = await fetch(path, Object.assign({{}}, opts, {{headers: headers}}));
-          return r.json();
+          return _parseDialResponse(r);
         }}
 
         async function _dialPost(path, body) {{
@@ -1476,10 +1515,10 @@ def send_setup_page(
             var nameEl = card.querySelector('.dial-name');
             var name = ((nameEl ? nameEl.value : '') || uuid.slice(0, 8)).trim();
             try {{
-              var j = await _dialPost('/api/dial/authorize', {{uuid: uuid, name: name}});
-              if (j.ok) {{ dialMsg(card, 'Authorized', true); setTimeout(function(){{ location.reload(); }}, 800); }}
+              var result = await _dialPost('/api/dial/authorize', {{uuid: uuid, name: name}});
+              if (result.ok) {{ dialMsg(card, 'Authorized', true); setTimeout(function(){{ location.reload(); }}, 800); }}
               else {{
-                dialMsg(card, j.error || 'Authorization failed', false);
+                dialMsg(card, _dialErrorMessage(result.error), false);
                 var cb = card.querySelector('.dial-allow');
                 if (cb) cb.checked = false;
               }}
@@ -1502,9 +1541,9 @@ def send_setup_page(
           var uuid = dialUUID(card);
           if (!uuid) return;
           try {{
-            var j = await _dialPost('/api/dial/revoke', {{uuid: uuid}});
-            if (j.ok) {{ dialMsg(card, 'Revoked', true); setTimeout(function(){{ location.reload(); }}, 800); }}
-            else dialMsg(card, j.error || 'Failed', false);
+            var result = await _dialPost('/api/dial/revoke', {{uuid: uuid}});
+            if (result.ok) {{ dialMsg(card, 'Revoked', true); setTimeout(function(){{ location.reload(); }}, 800); }}
+            else dialMsg(card, _dialErrorMessage(result.error), false);
           }} catch(e) {{ dialMsg(card, 'Network error', false); }}
         }}
 
@@ -1533,9 +1572,9 @@ def send_setup_page(
             body.current_pin = currentPin.trim();
           }}
           try {{
-            var j = await _dialPost('/api/dial/configure', body);
-            if (j.ok) {{ dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000); }}
-            else dialMsg(card, j.error || 'Failed', false);
+            var result = await _dialPost('/api/dial/configure', body);
+            if (result.ok) {{ dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000); }}
+            else dialMsg(card, _dialErrorMessage(result.error), false);
           }} catch(e) {{ dialMsg(card, 'Network error', false); }}
         }}
 
@@ -1546,8 +1585,9 @@ def send_setup_page(
             var r = await fetch('/api/dial/configure/' + encodeURIComponent(uuid), {{
               cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
             }});
-            if (!r.ok) return;
-            var j = await r.json();
+            var loadResult = await _parseDialResponse(r);
+            if (!loadResult.ok) return;
+            var j = loadResult.body;
             var stepEl = card.querySelector('.dial-step');
             var autoEl = card.querySelector('.dial-autoupdate');
             var chanEl = card.querySelector('.dial-channel');
@@ -1566,9 +1606,9 @@ def send_setup_page(
             var r = await fetch('/api/dial/update/' + encodeURIComponent(uuid), {{
               method: 'POST', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
             }});
-            var j = await r.json();
-            if (j.ok) dialMsg(card, 'Update started', true);
-            else dialMsg(card, j.error || 'Failed', false);
+            var updResult = await _parseDialResponse(r);
+            if (updResult.ok) dialMsg(card, 'Update started', true);
+            else dialMsg(card, _dialErrorMessage(updResult.error), false);
           }} catch(e) {{ dialMsg(card, 'Network error', false); }}
         }}
 
@@ -1618,16 +1658,16 @@ def send_setup_page(
               var r = await fetch('/api/dial/pin_recovery/status/' + encodeURIComponent(uuid), {{
                 cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
               }});
-              if (r.status === 200) {{
-                var status = await r.json();
-                if (status.volume_confirmed === true) {{
-                  clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null;
-                  _dialPinModalMode = 'recovery-set';
-                  document.getElementById('dialPinModalMsg').textContent = 'Confirmed. Enter your new PIN:';
-                  var inp = document.getElementById('dialPinModalInput');
-                  inp.style.display = ''; inp.focus();
-                  document.getElementById('dialPinModalOk').disabled = false;
-                }}
+              var pollResult = await _parseDialResponse(r);
+              // ok:true means active recovery with volume_confirmed; tunneled 404 (error_status:404)
+              // means recovery not yet active — continue polling silently in both cases.
+              if (pollResult.ok && pollResult.body && pollResult.body.volume_confirmed === true) {{
+                clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null;
+                _dialPinModalMode = 'recovery-set';
+                document.getElementById('dialPinModalMsg').textContent = 'Confirmed. Enter your new PIN:';
+                var inp = document.getElementById('dialPinModalInput');
+                inp.style.display = ''; inp.focus();
+                document.getElementById('dialPinModalOk').disabled = false;
               }}
             }} catch(e) {{}}
           }}, 2000);
@@ -1646,20 +1686,20 @@ def send_setup_page(
           var pin = (inputEl ? inputEl.value : '').trim();
           okBtn.disabled = true; errEl.style.display = 'none';
           try {{
-            var j;
+            var pinResult;
             if (mode === 'change') {{
               var body = {{uuid: uuid, new_pin: pin}};
               if (card.dataset.pinSet === 'true') body.current_pin = currentPin;
-              j = await _dialPost('/api/dial/configure', body);
+              pinResult = await _dialPost('/api/dial/configure', body);
             }} else {{
-              j = await _dialPost('/api/dial/pin_recovery/complete', {{uuid: uuid, new_pin: pin, pin_recovery: true}});
+              pinResult = await _dialPost('/api/dial/pin_recovery/complete', {{uuid: uuid, new_pin: pin, pin_recovery: true}});
             }}
-            if (j.ok) {{
+            if (pinResult.ok) {{
               card.dataset.pinSet = pin ? 'true' : 'false';
               dialMsg(card, mode === 'change' ? (pin ? 'PIN changed' : 'PIN removed') : 'PIN reset', true);
               _closeDialPinModal();
             }} else {{
-              errEl.textContent = j.error || 'Failed'; errEl.style.display = '';
+              errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
               okBtn.disabled = false;
             }}
           }} catch(e) {{

@@ -377,3 +377,201 @@ class TestOfflinePageStructure:
         assert 'onerror=' not in content, (
             f"{page.name} contains onerror= attribute (potential XSS vector)"
         )
+
+
+# ---------------------------------------------------------------------------
+# §7.5  Browser behavior: setup-page discriminated response parser (source-contract)
+# ---------------------------------------------------------------------------
+
+def _setup_page_src() -> str:
+    return (REPO_ROOT / "core" / "autostream_webui_page_setup.py").read_text(encoding="utf-8")
+
+
+class TestSetupPageDialResponseParser:
+    """Source-contract tests: verify the discriminated parser is present and correct."""
+
+    def _src(self) -> str:
+        return _setup_page_src()
+
+    def test_parse_dial_response_function_present(self):
+        assert "_parseDialResponse" in self._src()
+
+    def test_dial_error_message_function_present(self):
+        assert "_dialErrorMessage" in self._src()
+
+    def test_parser_checks_content_type(self):
+        src = self._src()
+        assert "Content-Type" in src or "content-type" in src
+        assert "application/json" in src
+
+    def test_invalid_response_used_for_non_json(self):
+        assert "invalid_response" in self._src()
+
+    def test_non_object_json_rejected(self):
+        assert "Array.isArray" in self._src()
+
+    def test_ok_false_treated_as_application_error(self):
+        src = self._src()
+        assert "body.ok === false" in src or "ok === false" in src
+
+    def test_transport_status_preserved_in_result(self):
+        assert "transportStatus" in self._src()
+
+    def test_network_error_only_on_fetch_rejection(self):
+        src = self._src()
+        assert "_dialErrorMessage" in src
+        assert "Network error" in src
+
+    def test_recovery_polling_uses_parser(self):
+        src = self._src()
+        assert "_parseDialResponse" in src
+        assert "volume_confirmed" in src
+
+    def test_load_config_checks_ok_before_using_body(self):
+        src = self._src()
+        assert "loadResult" in src
+        assert "loadResult.ok" in src or ("loadResult" in src and ".ok" in src)
+
+    def test_parser_has_no_dom_side_effects(self):
+        src = self._src()
+        idx = src.find("async function _parseDialResponse")
+        assert idx >= 0
+        # Parser is immediately followed by submitPinChange; use that as the boundary.
+        end_idx = src.find("async function submitPinChange", idx)
+        parser_body = src[idx:end_idx] if end_idx > 0 else src[idx:idx + 3000]
+        assert "document." not in parser_body
+
+    def test_foreground_callers_use_dial_error_message(self):
+        src = self._src()
+        assert src.count("_dialErrorMessage") >= 3
+
+    def test_background_dialloadconfig_uses_parser(self):
+        assert "loadResult" in self._src()
+
+    def test_successful_response_accesses_body(self):
+        src = self._src()
+        assert "loadResult.body" in src or "result.body" in src or "pinResult.ok" in src
+
+    def test_dial_offline_message_mapped(self):
+        assert "Dial is offline" in self._src()
+
+    def test_dial_unreachable_message_mapped(self):
+        assert "Dial could not be reached" in self._src()
+
+    def test_dial_bad_response_message_mapped(self):
+        assert "Dial returned an invalid response" in self._src()
+
+    def test_invalid_response_message_mapped(self):
+        assert "Appliance returned an unexpected response" in self._src()
+
+    def test_wrong_pin_message_mapped(self):
+        assert "Incorrect PIN" in self._src()
+
+    def test_too_many_attempts_message_mapped(self):
+        assert "Too many attempts" in self._src()
+
+    def test_dial_unavailable_message_mapped(self):
+        assert "Dial is temporarily unavailable" in self._src()
+
+    def test_dial_timeout_message_mapped(self):
+        assert "Dial did not respond in time" in self._src()
+
+
+def _render_setup_page(initial_setup_mode: bool) -> str:
+    """Render the full setup page HTML with all external dependencies mocked.
+
+    Returns the raw HTML that would be written to the browser.  Uses the same
+    module the production server uses so the test exercises conditional script
+    rendering, not a hardcoded copy.
+    """
+    import io
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    m = _load_page_setup()
+    mod = m.__name__  # "autostream_webui_page_setup"
+
+    buf = io.BytesIO()
+    handler = MagicMock()
+    handler.wfile = buf
+    handler._csrf_token = "tok"
+    handler.headers = {"Cookie": ""}
+
+    auth = MagicMock()
+    auth.get_csrf_token.return_value = "tok"
+    auth.get_boot_pin_value.return_value = ""
+
+    state = MagicMock()
+    state.get_monitor_devices.return_value = []
+
+    parsed = SimpleNamespace(
+        updates=SimpleNamespace(auto_update=False, update_channel="stable"),
+        owntone=SimpleNamespace(base_url="", output_name="", volume_percent=50),
+        general=SimpleNamespace(silence_seconds=30),
+        audio1=SimpleNamespace(
+            capture_device="hw:0,0", is_turntable=False, gain_db=0,
+            eq_40hz_db=0.0, eq_100hz_db=0.0, eq_8khz_db=0.0,
+        ),
+        audio2=SimpleNamespace(
+            capture_device="", is_turntable=False, gain_db=0,
+            eq_40hz_db=0.0, eq_100hz_db=0.0, eq_8khz_db=0.0,
+        ),
+        audio2_enabled=False,
+        webui=SimpleNamespace(
+            dark_mode=False, show_master_volume=True,
+            show_input_detail=True, show_hostname_on_home=False,
+            hidden_outputs=None,
+        ),
+    )
+
+    list_out = MagicMock()
+    list_out.ok = False
+
+    with patch(f"{mod}.locked_load_config", new=lambda p: {}), \
+         patch(f"{mod}.parse_config", new=lambda cfg: parsed), \
+         patch(f"{mod}.unconfigured", new=lambda p: initial_setup_mode), \
+         patch(f"{mod}.list_outputs", new=lambda base_url, timeout: list_out), \
+         patch(f"{mod}.build_top_banner_html", new=lambda **kw: ("", "")), \
+         patch(f"{mod}.get_system_hostname", new=lambda: "test-host"), \
+         patch(f"{mod}.get_app_version", new=lambda: "1.0.0"), \
+         patch(f"{mod}.suggested_silence_threshold_dbfs", new=lambda tt: -45.0), \
+         patch(f"{mod}.get_ap_ssid", new=lambda: "test-ssid"), \
+         patch(f"{mod}.parse_dial_entries", new=lambda: []), \
+         patch(f"{mod}._get_dial_sightings", new=lambda: []):
+        m.send_setup_page(handler, state, auth)
+
+    return buf.getvalue().decode("utf-8", errors="replace")
+
+
+class TestSetupPageScriptRendering:
+    """Verify the actual generated setup page scripts — not a hardcoded copy."""
+
+    def test_initial_setup_parser_and_submit_coexist(self):
+        """_parseDialResponse and submitPinChange must both be in the initial-setup page."""
+        html_out = _render_setup_page(initial_setup_mode=True)
+        scripts = _extract_script_blocks(html_out)
+        combined = "\n".join(scripts)
+        assert "_parseDialResponse" in combined, (
+            "_parseDialResponse not found in initial-setup page scripts"
+        )
+        assert "submitPinChange" in combined, (
+            "submitPinChange not found in initial-setup page scripts"
+        )
+
+    @node_available
+    def test_initial_setup_page_scripts_syntax(self):
+        """Every <script> block in the initial-setup page must be syntactically valid JS."""
+        html_out = _render_setup_page(initial_setup_mode=True)
+        scripts = _extract_script_blocks(html_out)
+        assert scripts, "No <script> blocks found in initial-setup page"
+        for i, script in enumerate(scripts):
+            _check_js_syntax(script, f"initial-setup page script #{i}")
+
+    @node_available
+    def test_configured_page_scripts_syntax(self):
+        """Every <script> block in the configured setup page must be syntactically valid JS."""
+        html_out = _render_setup_page(initial_setup_mode=False)
+        scripts = _extract_script_blocks(html_out)
+        assert scripts, "No <script> blocks found in configured setup page"
+        for i, script in enumerate(scripts):
+            _check_js_syntax(script, f"configured-page script #{i}")
