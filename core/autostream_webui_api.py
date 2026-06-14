@@ -87,6 +87,51 @@ for _si in _SERVICE_ITEMS:
 # Core JSON response helper
 # -----------------------------------------------------------------------------
 
+# Statuses intercepted by the main autostream NGINX configuration.
+# error_page 404 502 503 504 = @upstream_failed redirects these to an offline
+# page, so they cannot be used as browser transport status for structured JSON.
+# See system/nginx/autostream-nginx.conf and docs/API-ERROR-CONTRACT.md.
+_NGINX_INTERCEPTED_STATUSES: frozenset[int] = frozenset({404, 502, 503, 504})
+
+
+def send_browser_api_error(
+    handler,
+    semantic_status: int,
+    error: str,
+    *,
+    retryable: bool | None = None,
+    extra: dict | None = None,
+) -> None:
+    """Send a structured JSON error that survives the main NGINX boundary.
+
+    For statuses in _NGINX_INTERCEPTED_STATUSES (404/502/503/504) the browser
+    transport status is 200 and error_status carries the semantic code.
+    All other statuses are sent natively.
+
+    Caller-supplied extra fields are merged last; they cannot override ok,
+    error, or error_status.  The caller-provided dict is never mutated.
+    """
+    if not isinstance(semantic_status, int) or not (100 <= semantic_status <= 599):
+        raise ValueError(f"Invalid semantic_status: {semantic_status!r}")
+
+    payload: dict = {"ok": False, "error": error}
+
+    tunneled = semantic_status in _NGINX_INTERCEPTED_STATUSES
+    if tunneled:
+        payload["error_status"] = semantic_status
+
+    if retryable is not None:
+        payload["retryable"] = retryable
+
+    if extra:
+        for k, v in extra.items():
+            if k not in ("ok", "error", "error_status"):
+                payload[k] = v
+
+    transport_status = 200 if tunneled else semantic_status
+    send_json(handler, transport_status, payload)
+
+
 def send_json(handler, code: int, payload: dict) -> None:
     body = json.dumps(payload).encode("utf-8")
     try:

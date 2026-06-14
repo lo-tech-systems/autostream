@@ -2,12 +2,20 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-HTTP handler functions for all dial management endpoints.  All proxy
-handlers follow the same offline/failure contract:
-  - dial not in mDNS registry → 404  {"ok": false, "error": "dial_offline"}
-  - network error (OSError/timeout) → 502  {"ok": false, "error": "dial_unreachable"}
-  - non-JSON response from dial → 502  {"ok": false, "error": "dial_bad_response"}
-  - dial returns non-200 status → pass through verbatim
+HTTP handler functions for all dial management endpoints.
+
+All host-side proxy handlers normalize responses for the main autostream NGINX
+boundary (see docs/API-ERROR-CONTRACT.md). Statuses 404/502/503/504 cannot be
+used as browser transport status because NGINX intercepts them; they are tunneled
+through HTTP 200 with error_status carrying the semantic code.
+
+Host error contract:
+  - dial UUID absent from live registry → transport 200, error: dial_offline, error_status: 404
+  - connection refused / network failure / socket timeout → transport 200, error: dial_unreachable, error_status: 502
+  - target body not valid JSON / non-object JSON / oversized body → transport 200, error: dial_bad_response, error_status: 502
+  - target 3xx → rejected before JSON pass-through as dial_bad_response (error_status: 502)
+  - target 404/502/503/504 → tunneled through transport 200 with error_status
+  - target 400/403/429/500 → passed through natively (not intercepted by NGINX)
 """
 from __future__ import annotations
 
@@ -21,9 +29,25 @@ from autostream_dials import (
     validate_dial_name,
     write_dial_entry,
 )
-from autostream_webui_api import send_json
+from autostream_webui_api import send_json, send_browser_api_error, _NGINX_INTERCEPTED_STATUSES
 
 _PROXY_TIMEOUT = 4  # seconds — short; dial is on the same LAN
+
+# Maximum target-response body size. A body of exactly 65,536 bytes is accepted;
+# 65,537 bytes is rejected as dial_bad_response before JSON parsing.
+_MAX_PROXY_RESPONSE_BYTES = 64 * 1024  # 65,536
+
+# Default error identifiers for tunneled target statuses (§6.4 of the work plan).
+_TARGET_STATUS_ERRORS: dict[int, str] = {
+    404: "not_found",
+    502: "dial_bad_response",
+    503: "dial_unavailable",
+    504: "dial_timeout",
+}
+
+
+class _BadTargetResponse(Exception):
+    """Raised inside _proxy_call when the target body must be rejected."""
 
 
 # ---------------------------------------------------------------------------
@@ -32,62 +56,132 @@ _PROXY_TIMEOUT = 4  # seconds — short; dial is on the same LAN
 
 def _proxy_call(method: str, ip: str, port: int, path: str,
                 body: bytes | None = None) -> tuple[int, dict]:
-    """Send HTTP request to a dial and return (status_code, parsed_json).
+    """Send HTTP request to a dial and return (target_status, parsed_json_object).
 
-    Raises ConnectionError (or subclass) on network failure so callers can
-    map to 502.  Raises ValueError if the response body is not valid JSON.
+    Raises:
+      ConnectionError (or subclass) on network failure.
+      _BadTargetResponse if the body is oversized, is a redirect (3xx), is not
+        valid JSON, or the JSON root is not an object.
     """
     conn = http.client.HTTPConnection(ip, port, timeout=_PROXY_TIMEOUT)
     headers = {"Content-Type": "application/json"} if body else {}
     try:
         conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
-        raw = resp.read()
-        return resp.status, _json.loads(raw)
+        target_status = resp.status
+
+        # Read with an overflow sentinel byte so we can detect 65,537 bytes
+        # without buffering the entire oversized body.
+        raw = resp.read(_MAX_PROXY_RESPONSE_BYTES + 1)
+
+        if len(raw) > _MAX_PROXY_RESPONSE_BYTES:
+            raise _BadTargetResponse("target response exceeded size limit")
+
+        # Reject redirects before JSON parsing — no dial endpoint legitimately
+        # redirects, and a redirect body that happens to be valid JSON must not
+        # be passed through to the browser.
+        if 300 <= target_status <= 399:
+            raise _BadTargetResponse(f"target returned redirect {target_status}")
+
+        try:
+            parsed = _json.loads(raw)
+        except Exception:
+            raise _BadTargetResponse("target body is not valid JSON")
+
+        if not isinstance(parsed, dict):
+            raise _BadTargetResponse("target body JSON root is not an object")
+
+        return target_status, parsed
     finally:
         conn.close()
 
 
-def _get_sighting_or_404(handler, uuid: str):
-    """Return DialSighting for uuid, or send 404 and return None."""
+def _get_sighting_or_error(handler, uuid: str):
+    """Return DialSighting for uuid, or send a tunneled 404 and return None."""
     sighting = get_dial_sighting(uuid)
     if sighting is None:
-        send_json(handler, 404, {"ok": False, "error": "dial_offline"})
+        send_browser_api_error(handler, 404, "dial_offline", retryable=True)
     return sighting
 
 
+def _normalize_target_response(
+    handler,
+    target_status: int,
+    data: dict,
+) -> None:
+    """Send the final browser-facing response after a successful _proxy_call().
+
+    Non-intercepted target statuses (400/403/429/500) pass through natively.
+    Intercepted statuses (404/502/503/504) are tunneled through HTTP 200 with
+    error_status; safe object fields from the target body are preserved.
+    """
+    if target_status not in _NGINX_INTERCEPTED_STATUSES:
+        # Native pass-through — NGINX will not intercept this status.
+        send_json(handler, target_status, data)
+        return
+
+    # Tunnel the intercepted status.  Use the target's stable error identifier
+    # if it provided one; otherwise fall back to a safe default for this status.
+    error_id = data.get("error") if isinstance(data.get("error"), str) and data["error"] else None
+    if not error_id:
+        error_id = _TARGET_STATUS_ERRORS.get(target_status, "dial_bad_response")
+
+    # Build normalized body, then merge safe endpoint-specific fields.
+    # The caller cannot override ok, error, or error_status via the target body.
+    retryable_field: dict = {}
+    if target_status in (502, 503, 504):
+        retryable_field = {"retryable": True}
+    elif target_status == 404:
+        # For 404, preserve a target-provided retryable if present.
+        if "retryable" in data:
+            retryable_field = {"retryable": data["retryable"]}
+
+    payload: dict = {"ok": False, "error": error_id, "error_status": target_status}
+    payload.update(retryable_field)
+
+    # Merge safe target fields (anything that is not a reserved key).
+    reserved = {"ok", "error", "error_status", "retryable"}
+    for k, v in data.items():
+        if k not in reserved:
+            payload[k] = v
+
+    send_json(handler, 200, payload)
+
+
 def _proxy_get(handler, uuid: str, dial_path: str) -> None:
-    sighting = _get_sighting_or_404(handler, uuid)
+    sighting = _get_sighting_or_error(handler, uuid)
     if sighting is None:
         return
     try:
-        status, data = _proxy_call("GET", sighting.ip, sighting.port, dial_path)
+        target_status, data = _proxy_call("GET", sighting.ip, sighting.port, dial_path)
     except OSError as e:
         logging.debug("dial proxy GET %s: %s", dial_path, e)
-        send_json(handler, 502, {"ok": False, "error": "dial_unreachable"})
+        send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
         return
-    except ValueError:
-        send_json(handler, 502, {"ok": False, "error": "dial_bad_response"})
+    except _BadTargetResponse as e:
+        logging.debug("dial proxy GET %s bad response: %s", dial_path, e)
+        send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
         return
-    send_json(handler, status, data)
+    _normalize_target_response(handler, target_status, data)
 
 
 def _proxy_post(handler, uuid: str, dial_path: str, body_dict) -> None:
-    sighting = _get_sighting_or_404(handler, uuid)
+    sighting = _get_sighting_or_error(handler, uuid)
     if sighting is None:
         return
     body_bytes = _json.dumps(body_dict).encode() if body_dict is not None else None
     try:
-        status, data = _proxy_call("POST", sighting.ip, sighting.port,
-                                   dial_path, body=body_bytes)
+        target_status, data = _proxy_call("POST", sighting.ip, sighting.port,
+                                          dial_path, body=body_bytes)
     except OSError as e:
         logging.debug("dial proxy POST %s: %s", dial_path, e)
-        send_json(handler, 502, {"ok": False, "error": "dial_unreachable"})
+        send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
         return
-    except ValueError:
-        send_json(handler, 502, {"ok": False, "error": "dial_bad_response"})
+    except _BadTargetResponse as e:
+        logging.debug("dial proxy POST %s bad response: %s", dial_path, e)
+        send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
         return
-    send_json(handler, status, data)
+    _normalize_target_response(handler, target_status, data)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +199,9 @@ def dispatch_dial_management_post(handler, path: str, json_obj) -> None:
     elif path == "/api/dial/pin_recovery/complete":
         handle_dial_pin_recovery_complete_post(handler, body)
     else:
-        send_json(handler, 404, {"ok": False, "error": "not_found"})
+        # Known dispatcher, unknown management path — tunnel the semantic 404
+        # so it survives NGINX interception on the browser boundary.
+        send_browser_api_error(handler, 404, "not_found")
 
 
 # ---------------------------------------------------------------------------
