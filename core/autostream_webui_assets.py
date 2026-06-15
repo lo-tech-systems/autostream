@@ -1229,6 +1229,19 @@ PIN_MODAL_CSS = """
   #pinModal .modal-panel{--modal-width:22rem;}
 """
 
+APPLIANCE_SELECTOR_CSS = """
+  .appliance-selector{position:relative;display:inline-flex;align-items:center;}
+  .appliance-selector-btn{display:inline-flex;align-items:center;gap:4px;padding:0.22rem 0.6rem;border-radius:999px;background:var(--color-surface-raised);border:1px solid var(--color-border);color:var(--color-text-secondary);font-size:0.82rem;font-weight:500;cursor:pointer;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis;}
+  .appliance-selector-btn:hover,.appliance-selector-btn:focus{background:var(--color-surface-pressed);outline:2px solid var(--color-accent);outline-offset:1px;}
+  .appliance-selector-chevron{font-size:0.7rem;opacity:0.6;flex-shrink:0;pointer-events:none;}
+  .appliance-selector-dropdown{position:absolute;right:0;top:calc(100% + 4px);min-width:190px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.12);z-index:100;overflow:hidden;padding:4px 0;}
+  .appliance-selector-option{display:block;padding:0.5rem 0.9rem;font-size:0.9rem;color:var(--color-text);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .appliance-selector-option:hover,.appliance-selector-option:focus{background:var(--color-surface-pressed);outline:none;}
+  .appliance-selector-option-active{color:var(--color-accent);}
+  .appliance-selector-divider{height:1px;background:var(--color-border);margin:4px 0;}
+  .nav-tab-disabled{opacity:0.38;pointer-events:none;cursor:default;color:var(--color-nav-inactive);}
+"""
+
 
 A2HS_PROMPT_HTML = """
   <div id="a2hs-prompt" style="display:none;">

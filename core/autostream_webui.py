@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import threading
 import time
@@ -80,7 +81,7 @@ from autostream_webui_dials import (
 from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page
 from autostream_webui_page_equaliser import send_equaliser_page
-from autostream_webui_page_airplay import send_airplay_page
+from autostream_webui_page_airplay import send_airplay_page, send_remote_home_page
 from autostream_webui_page_logs import handle_logs_download, handle_logs_post, send_logs_page
 from autostream_webui_page_owntone import (
     send_owntone_ready_json,
@@ -113,6 +114,8 @@ from autostream_appliance_gateway import (
 
 _FEDERATION_PREFIX = "/api/federation/v1"
 _GATEWAY_PREFIX = "/api/appliances"
+_REMOTE_PAGE_PREFIX = "/a/"
+_APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 _FEDERATION_BODY_MAX = 4096  # bytes
 
 # Global state
@@ -481,6 +484,22 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 send_gateway_eq_status_json(self, STATE, aid)
             else:
                 self.send_error(404, "Not found")
+        elif path.startswith(_REMOTE_PAGE_PREFIX):
+            tail = path[len(_REMOTE_PAGE_PREFIX):]  # e.g. "aabbccdd1122334455aa" or "aabbccdd1122334455aa/equaliser"
+            parts = tail.split("/", 1)
+            aid = parts[0]
+            if not _APPLIANCE_ID_RE.match(aid):
+                self.send_error(404, "Not found")
+            else:
+                local_id = get_appliance_id(STATE.config_path) or ""
+                if aid == local_id:
+                    # Canonical redirect for bound appliance
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    send_remote_home_page(self, STATE, aid)
         elif path.startswith("/api/dial/configure/"):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return

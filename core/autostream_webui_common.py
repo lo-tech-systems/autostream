@@ -33,6 +33,8 @@ from autostream_webui_assets import (
     VIEWPORT_META,
 )
 
+import json as _json
+
 
 def locked_load_config(path: str):
     """Load config under a global lock to avoid reading partial writes."""
@@ -205,31 +207,132 @@ def settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: bo
 # Compact date formatter for the About page stylus panel
 # -----------------------------------------------------------------------------
 
-def build_nav_bar_html(active: str = "", *, service_warn: bool = False) -> str:
+def build_nav_bar_html(
+    active: str = "",
+    *,
+    service_warn: bool = False,
+    remote_id: str = "",
+) -> str:
     """Return the fixed bottom navigation bar HTML.
 
-    active:       one of 'home', 'setup', 'service', 'about'
+    active:       one of 'home', 'equaliser', 'setup', 'service', 'about'
     service_warn: when True the Service tab is styled red (e.g. stylus overdue)
+    remote_id:    when set, renders remote mode — Home/Equaliser link to the remote
+                  appliance; Service, Setup and Info are disabled (non-navigable).
     """
-    tabs = [
-        ("home",      "/",          "Home",      NAV_ICON_HOME,      ""),
-        ("equaliser", "/equaliser", "Equaliser", NAV_ICON_EQUALISER, ""),
-        ("service",   "/service",   "Service",   NAV_ICON_SERVICE,   ' id="service-nav-tab"'),
-        ("setup",     "/setup",     "Setup",     NAV_ICON_SETUP,     ""),
-        ("about",     "/about",     "Info",      NAV_ICON_ABOUT,     ""),
-    ]
+    if remote_id:
+        tabs = [
+            ("home",      f"/a/{remote_id}/",         "Home",      NAV_ICON_HOME,      ""),
+            ("equaliser", f"/a/{remote_id}/equaliser", "Equaliser", NAV_ICON_EQUALISER, ""),
+            ("service",   None,                        "Service",   NAV_ICON_SERVICE,   ' id="service-nav-tab"'),
+            ("setup",     None,                        "Setup",     NAV_ICON_SETUP,     ""),
+            ("about",     None,                        "Info",      NAV_ICON_ABOUT,     ""),
+        ]
+    else:
+        tabs = [
+            ("home",      "/",          "Home",      NAV_ICON_HOME,      ""),
+            ("equaliser", "/equaliser", "Equaliser", NAV_ICON_EQUALISER, ""),
+            ("service",   "/service",   "Service",   NAV_ICON_SERVICE,   ' id="service-nav-tab"'),
+            ("setup",     "/setup",     "Setup",     NAV_ICON_SETUP,     ""),
+            ("about",     "/about",     "Info",      NAV_ICON_ABOUT,     ""),
+        ]
     items = []
     for key, href, label, icon, extra_attrs in tabs:
         classes = ["nav-tab"]
         if key == active:
             classes.append("nav-tab-active")
-        if key == "service" and service_warn:
+        if key == "service" and service_warn and not remote_id:
             classes.append("nav-tab-warn")
+        if href is None:
+            classes.append("nav-tab-disabled")
         cls = " ".join(classes)
-        items.append(
-            f'<a href="{href}" class="{cls}"{extra_attrs}>{icon}<span>{label}</span></a>'
-        )
+        if href is None:
+            items.append(
+                f'<span class="{cls}" aria-disabled="true"{extra_attrs}>'
+                f'{icon}<span>{label}</span></span>'
+            )
+        else:
+            items.append(
+                f'<a href="{html.escape(href)}" class="{cls}"{extra_attrs}>'
+                f'{icon}<span>{label}</span></a>'
+            )
     return '<nav class="bottom-nav">' + "".join(items) + "</nav>"
+
+
+def build_appliance_selector_html(
+    appliances: list,
+    current_id: str,
+    current_page: str,
+) -> str:
+    """Build the appliance selector widget HTML.
+
+    appliances:   ordered list of appliance dicts (bound-first, then remote by name).
+                  Each dict has: id, hostname, is_bound, home_path, equaliser_path.
+    current_id:   the currently selected appliance ID
+    current_page: 'home' or 'equaliser' — determines the navigation target for each option.
+    """
+    # Resolve display name for the trigger button
+    current_name = "autostream"
+    for a in appliances:
+        if str(a.get("id") or "") == current_id:
+            current_name = str(a.get("hostname") or "").strip() or "autostream"
+            break
+
+    items: list[str] = []
+    divider_inserted = False
+    for a in appliances:
+        is_bound = bool(a.get("is_bound"))
+        aid = str(a.get("id") or "")
+        hostname = str(a.get("hostname") or "").strip() or "autostream"
+        is_selected = (aid == current_id)
+
+        if not is_bound and not divider_inserted:
+            items.append(
+                '<div class="appliance-selector-divider" role="separator" aria-hidden="true"></div>'
+            )
+            divider_inserted = True
+
+        if current_page == "equaliser":
+            href = str(a.get("equaliser_path") or f"/a/{aid}/equaliser")
+        else:
+            href = str(a.get("home_path") or ("/" if is_bound else f"/a/{aid}/"))
+
+        cls = "appliance-selector-option"
+        if is_selected:
+            cls += " appliance-selector-option-active"
+
+        weight = " style=\"font-weight:700;\"" if is_bound else ""
+        items.append(
+            f'<a href="{html.escape(href)}" role="option"'
+            f' aria-selected="{str(is_selected).lower()}"'
+            f' class="{cls}"{weight}>'
+            f'{html.escape(hostname)}</a>'
+        )
+
+    dropdown_inner = (
+        "".join(items)
+        if items
+        else '<span class="appliance-selector-option" style="color:var(--color-text-dim);">'
+             'No other appliances</span>'
+    )
+
+    safe_current = html.escape(current_name)
+    return (
+        f'<div class="appliance-selector" id="appliance-selector"'
+        f' data-current-id="{html.escape(current_id)}"'
+        f' data-current-page="{html.escape(current_page)}">'
+        f'<button type="button" class="appliance-selector-btn" id="appliance-selector-btn"'
+        f' aria-haspopup="listbox" aria-expanded="false"'
+        f' aria-label="Select appliance: {safe_current}">'
+        f'<span id="appliance-selector-current">{safe_current}</span>'
+        f'<span class="appliance-selector-chevron" aria-hidden="true">&#x25BE;</span>'
+        f'</button>'
+        f'<div id="appliance-selector-dropdown" role="listbox"'
+        f' aria-label="Appliances" class="appliance-selector-dropdown" hidden>'
+        f'{dropdown_inner}'
+        f'</div>'
+        f'</div>'
+    )
 
 
 def build_page_html(
@@ -246,6 +349,7 @@ def build_page_html(
     show_nav: bool = True,
     service_warn: bool = False,
     dark_mode: bool = False,
+    remote_id: str = "",
 ) -> str:
     """Render a complete HTML page using the shared scaffold.
 
@@ -264,14 +368,15 @@ def build_page_html(
                   before the nav bar (e.g. scripts, A2HS_SCRIPT)
     lic_html    : from build_top_banner_html() — the fixed flash/PSU banner
     lic_spacer  : from build_top_banner_html() — the spacer div
-    active_tab   : one of 'home', 'setup', 'service', 'about'; selects the
-                   active nav bar tab
+    active_tab   : one of 'home', 'equaliser', 'setup', 'service', 'about'
     show_nav     : when False the nav bar is omitted (e.g. initial-setup wizard)
     service_warn : when True the Service tab is highlighted red
     dark_mode    : when True the dark colour theme is applied via data-theme="dark"
+    remote_id    : when set, the nav bar renders in remote mode (pass the remote
+                   appliance ID)
     """
     style = STYLE_CSS + ("\n" + extra_css.strip() if extra_css.strip() else "")
-    nav = build_nav_bar_html(active_tab, service_warn=service_warn) if show_nav else ""
+    nav = build_nav_bar_html(active_tab, service_warn=service_warn, remote_id=remote_id) if show_nav else ""
     body_cls = ' class="has-bottom-nav"' if show_nav else ""
     theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
     return (

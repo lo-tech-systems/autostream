@@ -100,6 +100,7 @@ ALLOWLIST_PATHS = {
 # Implement prefix matching rather than adding literal remote IDs to the allowlist.
 ALLOWLIST_PREFIXES = (
     "/api/appliances/",
+    "/a/",
 )
 
 # Static asset extensions that must never trigger an auth redirect.
