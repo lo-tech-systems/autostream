@@ -137,8 +137,11 @@ def _reset_dial_mdns():
     yield
     m = _mod("dial_mdns")
     if m is not None:
-        m._by_key.clear()
-        m._by_name.clear()
+        browser = getattr(m, "_browser", None)
+        if browser is not None:
+            with browser._lock:
+                browser._by_key.clear()
+                browser._by_identity.clear()
 
 
 @pytest.fixture(autouse=True)

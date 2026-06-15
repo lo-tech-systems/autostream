@@ -1,0 +1,258 @@
+"""autostream_mdns.py — Shared Avahi mDNS browsing and registry scaffolding.
+
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+This module owns only transport and registry mechanics:
+  - launching avahi-browse --no-fail -p -r <service-type>
+  - reading its line-oriented output
+  - parsing Avahi fields and quoted TXT records with shlex
+  - IPv4 filtering
+  - tracking the Avahi five-tuple (interface, protocol, service_name, type, domain)
+  - deduplicating multiple interfaces via a caller-supplied identity key
+  - thread-safe snapshots
+  - add, update and remove event handling
+  - clearing stale state when avahi-browse exits
+  - retrying with per-browser exponential delays: 5, 10, 20, 30 seconds
+  - resetting the retry delay after a valid event or 60 seconds of uptime
+  - idempotent daemon-thread startup
+  - concise, rate-limited logging
+
+This module must not know about dial authorization, dial persistence,
+playing-state capabilities, appliance UI behavior, configuration files or HTTP
+forwarding.  Each consumer supplies a parse_fn that converts a resolved Avahi
+event into its domain model and returns (identity_key, model) or None to skip.
+"""
+from __future__ import annotations
+
+import logging
+import shlex
+import subprocess
+import threading
+import time
+from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar
+
+_T = TypeVar("_T")
+
+logger = logging.getLogger(__name__)
+
+# Retry delay sequence for avahi-browse restarts (seconds)
+_RETRY_DELAYS = [5, 10, 20, 30]
+# Delay resets to the first value after this many seconds of uptime
+_UPTIME_RESET_SECS = 60
+
+
+def parse_avahi_txt(raw: str) -> dict[str, str]:
+    """Parse an Avahi TXT record string into {key: value} using shlex."""
+    result: dict[str, str] = {}
+    try:
+        for token in shlex.split(raw):
+            if "=" in token:
+                k, _, v = token.partition("=")
+                result[k] = v
+    except ValueError as e:
+        logger.debug("TXT parse error (malformed quoted string): %s", e)
+    return result
+
+
+class MdnsBrowser(Generic[_T]):
+    """Generic Avahi browser that maintains a deduped, identity-keyed registry.
+
+    Parameters
+    ----------
+    service_type:
+        The mDNS service type to browse, e.g. ``_autostream-dial._tcp``.
+    parse_fn:
+        Called for each resolved (=) IPv4 event.  Receives:
+          - ``parts``: the semicolon-split Avahi output fields (list[str])
+          - ``txt``: parsed TXT key/value dict
+        Returns ``(identity_key, model)`` to register the entry, or ``None``
+        to ignore it.
+    on_add:
+        Optional callback called when a new identity_key appears.
+        Invoked outside the registry lock.
+    on_remove:
+        Optional callback called when an identity_key is fully removed.
+        Invoked outside the registry lock.  Must not perform network I/O.
+    """
+
+    def __init__(
+        self,
+        service_type: str,
+        parse_fn: Callable[[List[str], Dict[str, str]], Optional[Tuple[Any, _T]]],
+        on_add: Optional[Callable[[Any, _T], None]] = None,
+        on_remove: Optional[Callable[[Any, _T], None]] = None,
+    ) -> None:
+        self._service_type = service_type
+        self._parse_fn = parse_fn
+        self._on_add = on_add
+        self._on_remove = on_remove
+
+        self._lock = threading.Lock()
+        # Five-tuple key → (identity_key, model)
+        self._by_key: dict[tuple, tuple[Any, _T]] = {}
+        # identity_key → model (most-recently-seen sighting wins)
+        self._by_identity: dict[Any, _T] = {}
+
+        self._started = False
+        self._start_monotonic: float = 0.0
+        self._has_browse_event: bool = False
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """Start the background browse thread.  Idempotent; safe to call multiple times."""
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+            self._start_monotonic = time.monotonic()
+        t = threading.Thread(
+            target=self._browse_loop,
+            daemon=True,
+            name=f"mdns-{self._service_type}",
+        )
+        t.start()
+
+    def get_snapshot(self) -> dict[Any, _T]:
+        """Return an immutable shallow copy of the current identity → model mapping."""
+        with self._lock:
+            return dict(self._by_identity)
+
+    @property
+    def has_started(self) -> bool:
+        with self._lock:
+            return self._started
+
+    @property
+    def has_browse_event(self) -> bool:
+        """True after at least one Avahi event has been processed."""
+        with self._lock:
+            return self._has_browse_event
+
+    @property
+    def start_monotonic(self) -> float:
+        with self._lock:
+            return self._start_monotonic
+
+    def scanner_ready(self) -> bool:
+        """True when the scanner has processed at least one event or 8s have elapsed."""
+        with self._lock:
+            if self._has_browse_event:
+                return True
+            if not self._started:
+                return False
+            return (time.monotonic() - self._start_monotonic) >= 8.0
+
+    def grace_remaining_ms(self) -> int:
+        """Milliseconds remaining in the 8-second startup discovery grace period."""
+        with self._lock:
+            if self._has_browse_event or not self._started:
+                return 0
+            elapsed_ms = int((time.monotonic() - self._start_monotonic) * 1000)
+            return max(0, 8000 - elapsed_ms)
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _browse_loop(self) -> None:
+        delay_idx = 0
+        loop_start = time.monotonic()
+
+        while True:
+            with self._lock:
+                self._by_key.clear()
+                self._by_identity.clear()
+
+            run_start = time.monotonic()
+            had_valid_event = False
+
+            try:
+                proc = subprocess.Popen(
+                    ["avahi-browse", "--no-fail", "-p", "-r", self._service_type],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+                for line in proc.stdout:
+                    had_valid_event = True
+                    with self._lock:
+                        self._has_browse_event = True
+                    self._handle_line(line.strip())
+
+                    # Reset delay if browser has been up for at least 60 s
+                    if (time.monotonic() - run_start) >= _UPTIME_RESET_SECS:
+                        delay_idx = 0
+
+                logger.warning(
+                    "mdns(%s): avahi-browse exited; restarting", self._service_type
+                )
+            except Exception as exc:
+                logger.warning("mdns(%s): %s", self._service_type, exc)
+
+            # Reset delay if at least one valid event was received this run
+            if had_valid_event:
+                delay_idx = 0
+
+            delay = _RETRY_DELAYS[min(delay_idx, len(_RETRY_DELAYS) - 1)]
+            delay_idx = min(delay_idx + 1, len(_RETRY_DELAYS) - 1)
+            time.sleep(delay)
+
+    def _handle_line(self, line: str) -> None:
+        parts = line.split(";")
+        if not parts:
+            return
+        event = parts[0]
+
+        if event == "=" and len(parts) >= 10 and parts[2] == "IPv4":
+            five_tuple = tuple(parts[1:6])
+            txt = parse_avahi_txt(parts[9])
+            parsed = self._parse_fn(parts, txt)
+            if parsed is None:
+                return
+            identity_key, model = parsed
+
+            added = False
+            with self._lock:
+                old = self._by_identity.get(identity_key)
+                self._by_key[five_tuple] = (identity_key, model)
+                self._by_identity[identity_key] = model
+                if old is None:
+                    added = True
+
+            if added and self._on_add:
+                try:
+                    self._on_add(identity_key, model)
+                except Exception:
+                    logger.debug(
+                        "mdns(%s): on_add callback raised", self._service_type, exc_info=True
+                    )
+
+        elif event == "-" and len(parts) >= 6 and parts[2] == "IPv4":
+            five_tuple = tuple(parts[1:6])
+            removed_key = None
+            removed_model = None
+
+            with self._lock:
+                entry = self._by_key.pop(five_tuple, None)
+                if entry is not None:
+                    identity_key, _ = entry
+                    # Check if another five-tuple still holds this identity
+                    remaining = next(
+                        (m for k, (ik, m) in self._by_key.items() if ik == identity_key),
+                        None,
+                    )
+                    if remaining is not None:
+                        self._by_identity[identity_key] = remaining
+                    else:
+                        removed_model = self._by_identity.pop(identity_key, None)
+                        removed_key = identity_key
+
+            if removed_key is not None and self._on_remove:
+                try:
+                    self._on_remove(removed_key, removed_model)
+                except Exception:
+                    logger.debug(
+                        "mdns(%s): on_remove callback raised", self._service_type, exc_info=True
+                    )

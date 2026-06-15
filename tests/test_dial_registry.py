@@ -65,8 +65,9 @@ def _av_remove_dial(iface="eth0", proto="IPv4", name="My-Dial",
 
 
 def _clear_scanner():
-    dials._by_key.clear()
-    dials._by_uuid.clear()
+    with dials._browser._lock:
+        dials._browser._by_key.clear()
+        dials._browser._by_identity.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -228,25 +229,25 @@ class TestHandleLineDialScanner:
         with _redirect(tmp_path) as p:
             _write_dials(p, {})
             with patch("autostream_dials.update_dial_sighting"):
-                dials._handle_line(_av_add_dial())
-        assert "dial-uuid-1" in dials._by_uuid
+                dials._browser._handle_line(_av_add_dial())
+        assert "dial-uuid-1" in dials._browser.get_snapshot()
 
     def test_non_ipv4_event_ignored(self, tmp_path):
         with patch("autostream_dials.update_dial_sighting"):
-            dials._handle_line(_av_add_dial(proto="IPv6"))
-        assert dials._by_uuid == {}
+            dials._browser._handle_line(_av_add_dial(proto="IPv6"))
+        assert dials._browser.get_snapshot() == {}
 
     def test_entry_without_id_ignored(self, tmp_path):
         with patch("autostream_dials.update_dial_sighting"):
-            dials._handle_line(_av_add_dial(txt="name=Test version=v1"))
-        assert dials._by_uuid == {}
+            dials._browser._handle_line(_av_add_dial(txt="name=Test version=v1"))
+        assert dials._browser.get_snapshot() == {}
 
     def test_invalid_port_defaults_to_7842(self, tmp_path):
         with _redirect(tmp_path) as p:
             _write_dials(p, {})
             with patch("autostream_dials.update_dial_sighting"):
-                dials._handle_line(_av_add_dial(port="notaport"))
-        sighting = dials._by_uuid.get("dial-uuid-1")
+                dials._browser._handle_line(_av_add_dial(port="notaport"))
+        sighting = dials._browser.get_snapshot().get("dial-uuid-1")
         assert sighting is not None
         assert sighting.port == 7842
 
@@ -254,28 +255,28 @@ class TestHandleLineDialScanner:
         with _redirect(tmp_path) as p:
             _write_dials(p, {})
             with patch("autostream_dials.update_dial_sighting"):
-                dials._handle_line(_av_add_dial(txt="id=uuid-pr name=X pin_recovery=1"))
-        s = dials._by_uuid.get("uuid-pr")
+                dials._browser._handle_line(_av_add_dial(txt="id=uuid-pr name=X pin_recovery=1"))
+        s = dials._browser.get_snapshot().get("uuid-pr")
         assert s is not None and s.pin_recovery is True
 
     def test_remove_event_clears_sighting(self, tmp_path):
         with _redirect(tmp_path) as p:
             _write_dials(p, {})
             with patch("autostream_dials.update_dial_sighting"):
-                dials._handle_line(_av_add_dial())
-                dials._handle_line(_av_remove_dial())
-        assert "dial-uuid-1" not in dials._by_uuid
+                dials._browser._handle_line(_av_add_dial())
+                dials._browser._handle_line(_av_remove_dial())
+        assert "dial-uuid-1" not in dials._browser.get_snapshot()
 
     def test_remove_one_interface_preserves_other(self, tmp_path):
         with _redirect(tmp_path) as p:
             _write_dials(p, {})
             with patch("autostream_dials.update_dial_sighting"):
-                dials._handle_line(_av_add_dial(iface="eth0"))
-                dials._handle_line(_av_add_dial(iface="wlan0"))
-                dials._handle_line(_av_remove_dial(iface="eth0"))
-        assert "dial-uuid-1" in dials._by_uuid
+                dials._browser._handle_line(_av_add_dial(iface="eth0"))
+                dials._browser._handle_line(_av_add_dial(iface="wlan0"))
+                dials._browser._handle_line(_av_remove_dial(iface="eth0"))
+        assert "dial-uuid-1" in dials._browser.get_snapshot()
 
     def test_too_few_fields_ignored(self):
         with patch("autostream_dials.update_dial_sighting"):
-            dials._handle_line("=;eth0;IPv4;name;_tcp;local")
-        assert dials._by_uuid == {}
+            dials._browser._handle_line("=;eth0;IPv4;name;_tcp;local")
+        assert dials._browser.get_snapshot() == {}
