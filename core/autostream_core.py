@@ -1935,6 +1935,17 @@ def _configure_startup_monitors(
 
     return monitors
 
+def _check_webui_thread(thread) -> None:
+    """Raise RuntimeError if the Web UI thread has exited unexpectedly.
+
+    Called periodically from the coordinator loops so that a dead Web UI is
+    detected within one poll interval and causes a process exit that allows
+    systemd to restart the service.
+    """
+    if thread is not None and not thread.is_alive():
+        raise RuntimeError("Web UI thread has exited unexpectedly; shutting down")
+
+
 def run_autostream(config_path: str, start_webui=None) -> None:
     """Run autostream using the given config file path.
 
@@ -1952,12 +1963,11 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))
     version = _install_state.get("AUTOSTREAM_RELEASE_TAG", "")
 
-    # Optionally start the web UI.
+    # Optionally start the web UI.  Let any startup failure propagate so the
+    # process exits nonzero and systemd can restart it.
+    webui_thread = None
     if start_webui is not None:
-        try:
-            start_webui(config_path)
-        except Exception as e:
-            logging.error("Failed to start web UI: %s", e)
+        webui_thread = start_webui(config_path)
 
     socket_path = get_monitor_socket_path()
     POLL_INTERVAL = 0.5          # seconds between get_status() polls
@@ -1985,6 +1995,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                     "starting in setup mode and waiting for Web UI changes.",
                 )
                 while not stop_flag.is_set() and unconfigured(config_path):
+                    _check_webui_thread(webui_thread)
                     time.sleep(1.0)
                 if stop_flag.is_set():
                     return
@@ -2000,6 +2011,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                     "Cannot connect to autostream_monitor at %s; retrying in 5 s.",
                     socket_path,
                 )
+                _check_webui_thread(webui_thread)
                 time.sleep(5.0)
                 continue
 
@@ -2010,12 +2022,14 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                     fifo_result.message or "reconcile failed",
                 )
                 client.close()
+                _check_webui_thread(webui_thread)
                 time.sleep(5.0)
                 continue
 
             if not client.set_fifo(fifo_path):
                 logging.warning("set_fifo(%r) failed during startup; retrying in 5 s.", fifo_path)
                 client.close()
+                _check_webui_thread(webui_thread)
                 time.sleep(5.0)
                 continue
 
@@ -2035,6 +2049,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                 break
 
             client.close()
+            _check_webui_thread(webui_thread)
             time.sleep(5.0)
 
         if stop_flag.is_set() or monitors is None:
@@ -2059,6 +2074,9 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 
         try:
             while not stop_flag.is_set():
+
+                # ── Web UI health check ───────────────────────────────────────
+                _check_webui_thread(webui_thread)
 
                 # ── Config reload requested by Web UI ────────────────────────
                 if reload_flag.is_set():
@@ -2215,8 +2233,9 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 
                 time.sleep(POLL_INTERVAL)
 
-        except Exception as e:
-            logging.error("Unexpected error: %s", e)
+        except Exception:
+            logging.exception("Unexpected coordinator error; running cleanup before exit")
+            raise
 
         finally:
             tracker = _playback_tracker

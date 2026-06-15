@@ -575,7 +575,7 @@ def _scan_monitor_devices_loop() -> None:
         time.sleep(15)
 
 
-def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int = 8080) -> None:
+def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int = 8080) -> threading.Thread:
     """Start the configuration web UI on a background thread."""
     global STATE, AUTH
 
@@ -602,11 +602,13 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
             httpd = ThreadingHTTPServer((host, port), ConfigWebHandler)
             logging.info("Web UI available at http://%s:%d", host, port)
             httpd.serve_forever()
-        except Exception as e:
-            logging.error("Web UI server error: %s", e)
+        except Exception:
+            logging.exception("Web UI server error")
+            raise
 
     thread = threading.Thread(target=_serve, daemon=True)
     thread.start()
+    return thread
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
