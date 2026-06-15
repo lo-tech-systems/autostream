@@ -41,6 +41,9 @@ _ID_CACHE_LOCK = threading.Lock()
 _appliance_id_cache: Optional[str] = None
 _appliance_id_cache_set: bool = False
 _appliance_id_error_logged: bool = False
+_dial_id_cache: Optional[str] = None
+_dial_id_cache_set: bool = False
+_dial_id_error_logged: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +291,45 @@ def get_appliance_id() -> Optional[str]:
                 "Appliance identity unavailable: CPU serial is absent or non-hex and "
                 "%s is missing or invalid. Multi-appliance features are disabled.",
                 APPLIANCE_ID_FILE,
+            )
+        return None
+
+
+def get_dial_id() -> Optional[str]:
+    """Return the stable public Dial identity (20 lowercase hex chars).
+
+    Uses the same normalization and hashing as get_appliance_id() but with a
+    distinct namespace, so the same hardware produces different appliance and
+    dial identifiers.  Caches the result for the process lifetime.  Returns
+    None and logs one error per process if both sources fail.
+    """
+    global _dial_id_cache, _dial_id_cache_set, _dial_id_error_logged
+
+    with _ID_CACHE_LOCK:
+        if _dial_id_cache_set:
+            return _dial_id_cache
+
+        serial = get_cpu_serial()
+        derived = _namespaced_id_hash(_DIAL_NAMESPACE, serial)
+        if derived:
+            _dial_id_cache = derived
+            _dial_id_cache_set = True
+            return _dial_id_cache
+
+        fallback = _read_id_file(DIAL_ID_FILE)
+        if fallback:
+            _dial_id_cache = fallback
+            _dial_id_cache_set = True
+            return _dial_id_cache
+
+        _dial_id_cache = None
+        _dial_id_cache_set = True
+        if not _dial_id_error_logged:
+            _dial_id_error_logged = True
+            logger.error(
+                "Dial identity unavailable: CPU serial is absent or non-hex and "
+                "%s is missing or invalid.",
+                DIAL_ID_FILE,
             )
         return None
 

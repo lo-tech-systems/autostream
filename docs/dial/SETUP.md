@@ -23,12 +23,12 @@ the **autostream web interface** (not from the dial's own setup page):
 
 1. Open the autostream web UI (e.g. `http://autostream.local/`).
 2. Go to **Setup** and open the **Dials** panel.
-3. The dial appears under *Discovered dials* with its UUID.
+3. The dial appears under *Discovered dials* with its identity.
 4. Enter a friendly name (e.g. "Hallway") and tick **Allow control**.
 5. Click **Save**.
 
-The dial's UUID is broadcast in the mDNS TXT record — it is stable across
-reboots and firmware updates.
+The dial's identity is a 20-character hexadecimal value broadcast in the mDNS
+TXT record — it is stable across reboots and firmware updates.
 
 ---
 

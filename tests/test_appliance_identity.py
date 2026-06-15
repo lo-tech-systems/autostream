@@ -1,13 +1,14 @@
-"""WP1 — Appliance identity tests.
+"""WP1 + WP2 — Appliance and Dial identity tests.
 
 Covers:
   - CPU serial normalization and validation
-  - Deterministic hash vector for get_appliance_id()
+  - Deterministic hash vector for get_appliance_id() and get_dial_id()
   - Exact 20-character lowercase hexadecimal format
   - Invalid / non-hex serial handling
   - Process-lifetime cache behavior
   - Fallback-file read (valid, invalid, missing)
   - Both sources unavailable returns None without raising
+  - Distinct namespaces: appliance and dial IDs differ for the same serial
   - Missing identity logs one error per process and does not raise
   - Raw CPU serial is absent from the returned public ID
   - Installer fallback creation: only when CPU serial unavailable and file absent
@@ -414,3 +415,222 @@ class TestInstallerFallbackSemantics:
         id1 = self._run_installer_logic(path1, "")
         id2 = self._run_installer_logic(path2, "")
         assert id1.read_text().strip() != id2.read_text().strip()
+
+
+# ---------------------------------------------------------------------------
+# WP2: get_dial_id
+# ---------------------------------------------------------------------------
+
+def _clear_dial_cache():
+    with rpi._ID_CACHE_LOCK:
+        rpi._dial_id_cache = None
+        rpi._dial_id_cache_set = False
+        rpi._dial_id_error_logged = False
+
+
+@pytest.fixture(autouse=True)
+def _reset_dial_id_cache():
+    """Reset dial identity cache between tests."""
+    orig_cache = rpi._dial_id_cache
+    orig_set = rpi._dial_id_cache_set
+    orig_err = rpi._dial_id_error_logged
+    yield
+    with rpi._ID_CACHE_LOCK:
+        rpi._dial_id_cache = orig_cache
+        rpi._dial_id_cache_set = orig_set
+        rpi._dial_id_error_logged = orig_err
+
+
+class TestGetDialId:
+    def test_returns_20char_lowercase_hex(self):
+        _clear_dial_cache()
+        with patch.object(rpi, "get_cpu_serial", return_value="00000000abcdef12"):
+            result = rpi.get_dial_id()
+        assert result is not None
+        assert len(result) == 20
+        assert result == result.lower()
+        assert all(c in "0123456789abcdef" for c in result)
+
+    def test_deterministic_for_same_serial(self):
+        _clear_dial_cache()
+        with patch.object(rpi, "get_cpu_serial", return_value="00000000abcdef12"):
+            r1 = rpi.get_dial_id()
+        _clear_dial_cache()
+        with patch.object(rpi, "get_cpu_serial", return_value="00000000abcdef12"):
+            r2 = rpi.get_dial_id()
+        assert r1 == r2
+
+    def test_known_hash_vector(self):
+        _clear_dial_cache()
+        serial = "00000000abcdef12"
+        with patch.object(rpi, "get_cpu_serial", return_value=serial):
+            result = rpi.get_dial_id()
+        expected = hashlib.sha256(
+            ("autostream-dial-v1:" + serial).encode("utf-8")
+        ).hexdigest()[:20]
+        assert result == expected
+
+    def test_distinct_from_appliance_id_for_same_serial(self):
+        serial = "aabbccdd11223344"
+        _clear_cache()
+        _clear_dial_cache()
+        with patch.object(rpi, "get_cpu_serial", return_value=serial):
+            appliance = rpi.get_appliance_id()
+        _clear_dial_cache()
+        with patch.object(rpi, "get_cpu_serial", return_value=serial):
+            dial = rpi.get_dial_id()
+        assert appliance != dial
+
+    def test_normalizes_uppercase_serial(self):
+        _clear_dial_cache()
+        with patch.object(rpi, "get_cpu_serial", return_value="AABBCCDD12345678"):
+            r_upper = rpi.get_dial_id()
+        _clear_dial_cache()
+        with patch.object(rpi, "get_cpu_serial", return_value="aabbccdd12345678"):
+            r_lower = rpi.get_dial_id()
+        assert r_upper == r_lower
+
+    def test_uses_dial_fallback_file(self, tmp_path):
+        _clear_dial_cache()
+        fallback = tmp_path / "dial-id"
+        fallback.write_text("cafebabe12345678ab01", encoding="utf-8")
+        with patch.object(rpi, "get_cpu_serial", return_value=""), \
+             patch.object(rpi, "DIAL_ID_FILE", fallback):
+            result = rpi.get_dial_id()
+        assert result == "cafebabe12345678ab01"
+
+    def test_dial_fallback_is_distinct_from_appliance_fallback(self, tmp_path):
+        _clear_cache()
+        _clear_dial_cache()
+        appliance_fb = tmp_path / "appliance-id"
+        appliance_fb.write_text("aaaaaaaaaa1111111111", encoding="utf-8")
+        dial_fb = tmp_path / "dial-id"
+        dial_fb.write_text("bbbbbbbbbb2222222222", encoding="utf-8")
+        with patch.object(rpi, "get_cpu_serial", return_value=""), \
+             patch.object(rpi, "APPLIANCE_ID_FILE", appliance_fb), \
+             patch.object(rpi, "DIAL_ID_FILE", dial_fb):
+            app_id = rpi.get_appliance_id()
+            _clear_dial_cache()
+            dial_id = rpi.get_dial_id()
+        assert app_id == "aaaaaaaaaa1111111111"
+        assert dial_id == "bbbbbbbbbb2222222222"
+        assert app_id != dial_id
+
+    def test_returns_none_when_both_unavailable(self, tmp_path):
+        _clear_dial_cache()
+        missing = tmp_path / "dial-id"
+        with patch.object(rpi, "get_cpu_serial", return_value=""), \
+             patch.object(rpi, "DIAL_ID_FILE", missing):
+            result = rpi.get_dial_id()
+        assert result is None
+
+    def test_cached_for_process_lifetime(self):
+        _clear_dial_cache()
+        call_count = [0]
+
+        def counting_serial():
+            call_count[0] += 1
+            return "deadbeef12345678"
+
+        with patch.object(rpi, "get_cpu_serial", side_effect=counting_serial):
+            r1 = rpi.get_dial_id()
+            r2 = rpi.get_dial_id()
+
+        assert r1 == r2
+        assert call_count[0] == 1
+
+    def test_logs_one_error_when_unavailable(self, tmp_path, caplog):
+        _clear_dial_cache()
+        missing = tmp_path / "dial-id"
+        with patch.object(rpi, "get_cpu_serial", return_value=""), \
+             patch.object(rpi, "DIAL_ID_FILE", missing):
+            import logging
+            with caplog.at_level(logging.ERROR, logger="autostream_rpi"):
+                rpi.get_dial_id()
+                rpi.get_dial_id()
+
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) == 1
+
+
+# ---------------------------------------------------------------------------
+# WP2: Dial installer identity logic (structural tests)
+# ---------------------------------------------------------------------------
+
+class TestDialInstallerIdentity:
+    """Structural tests for generate_dial_id() behavior in helpers.sh."""
+
+    def _run_dial_installer_logic(self, tmp_path, cpu_serial: str) -> str:
+        """Replicate generate_dial_id() installer Python logic for testing."""
+        import re
+        import secrets
+
+        fallback_path = tmp_path / "dial-id"
+        serial = cpu_serial.strip().lower()
+
+        if re.match(r'^[0-9a-f]+$', serial) and serial:
+            digest = hashlib.sha256(
+                ("autostream-dial-v1:" + serial).encode("utf-8")
+            ).hexdigest()
+            return digest[:20]
+
+        if fallback_path.exists():
+            raw = fallback_path.read_text(encoding="utf-8").strip()
+            if len(raw) == 20 and re.match(r'^[0-9a-f]+$', raw):
+                return raw
+
+        new_id = secrets.token_hex(10)
+        tmp_file = fallback_path.with_suffix(".tmp")
+        tmp_file.write_text(new_id, encoding="utf-8")
+        tmp_file.replace(fallback_path)
+        return new_id
+
+    def test_derives_id_from_serial(self, tmp_path):
+        result = self._run_dial_installer_logic(tmp_path, "00000000abcdef12")
+        expected = hashlib.sha256(
+            ("autostream-dial-v1:" + "00000000abcdef12").encode("utf-8")
+        ).hexdigest()[:20]
+        assert result == expected
+
+    def test_creates_fallback_when_serial_unavailable(self, tmp_path):
+        result = self._run_dial_installer_logic(tmp_path, "")
+        fallback = tmp_path / "dial-id"
+        assert fallback.exists()
+        assert result == fallback.read_text(encoding="utf-8").strip()
+        assert len(result) == 20
+        assert all(c in "0123456789abcdef" for c in result)
+
+    def test_preserves_existing_fallback(self, tmp_path):
+        original = "aabbccddeeff001122ab"
+        existing = tmp_path / "dial-id"
+        existing.write_text(original, encoding="utf-8")
+        result = self._run_dial_installer_logic(tmp_path, "")
+        assert result == original
+
+    def test_no_file_created_when_serial_valid(self, tmp_path):
+        self._run_dial_installer_logic(tmp_path, "00000000abcdef12")
+        assert not (tmp_path / "dial-id").exists()
+
+    def test_helpers_sh_has_no_generate_uuid(self):
+        content = (
+            (Path(__file__).parent.parent / "installer" / "dial" / "helpers.sh")
+            .read_text(encoding="utf-8")
+        )
+        assert "generate_uuid" not in content, (
+            "generate_uuid() must be removed from installer/dial/helpers.sh"
+        )
+
+    def test_helpers_sh_has_generate_dial_id(self):
+        content = (
+            (Path(__file__).parent.parent / "installer" / "dial" / "helpers.sh")
+            .read_text(encoding="utf-8")
+        )
+        assert "generate_dial_id()" in content
+
+    def test_dial_installer_uses_generate_dial_id(self):
+        content = (
+            (Path(__file__).parent.parent / "autostream_dial_install.sh")
+            .read_text(encoding="utf-8")
+        )
+        assert "generate_dial_id" in content
+        assert "generate_uuid" not in content

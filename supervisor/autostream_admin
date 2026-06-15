@@ -83,8 +83,9 @@ autostream product — best-effort sync before deletion:
   /etc/owntone.conf -> /opt/autostream/owntone/owntone.conf (if both exist)
 
 autostream-dial product — preserved:
-  /etc/autostream/autostream-dial.json  (hardware config and UUID)
+  /etc/autostream/autostream-dial.json  (hardware config and identity)
   DIAL_UUID in /var/lib/autostream/install-state.env
+  /var/lib/autostream/dial-id
 
 autostream-dial product — deleted (fixed allowlist, no wildcards):
   /var/lib/autostream/dial-settings.json

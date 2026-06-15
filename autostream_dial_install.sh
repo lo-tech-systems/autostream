@@ -117,9 +117,13 @@ install -m 0755 "$DEPLOY/dial/cgi/download-logs.cgi"  /opt/autostream/nginx/cgi/
 systemctl enable fcgiwrap
 systemctl restart fcgiwrap
 
-# ---- UUID and config handling -----------------------------------------------
+# ---- Identity and config handling -------------------------------------------
 if ! $UPDATE; then
-    DIAL_UUID=$(generate_uuid)
+    DIAL_UUID=$(generate_dial_id)
+    if [[ -z "$DIAL_UUID" ]]; then
+        echo "ERROR: Unable to derive Dial identity (no CPU serial and fallback creation failed)." >&2
+        exit 1
+    fi
     write_dial_hw_config "$DIAL_UUID"
     write_dial_settings
 else

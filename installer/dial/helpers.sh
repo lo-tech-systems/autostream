@@ -74,8 +74,55 @@ disable_system_dnsmasq() {
     systemctl mask dnsmasq.service
 }
 
-generate_uuid() {
-    python3 -c "import uuid; print(uuid.uuid4())"
+generate_dial_id() {
+    # Derive the Dial identity from the CPU serial (SHA-256 hash, 20 hex chars)
+    # or create and store a cryptographically secure random fallback identity.
+    # Prints exactly 20 lowercase hexadecimal characters and exits non-zero on failure.
+    python3 - <<'PYEOF'
+import hashlib, os, re, secrets, sys
+from pathlib import Path
+
+def _get_cpu_serial():
+    try:
+        text = Path('/proc/cpuinfo').read_text(encoding='utf-8', errors='ignore')
+        for ln in text.splitlines():
+            if ln.strip().lower().startswith('serial'):
+                parts = ln.split(':', 1)
+                if len(parts) == 2 and parts[1].strip():
+                    return parts[1].strip()
+    except Exception:
+        pass
+    try:
+        raw = Path('/proc/device-tree/serial-number').read_bytes()
+        if raw:
+            return raw.replace(b'\x00', b'').decode('utf-8', errors='ignore').strip()
+    except Exception:
+        pass
+    return ''
+
+serial = _get_cpu_serial().strip().lower()
+if re.match(r'^[0-9a-f]+$', serial) and serial:
+    digest = hashlib.sha256(('autostream-dial-v1:' + serial).encode('utf-8')).hexdigest()
+    print(digest[:20])
+    sys.exit(0)
+
+fallback_path = Path('/var/lib/autostream/dial-id')
+if fallback_path.exists():
+    raw = fallback_path.read_text(encoding='utf-8').strip()
+    if len(raw) == 20 and re.match(r'^[0-9a-f]+$', raw):
+        print(raw)
+        sys.exit(0)
+
+# Create a new cryptographically secure fallback identity.
+new_id = secrets.token_hex(10)
+tmp = fallback_path.with_suffix('.tmp')
+tmp.write_text(new_id, encoding='utf-8')
+os.chmod(tmp, 0o644)
+os.chown(tmp, 0, 0)
+tmp.replace(fallback_path)
+print(new_id)
+sys.exit(0)
+PYEOF
 }
 
 write_dial_hw_config() {

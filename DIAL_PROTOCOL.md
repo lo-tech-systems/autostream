@@ -30,7 +30,7 @@ Announced continuously by a dial device.
 
 | TXT field | Value | Meaning |
 |---|---|---|
-| `id` | UUID | Stable dial identity (used for authorization) |
+| `id` | 20-char hex | Stable dial identity (used for authorization) |
 | `name` | string | Human-readable display name |
 | `version` | e.g. `1.0.0` | Installed dial firmware version |
 | `pin_recovery` | `1` | PIN recovery window active (10-minute window only) |
@@ -83,12 +83,12 @@ required.
 
 **Request body:**
 ```json
-{"dial_id": "<uuid>", "delta": 4}
+{"dial_id": "<id>", "delta": 4}
 ```
 
 | Field | Type | Constraints |
 |---|---|---|
-| `dial_id` | string | UUID of the dial; must be present in `dials.json` |
+| `dial_id` | string | Dial identity (20 lowercase hex chars); must be present in `dials.json` |
 | `delta` | int | Volume delta in percent; clamped to [-100, 100] |
 
 **Success response (200):**

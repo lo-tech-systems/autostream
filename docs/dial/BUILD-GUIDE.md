@@ -113,7 +113,7 @@ The installer:
 - Creates the `autostream` service user
 - Installs OS packages (`avahi-daemon`, `nginx`, `dnsmasq`, `gpiozero`, etc.)
 - Deploys the dial Python application to `/opt/autostream/`
-- Generates a UUID and writes `/etc/autostream/autostream-dial.json`
+- Derives a stable 20-character hex identity and writes `/etc/autostream/autostream-dial.json`
 - Configures systemd, nginx, logrotate, and sudoers
 - Starts the `autostream-dial` service
 
