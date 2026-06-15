@@ -859,22 +859,25 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
             send_json(handler, 200, {"ok": True, "muted": True})
 
         else:  # restore
-            # Only restore outputs that still have a snapshot entry.  Outputs that
-            # were successfully restored in a prior partial attempt have had their
-            # entry removed; including them again would overwrite their correct
-            # volume with the wrong default.
-            pending_restore = [o for o in selected if o.id in _mute_snapshot]
-            if not pending_restore:
-                # Nothing left to restore (all already done or snapshot empty).
-                _mute_pending = None
-                _mute_snapshot.clear()
-                send_json(handler, 200, {"ok": True, "muted": False})
-                return
-
+            # Per-output decision:
+            #  - In snapshot:            restore to the stored pre-mute volume.
+            #  - Not in snapshot, vol=0: restore to default (new output selected while
+            #                            muted, or state after a process restart where
+            #                            the snapshot was lost).
+            #  - Not in snapshot, vol>0: already successfully restored in a prior
+            #                            partial attempt — skip to avoid overwriting the
+            #                            correct volume with the wrong default.
             succeeded = 0
             failed = 0
-            for o in pending_restore:
-                restore_vol = _mute_snapshot[o.id]
+            any_attempted = False
+            for o in selected:
+                if o.id in _mute_snapshot:
+                    restore_vol = _mute_snapshot[o.id]
+                elif o.volume_percent == 0:
+                    restore_vol = default_vol
+                else:
+                    continue  # non-zero, not in snapshot: already restored — skip
+                any_attempted = True
                 r = update_output(base_url, o.id, volume_percent=restore_vol, timeout=3)
                 if r.ok:
                     _mute_snapshot.pop(o.id, None)
@@ -882,6 +885,13 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
                 else:
                     failed += 1
                     logging.warning("restore: update_output %s: %s", o.id, r.error)
+
+            if not any_attempted:
+                # All selected outputs are already at non-zero; nothing left to do.
+                _mute_pending = None
+                _mute_snapshot.clear()
+                send_json(handler, 200, {"ok": True, "muted": False})
+                return
 
             if not succeeded:
                 send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})

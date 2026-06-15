@@ -828,14 +828,11 @@ configure_cloud_init() {
 permissions_pass() {
   info "Setting ownership and permissions"
 
-  chown root:root "${INSTALL_DIR}"
+  # Reclaim the entire application tree as root:root.  Existing installations
+  # may have subdirectories (nginx/, images/, monitor/, venv/) still owned by
+  # the service account from before WP3; a recursive pass fixes them all.
+  chown -R root:root "${INSTALL_DIR}"
   chmod 0755 "${INSTALL_DIR}"
-  # Secure the venv: root-owned so the service account cannot replace installed packages.
-  # The installer (running as root) creates and updates the venv, so no service-account
-  # write access is needed at runtime.
-  if [[ -d "${INSTALL_DIR}/venv" ]]; then
-    chown -R root:root "${INSTALL_DIR}/venv"
-  fi
   chown -R autostream:autostream "${APP_LOG_DIR}"
   chmod 0755 "${APP_LOG_DIR}"
 
