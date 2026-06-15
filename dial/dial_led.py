@@ -1,4 +1,4 @@
-"""dial_led.py — Single LED driver (DR-6).
+"""dial_led.py — Single LED driver for the dial activity indicator.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -31,7 +31,7 @@ class DialLED:
             self._led.off()
 
     def flash_clamped(self) -> None:
-        """Two-cycle blink to indicate boundary volume (DR-6)."""
+        """Two-cycle blink to indicate the volume has reached its boundary (0 or 100)."""
         if not self._led:
             return
         threading.Thread(target=self._blink, daemon=True).start()

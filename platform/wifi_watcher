@@ -936,15 +936,6 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
 
 # ** WEB APP **
 
-@app.before_request
-def touch_ap_timer():
-    """No-op placeholder.
-
-    AP mode lifetime is fixed (AP_MAX_DURATION) and is not extended by web activity.
-    Kept to avoid changing the Flask routing behaviour elsewhere.
-    """
-    return
-
 def render_setup_page(error_code: str = "") -> str:
     """Return the HTML for the WiFi setup page (styled like autostream_webui.py),
     while trying hard to avoid iOS credential-save prompts.

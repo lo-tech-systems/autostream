@@ -2,7 +2,7 @@
 
 All network I/O runs in a single background worker thread.  Encoder callbacks
 call enqueue_delta() and button press callbacks call enqueue_mute_toggle();
-both return immediately (DR-2 — GPIO callbacks must never block).
+both return immediately so GPIO interrupt callbacks are never blocked by network I/O.
 
 Rapid encoder events are coalesced: adjacent delta events in the queue are
 summed before dispatch so a burst of detents produces one HTTP round-trip.

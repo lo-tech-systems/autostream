@@ -190,7 +190,7 @@ def run_admin_cmd(
     """Run autostream_admin via sudo (non-interactive).
 
     This assumes a tight sudoers rule for the web user, and that the helper is
-    installed at AUTOSTREAM_ADMIN_BIN (default /usr/local/sbin/autostream_admin).
+    installed at AUTOSTREAM_ADMIN_BIN (default /usr/local/libexec/autostream/autostream_admin).
     """
     cmd = ["sudo", "-n", AUTOSTREAM_ADMIN_BIN, *args]
     # For logs, avoid leaking the full filesystem path if you prefer;

@@ -1,8 +1,8 @@
-"""autostream_webui.py
+"""autostream_webui_assets.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-Web assets (e.g. CSS) to support web front-end for autostrea
+Web assets (e.g. CSS) to support the autostream web front-end.
 """
 
 
