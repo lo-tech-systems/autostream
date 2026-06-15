@@ -140,6 +140,18 @@ def _on_appliance_add(appliance_id: str, sighting: ApplianceSighting) -> None:
         logging.info("appliance peer found: %s (%s)", sighting.hostname, appliance_id)
 
 
+_peer_removal_callbacks: list = []
+
+
+def register_peer_removal_callback(fn) -> None:
+    """Register fn(appliance_id: str) to call on final peer removal.
+
+    Used by the gateway to hook evict_gateway_token without creating a
+    circular import (gateway → appliances, never appliances → gateway).
+    """
+    _peer_removal_callbacks.append(fn)
+
+
 def _on_appliance_remove(appliance_id: str, sighting: Optional[ApplianceSighting]) -> None:
     # Called only when the browser's last five-tuple for appliance_id is gone.
     # Clean up ALL _svc_info entries for this id — including any conflict-orphan entries
@@ -153,6 +165,11 @@ def _on_appliance_remove(appliance_id: str, sighting: Optional[ApplianceSighting
         _conflict_ids.discard(appliance_id)
     if sighting is not None and sighting.ip:
         evict_session_for_ip(sighting.ip)
+    for fn in _peer_removal_callbacks:
+        try:
+            fn(appliance_id)
+        except Exception:
+            logging.debug("peer_removal_callback raised", exc_info=True)
     snap = _browser.get_snapshot()
     if not snap:
         hostname = sighting.hostname if sighting is not None else appliance_id

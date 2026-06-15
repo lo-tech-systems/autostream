@@ -271,6 +271,21 @@ def build_appliance_selector_html(
     current_id:   the currently selected appliance ID
     current_page: 'home' or 'equaliser' — determines the navigation target for each option.
     """
+    if not current_id:
+        # Appliance identity unavailable — render a static, non-interactive hostname
+        # display so the selector button cannot be activated without a valid bound ID.
+        bound_hostname = "autostream"
+        for a in appliances:
+            if a.get("is_bound"):
+                bound_hostname = str(a.get("hostname") or "").strip() or "autostream"
+                break
+        return (
+            f'<span class="appliance-selector-btn"'
+            f' style="pointer-events:none;cursor:default"'
+            f' aria-label="{html.escape(bound_hostname)}">'
+            f'{html.escape(bound_hostname)}</span>'
+        )
+
     # Resolve display name for the trigger button
     current_name = "autostream"
     for a in appliances:

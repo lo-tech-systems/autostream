@@ -782,11 +782,16 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
         """Periodically reconcile the _autostream._tcp service file (every 60 s)."""
         from autostream_appliances import reconcile_appliance_announcement
         from autostream_config import load_config, parse_config
+        from autostream_federation import sweep_sessions
         from autostream_webui_common import get_app_version
         while not stop_flag.is_set():
             stop_flag.wait(60)
             if stop_flag.is_set():
                 break
+            try:
+                sweep_sessions()
+            except Exception:
+                logging.debug("sweep_sessions: error", exc_info=True)
             try:
                 cfg = parse_config(load_config(STATE.config_path))
                 reconcile_appliance_announcement(

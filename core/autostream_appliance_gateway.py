@@ -42,8 +42,10 @@ from autostream_appliances import (
     get_appliance_sighting,
     get_conflict_ids,
     grace_remaining_ms,
+    register_peer_removal_callback,
     scanner_ready,
 )
+from autostream_federation import EXPIRY_SECONDS as _FED_EXPIRY_SECONDS, FEDERATION_VERSION as _FED_VERSION
 from autostream_config import DEFAULT_AIRPLAY_MODE, parse_config
 from autostream_core import get_live_output_eq_status
 from autostream_player_service import config_airplay_mode_to_backend
@@ -186,8 +188,8 @@ def _acquire_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Opti
     if (
         not isinstance(token, str) or not token
         or token_type != "Bearer"
-        or not isinstance(expires_in, int) or isinstance(expires_in, bool) or expires_in <= 0
-        or not isinstance(fed_version, int) or isinstance(fed_version, bool)
+        or expires_in != _FED_EXPIRY_SECONDS
+        or fed_version != _FED_VERSION
     ):
         logging.warning("gateway: target %s returned malformed session schema", appliance_id)
         return None, "remote_bad_response"
@@ -212,6 +214,9 @@ def evict_gateway_token(appliance_id: str) -> None:
     """Evict the cached token for *appliance_id* (call on final peer removal)."""
     with _state_lock:
         _token_cache.pop(appliance_id, None)
+
+
+register_peer_removal_callback(evict_gateway_token)
 
 
 # ---------------------------------------------------------------------------
@@ -582,19 +587,26 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
         _gateway_error_to_browser(handler, resolution)
         return
 
-    # Sanitize body — strip browser-only fields before forwarding
+    # Sanitize body — only the two documented schemas are accepted.
     sanitized: dict = {"id": out_id}
     op = str(body.get("op") or "").strip().lower()
     if op == "pin":
         sanitized["op"] = "pin"
         sanitized["pin"] = str(body.get("pin") or "")
-    else:
-        sanitized["selected"] = bool(body.get("selected", False))
+    elif op == "":
+        selected_raw = body.get("selected")
+        if not isinstance(selected_raw, bool):
+            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+            return
+        sanitized["selected"] = selected_raw
         raw_vol = body.get("volume")
         try:
             sanitized["volume"] = max(0, min(100, int(raw_vol))) if raw_vol is not None else 50
         except (ValueError, TypeError):
             sanitized["volume"] = 50
+    else:
+        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        return
 
     if resolution == "bound":
         try:

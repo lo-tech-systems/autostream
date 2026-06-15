@@ -142,8 +142,10 @@ Authorization: Bearer <token>
 | `POST` | `/api/federation/v1/equaliser/reset` | Zero all EQ fields |
 | `GET` | `/api/federation/v1/equaliser/status` | Read live auto-trim state |
 
-All responses include `"federation_version": 1`. The gateway rejects responses where
-`federation_version` is absent, not an integer, or not equal to 1.
+The **session** response (`POST /api/federation/v1/session`) includes `"federation_version": 1`
+and `"expires_in": 600`. The gateway validates that both values match these exact constants
+and rejects the response (returning `remote_bad_response`) if they do not. Other federation
+endpoints do not include `federation_version` in their responses.
 
 ### Error codes returned by the target
 
