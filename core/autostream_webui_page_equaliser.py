@@ -20,14 +20,47 @@ import json
 import math
 from typing import Optional
 
+from autostream_appliances import get_all_appliances
 from autostream_config import parse_config
 from autostream_core import OUTPUT_PEQ_BANDS
+from autostream_rpi import get_appliance_id
+from autostream_sysutils import get_system_hostname
+from autostream_webui_assets import APPLIANCE_SELECTOR_CSS
 from autostream_webui_common import (
+    build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
     locked_load_config,
 )
 from autostream_webui_state import WebUIState
+
+
+def _build_eq_appliances_for_selector() -> list:
+    """Return the bound-first appliance list for the equaliser selector widget."""
+    local_id = get_appliance_id() or ""
+    hostname = str(get_system_hostname() or "").strip()
+    if hostname.lower().endswith(".local"):
+        hostname = hostname[:-6]
+    bound = {
+        "id": local_id,
+        "hostname": hostname.strip() or "autostream",
+        "is_bound": True,
+        "home_path": "/",
+        "equaliser_path": "/equaliser",
+    }
+    peers = get_all_appliances()
+    result = [bound]
+    for s in peers:
+        if s.id == local_id:
+            continue
+        result.append({
+            "id": s.id,
+            "hostname": s.hostname or "autostream",
+            "is_bound": False,
+            "home_path": f"/a/{s.id}/",
+            "equaliser_path": f"/a/{s.id}/equaliser",
+        })
+    return result
 
 
 # -----------------------------------------------------------------------------
@@ -66,7 +99,8 @@ def _eq_band_config_js() -> str:
     UI state without a round-trip.
     """
     bands = [
-        {"key": b["key"], "type": b["type"], "freq_hz": b["freq_hz"], "q": b["q"]}
+        {"key": b["key"], "type": b["type"], "freq_hz": b["freq_hz"], "q": b["q"],
+         "label": b.get("label", "")}
         for b in OUTPUT_PEQ_BANDS
     ]
     return f"var _EQ_BANDS = {json.dumps(bands)};\n"
@@ -130,18 +164,19 @@ def _eq_curve_html() -> str:
 # HTML helpers
 # -----------------------------------------------------------------------------
 
-def _eq_cards_html(output_eq) -> str:
+def _eq_cards_html(output_eq, selector_html: str = "") -> str:
     """Render the page header, Equaliser band card, and Gain card."""
     gain_db = float(output_eq.gain_db)
     auto_trim = bool(output_eq.auto_trim_enabled)
     checked = " checked" if auto_trim else ""
 
-    # --- Page header: back button + title + Reset button ---
+    # --- Page header: title + optional appliance selector + Reset button ---
     page_header = (
         "<div class='eq-page-header'>"
         "<div style='display:flex;align-items:center;gap:0.5rem;'>"
         "<h1>Equaliser</h1>"
         "</div>"
+        f"{selector_html}"
         "<button class='pill-btn small' onclick='resetEq()'>Reset</button>"
         "</div>"
     )
@@ -421,7 +456,81 @@ document.addEventListener('DOMContentLoaded', function() {
   _pollTrimStatus();
   setInterval(_pollTrimStatus, 2000);
   _drawEqCurve();
+  initApplianceSelector();
+  refreshApplianceSelector();
+  setInterval(function(){if(!document.hidden)refreshApplianceSelector();}, 15000);
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden) refreshApplianceSelector();
+  });
 });
+
+function initApplianceSelector(){
+  var btn=document.getElementById('appliance-selector-btn');
+  var dd=document.getElementById('appliance-selector-dropdown');
+  if(!btn||!dd) return;
+  btn.addEventListener('click',function(e){
+    e.stopPropagation();
+    var open=!dd.hidden;
+    dd.hidden=open;
+    btn.setAttribute('aria-expanded',String(!open));
+    if(!open) refreshApplianceSelector();
+  });
+  document.addEventListener('click',function(){
+    if(!dd.hidden){dd.hidden=true;btn.setAttribute('aria-expanded','false');}
+  });
+  dd.addEventListener('keydown',function(e){
+    var opts=Array.from(dd.querySelectorAll('.appliance-selector-option'));
+    var idx=opts.indexOf(document.activeElement);
+    if(e.key==='ArrowDown'){e.preventDefault();var n=opts[idx+1]||opts[0];if(n)n.focus();}
+    else if(e.key==='ArrowUp'){e.preventDefault();var p=opts[idx-1]||opts[opts.length-1];if(p)p.focus();}
+    else if(e.key==='Escape'){dd.hidden=true;btn.setAttribute('aria-expanded','false');btn.focus();}
+  });
+}
+
+function updateSelectorFromAppliances(appliances,currentId,currentPage){
+  var dd=document.getElementById('appliance-selector-dropdown');
+  var nameEl=document.getElementById('appliance-selector-current');
+  if(!dd) return;
+  dd.innerHTML='';
+  var dividerAdded=false;
+  appliances.forEach(function(a){
+    var isBound=!!a.is_bound;
+    if(!isBound&&!dividerAdded){
+      dividerAdded=true;
+      var divEl=document.createElement('div');
+      divEl.className='appliance-selector-divider';
+      divEl.setAttribute('role','separator');
+      divEl.setAttribute('aria-hidden','true');
+      dd.appendChild(divEl);
+    }
+    var href=currentPage==='equaliser'
+      ?(a.equaliser_path||'/a/'+a.id+'/equaliser')
+      :(a.home_path||(isBound?'/':'/a/'+a.id+'/'));
+    var opt=document.createElement('a');
+    opt.href=href;
+    opt.setAttribute('role','option');
+    opt.setAttribute('aria-selected',a.id===currentId?'true':'false');
+    opt.className='appliance-selector-option'+(a.id===currentId?' appliance-selector-option-active':'');
+    if(isBound) opt.style.fontWeight='700';
+    opt.textContent=String(a.hostname||'autostream');
+    dd.appendChild(opt);
+  });
+  var cur=appliances.find(function(a){return a.id===currentId;});
+  if(nameEl&&cur) nameEl.textContent=String(cur.hostname||'autostream');
+}
+
+function refreshApplianceSelector(){
+  fetch('/api/appliances',{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(!data||!data.ok||!Array.isArray(data.appliances)) return;
+      var el=document.getElementById('appliance-selector');
+      var currentId=el?(el.getAttribute('data-current-id')||window.__LOCAL_ID||''):(window.__LOCAL_ID||'');
+      var currentPage=el?(el.getAttribute('data-current-page')||'equaliser'):'equaliser';
+      updateSelectorFromAppliances(data.appliances,currentId,currentPage);
+    })
+    .catch(function(){});
+}
 """
 
 
@@ -447,13 +556,22 @@ def send_equaliser_page(
     csrf_token = getattr(handler, "_csrf_token", None) or ""
     dark_mode = parsed.webui.dark_mode if parsed is not None else False
 
+    _local_appliances = _build_eq_appliances_for_selector()
+    _local_id = str(get_appliance_id() or "")
+    _selector_html = build_appliance_selector_html(_local_appliances, _local_id, "equaliser")
+
     if parsed is not None:
-        card_html = _eq_cards_html(parsed.output_eq)
+        card_html = _eq_cards_html(parsed.output_eq, selector_html=_selector_html)
     else:
         card_html = (
+            f"{_selector_html}"
             "<p style='color:var(--color-text-secondary);'>"
             "Configuration unavailable.</p>"
         )
+
+    _head_extra = (
+        f"<script>window.__LOCAL_ID='{html.escape(_local_id)}';</script>"
+    )
 
     body_html = (
         f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
@@ -468,6 +586,8 @@ def send_equaliser_page(
     page = build_page_html(
         "Equaliser",
         body_html,
+        extra_css=APPLIANCE_SELECTOR_CSS,
+        head_extra=_head_extra,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="equaliser",
@@ -479,3 +599,367 @@ def send_equaliser_page(
     handler.send_header("Content-Length", str(len(body_bytes)))
     handler.end_headers()
     handler.wfile.write(body_bytes)
+
+
+# -----------------------------------------------------------------------------
+# Remote Equaliser JS — plain string (no f-string), references window.__* vars
+# set in head_extra of send_remote_equaliser_page.
+# -----------------------------------------------------------------------------
+
+_REMOTE_EQUALISER_SCRIPT = """<script>
+var _EQ_BAND_KEYS=['peq1_db','peq2_db','peq3_db','peq4_db','peq5_db','peq6_db'];
+var _eqWriteSeq={};
+var _eqFailCount=0;
+var _eqPollTimer=null;
+var _eqPolling=true;
+var __EQ_DEFINITIVE_ERRORS=['not_found','appliance_unconfigured','appliance_conflicted','appliance_identity_unavailable'];
+var __EQ_TRANSPORT_ERRORS=['remote_timeout','remote_bad_response','appliance_offline'];
+
+function _fmtDb(v,decimals){var s=v.toFixed(decimals!==undefined?decimals:0);return(v>0?'+':'')+s+' dB';}
+
+function _eqRedirectWithFlash(msg){window.location.href='/?msg='+encodeURIComponent('error:'+msg);}
+
+function _eqHandleError(error){
+  var hostname=window.__REMOTE_HOSTNAME||'autostream';
+  if(__EQ_DEFINITIVE_ERRORS.indexOf(error)>=0){
+    var msgs={
+      'not_found':'The selected appliance address is invalid. Returned to this appliance.',
+      'appliance_unconfigured':hostname+' is not ready for remote control. Returned to this appliance.',
+      'appliance_conflicted':hostname+' has a network identity conflict and cannot be selected safely. Returned to this appliance.',
+      'appliance_identity_unavailable':hostname+' cannot currently provide multi-appliance access. Returned to this appliance.'
+    };
+    _eqRedirectWithFlash(msgs[error]||(hostname+' is unavailable. Returned to this appliance.'));
+    return true;
+  }
+  if(__EQ_TRANSPORT_ERRORS.indexOf(error)>=0){
+    _eqFailCount++;
+    if(_eqFailCount>=3){_eqRedirectWithFlash(hostname+' is unavailable. Returned to this appliance.');return true;}
+  }
+  return false;
+}
+
+function _saveEqField(field,value){
+  if(!_eqWriteSeq[field])_eqWriteSeq[field]=0;
+  var seq=++_eqWriteSeq[field];
+  fetch(window.__SAVE_URL,{
+    method:'POST',credentials:'same-origin',
+    signal:AbortSignal.timeout(5000),
+    headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
+    body:JSON.stringify({field:field,value:value})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(_eqWriteSeq[field]!==seq)return;
+    if(!d||!d.ok){var err=(d&&d.error)||'remote_bad_response';_eqHandleError(err);}
+    else{_eqFailCount=0;}
+  }).catch(function(e){
+    if(_eqWriteSeq[field]!==seq)return;
+    _eqFailCount++;
+    if(_eqFailCount>=3)_eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+  });
+}
+
+function syncOutputGain(value){
+  var v=parseFloat(value);
+  var el=document.getElementById('output_gain_db_val');
+  if(el)el.textContent=_fmtDb(v,1);
+  _saveEqField('gain_db',v);
+}
+
+function syncOutputPeq(key,value){
+  var v=parseInt(value,10);
+  var el=document.getElementById(key+'_val');
+  if(el)el.textContent=_fmtDb(v,0);
+  _saveEqField(key,v);
+  if(typeof _drawEqCurve==='function')_drawEqCurve();
+}
+
+function setOutputAutoTrim(enabled){
+  _saveEqField('auto_trim_enabled',enabled?'true':'false');
+  var el=document.getElementById('output_trim_status');
+  if(!el)return;
+  if(!enabled){el.style.display='none';el.textContent='';}
+  else{el.style.display='';el.textContent='Calculating…';_pollTrimStatus();}
+}
+
+function resetEq(){
+  fetch(window.__RESET_URL,{
+    method:'POST',credentials:'same-origin',
+    signal:AbortSignal.timeout(5000),
+    headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
+    body:'{}'
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.ok){var err=(d&&d.error)||'remote_bad_response';_eqHandleError(err);return;}
+    _eqFailCount=0;
+    _EQ_BAND_KEYS.forEach(function(key){
+      var sl=document.getElementById(key);if(sl)sl.value=0;
+      var vl=document.getElementById(key+'_val');if(vl)vl.textContent='0 dB';
+    });
+    var gs=document.getElementById('output_gain_db');if(gs)gs.value=0;
+    var gv=document.getElementById('output_gain_db_val');if(gv)gv.textContent='0.0 dB';
+    if(typeof _drawEqCurve==='function')_drawEqCurve();
+  }).catch(function(){
+    _eqFailCount++;
+    if(_eqFailCount>=3)_eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+  });
+}
+
+function _pollTrimStatus(){
+  fetch(window.__STATUS_URL,{credentials:'same-origin',signal:AbortSignal.timeout(5000)})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d||!d.ok){
+        var err=(d&&d.error)||'remote_bad_response';
+        if(err!=='remote_backoff')_eqHandleError(err);
+        return;
+      }
+      _eqFailCount=0;
+      var el=document.getElementById('output_trim_status');if(!el)return;
+      var cb=document.getElementById('output_auto_trim');
+      if(!cb||!cb.checked){el.style.display='none';el.textContent='';return;}
+      el.style.display='';
+      var db=parseFloat(d.output_auto_trim_db);
+      el.textContent='Auto-trim: '+(Number.isFinite(db)?db.toFixed(1)+' dB applied':'unavailable');
+    })
+    .catch(function(){
+      _eqFailCount++;
+      if(_eqFailCount>=3)_eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+    });
+}
+
+function _scheduleEqPoll(){
+  if(_eqPollTimer)clearTimeout(_eqPollTimer);
+  _eqPollTimer=setTimeout(function(){
+    if(!_eqPolling||document.hidden)return;
+    _pollTrimStatus();
+    _scheduleEqPoll();
+  },3000);
+}
+
+function renderEqFromState(data){
+  var bandContainer=document.getElementById('eq-bands-container');
+  var gainSection=document.getElementById('eq-gain-section');
+  var loading=document.getElementById('eq-loading-msg');
+  var resetBtn=document.getElementById('eq-reset-btn');
+  if(loading)loading.hidden=true;
+  if(resetBtn)resetBtn.disabled=false;
+  if(bandContainer&&!bandContainer.querySelector('input')&&typeof _EQ_BANDS!=='undefined'){
+    bandContainer.innerHTML='';
+    _EQ_BANDS.forEach(function(b){
+      var key=b.key;var label=b.label||(b.freq_hz+' Hz');
+      var val=data[key]!==undefined?parseFloat(data[key]):0;
+      var sign=val>0?'+':'';
+      var col=document.createElement('div');col.className='eq-band';
+      col.innerHTML='<span class="eq-band-freq">'+label+'</span>'+
+        '<input type="range" class="eq-band-slider" min="-12" max="12" step="1"'+
+        ' id="'+key+'" value="'+val.toFixed(0)+'"'+
+        ' oninput="syncOutputPeq(\''+key+'\',this.value)">'+
+        '<span class="eq-band-val" id="'+key+'_val">'+sign+val.toFixed(0)+' dB</span>';
+      bandContainer.appendChild(col);
+    });
+  }
+  if(gainSection&&!gainSection.querySelector('input')){
+    var gainDb=data.gain_db!==undefined?parseFloat(data.gain_db):0;
+    var autoTrim=!!data.auto_trim_enabled;
+    var gsign=gainDb>0?'+':'';
+    gainSection.innerHTML=
+      '<div class="eq-section-title">Gain</div>'+
+      '<div class="eq-auto-trim-row">'+
+      '<div class="eq-auto-trim-labels">'+
+      '<div class="eq-auto-trim-title">Automatically trim gain</div>'+
+      '<div class="eq-auto-trim-subtitle">Prevent clipping by adjusting output level automatically</div>'+
+      '<div class="eq-auto-trim-subtitle" id="output_trim_status"'+(autoTrim?'':' style="display:none;"')+'>'+
+      (autoTrim?'Calculating…':'')+
+      '</div></div>'+
+      '<label class="output-toggle" style="flex-shrink:0;margin-top:2px;">'+
+      '<input type="checkbox" id="output_auto_trim"'+(autoTrim?' checked':'')+
+      ' onchange="setOutputAutoTrim(this.checked)"><span class="switch"></span></label>'+
+      '</div>'+
+      '<div class="eq-gain-row">'+
+      '<span class="eq-gain-label">Output gain</span>'+
+      '<span class="eq-gain-value" id="output_gain_db_val">'+gsign+gainDb.toFixed(1)+' dB</span>'+
+      '</div>'+
+      '<input type="range" min="-12" max="12" step="0.5" id="output_gain_db"'+
+      ' value="'+gainDb.toFixed(1)+'" oninput="syncOutputGain(this.value)">'+
+      '<div class="eq-gain-ticks"><span>-12 dB</span><span>0 dB</span><span>+12 dB</span></div>';
+  }
+  if(typeof _drawEqCurve==='function')_drawEqCurve();
+}
+
+async function _loadInitialEqState(){
+  try{
+    var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});
+    var data=await r.json();
+    if(!data||!data.ok){var err=(data&&data.error)||'remote_bad_response';_eqHandleError(err);return;}
+    _eqFailCount=0;
+    renderEqFromState(data);
+    var cb=document.getElementById('output_auto_trim');
+    if(cb&&cb.checked)_pollTrimStatus();
+    _scheduleEqPoll();
+  }catch(e){
+    _eqFailCount++;
+    _eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+  }
+}
+
+function initApplianceSelector(){
+  var btn=document.getElementById('appliance-selector-btn');
+  var dd=document.getElementById('appliance-selector-dropdown');
+  if(!btn||!dd)return;
+  btn.addEventListener('click',function(e){
+    e.stopPropagation();var open=!dd.hidden;dd.hidden=open;
+    btn.setAttribute('aria-expanded',String(!open));
+    if(!open)refreshApplianceSelector();
+  });
+  document.addEventListener('click',function(){
+    if(!dd.hidden){dd.hidden=true;btn.setAttribute('aria-expanded','false');}
+  });
+  dd.addEventListener('keydown',function(e){
+    var opts=Array.from(dd.querySelectorAll('.appliance-selector-option'));
+    var idx=opts.indexOf(document.activeElement);
+    if(e.key==='ArrowDown'){e.preventDefault();var n=opts[idx+1]||opts[0];if(n)n.focus();}
+    else if(e.key==='ArrowUp'){e.preventDefault();var p=opts[idx-1]||opts[opts.length-1];if(p)p.focus();}
+    else if(e.key==='Escape'){dd.hidden=true;btn.setAttribute('aria-expanded','false');btn.focus();}
+  });
+}
+function updateSelectorFromAppliances(appliances,currentId,currentPage){
+  var dd=document.getElementById('appliance-selector-dropdown');
+  var nameEl=document.getElementById('appliance-selector-current');
+  if(!dd)return;dd.innerHTML='';var dividerAdded=false;
+  appliances.forEach(function(a){
+    var isBound=!!a.is_bound;
+    if(!isBound&&!dividerAdded){dividerAdded=true;var divEl=document.createElement('div');divEl.className='appliance-selector-divider';divEl.setAttribute('role','separator');divEl.setAttribute('aria-hidden','true');dd.appendChild(divEl);}
+    var href=currentPage==='equaliser'?(a.equaliser_path||'/a/'+a.id+'/equaliser'):(a.home_path||(isBound?'/':'/a/'+a.id+'/'));
+    var opt=document.createElement('a');opt.href=href;opt.setAttribute('role','option');
+    opt.setAttribute('aria-selected',a.id===currentId?'true':'false');
+    opt.className='appliance-selector-option'+(a.id===currentId?' appliance-selector-option-active':'');
+    if(isBound)opt.style.fontWeight='700';opt.textContent=String(a.hostname||'autostream');dd.appendChild(opt);
+  });
+  var cur=appliances.find(function(a){return a.id===currentId;});
+  if(nameEl&&cur)nameEl.textContent=String(cur.hostname||'autostream');
+}
+function refreshApplianceSelector(){
+  fetch('/api/appliances',{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(!data||!data.ok||!Array.isArray(data.appliances))return;
+      var el=document.getElementById('appliance-selector');
+      var currentId=el?(el.getAttribute('data-current-id')||window.__REMOTE_AID||''):(window.__REMOTE_AID||'');
+      var currentPage=el?(el.getAttribute('data-current-page')||'equaliser'):'equaliser';
+      updateSelectorFromAppliances(data.appliances,currentId,currentPage);
+    }).catch(function(){});
+}
+window.addEventListener('DOMContentLoaded',function(){
+  initApplianceSelector();refreshApplianceSelector();
+  setInterval(function(){if(!document.hidden)refreshApplianceSelector();},15000);
+  document.addEventListener('visibilitychange',function(){
+    if(!document.hidden){_eqPolling=true;_eqFailCount=0;refreshApplianceSelector();}
+    else{_eqPolling=false;if(_eqPollTimer){clearTimeout(_eqPollTimer);_eqPollTimer=null;}}
+  });
+  _loadInitialEqState();
+});
+</script>"""
+
+
+# -----------------------------------------------------------------------------
+# Remote Equaliser page renderer
+# -----------------------------------------------------------------------------
+
+def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) -> None:
+    """Render the remote Equaliser shell for a remote appliance.
+
+    Serves a client-side loading shell.  JavaScript fetches
+    /api/appliances/<id>/equaliser on DOMContentLoaded, renders the sliders,
+    then polls /api/appliances/<id>/equaliser/status every 3 seconds.
+    Writes go to /api/appliances/<id>/equaliser/config and
+    /api/appliances/<id>/equaliser/reset via the gateway.
+    After 3 consecutive transport failures the browser returns to /.
+    Definitive errors return immediately to /.
+    """
+    try:
+        cfg = locked_load_config(state.config_path)
+        parsed = parse_config(cfg)
+    except Exception:
+        try:
+            handler.send_error(500, "Configuration unavailable")
+        except Exception:
+            pass
+        return
+
+    csrf_token = getattr(handler, "_csrf_token", None) or ""
+    dark_mode = parsed.webui.dark_mode
+
+    appliances = _build_eq_appliances_for_selector()
+    _local_id = str(get_appliance_id() or "")
+
+    _remote_hostname = "autostream"
+    for a in appliances:
+        if a.get("id") == appliance_id:
+            _remote_hostname = str(a.get("hostname") or "autostream")
+            break
+
+    poll_url = f"/api/appliances/{appliance_id}/equaliser"
+    save_url = f"/api/appliances/{appliance_id}/equaliser/config"
+    reset_url = f"/api/appliances/{appliance_id}/equaliser/reset"
+    status_url = f"/api/appliances/{appliance_id}/equaliser/status"
+
+    _selector_html = build_appliance_selector_html(appliances, appliance_id, "equaliser")
+
+    _head_extra = (
+        f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
+        f"<script>"
+        f"window.__CSRF='{html.escape(csrf_token)}';"
+        f"window.__POLL_URL='{html.escape(poll_url)}';"
+        f"window.__SAVE_URL='{html.escape(save_url)}';"
+        f"window.__RESET_URL='{html.escape(reset_url)}';"
+        f"window.__STATUS_URL='{html.escape(status_url)}';"
+        f"window.__REMOTE_AID='{html.escape(appliance_id)}';"
+        f"window.__REMOTE_HOSTNAME='{html.escape(_remote_hostname)}';"
+        f"window.__LOCAL_ID='{html.escape(_local_id)}';"
+        f"</script>\n"
+        + _REMOTE_EQUALISER_SCRIPT
+    )
+
+    page_header = (
+        "<div class='eq-page-header'>"
+        "<div style='display:flex;align-items:center;gap:0.5rem;'>"
+        "<h1>Equaliser</h1>"
+        "</div>"
+        f"{_selector_html}"
+        "<button class='pill-btn small' disabled id='eq-reset-btn'"
+        " onclick='resetEq()'>Reset</button>"
+        "</div>"
+    )
+
+    body_html = (
+        f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
+        + page_header
+        + "<div class='eq-section'>"
+        + _eq_curve_html()
+        + "<div class='eq-bands-wrap'>"
+        + "<div class='eq-bands-row' id='eq-bands-container'></div>"
+        + "</div></div>"
+        + "<div class='eq-section' id='eq-gain-section'></div>"
+        + "<p id='eq-loading-msg' style='text-align:center;"
+        "color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>Connecting…</p>"
+        + f"<script>{_eq_band_config_js()}{_EQUALISER_CURVE_JS}</script>"
+    )
+
+    page = build_page_html(
+        f"Equaliser — {html.escape(_remote_hostname)}",
+        body_html,
+        extra_css=APPLIANCE_SELECTOR_CSS,
+        head_extra=_head_extra,
+        active_tab="equaliser",
+        dark_mode=dark_mode,
+        remote_id=appliance_id,
+    )
+    body_bytes = page.encode("utf-8")
+    try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body_bytes)))
+        handler.end_headers()
+        handler.wfile.write(body_bytes)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    except Exception:
+        pass

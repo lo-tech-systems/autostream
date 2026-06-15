@@ -93,8 +93,10 @@ function renderHomeState(data){
 var __remoteFailCount=0;var __remotePolling=true;var __remotePollTimer=null;
 var __DEFINITIVE_ERRORS=['not_found','appliance_unconfigured','appliance_conflicted','appliance_identity_unavailable'];
 var __TRANSPORT_ERRORS=['remote_timeout','remote_bad_response','appliance_offline'];
+function __homeRedirectWithFlash(msg){window.location.href='/?msg='+encodeURIComponent('error:'+msg);}
+function __homeHandleDefinitiveError(err){var h=window.__REMOTE_HOSTNAME||'autostream';var msgs={'not_found':'The selected appliance address is invalid. Returned to this appliance.','appliance_unconfigured':h+' is not ready for remote control. Returned to this appliance.','appliance_conflicted':h+' has a network identity conflict and cannot be selected safely. Returned to this appliance.','appliance_identity_unavailable':h+' cannot currently provide multi-appliance access. Returned to this appliance.'};__homeRedirectWithFlash(msgs[err]||(h+' is unavailable. Returned to this appliance.'));}
 function scheduleRemotePoll(){if(__remotePollTimer)clearTimeout(__remotePollTimer);__remotePollTimer=setTimeout(pollHomeState,3000);}
-async function pollHomeState(){if(!__remotePolling)return;var data=null;try{var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});data=await r.json();}catch(e){__remoteFailCount++;if(__remoteFailCount>=3){window.location.href='/';return;}scheduleRemotePoll();return;}if(!data||!data.ok){var err=(data&&data.error)||'remote_timeout';if(__DEFINITIVE_ERRORS.indexOf(err)>=0){window.location.href='/';return;}if(__TRANSPORT_ERRORS.indexOf(err)>=0){__remoteFailCount++;if(__remoteFailCount>=3){window.location.href='/';return;}}scheduleRemotePoll();return;}__remoteFailCount=0;renderHomeState(data);scheduleRemotePoll();}
+async function pollHomeState(){if(!__remotePolling)return;var data=null;try{var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});data=await r.json();}catch(e){__remoteFailCount++;if(__remoteFailCount>=3){__homeRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');return;}scheduleRemotePoll();return;}if(!data||!data.ok){var err=(data&&data.error)||'remote_timeout';if(__DEFINITIVE_ERRORS.indexOf(err)>=0){__homeHandleDefinitiveError(err);return;}if(__TRANSPORT_ERRORS.indexOf(err)>=0){__remoteFailCount++;if(__remoteFailCount>=3){__homeRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');return;}}scheduleRemotePoll();return;}__remoteFailCount=0;renderHomeState(data);scheduleRemotePoll();}
 function initApplianceSelector(){var btn=document.getElementById('appliance-selector-btn');var dd=document.getElementById('appliance-selector-dropdown');if(!btn||!dd)return;btn.addEventListener('click',function(e){e.stopPropagation();var open=!dd.hidden;dd.hidden=open;btn.setAttribute('aria-expanded',String(!open));if(!open)refreshApplianceSelector();});document.addEventListener('click',function(){if(!dd.hidden){dd.hidden=true;btn.setAttribute('aria-expanded','false');}});dd.addEventListener('keydown',function(e){var opts=Array.from(dd.querySelectorAll('.appliance-selector-option'));var idx=opts.indexOf(document.activeElement);if(e.key==='ArrowDown'){e.preventDefault();var n=opts[idx+1]||opts[0];if(n)n.focus();}else if(e.key==='ArrowUp'){e.preventDefault();var p=opts[idx-1]||opts[opts.length-1];if(p)p.focus();}else if(e.key==='Escape'){dd.hidden=true;btn.setAttribute('aria-expanded','false');btn.focus();}});}
 function updateSelectorFromAppliances(appliances,currentId,currentPage){var dd=document.getElementById('appliance-selector-dropdown');var nameEl=document.getElementById('appliance-selector-current');if(!dd)return;dd.innerHTML='';var dividerAdded=false;appliances.forEach(function(a){var isBound=!!a.is_bound;if(!isBound&&!dividerAdded){dividerAdded=true;var divEl=document.createElement('div');divEl.className='appliance-selector-divider';divEl.setAttribute('role','separator');divEl.setAttribute('aria-hidden','true');dd.appendChild(divEl);}var href=currentPage==='equaliser'?(a.equaliser_path||'/a/'+a.id+'/equaliser'):(a.home_path||(isBound?'/':'/a/'+a.id+'/'));var opt=document.createElement('a');opt.href=href;opt.setAttribute('role','option');opt.setAttribute('aria-selected',a.id===currentId?'true':'false');opt.className='appliance-selector-option'+(a.id===currentId?' appliance-selector-option-active':'');if(isBound)opt.style.fontWeight='700';opt.textContent=String(a.hostname||'autostream');dd.appendChild(opt);});var cur=appliances.find(function(a){return a.id===currentId;});if(nameEl&&cur)nameEl.textContent=String(cur.hostname||'autostream');}
 function refreshApplianceSelector(){fetch('/api/appliances',{cache:'no-store'}).then(function(r){return r.json();}).then(function(data){if(!data||!data.ok||!Array.isArray(data.appliances))return;var el=document.getElementById('appliance-selector');var currentId=el?(el.getAttribute('data-current-id')||window.__REMOTE_AID||''):(window.__REMOTE_AID||'');var currentPage=el?(el.getAttribute('data-current-page')||'home'):'home';updateSelectorFromAppliances(data.appliances,currentId,currentPage);}).catch(function(){});}
@@ -1223,6 +1225,13 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
 
     _selector_html = build_appliance_selector_html(appliances, appliance_id, "home")
 
+    # Resolve remote hostname for page title and JS failure messages
+    _remote_hostname = "autostream"
+    for a in appliances:
+        if a.get("id") == appliance_id:
+            _remote_hostname = str(a.get("hostname") or "autostream")
+            break
+
     _warn_style_base = (
         "padding:0.85rem 0.9rem;border-radius:12px;"
         "border:1px solid var(--color-status-danger);"
@@ -1249,6 +1258,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"window.__REMOTE_AID='{html.escape(appliance_id)}';"
+        f"window.__REMOTE_HOSTNAME='{html.escape(_remote_hostname)}';"
         f"window.__POLL_URL='{html.escape(poll_url)}';"
         f"window.__OUTPUT_URL='{html.escape(output_url)}';"
         f"</script>\n"
@@ -1269,13 +1279,6 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     </div>
   </div>
 </div>"""
-
-    # Find hostname for page title (best-effort from appliances list)
-    _remote_hostname = "autostream"
-    for a in appliances:
-        if a.get("id") == appliance_id:
-            _remote_hostname = str(a.get("hostname") or "autostream")
-            break
 
     _np_icon_svg = ICON_LINE_LEVEL
 

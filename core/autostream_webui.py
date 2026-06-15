@@ -80,7 +80,7 @@ from autostream_webui_dials import (
 )
 from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page
-from autostream_webui_page_equaliser import send_equaliser_page
+from autostream_webui_page_equaliser import send_equaliser_page, send_remote_equaliser_page
 from autostream_webui_page_airplay import send_airplay_page, send_remote_home_page
 from autostream_webui_page_logs import handle_logs_download, handle_logs_post, send_logs_page
 from autostream_webui_page_owntone import (
@@ -402,6 +402,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         qs = parse_qs(query)
         msg = (qs.get("msg") or [""])[0]
         flash_type = "success"
+        # Parse type prefix from ?msg= parameter (mirrors flash cookie format for JS-side redirects).
+        if msg:
+            _colon = msg.find(":")
+            if _colon > 0 and msg[:_colon] in ("error", "warning"):
+                flash_type = msg[:_colon]
+                msg = msg[_colon + 1:]
 
         # One-shot flash message (cookie-based). This avoids "sticky" URLs in iOS A2HS/PWA.
         # Priority: explicit ?msg=... wins; otherwise consume the cookie once.
@@ -488,16 +494,20 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             tail = path[len(_REMOTE_PAGE_PREFIX):]  # e.g. "aabbccdd1122334455aa" or "aabbccdd1122334455aa/equaliser"
             parts = tail.split("/", 1)
             aid = parts[0]
+            sub = parts[1] if len(parts) > 1 else ""
             if not _APPLIANCE_ID_RE.match(aid):
                 self.send_error(404, "Not found")
             else:
                 local_id = get_appliance_id(STATE.config_path) or ""
                 if aid == local_id:
                     # Canonical redirect for bound appliance
+                    location = "/equaliser" if sub == "equaliser" else "/"
                     self.send_response(302)
-                    self.send_header("Location", "/")
+                    self.send_header("Location", location)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
+                elif sub == "equaliser":
+                    send_remote_equaliser_page(self, STATE, aid)
                 else:
                     send_remote_home_page(self, STATE, aid)
         elif path.startswith("/api/dial/configure/"):
