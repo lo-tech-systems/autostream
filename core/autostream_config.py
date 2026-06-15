@@ -44,7 +44,13 @@ def normalize_stylus_life_hours(
     value: object,
     default: int = DEFAULT_STYLUS_LIFE_HOURS,
 ) -> int:
-    """Return a valid stylus-life value in hours, or 0 for tracking disabled."""
+    """Return a stylus-life value in hours, or 0 if tracking is disabled.
+
+    Zero disables tracking.  Any positive integer is accepted — values outside
+    VALID_STYLUS_LIFE_HOURS (the set the UI offers) are preserved as-is so that
+    a custom lifetime set via direct config editing is not discarded.  Negative
+    values and non-numeric strings fall back to *default*.
+    """
     try:
         hours = int(str(value).strip())
     except Exception:

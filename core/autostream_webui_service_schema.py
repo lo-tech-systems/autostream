@@ -37,9 +37,12 @@ from autostream_playback_stats import InputPlaybackSnapshot, format_hours
 class _ServiceItem:
     """Metadata for one maintenance tracking dimension.
 
-    Drives both the page selector widgets and the _SERVICE_FIELD_MAP generated
-    in autostream_webui_api.  Add a new item here and it appears everywhere
-    automatically — no parallel hard-coded strings required.
+    Centralizes the labels, configuration keys, selector options, and
+    normalizers shared by the Service page and the JSON API.  Adding a new
+    maintenance type still requires coordinated changes: a new snapshot
+    attribute in PlaybackInputConfig/InputPlaybackSnapshot, page rendering
+    for the new card, API handling to read and reset it, and configuration
+    parse/normalize support.
     """
 
     key: str                             # "stylus" | "belt" | "bearing"
