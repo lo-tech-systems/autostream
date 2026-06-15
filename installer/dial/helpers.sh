@@ -88,7 +88,7 @@ with open('/etc/autostream/autostream-dial.json', 'w') as f:
     json.dump({
         "clk_gpio": 17,
         "dt_gpio":  27,
-        "sw_gpio":  None,
+        "sw_gpio":  22,
         "led_gpio": None,
         "port":     7842,
         "uuid":     uuid

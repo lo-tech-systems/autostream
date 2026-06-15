@@ -16,7 +16,7 @@ from dial_config import load_config
 from dial_http_server import ADMIN_CMD, VERSION, DialHTTPServer, _announce_self
 from dial_led import DialLED
 from dial_mdns import get_playing_targets, start_playing_browser
-from dial_volume import enqueue_delta, start_volume_worker
+from dial_volume import enqueue_delta, enqueue_mute_toggle, start_volume_worker
 
 
 def _configure_logging() -> None:
@@ -102,8 +102,11 @@ def main() -> None:
     button = None
     if setup_rotary_encoder is not None:
         encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, on_cw, on_ccw)
+    def on_press() -> None:
+        enqueue_mute_toggle()
+
     if setup_button is not None and cfg.sw_gpio is not None:
-        button = setup_button(cfg.sw_gpio, lambda: None)  # placeholder; WP6 supplies real callback
+        button = setup_button(cfg.sw_gpio, on_press)
 
     while True:
         led.set_playing() if get_playing_targets() else led.set_idle()

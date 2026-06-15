@@ -714,6 +714,10 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
 
 _volume_lock = threading.Lock()
 
+# Mute state — protected by _volume_lock
+_mute_snapshot: dict[str, int] = {}   # output_id → pre-mute volume_percent
+_mute_pending: Optional[str] = None   # "mute" | "restore" | None
+
 
 def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/volume — UUID-auth only (no session/CSRF required).
@@ -772,3 +776,109 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
         send_json(handler, 200, {"ok": True, "volume": new_master, "partial": True})
         return
     send_json(handler, 200, {"ok": True, "volume": new_master})
+
+
+def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/mute — UUID-auth only (no session/CSRF required).
+
+    Toggles mute state across all selected OwnTone outputs.  A snapshot of
+    pre-mute volumes is kept so that the restore action can return each output
+    to its original level.  The pending action is retained across partial
+    failures so that a retry press completes the interrupted operation rather
+    than toggling back too early.
+    """
+    global _mute_snapshot, _mute_pending
+
+    dial_id = json_obj.get("dial_id", "")
+    if not isinstance(dial_id, str) or not dial_id:
+        send_json(handler, 403, {})
+        return
+    if not is_dial_authorized(dial_id):
+        send_json(handler, 403, {})
+        return
+
+    try:
+        raw = locked_load_config(state.config_path)
+        parsed = parse_config(raw)
+        base_url = parsed.owntone.base_url
+        default_vol = parsed.owntone.volume_percent
+    except Exception as e:
+        logging.warning("dial mute: config load failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+
+    with _volume_lock:
+        result = list_outputs(base_url, timeout=3)
+        if not result.ok:
+            send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
+            return
+        selected = [o for o in result.outputs if o.selected]
+        if not selected:
+            send_json(handler, 200, {"ok": False, "error": "no_active_outputs"})
+            return
+
+        if _mute_pending is not None:
+            action = _mute_pending
+        elif any(o.volume_percent > 0 for o in selected):
+            action = "mute"
+        else:
+            action = "restore"
+
+        _mute_pending = action
+
+        if action == "mute":
+            targets = [o for o in selected if o.volume_percent > 0]
+            if not targets:
+                _mute_pending = None
+                send_json(handler, 200, {"ok": True, "muted": True})
+                return
+
+            for o in targets:
+                if o.id not in _mute_snapshot:
+                    _mute_snapshot[o.id] = o.volume_percent
+
+            succeeded = 0
+            failed = 0
+            for o in targets:
+                r = update_output(base_url, o.id, volume_percent=0, timeout=3)
+                if r.ok:
+                    succeeded += 1
+                else:
+                    failed += 1
+                    logging.warning("mute: update_output %s: %s", o.id, r.error)
+
+            if not succeeded:
+                send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
+                return
+
+            if failed:
+                send_json(handler, 200, {"ok": True, "muted": True, "partial": True})
+                return
+
+            _mute_pending = None
+            send_json(handler, 200, {"ok": True, "muted": True})
+
+        else:  # restore
+            succeeded = 0
+            failed = 0
+            for o in selected:
+                restore_vol = _mute_snapshot.get(o.id, default_vol)
+                r = update_output(base_url, o.id, volume_percent=restore_vol, timeout=3)
+                if r.ok:
+                    _mute_snapshot.pop(o.id, None)
+                    succeeded += 1
+                else:
+                    failed += 1
+                    logging.warning("restore: update_output %s: %s", o.id, r.error)
+
+            if not succeeded:
+                send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
+                return
+
+            if failed:
+                send_json(handler, 200, {"ok": True, "muted": False, "partial": True})
+                return
+
+            _mute_pending = None
+            _mute_snapshot.clear()
+            send_json(handler, 200, {"ok": True, "muted": False})

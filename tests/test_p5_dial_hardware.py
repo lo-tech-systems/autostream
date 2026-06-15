@@ -498,22 +498,22 @@ class TestEndToEndEventFlow:
     def test_cw_callback_enqueues_positive_delta(self):
         import dial_volume as dv
 
-        enqueued: list[int] = []
+        enqueued = []
         with patch.object(dv, "_queue") as mock_q:
             mock_q.put.side_effect = lambda x: enqueued.append(x)
             dv.enqueue_delta(5)
 
-        assert enqueued == [5]
+        assert enqueued == [("delta", 5)]
 
     def test_ccw_callback_enqueues_negative_delta(self):
         import dial_volume as dv
 
-        enqueued: list[int] = []
+        enqueued = []
         with patch.object(dv, "_queue") as mock_q:
             mock_q.put.side_effect = lambda x: enqueued.append(x)
             dv.enqueue_delta(-3)
 
-        assert enqueued == [-3]
+        assert enqueued == [("delta", -3)]
 
     def test_fan_out_triggers_led_flash_on_clamp(self):
         """_fan_out returning True must cause LED.flash_clamped() in the worker logic."""

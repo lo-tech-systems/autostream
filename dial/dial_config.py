@@ -29,7 +29,7 @@ def _normalise_dial_channel(value: object) -> str:
 class DialConfig:
     clk_gpio:       int        = 17
     dt_gpio:        int        = 27
-    sw_gpio:        int | None = None
+    sw_gpio:        int | None = 22
     led_gpio:       int | None = None
     port:           int        = 7842
     uuid:           str        = ''
@@ -70,7 +70,7 @@ def load_config() -> DialConfig:
     hw = json.loads(HW_CONFIG_PATH.read_text(encoding='utf-8'))
     cfg.clk_gpio  = hw.get('clk_gpio', cfg.clk_gpio)
     cfg.dt_gpio   = hw.get('dt_gpio',  cfg.dt_gpio)
-    cfg.sw_gpio   = hw.get('sw_gpio')
+    cfg.sw_gpio   = hw.get('sw_gpio', cfg.sw_gpio)
     cfg.led_gpio  = hw.get('led_gpio')
     cfg.port      = hw.get('port', cfg.port)
     cfg.uuid      = hw.get('uuid', '')

@@ -48,6 +48,7 @@ from autostream_webui_state import WebUIState
 from autostream_webui_api import (
     run_updater,
     send_audio_status_json,
+    send_dial_mute_post_json,
     send_dial_volume_post_json,
     send_json,
     send_output_eq_config_json,
@@ -421,9 +422,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 # Unknown content type; leave as raw body_str
                 pass
 
-        # ── UUID-auth dial volume (no session/CSRF required) ──────────────
+        # ── UUID-auth dial endpoints (no session/CSRF required) ───────────
         if path == "/api/dial/volume":
             send_dial_volume_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
+            return
+
+        if path == "/api/dial/mute":
+            send_dial_mute_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
             return
 
         # For all remaining JSON routes, a non-object top-level value is malformed.
