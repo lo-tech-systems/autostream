@@ -725,23 +725,20 @@ deploy_phase() {
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry"      "${LIBEXEC_DIR}/autostream_update_retry"      0755 root root
   install_text_linux "${AUTOSTREAM_DIR}/tools/autostream_migrate.py"             "${LIBEXEC_DIR}/autostream_migrate.py"        0755 root root
 
-  info "Setting ownership to enable autostream to manage venv"
-  chown autostream:autostream "${INSTALL_DIR}"
-
   update_progress "Updating Python packages..." 57
   info "Creating/updating Python virtual environment"
   if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
-    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache python3 -m venv --system-site-packages "${INSTALL_DIR}/venv"
+    PIP_CACHE_DIR=/tmp/pip-cache python3 -m venv --system-site-packages "${INSTALL_DIR}/venv"
   fi
-  sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache "${INSTALL_DIR}/venv/bin/pip" install -U pip
+  PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore "${INSTALL_DIR}/venv/bin/pip" install -U pip
 
   if [[ -f "${INSTALL_DIR}/requirements.lock" ]]; then
     info "Installing Python dependencies from requirements.lock (hash-checked)"
-    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache \
+    PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore \
       "${INSTALL_DIR}/venv/bin/pip" install --require-hashes -r "${INSTALL_DIR}/requirements.lock"
   else
     warn "requirements.lock not found; installing from requirements.txt (not hash-pinned)"
-    sudo -u autostream PIP_CACHE_DIR=/tmp/pip-cache \
+    PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore \
       "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
   fi
 }
@@ -833,6 +830,12 @@ permissions_pass() {
 
   chown root:root "${INSTALL_DIR}"
   chmod 0755 "${INSTALL_DIR}"
+  # Secure the venv: root-owned so the service account cannot replace installed packages.
+  # The installer (running as root) creates and updates the venv, so no service-account
+  # write access is needed at runtime.
+  if [[ -d "${INSTALL_DIR}/venv" ]]; then
+    chown -R root:root "${INSTALL_DIR}/venv"
+  fi
   chown -R autostream:autostream "${APP_LOG_DIR}"
   chmod 0755 "${APP_LOG_DIR}"
 

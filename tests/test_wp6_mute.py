@@ -283,7 +283,12 @@ class TestDialMuteAction:
 
         assert update_calls == [("o1", 70)]
 
-    def test_restore_uses_default_vol_when_no_snapshot(self):
+    def test_restore_with_empty_snapshot_is_noop_success(self):
+        """When the snapshot is empty, restore is a no-op and returns ok/unmuted.
+
+        This covers the edge case where all outputs are at 0 (action=restore) but
+        nothing was recorded in the snapshot — nothing to restore to, so succeed immediately.
+        """
         outputs = [_make_output("o1", 0)]
         update_calls = []
 
@@ -297,9 +302,14 @@ class TestDialMuteAction:
             update_calls.append((oid, volume_percent))
             return _make_update_result(True)
 
+        captured = {}
+
+        def fake_send_json(h, code, body):
+            captured.update({"code": code, "body": body})
+
         parsed = _make_parsed_config(volume_percent=35)
 
-        with patch("autostream_webui_api.send_json"), \
+        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
              patch("autostream_webui_api.locked_load_config", return_value={}), \
              patch("autostream_webui_api.parse_config", return_value=parsed), \
@@ -308,7 +318,9 @@ class TestDialMuteAction:
              patch("autostream_webui_api.update_output", side_effect=fake_update):
             send_dial_mute_post_json(MagicMock(), MagicMock(), {"dial_id": "uid"})
 
-        assert update_calls == [("o1", 35)]
+        assert update_calls == [], "no update_output call expected when snapshot is empty"
+        assert captured["body"]["ok"] is True
+        assert captured["body"]["muted"] is False
 
     def test_pending_mute_overrides_detection(self):
         # All at zero but a "mute" pending — stays mute (already complete)
@@ -407,6 +419,48 @@ class TestDialMuteFailures:
         assert "o1" not in snapshot
         assert "o2" in snapshot
         assert pending == "restore"
+
+    def test_restore_retry_skips_already_restored_outputs(self):
+        """A retry after partial restore must not overwrite already-restored volumes.
+
+        o1 succeeded in request 1 and was removed from the snapshot.
+        o2 failed. On the retry request, only o2 should be touched.
+        """
+        import autostream_webui_api as api
+        from autostream_webui_api import send_dial_mute_post_json
+
+        api._mute_snapshot.clear()
+        api._mute_snapshot.update({"o2": 30})  # o1 already gone (restored)
+        api._mute_pending = "restore"
+
+        outputs = [_make_output("o1", 0), _make_output("o2", 0)]
+        update_calls = []
+        ok_iter = iter([True])  # only o2 will be tried; it succeeds
+
+        def fake_update(base_url, output_id, volume_percent, timeout):
+            update_calls.append(output_id)
+            return _make_update_result(next(ok_iter))
+
+        captured = {}
+        parsed = _make_parsed_config()
+
+        def fake_send_json(h, code, body):
+            captured.update({"code": code, "body": body})
+
+        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.locked_load_config", return_value={}), \
+             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api.list_outputs",
+                   return_value=_make_list_result(outputs)), \
+             patch("autostream_webui_api.update_output", side_effect=fake_update):
+            send_dial_mute_post_json(MagicMock(), MagicMock(), {"dial_id": "uid"})
+
+        assert update_calls == ["o2"], (
+            f"Retry must only restore o2 (not o1 which was already restored); got {update_calls}"
+        )
+        assert captured["body"]["ok"] is True
+        assert captured["body"].get("muted") is False
 
 
 # ---------------------------------------------------------------------------

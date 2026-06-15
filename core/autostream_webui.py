@@ -423,6 +423,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 pass
 
         # ── UUID-auth dial endpoints (no session/CSRF required) ───────────
+        if path in ("/api/dial/volume", "/api/dial/mute"):
+            if content_type == "application/json" and body_str and not isinstance(json_obj, dict):
+                self.send_error(400, "JSON object required")
+                return
+
         if path == "/api/dial/volume":
             send_dial_volume_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
             return

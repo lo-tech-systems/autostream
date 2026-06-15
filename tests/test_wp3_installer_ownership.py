@@ -75,11 +75,16 @@ class TestNoRecursiveAppDirChown:
 # Application directory is set to root:root
 # ---------------------------------------------------------------------------
 
+def _permissions_pass_body(src: str) -> str:
+    m = re.search(r'permissions_pass\(\)\s*\{(.+?)\n\}', src, re.DOTALL)
+    assert m, "permissions_pass function not found in autostream_install.sh"
+    return m.group(1)
+
+
 class TestAppDirOwnedByRoot:
     def test_main_installer_permissions_pass_sets_root_ownership(self):
         """permissions_pass must set INSTALL_DIR to root:root."""
         src = _src(MAIN_INSTALLER)
-        # Look for a non-recursive chown root:root on INSTALL_DIR
         pattern = re.compile(
             r'chown\s+root:root\s+(?:"\$\{INSTALL_DIR\}"|/opt/autostream)[^/]'
         )
@@ -91,16 +96,44 @@ class TestAppDirOwnedByRoot:
     def test_main_installer_permissions_pass_no_autostream_dir_chown(self):
         """permissions_pass must not chown INSTALL_DIR to autostream:autostream."""
         src = _src(MAIN_INSTALLER)
-        # Extract the permissions_pass function body.
-        m = re.search(r'permissions_pass\(\)\s*\{(.+?)\n\}', src, re.DOTALL)
-        assert m, "permissions_pass function not found in autostream_install.sh"
-        body = m.group(1)
+        body = _permissions_pass_body(src)
         pattern = re.compile(
             r'chown\s+autostream:autostream\s+"\$\{INSTALL_DIR\}"',
         )
         assert not pattern.search(body), (
             "permissions_pass still contains 'chown autostream:autostream \"${INSTALL_DIR}\"'; "
             "WP3 requires this to be root:root"
+        )
+
+    def test_main_installer_permissions_pass_secures_venv(self):
+        """permissions_pass must do chown -R root:root on the venv directory."""
+        src = _src(MAIN_INSTALLER)
+        body = _permissions_pass_body(src)
+        pattern = re.compile(
+            r'chown\s+-R\s+root:root\s+(?:"\$\{INSTALL_DIR\}/venv"|/opt/autostream/venv)',
+        )
+        assert pattern.search(body), (
+            "permissions_pass must contain 'chown -R root:root \"${INSTALL_DIR}/venv\"' "
+            "so the service account cannot replace installed Python packages"
+        )
+
+    def test_main_installer_no_sudo_autostream_pip(self):
+        """pip must not be invoked as sudo -u autostream (venv runs as root installer)."""
+        src = _src(MAIN_INSTALLER)
+        pattern = re.compile(r'sudo\s+-u\s+autostream\s+.*pip')
+        assert not pattern.search(src), (
+            "autostream_install.sh invokes pip as 'sudo -u autostream'; "
+            "WP3 requires the installer (running as root) to own the venv"
+        )
+
+    def test_main_installer_no_pre_venv_autostream_chown(self):
+        """The temporary 'chown autostream INSTALL_DIR' before venv creation must be gone."""
+        src = _src(MAIN_INSTALLER)
+        # The comment-plus-chown block existed to let the service account write the venv.
+        # After WP3 fix the installer creates the venv as root — no temporary chown needed.
+        assert "Setting ownership to enable autostream to manage venv" not in src, (
+            "autostream_install.sh still contains the pre-venv 'chown autostream' block; "
+            "remove it now that pip runs as the root installer"
         )
 
 

@@ -77,15 +77,16 @@ The PIN protects setup settings: speaker selection, input configuration, hostnam
 
 **How the nonce mechanism works:**
 
-Each time a browser opens the setup page, autostream issues a short-lived challenge (nonce). The browser hashes the PIN with the nonce and sends only the hash, not the PIN. This means a passive observer watching local network traffic cannot extract the PIN from captured requests.
+Each time a browser opens the setup page, autostream issues a short-lived challenge (nonce). The browser hashes the PIN with the nonce and sends only the hash, not the PIN. This means a passive observer cannot directly read the PIN from a captured request.
 
-**What the nonce mechanism does not do:**
+**Limitations — what the nonce mechanism does not prevent:**
 
-- It does not encrypt the response data.
-- It does not prevent an active attacker with full network access from intercepting or modifying traffic (man-in-the-middle).
-- It does not replace HTTPS; the transport remains plain HTTP.
+- **Offline PIN guessing.** A captured nonce/hash pair can be replayed locally to guess the PIN by brute force. Short or simple PINs are more vulnerable; use a longer, less predictable PIN on untrusted networks.
+- **Session cookie capture.** After authentication, autostream issues an HTTP session cookie. A passive observer who captures that cookie can replay it to access settings without knowing the PIN.
+- **Active attacks (man-in-the-middle).** An attacker with full network access can intercept or modify traffic. The nonce mechanism provides no protection against active MITM.
+- **Response confidentiality.** Response data is not encrypted.
 
-The nonce mechanism is appropriate for a trusted home network. It is not a substitute for HTTPS in environments where you cannot trust the local network.
+The nonce mechanism is appropriate for a trusted home network. It is not a substitute for HTTPS.
 
 ---
 
