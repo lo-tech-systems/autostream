@@ -164,3 +164,35 @@ Manual checks and automatic updates both use the selected channel. The toggle is
 Toggle **Enable pre-release updates** off and save. autostream will no longer check for or install pre-releases.
 
 **Switching to stable does not automatically downgrade an installed pre-release.** If you are already running `v1.3.0-beta.2` and switch to stable, the next offered update will be a numerically newer stable release (e.g. `v1.3.0` or later). If you need to return to a known stable build immediately, use the console reinstall route described in the Troubleshooting guide.
+
+---
+
+## Multi-Appliance Control
+
+If you have more than one autostream on the same network, you can view and control any of them from a single iOS Home Screen application.
+
+### How it works
+
+Each autostream discovers other eligible appliances automatically over mDNS. When more than one appliance is online, the **appliance pill** near the top of the Home page and Equaliser page becomes a selector. Tap it to see a list of discovered appliances.
+
+* The iOS Home Screen application (PWA) stays bound to the appliance from which it was originally installed. Its URL, identity, and session never change.
+* When you select another appliance, the bound appliance acts as a gateway. Volume, speaker selection, and equaliser settings sent through the Web UI apply to the remote appliance.
+* Selecting the bound appliance's own name returns to normal local control.
+
+### What you can control remotely
+
+Remote mode supports **Home** (volume, speaker selection) and **Equaliser** (EQ bands, output gain, trim). The Service, Setup, and Info pages are disabled while a remote appliance is selected; they remain local-only.
+
+### Discovery
+
+Discovery uses the local network's mDNS multicast. All autostream appliances and your phone must be on the same LAN segment — not separated by VLANs, guest networks, or bridges with multicast filtering. Discovery typically completes within a few seconds of a peer coming online.
+
+Each appliance must have a **unique hostname**. If two appliances share the same hostname, mDNS discovery can behave unpredictably. Set each appliance's hostname in its own Setup page.
+
+### Opting out of multi-appliance discovery
+
+If you do not want a specific autostream to appear in other appliances' selectors, open that appliance's **Setup page** and disable **Show this autostream to other appliances**. The appliance remains directly accessible at its own `http://<hostname>.local/` address; it is only hidden from peer selectors.
+
+### Recovery when a remote appliance goes offline
+
+If the remote appliance becomes unreachable, the UI automatically returns you to the bound appliance and shows a status message. You can then select a different appliance or continue with the bound appliance as normal.

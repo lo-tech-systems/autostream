@@ -239,6 +239,56 @@ After changing it, confirm the active name:
 
 ---
 
+### Multi-appliance control
+
+This section applies when you have more than one autostream and use the appliance selector to control a remote appliance from the Home or Equaliser page.
+
+#### Appliances not appearing in the selector
+
+For discovery to work, **all autostream appliances and your phone must be on the same multicast-capable LAN segment**. Common causes of missing peers:
+
+* **Guest Wi-Fi / client isolation**: guest networks block multicast and device-to-device traffic.
+* **VLANs or separate SSIDs**: mDNS cannot traverse a VLAN boundary; if appliances and your phone are on different segments, they cannot discover each other.
+* **Mesh extenders with multicast filtering**: some mesh nodes suppress mDNS packets between bands or nodes.
+
+Also check:
+
+* Every appliance must have a **unique hostname** — duplicate hostnames cause unpredictable mDNS discovery.
+* The **"Show this autostream to other appliances"** setting must be enabled on any appliance you want to appear in peers' selectors. Appliances that have opted out do not appear.
+* An appliance with no stable identity (no CPU serial and no persistent fallback ID, such as a broken install) cannot participate in multi-appliance control.
+
+To inspect which `_autostream._tcp` services are visible from an appliance's console:
+
+```bash
+avahi-browse _autostream._tcp -t -r
+```
+
+#### Duplicate appliance identity
+
+Each autostream derives a stable identity from its Raspberry Pi CPU serial (with a persistent random fallback when the serial is unavailable). If two appliances produce the same identity — not expected under normal operation — both are suppressed from each other's selectors and a warning is logged. Check the autostream log:
+
+```bash
+journalctl -u autostream.service --no-pager | grep "conflict"
+```
+
+#### Remote appliance unavailable — returned to bound appliance
+
+If a remote appliance becomes unreachable after three consecutive polling failures, the UI automatically returns to the bound appliance and shows a status message. Common reasons:
+
+* The remote appliance was powered off or rebooted.
+* The network path between the two appliances was interrupted.
+* The remote appliance's `autostream.service` stopped; check `systemctl status autostream.service` on that appliance.
+
+If the remote appliance has come back online, tap the appliance selector to re-select it.
+
+#### Bound-appliance outage
+
+Multi-appliance control requires the bound appliance to be online. The iOS Home Screen application (PWA) is permanently bound to the appliance from which it was originally installed. If that appliance is offline (power loss, SD card failure, etc.), the PWA cannot function until the bound appliance is restored.
+
+Direct access to any appliance is always available from any browser at `http://<hostname>.local/`. If you want to make a different appliance the default for your Home Screen application, install a new PWA shortcut from that appliance's address.
+
+---
+
 ### Changed Wi-Fi SSID or password
 
 **autostream** stores the “configured SSID” marker at:
