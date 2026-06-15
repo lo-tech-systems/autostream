@@ -34,6 +34,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -72,6 +73,7 @@ NONCE_TTL_SECONDS = 60
 
 # Brute-force throttling (best-effort; in-memory)
 MAX_FAILED_ATTEMPTS = 5
+MAX_NONCES_PER_CLIENT = 8
 BACKOFF_BASE_SECONDS = 5
 BACKOFF_MAX_SECONDS = 5 * 60
 
@@ -189,9 +191,14 @@ class AuthManager:
         self.nav_html = nav_html
         self.title = title
 
+        # Lock protecting _sessions, _nonces, and _attempts.
+        # RLock allows _gc() to be called while the lock is already held.
+        self._lock = threading.RLock()
+
         # In-memory state
         self._sessions: Dict[str, Session] = {}
-        self._nonces: Dict[str, Nonce] = {}
+        # client_key → {nonce_value → Nonce}; multiple outstanding nonces per client
+        self._nonces: Dict[str, Dict[str, Nonce]] = {}
         self._attempts: Dict[str, tuple[int, float]] = {}  # client_key -> (fails, blocked_until_epoch)
 
         # PIN cache
@@ -413,7 +420,8 @@ class AuthManager:
 
             # Revoke all active sessions so that anyone who held a session
             # under the old PIN must re-authenticate with the new one.
-            self._sessions.clear()
+            with self._lock:
+                self._sessions.clear()
 
             LOG.info(
                 "PIN updated at %s source=%s (pin_len=%s, mtime=%r); all sessions invalidated",
@@ -464,20 +472,19 @@ class AuthManager:
         return True
 
     def is_authenticated(self, headers) -> bool:
-        # cleanup opportunistically
-        self._gc()
+        self._gc()  # opportunistic expiry
 
         cookie = parse_cookie_header(headers.get("Cookie"))
         token = cookie.get(SESSION_COOKIE_NAME)
         if not token:
             return False
-        sess = self._sessions.get(token)
-        if not sess:
-            return False
-        if sess.expires_at <= _now():
-            self._sessions.pop(token, None)
-            return False
-
+        with self._lock:
+            sess = self._sessions.get(token)
+            if not sess:
+                return False
+            if sess.expires_at <= _now():
+                self._sessions.pop(token, None)
+                return False
         return sess.authenticated
 
     def require_authenticated_if_pin_enabled(
@@ -509,27 +516,33 @@ class AuthManager:
         cookie = parse_cookie_header(handler.headers.get("Cookie"))
         token = cookie.get(SESSION_COOKIE_NAME)
 
-        sess = None
-        if token:
-            sess = self._sessions.get(token)
-            if sess and sess.expires_at <= _now():
-                self._sessions.pop(token, None)
-                sess = None
+        # Generate new credentials before the lock — avoid holding it during crypto.
+        new_token = _b64url(secrets.token_bytes(32))
+        new_csrf = _b64url(secrets.token_bytes(32))
+        new_sess: Optional[Session] = None
 
-        if not sess:
-            # Create a new unauthenticated session (still provides CSRF).
-            token = _b64url(secrets.token_bytes(32))
-            csrf = _b64url(secrets.token_bytes(32))
-            sess = Session(
-                token=token,
-                expires_at=_now() + SESSION_TTL_SECONDS,
-                csrf_token=csrf,
-                authenticated=False,
-            )
-            self._sessions[token] = sess
-            self._set_session_cookie(handler, sess)
+        with self._lock:
+            sess: Optional[Session] = None
+            if token:
+                sess = self._sessions.get(token)
+                if sess and sess.expires_at <= _now():
+                    self._sessions.pop(token, None)
+                    sess = None
 
-        return sess.csrf_token
+            if not sess:
+                sess = Session(
+                    token=new_token,
+                    expires_at=_now() + SESSION_TTL_SECONDS,
+                    csrf_token=new_csrf,
+                    authenticated=False,
+                )
+                self._sessions[new_token] = sess
+                new_sess = sess
+
+        if new_sess is not None:
+            self._set_session_cookie(handler, new_sess)
+
+        return sess.csrf_token  # type: ignore[union-attr]
 
     def validate_csrf(self, handler, token_from_body: Optional[str] = None) -> bool:
         """Validate CSRF token from header (X-CSRF-Token) or body."""
@@ -538,19 +551,17 @@ class AuthManager:
         if not token:
             return False
 
-        sess = self._sessions.get(token)
-        if not sess or sess.expires_at <= _now():
-            return False
+        with self._lock:
+            sess = self._sessions.get(token)
+            if not sess or sess.expires_at <= _now():
+                return False
+            expected = sess.csrf_token
 
-        expected = sess.csrf_token
-        # Check header first
+        # Constant-time comparison outside the lock
         got = handler.headers.get("X-CSRF-Token")
         if not got and token_from_body:
             got = token_from_body
-
-        if got and constant_time_eq(got, expected):
-            return True
-        return False
+        return bool(got and constant_time_eq(got, expected))
 
     def get_csrf_token(self, headers) -> str | None:
         """Return CSRF token for current session, if any."""
@@ -558,10 +569,11 @@ class AuthManager:
         token = cookie.get(SESSION_COOKIE_NAME)
         if not token:
             return None
-        sess = self._sessions.get(token)
-        if not sess or sess.expires_at <= _now():
-            return None
-        return sess.csrf_token
+        with self._lock:
+            sess = self._sessions.get(token)
+            if not sess or sess.expires_at <= _now():
+                return None
+            return sess.csrf_token
 
     # ------------------------
     # Rate limiting
@@ -570,7 +582,8 @@ class AuthManager:
     def _rate_limit_check(self, handler) -> tuple[bool, int]:
         """Returns (blocked, retry_after_seconds)."""
         key = self._client_key(handler)
-        fails, blocked_until = self._attempts.get(key, (0, 0.0))
+        with self._lock:
+            fails, blocked_until = self._attempts.get(key, (0, 0.0))
         now = time.time()
         if blocked_until and blocked_until > now:
             return True, int(blocked_until - now) + 1
@@ -578,18 +591,20 @@ class AuthManager:
 
     def _rate_limit_fail(self, handler) -> None:
         key = self._client_key(handler)
-        fails, blocked_until = self._attempts.get(key, (0, 0.0))
-        fails += 1
-        # After MAX_FAILED_ATTEMPTS, apply exponential backoff.
-        if fails >= MAX_FAILED_ATTEMPTS:
-            exp = min(fails - MAX_FAILED_ATTEMPTS, 6)
-            delay = min(BACKOFF_BASE_SECONDS * (2 ** exp), BACKOFF_MAX_SECONDS)
-            blocked_until = time.time() + delay
-        self._attempts[key] = (fails, blocked_until)
+        now = time.time()
+        with self._lock:
+            fails, blocked_until = self._attempts.get(key, (0, 0.0))
+            fails += 1
+            if fails >= MAX_FAILED_ATTEMPTS:
+                exp = min(fails - MAX_FAILED_ATTEMPTS, 6)
+                delay = min(BACKOFF_BASE_SECONDS * (2 ** exp), BACKOFF_MAX_SECONDS)
+                blocked_until = now + delay
+            self._attempts[key] = (fails, blocked_until)
 
     def _rate_limit_success(self, handler) -> None:
         key = self._client_key(handler)
-        self._attempts.pop(key, None)
+        with self._lock:
+            self._attempts.pop(key, None)
 
     # ------------------------
     # Nonce + verify
@@ -608,32 +623,38 @@ class AuthManager:
 
     def _issue_nonce(self, handler) -> str:
         key = self._client_key(handler)
+        # Generate token before the lock to avoid holding it during crypto.
         value = _b64url(secrets.token_bytes(18))
-        self._nonces[key] = Nonce(value=value, expires_at=_now() + NONCE_TTL_SECONDS)
+        now = _now()
+        new_nonce = Nonce(value=value, expires_at=now + NONCE_TTL_SECONDS)
+        with self._lock:
+            bucket = self._nonces.setdefault(key, {})
+            # Prune expired entries first
+            for v in list(bucket):
+                if bucket[v].expires_at <= now:
+                    del bucket[v]
+            # Cap at MAX_NONCES_PER_CLIENT: remove the oldest when full
+            while len(bucket) >= MAX_NONCES_PER_CLIENT:
+                oldest = min(bucket, key=lambda v: bucket[v].expires_at)
+                del bucket[oldest]
+            bucket[value] = new_nonce
         return value
 
-    def _get_nonce(self, handler) -> Optional[str]:
+    def _consume_nonce(self, handler, nonce_value: str) -> bool:
         key = self._client_key(handler)
-        n = self._nonces.get(key)
-        if not n:
-            return None
-        if n.expires_at <= _now():
-            self._nonces.pop(key, None)
-            return None
-        return n.value
-
-    def _consume_nonce(self, handler, expected: str) -> bool:
-        key = self._client_key(handler)
-        n = self._nonces.get(key)
-        if not n:
-            return False
-        if n.expires_at <= _now():
-            self._nonces.pop(key, None)
-            return False
-        ok = constant_time_eq(n.value, expected)
-        # Consume regardless to prevent replay
-        self._nonces.pop(key, None)
-        return ok
+        now = _now()
+        with self._lock:
+            bucket = self._nonces.get(key)
+            if not bucket:
+                return False
+            n = bucket.get(nonce_value)
+            if not n:
+                return False
+            del bucket[nonce_value]
+            if not bucket:
+                del self._nonces[key]
+            expired = n.expires_at <= now
+        return not expired
 
     def _compute_proof(self, nonce: str, pin: str) -> str:
         # Proof = SHA256(nonce + pin) in hex
@@ -777,7 +798,8 @@ class AuthManager:
 
         self._rate_limit_success(handler)
         session = self._new_session()
-        self._sessions[session.token] = session
+        with self._lock:
+            self._sessions[session.token] = session
 
         handler.send_response(200)
         self._set_session_cookie(handler, session)
@@ -839,7 +861,8 @@ class AuthManager:
         # avoid iOS credential-save heuristics. This also upgrades the current
         # setup-page flow from "no PIN" to "PIN enabled" seamlessly.
         session = self._new_session()
-        self._sessions[session.token] = session
+        with self._lock:
+            self._sessions[session.token] = session
 
         handler.send_response(200)
         self._set_session_cookie(handler, session)
@@ -857,14 +880,19 @@ class AuthManager:
 
     def _gc(self) -> None:
         now = _now()
-        # Sessions
-        for k, s in list(self._sessions.items()):
-            if s.expires_at <= now:
-                self._sessions.pop(k, None)
-        # Nonces
-        for k, n in list(self._nonces.items()):
-            if n.expires_at <= now:
-                self._nonces.pop(k, None)
+        with self._lock:
+            # Sessions
+            for k in list(self._sessions):
+                if self._sessions[k].expires_at <= now:
+                    del self._sessions[k]
+            # Nonces (nested buckets)
+            for ck in list(self._nonces):
+                bucket = self._nonces[ck]
+                for v in list(bucket):
+                    if bucket[v].expires_at <= now:
+                        del bucket[v]
+                if not bucket:
+                    del self._nonces[ck]
 
     def _send_json(self, handler, status: int, obj: dict) -> None:
         payload = json.dumps(obj).encode("utf-8")

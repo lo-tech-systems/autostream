@@ -24,6 +24,7 @@ if _core not in sys.path:
 from autostream_auth import (
     AuthManager,
     MAX_FAILED_ATTEMPTS,
+    MAX_NONCES_PER_CLIENT,
     PIN_STATUS_MISSING,
     PIN_STATUS_UNREADABLE,
     SESSION_COOKIE_NAME,
@@ -36,7 +37,7 @@ from autostream_auth import (
 
 def _make_manager(pin: Optional[str] = None) -> AuthManager:
     """Return an AuthManager with a pre-loaded (or absent) PIN."""
-    mgr = AuthManager(config_path="dummy.ini")
+    mgr = AuthManager(config_path="dummy.json", state_path="dummy_state.json")
     mgr._pin_loaded = True
     if pin is not None:
         mgr._pin_value = pin
@@ -125,7 +126,8 @@ class TestNonceLifecycle:
         handler = _make_handler()
         val = mgr._issue_nonce(handler)
         key = mgr._client_key(handler)
-        mgr._nonces[key].expires_at = 0
+        # _nonces is now a nested dict: client_key → {nonce_value → Nonce}
+        mgr._nonces[key][val].expires_at = 0
         assert mgr._consume_nonce(handler, val) is False
 
 
@@ -321,7 +323,7 @@ class TestMalformedStateFile:
         """JSONDecodeError inside write_pin_override is caught and returns HTTP 500."""
         state = tmp_path / "state.json"
         state.write_text("{not valid json}")
-        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        mgr = AuthManager(config_path="dummy.json", state_path=str(state))
         # Pre-load a valid PIN so the format check passes before the write attempt.
         mgr._pin_loaded = True
         mgr._pin_value = "currentpin"
@@ -329,3 +331,181 @@ class TestMalformedStateFile:
         code, body = mgr.set_pin("newpin1234")
         assert code == 500
         assert body["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 8. WP8 — Multi-nonce per client and concurrency safety
+# ---------------------------------------------------------------------------
+
+class TestMultiNoncePerClient:
+    """Two nonces issued to the same client can be consumed independently."""
+
+    def test_two_nonces_both_usable(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        v1 = mgr._issue_nonce(handler)
+        v2 = mgr._issue_nonce(handler)
+        assert v1 != v2
+        # Both should be consumable
+        assert mgr._consume_nonce(handler, v1) is True
+        assert mgr._consume_nonce(handler, v2) is True
+
+    def test_consuming_one_nonce_leaves_other_intact(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        v1 = mgr._issue_nonce(handler)
+        v2 = mgr._issue_nonce(handler)
+        # Consume v1; v2 must still be valid
+        mgr._consume_nonce(handler, v1)
+        assert mgr._consume_nonce(handler, v2) is True
+
+    def test_wrong_proof_consumes_only_the_attempted_nonce(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        v1 = mgr._issue_nonce(handler)
+        v2 = mgr._issue_nonce(handler)
+        # Wrong proof for v1 (simulate: try to consume v1 with wrong value — returns False)
+        # Actually _consume_nonce looks up by nonce value not by proof.
+        # The test should show that consuming v1 (even if the proof is wrong at
+        # the application level) does NOT affect v2.
+        mgr._consume_nonce(handler, v1)   # consumes v1 regardless
+        # v2 is untouched
+        assert mgr._consume_nonce(handler, v2) is True
+
+    def test_nonce_cannot_be_consumed_by_different_client(self):
+        mgr = _make_manager(pin="testpin1")
+        h1 = _make_handler(ip="10.0.0.1")
+        h2 = _make_handler(ip="10.0.0.2")
+        val = mgr._issue_nonce(h1)
+        # h2 should not be able to consume h1's nonce
+        assert mgr._consume_nonce(h2, val) is False
+        # The nonce must still be available to h1
+        assert mgr._consume_nonce(h1, val) is True
+
+    def test_expired_nonce_in_bucket_does_not_affect_valid_sibling(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        v1 = mgr._issue_nonce(handler)
+        v2 = mgr._issue_nonce(handler)
+        key = mgr._client_key(handler)
+        # Expire v1
+        mgr._nonces[key][v1].expires_at = 0
+        # v1 is expired → consume fails
+        assert mgr._consume_nonce(handler, v1) is False
+        # v2 is still valid
+        assert mgr._consume_nonce(handler, v2) is True
+
+    def test_gc_removes_empty_bucket_after_all_nonces_consumed(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        key = mgr._client_key(handler)
+        val = mgr._issue_nonce(handler)
+        mgr._consume_nonce(handler, val)
+        # After consumption the bucket should be removed by _consume_nonce
+        assert key not in mgr._nonces
+
+    def test_gc_removes_expired_nonces_and_empty_buckets(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        key = mgr._client_key(handler)
+        val = mgr._issue_nonce(handler)
+        # Expire the nonce
+        mgr._nonces[key][val].expires_at = 0
+        mgr._gc()
+        assert key not in mgr._nonces
+
+    def test_cap_prunes_oldest_when_limit_reached(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        issued = []
+        for _ in range(MAX_NONCES_PER_CLIENT + 2):
+            issued.append(mgr._issue_nonce(handler))
+        key = mgr._client_key(handler)
+        # Bucket must not exceed the cap
+        assert len(mgr._nonces[key]) <= MAX_NONCES_PER_CLIENT
+        # The most recently issued nonces should still be present
+        assert issued[-1] in mgr._nonces[key]
+
+    def test_nonce_single_use_prevents_replay(self):
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        val = mgr._issue_nonce(handler)
+        assert mgr._consume_nonce(handler, val) is True
+        # Second consumption must fail (replay protection)
+        assert mgr._consume_nonce(handler, val) is False
+
+
+class TestConcurrencySafety:
+    """Concurrent operations on _sessions, _nonces, and _attempts must not corrupt state."""
+
+    def test_concurrent_session_creation_does_not_raise(self):
+        import threading as _t
+        mgr = _make_manager(pin="testpin1")
+        errors = []
+
+        def _create():
+            try:
+                sess = mgr._new_session()
+                with mgr._lock:
+                    mgr._sessions[sess.token] = sess
+            except Exception as e:
+                errors.append(e)
+
+        threads = [_t.Thread(target=_create) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Errors during concurrent session creation: {errors}"
+        assert len(mgr._sessions) == 20
+
+    def test_concurrent_nonce_issue_does_not_raise(self):
+        import threading as _t
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        errors = []
+
+        def _issue():
+            try:
+                mgr._issue_nonce(handler)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [_t.Thread(target=_issue) for _ in range(MAX_NONCES_PER_CLIENT * 3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Errors during concurrent nonce issue: {errors}"
+        key = mgr._client_key(handler)
+        # Bucket must not exceed the cap
+        assert len(mgr._nonces.get(key, {})) <= MAX_NONCES_PER_CLIENT
+
+    def test_concurrent_gc_and_issue_do_not_corrupt(self):
+        import threading as _t
+        mgr = _make_manager(pin="testpin1")
+        handler = _make_handler()
+        errors = []
+
+        def _gc_loop():
+            for _ in range(50):
+                try:
+                    mgr._gc()
+                except Exception as e:
+                    errors.append(e)
+
+        def _issue_loop():
+            for _ in range(50):
+                try:
+                    mgr._issue_nonce(handler)
+                except Exception as e:
+                    errors.append(e)
+
+        t1 = _t.Thread(target=_gc_loop)
+        t2 = _t.Thread(target=_issue_loop)
+        t1.start(); t2.start()
+        t1.join(timeout=5); t2.join(timeout=5)
+
+        assert not errors, f"Errors during concurrent gc/issue: {errors}"
