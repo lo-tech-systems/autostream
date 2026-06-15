@@ -67,6 +67,7 @@ Missing, empty, or unknown product values fail closed for destructive operations
 autostream product — preserved:
   /boot/firmware/pin.txt (or /boot/pin.txt)
   /var/lib/autostream/cpuinfo
+  /var/lib/autostream/appliance-id
 
 autostream product — deleted (fixed allowlist, no wildcards):
   /etc/autostream/autostream.json

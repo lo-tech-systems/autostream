@@ -796,6 +796,49 @@ configure_phase() {
 
   # Permissions pass
   permissions_pass
+
+  # Create stable appliance identity fallback only when no valid CPU serial is
+  # available and the file does not yet exist.  On hardware with a readable serial,
+  # the runtime derives the identity from a hash and the file is not needed.
+  info "Ensuring appliance identity"
+  python3 - <<'PYEOF'
+import hashlib, os, re, secrets
+from pathlib import Path
+
+def _get_cpu_serial():
+    try:
+        text = Path('/proc/cpuinfo').read_text(encoding='utf-8', errors='ignore')
+        for ln in text.splitlines():
+            if ln.strip().lower().startswith('serial'):
+                parts = ln.split(':', 1)
+                if len(parts) == 2 and parts[1].strip():
+                    return parts[1].strip()
+    except Exception:
+        pass
+    try:
+        raw = Path('/proc/device-tree/serial-number').read_bytes()
+        if raw:
+            return raw.replace(b'\x00', b'').decode('utf-8', errors='ignore').strip()
+    except Exception:
+        pass
+    return ''
+
+serial = _get_cpu_serial().strip().lower()
+fallback_path = Path('/var/lib/autostream/appliance-id')
+
+if re.match(r'^[0-9a-f]+$', serial) and serial:
+    print('appliance-id: CPU serial available; fallback file not needed')
+elif fallback_path.exists():
+    print(f'appliance-id: fallback file already exists; preserving')
+else:
+    new_id = secrets.token_hex(10)
+    tmp = fallback_path.with_suffix('.tmp')
+    tmp.write_text(new_id, encoding='utf-8')
+    os.chmod(tmp, 0o644)
+    os.chown(tmp, 0, 0)
+    tmp.replace(fallback_path)
+    print(f'appliance-id: created fallback identity at {fallback_path}')
+PYEOF
 }
 
 configure_cloud_init() {
