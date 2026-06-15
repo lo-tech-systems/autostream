@@ -831,9 +831,9 @@ configure_cloud_init() {
 permissions_pass() {
   info "Setting ownership and permissions"
 
-  chown -R autostream:autostream "${INSTALL_DIR}"
-  chown -R autostream:autostream "${APP_LOG_DIR}"
+  chown root:root "${INSTALL_DIR}"
   chmod 0755 "${INSTALL_DIR}"
+  chown -R autostream:autostream "${APP_LOG_DIR}"
   chmod 0755 "${APP_LOG_DIR}"
 
   find "${INSTALL_DIR}" -maxdepth 1 -type f -name "*.sh" -exec chmod 0755 {} + 2>/dev/null || true
@@ -852,8 +852,6 @@ permissions_pass() {
     chown autostream:autostream "${STAMP_DIR}/dials.json"
     chmod 0600 "${STAMP_DIR}/dials.json"
   fi
-
-  chown autostream:autostream "${INSTALL_DIR}"
 }
 
 # services_phase: install and enable/reload systemd units (install and update).
