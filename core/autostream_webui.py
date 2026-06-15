@@ -498,7 +498,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not _APPLIANCE_ID_RE.match(aid):
                 self.send_error(404, "Not found")
             else:
-                local_id = get_appliance_id(STATE.config_path) or ""
+                local_id = get_appliance_id() or ""
                 if aid == local_id:
                     # Canonical redirect for bound appliance
                     location = "/equaliser" if sub == "equaliser" else "/"

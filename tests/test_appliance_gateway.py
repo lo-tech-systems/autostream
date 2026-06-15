@@ -195,6 +195,20 @@ class TestBackoff:
         gw._update_backoff(aid, 0, {"ok": False, "error": "remote_timeout"})
         assert aid in gw._backoff_state
 
+    def test_update_backoff_application_error_does_not_advance(self):
+        """409 appliance_unconfigured is an application error, not a transport failure."""
+        aid = "b" * 20
+        with gw._state_lock:
+            gw._backoff_state.pop(aid, None)
+        gw._update_backoff(aid, 409, {"ok": False, "error": "appliance_unconfigured"})
+        assert aid not in gw._backoff_state
+
+    def test_update_backoff_remote_bad_response_is_transport(self):
+        """remote_bad_response counts as a transport failure for backoff."""
+        aid = "c" * 20
+        gw._update_backoff(aid, 200, {"ok": False, "error": "remote_bad_response"})
+        assert aid in gw._backoff_state
+
     def test_check_backoff_in_window(self):
         aid = "a" * 20
         with gw._state_lock:
@@ -650,3 +664,51 @@ class TestSendGatewayHomeJson:
 
         assert sent_codes == [200]
         assert sent_data[0]["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# _handle_remote_response — error normalization
+# ---------------------------------------------------------------------------
+
+class TestHandleRemoteResponse:
+    """Unknown error codes must be normalized to remote_bad_response, not exposed."""
+
+    def _call(self, status, data):
+        handler = _make_handler()
+        sent_codes = []
+        sent_errors = []
+
+        def fake_json(h, code, d):
+            sent_codes.append(code)
+            sent_errors.append(d.get("error"))
+
+        def fake_browser_err(h, code, error, *, retryable=None, extra=None):
+            sent_codes.append(code)
+            sent_errors.append(error)
+
+        with patch("autostream_appliance_gateway.send_json", side_effect=fake_json), \
+             patch("autostream_appliance_gateway.send_browser_api_error",
+                   side_effect=fake_browser_err):
+            gw._handle_remote_response(handler, "a" * 20, status, data)
+
+        return sent_codes, sent_errors
+
+    def test_success_forwarded_directly(self):
+        codes, _ = self._call(200, {"ok": True, "data": "x"})
+        assert codes == [200]
+
+    def test_unknown_error_code_normalized(self):
+        """An arbitrary error code from the target must not be forwarded as-is."""
+        codes, errors = self._call(500, {"ok": False, "error": "some_internal_state"})
+        assert codes == [502]
+        assert errors == ["remote_bad_response"]
+
+    def test_appliance_unconfigured_mapped_to_409(self):
+        codes, errors = self._call(409, {"ok": False, "error": "appliance_unconfigured"})
+        assert codes == [409]
+        assert errors == ["appliance_unconfigured"]
+
+    def test_remote_timeout_mapped_to_504(self):
+        codes, errors = self._call(0, {"ok": False, "error": "remote_timeout"})
+        assert codes == [504]
+        assert errors == ["remote_timeout"]

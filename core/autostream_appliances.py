@@ -16,6 +16,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
+from autostream_federation import evict_session_for_ip
 from autostream_mdns import MdnsBrowser
 from autostream_rpi import get_appliance_id
 
@@ -140,19 +141,18 @@ def _on_appliance_add(appliance_id: str, sighting: ApplianceSighting) -> None:
 
 
 def _on_appliance_remove(appliance_id: str, sighting: Optional[ApplianceSighting]) -> None:
-    # Clean up conflict tracking when the last interface is removed.
-    svc_name = sighting.service_name if sighting is not None else None
+    # Called only when the browser's last five-tuple for appliance_id is gone.
+    # Clean up ALL _svc_info entries for this id — including any conflict-orphan entries
+    # that _parse_appliance_event wrote to _svc_info but returned None for, so they were
+    # never registered in the browser and can never be removed any other way.
     with _reg_lock:
-        if svc_name is not None:
-            prev = _svc_info.pop(svc_name, None)
-            if prev is not None:
-                old_id, old_h, old_ip = prev
-                old_set = _id_net_identities.get(old_id)
-                if old_set is not None:
-                    old_set.discard((old_h, old_ip))
-                    if not old_set:
-                        _id_net_identities.pop(old_id, None)
-                        _conflict_ids.discard(old_id)
+        stale = [k for k, v in _svc_info.items() if v[0] == appliance_id]
+        for k in stale:
+            _svc_info.pop(k, None)
+        _id_net_identities.pop(appliance_id, None)
+        _conflict_ids.discard(appliance_id)
+    if sighting is not None and sighting.ip:
+        evict_session_for_ip(sighting.ip)
     snap = _browser.get_snapshot()
     if not snap:
         hostname = sighting.hostname if sighting is not None else appliance_id

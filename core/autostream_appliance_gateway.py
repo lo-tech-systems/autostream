@@ -326,12 +326,20 @@ def _remote_request(
 
 
 def _update_backoff(appliance_id: str, status: int, data: dict) -> None:
-    """Record backoff outcome after a completed _remote_request() call."""
+    """Record backoff outcome after a completed _remote_request() call.
+
+    Only transport failures (status 0 or error codes remote_timeout /
+    remote_bad_response) advance the failure counter.  Application-level
+    errors from a reachable target (4xx, 5xx, ok=False with other codes)
+    count as success to avoid triggering backoff against a reachable peer.
+    """
+    err = data.get("error", "") if isinstance(data, dict) else ""
+    is_transport = status == 0 or err in ("remote_timeout", "remote_bad_response")
     with _state_lock:
-        if status == 200 and isinstance(data, dict) and data.get("ok"):
-            _record_success_locked(appliance_id)
-        else:
+        if is_transport:
             _record_failure_locked(appliance_id)
+        else:
+            _record_success_locked(appliance_id)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +457,7 @@ def _handle_remote_response(handler, appliance_id: str, status: int, data: dict)
     elif err == "appliance_offline":
         send_browser_api_error(handler, 503, err, retryable=True)
     else:
-        send_browser_api_error(handler, 502, err, retryable=True)
+        send_browser_api_error(handler, 502, "remote_bad_response", retryable=True)
 
 
 # ---------------------------------------------------------------------------

@@ -57,9 +57,13 @@ def _load_module():
 
     mdns_stub.MdnsBrowser = _CaptureBrowser
 
+    fed_stub = types.ModuleType("autostream_federation")
+    fed_stub.evict_session_for_ip = lambda ip: None
+
     with patch.dict("sys.modules", {
         "autostream_rpi": rpi_stub,
         "autostream_mdns": mdns_stub,
+        "autostream_federation": fed_stub,
     }):
         if "autostream_appliances" in sys.modules:
             del sys.modules["autostream_appliances"]
@@ -223,6 +227,50 @@ class TestConflictDetection:
                       _txt(appliance_id=id_b))
         assert r1 is not None
         assert r2 is not None
+
+    def test_conflict_cleared_after_on_appliance_remove(self):
+        """on_appliance_remove must fully clear _svc_info and conflict state."""
+        m, parse_fn, _, on_remove = _load_module()
+
+        # Register first sighting (no conflict yet)
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert r1 is not None
+        # Trigger conflict: second service claims the same ID
+        parse_fn(
+            _parts(service_name="SvcB._autostream._tcp.local",
+                   hostname="hb.local", ip="192.168.1.11"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert _PEER_ID in m.get_conflict_ids()
+        assert "SvcB._autostream._tcp.local" in m._svc_info
+
+        # Simulate browser calling on_remove when the last tracked sighting is gone
+        _, sighting1 = r1
+        on_remove(_PEER_ID, sighting1)
+
+        assert _PEER_ID not in m.get_conflict_ids()
+        assert _PEER_ID not in m._id_net_identities
+        # Both service names must be evicted from _svc_info
+        assert "SvcA._autostream._tcp.local" not in m._svc_info
+        assert "SvcB._autostream._tcp.local" not in m._svc_info
+
+    def test_on_remove_clears_svc_info_entry(self):
+        """on_appliance_remove removes _svc_info entries for the appliance."""
+        m, parse_fn, _, on_remove = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert "SvcA._autostream._tcp.local" in m._svc_info
+        _, sighting1 = r1
+        on_remove(_PEER_ID, sighting1)
+        assert "SvcA._autostream._tcp.local" not in m._svc_info
 
 
 # ---------------------------------------------------------------------------
