@@ -8,6 +8,8 @@
 
 * `http://<hostname>.local/` (example: `http://autostream.local/`)
 
+**Use HTTP, not HTTPS.** Autostream does not support HTTPS — publicly trusted certificates are not available for `.local` hostnames. If your browser redirects `http://` to `https://` automatically, disable that redirect for this address or use a different browser.
+
 If `.local` names don’t work on your network/device, try the device IP address instead (see **Advanced → Finding the IP**).
 
 ---
@@ -66,6 +68,24 @@ Once you are back in Setup, either:
 
 * change the user PIN, or
 * use Factory Reset if you want to return the appliance to first-run setup
+
+---
+
+### Authentication and PIN security
+
+The PIN protects setup settings: speaker selection, input configuration, hostname, Wi-Fi, EQ, factory reset, and PIN change. **Volume control is not PIN-protected** — the dial and the Web UI volume slider always work without a PIN.
+
+**How the nonce mechanism works:**
+
+Each time a browser opens the setup page, autostream issues a short-lived challenge (nonce). The browser hashes the PIN with the nonce and sends only the hash, not the PIN. This means a passive observer watching local network traffic cannot extract the PIN from captured requests.
+
+**What the nonce mechanism does not do:**
+
+- It does not encrypt the response data.
+- It does not prevent an active attacker with full network access from intercepting or modifying traffic (man-in-the-middle).
+- It does not replace HTTPS; the transport remains plain HTTP.
+
+The nonce mechanism is appropriate for a trusted home network. It is not a substitute for HTTPS in environments where you cannot trust the local network.
 
 ---
 

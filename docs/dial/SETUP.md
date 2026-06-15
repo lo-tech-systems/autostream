@@ -132,6 +132,31 @@ AP mode (WiFi setup).
 
 ---
 
+## Encoder Button — Mute/Unmute
+
+Pressing the encoder shaft (the push-button built into most KY-040 / EC11 encoders) **toggles mute on and off** for the currently selected speakers.
+
+**What mute does:**
+- Sets the volume of all selected outputs to zero.
+- Does **not** stop playback or deselect speakers.
+- Unmuting restores the previous volume level.
+
+**Hardware:** the button is wired to **BCM GPIO 22** (physical pin 15). See BUILD-GUIDE.md for wiring details.
+
+**Disabling the button:** set `"sw_gpio": null` in `/etc/autostream/autostream-dial.json` and restart `autostream_dial`. The encoder will still control volume; only the push-button function is disabled.
+
+**Enabling the button on an existing installation:** if your hardware has the button wired but it was installed before this feature was added, add `"sw_gpio": 22` to `/etc/autostream/autostream-dial.json` and restart `autostream_dial`:
+
+```bash
+# Edit the hardware config (requires root)
+sudo nano /etc/autostream/autostream-dial.json
+# Add or update the "sw_gpio" key, e.g.: "sw_gpio": 22
+# Then restart the service
+sudo systemctl restart autostream_dial
+```
+
+---
+
 ## LED Indicators (if fitted)
 
 | State | LED |

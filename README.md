@@ -23,9 +23,10 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 * Detects audio automatically - starts and stops the stream without any interaction
 * Supports HomePods and Stereo Paired HomePods, as well as third-party AirPlay and AirPlay 2 compatible speakers
 * iPhone-friendly web app for volume control and speaker selection, with PIN-protected setup
-* Runs entirely on your local network - no cloud services, accounts, or subscriptions
+* Runs entirely on your local network - no cloud services, no online accounts, no subscriptions
 * Switches between two connected sources automatically (e.g. turntable and CD player)
 * 6-band output equaliser and per-input 3-band equaliser
+* Stylus, belt, and bearing maintenance tracking for turntable inputs
 
 ---
 
@@ -41,7 +42,15 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 
 **autostream** listens on one or two audio inputs. When sound is detected, it streams automatically to your AirPlay speakers. When the music stops, the stream stops. If you switch from vinyl to CD, **autostream** switches too.
 
-Everything runs locally on your network — no cloud services, no logins, no recommendations.
+Everything runs locally on your network — no cloud services, no online accounts, no recommendations.
+
+---
+
+## Network Access
+
+Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`). **HTTPS is not supported.** Publicly trusted certificates are not available for `.local` hostnames; private HTTPS would require installing and trusting a local certificate authority on every phone or computer, which conflicts with autostream's zero-configuration setup and recovery design. Do not use `https://`.
+
+> Note: the installer and updater download releases and packages over HTTPS from GitHub — this is separate from the local Web UI transport.
 
 ---
 

@@ -41,8 +41,12 @@ Use BCM (Broadcom) pin numbering throughout.
 Internal pull-ups are enabled by `gpiozero`/`lgpio` — no external resistors
 needed on the encoder signal lines.
 
+The SW (button) line enables **mute/unmute**: pressing the encoder toggles the
+selected outputs to zero and back. Wire GPIO 22 to use this feature; omit it or
+set `sw_gpio: null` in `/etc/autostream/autostream-dial.json` to disable it.
+
 GPIO assignments can be changed in `/etc/autostream/autostream-dial.json` after
-install. The default values (CLK=17, DT=27) match the wiring above.
+install. The default values (CLK=17, DT=27, SW=22) match the wiring above.
 
 ---
 

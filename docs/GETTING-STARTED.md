@@ -24,6 +24,14 @@ The default `owntone-mini` build supports AirPlay and Chromecast. Use `--owntone
 
 ---
 
+## Network Access
+
+Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`). **HTTPS is not supported.** Publicly trusted certificates are not available for `.local` hostnames; private HTTPS would require installing and trusting a local certificate authority on every phone or computer, which conflicts with autostream's zero-configuration setup and recovery design. Do not use `https://`.
+
+The installer and updater download releases and packages over HTTPS from GitHub — this is separate from the local Web UI transport.
+
+---
+
 ## Initial Setup
 
 After installation, **autostream** only requires a short, one-time setup using an iPhone or iPad.
@@ -96,6 +104,42 @@ autostream is designed to be used from your device's home screen for an easy, ap
 ![IOS Add to Home Screen Prompt](add-to-home-screen-2.png)
 
 Once added, autostream behaves like a regular app — providing quick access to volume controls and speaker selection without opening Safari manually.
+
+---
+
+## Maintenance Tracking
+
+**autostream** tracks stylus, belt, and bearing wear for inputs configured as turntables.
+
+### Finding the Service page
+
+Open the autostream Web UI and tap **Service** in the navigation. The Service page is only shown when at least one input is configured as a turntable.
+
+### What is tracked
+
+| Item | Basis |
+|------|-------|
+| Stylus | Playback hours only |
+| Belt | Playback hours, calendar time, or both |
+| Bearing | Playback hours, calendar time, or both |
+
+Set a dimension to **0 / Don't track** to disable tracking for that item.
+
+### Life values and presets
+
+The UI offers common presets for stylus and belt life, but you can type in any positive value. Custom values are accepted and saved normally.
+
+### During playback
+
+Counters are updated while playback is active, so the **Service** page reflects live values including the current session.
+
+### Warning banners and indicators
+
+When a component is approaching or has exceeded its set life, a banner appears at the top of the Home Screen and a dot indicator appears next to the **Service** navigation item.
+
+### Resetting counters
+
+After servicing, tap the relevant button — **Mark Stylus Replaced**, **Mark Belt Replaced**, or **Mark Bearing Oiled** — to reset that counter to zero and clear the warning.
 
 ---
 
