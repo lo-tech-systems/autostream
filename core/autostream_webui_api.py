@@ -51,6 +51,14 @@ from autostream_core import (
     set_live_output_gain,
     update_playback_input_config,
 )
+from autostream_appliance_models import (
+    _OUTPUT_EQ_ALL_FIELDS,
+    _OUTPUT_EQ_BOOL_FIELDS,
+    _OUTPUT_EQ_DB_FIELDS,
+    apply_eq_field,
+    apply_eq_reset,
+    build_home_state,
+)
 from autostream_player_service import list_outputs, update_output
 from autostream_sysutils import run_admin_cmd
 from autostream_webui_common import locked_load_config, _fallback_input_snapshot
@@ -230,56 +238,11 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
 
 def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
     """Return Owntone outputs (id/name/selected/volume) for live refresh on '/'."""
-    try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
-    except Exception as e:
-        send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
+    home = build_home_state(state.config_path)
+    if not home.get("ok"):
+        send_json(handler, 500, {"ok": False, "error": home.get("error", ""), "outputs": []})
         return
-
-    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
-    if not outputs_result.ok:
-        send_json(
-            handler,
-            200,
-            {
-                "ok": False,
-                "error": outputs_result.message,
-                "outputs": [],
-            },
-        )
-        return
-    outputs = list(outputs_result.outputs)
-
-    default_output_name = parsed.owntone.output_name
-    hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
-
-    filtered = []
-    for out in outputs:
-        out_id = str(out.id or "").strip()
-        name = str(out.name or "").strip()
-        if not out_id or not name:
-            continue
-
-        selected = bool(out.selected)
-        # Mirror '/' page behaviour: hide hidden outputs unless selected or default
-        if name.casefold() in hidden and not selected and name != default_output_name:
-            continue
-
-        vol = max(0, min(100, int(out.volume_percent)))
-        filtered.append({
-            "id": out_id,
-            "name": name,
-            "selected": selected,
-            "volume": vol,
-            "is_default": (name == default_output_name),
-        })
-
-    # Sort: default first (matching '/' render)
-    if default_output_name:
-        filtered.sort(key=lambda o: (0 if o["is_default"] else 1, o["name"].casefold()))
-
-    send_json(handler, 200, {"ok": True, "outputs": filtered})
+    send_json(handler, 200, {"ok": True, "outputs": home["outputs"]})
 
 
 # -----------------------------------------------------------------------------
@@ -287,21 +250,34 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
 # -----------------------------------------------------------------------------
 
 def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
-    is_playing = any_monitor_capturing()
-    try:
-        input_levels = get_monitor_levels_dbfs()
-    except Exception:
+    if state is not None:
+        home = build_home_state(state.config_path)
+        input_levels = home.get("input_levels", [])
+        playback_dict = home.get("playback", {})
+        warnings = home.get("warnings", {})
+    else:
         input_levels = []
-    playback = get_playback_snapshot()
+        try:
+            input_levels = get_monitor_levels_dbfs()
+        except Exception:
+            pass
+        playback = get_playback_snapshot()
+        playback_dict = playback.to_public_dict()
+        warnings = {
+            "stylus": playback.stylus_banner_text or "",
+            "belt": playback.belt_banner_text or "",
+            "bearing": playback.bearing_banner_text or "",
+        }
+    is_playing = any_monitor_capturing()
     send_json(handler, 200, {
         "playing": is_playing,
         "status_text": _status_text_for_home(is_playing, input_levels),
         "status_class": "playing" if is_playing else "waiting",
         "input_levels": input_levels,
-        "playback": playback.to_public_dict(),
-        "playback_banner_text": playback.stylus_banner_text,
-        "belt_banner_text": playback.belt_banner_text,
-        "bearing_banner_text": playback.bearing_banner_text,
+        "playback": playback_dict,
+        "playback_banner_text": warnings.get("stylus"),
+        "belt_banner_text": warnings.get("belt"),
+        "bearing_banner_text": warnings.get("bearing"),
     })
 
 
@@ -522,16 +498,6 @@ def send_update_status_json(handler) -> None:
 # Output EQ JSON endpoints
 # -----------------------------------------------------------------------------
 
-# Fields accepted by send_output_eq_config_json and their types.
-_OUTPUT_EQ_DB_FIELDS = frozenset({
-    "gain_db", "peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db",
-})
-_OUTPUT_EQ_BOOL_FIELDS = frozenset({"auto_trim_enabled"})
-_OUTPUT_EQ_ALL_FIELDS = _OUTPUT_EQ_DB_FIELDS | _OUTPUT_EQ_BOOL_FIELDS
-_OUTPUT_EQ_DB_MIN = -12.0
-_OUTPUT_EQ_DB_MAX = 12.0
-
-
 def send_output_eq_config_json(handler, state, body: str) -> None:
     """POST /api/output_eq/config — auto-save one output EQ field.
 
@@ -540,10 +506,6 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
 
     Accepted fields:
         gain_db, auto_trim_enabled, peq1_db … peq6_db
-
-    Each save atomically writes autostream.json and immediately applies the
-    live change to autostream_monitor.  For PEQ band changes, all six bands
-    are re-sent to the monitor so the output EQ state stays consistent.
     """
     try:
         payload = json.loads(body or "{}")
@@ -553,89 +515,24 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
         return
 
-    if field not in _OUTPUT_EQ_ALL_FIELDS:
-        send_json(handler, 400, {"ok": False, "error": "Unknown field"})
-        return
-
-    section = "output_eq"
-
-    if field in _OUTPUT_EQ_BOOL_FIELDS:
-        normalised_bool = value_raw.lower() in ("true", "1", "yes")
-        normalised_str = "true" if normalised_bool else "false"
-        try:
-            with CONFIG_IO_LOCK:
-                cfg = load_config(state.config_path)
-                cfg.setdefault(section, {})[field] = normalised_bool
-                save_config(state.config_path, cfg)
-            set_live_output_auto_trim(normalised_bool)
-        except Exception as e:
-            logging.exception("send_output_eq_config_json: save failed")
-            send_json(handler, 200, {"ok": False, "error": str(e)})
-            return
-        send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
-        return
-
-    # Numeric dB field
     try:
-        value = float(value_raw)
-    except ValueError:
-        send_json(handler, 400, {"ok": False, "error": "Value must be numeric"})
+        ok, normalised_str, err = apply_eq_field(state.config_path, field, value_raw)
+    except ValueError as e:
+        send_json(handler, 400, {"ok": False, "error": str(e)})
         return
 
-    value = max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, value))
-    normalised_str = f"{value:.1f}"
-
-    try:
-        with CONFIG_IO_LOCK:
-            cfg = load_config(state.config_path)
-            p = parse_config(cfg)
-            cfg.setdefault(section, {})[field] = value
-            save_config(state.config_path, cfg)
-
-        # Apply the live change.  For any PEQ band change, rebuild the full
-        # six-band array from the pre-write parsed config, substituting the
-        # one changed band, to avoid a second config parse.
-        oeq = p.output_eq
-        if field == "gain_db":
-            set_live_output_gain(value)
-        else:
-            band_vals = {b: float(getattr(oeq, b)) for b in _OUTPUT_EQ_DB_FIELDS if b != "gain_db"}
-            band_vals[field] = value
-            set_live_output_eq(
-                band_vals["peq1_db"],
-                band_vals["peq2_db"],
-                band_vals["peq3_db"],
-                band_vals["peq4_db"],
-                band_vals["peq5_db"],
-                band_vals["peq6_db"],
-            )
-    except Exception as e:
-        logging.exception("send_output_eq_config_json: save failed")
-        send_json(handler, 200, {"ok": False, "error": str(e)})
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": err})
         return
 
     send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
 
 
 def send_output_eq_reset_json(handler, state) -> None:
-    """POST /api/output_eq/reset — zero all EQ bands and output gain.
-
-    Sets peq1_db … peq6_db and gain_db to 0.0 in autostream.json and
-    immediately applies the change to autostream_monitor.
-    """
-    try:
-        with CONFIG_IO_LOCK:
-            cfg = load_config(state.config_path)
-            section = "output_eq"
-            eq = cfg.setdefault(section, {})
-            for field in _OUTPUT_EQ_DB_FIELDS:
-                eq[field] = 0.0
-            save_config(state.config_path, cfg)
-        set_live_output_gain(0.0)
-        set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    except Exception as e:
-        logging.exception("send_output_eq_reset_json: reset failed")
-        send_json(handler, 200, {"ok": False, "error": str(e)})
+    """POST /api/output_eq/reset — zero all EQ bands and output gain."""
+    ok, err = apply_eq_reset(state.config_path)
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": err})
         return
     send_json(handler, 200, {"ok": True})
 

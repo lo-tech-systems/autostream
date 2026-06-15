@@ -71,11 +71,11 @@ def _call_output_update(body: dict, *, tmp_path: Path,
          patch("autostream_webui_post_handlers.locked_load_config",
                return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
          patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
-         patch("autostream_webui_post_handlers.update_output",
+         patch("autostream_appliance_models.update_output",
                return_value=update_result or ok_result), \
-         patch("autostream_webui_post_handlers.set_output_enabled",
+         patch("autostream_appliance_models.set_output_enabled",
                return_value=disable_result or ok_result), \
-         patch("autostream_webui_post_handlers.submit_output_pin",
+         patch("autostream_appliance_models.submit_output_pin",
                return_value=pin_result or ok_result):
         mock_parse.return_value.owntone.base_url = "http://localhost:3689"
         mock_parse.return_value.owntone.output_offsets_ms = {}
@@ -482,10 +482,10 @@ class TestOutputUpdateForwarding:
              patch("autostream_webui_post_handlers.locked_load_config",
                    return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
              patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
-             patch("autostream_webui_post_handlers.update_output", side_effect=fake_update_output), \
-             patch("autostream_webui_post_handlers.set_output_enabled",
+             patch("autostream_appliance_models.update_output", side_effect=fake_update_output), \
+             patch("autostream_appliance_models.set_output_enabled",
                    return_value=_make_result_ok()), \
-             patch("autostream_webui_post_handlers.submit_output_pin",
+             patch("autostream_appliance_models.submit_output_pin",
                    return_value=_make_result_ok()):
             mock_parse.return_value.owntone.base_url = "http://localhost:3689"
             mock_parse.return_value.owntone.output_offsets_ms = {"99": 200}

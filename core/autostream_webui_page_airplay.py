@@ -14,6 +14,7 @@ import logging
 
 from typing import Optional
 
+from autostream_appliance_models import build_output_list
 from autostream_config import parse_config
 from autostream_core import (
     get_monitor_levels_dbfs,
@@ -154,41 +155,29 @@ def send_airplay_page(
         vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
 
     outputs_result = list_outputs(owntone_base_url, timeout=3)
-    outputs = list(outputs_result.outputs) if outputs_result.ok else []
+    raw_outputs = list(outputs_result.outputs) if outputs_result.ok else []
     if not outputs_result.ok:
         _placeholder_state = "unreachable"
-    elif not outputs:
+    elif not raw_outputs:
         _placeholder_state = "empty"
     else:
         _placeholder_state = "hidden"
 
-    # Keep the configured default output at the top; otherwise use a stable
-    # alphabetical order regardless of whether an output is currently enabled.
-    outputs = sorted(
-        outputs,
-        key=lambda output: (
-            0 if (output.name == default_output_name) else 1,
-            str(output.name or "").casefold(),
-        ),
-    )
+    # Filter and sort outputs through the shared model helper.
+    output_dicts = build_output_list(parsed, raw_outputs)
 
     outputs_html = ""
-    for out in outputs:
-        out_id = str(out.id or "").strip()
-        if not out_id:
-            continue
-        name = out.name or f"Output {out_id}"
-        selected = bool(out.selected)
-        if str(name).strip().casefold() in hidden_output_names and not selected and name != default_output_name:
-            continue
-
-        volume = max(0, min(100, int(out.volume_percent)))
-        safe_name = html.escape(str(name))
-        default_badge = '<span class="output-card-default">Default</span>' if name == default_output_name else ""
+    for out in output_dicts:
+        out_id = out["id"]
+        name = out["name"]
+        selected = out["selected"]
+        volume = out["volume"]
+        safe_name = html.escape(name)
+        default_badge = '<span class="output-card-default">Default</span>' if out["is_default"] else ""
         state_text = "On" if selected else "Off"
         state_cls = "on" if selected else "off"
         card_state_cls = "output-card-on" if selected else "output-card-off"
-        is_default = "1" if name == default_output_name else "0"
+        is_default = "1" if out["is_default"] else "0"
         outputs_html += f"""
           <div class="output-card {card_state_cls}" id="output_card_{out_id}" data-output-id="{out_id}" data-is-default="{is_default}">
             <div class="output-card-head">
@@ -210,11 +199,7 @@ def send_airplay_page(
         """
 
     # Master volume: average of currently-selected outputs, or preset if none on.
-    _selected_volumes = [
-        max(0, min(100, int(out.volume_percent)))
-        for out in outputs
-        if out.selected
-    ]
+    _selected_volumes = [out["volume"] for out in output_dicts if out["selected"]]
     if _selected_volumes:
         initial_master = round(sum(_selected_volumes) / len(_selected_volumes))
         master_inactive = False

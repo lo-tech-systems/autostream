@@ -60,9 +60,6 @@ from autostream_players import (
 from autostream_player_service import (
     config_airplay_mode_to_backend,
     save_setting,
-    set_output_enabled,
-    submit_output_pin,
-    update_output,
 )
 from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
@@ -94,88 +91,21 @@ def _fld(form: dict, n: str, d: str = "") -> str:
 def handle_output_update(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body)
-        out_id = payload.get("id")
-        op = (payload.get("op") or "").strip().lower()
-        selected = bool(payload.get("selected", False))
-
-        # PIN may arrive as string or number depending on client implementation.
-        pin_raw = payload.get("pin") if isinstance(payload, dict) else None
-        pin = (str(pin_raw).strip() if pin_raw is not None else "")
+        out_id = str(payload.get("id") or "").strip()
 
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
         base_url = parsed.owntone.base_url.rstrip("/")
-        out_id_text = str(out_id or "").strip()
-        if not out_id_text:
-            send_json(handler, 200, {"ok": False, "error": "Missing output id"})
-            return
 
-        if op == "pin":
-            if not pin:
-                send_json(handler, 200, {"ok": False, "error": "Missing PIN", "id": out_id_text})
-                return
-            pin_result = submit_output_pin(base_url, out_id_text, pin, timeout=3)
-            if not pin_result.ok and pin_result.error_code == "pin_invalid":
-                send_json(handler, 200, {
-                    "ok": False,
-                    "id": out_id_text,
-                    "pin_invalid": True,
-                    "error": pin_result.message,
-                })
-                return
-            if not pin_result.ok:
-                send_json(handler, 200, {
-                    "ok": False,
-                    "id": out_id_text,
-                    "error": pin_result.message,
-                })
-                return
-            send_json(handler, 200, {"ok": True, "id": out_id_text})
-            return
+        op = (payload.get("op") or "").strip().lower()
+        offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id) if out_id else None
+        offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
+        mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE) if out_id else DEFAULT_AIRPLAY_MODE
+        mode = config_airplay_mode_to_backend(mode_text)
 
-        if selected:
-            volume = max(0, min(100, int(payload.get("volume", 50))))
-            offset_ms = parsed.owntone.output_offsets_ms.get(out_id_text)
-            mode_text = parsed.owntone.output_airplay_modes.get(out_id_text, DEFAULT_AIRPLAY_MODE)
-            update_result = update_output(
-                base_url,
-                out_id_text,
-                enabled=True,
-                volume_percent=volume,
-                offset_ms=int(offset_ms) if offset_ms is not None else None,
-                mode=config_airplay_mode_to_backend(mode_text),
-                timeout=3,
-            )
-            if not update_result.ok and update_result.error_code == "pin_required":
-                send_json(handler, 200, {
-                    "ok": False,
-                    "pin_required": True,
-                    "id": out_id_text,
-                    "output_name": str(payload.get("name") or ""),
-                    "error": update_result.message,
-                })
-                return
-            if not update_result.ok:
-                send_json(handler, 200, {
-                    "ok": False,
-                    "id": out_id_text,
-                    "error": update_result.message,
-                    "pin_invalid": False,
-                })
-                return
-
-            send_json(handler, 200, {"ok": True, "id": out_id_text})
-            return
-
-        disable_result = set_output_enabled(base_url, out_id_text, False, timeout=3)
-        if not disable_result.ok:
-            send_json(handler, 200, {
-                "ok": False,
-                "id": out_id_text,
-                "error": disable_result.message,
-            })
-            return
-        send_json(handler, 200, {"ok": True, "id": out_id_text})
+        from autostream_appliance_models import apply_output_mutation
+        result = apply_output_mutation(base_url, out_id, payload, offset_ms=offset_ms, mode=mode)
+        send_json(handler, 200, result)
     except Exception as e:
         logging.error("Update failed: %s", e)
         send_json(handler, 200, {"ok": False, "error": str(e)})
