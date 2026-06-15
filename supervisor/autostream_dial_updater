@@ -44,9 +44,7 @@ import fcntl
 import json
 import logging
 import os
-import shutil
 import sys
-import tarfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -58,8 +56,9 @@ if _HERE not in sys.path:
 
 from autostream_update_support import (
     FLOCK_BIN,
-    _download_file, _find_systemd_run, _github_latest_release,
-    _normalise_update_channel, _read_env_file, _run, _version_key,
+    _find_systemd_run, _github_latest_release,
+    _normalise_update_channel, _read_env_file, _version_key,
+    is_active_transient_unit, schedule_locked_installer, stage_release,
 )
 
 # ---- Paths / constants -------------------------------------------------------
@@ -152,14 +151,7 @@ def _dial_update_unit_active() -> bool:
     Fail-closed: raises RuntimeError on systemctl error so callers reject
     the request rather than proceeding with a potentially concurrent install.
     """
-    rc, out, err = _run(
-        ["systemctl", "list-units", "--state=active", "--no-legend", "--plain",
-         "autostream-update-*.service"],
-        timeout=10,
-    )
-    if rc != 0:
-        raise RuntimeError(f"systemctl exited rc={rc}: {err!r}")
-    return bool(out.strip())
+    return is_active_transient_unit("autostream-update-*.service")
 
 
 # ---- Commands ----------------------------------------------------------------
@@ -293,50 +285,15 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             _log(f"apply: refused — unable to recheck update unit status after lock: {e}")
             return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
 
-        # Clean up previous staging dir
-        if STAGING_DIR.exists():
-            try:
-                shutil.rmtree(str(STAGING_DIR))
-                _log(f"apply: removed previous staging dir {STAGING_DIR}")
-            except Exception as e:
-                _log(f"apply: warning — could not remove previous staging dir: {e}")
-
+        _log(f"apply: staging release tag={tag}")
         try:
-            STAGING_DIR.mkdir(parents=True, exist_ok=True)
-            os.chmod(str(STAGING_DIR), 0o700)
-
-            tar_path = STAGING_DIR / "release.tgz"
-            _log("apply: downloading release tarball")
-            _download_file(tarball_url, tar_path, UA, timeout=120)
-
-            extract_dir = STAGING_DIR / "src"
-            extract_dir.mkdir(parents=True, exist_ok=True)
-
-            _log("apply: extracting tarball")
-            with tarfile.open(tar_path, "r:gz") as tf:
-                tf.extractall(extract_dir, filter="data")
-
-            top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
-            repo_root = top_dirs[0] if len(top_dirs) == 1 else extract_dir
-
-            installer = repo_root / "autostream_dial_install.sh"
-            if not installer.exists():
-                raise FileNotFoundError(
-                    f"autostream_dial_install.sh not found in extracted tree at {repo_root}"
-                )
-            os.chmod(str(installer), 0o755)
-
-            tag_file = STAGING_DIR / "release_tag"
-            tag_file.write_text(tag + "\n", encoding="utf-8")
-            os.chmod(str(tag_file), 0o600)
-            _log(f"apply: staged release at {repo_root}")
-
+            installer = stage_release(
+                tarball_url, tag, STAGING_DIR,
+                "autostream_dial_install.sh", [], UA,
+            )
+            _log(f"apply: staged release at {installer.parent}")
         except Exception as e:
             _log(f"apply: staging failed: {e}")
-            try:
-                shutil.rmtree(str(STAGING_DIR), ignore_errors=True)
-            except Exception:
-                pass
             return {"ok": False, "error": "Release staging failed", "details": str(e)}
 
         # Create the updating flag before writing STATUS=in_progress so nginx
@@ -359,19 +316,13 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             unit_suffix = f"{int(time.time())}-{os.getpid()}"
             unit_name   = f"autostream-update-dial-{unit_suffix}"
 
-            cmd = [
-                str(systemd_run), "--quiet", "--collect",
-                f"--unit={unit_name}",
-                "--on-active=1",
-                "--property=Type=oneshot",
-                f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
-                "--setenv=AUTOSTREAM_DIAL_LOCKED=1",
-                "--",
-                FLOCK_BIN, "--exclusive", str(LOCK_PATH),
-                str(installer), "--update",
-            ]
-
-            rc, out, err = _run(cmd, timeout=15)
+            rc, out, err = schedule_locked_installer(
+                systemd_run, unit_name, LOCK_PATH, installer, ["--update"],
+                delay=1, extra_env={
+                    "AUTOSTREAM_RELEASE_TAG": tag,
+                    "AUTOSTREAM_DIAL_LOCKED": "1",
+                },
+            )
             if rc != 0:
                 write_update_result("failure", f"systemd-run failed scheduling {tag}", percent=0)
                 _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")

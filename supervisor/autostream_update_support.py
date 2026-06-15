@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -208,3 +209,117 @@ def _find_systemd_run() -> Optional[str]:
     if p and os.path.isabs(p) and os.access(p, os.X_OK):
         return p
     return None
+
+
+def is_active_transient_unit(pattern: str) -> bool:
+    """Return True if any unit matching *pattern* is currently active.
+
+    Raises RuntimeError on systemctl failure so callers used for admission
+    control can reject the request conservatively rather than failing open.
+    """
+    rc, out, err = _run(
+        ["systemctl", "list-units", "--state=active", "--no-legend", "--plain", pattern],
+        timeout=10,
+    )
+    if rc != 0:
+        raise RuntimeError(f"systemctl exited rc={rc}: {err!r}")
+    return bool(out.strip())
+
+
+def stage_release(
+    tarball_url: str,
+    tag: str,
+    staging_dir: Path,
+    installer_filename: str,
+    required_paths: list,
+    ua: str,
+) -> Path:
+    """Download, extract, and verify a release tarball into *staging_dir*.
+
+    Cleans and recreates *staging_dir* with mode 0700, downloads the tarball,
+    extracts with the safe 'data' filter, locates the installer, marks it
+    executable, verifies *required_paths* exist, writes release_tag, and
+    returns the installer path.  Removes partial staging on any failure and
+    re-raises so callers can format a product-specific error response.
+    """
+    if staging_dir.exists():
+        shutil.rmtree(str(staging_dir))
+
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(staging_dir), 0o700)
+
+    try:
+        tar_path = staging_dir / "release.tgz"
+        _download_file(tarball_url, tar_path, ua, timeout=120)
+
+        extract_dir = staging_dir / "src"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(tar_path, "r:gz") as tf:
+            # filter='data' (Python 3.12+) strips absolute paths, '../' traversal
+            # sequences, and unsafe member types (devices, setuid bits) before
+            # extraction.  Without a filter a crafted tarball could write to
+            # arbitrary filesystem paths because the updaters run as root.
+            tf.extractall(extract_dir, filter="data")
+
+        top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
+        repo_root = top_dirs[0] if len(top_dirs) == 1 else extract_dir
+
+        installer = repo_root / installer_filename
+        if not installer.exists():
+            raise FileNotFoundError(
+                f"{installer_filename} not found in extracted tree at {repo_root}"
+            )
+        os.chmod(str(installer), 0o755)
+
+        for rel_path in required_paths:
+            if not (repo_root / rel_path).exists():
+                raise FileNotFoundError(
+                    f"Expected {rel_path!r} not found in extracted tree at {repo_root}"
+                )
+
+        tag_file = staging_dir / "release_tag"
+        tag_file.write_text(tag + "\n", encoding="utf-8")
+        os.chmod(str(tag_file), 0o600)
+
+        return installer
+    except Exception:
+        shutil.rmtree(str(staging_dir), ignore_errors=True)
+        raise
+
+
+def schedule_locked_installer(
+    systemd_run: str,
+    unit_name: str,
+    lock_path: "str | Path",
+    installer: "str | Path",
+    installer_args: list,
+    delay: int = 1,
+    extra_env: Optional[dict] = None,
+    extra_properties: Optional[list] = None,
+) -> Tuple[int, str, str]:
+    """Build and run a systemd-run + flock command to schedule an installer.
+
+    Returns *(rc, stdout, stderr)*.
+    """
+    cmd: list = [
+        systemd_run,
+        "--quiet",
+        "--collect",
+        f"--unit={unit_name}",
+        f"--on-active={delay}",
+        "--property=Type=oneshot",
+    ]
+    if extra_properties:
+        for prop in extra_properties:
+            cmd.append(f"--property={prop}")
+    if extra_env:
+        for k, v in extra_env.items():
+            cmd.append(f"--setenv={k}={v}")
+    cmd += [
+        "--",
+        FLOCK_BIN, "--exclusive", str(lock_path),
+        str(installer),
+    ]
+    cmd.extend(installer_args)
+    return _run(cmd, timeout=15)

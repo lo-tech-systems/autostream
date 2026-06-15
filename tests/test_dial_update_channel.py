@@ -26,6 +26,7 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
+import autostream_update_support as _asu
 from autostream_update_support import API_LATEST, API_RELEASES
 
 
@@ -403,9 +404,9 @@ class TestDialUpdaterCmdApply:
 
         with patch.object(mod, "_resolve_dial_release", side_effect=fake_resolve), \
              patch.object(mod, "_dial_update_unit_active", return_value=False), \
-             patch.object(mod, "_download_file", side_effect=fake_download), \
+             patch.object(_asu, "_download_file", side_effect=fake_download), \
              patch.object(mod, "_find_systemd_run", return_value="/fake/systemd-run"), \
-             patch.object(mod, "_run", side_effect=fake_run):
+             patch.object(_asu, "_run", side_effect=fake_run):
             result = mod.cmd_apply()
 
         assert result.get("ok") is True, f"Expected ok:True, got {result}"

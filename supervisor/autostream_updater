@@ -31,9 +31,7 @@ import errno
 import fcntl
 import json
 import os
-import shutil
 import sys
-import tarfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -45,8 +43,9 @@ if _HERE not in sys.path:
 
 from autostream_update_support import (
     FLOCK_BIN, RELEASES_HTML,
-    _download_file, _find_systemd_run, _github_latest_release,
-    _normalise_update_channel, _read_env_file, _run, _version_key,
+    _find_systemd_run, _github_latest_release,
+    _normalise_update_channel, _read_env_file, _version_key,
+    is_active_transient_unit, schedule_locked_installer, stage_release,
 )
 
 # ---- Paths / constants ----
@@ -91,14 +90,7 @@ def _update_unit_active() -> bool:
     Raises RuntimeError on systemctl failure so callers used for admission
     control can reject the request conservatively rather than failing open.
     """
-    rc, out, err = _run(
-        ["systemctl", "list-units", "--state=active", "--no-legend", "--plain",
-         "autostream-update-*"],
-        timeout=10,
-    )
-    if rc != 0:
-        raise RuntimeError(f"systemctl exited rc={rc}: {err!r}")
-    return bool(out.strip())
+    return is_active_transient_unit("autostream-update-*")
 
 
 # ---- Config helpers ----
@@ -295,60 +287,13 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             _log(f"apply: refused — unable to recheck update unit status after lock: {e}")
             return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
 
-        # Clean up any previous staging directory so stale extracts do not accumulate.
-        if STAGING_DIR.exists():
-            try:
-                shutil.rmtree(str(STAGING_DIR))
-                _log(f"apply: removed previous staging dir {STAGING_DIR}")
-            except Exception as e:
-                _log(f"apply: warning — could not remove previous staging dir: {e}")
-
+        _log(f"apply: staging release tag={tag}")
         try:
-            STAGING_DIR.mkdir(parents=True, exist_ok=True)
-            os.chmod(str(STAGING_DIR), 0o700)
-
-            tar_path = STAGING_DIR / "release.tgz"
-            _log("apply: downloading release tarball")
-            _download_file(tarball_url, tar_path, UA, timeout=120)
-
-            extract_dir = STAGING_DIR / "src"
-            extract_dir.mkdir(parents=True, exist_ok=True)
-
-            _log("apply: extracting tarball")
-            with tarfile.open(tar_path, "r:gz") as tf:
-                # filter='data' (Python 3.12+) strips absolute paths, '../' traversal
-                # sequences, and unsafe member types (devices, setuid bits) before
-                # extraction.  Without a filter, a crafted tarball could write to
-                # arbitrary filesystem paths because this runs as root.
-                tf.extractall(extract_dir, filter="data")
-
-            # GitHub tarballs have a single top-level directory.
-            top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
-            if len(top_dirs) == 1:
-                repo_root = top_dirs[0]
-            else:
-                repo_root = extract_dir
-
-            installer = repo_root / "autostream_install.sh"
-            if not installer.exists():
-                raise FileNotFoundError(f"autostream_install.sh not found in extracted tree at {repo_root}")
-
-            # Ensure the installer is executable.
-            os.chmod(str(installer), 0o755)
-
-            # Validate the staging directory contains the expected structure.
-            if not (repo_root / "system").is_dir():
-                raise FileNotFoundError(f"Expected 'system/' directory not found in extracted tree at {repo_root}")
-
-            _log(f"apply: staged release at {repo_root}")
-
-            # Write the release tag to the staging dir so the boot-time retry
-            # service can recover AUTOSTREAM_RELEASE_TAG after a watchdog reset.
-            tag_file = STAGING_DIR / "release_tag"
-            tag_file.write_text(tag + "\n", encoding="utf-8")
-            os.chmod(str(tag_file), 0o600)
-            _log(f"apply: wrote release_tag to {tag_file}")
-
+            installer = stage_release(
+                tarball_url, tag, STAGING_DIR,
+                "autostream_install.sh", ["system"], UA,
+            )
+            _log(f"apply: staged release at {installer.parent}")
         except Exception as e:
             _log(f"apply: staging failed: {e}")
             return {"ok": False, "error": "Release staging failed", "details": str(e)}
@@ -361,21 +306,10 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         unit_suffix = f"{int(time.time())}-{os.getpid()}"
         unit_name = f"autostream-update-{unit_suffix}"
 
-        cmd = [
-            str(systemd_run),
-            "--quiet",
-            "--collect",
-            f"--unit={unit_name}",
-            "--on-active=1",           # fire 1 second after scheduling
-            "--property=Type=oneshot",
-            f"--setenv=AUTOSTREAM_RELEASE_TAG={tag}",
-            "--",
-            FLOCK_BIN, "--exclusive", str(UPDATE_LOCK_FILE),
-            str(installer),
-            "--update",
-        ]
-
-        rc, out, err = _run(cmd, timeout=15)
+        rc, out, err = schedule_locked_installer(
+            systemd_run, unit_name, UPDATE_LOCK_FILE, installer, ["--update"],
+            delay=1, extra_env={"AUTOSTREAM_RELEASE_TAG": tag},
+        )
         if rc != 0:
             _log(f"apply: systemd-run scheduling failed rc={rc} stderr='{err}'")
             return {"ok": False, "error": "Failed to schedule installer", "details": err or out}

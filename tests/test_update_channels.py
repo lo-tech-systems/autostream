@@ -577,22 +577,24 @@ class TestMainUpdaterApplySingleLookup:
             resolved_calls.append(channel)
             return (True, FAKE_TAG, FAKE_TARBALL, None, None)
 
-        def fake_download(url, dst, ua, timeout=120):
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_bytes(b"placeholder")
-            downloaded_urls.append(url)
+        # Build a real tarball so stage_release extraction succeeds.
+        real_tar_dir = tmp_path / "tarball_build"
+        real_tar_dir.mkdir()
+        repo_src = real_tar_dir / f"repo-{FAKE_TAG}"
+        repo_src.mkdir()
+        (repo_src / "autostream_install.sh").write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(str(repo_src / "autostream_install.sh"), 0o755)
+        (repo_src / "system").mkdir()
+        import tarfile as _tf
+        real_tar = real_tar_dir / "fake.tgz"
+        with _tf.open(real_tar, "w:gz") as tf:
+            tf.add(str(repo_src), arcname=f"repo-{FAKE_TAG}")
 
-        @contextmanager
-        def fake_taropen(path, mode):
-            # Create a minimal extracted tree so the installer-detection passes.
-            extract_dir = staging_dir / "src"
-            repo_dir = extract_dir / "repo-v1.3.0"
-            repo_dir.mkdir(parents=True, exist_ok=True)
-            installer = repo_dir / "autostream_install.sh"
-            installer.write_text("#!/bin/bash\n", encoding="utf-8")
-            os.chmod(str(installer), 0o755)
-            (repo_dir / "system").mkdir(exist_ok=True)
-            yield MagicMock()
+        def fake_download(url, dst, ua, timeout=120):
+            import shutil
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(real_tar), str(dst))
+            downloaded_urls.append(url)
 
         def fake_run(cmd, timeout=60):
             run_cmds.append(list(cmd))
@@ -602,10 +604,9 @@ class TestMainUpdaterApplySingleLookup:
 
         with patch.object(mod, "_resolve_release", side_effect=fake_resolve), \
              patch.object(mod, "_update_unit_active", return_value=False), \
-             patch.object(mod, "_download_file", side_effect=fake_download), \
+             patch.object(_sup, "_download_file", side_effect=fake_download), \
              patch.object(mod, "_find_systemd_run", return_value="/fake/systemd-run"), \
-             patch.object(mod, "_run", side_effect=fake_run), \
-             patch("tarfile.open", fake_taropen):
+             patch.object(_sup, "_run", side_effect=fake_run):
             result = mod.cmd_apply()
 
         assert result.get("ok") is True, f"Expected ok:True, got {result}"

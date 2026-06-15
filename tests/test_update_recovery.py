@@ -25,6 +25,10 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
+_SUPERVISOR_DIR = str(REPO_ROOT / "supervisor")
+if _SUPERVISOR_DIR not in sys.path:
+    sys.path.insert(0, _SUPERVISOR_DIR)
+
 from conftest import load_supervisor_script
 
 
@@ -176,9 +180,8 @@ class TestRetryCapExhausted:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch("subprocess.run") as mock_run, \
+             patch.object(mod, "_run", return_value=(0, "", "")), \
              _chown_noop():
-            mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
             rc = mod.main()
         assert rc == 0
 
@@ -201,9 +204,8 @@ class TestRetrySuccessPath:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch("subprocess.run") as mock_run, \
+             patch.object(mod, "_run", return_value=(0, "", "")), \
              _chown_noop():
-            mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
             rc = mod.main()
 
         assert rc == 0
@@ -223,9 +225,8 @@ class TestRetrySuccessPath:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch("subprocess.run") as mock_run, \
+             patch.object(mod, "_run", return_value=(0, "", "")), \
              _chown_noop():
-            mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
             rc = mod.main()
 
         assert rc == 0
@@ -241,16 +242,16 @@ class TestRetrySuccessPath:
         mod.RELEASE_TAG_FILE.write_text("v1.2.3\n")
         captured_cmd = []
 
-        def fake_run(cmd, **kw):
+        def fake_run(cmd, timeout=60):
             captured_cmd.extend(cmd)
-            return MagicMock(returncode=0, stderr="", stdout="")
+            return (0, "", "")
 
         with _geteuid_root(), \
              patch.object(mod, "_is_pre_boot", return_value=True), \
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch("subprocess.run", side_effect=fake_run), \
+             patch.object(mod, "_run", side_effect=fake_run), \
              _chown_noop():
             mod.main()
 
@@ -303,7 +304,7 @@ class TestRetrySchedulingFailure:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch("subprocess.run", side_effect=OSError("spawn failed")), \
+             patch.object(mod, "_run", side_effect=OSError("spawn failed")), \
              _chown_noop():
             rc = mod.main()
         assert rc == 1
@@ -320,7 +321,7 @@ class TestRetrySchedulingFailure:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch("subprocess.run", return_value=MagicMock(returncode=1, stderr="err", stdout="")), \
+             patch.object(mod, "_run", return_value=(1, "", "err")), \
              _chown_noop():
             rc = mod.main()
         assert rc == 1

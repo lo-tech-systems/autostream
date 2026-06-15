@@ -32,12 +32,19 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from autostream_update_support import (
+    FLOCK_BIN,
+    _find_systemd_run, _read_env_file, _run,
+)
 
 # ---- Paths / constants -------------------------------------------------------
 STAMP_DIR          = Path("/var/lib/autostream")
@@ -48,14 +55,8 @@ RETRY_COUNT_FILE   = STAGING_DIR / "retry_count"
 UPDATING_FLAG      = Path("/tmp/autostream-updating")
 LOG_PATH           = Path("/var/log/autostream/update.log")
 UPDATE_LOCK_FILE   = Path("/run/autostream-update.lock")
-FLOCK_BIN          = "/usr/bin/flock"
 
 MAX_RETRIES = 3
-
-SYSTEMDRUN_CANDIDATES = (
-    "/bin/systemd-run",
-    "/usr/bin/systemd-run",
-)
 
 
 # ---- Logging -----------------------------------------------------------------
@@ -65,28 +66,6 @@ def _log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with LOG_PATH.open("a", encoding="utf-8") as f:
         f.write(f"[{ts}] [update-retry] {msg}\n")
-
-
-# ---- Env file reader ---------------------------------------------------------
-
-def _read_env_file(path: Path) -> dict[str, str]:
-    """Parse a KEY="value" env file; returns an empty dict if the file is absent."""
-    data: dict[str, str] = {}
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return data
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-            value = value[1:-1]
-        data[key] = value
-    return data
 
 
 # ---- State helpers -----------------------------------------------------------
@@ -151,16 +130,6 @@ def _write_update_result(status: str, message: str, percent: int, run_at: str) -
     os.chmod(str(tmp), 0o600)
     os.chown(str(tmp), 0, 0)
     tmp.replace(UPDATE_RESULT_FILE)
-
-
-def _find_systemd_run() -> str | None:
-    for path in SYSTEMDRUN_CANDIDATES:
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-    p = shutil.which("systemd-run")
-    if p and os.path.isabs(p) and os.access(p, os.X_OK):
-        return p
-    return None
 
 
 # ---- Main --------------------------------------------------------------------
@@ -278,18 +247,15 @@ def main() -> int:
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        rc, out, err = _run(cmd, timeout=15)
     except Exception as exc:
         _log(f"systemd-run subprocess error: {exc}")
         _write_update_result("failure", "Failed to schedule retry", 0, run_at)
         UPDATING_FLAG.unlink(missing_ok=True)
         return 1
 
-    if result.returncode != 0:
-        _log(
-            f"systemd-run failed rc={result.returncode} "
-            f"stderr={result.stderr.strip()!r}"
-        )
+    if rc != 0:
+        _log(f"systemd-run failed rc={rc} stderr={err!r}")
         _write_update_result("failure", "Failed to schedule retry installer", 0, run_at)
         UPDATING_FLAG.unlink(missing_ok=True)
         return 1

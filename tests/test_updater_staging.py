@@ -32,6 +32,14 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
+# Put the supervisor dir in sys.path so autostream_update_support is importable
+# at module level (the updater scripts add it themselves on load, but we need
+# it before the first load_supervisor_script call for the module-level import).
+_SUPERVISOR_DIR = str(REPO_ROOT / "supervisor")
+if _SUPERVISOR_DIR not in sys.path:
+    sys.path.insert(0, _SUPERVISOR_DIR)
+import autostream_update_support as _asu
+
 # Use conftest helper
 from conftest import load_supervisor_script
 
@@ -116,12 +124,12 @@ def _fake_systemd_run(mod, tmp_path: Path):
     return patch.object(mod, "_find_systemd_run", return_value=fake_path)
 
 
-def _run_ok(mod):
-    return patch.object(mod, "_run", return_value=(0, "", ""))
+def _run_ok():
+    return patch.object(_asu, "_run", return_value=(0, "", ""))
 
 
-def _run_fail(mod):
-    return patch.object(mod, "_run", return_value=(1, "", "unit failed"))
+def _run_fail():
+    return patch.object(_asu, "_run", return_value=(1, "", "unit failed"))
 
 
 def _flock_bin_ok(mod, tmp_path: Path):
@@ -230,7 +238,7 @@ class TestHostStagingFailures:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -250,7 +258,7 @@ class TestHostStagingFailures:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -269,7 +277,7 @@ class TestHostStagingFailures:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=OSError("network timeout")), \
+             patch.object(_asu, "_download_file", side_effect=OSError("network timeout")), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -294,8 +302,8 @@ class TestHostApplySuccess:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
-             patch.object(mod, "_run", return_value=(0, "", "")) as mock_run, \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
+             patch.object(_asu, "_run", return_value=(0, "", "")) as mock_run, \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -338,8 +346,8 @@ class TestHostApplySuccess:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
-             patch.object(mod, "_run", return_value=(1, "", "systemd-run failed")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_run", return_value=(1, "", "systemd-run failed")), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -455,8 +463,8 @@ class TestDialSchedulingFailure:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
-             patch.object(mod, "_run", return_value=(1, "", "unit fail")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_run", return_value=(1, "", "unit fail")), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_dial_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -480,8 +488,8 @@ class TestDialSchedulingFailure:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
-             patch.object(mod, "_run", return_value=(1, "", "unit fail")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_run", return_value=(1, "", "unit fail")), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_dial_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -614,7 +622,7 @@ class TestHostTraversalRejected:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "_update_unit_active", return_value=False), \
              _with_host_lock(mod):
             result = mod.cmd_apply(auto=False)
@@ -633,9 +641,9 @@ class TestHostTraversalRejected:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "_update_unit_active", return_value=False), \
-             patch.object(mod, "_run", return_value=(0, "", "")), \
+             patch.object(_asu, "_run", return_value=(0, "", "")), \
              _with_host_lock(mod):
             result = mod.cmd_apply(auto=False)
         assert result["ok"] is True
@@ -652,7 +660,7 @@ class TestHostTraversalRejected:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "_update_unit_active", return_value=False), \
              _with_host_lock(mod):
             result = mod.cmd_apply(auto=False)
@@ -669,7 +677,7 @@ class TestHostTraversalRejected:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "_update_unit_active", return_value=False), \
              _with_host_lock(mod):
             result = mod.cmd_apply(auto=False)
@@ -719,8 +727,8 @@ class TestHostLockRelease:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
-             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
+             patch.object(_asu, "_run", return_value=(run_rc, "", "")), \
              patch.object(mod, "_update_unit_active", return_value=False), \
              patch.object(mod, "fcntl") as mk_fcntl:
             mk_fcntl.LOCK_EX = 2
@@ -763,8 +771,8 @@ class TestHostLockRelease:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
-             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
+             patch.object(_asu, "_run", return_value=(run_rc, "", "")), \
              patch.object(mod, "_update_unit_active", return_value=False), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch("os.open", return_value=FAKE_FD), \
@@ -814,8 +822,8 @@ class TestDialApplySuccess:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
-             patch.object(mod, "_run", return_value=(0, "", "")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_run", return_value=(0, "", "")), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch.object(mod, "_dial_update_unit_active", return_value=False):
             mk_fcntl.LOCK_EX = 2
@@ -839,7 +847,7 @@ class TestDialTraversalRejected:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "_dial_update_unit_active", return_value=False), \
              _with_dial_lock(mod):
             return mod.cmd_apply(auto=False)
@@ -864,9 +872,9 @@ class TestDialTraversalRejected:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "_dial_update_unit_active", return_value=False), \
-             patch.object(mod, "_run", return_value=(0, "", "")), \
+             patch.object(_asu, "_run", return_value=(0, "", "")), \
              _with_dial_lock(mod):
             result = mod.cmd_apply(auto=False)
         assert result["ok"] is True
@@ -902,8 +910,8 @@ class TestDialLockRelease:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
-             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar_path)), \
+             patch.object(_asu, "_run", return_value=(run_rc, "", "")), \
              patch.object(mod, "_dial_update_unit_active", return_value=False), \
              patch.object(mod, "fcntl") as mk_fcntl, \
              patch("os.open", return_value=FAKE_FD), \
@@ -1003,8 +1011,8 @@ class TestDialUpdatingFlag:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
-             patch.object(mod, "_run", return_value=(run_rc, "", "")), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_run", return_value=(run_rc, "", "")), \
              patch.object(mod, "fcntl") as mk_fcntl:
             mk_fcntl.LOCK_EX = 2
             mk_fcntl.LOCK_NB = 4
@@ -1092,7 +1100,7 @@ class TestDialUpdatingFlag:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "fcntl") as mk_fcntl:
             mk_fcntl.LOCK_EX = 2
             mk_fcntl.LOCK_NB = 4
@@ -1123,7 +1131,7 @@ class TestDialUpdatingFlag:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file", side_effect=_copy_tarball_to(tar)), \
+             patch.object(_asu, "_download_file", side_effect=_copy_tarball_to(tar)), \
              patch.object(mod, "fcntl") as mk_fcntl:
             mk_fcntl.LOCK_EX = 2
             mk_fcntl.LOCK_NB = 4
@@ -1164,9 +1172,9 @@ class TestDialUnitNaming:
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
              patch("os.access", return_value=True), \
-             patch.object(mod, "_download_file",
+             patch.object(_asu, "_download_file",
                           side_effect=_copy_tarball_to(tar)), \
-             patch.object(mod, "_run", side_effect=fake_run), \
+             patch.object(_asu, "_run", side_effect=fake_run), \
              patch.object(mod, "fcntl") as mk_fcntl:
             mk_fcntl.LOCK_EX = 2
             mk_fcntl.LOCK_NB = 4
