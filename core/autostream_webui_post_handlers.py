@@ -684,5 +684,5 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
         send_json(handler, 200, {"ok": True})
     except Exception as e:
         logging.error("handle_factory_reset_post: scheduling failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": str(e)})
+        send_json(handler, 500, {"ok": False, "error": "Factory reset could not be scheduled", "detail": str(e)})
 

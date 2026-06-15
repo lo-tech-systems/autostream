@@ -132,10 +132,21 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             self.send_error(413, "Request body too large")
             return None
         try:
-            return self.rfile.read(length)
+            data = self.rfile.read(length)
         except Exception as e:
             logging.error("Error reading POST body: %s", e)
+            try:
+                self.send_error(400, "Request body unreadable")
+            except Exception:
+                pass
             return None
+        if length > 0 and len(data) < length:
+            try:
+                self.send_error(400, "Request body truncated")
+            except Exception:
+                pass
+            return None
+        return data
 
     def _normalized_path(self) -> str:
         # Strip query string and trailing slash
@@ -369,13 +380,23 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         # --- 1) Auth verify ---
         if path == "/api/auth/verify":
             body = self._read_post_body_bytes()
-            if body:
-                AUTH.handle_auth_verify(self, body)
+            if body is None:
+                return  # error already sent
+            if not body:
+                self.send_error(400, "Missing request body")
+                return
+            AUTH.handle_auth_verify(self, body)
             return
 
         # --- 2) Read body once (may be empty) ---
-        body_bytes = self._read_post_body_bytes() or b""
-        body_str = body_bytes.decode("utf-8", errors="ignore")
+        body_bytes = self._read_post_body_bytes()
+        if body_bytes is None:
+            return  # error already sent
+        try:
+            body_str = body_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            self.send_error(400, "Request body is not valid UTF-8")
+            return
 
         # Normalize content-type (ignore charset, etc.)
         content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -403,6 +424,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         # ── UUID-auth dial volume (no session/CSRF required) ──────────────
         if path == "/api/dial/volume":
             send_dial_volume_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
+            return
+
+        # For all remaining JSON routes, a non-object top-level value is malformed.
+        if content_type == "application/json" and body_str and not isinstance(json_obj, dict):
+            self.send_error(400, "JSON object required")
             return
 
         # --- 4) CSRF: accept header OR body (form/json) ---
