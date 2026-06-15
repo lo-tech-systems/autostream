@@ -568,3 +568,75 @@ class TestDialImportIsolation:
         assert "send_browser_api_error" not in src
         src2 = self._dial_source("dial_http_server.py")
         assert "send_browser_api_error" not in src2
+
+
+# ---------------------------------------------------------------------------
+# §7.7  Gateway error contract
+# ---------------------------------------------------------------------------
+
+class TestGatewayErrorContract:
+    """Gateway-specific errors must use NGINX-safe transport where required.
+
+    NGINX-intercepted statuses (404/502/503/504) must be tunnelled as HTTP 200
+    with an error_status field.  Non-intercepted statuses (409/429/500) must be
+    returned natively without error_status.
+    """
+
+    def _call_helper(self, semantic_status: int, error: str, **kwargs):
+        from autostream_webui_api import send_browser_api_error
+        captured = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: captured.append((c, d))):
+            send_browser_api_error(MagicMock(), semantic_status, error, **kwargs)
+        assert len(captured) == 1
+        return captured[0]
+
+    # Transport failures produce tunnelled responses
+    def test_not_found_tunnelled_as_200(self):
+        code, payload = self._call_helper(404, "not_found")
+        assert code == 200
+        assert payload["error_status"] == 404
+        assert payload["ok"] is False
+
+    def test_remote_timeout_tunnelled_as_200_504(self):
+        code, payload = self._call_helper(504, "remote_timeout", retryable=True)
+        assert code == 200
+        assert payload["error_status"] == 504
+        assert payload["retryable"] is True
+
+    def test_remote_bad_response_tunnelled_as_200_502(self):
+        code, payload = self._call_helper(502, "remote_bad_response", retryable=True)
+        assert code == 200
+        assert payload["error_status"] == 502
+
+    def test_appliance_offline_tunnelled_as_200_503(self):
+        code, payload = self._call_helper(503, "appliance_offline", retryable=True)
+        assert code == 200
+        assert payload["error_status"] == 503
+
+    # Conflict and backoff produce native responses
+    def test_appliance_conflicted_is_native_409(self):
+        code, payload = self._call_helper(409, "appliance_conflicted")
+        assert code == 409
+        assert "error_status" not in payload
+
+    def test_remote_backoff_is_native_429(self):
+        code, payload = self._call_helper(429, "remote_backoff", retryable=True,
+                                          extra={"retry_after": 5})
+        assert code == 429
+        assert "error_status" not in payload
+        assert payload["retry_after"] == 5
+
+    def test_target_error_is_native_500(self):
+        code, payload = self._call_helper(500, "target_error")
+        assert code == 500
+        assert "error_status" not in payload
+
+    # Retryable propagates correctly for transport failures
+    def test_retryable_present_for_tunnelled_errors(self):
+        _, payload = self._call_helper(503, "appliance_offline", retryable=True)
+        assert payload["retryable"] is True
+
+    def test_retryable_absent_when_not_supplied(self):
+        _, payload = self._call_helper(502, "remote_bad_response")
+        assert "retryable" not in payload

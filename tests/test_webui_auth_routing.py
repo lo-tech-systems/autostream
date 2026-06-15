@@ -231,3 +231,78 @@ class TestFederationRoutesSkipBrowserAuth:
              patch.object(mgr, "validate_csrf") as mock_csrf:
             handler.do_POST()
         mock_csrf.assert_not_called()
+
+
+@_skip_no_webui
+class TestGatewayRoutesAuth:
+    """Gateway GET routes must bypass PIN auth; POST routes require CSRF only."""
+
+    def _make_get(self, path: str) -> "ConfigWebHandler":
+        import io
+        h = ConfigWebHandler.__new__(ConfigWebHandler)
+        h.path = path
+        h.command = "GET"
+        h.request_version = "HTTP/1.1"
+        h.headers = {"Cookie": "", "X-Forwarded-For": "", "X-Real-IP": ""}
+        h.client_address = ("127.0.0.1", 0)
+        h.rfile = io.BytesIO(b"")
+        h.wfile = io.BytesIO()
+        h.send_response = MagicMock()
+        h.send_header = MagicMock()
+        h.end_headers = MagicMock()
+        h.send_error = MagicMock()
+        h._pending_auth_cookie = None
+        h._pending_set_cookies = []
+        return h
+
+    def test_appliances_list_accessible_without_auth(self):
+        """GET /api/appliances must not redirect even with PIN enabled."""
+        mgr = _make_manager(pin="secret")
+        handler = self._make_get("/api/appliances")
+        redirect_codes = []
+        handler.send_response = lambda c, *a: redirect_codes.append(c)
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.send_appliances_json"):
+            handler.do_GET()
+        assert 302 not in redirect_codes, "Gateway list must not redirect to /auth"
+
+    def test_gateway_home_accessible_without_auth(self):
+        """GET /api/appliances/<id>/home must not redirect with PIN enabled."""
+        mgr = _make_manager(pin="secret")
+        handler = self._make_get("/api/appliances/aabbccdd1122334455aa/home")
+        redirect_codes = []
+        handler.send_response = lambda c, *a: redirect_codes.append(c)
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.send_gateway_home_json"):
+            handler.do_GET()
+        assert 302 not in redirect_codes
+
+    def test_requires_auth_returns_false_for_appliances(self):
+        """AuthManager.requires_auth must return False for /api/appliances."""
+        from autostream_auth import AuthManager
+        mgr = AuthManager(config_path="dummy.ini")
+        mgr._pin_loaded = True
+        mgr._pin_value = "secret"
+        mgr._pin_status = "ok"
+        assert mgr.requires_auth("/api/appliances") is False
+
+    def test_requires_auth_returns_false_for_appliances_id_home(self):
+        """AuthManager.requires_auth must return False for /api/appliances/<id>/home."""
+        from autostream_auth import AuthManager
+        mgr = AuthManager(config_path="dummy.ini")
+        mgr._pin_loaded = True
+        mgr._pin_value = "secret"
+        mgr._pin_status = "ok"
+        assert mgr.requires_auth("/api/appliances/aabbccdd1122334455aa/home") is False
+
+    def test_requires_auth_returns_false_for_appliances_id_equaliser(self):
+        from autostream_auth import AuthManager
+        mgr = AuthManager(config_path="dummy.ini")
+        mgr._pin_loaded = True
+        mgr._pin_value = "secret"
+        mgr._pin_status = "ok"
+        assert mgr.requires_auth("/api/appliances/aabbccdd1122334455aa/equaliser") is False

@@ -101,8 +101,18 @@ from autostream_webui_post_handlers import (
 
 from autostream_config import unconfigured, STATE_PATH
 from autostream_rpi import get_appliance_id
+from autostream_appliance_gateway import (
+    send_appliances_json,
+    send_gateway_eq_config_json,
+    send_gateway_eq_reset_json,
+    send_gateway_eq_status_json,
+    send_gateway_equaliser_json,
+    send_gateway_home_json,
+    send_gateway_output_json,
+)
 
 _FEDERATION_PREFIX = "/api/federation/v1"
+_GATEWAY_PREFIX = "/api/appliances"
 _FEDERATION_BODY_MAX = 4096  # bytes
 
 # Global state
@@ -456,6 +466,21 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_rebooting_page(self, STATE, AUTH)
         elif path == "/api/audio/status":
             send_audio_status_json(self, STATE)
+        elif path == _GATEWAY_PREFIX:
+            send_appliances_json(self, STATE)
+        elif path.startswith(_GATEWAY_PREFIX + "/"):
+            tail = path[len(_GATEWAY_PREFIX) + 1:]  # strip "/api/appliances/"
+            parts = tail.split("/", 1)
+            aid = parts[0]
+            sub = parts[1] if len(parts) > 1 else ""
+            if sub == "home":
+                send_gateway_home_json(self, STATE, aid)
+            elif sub == "equaliser":
+                send_gateway_equaliser_json(self, STATE, aid)
+            elif sub == "equaliser/status":
+                send_gateway_eq_status_json(self, STATE, aid)
+            else:
+                self.send_error(404, "Not found")
         elif path.startswith("/api/dial/configure/"):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
@@ -565,7 +590,27 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             return
 
         # --- 5) Route: enforce body only where needed ---
-        if path == "/api/output":
+        if path.startswith(_GATEWAY_PREFIX + "/"):
+            tail = path[len(_GATEWAY_PREFIX) + 1:]
+            parts = tail.split("/", 1)
+            aid = parts[0]
+            sub = parts[1] if len(parts) > 1 else ""
+            if sub == "output":
+                if not body_str:
+                    self.send_error(400, "Missing request body")
+                    return
+                send_gateway_output_json(self, STATE, aid, body_str)
+            elif sub == "equaliser/config":
+                if not body_str:
+                    self.send_error(400, "Missing request body")
+                    return
+                send_gateway_eq_config_json(self, STATE, aid, body_str)
+            elif sub == "equaliser/reset":
+                send_gateway_eq_reset_json(self, STATE, aid)
+            else:
+                self.send_error(404, "Not found")
+
+        elif path == "/api/output":
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return

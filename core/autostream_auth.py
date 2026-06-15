@@ -93,7 +93,14 @@ ALLOWLIST_PATHS = {
     "/api/service/reset",
     "/api/service/config",
     "/api/audio/status",
+    "/api/appliances",
 }
+
+# Path prefixes exempt from authentication (dynamic segments).
+# Implement prefix matching rather than adding literal remote IDs to the allowlist.
+ALLOWLIST_PREFIXES = (
+    "/api/appliances/",
+)
 
 # Static asset extensions that must never trigger an auth redirect.
 # If these reach Python (nginx misconfiguration or missing file), the correct
@@ -462,6 +469,9 @@ class AuthManager:
             return False
         if path in ALLOWLIST_PATHS:
             return False
+        for prefix in ALLOWLIST_PREFIXES:
+            if path.startswith(prefix):
+                return False
         # Static assets must never trigger an auth redirect. If they reach
         # Python (e.g. nginx misconfiguration, missing file), the correct
         # outcome is a 404 — not a /auth redirect that would overwrite the
