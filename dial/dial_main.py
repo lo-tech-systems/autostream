@@ -13,7 +13,6 @@ import sys
 import time
 
 from dial_config import load_config
-from dial_encoder import RotaryEncoderHandler
 from dial_http_server import ADMIN_CMD, VERSION, DialHTTPServer, _announce_self
 from dial_led import DialLED
 from dial_mdns import get_playing_targets, start_playing_browser
@@ -90,8 +89,21 @@ def main() -> None:
     def on_ccw() -> None:
         enqueue_delta(-http_server.step_percent)
 
-    # Store encoder handler — prevents GC of the lgpio device handle.
-    encoder = RotaryEncoderHandler(cfg.clk_gpio, cfg.dt_gpio, on_cw, on_ccw)
+    # Import GPIO helpers lazily — non-Pi hosts can still run the HTTP service.
+    try:
+        from autostream_rpi import setup_rotary_encoder, setup_button  # type: ignore[import]
+    except ImportError:
+        setup_rotary_encoder = None  # type: ignore[assignment]
+        setup_button = None  # type: ignore[assignment]
+
+    # Store encoder and button in long-lived locals — prevents GC from finalising
+    # the underlying lgpio device handle and silently stopping interrupts.
+    encoder = None
+    button = None
+    if setup_rotary_encoder is not None:
+        encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, on_cw, on_ccw)
+    if setup_button is not None and cfg.sw_gpio is not None:
+        button = setup_button(cfg.sw_gpio, lambda: None)  # placeholder; WP6 supplies real callback
 
     while True:
         led.set_playing() if get_playing_targets() else led.set_idle()

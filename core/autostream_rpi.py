@@ -320,7 +320,7 @@ def setup_rotary_encoder(clk: int, dt: int, on_cw, on_ccw):
         return None
 
 
-def setup_button(gpio: int, on_press):
+def setup_button(gpio: int, on_press, bounce_time: float = 0.1):
     """Attach an interrupt-driven press callback to a GPIO button.
 
     Returns the gpiozero.Button instance (caller must retain a reference to
@@ -329,7 +329,7 @@ def setup_button(gpio: int, on_press):
     """
     try:
         from gpiozero import Button
-        btn = Button(gpio, pull_up=True)
+        btn = Button(gpio, pull_up=True, bounce_time=bounce_time)
         btn.when_pressed = on_press
         return btn
     except Exception as e:
