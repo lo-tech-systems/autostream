@@ -164,3 +164,70 @@ class TestPostRouterAuthEnforcement:
             handler.do_POST()
 
         stub.assert_called_once()
+
+
+@_skip_no_webui
+class TestFederationRoutesSkipBrowserAuth:
+    """Federation routes must bypass browser auth/CSRF before reaching the handler."""
+
+    def _make_post_handler(self, path: str, body: bytes = b"") -> "ConfigWebHandler":
+        h = ConfigWebHandler.__new__(ConfigWebHandler)
+        h.path = path
+        h.command = "POST"
+        h.request_version = "HTTP/1.1"
+        h.headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+            "Authorization": "",
+            "X-CSRF-Token": "",
+            "Cookie": "",
+            "X-Forwarded-For": "",
+            "X-Real-IP": "",
+        }
+        h.client_address = ("127.0.0.1", 0)
+        h.rfile = io.BytesIO(body)
+        h.wfile = io.BytesIO()
+        h.send_response = MagicMock()
+        h.send_header = MagicMock()
+        h.end_headers = MagicMock()
+        h.send_error = MagicMock()
+        h._pending_auth_cookie = None
+        h._pending_set_cookies = []
+        return h
+
+    def test_federation_post_skips_csrf_with_pin_enabled(self):
+        """A POST to a federation route must not trigger CSRF rejection."""
+        import autostream_federation as fed
+        with fed._lock:
+            fed._sessions.clear()
+            fed._rate.clear()
+        mgr = _make_manager(pin="secret")
+        handler = self._make_post_handler("/api/federation/v1/session")
+        sent = []
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
+             patch("autostream_webui.initial_setup", 0), \
+             patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
+            handler.do_POST()
+        codes = [c for c, _ in sent]
+        assert 403 not in codes, "Federation route must not return 403 CSRF error"
+
+    def test_federation_post_does_not_call_validate_csrf(self):
+        """validate_csrf must not be called for federation POST routes."""
+        import autostream_federation as fed
+        with fed._lock:
+            fed._sessions.clear()
+            fed._rate.clear()
+        mgr = _make_manager(pin="secret")
+        handler = self._make_post_handler("/api/federation/v1/session")
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
+             patch("autostream_webui.initial_setup", 0), \
+             patch("autostream_webui.send_json"), \
+             patch.object(mgr, "validate_csrf") as mock_csrf:
+            handler.do_POST()
+        mock_csrf.assert_not_called()

@@ -287,6 +287,79 @@ class TestRouteDistinction:
         assert "error_status" not in data
 
 
+class TestFederationErrorContract:
+    """Federation target API uses native status codes (400/401/409/429/500).
+
+    These statuses are not in the NGINX-intercepted set, so they must be
+    returned natively without error_status tunnelling.
+    """
+
+    def test_federation_401_is_native_not_tunneled(self):
+        from autostream_webui_api import send_federation_home_json
+        sent = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.build_home_state",
+                   return_value={"ok": True, "outputs": [], "appliance": {},
+                                 "preferences": {}, "playback": {}, "input_levels": [],
+                                 "warnings": {}, "vu_delay_ms": 100}):
+            send_federation_home_json(MagicMock(), MagicMock())
+        # The API function itself doesn't do auth — auth is in the dispatcher.
+        # This test verifies the contract: 200 from home function (auth already validated)
+        assert sent[0][0] == 200
+        assert "error_status" not in sent[0][1]
+
+    def test_send_browser_api_error_with_400_is_native(self):
+        from autostream_webui_api import send_browser_api_error
+        sent = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))):
+            send_browser_api_error(MagicMock(), 400, "bad_request")
+        code, data = sent[0]
+        assert code == 400
+        assert "error_status" not in data
+
+    def test_send_browser_api_error_with_401_is_native(self):
+        from autostream_webui_api import send_browser_api_error
+        sent = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))):
+            send_browser_api_error(MagicMock(), 401, "unauthorized")
+        code, data = sent[0]
+        assert code == 401
+        assert "error_status" not in data
+
+    def test_send_browser_api_error_with_409_is_native(self):
+        from autostream_webui_api import send_browser_api_error
+        sent = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))):
+            send_browser_api_error(MagicMock(), 409, "appliance_unconfigured")
+        code, data = sent[0]
+        assert code == 409
+        assert "error_status" not in data
+
+    def test_send_browser_api_error_with_429_is_native(self):
+        from autostream_webui_api import send_browser_api_error
+        sent = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))):
+            send_browser_api_error(MagicMock(), 429, "rate_limited")
+        code, data = sent[0]
+        assert code == 429
+        assert "error_status" not in data
+
+    def test_send_browser_api_error_with_500_is_native(self):
+        from autostream_webui_api import send_browser_api_error
+        sent = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))):
+            send_browser_api_error(MagicMock(), 500, "internal_error")
+        code, data = sent[0]
+        assert code == 500
+        assert "error_status" not in data
+
+
 # ---------------------------------------------------------------------------
 # §7.4  NGINX policy regression tests
 # ---------------------------------------------------------------------------

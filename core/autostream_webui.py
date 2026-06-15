@@ -50,6 +50,13 @@ from autostream_webui_api import (
     send_audio_status_json,
     send_dial_mute_post_json,
     send_dial_volume_post_json,
+    send_federation_eq_config_json,
+    send_federation_eq_reset_json,
+    send_federation_eq_status_json,
+    send_federation_equaliser_json,
+    send_federation_home_json,
+    send_federation_output_json,
+    send_federation_session_json,
     send_json,
     send_output_eq_config_json,
     send_output_eq_reset_json,
@@ -62,6 +69,7 @@ from autostream_webui_api import (
     send_update_check_json,
     send_update_status_json,
 )
+import autostream_federation
 from autostream_webui_dials import (
     dispatch_dial_management_post,
     handle_dial_configure_get,
@@ -92,6 +100,10 @@ from autostream_webui_post_handlers import (
 )
 
 from autostream_config import unconfigured, STATE_PATH
+from autostream_rpi import get_appliance_id
+
+_FEDERATION_PREFIX = "/api/federation/v1"
+_FEDERATION_BODY_MAX = 4096  # bytes
 
 # Global state
 STATE: Optional[WebUIState] = None
@@ -230,10 +242,98 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _dispatch_federation(self, method: str, path: str, body_str: str = "") -> None:
+        """Dispatch a federation API request before browser auth/CSRF.
+
+        Never redirects to /auth, never reads or sets browser cookies, and
+        never creates a browser UI session.  Source-IP-bound bearer tokens
+        are the only acceptable credential on all routes except POST /session.
+        """
+        source_ip = self._get_client_ip()
+
+        # Unavailable during initial/AP setup or when identity is missing
+        if unconfigured(STATE.config_path):
+            send_json(self, 409, {"ok": False, "error": "appliance_unconfigured"})
+            return
+        global initial_setup
+        with _setup_lock:
+            in_setup = initial_setup != 0
+        if in_setup:
+            send_json(self, 409, {"ok": False, "error": "appliance_unconfigured"})
+            return
+        if not get_appliance_id():
+            send_json(self, 409, {"ok": False, "error": "appliance_unconfigured"})
+            return
+
+        # POST /session: no bearer token required
+        if path == f"{_FEDERATION_PREFIX}/session":
+            if method != "POST":
+                self.send_error(405, "Method not allowed")
+                return
+            if body_str:
+                if len(body_str) > _FEDERATION_BODY_MAX:
+                    send_json(self, 400, {"ok": False, "error": "body_too_large"})
+                    return
+                try:
+                    obj = json.loads(body_str)
+                except json.JSONDecodeError:
+                    send_json(self, 400, {"ok": False, "error": "invalid_json"})
+                    return
+                if not isinstance(obj, dict) or obj:
+                    send_json(self, 400, {"ok": False, "error": "invalid_request_body"})
+                    return
+            send_federation_session_json(self, source_ip)
+            return
+
+        # All other federation endpoints require a valid bearer token
+        auth_header = self.headers.get("Authorization") or ""
+        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+        if not autostream_federation.validate_session(token, source_ip):
+            send_json(self, 401, {"ok": False, "error": "unauthorized"})
+            return
+
+        if method == "GET":
+            if path == f"{_FEDERATION_PREFIX}/home":
+                send_federation_home_json(self, STATE)
+            elif path == f"{_FEDERATION_PREFIX}/equaliser":
+                send_federation_equaliser_json(self, STATE)
+            elif path == f"{_FEDERATION_PREFIX}/equaliser/status":
+                send_federation_eq_status_json(self, STATE)
+            else:
+                self.send_error(404, "Not found")
+            return
+
+        if method == "POST":
+            if len(body_str) > _FEDERATION_BODY_MAX:
+                send_json(self, 400, {"ok": False, "error": "body_too_large"})
+                return
+            if path == f"{_FEDERATION_PREFIX}/output":
+                if not body_str:
+                    send_json(self, 400, {"ok": False, "error": "missing_body"})
+                    return
+                send_federation_output_json(self, STATE, body_str)
+            elif path == f"{_FEDERATION_PREFIX}/equaliser/config":
+                if not body_str:
+                    send_json(self, 400, {"ok": False, "error": "missing_body"})
+                    return
+                send_federation_eq_config_json(self, STATE, body_str)
+            elif path == f"{_FEDERATION_PREFIX}/equaliser/reset":
+                send_federation_eq_reset_json(self, STATE)
+            else:
+                self.send_error(404, "Not found")
+            return
+
+        self.send_error(405, "Method not allowed")
+
     def do_GET(self):  # noqa: N802
         global initial_setup
 
         path = self._normalized_path()
+
+        # Federation routes bypass browser auth/CSRF and initial-setup redirect.
+        if path.startswith(_FEDERATION_PREFIX):
+            self._dispatch_federation("GET", path)
+            return
 
         # If INI missing, force setup except for the setup/auth endpoints + auth verify API
         if unconfigured(STATE.config_path):
@@ -434,6 +534,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/dial/mute":
             send_dial_mute_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
+            return
+
+        # ── Federation routes (bearer-token protected, no browser CSRF) ──────
+        if path.startswith(_FEDERATION_PREFIX):
+            self._dispatch_federation("POST", path, body_str)
             return
 
         # For all remaining JSON routes, a non-object top-level value is malformed.

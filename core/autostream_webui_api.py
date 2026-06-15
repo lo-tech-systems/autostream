@@ -28,6 +28,7 @@ import json
 import logging
 import subprocess
 import threading
+import time
 
 from typing import Optional
 
@@ -57,6 +58,8 @@ from autostream_appliance_models import (
     _OUTPUT_EQ_DB_FIELDS,
     apply_eq_field,
     apply_eq_reset,
+    apply_output_mutation,
+    build_equaliser_state,
     build_home_state,
 )
 from autostream_player_service import list_outputs, update_output
@@ -801,3 +804,152 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
             _mute_pending = None
             _mute_snapshot.clear()
             send_json(handler, 200, {"ok": True, "muted": False})
+
+
+# ---------------------------------------------------------------------------
+# Federation target API handlers (called by autostream_webui._dispatch_federation)
+# ---------------------------------------------------------------------------
+
+def send_federation_session_json(handler, source_ip: str) -> None:
+    """POST /api/federation/v1/session — issue a short-lived bearer token.
+
+    Rate-limited to 5 successful issuances per source IP per 60-second window.
+    A rejected request does not consume an issuance slot.
+    The token is never logged.
+    """
+    import autostream_federation
+    token, value = autostream_federation.create_session(source_ip)
+    if token is None:
+        retry_after = value
+        handler.send_response(429)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Retry-After", str(retry_after))
+        body = json.dumps({
+            "ok": False,
+            "error": "rate_limited",
+            "retryable": True,
+            "retry_after": retry_after,
+        }).encode("utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+        return
+    send_json(handler, 200, {
+        "ok": True,
+        "token": token,
+        "token_type": "Bearer",
+        "expires_in": autostream_federation.EXPIRY_SECONDS,
+        "federation_version": autostream_federation.FEDERATION_VERSION,
+    })
+
+
+def send_federation_home_json(handler, state: WebUIState) -> None:
+    """GET /api/federation/v1/home — return aggregate Home state."""
+    deadline = time.monotonic() + 1.5
+    home = build_home_state(state.config_path, deadline=deadline)
+    if not home.get("ok"):
+        send_json(handler, 500, {"ok": False, "error": home.get("error", "internal_error")})
+        return
+    send_json(handler, 200, home)
+
+
+def send_federation_output_json(handler, state: WebUIState, body_str: str) -> None:
+    """POST /api/federation/v1/output — toggle or PIN-submit an AirPlay output."""
+    try:
+        body = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError):
+        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        return
+    if not isinstance(body, dict):
+        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        return
+
+    out_id = str(body.get("id") or "").strip()
+    if not out_id:
+        send_json(handler, 400, {"ok": False, "error": "missing_output_id"})
+        return
+
+    try:
+        cfg = locked_load_config(state.config_path)
+        parsed = parse_config(cfg)
+        base_url = parsed.owntone.base_url.rstrip("/")
+        from autostream_player_service import config_airplay_mode_to_backend
+        from autostream_config import DEFAULT_AIRPLAY_MODE
+        offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
+        offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
+        mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE)
+        mode = config_airplay_mode_to_backend(mode_text)
+    except Exception as e:
+        logging.error("federation output: config error: %s", e)
+        send_json(handler, 500, {"ok": False, "error": "internal_error"})
+        return
+
+    # Sanitize: forward only the documented operation fields, never raw browser body
+    sanitized: dict = {"id": out_id}
+    op = str(body.get("op") or "").strip().lower()
+    if op == "pin":
+        sanitized["op"] = "pin"
+        sanitized["pin"] = str(body.get("pin") or "")
+    else:
+        sanitized["selected"] = bool(body.get("selected", False))
+        raw_vol = body.get("volume")
+        if raw_vol is not None:
+            try:
+                sanitized["volume"] = max(0, min(100, int(raw_vol)))
+            except (ValueError, TypeError):
+                sanitized["volume"] = 50
+        else:
+            sanitized["volume"] = 50
+
+    result = apply_output_mutation(base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode)
+    send_json(handler, 200, result)
+
+
+def send_federation_equaliser_json(handler, state: WebUIState) -> None:
+    """GET /api/federation/v1/equaliser — return aggregate Equaliser state."""
+    eq = build_equaliser_state(state.config_path)
+    if not eq.get("ok"):
+        send_json(handler, 500, {"ok": False, "error": eq.get("error", "internal_error")})
+        return
+    send_json(handler, 200, eq)
+
+
+def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) -> None:
+    """POST /api/federation/v1/equaliser/config — apply one EQ field."""
+    try:
+        payload = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError):
+        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        return
+    if not isinstance(payload, dict):
+        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        return
+    field = str(payload.get("field", "")).strip()
+    value_raw = str(payload.get("value", "")).strip()
+    try:
+        ok, normalised_str, err = apply_eq_field(state.config_path, field, value_raw)
+    except ValueError as e:
+        send_json(handler, 400, {"ok": False, "error": str(e)})
+        return
+    if not ok:
+        send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
+        return
+    send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
+
+
+def send_federation_eq_reset_json(handler, state: WebUIState) -> None:
+    """POST /api/federation/v1/equaliser/reset — zero all EQ fields."""
+    ok, err = apply_eq_reset(state.config_path)
+    if not ok:
+        send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
+        return
+    send_json(handler, 200, {"ok": True})
+
+
+def send_federation_eq_status_json(handler, state: WebUIState) -> None:  # noqa: ARG001
+    """GET /api/federation/v1/equaliser/status — return live trim state."""
+    status = get_live_output_eq_status()
+    if status is None:
+        send_json(handler, 200, {"ok": False, "error": "monitor_unavailable"})
+        return
+    send_json(handler, 200, {"ok": True, **status})
