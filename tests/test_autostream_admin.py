@@ -1038,3 +1038,93 @@ class TestIsStaleInProgress:
              patch.object(m, "_install_log_recently_modified", return_value=False):
             result = m._is_stale_in_progress("not-a-timestamp")
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Appliance service management: write-appliance-service, remove-appliance-service
+# ---------------------------------------------------------------------------
+
+class TestApplianceService:
+    def test_write_appliance_service_creates_xml(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            rc = m._write_appliance_service(args)
+
+        assert rc == 0
+        assert svc_file.exists()
+        content = svc_file.read_text(encoding="utf-8")
+        assert "_autostream._tcp" in content
+        assert "id=" + args.id in content
+        assert "ui=v1" in content
+        assert "federation=v1" in content
+        assert "version=" + args.version in content
+
+    def test_write_appliance_service_rejects_invalid_id(self):
+        args = MagicMock()
+        args.version = "v1.0"
+        args.id = "not-valid-id"
+
+        rc = m._write_appliance_service(args)
+        assert rc == 1
+
+    def test_write_appliance_service_rejects_uppercase_hex(self):
+        args = MagicMock()
+        args.version = "v1.0"
+        args.id = "A1B2C3D4E5F6A1B2C3D4"  # uppercase → rejected
+
+        rc = m._write_appliance_service(args)
+        assert rc == 1
+
+    def test_write_appliance_service_rejects_short_id(self):
+        args = MagicMock()
+        args.version = "v1.0"
+        args.id = "a1b2c3d4e5"  # only 10 chars
+
+        rc = m._write_appliance_service(args)
+        assert rc == 1
+
+    def test_write_appliance_service_escapes_version_html(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+
+        args = MagicMock()
+        args.version = "<script>bad</script>"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            rc = m._write_appliance_service(args)
+
+        assert rc == 0
+        content = svc_file.read_text(encoding="utf-8")
+        assert "<script>" not in content
+        assert "&lt;script&gt;" in content
+
+    def test_remove_appliance_service_removes_file(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+        svc_file.write_text("existing content", encoding="utf-8")
+
+        with patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            rc = m._remove_appliance_service(MagicMock())
+
+        assert rc == 0
+        assert not svc_file.exists()
+
+    def test_remove_appliance_service_no_error_if_absent(self, tmp_path):
+        svc_file = tmp_path / "autostream.service"
+
+        with patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            rc = m._remove_appliance_service(MagicMock())
+
+        assert rc == 0

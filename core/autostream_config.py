@@ -265,6 +265,9 @@ class WebUIConfig:
     dark_mode: bool
     # Whether to show the system hostname in the home-page top controls.
     show_hostname_on_home: bool
+    # Whether to announce this appliance via _autostream._tcp for peer discovery.
+    # Default: True (backwards-compatible; absence means advertise).
+    advertise_appliance: bool
 
 
 @dataclass(frozen=True)
@@ -406,6 +409,7 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         show_input_detail=bool(webui_d.get("show_input_detail", False)),
         dark_mode=bool(webui_d.get("dark_mode", False)),
         show_hostname_on_home=bool(webui_d.get("show_hostname_on_home", False)),
+        advertise_appliance=bool(webui_d.get("advertise_appliance", True)),
     )
 
     eq_d = data.get("output_eq") or {}

@@ -20,6 +20,7 @@ import html
 import json
 import logging
 import textwrap
+import threading
 
 from typing import Optional
 from urllib.parse import parse_qs, quote, urlparse
@@ -65,6 +66,10 @@ from autostream_player_service import (
 )
 from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
+
+# Dedicated lock for serializing advertisement preference changes.
+# Must not be held while CONFIG_IO_LOCK is held, and vice versa.
+_ADVERTISE_LOCK = threading.Lock()
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
     _set_flash_cookie,
@@ -238,6 +243,10 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             general = cfg.setdefault("general", {})
             general["silence_seconds"] = int(fld("silence_seconds", str(p.general.silence_seconds)))
 
+            # Snapshot the current advertise preference for post-save comparison.
+            old_advertise = p.webui.advertise_appliance
+            new_advertise = old_advertise  # default: no change
+
             # Only persist show_master_volume / show_input_detail when the Customise
             # panel was rendered (sentinel field present). During initial setup the
             # panel is absent and the checkboxes are never submitted; leaving the
@@ -248,6 +257,13 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 webui["show_input_detail"] = bool("webui_show_input_detail" in form)
                 webui["dark_mode"] = bool("webui_dark_mode" in form)
                 webui["show_hostname_on_home"] = bool("webui_show_hostname_on_home" in form)
+                # advertise_appliance is intentionally NOT saved here — it requires
+                # a successful privileged service operation before being persisted.
+                # That field-level update happens after this block.
+
+            # Capture the intended advertise value when the panel was rendered.
+            if "webui_advertise_appliance_present" in form:
+                new_advertise = bool("webui_advertise_appliance" in form)
 
             # Persist auto_update when the updates panel was rendered (initial setup omits it).
             old_auto_update = p.updates.auto_update
@@ -292,6 +308,50 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                                 flash_msg="Auto-update toggle failed; timer could not be updated.",
                                 flash_type="error")
                 return
+
+        # Race-safe advertisement preference field-level update.
+        # Serialize with _ADVERTISE_LOCK; do not hold CONFIG_IO_LOCK during admin call.
+        if "webui_advertise_appliance_present" in form and new_advertise != old_advertise:
+            try:
+                from autostream_appliances import reconcile_appliance_announcement
+                from autostream_webui_common import get_app_version
+                with _ADVERTISE_LOCK:
+                    ok = reconcile_appliance_announcement(get_app_version(), new_advertise)
+                    if not ok:
+                        logging.warning(
+                            "handle_setup_post: advertisement preference admin call failed; "
+                            "not persisting advertise_appliance=%s",
+                            new_advertise,
+                        )
+                        send_setup_page(
+                            handler, state, auth,
+                            flash_msg="Advertisement preference could not be applied; check logs.",
+                            flash_type="error",
+                        )
+                        return
+                    # Admin call succeeded: re-load fresh config and change only this field.
+                    try:
+                        with CONFIG_IO_LOCK:
+                            fresh_cfg = load_config(state.config_path)
+                            fresh_cfg.setdefault("webui", {})["advertise_appliance"] = new_advertise
+                            save_config(state.config_path, fresh_cfg)
+                    except Exception:
+                        logging.warning(
+                            "handle_setup_post: failed to persist advertise_appliance=%s; "
+                            "rolling back service state",
+                            new_advertise,
+                        )
+                        # Roll back: restore previous service state.
+                        reconcile_appliance_announcement(get_app_version(), old_advertise)
+                        send_setup_page(
+                            handler, state, auth,
+                            flash_msg="Advertisement preference could not be saved; check logs.",
+                            flash_type="error",
+                        )
+                        return
+            except Exception:
+                logging.exception("handle_setup_post: advertisement preference update failed")
+                # Do not abort the whole save; the other preferences were already saved.
 
         update_live_owntone_runtime(
             output_name=fld("owntone_output_name", p.owntone.output_name),

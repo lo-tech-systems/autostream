@@ -162,6 +162,7 @@ main() {
   remove_path /etc/sudoers.d/autostream_admin
 
   info "Removing other autostream-managed files we can identify confidently"
+  remove_path /etc/avahi/services/autostream.service
   remove_path /etc/logrotate.d/autostream
   remove_path /etc/dnsmasq.d/autostream-setup.conf
   remove_path /etc/NetworkManager/dispatcher.d/99-wlan-fix

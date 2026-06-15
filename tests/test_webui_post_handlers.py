@@ -939,3 +939,168 @@ class TestSetupPost:
             handle_setup_post(MagicMock(), MagicMock(), MagicMock(), urlencode(form))
 
         assert reload_calls, "request_config_reload must be called when update_live_silence_seconds fails"
+
+
+# ---------------------------------------------------------------------------
+# handle_setup_post — advertisement preference (advertise_appliance)
+# ---------------------------------------------------------------------------
+
+def _call_setup_post_advertise(
+    form_data: dict,
+    tmp_path: Path,
+    old_advertise: bool = True,
+    reconcile_ok: bool = True,
+    second_save_fail: bool = False,
+) -> dict:
+    """Minimal helper focused on the advertise_appliance field-level update."""
+    from urllib.parse import urlencode
+    from autostream_webui_post_handlers import handle_setup_post
+
+    body = urlencode(form_data)
+    cfg = _minimal_config()
+    saved_cfgs = []
+    flash_calls = []
+    reconcile_calls = []
+    save_count = [0]
+
+    def fake_save(path, data):
+        save_count[0] += 1
+        if second_save_fail and save_count[0] >= 2:
+            raise OSError("disk full")
+        saved_cfgs.append(dict(data))
+
+    def fake_reconcile(version, advertise):
+        reconcile_calls.append(advertise)
+        return reconcile_ok
+
+    with patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
+         patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
+         patch("autostream_webui_post_handlers.save_config", side_effect=fake_save), \
+         patch("autostream_webui_post_handlers.mark_configured"), \
+         patch("autostream_webui_post_handlers.get_system_hostname", return_value="host"), \
+         patch("autostream_webui_post_handlers.set_system_hostname"), \
+         patch("autostream_webui_post_handlers.run_admin_cmd",
+               return_value=MagicMock(returncode=0, stderr="")), \
+         patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
+         patch("autostream_webui_post_handlers.update_playback_input_config"), \
+         patch("autostream_webui_post_handlers.send_setup_page",
+               side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
+         patch("autostream_webui_post_handlers._set_flash_cookie"), \
+         patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
+         patch("autostream_webui_post_handlers.request_config_reload"), \
+         patch("autostream_appliances.reconcile_appliance_announcement",
+               side_effect=fake_reconcile), \
+         patch("autostream_webui_common.get_app_version", return_value="v1.0"):
+        p = mock_parse.return_value
+        p.audio1.capture_device = "hw:0,0"
+        p.audio1.silence_threshold_dbfs = -50.0
+        for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                     "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                     "bearing_life_hours", "bearing_life_years"):
+            setattr(p.audio1, attr, 0.0)
+        p.audio2.capture_device = "hw:1,0"
+        p.audio2.silence_threshold_dbfs = -50.0
+        for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
+                     "stylus_life_hours", "belt_life_hours", "belt_life_years",
+                     "bearing_life_hours", "bearing_life_years"):
+            setattr(p.audio2, attr, 0.0)
+        p.audio2_enabled = False
+        p.owntone.output_name = "Default"
+        p.owntone.volume_percent = 50
+        p.owntone.base_url = "http://localhost:3689"
+        p.owntone.output_offsets_ms = {}
+        p.owntone.output_airplay_modes = {}
+        p.general.silence_seconds = 10
+        p.general.log_file = "/var/log/autostream.log"
+        p.general.fifo_path = "/run/autostream/audio.fifo"
+        p.updates.auto_update = False
+        p.webui.advertise_appliance = old_advertise
+
+        handle_setup_post(MagicMock(), MagicMock(), MagicMock(), body)
+
+    return {
+        "saved": saved_cfgs,
+        "flash_calls": flash_calls,
+        "reconcile_calls": reconcile_calls,
+    }
+
+
+class TestSetupPostAdvertisePreference:
+    def test_no_sentinel_skips_reconcile(self, tmp_path):
+        # When webui_advertise_appliance_present is absent, reconcile must not be called.
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+        }
+        result = _call_setup_post_advertise(form, tmp_path, old_advertise=True)
+        assert result["reconcile_calls"] == []
+
+    def test_sentinel_present_value_unchanged_skips_reconcile(self, tmp_path):
+        # Sentinel present but value didn't change → no reconcile call.
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+            "webui_advertise_appliance_present": "1",
+            "webui_advertise_appliance": "1",   # checkbox checked → True, same as old_advertise=True
+        }
+        result = _call_setup_post_advertise(form, tmp_path, old_advertise=True)
+        assert result["reconcile_calls"] == []
+
+    def test_sentinel_present_value_changes_true_to_false(self, tmp_path):
+        # old=True, form says disabled → reconcile(False) called.
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+            "webui_advertise_appliance_present": "1",
+            # checkbox absent → new_advertise = False
+        }
+        result = _call_setup_post_advertise(form, tmp_path, old_advertise=True)
+        assert result["reconcile_calls"] == [False]
+
+    def test_sentinel_present_value_changes_false_to_true(self, tmp_path):
+        # old=False, form says enabled → reconcile(True) called.
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+            "webui_advertise_appliance_present": "1",
+            "webui_advertise_appliance": "1",  # checkbox checked → True
+        }
+        result = _call_setup_post_advertise(form, tmp_path, old_advertise=False)
+        assert result["reconcile_calls"] == [True]
+
+    def test_admin_failure_shows_error_flash(self, tmp_path):
+        # When reconcile returns False, an error flash should be shown.
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+            "webui_advertise_appliance_present": "1",
+        }
+        result = _call_setup_post_advertise(form, tmp_path, old_advertise=True, reconcile_ok=False)
+        assert result["flash_calls"], "expected an error flash when admin call fails"
+        flash = result["flash_calls"][0]
+        assert flash.get("flash_type") == "error"
+
+    def test_field_level_save_on_success(self, tmp_path):
+        # On success the field-level save must write advertise_appliance.
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+            "webui_advertise_appliance_present": "1",
+        }
+        result = _call_setup_post_advertise(form, tmp_path, old_advertise=True, reconcile_ok=True)
+        # At least the field-level save (second save) must have run
+        assert len(result["saved"]) >= 2, "expected field-level re-save after successful admin call"
+        last_saved = result["saved"][-1]
+        assert last_saved.get("webui", {}).get("advertise_appliance") is False

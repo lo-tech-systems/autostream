@@ -712,9 +712,11 @@ def send_setup_page(
             + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
             + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
             + (" \u00b7 Hostname: On" if parsed.webui.show_hostname_on_home else " \u00b7 Hostname: Off")
+            + (" \u00b7 Visible to peers: On" if parsed.webui.advertise_appliance else " \u00b7 Visible to peers: Off")
         )
         customise_card_html = settings_card_html(f"""
               <input type="hidden" name="webui_show_master_volume_present" value="1">
+              <input type="hidden" name="webui_advertise_appliance_present" value="1">
               <div class="setup-customise-row" style="margin-top:0.5rem;">
                 <label class="output-toggle" style="margin:0;">
                   <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="refreshCustomiseCardSub()">
@@ -742,6 +744,13 @@ def send_setup_page(
                   <span class="switch"></span>
                 </label>
                 <span>Dark Mode</span>
+              </div>
+              <div class="setup-customise-row" style="margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Show this autostream to other autostream devices</span>
               </div>
             """, margin_top="0")
 
@@ -1448,11 +1457,13 @@ def send_setup_page(
           var cbDet = document.getElementById('webui_show_input_detail');
           var cbDark = document.getElementById('webui_dark_mode');
           var cbHost = document.getElementById('webui_show_hostname_on_home');
+          var cbAdv = document.getElementById('webui_advertise_appliance');
           var mv = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
           var det = (cbDet && cbDet.checked) ? 'Input detail: On' : 'Input detail: Off';
           var dark = (cbDark && cbDark.checked) ? 'Dark mode: On' : 'Dark mode: Off';
           var host = (cbHost && cbHost.checked) ? 'Hostname: On' : 'Hostname: Off';
-          sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark + ' \u00b7 ' + host;
+          var adv = (cbAdv && cbAdv.checked) ? 'Visible to peers: On' : 'Visible to peers: Off';
+          sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark + ' \u00b7 ' + host + ' \u00b7 ' + adv;
         }}
         function closePanel() {{
           refreshInputCardSubs();

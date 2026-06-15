@@ -156,6 +156,15 @@ class TestParseConfigDefaults:
         assert cfg.webui.show_input_detail is False
         assert cfg.webui.dark_mode is False
         assert cfg.webui.hidden_outputs == ()
+        assert cfg.webui.advertise_appliance is True
+
+    def test_webui_advertise_appliance_explicit_false(self):
+        cfg = c.parse_config({"webui": {"advertise_appliance": False}})
+        assert cfg.webui.advertise_appliance is False
+
+    def test_webui_advertise_appliance_explicit_true(self):
+        cfg = c.parse_config({"webui": {"advertise_appliance": True}})
+        assert cfg.webui.advertise_appliance is True
 
     def test_update_channel_normalised_to_stable_for_unknown(self):
         cfg = c.parse_config({"updates": {"update_channel": "nightly"}})

@@ -599,15 +599,54 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
         title="autostream",
     )
 
+    def _reconcile_announcement_loop() -> None:
+        """Periodically reconcile the _autostream._tcp service file (every 60 s)."""
+        from autostream_appliances import reconcile_appliance_announcement
+        from autostream_config import load_config, parse_config
+        from autostream_webui_common import get_app_version
+        while not stop_flag.is_set():
+            stop_flag.wait(60)
+            if stop_flag.is_set():
+                break
+            try:
+                cfg = parse_config(load_config(STATE.config_path))
+                reconcile_appliance_announcement(
+                    get_app_version(), cfg.webui.advertise_appliance
+                )
+            except Exception:
+                logging.debug("reconcile_announcement_loop: error", exc_info=True)
+
     def _serve() -> None:
         try:
             from autostream_dials import start_dial_scanner
+            from autostream_appliances import (
+                reconcile_appliance_announcement,
+                start_appliance_scanner,
+            )
+            from autostream_config import load_config, parse_config
+            from autostream_webui_common import get_app_version
+
             start_dial_scanner()
+            start_appliance_scanner()
 
             scanner_thread = threading.Thread(
                 target=_scan_monitor_devices_loop, daemon=True,
             )
             scanner_thread.start()
+
+            # Initial announcement reconciliation (best-effort; errors are logged)
+            try:
+                cfg = parse_config(load_config(config_path))
+                reconcile_appliance_announcement(
+                    get_app_version(), cfg.webui.advertise_appliance
+                )
+            except Exception:
+                logging.debug("startup reconcile_announcement: error", exc_info=True)
+
+            reconcile_thread = threading.Thread(
+                target=_reconcile_announcement_loop, daemon=True,
+            )
+            reconcile_thread.start()
 
             httpd = ThreadingHTTPServer((host, port), ConfigWebHandler)
             logging.info("Web UI available at http://%s:%d", host, port)
