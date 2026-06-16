@@ -676,9 +676,10 @@ _REMOTE_EQUALISER_SCRIPT = """<script>
 var _EQ_BAND_KEYS=['peq1_db','peq2_db','peq3_db','peq4_db','peq5_db','peq6_db'];
 var _EQ_INITIAL_RETRY_DELAYS_MS=[500,500,1000,1000,2000,3000];
 var _EQ_NORMAL_POLL_MS=3000;
+var _EQ_DEGRADED_POLL_MS=10000;
+var _eqDegraded=false;
 var _eqWriteSeq={};
 var _eqPendingFields=new Set();
-var _eqFailCount=0;
 var _eqPollTimer=null;
 var _eqPolling=true;
 var __EQ_DEFINITIVE_ERRORS=['not_found','appliance_unconfigured','appliance_conflicted','appliance_identity_unavailable'];
@@ -702,8 +703,8 @@ function _eqHandleError(error){
     return true;
   }
   if(__EQ_TRANSPORT_ERRORS.indexOf(error)>=0){
-    _eqFailCount++;
-    if(_eqFailCount>=3){_eqRedirectWithFlash(hostname+' is unavailable. Returned to this appliance.');return true;}
+    _eqDegraded=true;
+    return false;
   }
   return false;
 }
@@ -721,12 +722,11 @@ function _saveEqField(field,value){
     if(_eqWriteSeq[field]!==seq)return;
     _eqPendingFields.delete(field);
     if(!d||!d.ok){var err=(d&&d.error)||'remote_bad_response';_eqHandleError(err);}
-    else{_eqFailCount=0;}
+    else{_eqDegraded=false;}
   }).catch(function(e){
     if(_eqWriteSeq[field]!==seq)return;
     _eqPendingFields.delete(field);
-    _eqFailCount++;
-    if(_eqFailCount>=3)_eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+    _eqDegraded=true;
   });
 }
 
@@ -761,15 +761,14 @@ function resetEq(){
     body:'{}'
   }).then(function(r){return r.json();}).then(function(d){
     if(!d||!d.ok){var err=(d&&d.error)||'remote_bad_response';_eqHandleError(err);return;}
-    _eqFailCount=0;
+    _eqDegraded=false;
     _EQ_BAND_KEYS.forEach(function(key){
       var sl=document.getElementById(key);if(sl)sl.value=0;
       var vl=document.getElementById(key+'_val');if(vl)vl.textContent='0 dB';
     });
     if(typeof _drawEqCurve==='function')_drawEqCurve();
   }).catch(function(){
-    _eqFailCount++;
-    if(_eqFailCount>=3)_eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+    _eqDegraded=true;
   });
 }
 
@@ -782,7 +781,7 @@ function _pollTrimStatus(){
         if(err!=='remote_backoff')_eqHandleError(err);
         return;
       }
-      _eqFailCount=0;
+      _eqDegraded=false;
       var el=document.getElementById('output_trim_status');if(!el)return;
       var cb=document.getElementById('output_auto_trim');
       if(!cb||!cb.checked){el.style.display='none';el.textContent='';return;}
@@ -791,8 +790,7 @@ function _pollTrimStatus(){
       el.textContent='Auto-trim: '+(Number.isFinite(db)?db.toFixed(1)+' dB applied':'unavailable');
     })
     .catch(function(){
-      _eqFailCount++;
-      if(_eqFailCount>=3)_eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+      _eqDegraded=true;
     });
 }
 
@@ -801,18 +799,23 @@ async function _pollFullEqState(){
   try{
     var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});
     var data=await r.json();
-    if(!data||!data.ok){var err=(data&&data.error)||'remote_bad_response';_eqHandleError(err);}
-    else{_eqFailCount=0;renderEqFromState(data);}
+    if(!data||!data.ok){
+      var err=(data&&data.error)||'remote_bad_response';
+      if(__EQ_DEFINITIVE_ERRORS.indexOf(err)>=0){_eqHandleError(err);return;}
+      _eqDegraded=true;
+    }else{
+      _eqDegraded=false;
+      renderEqFromState(data);
+    }
   }catch(e){
-    _eqFailCount++;
-    if(_eqFailCount>=3)_eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+    _eqDegraded=true;
   }
   _scheduleEqPoll();
 }
 
 function _scheduleEqPoll(){
   if(_eqPollTimer)clearTimeout(_eqPollTimer);
-  _eqPollTimer=setTimeout(_pollFullEqState,_EQ_NORMAL_POLL_MS);
+  _eqPollTimer=setTimeout(_pollFullEqState,_eqDegraded?_EQ_DEGRADED_POLL_MS:_EQ_NORMAL_POLL_MS);
 }
 
 function renderEqFromState(data){
@@ -917,7 +920,7 @@ async function _loadInitialEqState(){
       var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});
       var data=await r.json();
       if(data&&data.ok){
-        _eqFailCount=0;
+        _eqDegraded=false;
         renderEqFromState(data);
         var cb=document.getElementById('output_auto_trim');
         if(cb&&cb.checked)_pollTrimStatus();
@@ -995,7 +998,7 @@ window.addEventListener('DOMContentLoaded',function(){
   initApplianceSelector();refreshApplianceSelector();
   setInterval(function(){if(!document.hidden)refreshApplianceSelector();},15000);
   document.addEventListener('visibilitychange',function(){
-    if(!document.hidden){_eqPolling=true;_eqFailCount=0;_pollFullEqState();refreshApplianceSelector();}
+    if(!document.hidden){_eqPolling=true;_eqDegraded=false;_pollFullEqState();refreshApplianceSelector();}
     else{_eqPolling=false;if(_eqPollTimer){clearTimeout(_eqPollTimer);_eqPollTimer=null;}}
   });
   _loadInitialEqState();

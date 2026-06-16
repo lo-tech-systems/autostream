@@ -199,9 +199,11 @@ class TestRemoteEqualiserFlashMessages:
                      "appliance_identity_unavailable"):
             assert code in html, f"Expected definitive error code {code!r} in remote Equaliser JS"
 
-    def test_three_strike_threshold_in_js(self):
+    def test_degraded_mode_replaces_three_strike_redirect(self):
         html = _render_remote_equaliser()
-        assert "_eqFailCount>=3" in html or "_eqFailCount >= 3" in html
+        assert "_eqDegraded" in html
+        assert "_EQ_DEGRADED_POLL_MS" in html
+        assert "_eqFailCount>=3" not in html and "_eqFailCount >= 3" not in html
 
     def test_save_url_referenced_in_js(self):
         html = _render_remote_equaliser()
@@ -223,25 +225,25 @@ class TestRemoteEqualiserFlashMessages:
 
 @_skip
 class TestIndependentFailureCounters:
-    """Home and Equaliser pages have independent failure counter variables."""
+    """Home and Equaliser pages have independent failure state variables."""
 
     def test_home_uses_remote_fail_count(self):
         html = _render_remote_home()
         assert "__remoteFailCount" in html
 
-    def test_equaliser_uses_eq_fail_count(self):
+    def test_equaliser_uses_degraded_flag(self):
         html = _render_remote_equaliser()
-        assert "_eqFailCount" in html
+        assert "_eqDegraded" in html
 
     def test_home_counter_not_in_equaliser(self):
         """The Equaliser page must not reference the Home page counter."""
         html = _render_remote_equaliser()
         assert "__remoteFailCount" not in html
 
-    def test_equaliser_counter_not_in_home(self):
-        """The Home page must not reference the Equaliser counter."""
+    def test_home_page_no_eq_degraded(self):
+        """The Home page must not reference the Equaliser degraded flag."""
         html = _render_remote_home()
-        assert "_eqFailCount" not in html
+        assert "_eqDegraded" not in html
 
 
 # ---------------------------------------------------------------------------

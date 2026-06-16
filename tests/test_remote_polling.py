@@ -176,7 +176,7 @@ class TestRemoteEqualiserFullPolling:
         """_pollFullEqState must call renderEqFromState on success."""
         src = _REMOTE_EQUALISER_SCRIPT
         fn_idx = src.index('async function _pollFullEqState')
-        fn_body = src[fn_idx:fn_idx + 400]
+        fn_body = src[fn_idx:fn_idx + 700]
         assert 'renderEqFromState' in fn_body
 
     def test_poll_full_eq_reschedules(self):
@@ -341,7 +341,66 @@ class TestRemoteEqualiserVisibilityResume:
         src = _REMOTE_EQUALISER_SCRIPT
         vis_idx = src.index('visibilitychange')
         vis_body = src[vis_idx:vis_idx + 300]
-        assert '_eqFailCount=0' in vis_body
+        assert '_eqDegraded=false' in vis_body
+
+
+# ---------------------------------------------------------------------------
+# Remote Equaliser — degraded polling mode
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestRemoteEqualiserDegradedMode:
+    def test_degraded_vars_declared(self):
+        assert '_EQ_DEGRADED_POLL_MS=10000' in _REMOTE_EQUALISER_SCRIPT
+        assert '_eqDegraded=false' in _REMOTE_EQUALISER_SCRIPT
+
+    def test_schedule_eq_poll_uses_degraded_var(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('function _scheduleEqPoll')
+        fn_body = src[fn_idx:fn_idx + 200]
+        assert '_EQ_DEGRADED_POLL_MS' in fn_body
+        assert '_eqDegraded' in fn_body
+
+    def test_poll_full_eq_sets_degraded_on_transport_failure(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('async function _pollFullEqState')
+        fn_body = src[fn_idx:fn_idx + 700]
+        assert '_eqDegraded=true' in fn_body
+
+    def test_poll_full_eq_clears_degraded_on_success(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('async function _pollFullEqState')
+        fn_body = src[fn_idx:fn_idx + 700]
+        assert '_eqDegraded=false' in fn_body
+
+    def test_poll_full_eq_no_redirect_on_transport(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('async function _pollFullEqState')
+        fn_body = src[fn_idx:fn_idx + 700]
+        assert '_eqRedirectWithFlash' not in fn_body
+
+    def test_poll_trim_status_no_redirect_in_catch(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('function _pollTrimStatus')
+        fn_body = src[fn_idx:fn_idx + 500]
+        assert '_eqRedirectWithFlash' not in fn_body
+
+    def test_save_eq_field_no_redirect_in_catch(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('function _saveEqField')
+        fn_end = src.index('function syncOutputGain')
+        fn_body = src[fn_idx:fn_end]
+        # The catch block must not redirect; only _eqDegraded=true
+        catch_idx = fn_body.rfind('.catch(')
+        catch_body = fn_body[catch_idx:]
+        assert '_eqRedirectWithFlash' not in catch_body
+        assert '_eqDegraded=true' in catch_body
+
+    def test_visibility_resume_resets_degraded(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        vis_idx = src.index('visibilitychange')
+        vis_body = src[vis_idx:vis_idx + 300]
+        assert '_eqDegraded=false' in vis_body
 
 
 # ---------------------------------------------------------------------------
