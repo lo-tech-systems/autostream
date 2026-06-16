@@ -888,10 +888,18 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
     sanitized: dict = {"id": out_id}
     op = str(body.get("op") or "").strip().lower()
     if op == "pin":
+        pin_val = str(body.get("pin") or "")
+        if not pin_val:
+            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+            return
         sanitized["op"] = "pin"
-        sanitized["pin"] = str(body.get("pin") or "")
-    else:
-        sanitized["selected"] = bool(body.get("selected", False))
+        sanitized["pin"] = pin_val
+    elif op == "":
+        selected_raw = body.get("selected")
+        if not isinstance(selected_raw, bool):
+            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+            return
+        sanitized["selected"] = selected_raw
         raw_vol = body.get("volume")
         if raw_vol is not None:
             try:
@@ -900,6 +908,9 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
                 sanitized["volume"] = 50
         else:
             sanitized["volume"] = 50
+    else:
+        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        return
 
     result = apply_output_mutation(base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode)
     send_json(handler, 200, result)

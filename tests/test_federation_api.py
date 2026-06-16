@@ -499,32 +499,36 @@ class TestFederationOutput:
         # apply_output_mutation receives the sanitized body dict
         # We check that apply_output_mutation was called with the right args through the chain
 
-    def test_unknown_federation_post_route_returns_404(self, tmp_path):
+    def test_unknown_federation_post_route_returns_400_invalid_endpoint(self, tmp_path):
         state = _fake_state(tmp_path)
         bearer = _get_bearer()
         h = _make_handler("POST", "/api/federation/v1/nonexistent",
                           body=b"{}",
                           headers={"Authorization": bearer})
+        sent = []
         with patch("autostream_webui.STATE", state), \
              patch("autostream_webui.unconfigured", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0):
+             patch("autostream_webui.initial_setup", 0), \
+             patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
-        h.send_error.assert_called()
-        assert h.send_error.call_args[0][0] == 404
+        assert sent and sent[0][0] == 400
+        assert sent[0][1]["error"] == "invalid_endpoint"
 
-    def test_unknown_federation_get_route_returns_404(self, tmp_path):
+    def test_unknown_federation_get_route_returns_400_invalid_endpoint(self, tmp_path):
         state = _fake_state(tmp_path)
         bearer = _get_bearer()
         h = _make_handler("GET", "/api/federation/v1/nonexistent",
                           headers={"Authorization": bearer})
+        sent = []
         with patch("autostream_webui.STATE", state), \
              patch("autostream_webui.unconfigured", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0):
+             patch("autostream_webui.initial_setup", 0), \
+             patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_GET()
-        h.send_error.assert_called()
-        assert h.send_error.call_args[0][0] == 404
+        assert sent and sent[0][0] == 400
+        assert sent[0][1]["error"] == "invalid_endpoint"
 
 
 # ---------------------------------------------------------------------------

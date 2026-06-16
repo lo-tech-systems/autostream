@@ -81,11 +81,13 @@ class MdnsBrowser(Generic[_T]):
         parse_fn: Callable[[List[str], Dict[str, str]], Optional[Tuple[Any, _T]]],
         on_add: Optional[Callable[[Any, _T], None]] = None,
         on_remove: Optional[Callable[[Any, _T], None]] = None,
+        on_change: Optional[Callable[[Any, _T, _T], None]] = None,
     ) -> None:
         self._service_type = service_type
         self._parse_fn = parse_fn
         self._on_add = on_add
         self._on_remove = on_remove
+        self._on_change = on_change
 
         self._lock = threading.Lock()
         # Five-tuple key → (identity_key, model)
@@ -233,11 +235,14 @@ class MdnsBrowser(Generic[_T]):
             five_tuple = tuple(parts[1:6])
             removed_key = None
             removed_model = None
+            changed_key = None
+            changed_removed = None
+            changed_remaining = None
 
             with self._lock:
                 entry = self._by_key.pop(five_tuple, None)
                 if entry is not None:
-                    identity_key, _ = entry
+                    identity_key, popped_model = entry
                     # Check if another five-tuple still holds this identity
                     remaining = next(
                         (m for k, (ik, m) in self._by_key.items() if ik == identity_key),
@@ -245,6 +250,9 @@ class MdnsBrowser(Generic[_T]):
                     )
                     if remaining is not None:
                         self._by_identity[identity_key] = remaining
+                        changed_key = identity_key
+                        changed_removed = popped_model
+                        changed_remaining = remaining
                     else:
                         removed_model = self._by_identity.pop(identity_key, None)
                         removed_key = identity_key
@@ -255,4 +263,12 @@ class MdnsBrowser(Generic[_T]):
                 except Exception:
                     logger.debug(
                         "mdns(%s): on_remove callback raised", self._service_type, exc_info=True
+                    )
+
+            if changed_key is not None and self._on_change:
+                try:
+                    self._on_change(changed_key, changed_removed, changed_remaining)
+                except Exception:
+                    logger.debug(
+                        "mdns(%s): on_change callback raised", self._service_type, exc_info=True
                     )

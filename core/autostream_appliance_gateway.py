@@ -162,8 +162,15 @@ def _get_token_from_cache_locked(appliance_id: str) -> Optional[str]:
     return None
 
 
-def _acquire_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Optional[str], str]:
-    """Acquire a new federation token from the target. Returns (token, error_code)."""
+_V1_SESSION_KEYS = frozenset({"ok", "token", "token_type", "expires_in", "federation_version"})
+
+
+def _acquire_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Optional[str], str, int]:
+    """Acquire a new federation token from the target.
+
+    Returns (token, error_code, retry_after_seconds).  On success: (token, "", 0).
+    On rate_limited: (None, "rate_limited", retry_after).  Other errors: (None, code, 0).
+    """
     status, data = _remote_federation_request(
         "POST", sighting, "/api/federation/v1/session",
         token="",  # no token needed for session creation
@@ -171,42 +178,49 @@ def _acquire_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Opti
     )
     if status == 0:
         error_code = data.get("error", "remote_timeout")
-        return None, error_code
+        return None, error_code, 0
 
     if status != 200 or not data.get("ok"):
         error_code = data.get("error", "remote_bad_response")
-        if error_code not in ("appliance_unconfigured", "appliance_identity_unavailable",
-                               "rate_limited"):
+        if error_code == "rate_limited":
+            retry_after = int(data.get("retry_after", 60)) if isinstance(data, dict) else 60
+            return None, "rate_limited", retry_after
+        if error_code not in ("appliance_unconfigured", "appliance_identity_unavailable"):
             error_code = "remote_bad_response"
-        return None, error_code
+        return None, error_code, 0
 
-    # Validate exact v1 session schema
+    # Reject responses with unexpected fields — plan requires the exact v1 schema
+    if set(data.keys()) != _V1_SESSION_KEYS:
+        logging.warning("gateway: target %s returned non-exact session schema", appliance_id)
+        return None, "remote_bad_response", 0
+
+    # Validate exact v1 session schema values
     token = data.get("token")
     token_type = data.get("token_type")
     expires_in = data.get("expires_in")
     fed_version = data.get("federation_version")
     if (
-        not isinstance(token, str) or not token
+        not isinstance(token, str) or len(token) < 40
         or token_type != "Bearer"
-        or expires_in != _FED_EXPIRY_SECONDS
-        or fed_version != _FED_VERSION
+        or isinstance(expires_in, bool) or expires_in != _FED_EXPIRY_SECONDS
+        or isinstance(fed_version, bool) or fed_version != _FED_VERSION
     ):
         logging.warning("gateway: target %s returned malformed session schema", appliance_id)
-        return None, "remote_bad_response"
+        return None, "remote_bad_response", 0
 
     received_at = time.monotonic()
     expires = received_at + expires_in
     with _state_lock:
         _token_cache[appliance_id] = (token, expires)
-    return token, ""
+    return token, "", 0
 
 
-def _get_or_renew_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Optional[str], str]:
+def _get_or_renew_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Optional[str], str, int]:
     """Return a valid bearer token for *appliance_id*, acquiring one if needed."""
     with _state_lock:
         token = _get_token_from_cache_locked(appliance_id)
     if token:
-        return token, ""
+        return token, "", 0
     return _acquire_token(appliance_id, sighting)
 
 
@@ -214,6 +228,15 @@ def evict_gateway_token(appliance_id: str) -> None:
     """Evict the cached token for *appliance_id* (call on final peer removal)."""
     with _state_lock:
         _token_cache.pop(appliance_id, None)
+
+
+def sweep_token_cache() -> None:
+    """Evict expired entries from the gateway token cache."""
+    now = time.monotonic()
+    with _state_lock:
+        expired = [aid for aid, (_, exp) in _token_cache.items() if exp <= now]
+        for aid in expired:
+            _token_cache.pop(aid, None)
 
 
 register_peer_removal_callback(evict_gateway_token)
@@ -312,8 +335,10 @@ def _remote_request(
     call _update_backoff() after every completed request.
     Returns (http_status, data_dict). Status 0 means transport failure.
     """
-    token, err = _get_or_renew_token(appliance_id, sighting)
+    token, err, retry_after = _get_or_renew_token(appliance_id, sighting)
     if token is None:
+        if err == "rate_limited":
+            return 429, {"ok": False, "error": "rate_limited", "retry_after": retry_after or 60}
         return 0, {"ok": False, "error": err or "remote_timeout"}
 
     status, data = _remote_federation_request(method, sighting, fed_path, token, body)
@@ -322,8 +347,10 @@ def _remote_request(
         # Token may have expired: evict and retry once with a fresh token
         with _state_lock:
             _token_cache.pop(appliance_id, None)
-        token2, err2 = _acquire_token(appliance_id, sighting)
+        token2, err2, retry2 = _acquire_token(appliance_id, sighting)
         if token2 is None:
+            if err2 == "rate_limited":
+                return 429, {"ok": False, "error": "rate_limited", "retry_after": retry2 or 60}
             return 0, {"ok": False, "error": err2 or "remote_timeout"}
         status, data = _remote_federation_request(method, sighting, fed_path, token2, body)
 
@@ -407,7 +434,11 @@ def _coalesced_remote_get(
             _read_cache[cache_key] = (data, time.monotonic() + _READ_CACHE_TTL)
             _record_success_locked(appliance_id)
         else:
-            _record_failure_locked(appliance_id)
+            err_str = data.get("error", "") if isinstance(data, dict) else ""
+            if status == 0 or err_str in ("remote_timeout", "remote_bad_response"):
+                _record_failure_locked(appliance_id)
+            else:
+                _record_success_locked(appliance_id)
         del _in_flight[cache_key]
     event_to_wait.set()
 
@@ -450,6 +481,10 @@ def _handle_remote_response(handler, appliance_id: str, status: int, data: dict)
         retry = data.get("retry_after", 1) if isinstance(data, dict) else 1
         send_browser_api_error(handler, 429, "remote_backoff", retryable=True,
                                extra={"retry_after": int(retry)})
+    elif err == "rate_limited":
+        retry = data.get("retry_after", 1) if isinstance(data, dict) else 1
+        send_browser_api_error(handler, 429, "rate_limited", retryable=True,
+                               extra={"retry_after": int(retry)})
     elif err in ("appliance_unconfigured", "appliance_identity_unavailable"):
         send_json(handler, 409, {"ok": False, "error": err})
     elif status == 200:
@@ -462,7 +497,7 @@ def _handle_remote_response(handler, appliance_id: str, status: int, data: dict)
     elif err == "appliance_offline":
         send_browser_api_error(handler, 503, err, retryable=True)
     else:
-        send_browser_api_error(handler, 502, "remote_bad_response", retryable=True)
+        send_json(handler, 500, {"ok": False, "error": "target_error"})
 
 
 # ---------------------------------------------------------------------------
@@ -591,8 +626,12 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
     sanitized: dict = {"id": out_id}
     op = str(body.get("op") or "").strip().lower()
     if op == "pin":
+        pin_val = str(body.get("pin") or "")
+        if not pin_val:
+            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+            return
         sanitized["op"] = "pin"
-        sanitized["pin"] = str(body.get("pin") or "")
+        sanitized["pin"] = pin_val
     elif op == "":
         selected_raw = body.get("selected")
         if not isinstance(selected_raw, bool):

@@ -281,7 +281,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         # POST /session: no bearer token required
         if path == f"{_FEDERATION_PREFIX}/session":
             if method != "POST":
-                self.send_error(405, "Method not allowed")
+                send_json(self, 405, {"ok": False, "error": "method_not_allowed"})
                 return
             if body_str:
                 if len(body_str) > _FEDERATION_BODY_MAX:
@@ -313,7 +313,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             elif path == f"{_FEDERATION_PREFIX}/equaliser/status":
                 send_federation_eq_status_json(self, STATE)
             else:
-                self.send_error(404, "Not found")
+                send_json(self, 400, {"ok": False, "error": "invalid_endpoint"})
             return
 
         if method == "POST":
@@ -333,10 +333,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             elif path == f"{_FEDERATION_PREFIX}/equaliser/reset":
                 send_federation_eq_reset_json(self, STATE)
             else:
-                self.send_error(404, "Not found")
+                send_json(self, 400, {"ok": False, "error": "invalid_endpoint"})
             return
 
-        self.send_error(405, "Method not allowed")
+        send_json(self, 405, {"ok": False, "error": "method_not_allowed"})
 
     def do_GET(self):  # noqa: N802
         global initial_setup
@@ -780,6 +780,7 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
 
     def _reconcile_announcement_loop() -> None:
         """Periodically reconcile the _autostream._tcp service file (every 60 s)."""
+        from autostream_appliance_gateway import sweep_token_cache
         from autostream_appliances import reconcile_appliance_announcement
         from autostream_config import load_config, parse_config
         from autostream_federation import sweep_sessions
@@ -792,6 +793,10 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
                 sweep_sessions()
             except Exception:
                 logging.debug("sweep_sessions: error", exc_info=True)
+            try:
+                sweep_token_cache()
+            except Exception:
+                logging.debug("sweep_token_cache: error", exc_info=True)
             try:
                 cfg = parse_config(load_config(STATE.config_path))
                 reconcile_appliance_announcement(

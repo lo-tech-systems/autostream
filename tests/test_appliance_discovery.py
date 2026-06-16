@@ -34,10 +34,11 @@ def _load_module():
 
     class _CaptureBrowser:
         """Captures parse_fn so tests can call it directly."""
-        def __init__(self, *, service_type, parse_fn, on_add, on_remove):
+        def __init__(self, *, service_type, parse_fn, on_add, on_remove, on_change=None):
             captured["parse_fn"] = parse_fn
             captured["on_add"] = on_add
             captured["on_remove"] = on_remove
+            captured["on_change"] = on_change
             self._by_key: dict = {}
             self._lock = threading.Lock()
             self._started = False
@@ -75,7 +76,7 @@ def _load_module():
     m._conflict_ids.clear()
     m._conflict_logged.clear()
 
-    return m, captured["parse_fn"], captured["on_add"], captured["on_remove"]
+    return m, captured["parse_fn"], captured["on_add"], captured["on_remove"], captured.get("on_change")
 
 
 def _parts(service_name="AS._autostream._tcp.local", hostname="peer.local",
@@ -176,13 +177,17 @@ class TestConflictDetection:
         )
         assert r1 is not None  # not yet conflicted
 
-        # Second service: same ID, different (hostname, ip)
+        # Second service: same ID, different (hostname, ip) — conflict detected
         r2 = parse_fn(
             _parts(service_name="SvcB._autostream._tcp.local",
                    hostname="host-b.local", ip="192.168.1.11"),
             _txt(appliance_id=_PEER_ID),
         )
-        assert r2 is None  # conflict → excluded
+        # r2 is now returned (not None) so MdnsBrowser can track the five-tuple for removal.
+        # The public APIs filter by _conflict_ids, so conflicted sightings remain hidden.
+        assert r2 is not None
+        assert _PEER_ID in m.get_conflict_ids()
+        assert m.get_appliance_sighting(_PEER_ID) is None
 
     def test_same_id_same_host_no_conflict(self):
         m, parse_fn, *_ = _load_module()
@@ -230,7 +235,7 @@ class TestConflictDetection:
 
     def test_conflict_cleared_after_on_appliance_remove(self):
         """on_appliance_remove must fully clear _svc_info and conflict state."""
-        m, parse_fn, _, on_remove = _load_module()
+        m, parse_fn, _, on_remove, _ = _load_module()
 
         # Register first sighting (no conflict yet)
         r1 = parse_fn(
@@ -258,9 +263,41 @@ class TestConflictDetection:
         assert "SvcA._autostream._tcp.local" not in m._svc_info
         assert "SvcB._autostream._tcp.local" not in m._svc_info
 
+    def test_on_change_resolves_conflict_when_one_sighting_disappears(self):
+        """on_change must resolve conflict when one of the two conflicting sightings is removed."""
+        m, parse_fn, _, on_remove, on_change = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        r2 = parse_fn(
+            _parts(service_name="SvcB._autostream._tcp.local",
+                   hostname="hb.local", ip="192.168.1.11"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert _PEER_ID in m.get_conflict_ids()
+        assert r1 is not None
+        assert r2 is not None
+
+        # Simulate MdnsBrowser firing on_change when SvcB is removed but SvcA remains
+        _, sighting2 = r2
+        _, sighting1 = r1
+        on_change(_PEER_ID, sighting2, sighting1)
+
+        # Conflict must be resolved
+        assert _PEER_ID not in m.get_conflict_ids()
+        # SvcB's svc_info entry must be removed
+        assert "SvcB._autostream._tcp.local" not in m._svc_info
+        # SvcA's svc_info entry must still be present
+        assert "SvcA._autostream._tcp.local" in m._svc_info
+        # id_net_identities must have only one entry now
+        assert len(m._id_net_identities.get(_PEER_ID, set())) == 1
+
     def test_on_remove_clears_svc_info_entry(self):
         """on_appliance_remove removes _svc_info entries for the appliance."""
-        m, parse_fn, _, on_remove = _load_module()
+        m, parse_fn, _, on_remove, _ = _load_module()
 
         r1 = parse_fn(
             _parts(service_name="SvcA._autostream._tcp.local",
@@ -279,7 +316,7 @@ class TestConflictDetection:
 
 class TestPublicAPI:
     def test_get_all_appliances_sorted_by_hostname(self):
-        m, parse_fn, on_add, on_remove = _load_module()
+        m, parse_fn, on_add, on_remove, _ = _load_module()
         id_a = "aa00000000000000000a"
         id_b = "bb00000000000000000b"
 
@@ -302,6 +339,54 @@ class TestPublicAPI:
     def test_get_appliance_sighting_unknown_returns_none(self):
         m, *_ = _load_module()
         assert m.get_appliance_sighting("0000000000000000dead") is None
+
+    def test_get_appliance_sighting_conflicted_returns_none(self):
+        """get_appliance_sighting must return None for a conflicted ID."""
+        m, parse_fn, _, on_remove, _ = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert r1 is not None
+        # Manually put the first sighting into the browser snapshot to simulate it having
+        # been registered before the second conflicting sighting arrived
+        _, sighting1 = r1
+        with m._browser._lock:
+            m._browser._by_key[_PEER_ID] = sighting1
+
+        # Trigger conflict via second service
+        parse_fn(
+            _parts(service_name="SvcB._autostream._tcp.local",
+                   hostname="hb.local", ip="192.168.1.11"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert _PEER_ID in m.get_conflict_ids()
+        # Even though browser has the first sighting, get_appliance_sighting must return None
+        assert m.get_appliance_sighting(_PEER_ID) is None
+
+    def test_get_all_appliances_excludes_conflicted(self):
+        """get_all_appliances must not return sightings for conflicted IDs."""
+        m, parse_fn, _, on_remove, _ = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert r1 is not None
+        _, sighting1 = r1
+        with m._browser._lock:
+            m._browser._by_key[_PEER_ID] = sighting1
+
+        parse_fn(
+            _parts(service_name="SvcB._autostream._tcp.local",
+                   hostname="hb.local", ip="192.168.1.11"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert _PEER_ID in m.get_conflict_ids()
+        assert m.get_all_appliances() == []
 
     def test_scanner_ready_returns_bool(self):
         m, *_ = _load_module()

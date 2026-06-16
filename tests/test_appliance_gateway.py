@@ -258,20 +258,23 @@ class TestTokenCache:
         gw.evict_gateway_token(aid)
         assert aid not in gw._token_cache
 
+    _VALID_TOKEN = "a" * 40  # minimum 40-char hex token for schema validation
+
     def test_acquire_token_parses_schema(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
         session_resp = {
             "ok": True,
-            "token": "abc123",
+            "token": self._VALID_TOKEN,
             "token_type": "Bearer",
             "expires_in": 600,
             "federation_version": 1,
         }
         with patch.object(gw, "_remote_federation_request", return_value=(200, session_resp)):
-            token, err = gw._acquire_token(aid, sighting)
-        assert token == "abc123"
+            token, err, retry = gw._acquire_token(aid, sighting)
+        assert token == self._VALID_TOKEN
         assert err == ""
+        assert retry == 0
         assert aid in gw._token_cache
 
     def test_acquire_token_transport_error(self):
@@ -279,9 +282,10 @@ class TestTokenCache:
         sighting = _make_sighting(appliance_id=aid)
         with patch.object(gw, "_remote_federation_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            token, err = gw._acquire_token(aid, sighting)
+            token, err, retry = gw._acquire_token(aid, sighting)
         assert token is None
         assert err == "remote_timeout"
+        assert retry == 0
 
     def test_acquire_token_malformed_schema(self):
         aid = "a" * 20
@@ -289,9 +293,52 @@ class TestTokenCache:
         bad_resp = {"ok": True, "token": 12345, "token_type": "Bearer",
                     "expires_in": 600, "federation_version": 1}
         with patch.object(gw, "_remote_federation_request", return_value=(200, bad_resp)):
-            token, err = gw._acquire_token(aid, sighting)
+            token, err, _ = gw._acquire_token(aid, sighting)
         assert token is None
         assert err == "remote_bad_response"
+
+    def test_acquire_token_short_token_rejected(self):
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        bad_resp = {"ok": True, "token": "short", "token_type": "Bearer",
+                    "expires_in": 600, "federation_version": 1}
+        with patch.object(gw, "_remote_federation_request", return_value=(200, bad_resp)):
+            token, err, _ = gw._acquire_token(aid, sighting)
+        assert token is None
+        assert err == "remote_bad_response"
+
+    def test_acquire_token_bool_federation_version_rejected(self):
+        """True == 1 in Python; must not pass the fed_version != 1 check."""
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        bad_resp = {"ok": True, "token": self._VALID_TOKEN, "token_type": "Bearer",
+                    "expires_in": 600, "federation_version": True}
+        with patch.object(gw, "_remote_federation_request", return_value=(200, bad_resp)):
+            token, err, _ = gw._acquire_token(aid, sighting)
+        assert token is None
+        assert err == "remote_bad_response"
+
+    def test_acquire_token_extra_fields_rejected(self):
+        """Session response with extra fields must be rejected as non-exact schema."""
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        extra_resp = {"ok": True, "token": self._VALID_TOKEN, "token_type": "Bearer",
+                      "expires_in": 600, "federation_version": 1, "extra": "field"}
+        with patch.object(gw, "_remote_federation_request", return_value=(200, extra_resp)):
+            token, err, _ = gw._acquire_token(aid, sighting)
+        assert token is None
+        assert err == "remote_bad_response"
+
+    def test_acquire_token_rate_limited_preserves_retry_after(self):
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        with patch.object(gw, "_remote_federation_request",
+                          return_value=(429, {"ok": False, "error": "rate_limited",
+                                             "retry_after": 30})):
+            token, err, retry = gw._acquire_token(aid, sighting)
+        assert token is None
+        assert err == "rate_limited"
+        assert retry == 30
 
 
 # ---------------------------------------------------------------------------
@@ -382,10 +429,20 @@ class TestRemoteRequest:
     def test_token_failure_returns_error(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_get_or_renew_token", return_value=(None, "remote_timeout")):
+        with patch.object(gw, "_get_or_renew_token", return_value=(None, "remote_timeout", 0)):
             status, data = gw._remote_request(aid, sighting, "GET", "/foo")
         assert status == 0
         assert data["error"] == "remote_timeout"
+
+    def test_rate_limited_token_returns_429_with_retry_after(self):
+        """rate_limited from token acquisition must return 429 with retry_after, not status 0."""
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        with patch.object(gw, "_get_or_renew_token", return_value=(None, "rate_limited", 45)):
+            status, data = gw._remote_request(aid, sighting, "GET", "/foo")
+        assert status == 429
+        assert data["error"] == "rate_limited"
+        assert data.get("retry_after") == 45
 
     def test_401_triggers_retry(self):
         aid = "a" * 20
@@ -400,7 +457,7 @@ class TestRemoteRequest:
         session_resp = {"ok": True, "token": "new_token", "token_type": "Bearer",
                         "expires_in": 600, "federation_version": 1}
         with patch.object(gw, "_remote_federation_request", side_effect=fake_fed_req), \
-             patch.object(gw, "_acquire_token", return_value=("new_token", "")):
+             patch.object(gw, "_acquire_token", return_value=("new_token", "", 0)):
             status, data = gw._remote_request(aid, sighting, "GET", "/foo")
         assert status == 200
         assert data["ok"] is True
@@ -411,7 +468,7 @@ class TestRemoteRequest:
         gw._token_cache[aid] = ("old_token", time.monotonic() + 600)
         with patch.object(gw, "_remote_federation_request",
                           return_value=(401, {"ok": False, "error": "unauthorized"})), \
-             patch.object(gw, "_acquire_token", return_value=(None, "remote_timeout")):
+             patch.object(gw, "_acquire_token", return_value=(None, "remote_timeout", 0)):
             status, data = gw._remote_request(aid, sighting, "GET", "/foo")
         assert status == 0
         assert data["error"] == "remote_timeout"
@@ -420,7 +477,7 @@ class TestRemoteRequest:
         """_remote_request must not touch backoff state — callers own that."""
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_get_or_renew_token", return_value=("tok", "")), \
+        with patch.object(gw, "_get_or_renew_token", return_value=("tok", "", 0)), \
              patch.object(gw, "_remote_federation_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
             gw._remote_request(aid, sighting, "GET", "/foo")
@@ -497,6 +554,17 @@ class TestCoalescedRemoteGet:
         with patch.object(gw, "_remote_request", return_value=(200, fresh)):
             status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
         assert data.get("fresh") is True
+
+    def test_rate_limited_does_not_advance_backoff(self):
+        """rate_limited response (429 from token acquisition) must not advance backoff counter."""
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        with patch.object(gw, "_remote_request",
+                          return_value=(429, {"ok": False, "error": "rate_limited",
+                                             "retry_after": 30})):
+            gw._coalesced_remote_get(aid, sighting, fed_path)
+        assert aid not in gw._backoff_state
 
     def test_coalescing_second_caller_gets_same_result(self):
         """A second concurrent caller waits on the Event and gets the owner's result."""
@@ -697,11 +765,11 @@ class TestHandleRemoteResponse:
         codes, _ = self._call(200, {"ok": True, "data": "x"})
         assert codes == [200]
 
-    def test_unknown_error_code_normalized(self):
-        """An arbitrary error code from the target must not be forwarded as-is."""
+    def test_unknown_error_code_mapped_to_target_error(self):
+        """An unrecognized error from a reachable target maps to 500 target_error."""
         codes, errors = self._call(500, {"ok": False, "error": "some_internal_state"})
-        assert codes == [502]
-        assert errors == ["remote_bad_response"]
+        assert codes == [500]
+        assert errors == ["target_error"]
 
     def test_appliance_unconfigured_mapped_to_409(self):
         codes, errors = self._call(409, {"ok": False, "error": "appliance_unconfigured"})
@@ -712,3 +780,8 @@ class TestHandleRemoteResponse:
         codes, errors = self._call(0, {"ok": False, "error": "remote_timeout"})
         assert codes == [504]
         assert errors == ["remote_timeout"]
+
+    def test_rate_limited_mapped_to_429(self):
+        codes, errors = self._call(429, {"ok": False, "error": "rate_limited", "retry_after": 30})
+        assert codes == [429]
+        assert errors == ["rate_limited"]

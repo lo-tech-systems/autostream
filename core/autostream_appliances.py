@@ -118,10 +118,9 @@ def _parse_appliance_event(parts: list, txt: dict) -> tuple | None:
                         "appliance ID conflict: id=%s hostnames=[%s]",
                         appliance_id, ', '.join(hostnames),
                     )
-            return None
-
-        if appliance_id in _conflict_ids:
-            return None
+            # Still return the sighting so MdnsBrowser tracks the five-tuple.
+            # This ensures on_remove / on_change fire when a conflicting appliance
+            # goes offline, allowing conflict state to be cleaned up automatically.
 
     sighting = ApplianceSighting(
         id=appliance_id,
@@ -138,6 +137,23 @@ def _on_appliance_add(appliance_id: str, sighting: ApplianceSighting) -> None:
     snap = _browser.get_snapshot()
     if len(snap) == 1:
         logging.info("appliance peer found: %s (%s)", sighting.hostname, appliance_id)
+
+
+def _on_appliance_change(appliance_id: str, removed_sighting: Optional[ApplianceSighting], remaining_sighting: ApplianceSighting) -> None:
+    """Called when one of multiple tracked sightings for an ID is removed, but at least one remains.
+
+    Resolves conflict state when one of the conflicting appliances goes offline.
+    """
+    with _reg_lock:
+        if removed_sighting is not None:
+            _svc_info.pop(removed_sighting.service_name, None)
+            id_nets = _id_net_identities.get(appliance_id)
+            if id_nets is not None:
+                id_nets.discard((removed_sighting.hostname, removed_sighting.ip))
+                if len(id_nets) <= 1:
+                    _conflict_ids.discard(appliance_id)
+    if removed_sighting is not None and removed_sighting.ip:
+        evict_session_for_ip(removed_sighting.ip)
 
 
 _peer_removal_callbacks: list = []
@@ -181,6 +197,7 @@ _browser: MdnsBrowser = MdnsBrowser(
     parse_fn=_parse_appliance_event,
     on_add=_on_appliance_add,
     on_remove=_on_appliance_remove,
+    on_change=_on_appliance_change,
 )
 
 
@@ -191,12 +208,17 @@ _browser: MdnsBrowser = MdnsBrowser(
 
 def get_appliance_sighting(appliance_id: str) -> Optional[ApplianceSighting]:
     """Return the live sighting for *appliance_id* or None if absent/conflicted."""
+    with _reg_lock:
+        if appliance_id in _conflict_ids:
+            return None
     return _browser.get_snapshot().get(appliance_id)
 
 
 def get_all_appliances() -> list[ApplianceSighting]:
     """Return all eligible live appliances sorted by case-insensitive hostname."""
-    sightings = list(_browser.get_snapshot().values())
+    with _reg_lock:
+        conflicts = frozenset(_conflict_ids)
+    sightings = [s for s in _browser.get_snapshot().values() if s.id not in conflicts]
     sightings.sort(key=lambda s: s.hostname.lower())
     return sightings
 
