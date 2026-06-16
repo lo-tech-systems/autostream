@@ -148,81 +148,84 @@ class TestResolveAppliance:
 # ---------------------------------------------------------------------------
 
 class TestBackoff:
+    _KEY = ("a" * 20, "/api/federation/v1/home")
+
     def test_no_backoff_initially(self):
+        key = ("x" * 20, "/api/federation/v1/home")
         with gw._state_lock:
-            in_b, _ = gw._check_backoff_locked("x" * 20)
+            in_b, _ = gw._check_backoff_locked(key)
         assert in_b is False
 
     def test_first_failure_sets_1s_backoff(self):
-        aid = "a" * 20
+        key = self._KEY
         with gw._state_lock:
-            gw._record_failure_locked(aid)
-            until, step = gw._backoff_state[aid]
+            gw._record_failure_locked(key)
+            until, step = gw._backoff_state[key]
         assert step == 0
         assert until > time.monotonic()
 
     def test_second_failure_advances_step(self):
-        aid = "a" * 20
+        key = self._KEY
         with gw._state_lock:
-            gw._record_failure_locked(aid)
-            gw._record_failure_locked(aid)
-            _, step = gw._backoff_state[aid]
+            gw._record_failure_locked(key)
+            gw._record_failure_locked(key)
+            _, step = gw._backoff_state[key]
         assert step == 1  # step 1 → 2 seconds
 
     def test_max_step_is_capped(self):
-        aid = "a" * 20
+        key = self._KEY
         with gw._state_lock:
             for _ in range(20):  # way more failures than backoff steps
-                gw._record_failure_locked(aid)
-            _, step = gw._backoff_state[aid]
+                gw._record_failure_locked(key)
+            _, step = gw._backoff_state[key]
         assert step == len(gw._BACKOFF_STEPS) - 1
 
     def test_success_clears_backoff(self):
-        aid = "a" * 20
+        key = self._KEY
         with gw._state_lock:
-            gw._record_failure_locked(aid)
-            gw._record_success_locked(aid)
-        assert aid not in gw._backoff_state
+            gw._record_failure_locked(key)
+            gw._record_success_locked(key)
+        assert key not in gw._backoff_state
 
     def test_update_backoff_success(self):
-        aid = "a" * 20
+        key = self._KEY
         with gw._state_lock:
-            gw._record_failure_locked(aid)
-        gw._update_backoff(aid, 200, {"ok": True})
-        assert aid not in gw._backoff_state
+            gw._record_failure_locked(key)
+        gw._update_backoff(key, 200, {"ok": True})
+        assert key not in gw._backoff_state
 
     def test_update_backoff_failure(self):
-        aid = "a" * 20
-        gw._update_backoff(aid, 0, {"ok": False, "error": "remote_timeout"})
-        assert aid in gw._backoff_state
+        key = self._KEY
+        gw._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"})
+        assert key in gw._backoff_state
 
     def test_update_backoff_application_error_does_not_advance(self):
         """409 appliance_unconfigured is an application error, not a transport failure."""
-        aid = "b" * 20
+        key = ("b" * 20, "/api/federation/v1/home")
         with gw._state_lock:
-            gw._backoff_state.pop(aid, None)
-        gw._update_backoff(aid, 409, {"ok": False, "error": "appliance_unconfigured"})
-        assert aid not in gw._backoff_state
+            gw._backoff_state.pop(key, None)
+        gw._update_backoff(key, 409, {"ok": False, "error": "appliance_unconfigured"})
+        assert key not in gw._backoff_state
 
     def test_update_backoff_remote_bad_response_is_transport(self):
         """remote_bad_response counts as a transport failure for backoff."""
-        aid = "c" * 20
-        gw._update_backoff(aid, 200, {"ok": False, "error": "remote_bad_response"})
-        assert aid in gw._backoff_state
+        key = ("c" * 20, "/api/federation/v1/home")
+        gw._update_backoff(key, 200, {"ok": False, "error": "remote_bad_response"})
+        assert key in gw._backoff_state
 
     def test_check_backoff_in_window(self):
-        aid = "a" * 20
+        key = self._KEY
         with gw._state_lock:
-            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
-            in_b, retry = gw._check_backoff_locked(aid)
+            gw._backoff_state[key] = (time.monotonic() + 10, 0)
+            in_b, retry = gw._check_backoff_locked(key)
         assert in_b is True
         assert retry >= 1
 
     def test_check_backoff_expired(self):
-        aid = "a" * 20
+        key = self._KEY
         with gw._state_lock:
-            gw._backoff_state[aid] = (time.monotonic() - 1, 0)
-            in_b, _ = gw._check_backoff_locked(aid)
+            gw._backoff_state[key] = (time.monotonic() - 1, 0)
+            in_b, _ = gw._check_backoff_locked(key)
         assert in_b is False
 
 
@@ -482,8 +485,8 @@ class TestRemoteRequest:
              patch.object(gw, "_remote_federation_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
             gw._remote_request(aid, sighting, "GET", "/foo")
-        # Backoff state must not have been modified
-        assert aid not in gw._backoff_state
+        # Backoff state must not have been modified (no tuple key for this aid)
+        assert not any(k[0] == aid for k in gw._backoff_state)
 
 
 # ---------------------------------------------------------------------------
@@ -535,14 +538,14 @@ class TestCoalescedRemoteGet:
         with patch.object(gw, "_remote_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
             gw._coalesced_remote_get(aid, sighting, fed_path)
-        assert aid in gw._backoff_state
+        assert (aid, fed_path) in gw._backoff_state
 
     def test_backoff_guard_short_circuits(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         with gw._state_lock:
-            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
+            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
         with patch.object(gw, "_remote_request") as mock_req:
             status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
         mock_req.assert_not_called()
@@ -590,7 +593,7 @@ class TestCoalescedRemoteGet:
                           return_value=(429, {"ok": False, "error": "rate_limited",
                                              "retry_after": 30})):
             gw._coalesced_remote_get(aid, sighting, fed_path)
-        assert aid not in gw._backoff_state
+        assert (aid, fed_path) not in gw._backoff_state
 
     def test_coalescing_second_caller_gets_same_result(self):
         """A second concurrent caller waits on the Event and gets the owner's result."""
@@ -684,7 +687,7 @@ class TestStaleCache:
         fed_path = "/api/federation/v1/equaliser"
         self._prime_stale(aid, fed_path, data={"ok": True, "eq_cached": True})
         with gw._state_lock:
-            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
+            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
 
         with patch.object(gw, "_remote_request") as mock_req:
             status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
@@ -702,7 +705,7 @@ class TestStaleCache:
         fed_path = "/api/federation/v1/home"
         self._prime_stale(aid, fed_path)
         with gw._state_lock:
-            gw._backoff_state[aid] = (time.monotonic() + 5, 0)
+            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 5, 0)
 
         _, data = gw._coalesced_remote_get(aid, sighting, fed_path)
 
@@ -798,7 +801,7 @@ class TestStaleCache:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         with gw._state_lock:
-            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
+            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
 
         with patch.object(gw, "_remote_request") as mock_req:
             status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
@@ -806,6 +809,60 @@ class TestStaleCache:
         mock_req.assert_not_called()
         assert status == 0
         assert data["error"] == "remote_backoff"
+
+
+# ---------------------------------------------------------------------------
+# Endpoint-scoped backoff isolation
+# ---------------------------------------------------------------------------
+
+class TestEndpointScopedBackoff:
+    """Backoff on one fed_path must not affect a different fed_path for the same appliance."""
+
+    def test_home_backoff_does_not_block_equaliser(self):
+        """/home backoff must not prevent /equaliser from making a remote call."""
+        aid = "j" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        home_path = "/api/federation/v1/home"
+        eq_path = "/api/federation/v1/equaliser"
+        with gw._state_lock:
+            gw._backoff_state[(aid, home_path)] = (time.monotonic() + 30, 2)
+
+        eq_data = {"ok": True, "equaliser": True}
+        with patch.object(gw, "_remote_request", return_value=(200, eq_data)) as mock_req:
+            status, data = gw._coalesced_remote_get(aid, sighting, eq_path)
+
+        mock_req.assert_called_once()
+        assert status == 200
+        assert data.get("equaliser") is True
+
+    def test_equaliser_backoff_does_not_block_home(self):
+        """/equaliser backoff must not prevent /home from making a remote call."""
+        aid = "k" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        home_path = "/api/federation/v1/home"
+        eq_path = "/api/federation/v1/equaliser"
+        with gw._state_lock:
+            gw._backoff_state[(aid, eq_path)] = (time.monotonic() + 30, 2)
+
+        home_data = {"ok": True, "home": True}
+        with patch.object(gw, "_remote_request", return_value=(200, home_data)) as mock_req:
+            status, data = gw._coalesced_remote_get(aid, sighting, home_path)
+
+        mock_req.assert_called_once()
+        assert status == 200
+        assert data.get("home") is True
+
+    def test_write_backoff_uses_write_scope(self):
+        """POST _update_backoff must use '*write*' scope, not the POST path."""
+        aid = "l" * 20
+        key = (aid, "*write*")
+        with gw._state_lock:
+            gw._backoff_state.pop(key, None)
+        gw._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"})
+        assert key in gw._backoff_state
+        # GET path must still be clear
+        get_key = (aid, "/api/federation/v1/home")
+        assert get_key not in gw._backoff_state
 
 
 # ---------------------------------------------------------------------------
@@ -1012,52 +1069,57 @@ class TestGatewayLogging:
 
     def test_backoff_set_logged_on_failure(self, caplog):
         aid = "a" * 20
+        key = (aid, "/api/federation/v1/home")
         with caplog.at_level(logging.DEBUG):
             with gw._state_lock:
-                gw._record_failure_locked(aid)
+                gw._record_failure_locked(key)
         assert any("backoff set" in r.message and aid in r.message for r in caplog.records)
 
     def test_backoff_set_includes_delay_and_step(self, caplog):
         aid = "b" * 20
+        key = (aid, "/api/federation/v1/home")
         with caplog.at_level(logging.DEBUG):
             with gw._state_lock:
-                gw._record_failure_locked(aid)
+                gw._record_failure_locked(key)
         msg = next(r.message for r in caplog.records if "backoff set" in r.message)
         assert "1s" in msg  # first failure → step 0 → 1 second
         assert "step 0" in msg
 
     def test_backoff_cleared_logged_on_success(self, caplog):
         aid = "a" * 20
+        key = (aid, "/api/federation/v1/home")
         with gw._state_lock:
-            gw._record_failure_locked(aid)  # pre-set backoff (logged, but outside caplog scope)
+            gw._record_failure_locked(key)  # pre-set (logged, but outside caplog scope)
         with caplog.at_level(logging.DEBUG):
             with gw._state_lock:
-                gw._record_success_locked(aid)
+                gw._record_success_locked(key)
         assert any("backoff cleared" in r.message and aid in r.message for r in caplog.records)
 
     def test_backoff_not_logged_when_already_clear(self, caplog):
-        aid = "a" * 20  # no prior failure → nothing to clear
+        key = ("a" * 20, "/api/federation/v1/home")  # no prior failure → nothing to clear
         with caplog.at_level(logging.DEBUG):
             with gw._state_lock:
-                gw._record_success_locked(aid)
+                gw._record_success_locked(key)
         assert not any("backoff cleared" in r.message for r in caplog.records)
 
     def test_serving_backoff_logged(self, caplog):
         aid = "a" * 20
+        scope = "/api/federation/v1/home"
         handler = _make_handler()
         with gw._state_lock:
-            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
+            gw._backoff_state[(aid, scope)] = (time.monotonic() + 10, 0)
         with caplog.at_level(logging.DEBUG), \
              patch("autostream_appliance_gateway.send_browser_api_error"):
-            gw._check_and_emit_backoff(handler, aid)
+            gw._check_and_emit_backoff(handler, aid, scope)
         assert any("serving backoff" in r.message and aid in r.message for r in caplog.records)
 
     def test_no_serving_backoff_log_when_not_in_backoff(self, caplog):
         aid = "a" * 20
+        scope = "/api/federation/v1/home"
         handler = _make_handler()
         with caplog.at_level(logging.DEBUG), \
              patch("autostream_appliance_gateway.send_browser_api_error"):
-            gw._check_and_emit_backoff(handler, aid)
+            gw._check_and_emit_backoff(handler, aid, scope)
         assert not any("serving backoff" in r.message for r in caplog.records)
 
     # -- Token acquisition ---------------------------------------------------
