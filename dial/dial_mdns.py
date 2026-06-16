@@ -39,6 +39,7 @@ class PlayingTarget:
     name:         str
     dial_api:     bool = False
     audio_status: bool = False
+    dial_status:  bool = False
 
 
 # Tracks whether we have ever seen a playing target — persists across
@@ -66,6 +67,7 @@ def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
         name=svc_name,
         dial_api=True,
         audio_status=(txt.get('audio_status') == 'v1'),
+        dial_status=(txt.get('dial_status') == 'v1'),
     )
     return (svc_name, target)
 
