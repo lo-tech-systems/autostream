@@ -216,7 +216,11 @@ _install_success=true   # disarm EXIT trap only after status is safely written
 
 echo "autostream dial installation complete."
 if ! $UPDATE; then
-    echo "Connect to 'autostream-dial_SETUP' WiFi to complete setup."
+    if [[ -s /opt/autostream/ssid ]]; then
+        echo "WiFi connection recorded. After reboot, continue setup from an autostream appliance."
+    else
+        echo "Connect to 'autostream-dial_SETUP' WiFi to complete setup."
+    fi
     if has_tty; then
         echo ""
         tty_read "Reboot now to complete setup? (Y/N) " _rb || true

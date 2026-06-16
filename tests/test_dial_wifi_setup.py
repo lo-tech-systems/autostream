@@ -173,15 +173,46 @@ class TestConnectToConfiguredWifiHealthCheck:
             "Device disconnect must be inside a conditional branch, not run unconditionally"
         )
 
-    def test_connection_up_always_called(self):
-        """nmcli connection up must still be called regardless of health."""
+    def test_connection_up_called_only_on_unhealthy_path(self):
+        """nmcli connection up must only be called on the unhealthy (reconnect) path.
+
+        When the configured WiFi is already healthy, do not disturb it — skip both
+        the device bounce and the connection up call and return True immediately.
+        """
         src = _watcher_src()
         fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
-        # connection up must appear after any health check / bounce branch
         health_pos = fn_body.index("is_wifi_client_healthy")
-        up_pos = fn_body.find('"up"', health_pos)
+        # After the health check there must be an early return True before connection up
+        after_health = fn_body[health_pos:]
+        early_return_pos = after_health.find("return True")
+        up_pos = after_health.find('"up"')
+        assert early_return_pos != -1, (
+            "connect_to_configured_wifi must return True early on the healthy path"
+        )
         assert up_pos != -1, (
-            "nmcli connection up must still be called after the health check"
+            "nmcli connection up must still appear in the unhealthy reconnect path"
+        )
+        assert early_return_pos < up_pos, (
+            "The early 'return True' must appear before nmcli connection up, "
+            "so healthy connections are not disturbed by an unnecessary activation call"
+        )
+
+    def test_early_return_when_healthy_skips_connection_up(self):
+        """The healthy path must return before reaching 'nmcli connection up'.
+
+        Sending 'connection up' to an already-active profile is unnecessary and
+        can cause a brief re-authentication event on some APs.
+        """
+        src = _watcher_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        # Isolate the healthy branch: from health check to the first 'return True'
+        health_pos = fn_body.index("is_wifi_client_healthy")
+        after_health = fn_body[health_pos:]
+        first_return_pos = after_health.index("return True")
+        healthy_branch = after_health[:first_return_pos]
+        assert '"up"' not in healthy_branch, (
+            "The healthy branch must not call 'nmcli connection up' — "
+            "it must return True before reaching the reconnect code"
         )
 
     def test_no_unconditional_disconnect_before_health_check(self):

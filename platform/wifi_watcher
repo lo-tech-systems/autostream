@@ -1774,16 +1774,17 @@ def connect_to_configured_wifi() -> bool:
     if not connection_name:
         return False
 
-    # Only bounce the interface if the configured WiFi is not already healthy.
-    # Bouncing a healthy connection causes unnecessary disruption.
+    # If the configured WiFi is already healthy, do not disturb it.
+    # Both the device bounce and the connection up call are skipped.
     if is_wifi_client_healthy():
-        logger.debug("Configured WiFi '%s' already healthy; skipping device bounce", connection_name)
-    else:
-        logger.info("Attempting WiFi device bounce on %s (disconnect/reconnect) before bringing up '%s'", AP_IFNAME, connection_name)
-        r_disc = run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
-        r_conn = run_cmd(["nmcli", "device", "connect", AP_IFNAME])
-        if r_disc.returncode != 0 or r_conn.returncode != 0:
-            logger.debug("WiFi device bounce: disconnect rc=%d, connect rc=%d", r_disc.returncode, r_conn.returncode)
+        logger.debug("Configured WiFi '%s' already healthy; no action needed", connection_name)
+        return True
+
+    logger.info("Attempting WiFi device bounce on %s (disconnect/reconnect) before bringing up '%s'", AP_IFNAME, connection_name)
+    r_disc = run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
+    r_conn = run_cmd(["nmcli", "device", "connect", AP_IFNAME])
+    if r_disc.returncode != 0 or r_conn.returncode != 0:
+        logger.debug("WiFi device bounce: disconnect rc=%d, connect rc=%d", r_disc.returncode, r_conn.returncode)
 
     # Bring up the configured connection profile.
     logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)

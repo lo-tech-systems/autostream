@@ -196,7 +196,9 @@ EOF
             *) echo "ERROR: Aborted by user." >&2; exit 1 ;;
         esac
     else
-        echo "Non-interactive session; proceeding with installation."
+        echo "ERROR: Non-interactive session detected. Cannot prompt for confirmation." >&2
+        echo "ERROR: Re-run interactively via a TTY (e.g. sudo ./autostream_dial_install.sh)." >&2
+        exit 1
     fi
 }
 

@@ -684,6 +684,30 @@ class TestInstallerSafetyPrompt:
             "show_info_and_prompt must exit with code 1 on non-Y/y answer"
         )
 
+    def test_show_info_and_prompt_refuses_non_interactive(self):
+        """show_info_and_prompt must refuse (exit 1) when there is no TTY.
+
+        The main installer's safety model is that non-interactive fresh installs
+        are rejected unless an explicit unattended mode is provided.  Proceeding
+        silently on a piped/automated run bypasses the only human confirmation gate.
+        """
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("show_info_and_prompt()")
+        assert start != -1
+        body = content[start: start + 1500]
+        # The else branch (no TTY) must exit, not proceed
+        else_idx = body.find("else\n", body.find("if has_tty"))
+        assert else_idx != -1, "show_info_and_prompt must have an else branch after 'if has_tty'"
+        else_body = body[else_idx: else_idx + 300]
+        assert "exit 1" in else_body, (
+            "show_info_and_prompt must exit 1 in the non-TTY else branch; "
+            "silently proceeding on a piped install bypasses the confirmation gate"
+        )
+        # Must not say 'proceeding' in that else branch
+        assert "proceeding with installation" not in else_body.lower(), (
+            "show_info_and_prompt must not silently proceed when there is no TTY"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Reboot prompt at end of fresh install
@@ -730,6 +754,51 @@ class TestInstallerRebootPrompt:
         after = content[complete_pos:]
         assert "reboot the device when convenient" in after, (
             "Non-interactive path must tell user to reboot when convenient"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Conditional completion message based on recorded WiFi
+# ---------------------------------------------------------------------------
+
+class TestInstallerCompletionMessage:
+    def _after_complete(self) -> str:
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        pos = content.find("installation complete")
+        assert pos != -1
+        return content[pos:]
+
+    def test_completion_message_checks_ssid_file(self):
+        """Installer must check /opt/autostream/ssid to decide which message to show."""
+        after = self._after_complete()
+        assert "/opt/autostream/ssid" in after, (
+            "Completion block must check /opt/autostream/ssid to determine the next-step message"
+        )
+
+    def test_wifi_recorded_message_shown_when_ssid_file_exists(self):
+        """When WiFi was recorded, message must direct user to continue from an appliance."""
+        after = self._after_complete()
+        assert "continue setup from an autostream appliance" in after.lower(), (
+            "Installer must tell users to 'continue setup from an autostream appliance' "
+            "when WiFi was recorded during install"
+        )
+
+    def test_setup_ssid_message_shown_when_no_wifi_recorded(self):
+        """When no WiFi was recorded, message must still direct user to the setup SSID."""
+        after = self._after_complete()
+        assert "autostream-dial_SETUP" in after or "SETUP" in after, (
+            "Installer must still mention the setup SSID for devices without recorded WiFi"
+        )
+
+    def test_completion_messages_are_mutually_conditional(self):
+        """The two messages must be in an if/else block, not both always printed."""
+        after = self._after_complete()
+        ssid_idx = after.find("/opt/autostream/ssid")
+        assert ssid_idx != -1
+        block = after[ssid_idx: ssid_idx + 400]
+        assert "if " in block and "else" in block, (
+            "The two completion messages must be in an if/else block "
+            "so only one is printed depending on whether WiFi was recorded"
         )
 
 
