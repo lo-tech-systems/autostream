@@ -18,9 +18,13 @@ Deleted when the last capture stops.
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
+| `dial_status` | `v1` | `POST /api/dial/status` is available |
 
 A consumer that sees neither `dial_api` nor `audio_status` treats the appliance as a legacy
 instance (pre-dial support) and skips it.
+
+`dial_status=v1` is independent of `dial_api=v1`. An older appliance may support
+`dial_api=v1` without supporting `dial_status=v1`.
 
 Port: **80** (appliance HTTP server).
 
@@ -116,6 +120,52 @@ Some outputs updated successfully; others failed. Not all outputs failed.
 
 **Authorization failure: 403** (empty body). Returned when `dial_id` is absent, empty, or
 not present in `dials.json`.
+
+---
+
+### `POST /api/dial/status`
+
+UUID-in-body auth. Must be routed **before** `validate_csrf()` — no session or CSRF token
+required. Read-only; no output mutation.
+
+Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
+
+**Request body:**
+```json
+{"dial_id": "<id>"}
+```
+
+**Success response (200) — outputs selected:**
+```json
+{"ok": true, "playing": true, "master_volume": 59, "selected_output_count": 2}
+```
+
+**Success response (200) — no outputs selected:**
+```json
+{"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `playing` | bool | `true` if any capture is currently active |
+| `master_volume` | int\|null | Rounded arithmetic mean of selected output volumes; `null` when none selected |
+| `selected_output_count` | int | Number of currently selected outputs |
+
+`master_volume` uses the same arithmetic-mean calculation as the home-page master control
+and `POST /api/dial/volume`.
+
+**Application failure responses (200 body):**
+
+| `error` | Meaning |
+|---|---|
+| `config_error` | Appliance configuration could not be loaded |
+| `backend_unavailable` | Audio backend (OwnTone) could not provide outputs |
+
+**Authorization failure: 403** (empty JSON object `{}`). Returned when `dial_id` is absent,
+empty, or not present in `dials.json`. Matches `POST /api/dial/volume` behavior.
+
+This `403` is **not** intercepted by the main NGINX `error_page` directive (which only
+intercepts 404, 502, 503, and 504), so the dial client receives the original HTTP `403`.
 
 ---
 
@@ -220,12 +270,13 @@ Triggers a firmware update. Returns immediately:
 
 ---
 
-## 5. `dial_api=v1` Version Table
+## 5. Capability Version Table
 
-| Version | Endpoint | Notes |
+| Capability | Endpoint | Notes |
 |---|---|---|
-| `v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
-| `v1` | `GET /api/audio/status` | Output names only; no IDs |
+| `dial_api=v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
+| `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
+| `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
 
 Breaking changes (new `v2`):
 - Any change to request/response schema that removes or renames required fields.

@@ -50,6 +50,7 @@ from autostream_webui_api import (
     run_updater,
     send_audio_status_json,
     send_dial_mute_post_json,
+    send_dial_status_post_json,
     send_dial_volume_post_json,
     send_federation_eq_config_json,
     send_federation_eq_reset_json,
@@ -577,7 +578,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 pass
 
         # ── UUID-auth dial endpoints (no session/CSRF required) ───────────
-        if path in ("/api/dial/volume", "/api/dial/mute"):
+        if path in ("/api/dial/volume", "/api/dial/mute", "/api/dial/status"):
             if content_type == "application/json" and body_str and not isinstance(json_obj, dict):
                 self.send_error(400, "JSON object required")
                 return
@@ -588,6 +589,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/dial/mute":
             send_dial_mute_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
+            return
+
+        if path == "/api/dial/status":
+            send_dial_status_post_json(self, STATE, json_obj if isinstance(json_obj, dict) else {})
             return
 
         # ── Federation routes (bearer-token protected, no browser CSRF) ──────

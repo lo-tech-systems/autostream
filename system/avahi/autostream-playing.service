@@ -8,5 +8,6 @@
     <txt-record>version=__AUTOSTREAM_RELEASE_TAG__</txt-record>
     <txt-record>dial_api=v1</txt-record>
     <txt-record>audio_status=v1</txt-record>
+    <txt-record>dial_status=v1</txt-record>
   </service>
 </service-group>

@@ -678,6 +678,67 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
     send_json(handler, 200, {"ok": True, "volume": new_master})
 
 
+def calculate_master_volume(outputs) -> tuple:
+    """Return (master_volume, selected_output_count) for selected outputs.
+
+    For each selected output, volume_percent is converted to int and clamped to
+    0..100.  Returns (round(sum/count), count), or (None, 0) when none selected.
+    """
+    volumes = [
+        max(0, min(100, int(o.volume_percent)))
+        for o in outputs
+        if o.selected
+    ]
+    if not volumes:
+        return (None, 0)
+    return (round(sum(volumes) / len(volumes)), len(volumes))
+
+
+def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/status — UUID-auth only (no session/CSRF required).
+
+    Returns fresh, side-effect-free playing state and master volume.
+    """
+    dial_id = json_obj.get("dial_id", "")
+    if not isinstance(dial_id, str) or not dial_id:
+        send_json(handler, 403, {})
+        return
+    if not is_dial_authorized(dial_id):
+        send_json(handler, 403, {})
+        return
+
+    playing = any_monitor_capturing()
+
+    try:
+        raw = locked_load_config(state.config_path)
+        parsed = parse_config(raw)
+        base_url = parsed.owntone.base_url
+    except Exception as e:
+        logging.warning("dial status: config load failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+
+    try:
+        result = list_outputs(base_url, timeout=1.0)
+    except Exception as e:
+        logging.warning("dial status: list_outputs raised: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
+        return
+
+    if not result.ok:
+        logging.warning("dial status: list_outputs not ok: %s", result.error)
+        send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
+        return
+
+    master_volume, selected_output_count = calculate_master_volume(result.outputs)
+    send_json(handler, 200, {
+        "ok": True,
+        "playing": playing,
+        "master_volume": master_volume,
+        "selected_output_count": selected_output_count,
+    })
+
+
 def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/mute — UUID-auth only (no session/CSRF required).
 
