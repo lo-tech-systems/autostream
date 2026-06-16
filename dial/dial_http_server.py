@@ -1,10 +1,13 @@
-"""dial_http_server.py — Dial HTTP server (port 7842).
+"""dial_http_server.py — Dial management API (port 7842).
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-Routes: GET / (setup page), GET /configure (setup JSON), POST /configure (save
-setup and PIN), GET /recovery_status, GET /update/status, GET /update/check,
-POST /update.
+This module is a management API used by the autostream appliance to configure
+the dial (name, PIN, step size, auto-update).  It does not serve a browser-
+facing setup UI; dial configuration is done through the appliance web interface.
+
+Routes: GET /configure, POST /configure, GET /recovery_status,
+GET /update/status, GET /update/check, POST /update.
 """
 from __future__ import annotations
 
@@ -265,16 +268,7 @@ class DialHTTPServer:
                 return self.rfile.read(content_length)
 
             def do_GET(self) -> None:
-                if self.path in ('/', '/index.html'):
-                    from dial_webui_assets import SETUP_PAGE_HTML
-                    body = SETUP_PAGE_HTML.encode('utf-8')
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html; charset=utf-8')
-                    self.send_header('Content-Length', str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-
-                elif self.path == '/configure':
+                if self.path == '/configure':
                     with dial_server._cfg_lock:
                         cfg = dial_server._cfg
                     self._send_json(200, {

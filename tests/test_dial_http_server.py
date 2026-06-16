@@ -736,3 +736,126 @@ class TestReconcileUpdateTimer:
             dial_main._reconcile_update_timer(True)
         flat = " ".join(run_cmds[0])
         assert "toggle-dial-update-timer" in flat
+
+
+# ---------------------------------------------------------------------------
+# Dial root route removed — setup UI no longer served
+# ---------------------------------------------------------------------------
+
+class TestDialRootRouteRemoved:
+    def test_get_root_returns_404(self):
+        """GET / must return 404 — the dial no longer serves a standalone setup UI."""
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+        h.do_GET()
+        assert result.get("status") == 404, (
+            "GET / must return 404 now that the standalone dial setup UI has been removed"
+        )
+
+    def test_get_index_html_returns_404(self):
+        """GET /index.html must return 404."""
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/index.html"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+        h.do_GET()
+        assert result.get("status") == 404, (
+            "GET /index.html must return 404 — setup page no longer served"
+        )
+
+    def test_setup_page_html_not_imported_at_module_level(self):
+        """SETUP_PAGE_HTML must not be imported at module level in dial_http_server."""
+        import dial_http_server
+        assert not hasattr(dial_http_server, "SETUP_PAGE_HTML"), (
+            "SETUP_PAGE_HTML must not be a module-level name in dial_http_server "
+            "after the setup UI was removed"
+        )
+
+    def test_docstring_describes_management_api(self):
+        """dial_http_server module docstring must say 'management API', not 'setup page'."""
+        import dial_http_server
+        doc = dial_http_server.__doc__ or ""
+        assert "management" in doc.lower() or "management API" in doc, (
+            "dial_http_server docstring must describe this as a management API"
+        )
+        assert "setup page" not in doc.lower(), (
+            "dial_http_server docstring must not refer to a 'setup page' "
+            "after the UI was removed"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Management API still works after setup UI removal
+# ---------------------------------------------------------------------------
+
+class TestManagementApiRetained:
+    def test_get_configure_still_200(self):
+        """GET /configure must still return 200 — appliance proxy depends on this."""
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/configure"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+        h.do_GET()
+        assert result.get("status") == 200, (
+            "GET /configure must still return 200 after setup UI removal"
+        )
+
+    def test_get_recovery_status_still_reachable(self):
+        """GET /recovery_status must still respond — recovery flow is retained."""
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/recovery_status"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+        h.do_GET()
+        # Returns 200 (active) or 404 (inactive) — both are valid; must not be 500
+        assert result.get("status") in (200, 404), (
+            "GET /recovery_status must still return 200 or 404 after setup UI removal"
+        )
+
+    def test_get_update_status_still_reachable(self):
+        """GET /update/status must still respond — update flow is retained."""
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/update/status"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+
+        fake_env = {"STATUS": "success", "MESSAGE": "ok", "PERCENT_COMPLETE": "100",
+                    "LAST_RUN_AT": "2026-01-01T00:00:00+00:00"}
+        with patch("dial_http_server._read_update_state", return_value="complete"):
+            h.do_GET()
+        assert result.get("status") == 200, (
+            "GET /update/status must still return 200 after setup UI removal"
+        )
+
+    def test_post_configure_still_works(self):
+        """POST /configure must still process name changes — appliance proxy depends on it."""
+        r = _call_handler("/configure", body={"name": "MyDial"})
+        assert r["status"] == 200, (
+            "POST /configure must still return 200 after setup UI removal"
+        )
+        assert r["data"].get("ok") is True
+
+    def test_configure_name_pin_step_fields_accepted(self):
+        """POST /configure must still accept name, step_percent, and new_pin."""
+        r = _call_handler("/configure", body={"name": "Test", "step_percent": 3, "new_pin": "4321"})
+        assert r["status"] == 200
+        assert r["save_calls"][0].name == "Test"
+        assert r["save_calls"][0].step_percent == 3
+        assert r["save_calls"][0].pin == "4321"
