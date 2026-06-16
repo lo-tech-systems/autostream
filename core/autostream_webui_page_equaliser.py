@@ -10,7 +10,8 @@ Responsibilities:
     live trim readout, and six parametric EQ band sliders.
   - No PIN required; /equaliser is in the auth allowlist.
   - Settings are saved automatically via POST /api/output_eq/config (AJAX).
-  - Live trim status is polled every 2 seconds from GET /api/output_eq/status.
+  - Full EQ state (all bands, gain, auto-trim) is polled every 3 seconds via
+    GET /api/appliances/<local_id>/equaliser (the gateway bound path).
 """
 
 from __future__ import annotations
@@ -372,6 +373,8 @@ function _drawEqCurve() {{
 _EQUALISER_JS = r"""
 var _csrfToken = document.getElementById('_csrfField').value;
 var _EQ_BAND_KEYS = ['peq1_db','peq2_db','peq3_db','peq4_db','peq5_db','peq6_db'];
+var _eqPollTimer = null;
+var _eqPendingFields = new Set();
 
 function _fmtDb(v, decimals) {
   var s = v.toFixed(decimals !== undefined ? decimals : 0);
@@ -379,14 +382,19 @@ function _fmtDb(v, decimals) {
 }
 
 function _saveEqField(field, value) {
+  _eqPendingFields.add(field);
   fetch('/api/output_eq/config', {
     method: 'POST',
     credentials: 'same-origin',
     headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
     body: JSON.stringify({field: field, value: value})
   }).then(function(r) { return r.json(); }).then(function(d) {
+    _eqPendingFields.delete(field);
     if (!d.ok) { console.warn('Output EQ save failed:', field, d.error); }
-  }).catch(function(e) { console.warn('Output EQ save error:', e); });
+  }).catch(function(e) {
+    _eqPendingFields.delete(field);
+    console.warn('Output EQ save error:', e);
+  });
 }
 
 function syncOutputGain(value) {
@@ -412,7 +420,6 @@ function setOutputAutoTrim(enabled) {
   } else {
     el.style.display = '';
     el.textContent = 'Calculating\u2026';
-    _pollTrimStatus();
   }
 }
 
@@ -434,35 +441,77 @@ function resetEq() {
   }).catch(function(e) { console.warn('EQ reset error:', e); });
 }
 
-function _pollTrimStatus() {
-  fetch('/api/output_eq/status', {credentials: 'same-origin'})
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      var el = document.getElementById('output_trim_status');
-      if (!el) return;
-      var cb = document.getElementById('output_auto_trim');
-      if (!cb || !cb.checked) { el.style.display = 'none'; el.textContent = ''; return; }
-      el.style.display = '';
-      if (!d.ok) { el.textContent = 'Auto-trim: unavailable'; return; }
-      var db = parseFloat(d.output_auto_trim_db);
-      el.textContent = 'Auto-trim: ' + db.toFixed(1) + ' dB applied';
-    })
-    .catch(function() {
-      var el = document.getElementById('output_trim_status');
-      if (el) { el.style.display = 'none'; el.textContent = ''; }
-    });
+function _scheduleEqPoll() {
+  if (_eqPollTimer) clearTimeout(_eqPollTimer);
+  _eqPollTimer = setTimeout(_pollFullEqState, 3000);
+}
+
+async function _pollFullEqState() {
+  if (document.hidden) { _scheduleEqPoll(); return; }
+  try {
+    var r = await fetch(window.__POLL_URL, {cache: 'no-store', signal: AbortSignal.timeout(5000)});
+    var data = await r.json();
+    if (data && data.ok) { _updateEqFromPoll(data); }
+  } catch(e) {}
+  _scheduleEqPoll();
+}
+
+function _updateEqFromPoll(data) {
+  _EQ_BAND_KEYS.forEach(function(key) {
+    if (_eqPendingFields.has(key)) return;
+    var sl = document.getElementById(key);
+    if (!sl || sl === document.activeElement) return;
+    var v = data[key] !== undefined ? parseInt(data[key], 10) : null;
+    if (v !== null && String(sl.value) !== String(v)) {
+      sl.value = String(v);
+      var lbl = document.getElementById(key + '_val');
+      if (lbl) lbl.textContent = _fmtDb(v, 0);
+    }
+  });
+  if (!_eqPendingFields.has('gain_db')) {
+    var gs = document.getElementById('output_gain_db');
+    if (gs && gs !== document.activeElement && data.gain_db !== undefined) {
+      var gv = parseFloat(data.gain_db);
+      var gvStr = gv.toFixed(1);
+      if (gs.value !== gvStr) {
+        gs.value = gvStr;
+        var gvEl = document.getElementById('output_gain_db_val');
+        if (gvEl) gvEl.textContent = _fmtDb(gv, 1);
+      }
+    }
+  }
+  if (!_eqPendingFields.has('auto_trim_enabled')) {
+    var cb = document.getElementById('output_auto_trim');
+    if (cb && data.auto_trim_enabled !== undefined) {
+      cb.checked = !!data.auto_trim_enabled;
+      if (!data.auto_trim_enabled) {
+        var trimSt = document.getElementById('output_trim_status');
+        if (trimSt) { trimSt.style.display = 'none'; trimSt.textContent = ''; }
+      }
+    }
+  }
+  if (data.output_auto_trim_db !== undefined) {
+    var trimEl = document.getElementById('output_trim_status');
+    var cbAt = document.getElementById('output_auto_trim');
+    if (trimEl && cbAt && cbAt.checked) {
+      trimEl.style.display = '';
+      var trimDb = parseFloat(data.output_auto_trim_db);
+      trimEl.textContent = 'Auto-trim: ' + (Number.isFinite(trimDb) ? trimDb.toFixed(1) + ' dB applied' : 'unavailable');
+    }
+  }
+  if (typeof _drawEqCurve === 'function') _drawEqCurve();
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-  _pollTrimStatus();
-  setInterval(_pollTrimStatus, 2000);
   _drawEqCurve();
   initApplianceSelector();
   refreshApplianceSelector();
   setInterval(function(){if(!document.hidden)refreshApplianceSelector();}, 15000);
   document.addEventListener('visibilitychange', function(){
-    if(!document.hidden) refreshApplianceSelector();
+    if (!document.hidden) { _pollFullEqState(); refreshApplianceSelector(); }
+    else { if (_eqPollTimer) { clearTimeout(_eqPollTimer); _eqPollTimer = null; } }
   });
+  _pollFullEqState();
 });
 
 function initApplianceSelector(){
@@ -577,8 +626,12 @@ def send_equaliser_page(
             "Configuration unavailable.</p>"
         )
 
+    _poll_url = f"/api/appliances/{html.escape(_local_id)}/equaliser"
     _head_extra = (
-        f"<script>window.__LOCAL_ID='{html.escape(_local_id)}';</script>"
+        f"<script>"
+        f"window.__LOCAL_ID='{html.escape(_local_id)}';"
+        f"window.__POLL_URL='{_poll_url}';"
+        f"</script>"
     )
 
     body_html = (

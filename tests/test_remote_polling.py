@@ -29,10 +29,11 @@ if _CORE not in sys.path:
 
 try:
     from autostream_webui_page_airplay import _REMOTE_HOME_SCRIPT
-    from autostream_webui_page_equaliser import _REMOTE_EQUALISER_SCRIPT
+    from autostream_webui_page_equaliser import _EQUALISER_JS, _REMOTE_EQUALISER_SCRIPT
     _HAS_SCRIPTS = True
 except ImportError:
     _HAS_SCRIPTS = False
+    _EQUALISER_JS = ""
 
 _skip = pytest.mark.skipif(not _HAS_SCRIPTS, reason="page scripts unavailable")
 
@@ -341,3 +342,146 @@ class TestRemoteEqualiserVisibilityResume:
         vis_idx = src.index('visibilitychange')
         vis_body = src[vis_idx:vis_idx + 300]
         assert '_eqFailCount=0' in vis_body
+
+
+# ---------------------------------------------------------------------------
+# Local Equaliser — full-state polling
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestLocalEqualiserFullPolling:
+    def test_poll_full_eq_state_function_exists(self):
+        """_EQUALISER_JS must define _pollFullEqState."""
+        assert '_pollFullEqState' in _EQUALISER_JS
+
+    def test_poll_full_eq_state_fetches_poll_url(self):
+        """_pollFullEqState must fetch window.__POLL_URL, not just the status endpoint."""
+        src = _EQUALISER_JS
+        fn_idx = src.index('async function _pollFullEqState')
+        fn_body = src[fn_idx:fn_idx + 400]
+        assert '__POLL_URL' in fn_body
+        assert '/api/output_eq/status' not in fn_body
+
+    def test_schedule_eq_poll_calls_poll_full_eq(self):
+        """_scheduleEqPoll must schedule _pollFullEqState."""
+        src = _EQUALISER_JS
+        fn_idx = src.index('function _scheduleEqPoll')
+        fn_body = src[fn_idx:fn_idx + 200]
+        assert '_pollFullEqState' in fn_body
+
+    def test_poll_full_eq_applies_state(self):
+        """_pollFullEqState must call _updateEqFromPoll on success."""
+        src = _EQUALISER_JS
+        fn_idx = src.index('async function _pollFullEqState')
+        fn_body = src[fn_idx:fn_idx + 400]
+        assert '_updateEqFromPoll' in fn_body
+
+    def test_poll_full_eq_reschedules(self):
+        """_pollFullEqState must call _scheduleEqPoll to reschedule."""
+        src = _EQUALISER_JS
+        fn_idx = src.index('async function _pollFullEqState')
+        fn_body = src[fn_idx:fn_idx + 400]
+        assert '_scheduleEqPoll()' in fn_body
+
+    def test_domcontentloaded_starts_full_poll(self):
+        """DOMContentLoaded must call _pollFullEqState, not setInterval(_pollTrimStatus)."""
+        src = _EQUALISER_JS
+        dl_idx = src.index('DOMContentLoaded')
+        dl_body = src[dl_idx:dl_idx + 400]
+        assert '_pollFullEqState' in dl_body
+        assert 'setInterval(_pollTrimStatus' not in dl_body
+
+    def test_no_trim_status_interval(self):
+        """_EQUALISER_JS must not contain a periodic trim-status-only poll."""
+        assert 'setInterval(_pollTrimStatus' not in _EQUALISER_JS
+
+    def test_visibility_resume_calls_poll_full_eq_state(self):
+        """visibilitychange resume must call _pollFullEqState for immediate refresh."""
+        src = _EQUALISER_JS
+        vis_idx = src.index('visibilitychange')
+        vis_body = src[vis_idx:vis_idx + 300]
+        assert '_pollFullEqState()' in vis_body
+
+
+# ---------------------------------------------------------------------------
+# Local Equaliser — _updateEqFromPoll update path
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestLocalEqualiserUpdateFromPoll:
+    def _fn_body(self) -> str:
+        src = _EQUALISER_JS
+        fn_idx = src.index('function _updateEqFromPoll(')
+        fn_end = src.index('document.addEventListener(', fn_idx)
+        return src[fn_idx:fn_end]
+
+    def test_update_skips_focused_slider(self):
+        """_updateEqFromPoll must not clobber band sliders that are focused."""
+        fn_body = self._fn_body()
+        assert 'document.activeElement' in fn_body
+
+    def test_update_skips_pending_fields(self):
+        """_updateEqFromPoll must skip fields with in-flight saves."""
+        fn_body = self._fn_body()
+        assert '_eqPendingFields' in fn_body
+
+    def test_update_refreshes_band_sliders(self):
+        """_updateEqFromPoll must iterate _EQ_BAND_KEYS and update sliders."""
+        fn_body = self._fn_body()
+        assert '_EQ_BAND_KEYS' in fn_body
+
+    def test_update_refreshes_gain(self):
+        """_updateEqFromPoll must update output_gain_db when not pending and not focused."""
+        fn_body = self._fn_body()
+        assert 'output_gain_db' in fn_body
+        assert 'gain_db' in fn_body
+
+    def test_update_refreshes_auto_trim_checkbox(self):
+        """_updateEqFromPoll must update the auto_trim checkbox when not pending."""
+        fn_body = self._fn_body()
+        assert 'auto_trim_enabled' in fn_body
+        assert 'output_auto_trim' in fn_body
+
+    def test_trim_status_updated_from_full_response(self):
+        """output_auto_trim_db in full response must update trim status display."""
+        fn_body = self._fn_body()
+        assert 'output_auto_trim_db' in fn_body
+
+    def test_eq_curve_redrawn_after_update(self):
+        """_drawEqCurve must be called after applying the poll response."""
+        fn_body = self._fn_body()
+        assert '_drawEqCurve' in fn_body
+
+
+# ---------------------------------------------------------------------------
+# Local Equaliser — pending-field guard (_eqPendingFields)
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestLocalEqualiserPendingFields:
+    def test_pending_fields_declared(self):
+        assert '_eqPendingFields = new Set()' in _EQUALISER_JS
+
+    def test_save_adds_field_to_pending(self):
+        """_saveEqField must add the field to _eqPendingFields before fetching."""
+        src = _EQUALISER_JS
+        fn_idx = src.index('function _saveEqField(')
+        fn_body = src[fn_idx:fn_idx + 600]
+        add_pos = fn_body.index('_eqPendingFields.add(field)')
+        fetch_pos = fn_body.index("fetch('/api/output_eq/config'")
+        assert add_pos < fetch_pos
+
+    def test_save_clears_field_on_success(self):
+        """_saveEqField must delete field from _eqPendingFields on success."""
+        src = _EQUALISER_JS
+        fn_idx = src.index('function _saveEqField(')
+        fn_body = src[fn_idx:fn_idx + 700]
+        assert '_eqPendingFields.delete(field)' in fn_body
+
+    def test_save_clears_field_on_error(self):
+        """_saveEqField must delete field from _eqPendingFields in catch block."""
+        src = _EQUALISER_JS
+        fn_idx = src.index('function _saveEqField(')
+        fn_end = src.index('\nfunction syncOutputGain')
+        fn_body = src[fn_idx:fn_end]
+        assert fn_body.count('_eqPendingFields.delete(field)') >= 2
