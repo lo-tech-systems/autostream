@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import sys
 import threading
 import time
@@ -785,3 +786,188 @@ class TestHandleRemoteResponse:
         codes, errors = self._call(429, {"ok": False, "error": "rate_limited", "retry_after": 30})
         assert codes == [429]
         assert errors == ["rate_limited"]
+
+
+# ---------------------------------------------------------------------------
+# Debug logging
+# ---------------------------------------------------------------------------
+
+class TestGatewayLogging:
+    """Verify that key gateway events emit debug log messages."""
+
+    _VALID_TOKEN = "a" * 40
+    _SESSION_RESP = {
+        "ok": True,
+        "token": "a" * 40,
+        "token_type": "Bearer",
+        "expires_in": 600,
+        "federation_version": 1,
+    }
+
+    # -- Backoff transitions -------------------------------------------------
+
+    def test_backoff_set_logged_on_failure(self, caplog):
+        aid = "a" * 20
+        with caplog.at_level(logging.DEBUG):
+            with gw._state_lock:
+                gw._record_failure_locked(aid)
+        assert any("backoff set" in r.message and aid in r.message for r in caplog.records)
+
+    def test_backoff_set_includes_delay_and_step(self, caplog):
+        aid = "b" * 20
+        with caplog.at_level(logging.DEBUG):
+            with gw._state_lock:
+                gw._record_failure_locked(aid)
+        msg = next(r.message for r in caplog.records if "backoff set" in r.message)
+        assert "1s" in msg  # first failure → step 0 → 1 second
+        assert "step 0" in msg
+
+    def test_backoff_cleared_logged_on_success(self, caplog):
+        aid = "a" * 20
+        with gw._state_lock:
+            gw._record_failure_locked(aid)  # pre-set backoff (logged, but outside caplog scope)
+        with caplog.at_level(logging.DEBUG):
+            with gw._state_lock:
+                gw._record_success_locked(aid)
+        assert any("backoff cleared" in r.message and aid in r.message for r in caplog.records)
+
+    def test_backoff_not_logged_when_already_clear(self, caplog):
+        aid = "a" * 20  # no prior failure → nothing to clear
+        with caplog.at_level(logging.DEBUG):
+            with gw._state_lock:
+                gw._record_success_locked(aid)
+        assert not any("backoff cleared" in r.message for r in caplog.records)
+
+    def test_serving_backoff_logged(self, caplog):
+        aid = "a" * 20
+        handler = _make_handler()
+        with gw._state_lock:
+            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
+        with caplog.at_level(logging.DEBUG), \
+             patch("autostream_appliance_gateway.send_browser_api_error"):
+            gw._check_and_emit_backoff(handler, aid)
+        assert any("serving backoff" in r.message and aid in r.message for r in caplog.records)
+
+    def test_no_serving_backoff_log_when_not_in_backoff(self, caplog):
+        aid = "a" * 20
+        handler = _make_handler()
+        with caplog.at_level(logging.DEBUG), \
+             patch("autostream_appliance_gateway.send_browser_api_error"):
+            gw._check_and_emit_backoff(handler, aid)
+        assert not any("serving backoff" in r.message for r in caplog.records)
+
+    # -- Token acquisition ---------------------------------------------------
+
+    def test_token_acquisition_attempt_logged(self, caplog):
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        with patch.object(gw, "_remote_federation_request",
+                          return_value=(0, {"ok": False, "error": "remote_timeout"})):
+            with caplog.at_level(logging.DEBUG):
+                gw._acquire_token(aid, sighting)
+        assert any("acquiring token" in r.message and aid in r.message for r in caplog.records)
+
+    def test_token_transport_failure_logged(self, caplog):
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        with patch.object(gw, "_remote_federation_request",
+                          return_value=(0, {"ok": False, "error": "remote_timeout"})):
+            with caplog.at_level(logging.DEBUG):
+                gw._acquire_token(aid, sighting)
+        assert any("transport failure" in r.message and aid in r.message for r in caplog.records)
+
+    def test_token_rate_limited_logged(self, caplog):
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        with patch.object(gw, "_remote_federation_request",
+                          return_value=(429, {"ok": False, "error": "rate_limited",
+                                             "retry_after": 30})):
+            with caplog.at_level(logging.DEBUG):
+                gw._acquire_token(aid, sighting)
+        assert any("rate-limited" in r.message and aid in r.message for r in caplog.records)
+
+    def test_token_rejection_logged(self, caplog):
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        with patch.object(gw, "_remote_federation_request",
+                          return_value=(409, {"ok": False, "error": "appliance_unconfigured"})):
+            with caplog.at_level(logging.DEBUG):
+                gw._acquire_token(aid, sighting)
+        assert any("token acquisition rejected" in r.message and "HTTP 409" in r.message
+                   for r in caplog.records)
+
+    def test_token_acquired_logged(self, caplog):
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        with patch.object(gw, "_remote_federation_request",
+                          return_value=(200, self._SESSION_RESP)):
+            with caplog.at_level(logging.DEBUG):
+                gw._acquire_token(aid, sighting)
+        assert any("token acquired" in r.message and aid in r.message for r in caplog.records)
+
+    # -- Transport layer -----------------------------------------------------
+
+    def test_socket_timeout_logged(self, caplog):
+        import socket as _socket
+        sighting = _make_sighting()
+        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+            MockConn.return_value.request.side_effect = _socket.timeout("timed out")
+            with caplog.at_level(logging.DEBUG):
+                gw._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
+        assert any("socket timeout" in r.message for r in caplog.records)
+
+    def test_connection_error_logged(self, caplog):
+        sighting = _make_sighting()
+        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+            MockConn.return_value.request.side_effect = ConnectionRefusedError()
+            with caplog.at_level(logging.DEBUG):
+                gw._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
+        assert any("connection error" in r.message for r in caplog.records)
+
+    def test_successful_response_logged(self, caplog):
+        sighting = _make_sighting()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = json.dumps({"ok": True}).encode()
+        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+            MockConn.return_value.sock = MagicMock()
+            MockConn.return_value.getresponse.return_value = mock_resp
+            with caplog.at_level(logging.DEBUG):
+                gw._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
+        assert any("fed response" in r.message and "HTTP 200" in r.message for r in caplog.records)
+
+    def test_token_not_logged_in_transport(self, caplog):
+        """Bearer token must never appear in any log message."""
+        secret = "s3cr3t" + "x" * 34  # 40-char token
+        sighting = _make_sighting()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = json.dumps({"ok": True}).encode()
+        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+            MockConn.return_value.sock = MagicMock()
+            MockConn.return_value.getresponse.return_value = mock_resp
+            with caplog.at_level(logging.DEBUG):
+                gw._remote_federation_request("GET", sighting, "/foo", secret)
+        assert not any(secret in r.message for r in caplog.records)
+
+    # -- Browser error response ----------------------------------------------
+
+    def test_error_response_to_browser_logged(self, caplog):
+        aid = "a" * 20
+        handler = _make_handler()
+        with patch("autostream_appliance_gateway.send_browser_api_error"), \
+             caplog.at_level(logging.DEBUG):
+            gw._handle_remote_response(
+                handler, aid, 0, {"ok": False, "error": "remote_timeout"},
+            )
+        assert any("error response" in r.message and aid in r.message for r in caplog.records)
+
+    def test_success_response_not_logged_as_error(self, caplog):
+        aid = "a" * 20
+        handler = _make_handler()
+        with patch("autostream_appliance_gateway.send_json"), \
+             caplog.at_level(logging.DEBUG):
+            gw._handle_remote_response(handler, aid, 200, {"ok": True})
+        assert not any("error response" in r.message for r in caplog.records)

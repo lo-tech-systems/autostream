@@ -140,10 +140,13 @@ def _record_failure_locked(appliance_id: str) -> None:
         step_idx = min(step_idx + 1, len(_BACKOFF_STEPS) - 1)
     delay = _BACKOFF_STEPS[step_idx]
     _backoff_state[appliance_id] = (time.monotonic() + delay, step_idx)
+    logging.debug("gateway: backoff set for %s: %ds (step %d)", appliance_id, delay, step_idx)
 
 
 def _record_success_locked(appliance_id: str) -> None:
     """Reset per-target backoff. Lock must be held."""
+    if appliance_id in _backoff_state:
+        logging.debug("gateway: backoff cleared for %s", appliance_id)
     _backoff_state.pop(appliance_id, None)
 
 
@@ -171,6 +174,7 @@ def _acquire_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Opti
     Returns (token, error_code, retry_after_seconds).  On success: (token, "", 0).
     On rate_limited: (None, "rate_limited", retry_after).  Other errors: (None, code, 0).
     """
+    logging.debug("gateway: acquiring token for %s at %s:%d", appliance_id, sighting.ip, sighting.port)
     status, data = _remote_federation_request(
         "POST", sighting, "/api/federation/v1/session",
         token="",  # no token needed for session creation
@@ -178,15 +182,24 @@ def _acquire_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Opti
     )
     if status == 0:
         error_code = data.get("error", "remote_timeout")
+        logging.debug("gateway: token acquisition transport failure for %s: %s", appliance_id, error_code)
         return None, error_code, 0
 
     if status != 200 or not data.get("ok"):
         error_code = data.get("error", "remote_bad_response")
         if error_code == "rate_limited":
             retry_after = int(data.get("retry_after", 60)) if isinstance(data, dict) else 60
+            logging.debug(
+                "gateway: token acquisition rate-limited for %s (retry_after=%ds)",
+                appliance_id, retry_after,
+            )
             return None, "rate_limited", retry_after
         if error_code not in ("appliance_unconfigured", "appliance_identity_unavailable"):
             error_code = "remote_bad_response"
+        logging.debug(
+            "gateway: token acquisition rejected for %s: %s (HTTP %d)",
+            appliance_id, error_code, status,
+        )
         return None, error_code, 0
 
     # Reject responses with unexpected fields — plan requires the exact v1 schema
@@ -212,6 +225,7 @@ def _acquire_token(appliance_id: str, sighting: ApplianceSighting) -> tuple[Opti
     expires = received_at + expires_in
     with _state_lock:
         _token_cache[appliance_id] = (token, expires)
+    logging.debug("gateway: token acquired for %s (expires in %ds)", appliance_id, expires_in)
     return token, "", 0
 
 
@@ -301,14 +315,29 @@ def _remote_federation_request(
         if not isinstance(data, dict):
             return 0, {"ok": False, "error": "remote_bad_response"}
 
+        logging.debug(
+            "gateway: fed response %s %s %s:%d → HTTP %d",
+            method, fed_path, sighting.ip, sighting.port, status,
+        )
         return status, data
 
     except socket.timeout:
+        logging.debug(
+            "gateway: socket timeout %s %s %s:%d",
+            method, fed_path, sighting.ip, sighting.port,
+        )
         return 0, {"ok": False, "error": "remote_timeout"}
-    except OSError:
+    except OSError as exc:
+        logging.debug(
+            "gateway: connection error %s %s %s:%d: %s",
+            method, fed_path, sighting.ip, sighting.port, type(exc).__name__,
+        )
         return 0, {"ok": False, "error": "remote_timeout"}
     except Exception as exc:
-        logging.debug("federation transport error: %s", type(exc).__name__)
+        logging.debug(
+            "gateway: unexpected transport error %s %s %s:%d: %s",
+            method, fed_path, sighting.ip, sighting.port, type(exc).__name__,
+        )
         return 0, {"ok": False, "error": "remote_timeout"}
     finally:
         if conn is not None:
@@ -464,18 +493,22 @@ def _check_and_emit_backoff(handler, appliance_id: str) -> bool:
     with _state_lock:
         in_backoff, retry_after = _check_backoff_locked(appliance_id)
     if in_backoff:
+        logging.debug(
+            "gateway: serving backoff for %s (retry_after=%ds)", appliance_id, retry_after,
+        )
         send_browser_api_error(handler, 429, "remote_backoff", retryable=True,
                                extra={"retry_after": retry_after})
     return in_backoff
 
 
-def _handle_remote_response(handler, appliance_id: str, status: int, data: dict) -> None:  # noqa: ARG001
+def _handle_remote_response(handler, appliance_id: str, status: int, data: dict) -> None:
     """Emit the browser response for a completed remote request."""
     if status == 200 and isinstance(data, dict) and data.get("ok"):
         send_json(handler, 200, data)
         return
 
     err = data.get("error", "remote_timeout") if isinstance(data, dict) else "remote_timeout"
+    logging.debug("gateway: error response for %s: %s (HTTP %d)", appliance_id, err, status)
 
     if err == "remote_backoff":
         retry = data.get("retry_after", 1) if isinstance(data, dict) else 1
