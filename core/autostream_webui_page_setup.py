@@ -15,7 +15,7 @@ from __future__ import annotations
 import html
 import logging
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import parse_qs
 
@@ -153,7 +153,11 @@ def _relative_time(iso_str: str) -> str:
     if not iso_str:
         return "never seen"
     try:
-        delta = datetime.utcnow() - datetime.fromisoformat(iso_str)
+        parsed = datetime.fromisoformat(iso_str)
+        now = datetime.now(timezone.utc)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        delta = now - parsed
         secs = int(delta.total_seconds())
         if secs < 60:
             return "just now"
