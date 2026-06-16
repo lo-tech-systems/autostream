@@ -271,13 +271,24 @@ Each autostream derives a stable identity from its Raspberry Pi CPU serial (with
 journalctl -u autostream.service --no-pager | grep "conflict"
 ```
 
+#### Remote appliance temporarily unreachable
+
+If a remote appliance becomes unreachable (network interruption, brief reboot, transient timeout), the UI enters **degraded polling mode**: it continues polling every 10 seconds and shows the last-known state rather than redirecting. When the appliance comes back online, normal polling resumes automatically.
+
+The UI only redirects back to the bound appliance for a **definitive** error — one that indicates the selection is fundamentally invalid (appliance not found, identity conflict, or appliance not configured for federation). Common reasons for a redirect:
+
+* The remote appliance was permanently removed from the network.
+* The remote appliance's identity changed (hardware or config replacement).
+* Federation is disabled on the remote appliance.
+
+If the UI redirects unexpectedly after a reboot, wait for the remote appliance to finish booting, then tap the appliance selector to re-select it.
+
 #### Remote appliance unavailable — returned to bound appliance
 
-If a remote appliance becomes unreachable after three consecutive polling failures, the UI automatically returns to the bound appliance and shows a status message. Common reasons:
+If the UI does redirect automatically, common causes include:
 
-* The remote appliance was powered off or rebooted.
-* The network path between the two appliances was interrupted.
 * The remote appliance's `autostream.service` stopped; check `systemctl status autostream.service` on that appliance.
+* The remote appliance has a hostname or identity conflict — check for duplicate hostnames on your network.
 
 If the remote appliance has come back online, tap the appliance selector to re-select it.
 
