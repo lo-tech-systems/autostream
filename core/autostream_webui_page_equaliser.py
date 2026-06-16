@@ -674,6 +674,8 @@ def send_equaliser_page(
 
 _REMOTE_EQUALISER_SCRIPT = """<script>
 var _EQ_BAND_KEYS=['peq1_db','peq2_db','peq3_db','peq4_db','peq5_db','peq6_db'];
+var _EQ_INITIAL_RETRY_DELAYS_MS=[500,500,1000,1000,2000,3000];
+var _EQ_NORMAL_POLL_MS=3000;
 var _eqWriteSeq={};
 var _eqPendingFields=new Set();
 var _eqFailCount=0;
@@ -681,6 +683,7 @@ var _eqPollTimer=null;
 var _eqPolling=true;
 var __EQ_DEFINITIVE_ERRORS=['not_found','appliance_unconfigured','appliance_conflicted','appliance_identity_unavailable'];
 var __EQ_TRANSPORT_ERRORS=['remote_timeout','remote_bad_response','appliance_offline'];
+function _sleep(ms){return new Promise(function(resolve){setTimeout(resolve,ms);});}
 
 function _fmtDb(v,decimals){var s=v.toFixed(decimals!==undefined?decimals:0);return(v>0?'+':'')+s+' dB';}
 
@@ -809,7 +812,7 @@ async function _pollFullEqState(){
 
 function _scheduleEqPoll(){
   if(_eqPollTimer)clearTimeout(_eqPollTimer);
-  _eqPollTimer=setTimeout(_pollFullEqState,3000);
+  _eqPollTimer=setTimeout(_pollFullEqState,_EQ_NORMAL_POLL_MS);
 }
 
 function renderEqFromState(data){
@@ -906,19 +909,39 @@ function renderEqFromState(data){
 }
 
 async function _loadInitialEqState(){
-  try{
-    var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-    var data=await r.json();
-    if(!data||!data.ok){var err=(data&&data.error)||'remote_bad_response';_eqHandleError(err);return;}
-    _eqFailCount=0;
-    renderEqFromState(data);
-    var cb=document.getElementById('output_auto_trim');
-    if(cb&&cb.checked)_pollTrimStatus();
-    _scheduleEqPoll();
-  }catch(e){
-    _eqFailCount++;
-    _eqRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');
+  var delays=_EQ_INITIAL_RETRY_DELAYS_MS;
+  for(var attempt=0;attempt<=delays.length;attempt++){
+    var waitMs=attempt>0?delays[attempt-1]:0;
+    if(waitMs>0)await _sleep(waitMs);
+    try{
+      var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});
+      var data=await r.json();
+      if(data&&data.ok){
+        _eqFailCount=0;
+        renderEqFromState(data);
+        var cb=document.getElementById('output_auto_trim');
+        if(cb&&cb.checked)_pollTrimStatus();
+        _scheduleEqPoll();
+        return;
+      }
+      var err=(data&&data.error)||'remote_bad_response';
+      if(__EQ_DEFINITIVE_ERRORS.indexOf(err)>=0){_eqHandleError(err);return;}
+      if(data&&data.stale){
+        renderEqFromState(data);
+        var cb2=document.getElementById('output_auto_trim');
+        if(cb2&&cb2.checked)_pollTrimStatus();
+        _scheduleEqPoll();
+        return;
+      }
+      if(data&&data.retry_after&&attempt<delays.length){
+        var ra=Math.min(data.retry_after*1000,delays[attempt]||3000);
+        await _sleep(ra);
+        continue;
+      }
+    }catch(e){}
+    if(attempt>=delays.length){_scheduleEqPoll();return;}
   }
+  _scheduleEqPoll();
 }
 
 function initApplianceSelector(){

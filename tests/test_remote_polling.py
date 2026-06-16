@@ -345,6 +345,57 @@ class TestRemoteEqualiserVisibilityResume:
 
 
 # ---------------------------------------------------------------------------
+# Remote Equaliser — initial-load retry
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestRemoteEqualiserInitialLoadRetry:
+    def _load_fn(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('async function _loadInitialEqState')
+        fn_end = src.index('function initApplianceSelector')
+        return src[fn_idx:fn_end]
+
+    def test_initial_load_fn_exists(self):
+        assert 'async function _loadInitialEqState' in _REMOTE_EQUALISER_SCRIPT
+
+    def test_constants_declared(self):
+        assert '_EQ_INITIAL_RETRY_DELAYS_MS' in _REMOTE_EQUALISER_SCRIPT
+        assert '_EQ_NORMAL_POLL_MS' in _REMOTE_EQUALISER_SCRIPT
+
+    def test_sleep_helper_declared(self):
+        assert 'function _sleep(' in _REMOTE_EQUALISER_SCRIPT
+
+    def test_retry_loop_uses_delays_constant(self):
+        fn = self._load_fn()
+        assert '_EQ_INITIAL_RETRY_DELAYS_MS' in fn
+
+    def test_definitive_errors_still_redirect(self):
+        fn = self._load_fn()
+        assert '__EQ_DEFINITIVE_ERRORS' in fn
+        assert '_eqHandleError' in fn
+
+    def test_stale_data_accepted_and_rendered(self):
+        fn = self._load_fn()
+        assert 'data.stale' in fn or "data&&data.stale" in fn
+
+    def test_on_exhaustion_schedules_poll_not_redirect(self):
+        fn = self._load_fn()
+        assert '_scheduleEqPoll()' in fn
+
+    def test_success_path_calls_render_and_schedules_poll(self):
+        fn = self._load_fn()
+        assert 'renderEqFromState' in fn
+        assert '_scheduleEqPoll()' in fn
+
+    def test_schedule_eq_poll_uses_normal_poll_ms(self):
+        src = _REMOTE_EQUALISER_SCRIPT
+        fn_idx = src.index('function _scheduleEqPoll')
+        fn_body = src[fn_idx:fn_idx + 200]
+        assert '_EQ_NORMAL_POLL_MS' in fn_body
+
+
+# ---------------------------------------------------------------------------
 # Local Equaliser — full-state polling
 # ---------------------------------------------------------------------------
 
