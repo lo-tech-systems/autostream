@@ -88,6 +88,14 @@ def _fetch_target_status(
         result_queue.put((index, record))
         return
 
+    # Validate Content-Type: must be application/json (case-insensitive, ignoring params)
+    ct_header = resp.getheader("Content-Type") or ""
+    ct_base = ct_header.split(";")[0].strip().lower()
+    if ct_base != "application/json":
+        record["status_error"] = "bad_response"
+        result_queue.put((index, record))
+        return
+
     # Oversized response
     if len(raw) > TARGET_STATUS_MAX_BYTES:
         record["status_error"] = "bad_response"

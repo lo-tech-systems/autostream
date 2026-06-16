@@ -5,6 +5,7 @@ Covers:
 2.  Authorization: absent, empty, non-string, unauthorized UUID → HTTP 403 {}.
 3.  Malformed JSON → HTTP 400 (router's native behavior).
 4.  Non-object JSON root → HTTP 403 (reaches handler as {}).
+4b. Router-level: non-object JSON body does NOT trigger HTTP 400 for /api/dial/status.
 5.  Valid authorized UUID → HTTP 200 with ok:true.
 6.  application/json with charset parameter is accepted.
 7.  selected output volumes [40, 60] → master_volume:50, selected_output_count:2.
@@ -386,3 +387,104 @@ class TestDialProtocolDoc:
         assert "dial_status" in text, "DIAL_PROTOCOL.md does not mention dial_status"
         assert "/api/dial/status" in text, \
             "DIAL_PROTOCOL.md does not document POST /api/dial/status"
+
+
+# ---------------------------------------------------------------------------
+# Router-level: non-object JSON must NOT trigger HTTP 400 for /api/dial/status
+# ---------------------------------------------------------------------------
+
+try:
+    from autostream_webui import ConfigWebHandler
+    import autostream_webui as _webui_module
+    _HAS_WEBUI = True
+except ImportError:
+    _HAS_WEBUI = False
+
+_skip_no_webui = pytest.mark.skipif(
+    not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
+)
+
+
+def _make_do_post_handler(path: str, body: bytes, content_type: str = "application/json"):
+    """Build a ConfigWebHandler instance suitable for calling do_POST()."""
+    h = ConfigWebHandler.__new__(ConfigWebHandler)
+    h.path = path
+    h.command = "POST"
+    h.request_version = "HTTP/1.1"
+    h.headers = {
+        "Content-Type": content_type,
+        "Content-Length": str(len(body)),
+        "Cookie": "",
+        "X-CSRF-Token": "",
+        "X-Forwarded-For": "",
+        "X-Real-IP": "",
+    }
+    h.client_address = ("127.0.0.1", 0)
+    h.rfile = io.BytesIO(body)
+    h.wfile = io.BytesIO()
+    h.send_response = MagicMock()
+    h.send_header = MagicMock()
+    h.end_headers = MagicMock()
+    h.send_error = MagicMock()
+    h._pending_auth_cookie = None
+    h._pending_set_cookies = []
+    return h
+
+
+@_skip_no_webui
+class TestRouterLevelDialStatus:
+    """Router-level tests: do_POST() routing behavior for /api/dial/status.
+
+    Verifies that a non-object JSON body (e.g. an array or null) does NOT
+    cause the router to return HTTP 400.  Instead the body is treated as {}
+    and the handler returns HTTP 403 for a missing dial_id.  This differs from
+    /api/dial/volume and /api/dial/mute, which return HTTP 400 for non-object
+    JSON to reject malformed requests early.
+    """
+
+    def test_array_body_reaches_handler_as_empty_object(self):
+        """JSON array body must not produce HTTP 400; handler returns 403."""
+        body = b"[]"
+        handler = _make_do_post_handler("/api/dial/status", body)
+
+        with patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.AUTH", MagicMock()), \
+             patch("autostream_webui.send_dial_status_post_json") as mock_fn:
+            handler.do_POST()
+
+        # The router must NOT have short-circuited with send_error(400)
+        handler.send_error.assert_not_called()
+        # The handler must have been invoked with an empty dict (missing dial_id)
+        mock_fn.assert_called_once()
+        _, _, json_arg = mock_fn.call_args[0]
+        assert json_arg == {}
+
+    def test_null_body_reaches_handler_as_empty_object(self):
+        """JSON null body must not produce HTTP 400; handler receives {}."""
+        body = b"null"
+        handler = _make_do_post_handler("/api/dial/status", body)
+
+        with patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.AUTH", MagicMock()), \
+             patch("autostream_webui.send_dial_status_post_json") as mock_fn:
+            handler.do_POST()
+
+        handler.send_error.assert_not_called()
+        mock_fn.assert_called_once()
+        _, _, json_arg = mock_fn.call_args[0]
+        assert json_arg == {}
+
+    def test_volume_route_still_rejects_array_with_400(self):
+        """Regression: /api/dial/volume retains HTTP 400 for non-object JSON."""
+        body = b"[]"
+        handler = _make_do_post_handler("/api/dial/volume", body)
+
+        with patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.AUTH", MagicMock()), \
+             patch("autostream_webui.send_dial_volume_post_json") as mock_fn:
+            handler.do_POST()
+
+        handler.send_error.assert_called_once()
+        call_args = handler.send_error.call_args[0]
+        assert call_args[0] == 400
+        mock_fn.assert_not_called()

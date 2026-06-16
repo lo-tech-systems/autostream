@@ -115,11 +115,6 @@ def main() -> None:
         software_version=VERSION,
     )
 
-    try:
-        control_server.start()
-    except RuntimeError as e:
-        logging.warning("dial control: socket unavailable: %s", e)
-
     # Import GPIO helpers lazily — non-Pi hosts can still run the HTTP service.
     try:
         from autostream_rpi import setup_rotary_encoder, setup_button  # type: ignore[import]
@@ -127,20 +122,25 @@ def main() -> None:
         setup_rotary_encoder = None  # type: ignore[assignment]
         setup_button = None  # type: ignore[assignment]
 
-    # Store encoder and button in long-lived locals — prevents GC from finalising
-    # the underlying lgpio device handle and silently stopping interrupts.
-    encoder = None
-    button = None
-    if setup_rotary_encoder is not None:
-        encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
-
-    def on_press() -> None:
-        enqueue_mute_toggle()
-
-    if setup_button is not None and cfg.sw_gpio is not None:
-        button = setup_button(cfg.sw_gpio, on_press)
-
+    # Socket startup failures are fatal — let them escape so systemd can retry.
+    # The finally block stops the control server and HTTP server on any exit.
     try:
+        control_server.start()
+
+        # Store encoder and button in long-lived locals — prevents GC from
+        # finalising the underlying lgpio device handle and silently stopping
+        # interrupts.
+        encoder = None
+        button = None
+        if setup_rotary_encoder is not None:
+            encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
+
+        def on_press() -> None:
+            enqueue_mute_toggle()
+
+        if setup_button is not None and cfg.sw_gpio is not None:
+            button = setup_button(cfg.sw_gpio, on_press)
+
         while True:
             led.set_playing() if get_playing_targets() else led.set_idle()
             time.sleep(5)

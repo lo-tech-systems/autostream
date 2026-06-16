@@ -8,6 +8,9 @@ Covers:
 5.  No selected outputs → master_volume:null, selected_output_count:0.
 6.  HTTP 403 → unauthorized.
 7.  Connection failure → unreachable.
+25. Missing Content-Type header → bad_response.
+26. Non-JSON Content-Type → bad_response.
+27. application/json with charset parameter is accepted.
 8.  Timeout → timeout.
 9.  Oversized response → bad_response.
 10. Malformed JSON → bad_response.
@@ -86,9 +89,15 @@ def _ok_response(
 class _FakeHTTPConn:
     """Minimal mock of http.client.HTTPConnection."""
 
-    def __init__(self, response_data: bytes, status: int = 200):
+    def __init__(
+        self,
+        response_data: bytes,
+        status: int = 200,
+        content_type: str = "application/json",
+    ):
         self._data = response_data
         self._status = status
+        self._content_type = content_type
         self.request_called = False
 
     def request(self, method, url, body=None, headers=None):
@@ -98,22 +107,25 @@ class _FakeHTTPConn:
         resp = MagicMock()
         resp.status = self._status
         resp.read = MagicMock(return_value=self._data)
+        ct = self._content_type
+        resp.getheader = MagicMock(side_effect=lambda h, default=None: ct if (h == "Content-Type" and ct is not None) else default)
         return resp
 
     def close(self):
         pass
 
 
-def _mock_conn(data: dict | bytes, status: int = 200):
+def _mock_conn(data: dict | bytes, status: int = 200, content_type: str | None = "application/json"):
     """Return a context-manager patch for HTTPConnection returning data."""
     if isinstance(data, dict):
         raw = json.dumps(data).encode("utf-8")
     else:
         raw = data
+    _ct = content_type
 
     class _Conn(_FakeHTTPConn):
         def __init__(self, host, port=None, timeout=None):
-            super().__init__(raw, status)
+            super().__init__(raw, status, _ct)
 
     return patch("dial_target_status.http.client.HTTPConnection", _Conn)
 
@@ -400,6 +412,9 @@ class TestEnrichConcurrencyAndSorting:
                 resp.read = MagicMock(return_value=json.dumps(
                     _ok_response(playing=True, master_volume=60, selected_output_count=1)
                 ).encode())
+                resp.getheader = MagicMock(
+                    side_effect=lambda h, d=None: "application/json" if h == "Content-Type" else d
+                )
                 return resp
             def close(self): pass
 
@@ -448,3 +463,47 @@ class TestEnrichConcurrencyAndSorting:
                 result = enrich_targets([t], "dial-id")
 
         assert result[0]["status_error"] == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# Content-Type validation (finding #2)
+# ---------------------------------------------------------------------------
+
+class TestContentTypeValidation:
+    """Response Content-Type must be application/json; otherwise bad_response."""
+
+    def test_missing_content_type_returns_bad_response(self):
+        """No Content-Type header → bad_response."""
+        t = _target()
+        with _mock_conn(_ok_response(), content_type=None):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_text_html_content_type_returns_bad_response(self):
+        """text/html Content-Type → bad_response even when body is valid JSON."""
+        t = _target()
+        with _mock_conn(_ok_response(), content_type="text/html"):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_text_plain_content_type_returns_bad_response(self):
+        """text/plain Content-Type → bad_response."""
+        t = _target()
+        with _mock_conn(_ok_response(), content_type="text/plain; charset=utf-8"):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_application_json_with_charset_is_accepted(self):
+        """application/json; charset=utf-8 must be accepted (ignore params)."""
+        t = _target()
+        with _mock_conn(_ok_response(), content_type="application/json; charset=utf-8"):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] is None
+        assert result[0]["playing"] is True
+
+    def test_application_json_uppercase_is_accepted(self):
+        """Content-Type matching is case-insensitive."""
+        t = _target()
+        with _mock_conn(_ok_response(), content_type="Application/JSON"):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] is None

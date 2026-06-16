@@ -120,43 +120,52 @@ class RecoveryWindow:
 
     def __init__(self, on_announce: Callable[[bool], None]) -> None:
         self._on_announce      = on_announce
+        self._lock             = threading.Lock()
         self._active           = False
         self._volume_confirmed = False
         self._timer: threading.Timer | None = None
 
     def open(self) -> None:
-        self._volume_confirmed = False
-        self._active = True
-        self._on_announce(True)
-        self._timer = threading.Timer(600, self._expire)
-        self._timer.daemon = True
-        self._timer.start()
+        with self._lock:
+            self._volume_confirmed = False
+            self._active = True
+            timer = threading.Timer(600, self._expire)
+            timer.daemon = True
+            self._timer = timer
+        timer.start()
+        self._on_announce(True)   # outside lock — slow subprocess
         logging.info("PIN recovery window opened (10 min)")
 
     def _expire(self) -> None:
-        self._active = False
-        self._on_announce(False)
+        with self._lock:
+            self._active = False
+        self._on_announce(False)  # outside lock
         logging.info("PIN recovery window expired")
 
     def complete(self) -> None:
-        if self._timer:
-            self._timer.cancel()
+        with self._lock:
+            timer = self._timer
             self._timer = None
-        self._active = False
-        self._on_announce(False)
+            self._active = False
+        if timer:
+            timer.cancel()
+        self._on_announce(False)  # outside lock
         logging.info("PIN recovery: PIN updated")
 
     def confirm_volume(self) -> None:
-        if self._active and not self._volume_confirmed:
+        with self._lock:
+            if not (self._active and not self._volume_confirmed):
+                return
             self._volume_confirmed = True
-            logging.info("PIN recovery: volume confirmed")
+        logging.info("PIN recovery: volume confirmed")
 
     def snapshot(self) -> dict:
         """Return a thread-safe copy of current recovery window state."""
-        return {
-            "active": self._active,
-            "volume_confirmed": self._volume_confirmed,
-        }
+        with self._lock:
+            return {
+                "active": self._active,
+                "volume_confirmed": self._volume_confirmed,
+            }
 
 
 # ---- HTTP server ------------------------------------------------------------
@@ -278,13 +287,13 @@ class DialHTTPServer:
                     })
 
                 elif self.path == '/recovery_status':
-                    rw = dial_server._recovery_window
-                    if not rw._active:
+                    snap = dial_server._recovery_window.snapshot()
+                    if not snap['active']:
                         self._send_json(404, {'active': False})
                     else:
                         self._send_json(200, {
                             'active':           True,
-                            'volume_confirmed': rw._volume_confirmed,
+                            'volume_confirmed': snap['volume_confirmed'],
                         })
 
                 elif self.path == '/update/status':
@@ -337,8 +346,8 @@ class DialHTTPServer:
                         if not isinstance(p, str) or not re.fullmatch(r'\d{4,8}', p):
                             self._send_json(400, {'ok': False, 'error': 'new_pin_required_for_recovery'})
                             return
-                        rw = dial_server._recovery_window
-                        if not rw._active or not rw._volume_confirmed:
+                        snap = dial_server._recovery_window.snapshot()
+                        if not snap['active'] or not snap['volume_confirmed']:
                             self._send_json(403, {'ok': False, 'error': 'recovery_not_confirmed'})
                             return
                     else:

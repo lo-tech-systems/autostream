@@ -40,6 +40,11 @@ class FakeDialServer:
         self._recovery_window = MagicMock(spec=RecoveryWindow)
         self._recovery_window._active           = False
         self._recovery_window._volume_confirmed = False
+        rw = self._recovery_window
+        rw.snapshot.side_effect = lambda: {
+            "active": rw._active,
+            "volume_confirmed": rw._volume_confirmed,
+        }
         self._announce_calls: list = []
 
     def update_cfg(self, new_cfg: DialConfig) -> None:
