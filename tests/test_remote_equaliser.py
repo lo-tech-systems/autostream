@@ -9,6 +9,7 @@ Covers:
 """
 from __future__ import annotations
 
+import ast
 import io
 import sys
 from pathlib import Path
@@ -274,6 +275,24 @@ class TestRemoteEqualiserPageContent:
         """_EQ_BANDS must be defined so renderEqFromState can build sliders."""
         html = self._render()
         assert "_EQ_BANDS" in html
+
+    def test_remote_eq_band_slider_handler_survives_python_string_escaping(self):
+        """The browser-facing script must contain escaped quotes in generated slider handlers."""
+        source = (REPO_ROOT / "core" / "autostream_webui_page_equaliser.py").read_text()
+        module = ast.parse(source)
+        script = None
+        for node in module.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "_REMOTE_EQUALISER_SCRIPT":
+                        script = ast.literal_eval(node.value)
+                        break
+            if script is not None:
+                break
+
+        assert script is not None
+        assert "syncOutputPeq(\\''+key+'\\',this.value)" in script
+        assert "syncOutputPeq(''+key+'',this.value)" not in script
 
     def test_page_active_tab_is_equaliser(self):
         html = self._render()

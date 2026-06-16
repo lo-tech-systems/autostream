@@ -751,7 +751,7 @@ function renderEqFromState(data){
       col.innerHTML='<span class="eq-band-freq">'+label+'</span>'+
         '<input type="range" class="eq-band-slider" min="-12" max="12" step="1"'+
         ' id="'+key+'" value="'+val.toFixed(0)+'"'+
-        ' oninput="syncOutputPeq(\''+key+'\',this.value)">'+
+        ' oninput="syncOutputPeq(\\''+key+'\\',this.value)">'+
         '<span class="eq-band-val" id="'+key+'_val">'+sign+val.toFixed(0)+' dB</span>';
       bandContainer.appendChild(col);
     });
