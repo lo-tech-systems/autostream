@@ -170,14 +170,13 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
     auto_trim = bool(output_eq.auto_trim_enabled)
     checked = " checked" if auto_trim else ""
 
-    # --- Page header: title + optional appliance selector + Reset button ---
+    # --- Page header: title + optional appliance selector ---
     page_header = (
         "<div class='eq-page-header'>"
         "<div style='display:flex;align-items:center;gap:0.5rem;'>"
         "<h1>Equaliser</h1>"
         "</div>"
         f"{selector_html}"
-        "<button class='pill-btn small' onclick='resetEq()'>Reset</button>"
         "</div>"
     )
 
@@ -199,6 +198,10 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
         )
     eq_card = (
         "<div class='eq-section'>"
+        "<div class='eq-section-header'>"
+        "<span></span>"
+        "<button class='pill-btn small' id='eq-flat-btn' onclick='resetEq()'>Flat</button>"
+        "</div>"
         + _eq_curve_html()
         + "<div class='eq-bands-wrap'>"
         f"<div class='eq-bands-row'>{band_cols}</div>"
@@ -217,7 +220,6 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
     gain_sign = "+" if gain_db > 0 else ""
     gain_card = (
         "<div class='eq-section'>"
-        "<div class='eq-section-title'>Gain</div>"
         "<div class='eq-auto-trim-row'>"
         "<div class='eq-auto-trim-labels'>"
         "<div class='eq-auto-trim-title'>Automatically trim gain</div>"
@@ -738,7 +740,7 @@ function renderEqFromState(data){
   var bandContainer=document.getElementById('eq-bands-container');
   var gainSection=document.getElementById('eq-gain-section');
   var loading=document.getElementById('eq-loading-msg');
-  var resetBtn=document.getElementById('eq-reset-btn');
+  var resetBtn=document.getElementById('eq-flat-btn');
   if(loading)loading.hidden=true;
   if(resetBtn)resetBtn.disabled=false;
   if(bandContainer&&!bandContainer.querySelector('input')&&typeof _EQ_BANDS!=='undefined'){
@@ -761,7 +763,6 @@ function renderEqFromState(data){
     var autoTrim=!!data.auto_trim_enabled;
     var gsign=gainDb>0?'+':'';
     gainSection.innerHTML=
-      '<div class="eq-section-title">Gain</div>'+
       '<div class="eq-auto-trim-row">'+
       '<div class="eq-auto-trim-labels">'+
       '<div class="eq-auto-trim-title">Automatically trim gain</div>'+
@@ -924,8 +925,6 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         "<h1>Equaliser</h1>"
         "</div>"
         f"{_selector_html}"
-        "<button class='pill-btn small' disabled id='eq-reset-btn'"
-        " onclick='resetEq()'>Reset</button>"
         "</div>"
     )
 
@@ -933,6 +932,10 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
         + page_header
         + "<div class='eq-section'>"
+        + "<div class='eq-section-header'>"
+        + "<span></span>"
+        + "<button class='pill-btn small' disabled id='eq-flat-btn' onclick='resetEq()'>Flat</button>"
+        + "</div>"
         + _eq_curve_html()
         + "<div class='eq-bands-wrap'>"
         + "<div class='eq-bands-row' id='eq-bands-container'></div>"

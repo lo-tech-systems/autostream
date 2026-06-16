@@ -13,6 +13,7 @@ import ast
 import io
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -239,6 +240,26 @@ class TestRemoteEqualiserPageContent:
         html = self._render()
         assert "appliance-selector" in html
 
+    def test_page_header_contains_selector_without_flat_button(self):
+        html = self._render()
+        header_start = html.index("<div class='eq-page-header'>")
+        header_end = html.index("<div class='eq-section'>", header_start)
+        header = html[header_start:header_end]
+
+        assert "appliance-selector" in header
+        assert "eq-flat-btn" not in header
+        assert ">Reset<" not in header
+
+    def test_flat_button_is_inside_eq_card(self):
+        html = self._render()
+        flat_idx = html.index("id='eq-flat-btn'")
+        section_idx = html.rindex("<div class='eq-section'>", 0, flat_idx)
+        curve_idx = html.index("eq-curve-wrap", flat_idx)
+
+        assert section_idx < flat_idx < curve_idx
+        assert ">Flat</button>" in html
+        assert "eq-reset-btn" not in html
+
     def test_page_has_remote_nav(self):
         html = self._render()
         assert "nav-tab-disabled" in html
@@ -254,6 +275,10 @@ class TestRemoteEqualiserPageContent:
     def test_page_has_gain_section(self):
         html = self._render()
         assert "eq-gain-section" in html
+
+    def test_remote_gain_card_has_no_gain_title(self):
+        html = self._render()
+        assert '<div class="eq-section-title">Gain</div>' not in html
 
     def test_page_has_loading_message(self):
         html = self._render()
@@ -293,6 +318,45 @@ class TestRemoteEqualiserPageContent:
         assert script is not None
         assert "syncOutputPeq(\\''+key+'\\',this.value)" in script
         assert "syncOutputPeq(''+key+'',this.value)" not in script
+
+    def test_remote_script_enables_flat_button(self):
+        source = (REPO_ROOT / "core" / "autostream_webui_page_equaliser.py").read_text()
+        module = ast.parse(source)
+        script = None
+        for node in module.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "_REMOTE_EQUALISER_SCRIPT":
+                        script = ast.literal_eval(node.value)
+                        break
+            if script is not None:
+                break
+
+        assert script is not None
+        assert "getElementById('eq-flat-btn')" in script
+        assert "getElementById('eq-reset-btn')" not in script
+
+    def test_local_equaliser_cards_match_flat_button_layout(self):
+        from autostream_core import OUTPUT_PEQ_BANDS
+        from autostream_webui_page_equaliser import _eq_cards_html
+
+        values = {band["key"]: 0.0 for band in OUTPUT_PEQ_BANDS}
+        output_eq = SimpleNamespace(
+            gain_db=0.0,
+            auto_trim_enabled=False,
+            **values,
+        )
+        html = _eq_cards_html(output_eq, selector_html="<div id='appliance-selector'></div>")
+        header_start = html.index("<div class='eq-page-header'>")
+        header_end = html.index("<div class='eq-section'>", header_start)
+        header = html[header_start:header_end]
+
+        assert "appliance-selector" in header
+        assert "eq-flat-btn" not in header
+        assert "id='eq-flat-btn'" in html
+        assert ">Flat</button>" in html
+        assert ">Reset</button>" not in html
+        assert "<div class='eq-section-title'>Gain</div>" not in html
 
     def test_page_active_tab_is_equaliser(self):
         html = self._render()

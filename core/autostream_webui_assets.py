@@ -758,6 +758,14 @@ code {
   margin-bottom: 0.85rem;
 }
 
+.eq-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 1.9rem;
+  margin-bottom: 0.65rem;
+}
+
 .eq-bands-wrap {
   display: flex;
   align-items: stretch;
