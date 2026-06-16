@@ -19,6 +19,8 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=autostream-dial
+RuntimeDirectory=autostream-dial
+RuntimeDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target

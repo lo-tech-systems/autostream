@@ -83,6 +83,10 @@ install -m 0644 "$DEPLOY/core/autostream_rpi.py"      /opt/autostream/autostream
 install -m 0644 "$DEPLOY/core/autostream_sysutils.py" /opt/autostream/autostream_sysutils.py
 install -m 0644 "$DEPLOY/core/autostream_mdns.py"     /opt/autostream/autostream_mdns.py
 cp -a "$DEPLOY/dial/."     /opt/autostream/
+install -m 0644 "$DEPLOY/dial/autostream_dial_control.py" \
+    /opt/autostream/autostream_dial_control.py
+install -m 0755 "$DEPLOY/dial/autostream-dial-control" \
+    /usr/local/bin/autostream-dial-control
 install -m 0755 "$DEPLOY/platform/wifi_watcher" /opt/autostream/autostream_wifi_watcher
 
 deploy_admin

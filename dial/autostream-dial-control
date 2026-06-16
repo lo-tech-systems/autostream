@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/autostream/venv/bin/python /opt/autostream/autostream_dial_control.py "$@"
