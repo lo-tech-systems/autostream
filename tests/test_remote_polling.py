@@ -434,9 +434,12 @@ class TestRemoteEqualiserInitialLoadRetry:
         assert '__EQ_DEFINITIVE_ERRORS' in fn
         assert '_eqHandleError' in fn
 
-    def test_stale_data_accepted_and_rendered(self):
+    def test_stale_data_accepted_via_ok_path(self):
+        """Gateway stale responses have ok:true; _loadInitialEqState must render them."""
         fn = self._load_fn()
-        assert 'data.stale' in fn or "data&&data.stale" in fn
+        # Stale responses have ok:true so they're caught by the data.ok branch
+        assert 'data&&data.ok' in fn or 'data.ok' in fn
+        assert 'renderEqFromState' in fn
 
     def test_on_exhaustion_schedules_poll_not_redirect(self):
         fn = self._load_fn()
@@ -446,6 +449,13 @@ class TestRemoteEqualiserInitialLoadRetry:
         fn = self._load_fn()
         assert 'renderEqFromState' in fn
         assert '_scheduleEqPoll()' in fn
+
+    def test_retry_after_honored_without_double_sleep(self):
+        """retry_after must replace the scheduled delay, not add to it (no continue)."""
+        fn = self._load_fn()
+        assert 'retry_after' in fn
+        # The old double-sleep pattern used `continue` to re-run the top-of-loop sleep
+        assert 'continue' not in fn
 
     def test_schedule_eq_poll_uses_normal_poll_ms(self):
         src = _REMOTE_EQUALISER_SCRIPT

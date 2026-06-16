@@ -810,6 +810,79 @@ class TestStaleCache:
         assert status == 0
         assert data["error"] == "remote_backoff"
 
+    def test_definitive_error_not_served_stale(self):
+        """Application errors like appliance_unconfigured must pass through, not serve stale."""
+        aid = "j" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path, data={"ok": True, "cached": True})
+
+        with patch.object(gw, "_remote_request",
+                          return_value=(200, {"ok": False, "error": "appliance_unconfigured"})):
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        assert data.get("error") == "appliance_unconfigured"
+        assert "stale" not in data
+
+    def test_waiter_gets_owner_error_for_definitive_failure(self):
+        """Waiter must receive the actual application error, not stale data."""
+        aid = "k" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path, data={"ok": True, "cached": True})
+
+        results = [None, None]
+
+        def slow_definitive(*args, **kwargs):
+            time.sleep(0.2)
+            return 200, {"ok": False, "error": "appliance_identity_unavailable"}
+
+        with patch.object(gw, "_remote_request", side_effect=slow_definitive):
+            def call_get(idx):
+                results[idx] = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+            t1 = threading.Thread(target=call_get, args=(0,))
+            t2 = threading.Thread(target=call_get, args=(1,))
+            t1.start()
+            time.sleep(0.05)
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        for s, d in results:
+            assert d.get("error") == "appliance_identity_unavailable"
+            assert "stale" not in d
+
+    def test_waiter_stale_reason_matches_owner_error(self):
+        """Stale reason for a waiter must use the actual owner error, not remote_timeout."""
+        aid = "l" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path, data={"ok": True, "cached": True})
+
+        results = [None, None]
+
+        def slow_bad_response(*args, **kwargs):
+            time.sleep(0.2)
+            return 0, {"ok": False, "error": "remote_bad_response"}
+
+        with patch.object(gw, "_remote_request", side_effect=slow_bad_response):
+            def call_get(idx):
+                results[idx] = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+            t1 = threading.Thread(target=call_get, args=(0,))
+            t2 = threading.Thread(target=call_get, args=(1,))
+            t1.start()
+            time.sleep(0.05)
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        for s, d in results:
+            assert s == 200
+            assert d.get("stale") is True
+            assert d.get("stale_reason") == "remote_bad_response"
+
 
 # ---------------------------------------------------------------------------
 # Endpoint-scoped backoff isolation

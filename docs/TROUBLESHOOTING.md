@@ -271,17 +271,21 @@ Each autostream derives a stable identity from its Raspberry Pi CPU serial (with
 journalctl -u autostream.service --no-pager | grep "conflict"
 ```
 
-#### Remote appliance temporarily unreachable
+#### Remote Equaliser — temporarily unreachable
 
-If a remote appliance becomes unreachable (network interruption, brief reboot, transient timeout), the UI enters **degraded polling mode**: it continues polling every 10 seconds and shows the last-known state rather than redirecting. When the appliance comes back online, normal polling resumes automatically.
+On the **Equaliser page**, if the remote appliance becomes unreachable (network interruption, brief reboot, transient timeout), the page enters **degraded polling mode**: it continues polling every 10 seconds and shows the last-known equaliser state rather than redirecting. When the appliance comes back online, normal 3-second polling resumes automatically.
 
-The UI only redirects back to the bound appliance for a **definitive** error — one that indicates the selection is fundamentally invalid (appliance not found, identity conflict, or appliance not configured for federation). Common reasons for a redirect:
+The Equaliser page only redirects for a **definitive** error — one that indicates the selection is fundamentally invalid (appliance not found, identity conflict, or appliance not configured for federation). Common reasons for a redirect:
 
 * The remote appliance was permanently removed from the network.
 * The remote appliance's identity changed (hardware or config replacement).
 * Federation is disabled on the remote appliance.
 
-If the UI redirects unexpectedly after a reboot, wait for the remote appliance to finish booting, then tap the appliance selector to re-select it.
+If the Equaliser page redirects unexpectedly after a reboot, wait for the remote appliance to finish booting, then tap the appliance selector to re-select it.
+
+#### Remote Home — temporarily unreachable
+
+On the **Home page**, three consecutive transport failures (timeout or bad response) return to the bound appliance and show a status message. This is more sensitive to brief interruptions than the Equaliser page. If the remote appliance was only rebooting, wait for it to come back and re-select it from the appliance selector.
 
 #### Remote appliance unavailable — returned to bound appliance
 

@@ -10,8 +10,8 @@ Responsibilities:
     live trim readout, and six parametric EQ band sliders.
   - No PIN required; /equaliser is in the auth allowlist.
   - Settings are saved automatically via POST /api/output_eq/config (AJAX).
-  - Full EQ state (all bands, gain, auto-trim) is polled every 3 seconds via
-    GET /api/appliances/<local_id>/equaliser (the gateway bound path).
+  - Full EQ state (all bands, gain, auto-trim) is polled every 3 s (10 s in
+    degraded mode) via GET /api/appliances/<local_id>/equaliser.
 """
 
 from __future__ import annotations
@@ -914,8 +914,6 @@ function renderEqFromState(data){
 async function _loadInitialEqState(){
   var delays=_EQ_INITIAL_RETRY_DELAYS_MS;
   for(var attempt=0;attempt<=delays.length;attempt++){
-    var waitMs=attempt>0?delays[attempt-1]:0;
-    if(waitMs>0)await _sleep(waitMs);
     try{
       var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});
       var data=await r.json();
@@ -929,20 +927,14 @@ async function _loadInitialEqState(){
       }
       var err=(data&&data.error)||'remote_bad_response';
       if(__EQ_DEFINITIVE_ERRORS.indexOf(err)>=0){_eqHandleError(err);return;}
-      if(data&&data.stale){
-        renderEqFromState(data);
-        var cb2=document.getElementById('output_auto_trim');
-        if(cb2&&cb2.checked)_pollTrimStatus();
-        _scheduleEqPoll();
-        return;
+      if(attempt<delays.length){
+        var waitMs=delays[attempt];
+        if(data&&data.retry_after)waitMs=Math.max(waitMs,data.retry_after*1000);
+        await _sleep(waitMs);
       }
-      if(data&&data.retry_after&&attempt<delays.length){
-        var ra=Math.min(data.retry_after*1000,delays[attempt]||3000);
-        await _sleep(ra);
-        continue;
-      }
-    }catch(e){}
-    if(attempt>=delays.length){_scheduleEqPoll();return;}
+    }catch(e){
+      if(attempt<delays.length)await _sleep(delays[attempt]);
+    }
   }
   _scheduleEqPoll();
 }
@@ -1014,12 +1006,13 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
     """Render the remote Equaliser shell for a remote appliance.
 
     Serves a client-side loading shell.  JavaScript fetches
-    /api/appliances/<id>/equaliser on DOMContentLoaded, renders the sliders,
-    then polls /api/appliances/<id>/equaliser/status every 3 seconds.
+    /api/appliances/<id>/equaliser on DOMContentLoaded (with retry schedule
+    [500, 500, 1000, 1000, 2000, 3000] ms before handing off to background
+    polling), renders the sliders, then polls every 3 s (10 s in degraded mode).
     Writes go to /api/appliances/<id>/equaliser/config and
     /api/appliances/<id>/equaliser/reset via the gateway.
-    After 3 consecutive transport failures the browser returns to /.
-    Definitive errors return immediately to /.
+    Transient transport failures enter degraded mode; only definitive errors
+    (appliance_unconfigured, identity conflicts, etc.) return to /.
     """
     try:
         cfg = locked_load_config(state.config_path)

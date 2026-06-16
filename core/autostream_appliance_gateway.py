@@ -77,6 +77,12 @@ _CONNECT_TIMEOUT = 1.0             # seconds
 _READ_TIMEOUT = 2.0                # seconds
 _READ_CACHE_TTL = 1.0              # seconds — fresh window for successful-read cache
 _STALE_READ_CACHE_TTL = 15.0       # seconds — stale fallback window after fresh_until
+# Only transport-level errors get the stale fallback.  Application errors
+# (appliance_unconfigured, identity conflicts, etc.) must pass through so the
+# browser can redirect immediately rather than showing stale state.
+_STALE_RETRYABLE_ERRORS = frozenset({
+    "remote_timeout", "remote_bad_response", "remote_backoff", "rate_limited",
+})
 _FED_VERSION_HEADER = "1"
 
 
@@ -490,7 +496,16 @@ def _coalesced_remote_get(
             owner_status, owner_data = result_holder[0]
             if owner_status == 200 and isinstance(owner_data, dict) and owner_data.get("ok"):
                 return owner_status, owner_data
-        # Owner failed — fall back to stale if available
+            # Owner got a definitive application error — pass it through unchanged
+            owner_err = owner_data.get("error", "remote_timeout") if isinstance(owner_data, dict) else "remote_timeout"
+            is_retryable = owner_status == 0 or owner_err in _STALE_RETRYABLE_ERRORS
+            if is_retryable:
+                with _state_lock:
+                    stale = _read_cache.get(cache_key)
+                if stale is not None and time.monotonic() < stale["stale_until"]:
+                    return 200, _stale_response(stale, owner_err)
+            return owner_status, owner_data
+        # Timed out waiting (no result_holder populated) — treat as transport failure
         with _state_lock:
             stale = _read_cache.get(cache_key)
         if stale is not None and time.monotonic() < stale["stale_until"]:
@@ -524,13 +539,16 @@ def _coalesced_remote_get(
         del _in_flight[cache_key]
     event_to_wait.set()
 
-    # On transport failure, return stale data if available rather than the error
+    # On retryable transport failure, return stale data rather than the error.
+    # Definitive application errors (appliance_unconfigured, identity conflicts,
+    # etc.) must pass through so the browser can redirect immediately.
     if not (status == 200 and isinstance(data, dict) and data.get("ok")):
-        with _state_lock:
-            stale = _read_cache.get(cache_key)
-        if stale is not None and time.monotonic() < stale["stale_until"]:
-            err_str = data.get("error", "") if isinstance(data, dict) else "remote_timeout"
-            return 200, _stale_response(stale, err_str)
+        err_str = data.get("error", "remote_timeout") if isinstance(data, dict) else "remote_timeout"
+        if status == 0 or err_str in _STALE_RETRYABLE_ERRORS:
+            with _state_lock:
+                stale = _read_cache.get(cache_key)
+            if stale is not None and time.monotonic() < stale["stale_until"]:
+                return 200, _stale_response(stale, err_str)
 
     return status, data
 
