@@ -77,7 +77,7 @@ function renderHomeState(data){
   var isPlaying=false,activeLevel=null,activeIdx=0;
   for(var i=0;i<levels.length;i++){if(levels[i]&&levels[i].is_above_threshold){isPlaying=true;activeLevel=levels[i];activeIdx=i;break;}}
   var card=document.getElementById('now-playing-card');var hdrEl=document.getElementById('np-hdr');
-  if(card)card.classList.toggle('np-ready',!isPlaying);if(hdrEl)hdrEl.textContent=isPlaying?'Now Playing':'Ready';
+  if(card)card.classList.toggle('np-ready',!isPlaying);if(hdrEl)hdrEl.textContent=(isPlaying?'Now Playing':'Ready')+' \\u00b7 '+(window.__REMOTE_HOSTNAME||'');
   if(!isPlaying){_vuActiveIdx=-1;_vuQueue={};updateVuBars(-90,-90);}else{
     if(!activeLevel&&levels.length>0){activeLevel=levels[0];activeIdx=0;}
     if(activeLevel){var inputSnap=inputs[String(activeIdx+1)]||{};var isTurntable=!!inputSnap.is_turntable;var label=String(activeLevel.label||('Input '+(activeIdx+1)));var hz=Number(activeLevel.detected_hz||0);var nameEl=document.getElementById('np-name');var signalEl=document.getElementById('np-signal');var iconEl=document.getElementById('np-icon');if(nameEl)nameEl.textContent=label+' \\u00b7 '+(isTurntable?'Turntable':'Line Level');if(signalEl){var sp=[];if(window.__SHOW_INPUT_DETAIL&&Number.isFinite(hz)&&hz>0){sp.push('Locked');sp.push(Math.round(hz/1000)+' kHz');}signalEl.textContent=sp.join(' \\u00b7 ');}if(iconEl&&iconEl.dataset.iconType!==String(isTurntable)){iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.dataset.iconType=String(isTurntable);}vuIngestHistory(activeIdx,activeLevel.vu_history);}
@@ -1242,6 +1242,8 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         if a.get("id") == appliance_id:
             _remote_hostname = str(a.get("hostname") or "autostream")
             break
+    if _remote_hostname.lower().endswith(".local"):
+        _remote_hostname = _remote_hostname[:-6]
 
     _warn_style_base = (
         "padding:0.85rem 0.9rem;border-radius:12px;"
@@ -1303,7 +1305,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
 
     _now_playing_card_html = (
         f'<div class="now-playing-card np-ready" id="now-playing-card">'
-        f'<div class="now-playing-hdr" id="np-hdr">Ready</div>'
+        f'<div class="now-playing-hdr" id="np-hdr">Ready · {html.escape(_remote_hostname)}</div>'
         f'<div class="now-playing-body">'
         f'<div class="now-playing-icon" id="np-icon" data-icon-type="false">'
         f'{_np_icon_svg}'
@@ -1314,7 +1316,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'</div>'
         f'</div>'
         f'<div class="np-volume-wrap master-volume-inactive" id="master-volume-card" hidden>'
-        f'<div class="slider-header"><span>Master Volume ({html.escape(_remote_hostname)})</span></div>'
+        f'<div class="slider-header"><span>Master Volume</span></div>'
         f'<input type="range" id="master_vol_slider" min="0" max="100" step="1"'
         f' value="{preset_volume}" disabled'
         f' oninput="onMasterVolumeInput(this.value)"'
