@@ -151,6 +151,13 @@ class RecoveryWindow:
             self._volume_confirmed = True
             logging.info("PIN recovery: volume confirmed")
 
+    def snapshot(self) -> dict:
+        """Return a thread-safe copy of current recovery window state."""
+        return {
+            "active": self._active,
+            "volume_confirmed": self._volume_confirmed,
+        }
+
 
 # ---- HTTP server ------------------------------------------------------------
 
@@ -185,6 +192,23 @@ class DialHTTPServer:
 
     def confirm_volume(self) -> None:
         self._recovery_window.confirm_volume()
+
+    def get_runtime_status(self) -> dict:
+        """Return a fresh snapshot of runtime state without exposing secrets.
+
+        Returns a dict with keys: uuid, name, step_percent, recovery_active,
+        volume_confirmed.  Safe to call from any thread.
+        """
+        with self._cfg_lock:
+            cfg = self._cfg
+        snap = self._recovery_window.snapshot()
+        return {
+            "uuid": cfg.uuid,
+            "name": cfg.name,
+            "step_percent": cfg.step_percent,
+            "recovery_active": snap["active"],
+            "volume_confirmed": snap["volume_confirmed"],
+        }
 
     def _on_announce(self, add: bool) -> None:
         with self._cfg_lock:

@@ -13,9 +13,11 @@ import sys
 import time
 
 from dial_config import load_config
+from dial_control import DialControlServer
 from dial_http_server import ADMIN_CMD, VERSION, DialHTTPServer, _announce_self
 from dial_led import DialLED
 from dial_mdns import get_playing_targets, start_playing_browser
+from dial_target_status import enrich_targets
 from dial_volume import enqueue_delta, enqueue_mute_toggle, start_volume_worker
 
 
@@ -82,12 +84,41 @@ def main() -> None:
     start_playing_browser()
     start_volume_worker(cfg, get_playing_targets, led)
 
-    def on_cw() -> None:
-        http_server.confirm_volume()
-        enqueue_delta(http_server.step_percent)
+    # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
 
-    def on_ccw() -> None:
-        enqueue_delta(-http_server.step_percent)
+    def nudge_up() -> int:
+        http_server.confirm_volume()
+        delta = http_server.step_percent
+        enqueue_delta(delta)
+        return delta
+
+    def nudge_down() -> int:
+        delta = -http_server.step_percent
+        enqueue_delta(delta)
+        return delta
+
+    def nudge_delta(delta: int) -> int:
+        if delta > 0:
+            http_server.confirm_volume()
+        enqueue_delta(delta)
+        return delta
+
+    # ---- Local control socket ----
+
+    control_server = DialControlServer(
+        get_runtime_status=http_server.get_runtime_status,
+        get_targets=get_playing_targets,
+        enrich_targets=enrich_targets,
+        nudge_up=nudge_up,
+        nudge_down=nudge_down,
+        nudge_delta=nudge_delta,
+        software_version=VERSION,
+    )
+
+    try:
+        control_server.start()
+    except RuntimeError as e:
+        logging.warning("dial control: socket unavailable: %s", e)
 
     # Import GPIO helpers lazily — non-Pi hosts can still run the HTTP service.
     try:
@@ -101,16 +132,21 @@ def main() -> None:
     encoder = None
     button = None
     if setup_rotary_encoder is not None:
-        encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, on_cw, on_ccw)
+        encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
+
     def on_press() -> None:
         enqueue_mute_toggle()
 
     if setup_button is not None and cfg.sw_gpio is not None:
         button = setup_button(cfg.sw_gpio, on_press)
 
-    while True:
-        led.set_playing() if get_playing_targets() else led.set_idle()
-        time.sleep(5)
+    try:
+        while True:
+            led.set_playing() if get_playing_targets() else led.set_idle()
+            time.sleep(5)
+    finally:
+        control_server.stop()
+        http_server._server.shutdown()
 
 
 if __name__ == '__main__':
