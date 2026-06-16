@@ -532,7 +532,7 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
 
 
 def send_output_eq_reset_json(handler, state) -> None:
-    """POST /api/output_eq/reset — zero all EQ bands and output gain."""
+    """POST /api/output_eq/reset — zero all EQ bands; does not change output gain or auto-trim."""
     ok, err = apply_eq_reset(state.config_path)
     if not ok:
         send_json(handler, 200, {"ok": False, "error": err})
@@ -1010,7 +1010,7 @@ def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) ->
 
 
 def send_federation_eq_reset_json(handler, state: WebUIState) -> None:
-    """POST /api/federation/v1/equaliser/reset — zero all EQ fields."""
+    """POST /api/federation/v1/equaliser/reset — zero all EQ bands; does not change output gain or auto-trim."""
     ok, err = apply_eq_reset(state.config_path)
     if not ok:
         send_json(handler, 500, {"ok": False, "error": err or "internal_error"})

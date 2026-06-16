@@ -48,6 +48,9 @@ from autostream_webui_common import get_app_version, locked_load_config
 _OUTPUT_EQ_DB_FIELDS = frozenset({
     "gain_db", "peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db",
 })
+_OUTPUT_EQ_BAND_FIELDS = frozenset({
+    "peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db",
+})
 _OUTPUT_EQ_BOOL_FIELDS = frozenset({"auto_trim_enabled"})
 _OUTPUT_EQ_ALL_FIELDS = _OUTPUT_EQ_DB_FIELDS | _OUTPUT_EQ_BOOL_FIELDS
 _OUTPUT_EQ_DB_MIN = -12.0
@@ -328,15 +331,14 @@ def apply_eq_field(config_path: str, field: str, value_raw: str) -> tuple[bool, 
 
 
 def apply_eq_reset(config_path: str) -> tuple[bool, str]:
-    """Zero all output EQ fields. Returns (ok, error_message)."""
+    """Zero all EQ band fields (peq1–peq6). Does not change output gain or auto-trim."""
     try:
         with CONFIG_IO_LOCK:
             cfg = load_config(config_path)
             eq = cfg.setdefault("output_eq", {})
-            for f in _OUTPUT_EQ_DB_FIELDS:
+            for f in _OUTPUT_EQ_BAND_FIELDS:
                 eq[f] = 0.0
             save_config(config_path, cfg)
-        set_live_output_gain(0.0)
         set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     except Exception as e:
         logging.exception("apply_eq_reset: reset failed")

@@ -430,10 +430,6 @@ function resetEq() {
       var val = document.getElementById(key + '_val');
       if (val) val.textContent = '0 dB';
     });
-    var gainSlider = document.getElementById('output_gain_db');
-    if (gainSlider) gainSlider.value = 0;
-    var gainVal = document.getElementById('output_gain_db_val');
-    if (gainVal) gainVal.textContent = '0.0 dB';
     _drawEqCurve();
   }).catch(function(e) { console.warn('EQ reset error:', e); });
 }
@@ -709,8 +705,6 @@ function resetEq(){
       var sl=document.getElementById(key);if(sl)sl.value=0;
       var vl=document.getElementById(key+'_val');if(vl)vl.textContent='0 dB';
     });
-    var gs=document.getElementById('output_gain_db');if(gs)gs.value=0;
-    var gv=document.getElementById('output_gain_db_val');if(gv)gv.textContent='0.0 dB';
     if(typeof _drawEqCurve==='function')_drawEqCurve();
   }).catch(function(){
     _eqFailCount++;
