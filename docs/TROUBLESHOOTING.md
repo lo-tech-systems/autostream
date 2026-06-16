@@ -519,3 +519,97 @@ curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/boo
 ```
 
 This downloads and installs the latest stable release, replacing the pre-release build.
+
+---
+
+## autostream-dial Control Socket
+
+### `autostream-dial-control` returns exit code 3
+
+The control socket at `/run/autostream-dial/control.sock` is created only when
+the `autostream_dial` service is running.
+
+Check the service status:
+
+```bash
+sudo systemctl status autostream_dial
+sudo journalctl -u autostream_dial -n 50
+```
+
+If the service is stopped, start it:
+
+```bash
+sudo systemctl start autostream_dial
+```
+
+If the service is running but the socket is missing, look for startup errors
+in the journal (socket bind failures are logged as ERROR).
+
+### Permission denied on the socket
+
+The socket has mode 0660 and is owned by `autostream:autostream`. Run the
+CLI with `sudo`:
+
+```bash
+sudo autostream-dial-control ping
+```
+
+### `targets` returns an empty list
+
+An empty target list is normal when no compatible autostream appliance is
+currently playing. The dial discovers appliances via mDNS
+(`_autostream-playing._tcp`); an appliance only appears while it has an active
+audio capture.
+
+Check:
+1. At least one autostream appliance is running and capturing audio.
+2. Both the dial and the appliance are on the same network segment.
+3. `avahi-browse -t _autostream-playing._tcp` on the dial shows the appliance.
+
+### Target shows `status_error: unsupported`
+
+The appliance does not advertise `dial_status=v1` in its mDNS TXT record.
+Update the appliance to a version that supports `POST /api/dial/status`.
+
+### Target shows `status_error: unauthorized`
+
+The dial's UUID is not authorized on that appliance. Authorize it from the
+appliance's Setup page (Settings → Dials).
+
+### Target shows `status_error: timeout` or `unreachable`
+
+The appliance did not respond within 1 second. Check:
+- Network connectivity from the dial to the appliance.
+- The appliance's autostream service is running.
+
+### Manual verification checklist (deployed dial without encoder)
+
+After installing on a dial without encoder hardware, run:
+
+```bash
+sudo systemctl status autostream_dial
+sudo autostream-dial-control ping
+sudo autostream-dial-control version
+sudo autostream-dial-control status
+sudo autostream-dial-control targets
+```
+
+With an authorized autostream appliance actively playing:
+
+```bash
+sudo autostream-dial-control nudge up
+sudo autostream-dial-control nudge down
+sudo autostream-dial-control nudge --delta 10
+```
+
+Verify:
+1. The reported target list matches the playing appliance(s).
+2. Each reachable target reports the same master volume as shown on the appliance home page.
+3. Volume changes by the reported delta.
+4. A subsequent `targets` call reports the updated volume.
+5. Commands report "queued" work, not guaranteed delivery.
+6. `journalctl -u autostream_dial` shows no restarts or tracebacks.
+7. Stopping the service (`sudo systemctl stop autostream_dial`) makes the CLI exit with code 3.
+
+Note: physical encoder direction, GPIO pin wiring, LED polarity, and electrical
+behavior still require hands-on hardware verification.

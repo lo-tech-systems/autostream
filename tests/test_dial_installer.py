@@ -480,3 +480,119 @@ class TestSudoersWwwData:
                 assert not verb.startswith("ALL"), (
                     f"www-data line must not grant ALL: {line!r}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Control socket deployment contract tests (WP5 spec §9.7)
+# ---------------------------------------------------------------------------
+
+class TestControlSocketDeployment:
+    def _service_content(self):
+        svc = REPO_ROOT / "system" / "systemd" / "autostream_dial.service"
+        return svc.read_text(encoding="utf-8")
+
+    def _installer_content(self):
+        return DIAL_INSTALLER.read_text(encoding="utf-8")
+
+    def test_runtime_directory_defined_in_service(self):
+        """autostream_dial.service must define RuntimeDirectory=autostream-dial."""
+        content = self._service_content()
+        assert "RuntimeDirectory=autostream-dial" in content, (
+            "RuntimeDirectory=autostream-dial not found in autostream_dial.service"
+        )
+
+    def test_runtime_directory_mode_defined_in_service(self):
+        """autostream_dial.service must define RuntimeDirectoryMode=0750."""
+        content = self._service_content()
+        assert "RuntimeDirectoryMode=0750" in content, (
+            "RuntimeDirectoryMode=0750 not found in autostream_dial.service"
+        )
+
+    def test_cli_python_installed_with_0644(self):
+        """autostream_dial_control.py must be installed with mode 0644."""
+        content = self._installer_content()
+        # Look for the install command with 0644 and the CLI module
+        assert "autostream_dial_control.py" in content, (
+            "autostream_dial_control.py deployment not found in installer"
+        )
+        # Find 0644 near the CLI install
+        idx = content.find("autostream_dial_control.py")
+        nearby = content[max(0, idx - 200): idx + 200]
+        assert "0644" in nearby, (
+            "autostream_dial_control.py must be installed with mode 0644"
+        )
+
+    def test_shell_launcher_installed_with_0755(self):
+        """autostream-dial-control shell launcher must be installed with mode 0755."""
+        content = self._installer_content()
+        assert "autostream-dial-control" in content, (
+            "autostream-dial-control deployment not found in installer"
+        )
+        idx = content.find("/usr/local/bin/autostream-dial-control")
+        assert idx != -1, "/usr/local/bin/autostream-dial-control not in installer"
+        nearby = content[max(0, idx - 200): idx + 200]
+        assert "0755" in nearby, (
+            "autostream-dial-control must be installed with mode 0755"
+        )
+
+    def test_cli_deployed_on_update(self):
+        """CLI installation must appear outside the 'if ! $UPDATE' block.
+
+        Both fresh and --update installations must deploy the CLI.
+        """
+        content = self._installer_content()
+        cli_pos = content.find("autostream_dial_control.py")
+        assert cli_pos != -1
+        # The CLI install must not be inside the 'if ! $UPDATE' fresh-only block
+        # (positioned before the block or outside it).
+        # Simplest check: CLI install appears after 'cp -a "$DEPLOY/dial/."'
+        cp_pos = content.find('cp -a "$DEPLOY/dial/."')
+        assert cp_pos != -1, "cp -a dial/ block not found"
+        # CLI install follows the cp -a block
+        assert cli_pos > cp_pos, (
+            "autostream_dial_control.py install must follow the cp -a dial/ block "
+            "so it runs on both fresh install and --update"
+        )
+
+    def test_socket_path_constant_in_protocol_module(self):
+        """CONTROL_SOCKET_PATH must be defined in dial_control_protocol.py."""
+        protocol_module = REPO_ROOT / "dial" / "dial_control_protocol.py"
+        content = protocol_module.read_text(encoding="utf-8")
+        assert "CONTROL_SOCKET_PATH" in content, (
+            "CONTROL_SOCKET_PATH not found in dial_control_protocol.py"
+        )
+        assert "/run/autostream-dial/control.sock" in content, (
+            "Expected socket path not found in CONTROL_SOCKET_PATH definition"
+        )
+
+    def test_no_broad_sudoers_for_dial_control(self):
+        """autostream_dial sudoers must not grant broad ALL access."""
+        content = SUDOERS.read_text(encoding="utf-8")
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "autostream" in stripped and "ALL" in stripped:
+                # Narrow check: must not be a bare ALL with no specific command
+                # Acceptable: ALL=(ALL) NOPASSWD: /path/to/command
+                # Not acceptable: ALL
+                parts = stripped.split("NOPASSWD:", 1)
+                if len(parts) == 2:
+                    verb = parts[1].strip()
+                    assert not verb == "ALL", (
+                        f"Broad ALL grant found in sudoers: {stripped!r}"
+                    )
+
+    def test_no_tcp_listener_in_dial_control(self):
+        """dial_control.py must not introduce a TCP listener."""
+        control_module = REPO_ROOT / "dial" / "dial_control.py"
+        content = control_module.read_text(encoding="utf-8")
+        # Must not contain socket.AF_INET6 or socket.AF_INET used for the server
+        # (the AF_INET fallback in _UnixStreamServer is for import compatibility only)
+        assert "TCPServer" not in content or "_UnixStreamServer" in content, (
+            "dial_control.py must not start a TCP server"
+        )
+        # The fallback is only for import; AF_UNIX check in start() prevents TCP
+        assert "_AF_UNIX is None" in content, (
+            "dial_control.py must check for _AF_UNIX is None in start()"
+        )

@@ -157,6 +157,101 @@ sudo systemctl restart autostream_dial
 
 ---
 
+## Local Control CLI
+
+The `autostream-dial-control` command lets an SSH operator exercise the dial's
+live volume path without a physical rotary encoder. It connects to a local
+Unix-domain socket created by the running `autostream_dial` service.
+
+**Requires root** (the socket is owned by `autostream:autostream`, mode 0660):
+
+```bash
+sudo autostream-dial-control ping
+sudo autostream-dial-control version
+sudo autostream-dial-control status
+sudo autostream-dial-control targets
+sudo autostream-dial-control nudge up
+sudo autostream-dial-control nudge down
+sudo autostream-dial-control nudge --delta 10
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `ping` | Confirm the service is responding. |
+| `version` | Print protocol and software versions. |
+| `status` | Print live dial state: UUID, name, step size, target count, PIN recovery. |
+| `targets` | List currently discovered playing appliances with live master volume. |
+| `nudge up` | Queue a positive volume delta (same path as clockwise encoder turn). |
+| `nudge down` | Queue a negative volume delta. |
+| `nudge --delta N` | Queue an explicit delta in -100..100 (excluding 0). |
+
+### Options
+
+`--json` — Print the raw server response as compact JSON instead of
+human-readable text. May appear before or after the subcommand.
+
+### Discovered targets vs all appliances
+
+`targets` lists only appliances that are **currently playing** and that the
+dial has discovered via mDNS (`_autostream-playing._tcp`). It is not a list of
+every autostream appliance on the LAN. An empty list means the dial currently
+sees no compatible playing targets; this is a normal result when nothing is playing.
+
+### Target master volume
+
+For each discovered target that advertises `dial_status=v1`, `targets` fetches
+the current master volume by calling `POST /api/dial/status` on that appliance.
+The master volume is the rounded arithmetic mean of all currently selected
+OwnTone output volumes — the same value shown on the appliance home page.
+
+If a target cannot be reached within 1 second (per target) or 1.5 seconds
+overall, or if the response is invalid, the `status_error` field explains why:
+
+| `status_error` | Meaning |
+|---|---|
+| `unsupported` | Target does not advertise `dial_status=v1` |
+| `unauthorized` | Target rejected the dial UUID (HTTP 403) |
+| `unreachable` | Connection or network failure |
+| `timeout` | No response before the per-target deadline |
+| `bad_response` | Oversized, malformed, or schema-invalid response |
+| `config_error` | Target could not load its configuration |
+| `backend_unavailable` | Target could not read OwnTone output state |
+
+A lookup failure does not hide the target from the list; it appears with null
+volume fields and a non-null `status_error`.
+
+### Nudge semantics
+
+`nudge` commands return immediately after queueing the delta. The response
+field `queued:true` means the delta was accepted into the dial's local queue —
+not that it has been delivered to any appliance. The volume worker processes
+the queue asynchronously. The response field `target_count` is advisory; the
+worker takes its own fresh snapshot when it processes the delta.
+
+A positive nudge (or `nudge up`) confirms an active PIN-recovery window,
+matching a clockwise physical encoder rotation.
+
+### Exit codes
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Server returned `ok:true` |
+| 1 | Server returned `ok:false` |
+| 2 | CLI argument or usage error |
+| 3 | Socket missing, permission denied, timeout, or invalid response |
+
+If the service is stopped, exit code 3 is returned.
+
+### Socket path and permissions
+
+The socket is created at `/run/autostream-dial/control.sock` with mode 0660.
+The directory `/run/autostream-dial/` is created by systemd (`RuntimeDirectory`)
+when the service starts and removed when it stops.
+
+---
+
 ## LED Indicators (if fitted)
 
 | State | LED |
