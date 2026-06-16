@@ -374,6 +374,7 @@ _EQUALISER_JS = r"""
 var _csrfToken = document.getElementById('_csrfField').value;
 var _EQ_BAND_KEYS = ['peq1_db','peq2_db','peq3_db','peq4_db','peq5_db','peq6_db'];
 var _eqPollTimer = null;
+var _eqWriteSeq = {};
 var _eqPendingFields = new Set();
 
 function _fmtDb(v, decimals) {
@@ -382,6 +383,8 @@ function _fmtDb(v, decimals) {
 }
 
 function _saveEqField(field, value) {
+  if (!_eqWriteSeq[field]) _eqWriteSeq[field] = 0;
+  var seq = ++_eqWriteSeq[field];
   _eqPendingFields.add(field);
   fetch('/api/output_eq/config', {
     method: 'POST',
@@ -389,9 +392,11 @@ function _saveEqField(field, value) {
     headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrfToken},
     body: JSON.stringify({field: field, value: value})
   }).then(function(r) { return r.json(); }).then(function(d) {
+    if (_eqWriteSeq[field] !== seq) return;
     _eqPendingFields.delete(field);
     if (!d.ok) { console.warn('Output EQ save failed:', field, d.error); }
   }).catch(function(e) {
+    if (_eqWriteSeq[field] !== seq) return;
     _eqPendingFields.delete(field);
     console.warn('Output EQ save error:', e);
   });

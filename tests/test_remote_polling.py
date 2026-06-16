@@ -459,29 +459,52 @@ class TestLocalEqualiserUpdateFromPoll:
 
 @_skip
 class TestLocalEqualiserPendingFields:
+    def _save_fn(self) -> str:
+        src = _EQUALISER_JS
+        fn_idx = src.index('function _saveEqField(')
+        fn_end = src.index('\nfunction syncOutputGain')
+        return src[fn_idx:fn_end]
+
     def test_pending_fields_declared(self):
         assert '_eqPendingFields = new Set()' in _EQUALISER_JS
 
+    def test_write_seq_declared(self):
+        assert '_eqWriteSeq = {}' in _EQUALISER_JS
+
     def test_save_adds_field_to_pending(self):
         """_saveEqField must add the field to _eqPendingFields before fetching."""
-        src = _EQUALISER_JS
-        fn_idx = src.index('function _saveEqField(')
-        fn_body = src[fn_idx:fn_idx + 600]
+        fn_body = self._save_fn()
         add_pos = fn_body.index('_eqPendingFields.add(field)')
         fetch_pos = fn_body.index("fetch('/api/output_eq/config'")
         assert add_pos < fetch_pos
 
+    def test_save_increments_seq_before_fetch(self):
+        """_saveEqField must increment the per-field sequence counter before fetching."""
+        fn_body = self._save_fn()
+        seq_pos = fn_body.index('var seq = ++_eqWriteSeq[field]')
+        fetch_pos = fn_body.index("fetch('/api/output_eq/config'")
+        assert seq_pos < fetch_pos
+
     def test_save_clears_field_on_success(self):
         """_saveEqField must delete field from _eqPendingFields on success."""
-        src = _EQUALISER_JS
-        fn_idx = src.index('function _saveEqField(')
-        fn_body = src[fn_idx:fn_idx + 700]
+        fn_body = self._save_fn()
         assert '_eqPendingFields.delete(field)' in fn_body
 
+    def test_save_checks_seq_before_clearing_on_success(self):
+        """_saveEqField must guard delete with seq check so stale saves don't clear pending."""
+        fn_body = self._save_fn()
+        seq_check_pos = fn_body.index('if (_eqWriteSeq[field] !== seq) return;')
+        delete_pos = fn_body.index('_eqPendingFields.delete(field)')
+        assert seq_check_pos < delete_pos
+
     def test_save_clears_field_on_error(self):
-        """_saveEqField must delete field from _eqPendingFields in catch block."""
-        src = _EQUALISER_JS
-        fn_idx = src.index('function _saveEqField(')
-        fn_end = src.index('\nfunction syncOutputGain')
-        fn_body = src[fn_idx:fn_end]
+        """_saveEqField must delete field from _eqPendingFields in catch block too."""
+        fn_body = self._save_fn()
         assert fn_body.count('_eqPendingFields.delete(field)') >= 2
+
+    def test_save_checks_seq_in_catch(self):
+        """catch block must also guard delete with seq check."""
+        fn_body = self._save_fn()
+        catch_idx = fn_body.index('.catch(function(')
+        catch_body = fn_body[catch_idx:]
+        assert 'if (_eqWriteSeq[field] !== seq) return;' in catch_body

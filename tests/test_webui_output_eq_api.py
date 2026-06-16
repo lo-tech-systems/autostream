@@ -264,7 +264,7 @@ class TestOutputEQReset:
         assert code == 200
         assert data["ok"] is True
 
-    def test_reset_zeros_all_db_fields_in_config(self, tmp_path):
+    def test_reset_zeros_band_fields_in_config(self, tmp_path):
         state = _make_state(tmp_path)
         # Set some non-zero values first
         cfg = json.loads(state.config_path.read_text())
@@ -273,16 +273,15 @@ class TestOutputEQReset:
         state.config_path.write_text(json.dumps(cfg))
 
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_appliance_models.set_live_output_gain"), \
              patch("autostream_appliance_models.set_live_output_eq"):
             send_output_eq_reset_json(MagicMock(), state)
 
         saved = json.loads(state.config_path.read_text())
-        for field in ("gain_db", "peq1_db", "peq2_db", "peq3_db",
-                      "peq4_db", "peq5_db", "peq6_db"):
+        for field in ("peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db"):
             assert saved["output_eq"][field] == 0.0, f"{field} not zeroed"
+        assert saved["output_eq"]["gain_db"] == 5.0, "gain_db must not be changed by Flat reset"
 
-    def test_reset_calls_set_live_output_gain_and_eq(self, tmp_path):
+    def test_reset_calls_set_live_eq_but_not_gain(self, tmp_path):
         gain_calls = []
         eq_calls = []
         state = _make_state(tmp_path)
@@ -294,7 +293,7 @@ class TestOutputEQReset:
                    side_effect=lambda *a: eq_calls.append(a)):
             send_output_eq_reset_json(MagicMock(), state)
 
-        assert gain_calls == [0.0]
+        assert gain_calls == [], "set_live_output_gain must not be called by Flat reset"
         assert eq_calls and all(v == 0.0 for v in eq_calls[0])
 
     def test_reset_save_failure_returns_ok_false(self, tmp_path):
