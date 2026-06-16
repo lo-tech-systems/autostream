@@ -53,9 +53,12 @@ def _build_eq_appliances_for_selector() -> list:
     for s in peers:
         if s.id == local_id:
             continue
+        peer_hostname = str(s.hostname or "").strip()
+        if peer_hostname.lower().endswith(".local"):
+            peer_hostname = peer_hostname[:-6]
         result.append({
             "id": s.id,
-            "hostname": s.hostname or "autostream",
+            "hostname": peer_hostname or "autostream",
             "is_bound": False,
             "home_path": f"/a/{s.id}/",
             "equaliser_path": f"/a/{s.id}/equaliser",
@@ -560,13 +563,20 @@ def send_equaliser_page(
 
     _local_appliances = _build_eq_appliances_for_selector()
     _local_id = str(get_appliance_id() or "")
-    _selector_html = build_appliance_selector_html(_local_appliances, _local_id, "equaliser")
 
     if parsed is not None:
+        _show_hostname = parsed.webui.show_hostname_on_home
+        _effective_control = _show_hostname and parsed.webui.control_other_appliances
+        if _show_hostname:
+            _selector_html = build_appliance_selector_html(
+                _local_appliances, _local_id, "equaliser",
+                display_only=not _effective_control,
+            )
+        else:
+            _selector_html = ""
         card_html = _eq_cards_html(parsed.output_eq, selector_html=_selector_html)
     else:
         card_html = (
-            f"{_selector_html}"
             "<p style='color:var(--color-text-secondary);'>"
             "Configuration unavailable.</p>"
         )

@@ -186,7 +186,13 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 webui["show_master_volume"] = bool("webui_show_master_volume" in form)
                 webui["show_input_detail"] = bool("webui_show_input_detail" in form)
                 webui["dark_mode"] = bool("webui_dark_mode" in form)
-                webui["show_hostname_on_home"] = bool("webui_show_hostname_on_home" in form)
+                new_show_hostname = bool("webui_show_hostname_on_home" in form)
+                webui["show_hostname_on_home"] = new_show_hostname
+                # Enforce dependency: control_other_appliances requires show_hostname_on_home.
+                if not new_show_hostname:
+                    webui["control_other_appliances"] = False
+                elif "webui_control_other_appliances_present" in form:
+                    webui["control_other_appliances"] = bool("webui_control_other_appliances" in form)
                 # advertise_appliance is intentionally NOT saved here — it requires
                 # a successful privileged service operation before being persisted.
                 # That field-level update happens after this block.

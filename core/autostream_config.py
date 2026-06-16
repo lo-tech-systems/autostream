@@ -268,6 +268,10 @@ class WebUIConfig:
     # Whether to announce this appliance via _autostream._tcp for peer discovery.
     # Default: True (backwards-compatible; absence means advertise).
     advertise_appliance: bool
+    # Whether to allow controlling other autostream appliances from this UI.
+    # Requires show_hostname_on_home=True to take effect.
+    # Default: True (backwards-compatible; absence means allow).
+    control_other_appliances: bool
 
 
 @dataclass(frozen=True)
@@ -410,6 +414,7 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         dark_mode=bool(webui_d.get("dark_mode", False)),
         show_hostname_on_home=bool(webui_d.get("show_hostname_on_home", False)),
         advertise_appliance=bool(webui_d.get("advertise_appliance", True)),
+        control_other_appliances=bool(webui_d.get("control_other_appliances", True)),
     )
 
     eq_d = data.get("output_eq") or {}

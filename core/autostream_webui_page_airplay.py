@@ -215,6 +215,8 @@ def send_airplay_page(
     show_master_volume = parsed.webui.show_master_volume
     show_input_detail = parsed.webui.show_input_detail
     show_hostname_on_home = parsed.webui.show_hostname_on_home
+    control_other_appliances = parsed.webui.control_other_appliances
+    effective_control = show_hostname_on_home and control_other_appliances
 
     try:
         input_levels = get_monitor_levels_dbfs()
@@ -320,6 +322,13 @@ def send_airplay_page(
         initial_master = preset_volume
     _local_appliances = _build_appliances_for_selector()
     _local_id = str(get_appliance_id() or "")
+    if show_hostname_on_home:
+        _top_right_html = build_appliance_selector_html(
+            _local_appliances, _local_id, "home",
+            display_only=not effective_control,
+        )
+    else:
+        _top_right_html = ""
     csrf_meta = (
         f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
         f"<script>window.__CSRF='{html.escape(csrf_token)}';"
@@ -1068,8 +1077,7 @@ def send_airplay_page(
   </div>
 </div>"""
 
-    # Top controls row: refresh button + appliance selector (replaces hostname pill).
-    _top_right_html = build_appliance_selector_html(_local_appliances, _local_id, "home")
+    # Top controls row: refresh button + optional hostname/selector.
     _top_controls_html = (
         f"<div class='airplay-top-controls'>"
         f"<button type='button' class='pill-btn small' onclick='location.reload();'"
@@ -1303,7 +1311,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'</div>'
         f'</div>'
         f'<div class="np-volume-wrap master-volume-inactive" id="master-volume-card" hidden>'
-        f'<div class="slider-header"><span>Master Volume</span></div>'
+        f'<div class="slider-header"><span>Master Volume ({html.escape(_remote_hostname)})</span></div>'
         f'<input type="range" id="master_vol_slider" min="0" max="100" step="1"'
         f' value="{preset_volume}" disabled'
         f' oninput="onMasterVolumeInput(this.value)"'

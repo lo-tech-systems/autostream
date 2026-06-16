@@ -711,22 +711,41 @@ def send_setup_page(
         if parsed.updates.update_channel == "dev":
             _au_state += " - Pre-release channel"
         system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
+        _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
         customise_summary = html.escape(
             ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
             + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
             + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
             + (" \u00b7 Hostname: On" if parsed.webui.show_hostname_on_home else " \u00b7 Hostname: Off")
+            + (" \u00b7 Control others: On" if _ctrl_other_effective else " \u00b7 Control others: Off")
             + (" \u00b7 Visible to peers: On" if parsed.webui.advertise_appliance else " \u00b7 Visible to peers: Off")
         )
+        _ctrl_other_disabled = ' disabled' if not parsed.webui.show_hostname_on_home else ''
+        _ctrl_other_row_style = "margin-top:0.75rem;opacity:0.4;" if not parsed.webui.show_hostname_on_home else "margin-top:0.75rem;"
         customise_card_html = settings_card_html(f"""
               <input type="hidden" name="webui_show_master_volume_present" value="1">
               <input type="hidden" name="webui_advertise_appliance_present" value="1">
+              <input type="hidden" name="webui_control_other_appliances_present" value="1">
               <div class="setup-customise-row" style="margin-top:0.5rem;">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="refreshCustomiseCardSub()">
+                  <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="onHostnameToggle(this.checked)">
                   <span class="switch"></span>
                 </label>
                 <span>Display Hostname</span>
+              </div>
+              <div id="ctrl-other-row" class="setup-customise-row" style="{_ctrl_other_row_style}">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_control_other_appliances" id="webui_control_other_appliances"{'  checked' if _ctrl_other_effective else ''}{_ctrl_other_disabled} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Allow control of other appliances</span>
+              </div>
+              <div class="setup-customise-row" style="margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub()">
+                  <span class="switch"></span>
+                </label>
+                <span>Allow control of this from other appliances</span>
               </div>
               <div class="setup-customise-row" style="margin-top:0.75rem;">
                 <label class="output-toggle" style="margin:0;">
@@ -748,13 +767,6 @@ def send_setup_page(
                   <span class="switch"></span>
                 </label>
                 <span>Dark Mode</span>
-              </div>
-              <div class="setup-customise-row" style="margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub()">
-                  <span class="switch"></span>
-                </label>
-                <span>Show this autostream to other autostream devices</span>
               </div>
             """, margin_top="0")
 
@@ -1299,6 +1311,9 @@ def send_setup_page(
           if (pinModalOk) pinModalOk.addEventListener('click', handlePinModalOk);
           syncInputUi(1);
           syncInputUi(2);
+          // Enforce hostname-dependent state on load
+          const cbHost = document.getElementById('webui_show_hostname_on_home');
+          if (cbHost) onHostnameToggle(cbHost.checked);
         }});
         function requestReboot(){{
           showRebootModal();
@@ -1454,6 +1469,20 @@ def send_setup_page(
           if (track) track.classList.add('panel-open');
           window.scrollTo(0, 0);
         }}
+        function onHostnameToggle(checked) {{
+          var cb = document.getElementById('webui_control_other_appliances');
+          var row = document.getElementById('ctrl-other-row');
+          if (cb) {{
+            if (!checked) {{
+              cb.checked = false;
+              cb.disabled = true;
+            }} else {{
+              cb.disabled = false;
+            }}
+          }}
+          if (row) {{ row.style.opacity = checked ? '' : '0.4'; }}
+          refreshCustomiseCardSub();
+        }}
         function refreshCustomiseCardSub() {{
           var sub = document.getElementById('customise-card-sub');
           if (!sub) return;
@@ -1461,13 +1490,15 @@ def send_setup_page(
           var cbDet = document.getElementById('webui_show_input_detail');
           var cbDark = document.getElementById('webui_dark_mode');
           var cbHost = document.getElementById('webui_show_hostname_on_home');
+          var cbCtrl = document.getElementById('webui_control_other_appliances');
           var cbAdv = document.getElementById('webui_advertise_appliance');
           var mv = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
           var det = (cbDet && cbDet.checked) ? 'Input detail: On' : 'Input detail: Off';
           var dark = (cbDark && cbDark.checked) ? 'Dark mode: On' : 'Dark mode: Off';
           var host = (cbHost && cbHost.checked) ? 'Hostname: On' : 'Hostname: Off';
+          var ctrl = (cbCtrl && cbCtrl.checked) ? 'Control others: On' : 'Control others: Off';
           var adv = (cbAdv && cbAdv.checked) ? 'Visible to peers: On' : 'Visible to peers: Off';
-          sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark + ' \u00b7 ' + host + ' \u00b7 ' + adv;
+          sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark + ' \u00b7 ' + host + ' \u00b7 ' + ctrl + ' \u00b7 ' + adv;
         }}
         function closePanel() {{
           refreshInputCardSubs();

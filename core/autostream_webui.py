@@ -119,6 +119,22 @@ _REMOTE_PAGE_PREFIX = "/a/"
 _APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 _FEDERATION_BODY_MAX = 4096  # bytes
 
+
+def _effective_control_other_appliances(state) -> bool:
+    """Return True if this appliance is configured to allow controlling other appliances.
+
+    Fails open (returns True) on any config read error so a misconfiguration
+    never inadvertently locks out functionality.
+    """
+    try:
+        from autostream_webui_common import locked_load_config
+        from autostream_config import parse_config
+        cfg = locked_load_config(state.config_path)
+        parsed = parse_config(cfg)
+        return parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
+    except Exception:
+        return True
+
 # Global state
 STATE: Optional[WebUIState] = None
 AUTH: Optional[AuthManager] = None
@@ -483,7 +499,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             parts = tail.split("/", 1)
             aid = parts[0]
             sub = parts[1] if len(parts) > 1 else ""
-            if sub == "home":
+            local_id = get_appliance_id() or ""
+            if aid != local_id and not _effective_control_other_appliances(STATE):
+                send_json(self, 403, {"ok": False, "error": "control_disabled"})
+            elif sub == "home":
                 send_gateway_home_json(self, STATE, aid)
             elif sub == "equaliser":
                 send_gateway_equaliser_json(self, STATE, aid)
@@ -507,6 +526,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                     self.send_header("Location", location)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
+                elif not _effective_control_other_appliances(STATE):
+                    self._redirect_with_error_flash(
+                        "Controlling other appliances is disabled.", "/"
+                    )
                 elif sub == "equaliser":
                     send_remote_equaliser_page(self, STATE, aid)
                 else:
@@ -633,7 +656,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             parts = tail.split("/", 1)
             aid = parts[0]
             sub = parts[1] if len(parts) > 1 else ""
-            if sub == "output":
+            local_id = get_appliance_id() or ""
+            if aid != local_id and not _effective_control_other_appliances(STATE):
+                send_json(self, 403, {"ok": False, "error": "control_disabled"})
+            elif sub == "output":
                 if not body_str:
                     self.send_error(400, "Missing request body")
                     return

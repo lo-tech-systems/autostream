@@ -263,6 +263,8 @@ def build_appliance_selector_html(
     appliances: list,
     current_id: str,
     current_page: str,
+    *,
+    display_only: bool = False,
 ) -> str:
     """Build the appliance selector widget HTML.
 
@@ -270,7 +272,22 @@ def build_appliance_selector_html(
                   Each dict has: id, hostname, is_bound, home_path, equaliser_path.
     current_id:   the currently selected appliance ID
     current_page: 'home' or 'equaliser' — determines the navigation target for each option.
+    display_only: when True, render a non-interactive hostname display instead of a
+                  dropdown selector (used when control_other_appliances is disabled).
     """
+    if display_only:
+        hostname = "autostream"
+        for a in appliances:
+            if str(a.get("id") or "") == current_id:
+                hostname = str(a.get("hostname") or "").strip() or "autostream"
+                break
+        return (
+            f'<span class="appliance-selector-btn"'
+            f' style="pointer-events:none;cursor:default"'
+            f' aria-label="{html.escape(hostname)}">'
+            f'{html.escape(hostname)}</span>'
+        )
+
     if not current_id:
         # Appliance identity unavailable — render a static, non-interactive hostname
         # display so the selector button cannot be activated without a valid bound ID.
