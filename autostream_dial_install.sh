@@ -64,6 +64,7 @@ require_trixie_os
 
 # ---- Fresh-install only steps -----------------------------------------------
 if ! $UPDATE; then
+    show_info_and_prompt
     check_pi_model
     install_os_packages
     create_dirs
@@ -71,6 +72,7 @@ if ! $UPDATE; then
     init_service_dirs         # chown settings/; create initial log files
     add_gpio_group
     disable_system_dnsmasq
+    network_state_phase       # record existing WiFi so wifi_watcher can reconnect
     # Redirect to persistent log now that /var/log/autostream/ and log files exist.
     if [[ ! -t 1 ]]; then
         LOGFILE=/var/log/autostream/dial-install.log
@@ -213,4 +215,16 @@ $UPDATE && write_update_result "success" "Installed ${AUTOSTREAM_RELEASE_TAG}" 1
 _install_success=true   # disarm EXIT trap only after status is safely written
 
 echo "autostream dial installation complete."
-! $UPDATE && echo "Connect to 'autostream-dial_SETUP' WiFi to complete setup."
+if ! $UPDATE; then
+    echo "Connect to 'autostream-dial_SETUP' WiFi to complete setup."
+    if has_tty; then
+        echo ""
+        tty_read "Reboot now to complete setup? (Y/N) " _rb || true
+        case "${_rb:-N}" in
+            Y|y) echo "Rebooting..."; reboot ;;
+            *) echo "Reboot skipped. Please reboot the device when convenient." ;;
+        esac
+    else
+        echo "Non-interactive session; please reboot the device when convenient."
+    fi
+fi

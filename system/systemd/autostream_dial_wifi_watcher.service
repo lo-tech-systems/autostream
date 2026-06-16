@@ -21,6 +21,7 @@ Environment=APP_DNSMASQ_SERVICE=autostream_dial_dnsmasq.service
 Environment="APP_TITLE=autostream dial"
 Environment=APP_CHECK_CPU=no
 Environment=APP_BANNER_IMAGE=/autostream-dial-badge.png
+Environment=APP_DIAL_MODE=1
 
 Restart=on-failure
 RestartSec=5

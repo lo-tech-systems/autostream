@@ -157,6 +157,84 @@ with os.fdopen(fd, 'w') as f:
     chown autostream:autostream /var/lib/autostream/dial-settings.json
 }
 
+has_tty() {
+    [[ -r /dev/tty && -w /dev/tty ]]
+}
+
+tty_read() {
+    local prompt="$1" __var="$2"
+    IFS= read -r -p "${prompt}" "${__var}" < /dev/tty
+}
+
+show_info_and_prompt() {
+    cat <<'EOF'
+
+=============================================================================
+AUTOSTREAM DIAL INSTALLER
+=============================================================================
+This script will:
+- Install OS packages (nginx, dnsmasq, avahi, Python dependencies, etc.)
+- Deploy dial firmware and configuration files
+- Enable systemd services for dial, wifi watcher, and auto-update
+- Create system users/groups and modify permissions
+- Configure nginx, logrotate, dnsmasq, and avahi for dial operation
+
+WARNING:
+- Use ONLY on a dedicated Raspberry Pi Zero running Raspberry Pi OS Lite (Trixie).
+- Use on a clean image only.
+- Do NOT run on machines containing important data or multi-purpose systems.
+
+A full activity log will be written to ~/autostream_dial_install.log
+=============================================================================
+EOF
+
+    if has_tty; then
+        local ans
+        tty_read "Continue with installation? (Y/N) " ans || true
+        case "${ans:-N}" in
+            Y|y) echo "Continuing..." ;;
+            *) echo "ERROR: Aborted by user." >&2; exit 1 ;;
+        esac
+    else
+        echo "Non-interactive session; proceeding with installation."
+    fi
+}
+
+# network_state_phase: record current WiFi client connection (fresh install only).
+# Mirrors the same function in autostream_install.sh.
+# Preserves an existing /opt/autostream/ssid if non-empty.
+# Writes the active non-AP wlan0 connection name; skips AP-mode and absent connections.
+network_state_phase() {
+    local ssid_file="/opt/autostream/ssid"
+
+    if [[ -s "${ssid_file}" ]]; then
+        echo "WiFi connection already recorded at ${ssid_file}"
+        return 0
+    fi
+
+    local wifi_conn
+    wifi_conn="$(
+        nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
+            | awk -F: '$1=="wlan0" && $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {print $4; exit}'
+    )"
+
+    if [[ -n "${wifi_conn}" ]]; then
+        local wifi_mode
+        wifi_mode="$(
+            nmcli -t -f 802-11-wireless.mode connection show "${wifi_conn}" 2>/dev/null \
+                | awk -F: '{print tolower($2)}' | head -n1
+        )"
+        if [[ "${wifi_mode}" != "ap" ]]; then
+            printf "%s\n" "${wifi_conn}" > "${ssid_file}"
+            echo "Recorded WiFi connection '${wifi_conn}' to ${ssid_file}"
+        else
+            echo "Current WiFi connection '${wifi_conn}' is AP mode; not recording"
+        fi
+    else
+        echo "No active WiFi connection on wlan0; hotspot mode will be used if wired connection is not detected"
+    fi
+}
+
 check_pi_model() {
     local model
     model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)

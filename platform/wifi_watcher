@@ -69,6 +69,7 @@ from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_syste
 
 APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 APP_BANNER_IMAGE = os.environ.get('APP_BANNER_IMAGE', '').strip()
+_DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
 
 if APP_BANNER_IMAGE:
     BANNER_HTML = (
@@ -672,8 +673,6 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
 
     Returns True on apparent success, False otherwise.
     """
-    # Remove any existing connection for this network
-    run_cmd(["nmcli", "connection", "delete", ssid])
     # Rescan...
     result = run_cmd(["nmcli", "dev", "wifi", "rescan"])
     if result.returncode == 0:
@@ -1266,6 +1265,19 @@ def render_wait_page(selected_ssid: str = "") -> str:
     # Hostname may change at runtime (e.g. user renames device); re-read when rendering.
     host_safe = html.escape(get_system_hostname())
 
+    # Dial mode: after joining, the user continues setup from an autostream appliance,
+    # not from the dial's own web page.  Non-dial mode: redirect to the appliance web UI.
+    if _DIAL_MODE:
+        next_step_html = "<p>Continue setup from an autostream appliance.</p>"
+        success_js = "/* dial: remain on this page — user continues from an appliance */"
+    else:
+        next_step_html = (
+            f"<p>Open {browser_name} and go to "
+            f"<code>{host_safe}.local</code> to continue setup.</p>"
+        )
+        success_js = (
+            f"window.location.replace('http://{host_safe}.local/?t=' + Date.now());"
+        )
 
     return f"""<!DOCTYPE html>
         <html>
@@ -1290,8 +1302,8 @@ def render_wait_page(selected_ssid: str = "") -> str:
                     return;
                 }}
 
-                // If not in SetupMode, assume success path; send them to the mDNS host
-                window.location.replace('http://{host_safe}.local/?t=' + Date.now());
+                // Success path
+                {success_js}
                 return;
                 }}
             }} catch (e) {{}}
@@ -1311,9 +1323,7 @@ def render_wait_page(selected_ssid: str = "") -> str:
 
             <p>Attempting to join the network <code>{ssid_safe}</code>.</p>
 
-            <p>
-            Open {browser_name} and go to <code>{host_safe}.local</code> to continue setup.
-            </p>
+            {next_step_html}
         </div>
         </body>
         </html>
@@ -1764,14 +1774,18 @@ def connect_to_configured_wifi() -> bool:
     if not connection_name:
         return False
 
-    # Step 1 (requested): try device disconnect/reconnect first
-    logger.info("Attempting WiFi device bounce on %s (disconnect/reconnect) before bringing up '%s'", AP_IFNAME, connection_name)
-    r_disc = run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
-    r_conn = run_cmd(["nmcli", "device", "connect", AP_IFNAME])
-    if r_disc.returncode != 0 or r_conn.returncode != 0:
-        logger.debug("WiFi device bounce: disconnect rc=%d, connect rc=%d", r_disc.returncode, r_conn.returncode)
+    # Only bounce the interface if the configured WiFi is not already healthy.
+    # Bouncing a healthy connection causes unnecessary disruption.
+    if is_wifi_client_healthy():
+        logger.debug("Configured WiFi '%s' already healthy; skipping device bounce", connection_name)
+    else:
+        logger.info("Attempting WiFi device bounce on %s (disconnect/reconnect) before bringing up '%s'", AP_IFNAME, connection_name)
+        r_disc = run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
+        r_conn = run_cmd(["nmcli", "device", "connect", AP_IFNAME])
+        if r_disc.returncode != 0 or r_conn.returncode != 0:
+            logger.debug("WiFi device bounce: disconnect rc=%d, connect rc=%d", r_disc.returncode, r_conn.returncode)
 
-    # Step 2: bring up the configured connection profile as a fallback/assist
+    # Bring up the configured connection profile.
     logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
     r_up = run_cmd(["nmcli", "connection", "up", connection_name])
     if r_up.returncode != 0:

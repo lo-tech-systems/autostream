@@ -1,0 +1,310 @@
+"""Structural and unit tests for dial WiFi setup changes.
+
+Covers:
+- wifi_watcher connect_to_configured_wifi does not bounce a healthy connection.
+- wifi_watcher configure_wifi_with_nmcli does not delete user WiFi profiles by SSID name.
+- Dial hotspot wait page shows 'Continue setup from an autostream appliance' instruction.
+- Dial hotspot wait page JS does not redirect to the dial's own .local hostname on success.
+- Non-dial wait page still redirects to .local on success.
+- APP_DIAL_MODE=1 is set in the dial wifi watcher systemd service.
+"""
+from __future__ import annotations
+
+import importlib
+import os
+import sys
+import types
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+REPO_ROOT = Path(__file__).parent.parent
+WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
+DIAL_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_dial_wifi_watcher.service"
+
+
+# ---------------------------------------------------------------------------
+# Helpers to load wifi_watcher as a module (it has no .py extension)
+# ---------------------------------------------------------------------------
+
+def _load_wifi_watcher(env_overrides: dict | None = None) -> types.ModuleType:
+    """Import platform/wifi_watcher as a module with optional env overrides.
+
+    We reload on each call with a clean sys.modules entry so env vars set via
+    os.environ take effect (module-level constants read env at import time).
+    """
+    env = dict(os.environ)
+    env.update(env_overrides or {})
+
+    source = WIFI_WATCHER_PATH.read_text(encoding="utf-8")
+    spec = importlib.util.spec_from_loader("wifi_watcher_test", loader=None)
+    mod = types.ModuleType("wifi_watcher_test")
+
+    # Provide stub dependencies so the import doesn't fail in a non-Pi environment.
+    stub_flask = types.ModuleType("flask")
+    stub_flask.Flask = MagicMock(return_value=MagicMock())
+    stub_flask.request = MagicMock()
+    stub_flask.jsonify = MagicMock()
+    stub_flask.redirect = MagicMock()
+    stub_flask.url_for = MagicMock()
+    stub_flask.make_response = MagicMock()
+
+    stub_sysutils = types.ModuleType("autostream_sysutils")
+    stub_sysutils.run_cmd = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
+    stub_sysutils.prime_gateway = MagicMock()
+    stub_sysutils.reboot_system = MagicMock()
+    stub_sysutils.get_system_hostname = MagicMock(return_value="test-host")
+    stub_sysutils.dataclasses = MagicMock()
+
+    saved = {}
+    for k, v in env.items():
+        saved[k] = os.environ.get(k)
+        os.environ[k] = v
+    # Ensure APP_DIAL_MODE absent by default unless overridden
+    if 'APP_DIAL_MODE' not in env:
+        os.environ.pop('APP_DIAL_MODE', None)
+
+    try:
+        with patch.dict("sys.modules", {
+            "flask": stub_flask,
+            "autostream_sysutils": stub_sysutils,
+            "autostream_rpi": MagicMock(),
+        }):
+            mod.__spec__ = spec
+            exec(compile(source, str(WIFI_WATCHER_PATH), "exec"), mod.__dict__)  # noqa: S102
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Source-level structural tests (no import needed)
+# ---------------------------------------------------------------------------
+
+def _watcher_src() -> str:
+    return WIFI_WATCHER_PATH.read_text(encoding="utf-8")
+
+
+def _fn_body(src: str, fn_name: str, end_marker: str) -> str:
+    """Extract source from 'def fn_name(' up to end_marker.
+
+    end_marker may be a def statement ('def foo(') or any other string
+    such as a decorator ('@app.route').
+    """
+    start = src.index(f"def {fn_name}(")
+    # Try the literal end_marker first; if that fails try it as a def.
+    try:
+        end = src.index(end_marker, start)
+    except ValueError:
+        end = src.index(f"def {end_marker}(", start)
+    return src[start:end]
+
+
+# ---------------------------------------------------------------------------
+# configure_wifi_with_nmcli — no SSID-named profile deletion
+# ---------------------------------------------------------------------------
+
+class TestConfigureWifiNoProfileDelete:
+    def test_does_not_delete_connection_by_ssid_name(self):
+        """configure_wifi_with_nmcli must not run 'nmcli connection delete <ssid>'.
+
+        Deleting by SSID name destroys saved user profiles.  Only the AP
+        profile (AP_CONNECTION_NAME='Hotspot') may be deleted by name.
+        """
+        src = _watcher_src()
+        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "wait_for_connection")
+        # The old pattern was: run_cmd(["nmcli", "connection", "delete", ssid])
+        # This matches any delete of a variable named 'ssid' (not the fixed AP name)
+        assert '"connection", "delete", ssid' not in fn_body, (
+            "configure_wifi_with_nmcli must not delete a profile by the ssid variable; "
+            "this would destroy saved user profiles"
+        )
+
+    def test_rescan_still_present(self):
+        """nmcli rescan must still be called before connect."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "wait_for_connection")
+        assert "rescan" in fn_body, (
+            "configure_wifi_with_nmcli must still call nmcli dev wifi rescan"
+        )
+
+    def test_connect_still_present(self):
+        """nmcli wifi connect must still be called."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "wait_for_connection")
+        assert '"connect"' in fn_body, (
+            "configure_wifi_with_nmcli must still call nmcli device wifi connect"
+        )
+
+
+# ---------------------------------------------------------------------------
+# connect_to_configured_wifi — skip bounce when healthy
+# ---------------------------------------------------------------------------
+
+class TestConnectToConfiguredWifiHealthCheck:
+    def test_health_check_present_in_function(self):
+        """connect_to_configured_wifi must check is_wifi_client_healthy before bouncing."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        assert "is_wifi_client_healthy" in fn_body, (
+            "connect_to_configured_wifi must call is_wifi_client_healthy() "
+            "to avoid bouncing a healthy connection"
+        )
+
+    def test_bounce_inside_else_or_conditional(self):
+        """Device disconnect/connect must be conditional, not unconditional."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        # The bounce (device disconnect) must follow a health check conditional
+        health_pos = fn_body.index("is_wifi_client_healthy")
+        disconnect_pos = fn_body.find('"disconnect"', health_pos)
+        assert disconnect_pos != -1, (
+            "Device disconnect must appear after the is_wifi_client_healthy check"
+        )
+        # There must be an else branch between health check and disconnect
+        between = fn_body[health_pos:disconnect_pos]
+        assert "else" in between or "if" in between, (
+            "Device disconnect must be inside a conditional branch, not run unconditionally"
+        )
+
+    def test_connection_up_always_called(self):
+        """nmcli connection up must still be called regardless of health."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        # connection up must appear after any health check / bounce branch
+        health_pos = fn_body.index("is_wifi_client_healthy")
+        up_pos = fn_body.find('"up"', health_pos)
+        assert up_pos != -1, (
+            "nmcli connection up must still be called after the health check"
+        )
+
+    def test_no_unconditional_disconnect_before_health_check(self):
+        """Device disconnect must not appear before the health check."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        health_pos = fn_body.find("is_wifi_client_healthy")
+        assert health_pos != -1
+        before_health = fn_body[:health_pos]
+        assert '"disconnect"' not in before_health, (
+            "Device disconnect must not appear unconditionally before the health check"
+        )
+
+
+# ---------------------------------------------------------------------------
+# AP_CONNECTION_NAME deletion — only managed AP profile is deleted
+# ---------------------------------------------------------------------------
+
+class TestApProfileDeletion:
+    def test_start_ap_mode_deletes_only_ap_connection_name(self):
+        """start_ap_mode must delete AP_CONNECTION_NAME, not arbitrary profiles."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "start_ap_mode", "\ndef stop_ap_mode(")
+        assert "AP_CONNECTION_NAME" in fn_body, (
+            "start_ap_mode must delete the managed AP profile (AP_CONNECTION_NAME)"
+        )
+
+    def test_stop_ap_mode_deletes_only_ap_connection_name(self):
+        """stop_ap_mode must delete AP_CONNECTION_NAME, not other profiles."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "stop_ap_mode", "scan_wifi_networks")
+        assert "AP_CONNECTION_NAME" in fn_body
+        # Must not reference ssid variable (would delete user profile)
+        assert '"delete", ssid' not in fn_body
+
+
+# ---------------------------------------------------------------------------
+# Dial mode wait page — instruction text and JS behaviour
+# ---------------------------------------------------------------------------
+
+class TestDialWaitPageInstruction:
+    def test_dial_mode_shows_appliance_instruction(self):
+        """Dial mode wait page must include 'Continue setup from an autostream appliance'."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "render_wait_page", "@app.route")
+        assert "Continue setup from an autostream appliance" in fn_body, (
+            "render_wait_page must include 'Continue setup from an autostream appliance' "
+            "in the dial mode branch"
+        )
+
+    def test_dial_mode_no_redirect_to_host_local(self):
+        """Dial mode success path must not redirect to the dial's own .local hostname."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "render_wait_page", "@app.route")
+        # Find the dial-mode branch by locating the _DIAL_MODE conditional
+        dial_idx = fn_body.index("_DIAL_MODE")
+        # Find 'success_js' assignment under the dial branch
+        success_js_idx = fn_body.index("success_js", dial_idx)
+        # The value assigned in the dial branch must NOT contain window.location.replace
+        # The else branch (non-dial) will assign the redirect
+        dial_branch = fn_body[dial_idx: success_js_idx + 200]
+        # The dial mode assigns a no-op / comment, not a redirect
+        dial_assign = dial_branch[dial_branch.index("success_js"):]
+        assign_end = dial_assign.index("\n") + 1
+        dial_value = dial_assign[:assign_end]
+        assert "window.location.replace" not in dial_value, (
+            "Dial mode success_js must not contain window.location.replace"
+        )
+
+    def test_non_dial_mode_redirects_to_local(self):
+        """Non-dial mode wait page must redirect to the appliance's .local hostname."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "render_wait_page", "@app.route")
+        # The else branch assigns the redirect
+        else_idx = fn_body.rindex("else:")
+        else_branch = fn_body[else_idx: else_idx + 400]
+        assert "window.location.replace" in else_branch or "host_safe" in else_branch, (
+            "Non-dial mode must redirect to the appliance's .local hostname on success"
+        )
+
+    def test_dial_mode_variable_used(self):
+        """render_wait_page must branch on _DIAL_MODE."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "render_wait_page", "@app.route")
+        assert "_DIAL_MODE" in fn_body, (
+            "render_wait_page must branch on _DIAL_MODE to distinguish dial from appliance mode"
+        )
+
+    def test_failure_redirect_preserved_in_both_modes(self):
+        """Both dial and non-dial wait pages must redirect to /setup on failure."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "render_wait_page", "@app.route")
+        assert "/setup?e=" in fn_body, (
+            "Wait page must redirect to /setup on failure in both dial and non-dial mode"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dial systemd service — APP_DIAL_MODE env var
+# ---------------------------------------------------------------------------
+
+class TestDialServiceDialMode:
+    def test_app_dial_mode_set_in_service(self):
+        """autostream_dial_wifi_watcher.service must set APP_DIAL_MODE=1."""
+        content = DIAL_SERVICE.read_text(encoding="utf-8")
+        assert "APP_DIAL_MODE=1" in content, (
+            "autostream_dial_wifi_watcher.service must set APP_DIAL_MODE=1 "
+            "so wifi_watcher uses dial-mode wait page behaviour"
+        )
+
+    def test_app_title_still_set(self):
+        """APP_TITLE must still be set in the dial wifi watcher service."""
+        content = DIAL_SERVICE.read_text(encoding="utf-8")
+        assert "APP_TITLE" in content, (
+            "APP_TITLE must still be present in autostream_dial_wifi_watcher.service"
+        )
+
+    def test_app_dial_mode_not_in_main_service(self):
+        """autostream_wifi_watcher.service (appliance) must NOT set APP_DIAL_MODE=1."""
+        main_service = REPO_ROOT / "system" / "systemd" / "autostream_wifi_watcher.service"
+        if not main_service.exists():
+            pytest.skip("autostream_wifi_watcher.service not found")
+        content = main_service.read_text(encoding="utf-8")
+        assert "APP_DIAL_MODE=1" not in content, (
+            "The main appliance wifi watcher service must not set APP_DIAL_MODE=1"
+        )

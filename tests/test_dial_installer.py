@@ -17,6 +17,9 @@ Covers:
   runs gain these dependencies without re-imaging.
 - Image, offline-page, and shared CGI deployment paths and modes.
 - Sudoers entries granting www-data the three offline-recovery admin verbs.
+- Installer safety prompt (show_info_and_prompt) and TTY helpers on fresh install.
+- Reboot prompt at end of fresh install (not on --update).
+- network_state_phase records active non-AP WiFi connection name on fresh install.
 """
 import pytest
 from pathlib import Path
@@ -595,4 +598,234 @@ class TestControlSocketDeployment:
         # The fallback is only for import; AF_UNIX check in start() prevents TCP
         assert "_AF_UNIX is None" in content, (
             "dial_control.py must check for _AF_UNIX is None in start()"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Installer safety prompt (show_info_and_prompt) and TTY helpers
+# ---------------------------------------------------------------------------
+
+class TestInstallerSafetyPrompt:
+    def test_has_tty_defined_in_helpers(self):
+        """has_tty() must be defined in helpers.sh so the prompt can detect TTY."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        assert "has_tty()" in content, "has_tty() not found in installer/dial/helpers.sh"
+
+    def test_tty_read_defined_in_helpers(self):
+        """tty_read() must be defined in helpers.sh."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        assert "tty_read()" in content, "tty_read() not found in installer/dial/helpers.sh"
+
+    def test_show_info_and_prompt_defined_in_helpers(self):
+        """show_info_and_prompt() must be defined in helpers.sh."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        assert "show_info_and_prompt()" in content, (
+            "show_info_and_prompt() not found in installer/dial/helpers.sh"
+        )
+
+    def test_show_info_and_prompt_contains_installer_name(self):
+        """Banner must identify this as the AUTOSTREAM DIAL INSTALLER."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("show_info_and_prompt()")
+        assert start != -1
+        body = content[start: start + 600]
+        assert "AUTOSTREAM DIAL INSTALLER" in body, (
+            "show_info_and_prompt() banner must say 'AUTOSTREAM DIAL INSTALLER'"
+        )
+
+    def test_show_info_and_prompt_has_continue_question(self):
+        """Banner must include 'Continue with installation?' prompt."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("show_info_and_prompt()")
+        assert start != -1
+        body = content[start: start + 1500]
+        assert "Continue with installation?" in body, (
+            "show_info_and_prompt() must ask 'Continue with installation?'"
+        )
+
+    def test_show_info_and_prompt_called_in_fresh_install_block(self):
+        """show_info_and_prompt must be called inside the 'if ! $UPDATE' block.
+
+        It must never run on --update (which is non-interactive).
+        """
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        update_gate_pos = content.find("if ! $UPDATE")
+        assert update_gate_pos != -1
+        # Find the matching 'fi' for the first 'if ! $UPDATE'
+        fi_pos = content.find("\nfi\n", update_gate_pos)
+        assert fi_pos != -1
+        block = content[update_gate_pos: fi_pos]
+        assert "show_info_and_prompt" in block, (
+            "show_info_and_prompt must be called inside the 'if ! $UPDATE' block"
+        )
+
+    def test_show_info_and_prompt_called_before_install_os_packages(self):
+        """show_info_and_prompt must appear before install_os_packages.
+
+        The user must be able to abort before any system modification.
+        """
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        prompt_pos = content.find("show_info_and_prompt")
+        pkg_pos = content.find("install_os_packages")
+        assert prompt_pos != -1, "show_info_and_prompt not found in installer"
+        assert pkg_pos != -1, "install_os_packages not found in installer"
+        assert prompt_pos < pkg_pos, (
+            "show_info_and_prompt must appear before install_os_packages so the "
+            "user can abort before any packages are installed"
+        )
+
+    def test_show_info_and_prompt_exits_on_non_y(self):
+        """show_info_and_prompt must call exit on any answer other than Y/y."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("show_info_and_prompt()")
+        assert start != -1
+        body = content[start: start + 1500]
+        assert "exit 1" in body, (
+            "show_info_and_prompt must exit with code 1 on non-Y/y answer"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Reboot prompt at end of fresh install
+# ---------------------------------------------------------------------------
+
+class TestInstallerRebootPrompt:
+    def test_reboot_prompt_uses_has_tty(self):
+        """Reboot prompt must gate on has_tty so it only runs interactively."""
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        # find 'has_tty' after 'installation complete'
+        complete_pos = content.find("installation complete")
+        assert complete_pos != -1
+        after = content[complete_pos:]
+        assert "has_tty" in after, (
+            "Reboot prompt after 'installation complete' must use has_tty"
+        )
+
+    def test_reboot_prompt_only_on_fresh_install(self):
+        """Reboot prompt must be inside 'if ! $UPDATE' so --update stays non-interactive."""
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        # Find the last 'if ! $UPDATE' block (the end-of-installer one)
+        complete_pos = content.find("installation complete")
+        assert complete_pos != -1
+        after = content[complete_pos:]
+        assert "if ! $UPDATE" in after, (
+            "Reboot prompt must be guarded by 'if ! $UPDATE'"
+        )
+
+    def test_reboot_prompt_offers_reboot(self):
+        """Reboot prompt must call reboot on Y/y answer."""
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        complete_pos = content.find("installation complete")
+        assert complete_pos != -1
+        after = content[complete_pos:]
+        assert "reboot" in after, (
+            "Reboot prompt must call 'reboot' when user answers Y"
+        )
+
+    def test_reboot_prompt_non_interactive_message(self):
+        """Non-interactive path must print a 'please reboot' message."""
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        complete_pos = content.find("installation complete")
+        assert complete_pos != -1
+        after = content[complete_pos:]
+        assert "reboot the device when convenient" in after, (
+            "Non-interactive path must tell user to reboot when convenient"
+        )
+
+
+# ---------------------------------------------------------------------------
+# network_state_phase — dial installer WiFi recording
+# ---------------------------------------------------------------------------
+
+class TestDialNetworkStatePhase:
+    def test_network_state_phase_defined_in_helpers(self):
+        """network_state_phase() must be defined in installer/dial/helpers.sh."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        assert "network_state_phase()" in content, (
+            "network_state_phase() not found in installer/dial/helpers.sh"
+        )
+
+    def test_network_state_phase_preserves_existing_ssid_file(self):
+        """network_state_phase must skip recording when /opt/autostream/ssid already exists and is non-empty."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("network_state_phase()")
+        assert start != -1
+        body = content[start: start + 800]
+        # Checks for [[ -s ... ]] guard (non-empty file test)
+        assert "-s " in body and "ssid" in body, (
+            "network_state_phase must check for existing non-empty ssid file with [[ -s ]]"
+        )
+        # Must return early when file exists
+        assert "return 0" in body or "return" in body, (
+            "network_state_phase must return early when ssid file already exists"
+        )
+
+    def test_network_state_phase_uses_nmcli_device_status(self):
+        """network_state_phase must use nmcli device status to detect active connection."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("network_state_phase()")
+        assert start != -1
+        body = content[start: start + 800]
+        assert "nmcli" in body and "device" in body and "status" in body, (
+            "network_state_phase must query nmcli device status"
+        )
+
+    def test_network_state_phase_checks_wlan0(self):
+        """network_state_phase must specifically check the wlan0 interface."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("network_state_phase()")
+        assert start != -1
+        body = content[start: start + 800]
+        assert "wlan0" in body, "network_state_phase must check wlan0"
+
+    def test_network_state_phase_rejects_ap_mode(self):
+        """network_state_phase must not record a connection that is in AP mode."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("network_state_phase()")
+        assert start != -1
+        body = content[start: start + 1000]
+        assert "802-11-wireless.mode" in body or "wireless.mode" in body, (
+            "network_state_phase must check 802-11-wireless.mode to reject AP connections"
+        )
+        assert '"ap"' in body or "'ap'" in body or "!= \"ap\"" in body or "!= 'ap'" in body, (
+            "network_state_phase must skip when mode is 'ap'"
+        )
+
+    def test_network_state_phase_writes_ssid_file(self):
+        """network_state_phase must write the connection name to /opt/autostream/ssid."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("network_state_phase()")
+        assert start != -1
+        body = content[start: start + 1000]
+        assert "/opt/autostream/ssid" in body, (
+            "network_state_phase must write to /opt/autostream/ssid"
+        )
+        assert "printf" in body or "> " in body, (
+            "network_state_phase must write the connection name to the ssid file"
+        )
+
+    def test_network_state_phase_called_in_fresh_install_block(self):
+        """network_state_phase must be called inside the 'if ! $UPDATE' block.
+
+        It must not run on --update (WiFi is already configured and recorded).
+        """
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        update_gate_pos = content.find("if ! $UPDATE")
+        assert update_gate_pos != -1
+        fi_pos = content.find("\nfi\n", update_gate_pos)
+        assert fi_pos != -1
+        block = content[update_gate_pos: fi_pos]
+        assert "network_state_phase" in block, (
+            "network_state_phase must be called inside the 'if ! $UPDATE' block"
+        )
+
+    def test_network_state_phase_called_after_create_dirs(self):
+        """network_state_phase must be called after create_dirs so /opt/autostream exists."""
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        create_dirs_pos = content.find("create_dirs")
+        network_pos = content.find("network_state_phase")
+        assert create_dirs_pos != -1, "create_dirs not found in installer"
+        assert network_pos != -1, "network_state_phase not found in installer"
+        assert network_pos > create_dirs_pos, (
+            "network_state_phase must be called after create_dirs so /opt/autostream exists"
         )
