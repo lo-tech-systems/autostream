@@ -499,8 +499,12 @@ class TestCoalescedRemoteGet:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         cached = {"ok": True, "cached": True}
+        now = time.monotonic()
         with gw._state_lock:
-            gw._read_cache[(aid, fed_path)] = (cached, time.monotonic() + 1.0)
+            gw._read_cache[(aid, fed_path)] = {
+                "data": cached, "cached_at": now,
+                "fresh_until": now + 1.0, "stale_until": now + gw._STALE_READ_CACHE_TTL,
+            }
         status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
         assert status == 200
         assert data["cached"] is True
@@ -544,17 +548,38 @@ class TestCoalescedRemoteGet:
         mock_req.assert_not_called()
         assert data["error"] == "remote_backoff"
 
-    def test_expired_cache_makes_new_request(self):
+    def test_expired_fresh_cache_makes_new_request(self):
+        """Past fresh_until but within stale_until: must attempt remote before returning stale."""
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
-        expired = {"ok": True, "stale": True}
+        old_data = {"ok": True, "old": True}
+        now = time.monotonic()
         with gw._state_lock:
-            gw._read_cache[(aid, fed_path)] = (expired, time.monotonic() - 0.1)
+            gw._read_cache[(aid, fed_path)] = {
+                "data": old_data, "cached_at": now - 5.0,
+                "fresh_until": now - 0.1,
+                "stale_until": now + gw._STALE_READ_CACHE_TTL,
+            }
         fresh = {"ok": True, "fresh": True}
         with patch.object(gw, "_remote_request", return_value=(200, fresh)):
             status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
         assert data.get("fresh") is True
+
+    def test_success_stores_new_cache_shape(self):
+        """Successful remote request must store the dict-shape cache entry."""
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        ok_data = {"ok": True}
+        with patch.object(gw, "_remote_request", return_value=(200, ok_data)):
+            gw._coalesced_remote_get(aid, sighting, fed_path)
+        entry = gw._read_cache.get((aid, fed_path))
+        assert entry is not None
+        assert "fresh_until" in entry
+        assert "stale_until" in entry
+        assert "cached_at" in entry
+        assert entry["data"] is ok_data
 
     def test_rate_limited_does_not_advance_backoff(self):
         """rate_limited response (429 from token acquisition) must not advance backoff counter."""
@@ -601,6 +626,186 @@ class TestCoalescedRemoteGet:
         assert d1.get("coalesced") is True
         assert s2 == 200
         assert d2.get("coalesced") is True
+
+
+# ---------------------------------------------------------------------------
+# Stale cache fallback
+# ---------------------------------------------------------------------------
+
+class TestStaleCache:
+    """_coalesced_remote_get stale-on-failure fallback behaviour."""
+
+    def _prime_stale(self, aid, fed_path, data=None, fresh_offset=-2.0):
+        """Insert a cache entry whose fresh_until has passed but stale_until has not."""
+        now = time.monotonic()
+        with gw._state_lock:
+            gw._read_cache[(aid, fed_path)] = {
+                "data": data or {"ok": True, "cached": True},
+                "cached_at": now + fresh_offset - 1.0,
+                "fresh_until": now + fresh_offset,
+                "stale_until": now + gw._STALE_READ_CACHE_TTL,
+            }
+
+    def test_stale_returned_on_owner_transport_failure(self):
+        """On remote_timeout, stale cached data is returned instead of an error."""
+        aid = "a" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path, data={"ok": True, "last_known": True})
+
+        with patch.object(gw, "_remote_request",
+                          return_value=(0, {"ok": False, "error": "remote_timeout"})):
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        assert status == 200
+        assert data.get("ok") is True
+        assert data.get("stale") is True
+        assert data.get("last_known") is True
+
+    def test_stale_response_includes_metadata(self):
+        """Stale response must include stale_reason and stale_age_ms."""
+        aid = "b" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path)
+
+        with patch.object(gw, "_remote_request",
+                          return_value=(0, {"ok": False, "error": "remote_timeout"})):
+            _, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        assert data["stale_reason"] == "remote_timeout"
+        assert isinstance(data["stale_age_ms"], int)
+        assert data["stale_age_ms"] >= 0
+
+    def test_stale_returned_on_backoff(self):
+        """When appliance is in backoff and stale data exists, return stale instead of backoff error."""
+        aid = "c" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/equaliser"
+        self._prime_stale(aid, fed_path, data={"ok": True, "eq_cached": True})
+        with gw._state_lock:
+            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
+
+        with patch.object(gw, "_remote_request") as mock_req:
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        mock_req.assert_not_called()
+        assert status == 200
+        assert data.get("stale") is True
+        assert data.get("stale_reason") == "remote_backoff"
+        assert "retry_after" in data
+
+    def test_stale_backoff_includes_retry_after(self):
+        """Stale response for a backoff case must include retry_after."""
+        aid = "d" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path)
+        with gw._state_lock:
+            gw._backoff_state[aid] = (time.monotonic() + 5, 0)
+
+        _, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        assert data.get("stale") is True
+        assert data.get("retry_after", 0) >= 1
+
+    def test_no_stale_after_stale_ttl(self):
+        """Past stale_until, a transport failure returns the error, not stale data."""
+        aid = "e" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        now = time.monotonic()
+        with gw._state_lock:
+            gw._read_cache[(aid, fed_path)] = {
+                "data": {"ok": True},
+                "cached_at": now - 20.0,
+                "fresh_until": now - 16.0,
+                "stale_until": now - 1.0,   # stale window also expired
+            }
+
+        with patch.object(gw, "_remote_request",
+                          return_value=(0, {"ok": False, "error": "remote_timeout"})):
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        assert status == 0
+        assert data["error"] == "remote_timeout"
+
+    def test_stale_not_returned_when_remote_succeeds(self):
+        """If the remote call succeeds, fresh data is returned, not the stale copy."""
+        aid = "f" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path, data={"ok": True, "old": True})
+
+        fresh = {"ok": True, "fresh": True}
+        with patch.object(gw, "_remote_request", return_value=(200, fresh)):
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        assert data.get("fresh") is True
+        assert "stale" not in data
+
+    def test_stale_does_not_mutate_cached_data(self):
+        """_stale_response must not mutate the original cached dict."""
+        aid = "g" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        original = {"ok": True, "key": "value"}
+        self._prime_stale(aid, fed_path, data=original)
+
+        with patch.object(gw, "_remote_request",
+                          return_value=(0, {"ok": False, "error": "remote_timeout"})):
+            gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        # Original cached data must not have been modified
+        assert "stale" not in original
+
+    def test_waiter_gets_stale_on_owner_failure(self):
+        """A coalesced waiter must get stale data when the owner's request fails."""
+        aid = "h" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path, data={"ok": True, "waiter_stale": True})
+
+        results = [None, None]
+        call_count = [0]
+
+        def slow_fail(*args, **kwargs):
+            call_count[0] += 1
+            time.sleep(0.2)
+            return 0, {"ok": False, "error": "remote_timeout"}
+
+        with patch.object(gw, "_remote_request", side_effect=slow_fail):
+            def call_get(idx):
+                results[idx] = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+            t1 = threading.Thread(target=call_get, args=(0,))
+            t2 = threading.Thread(target=call_get, args=(1,))
+            t1.start()
+            time.sleep(0.05)
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert call_count[0] == 1, "Only one HTTP request (coalescing)"
+        for s, d in results:
+            assert s == 200
+            assert d.get("stale") is True
+            assert d.get("waiter_stale") is True
+
+    def test_no_backoff_without_stale_data(self):
+        """When in backoff and no stale data exists, return the backoff error as before."""
+        aid = "i" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        with gw._state_lock:
+            gw._backoff_state[aid] = (time.monotonic() + 10, 0)
+
+        with patch.object(gw, "_remote_request") as mock_req:
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        mock_req.assert_not_called()
+        assert status == 0
+        assert data["error"] == "remote_backoff"
 
 
 # ---------------------------------------------------------------------------
@@ -725,7 +930,6 @@ class TestSendGatewayHomeJson:
 
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=("remote", sighting)), \
-             patch.object(gw, "_check_and_emit_backoff", return_value=False), \
              patch.object(gw, "_coalesced_remote_get", return_value=(200, remote_data)), \
              patch("autostream_appliance_gateway.send_json",
                    side_effect=lambda h, c, d: (sent_codes.append(c), sent_data.append(d))):

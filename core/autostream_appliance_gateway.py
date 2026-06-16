@@ -16,6 +16,13 @@ POST handler) are responsible for calling _update_backoff() after every
 completed request so that success clears the counter and failure advances
 it exactly once.
 
+Stale fallback: _coalesced_remote_get retains successful GET data for
+_STALE_READ_CACHE_TTL seconds. If a subsequent request hits backoff or a
+transport failure, the cached data is returned with stale=True metadata
+rather than an error, so the browser can render the last-known state while
+retrying in the background. Stale fallback never clears backoff state — only
+a real successful remote response does that.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
@@ -63,7 +70,8 @@ _BACKOFF_STEPS = (1, 2, 4, 8, 15)  # per-target exponential backoff in seconds
 _REMOTE_RESPONSE_MAX = 256 * 1024  # 256 KiB response body cap
 _CONNECT_TIMEOUT = 1.0             # seconds
 _READ_TIMEOUT = 2.0                # seconds
-_READ_CACHE_TTL = 1.0              # seconds for successful-read cache
+_READ_CACHE_TTL = 1.0              # seconds — fresh window for successful-read cache
+_STALE_READ_CACHE_TTL = 15.0       # seconds — stale fallback window after fresh_until
 _FED_VERSION_HEADER = "1"
 
 
@@ -79,8 +87,9 @@ _token_cache: dict[str, tuple[str, float]] = {}
 # backoff state: appliance_id → (backoff_until_monotonic, step_index)
 _backoff_state: dict[str, tuple[float, int]] = {}
 
-# successful-read cache: (appliance_id, fed_path) → (data_dict, cache_until_monotonic)
-_read_cache: dict[tuple[str, str], tuple[dict, float]] = {}
+# successful-read cache: (appliance_id, fed_path) → cache entry dict
+# shape: {"data": dict, "cached_at": float, "fresh_until": float, "stale_until": float}
+_read_cache: dict[tuple[str, str], dict] = {}
 
 # in-flight coalescing: (appliance_id, fed_path) → (Event, result_list)
 _in_flight: dict[tuple[str, str], tuple[threading.Event, list]] = {}
@@ -404,7 +413,26 @@ def _update_backoff(appliance_id: str, status: int, data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Coalesced remote GET (cache + coalescing + backoff)
+# Stale-response helper
+# ---------------------------------------------------------------------------
+
+def _stale_response(entry: dict, reason: str, retry_after: int = 0) -> dict:
+    """Return a copy of cached data with stale metadata merged in.
+
+    Never mutates the cached entry — always produces a new dict.
+    """
+    age_ms = int((time.monotonic() - entry["cached_at"]) * 1000)
+    result = dict(entry["data"])
+    result["stale"] = True
+    result["stale_reason"] = reason
+    result["stale_age_ms"] = age_ms
+    if retry_after:
+        result["retry_after"] = retry_after
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Coalesced remote GET (cache + coalescing + backoff + stale fallback)
 # ---------------------------------------------------------------------------
 
 def _coalesced_remote_get(
@@ -412,23 +440,29 @@ def _coalesced_remote_get(
     sighting: ApplianceSighting,
     fed_path: str,
 ) -> tuple[int, dict]:
-    """GET with one-second cache, per-target coalescing and backoff guard."""
+    """GET with cache, per-target coalescing, backoff guard, and stale fallback.
+
+    Returns fresh cached data immediately if within _READ_CACHE_TTL.
+    On backoff or transport failure, returns stale cached data (within
+    _STALE_READ_CACHE_TTL) with stale=True metadata rather than an error.
+    Only a real successful remote response clears backoff state.
+    """
     cache_key = (appliance_id, fed_path)
     event_to_wait: Optional[threading.Event] = None
     result_holder: Optional[list] = None
     am_owner = False
 
     with _state_lock:
-        # Cache hit?
-        cached = _read_cache.get(cache_key)
-        if cached is not None:
-            data, expires = cached
-            if time.monotonic() < expires:
-                return 200, data
+        # Fresh cache hit?
+        entry = _read_cache.get(cache_key)
+        if entry is not None and time.monotonic() < entry["fresh_until"]:
+            return 200, entry["data"]
 
-        # Backoff guard
+        # Backoff guard — return stale data if available, otherwise backoff error
         in_backoff, retry_after = _check_backoff_locked(appliance_id)
         if in_backoff:
+            if entry is not None and time.monotonic() < entry["stale_until"]:
+                return 200, _stale_response(entry, "remote_backoff", retry_after)
             return 0, {"ok": False, "error": "remote_backoff", "retry_after": retry_after}
 
         # Coalescing: join an in-flight request or become the owner
@@ -447,7 +481,14 @@ def _coalesced_remote_get(
         # Wait for the owning request to complete
         event_to_wait.wait(timeout=_READ_TIMEOUT + 0.5)
         if result_holder:
-            return result_holder[0]
+            owner_status, owner_data = result_holder[0]
+            if owner_status == 200 and isinstance(owner_data, dict) and owner_data.get("ok"):
+                return owner_status, owner_data
+        # Owner failed — fall back to stale if available
+        with _state_lock:
+            stale = _read_cache.get(cache_key)
+        if stale is not None and time.monotonic() < stale["stale_until"]:
+            return 200, _stale_response(stale, "remote_timeout")
         return 0, {"ok": False, "error": "remote_timeout"}
 
     # We are the owner: make the actual request
@@ -459,8 +500,14 @@ def _coalesced_remote_get(
 
     with _state_lock:
         result_holder.append((status, data))
+        now = time.monotonic()
         if status == 200 and isinstance(data, dict) and data.get("ok"):
-            _read_cache[cache_key] = (data, time.monotonic() + _READ_CACHE_TTL)
+            _read_cache[cache_key] = {
+                "data": data,
+                "cached_at": now,
+                "fresh_until": now + _READ_CACHE_TTL,
+                "stale_until": now + _STALE_READ_CACHE_TTL,
+            }
             _record_success_locked(appliance_id)
         else:
             err_str = data.get("error", "") if isinstance(data, dict) else ""
@@ -470,6 +517,14 @@ def _coalesced_remote_get(
                 _record_success_locked(appliance_id)
         del _in_flight[cache_key]
     event_to_wait.set()
+
+    # On transport failure, return stale data if available rather than the error
+    if not (status == 200 and isinstance(data, dict) and data.get("ok")):
+        with _state_lock:
+            stale = _read_cache.get(cache_key)
+        if stale is not None and time.monotonic() < stale["stale_until"]:
+            err_str = data.get("error", "") if isinstance(data, dict) else "remote_timeout"
+            return 200, _stale_response(stale, err_str)
 
     return status, data
 
@@ -624,8 +679,6 @@ def send_gateway_home_json(handler, state, appliance_id: str) -> None:
         send_json(handler, 200, home)
         return
 
-    if _check_and_emit_backoff(handler, appliance_id):
-        return
     status, data = _coalesced_remote_get(appliance_id, sighting, "/api/federation/v1/home")
     _handle_remote_response(handler, appliance_id, status, data)
 
@@ -725,8 +778,6 @@ def send_gateway_equaliser_json(handler, state, appliance_id: str) -> None:
         send_json(handler, 200, eq)
         return
 
-    if _check_and_emit_backoff(handler, appliance_id):
-        return
     status, data = _coalesced_remote_get(appliance_id, sighting, "/api/federation/v1/equaliser")
     _handle_remote_response(handler, appliance_id, status, data)
 

@@ -630,17 +630,16 @@ class TestRemoteHomeMasterVolumeLabel:
 
         return b"".join(written_chunks).decode("utf-8", errors="replace")
 
-    def test_master_volume_label_includes_hostname(self):
+    def test_master_volume_label_is_plain(self):
         html = self._render("music-room")
-        assert "Master Volume (music-room)" in html
+        assert "Master Volume" in html
+        assert "Master Volume (music-room)" not in html
 
-    def test_master_volume_label_uses_correct_remote_hostname(self):
-        html = self._render("kitchen")
-        assert "Master Volume (kitchen)" in html
-        assert "Master Volume (local-host)" not in html
+    def test_hostname_appears_in_now_playing_header(self):
+        html = self._render("music-room")
+        assert "music-room" in html
+        assert "now-playing-hdr" in html or "np-hdr" in html
 
-    def test_master_volume_label_escapes_hostname(self):
+    def test_hostname_escaped_in_now_playing_header(self):
         html = self._render("<script>")
-        assert "Master Volume (<script>)" not in html
-        assert "Master Volume (" in html  # Something is rendered
-        assert "<script>" not in html.split("Master Volume")[1].split(")")[0]
+        assert "&lt;script&gt;" in html

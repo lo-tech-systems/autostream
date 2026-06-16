@@ -336,18 +336,18 @@ class TestApplyEqReset:
              patch("autostream_appliance_models.set_live_output_eq"):
             models.apply_eq_reset(str(cfg_path))
         saved = json.loads(cfg_path.read_text())
-        for f in ("gain_db", "peq1_db", "peq2_db", "peq3_db",
-                  "peq4_db", "peq5_db", "peq6_db"):
+        for f in ("peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db"):
             assert saved["output_eq"][f] == 0.0, f"{f} not zeroed"
+        assert saved["output_eq"]["gain_db"] == 5.0, "gain_db must not be changed by Flat reset"
 
-    def test_reset_calls_set_live_output_gain_zero(self, tmp_path):
+    def test_reset_does_not_call_set_live_output_gain(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         gain_calls = []
         with patch("autostream_appliance_models.set_live_output_gain",
                    side_effect=lambda v: gain_calls.append(v)), \
              patch("autostream_appliance_models.set_live_output_eq"):
             models.apply_eq_reset(str(cfg_path))
-        assert gain_calls == [0.0]
+        assert gain_calls == [], "set_live_output_gain must not be called by Flat reset"
 
     def test_reset_calls_set_live_output_eq_all_zeros(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
