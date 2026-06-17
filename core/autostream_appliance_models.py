@@ -22,6 +22,7 @@ from autostream_config import (
 )
 from autostream_core import (
     any_monitor_capturing,
+    get_active_track_identification_snapshot,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
@@ -198,6 +199,7 @@ def build_home_state(
         parsed = parse_config(locked_load_config(config_path))
     except Exception as e:
         logging.warning("build_home_state: config load failed: %s", e)
+        from track_id.models import disabled_snapshot
         return {
             "ok": False,
             "error": str(e),
@@ -208,6 +210,7 @@ def build_home_state(
             "warnings": {"stylus": "", "belt": "", "bearing": ""},
             "outputs": [],
             "vu_delay_ms": SETTING_START_BUFFER_MS_DEFAULT,
+            "track_identification": disabled_snapshot().to_public_dict(),
         }
 
     try:
@@ -258,6 +261,13 @@ def build_home_state(
     except Exception:
         pass
 
+    try:
+        ti_snapshot = get_active_track_identification_snapshot()
+        ti_dict = ti_snapshot.to_public_dict()
+    except Exception:
+        from track_id.models import disabled_snapshot
+        ti_dict = disabled_snapshot().to_public_dict()
+
     hostname = _format_hostname(get_system_hostname())
     return {
         "ok": True,
@@ -279,6 +289,7 @@ def build_home_state(
         },
         "outputs": outputs,
         "vu_delay_ms": int(vu_delay_ms),
+        "track_identification": ti_dict,
     }
 
 

@@ -126,6 +126,24 @@ def get_track_identification_snapshot(input_index: int):
     return disabled_snapshot()
 
 
+def get_active_track_identification_snapshot():
+    """Return track identification state for the currently capturing monitor.
+
+    Returns the snapshot for whichever monitor is capturing, or a disabled
+    snapshot when nothing is active.  If the service is configured but no
+    input is capturing, returns a waiting snapshot.  Never blocks.
+    """
+    with _monitors_lock:
+        monitors = list(all_monitors)
+    for m in monitors:
+        if m.is_capturing:
+            return m._ti_snapshot  # atomic under GIL
+    from track_id.models import disabled_snapshot, waiting_snapshot
+    if _track_id_service is not None:
+        return waiting_snapshot()
+    return disabled_snapshot()
+
+
 # ---------------------------------------------------------------------------
 # mDNS playing-state lifecycle
 # ---------------------------------------------------------------------------
