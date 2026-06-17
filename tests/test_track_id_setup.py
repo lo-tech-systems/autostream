@@ -8,7 +8,7 @@ Covers:
 - Save with API key persists the key (without logging it)
 - Save preserves nested provider settings
 - Initial setup without sentinel does not create/overwrite the section
-- Config reload is requested when enabled/key changes
+- Track ID changes apply the service live without restarting monitors
 """
 from __future__ import annotations
 
@@ -147,7 +147,10 @@ def _make_state(tmp_path: Path, extra_cfg: dict | None = None) -> MagicMock:
 
 
 def _run_setup_post(form_fields: dict, tmp_path: Path, extra_cfg: dict | None = None):
-    """Run handle_setup_post with minimal patches and return the saved config."""
+    """Run handle_setup_post with minimal patches.
+
+    Returns (saved_cfg, mock_reload, mock_live_apply).
+    """
     import autostream_webui_post_handlers as ph
     from urllib.parse import urlencode
 
@@ -165,13 +168,14 @@ def _run_setup_post(form_fields: dict, tmp_path: Path, extra_cfg: dict | None = 
         patch.object(ph, "update_playback_input_config"),
         patch.object(ph, "suggested_silence_threshold_dbfs", return_value=-60.0),
         patch.object(ph, "request_config_reload") as mock_reload,
+        patch.object(ph, "apply_track_id_config_live") as mock_live_apply,
         patch.object(ph, "update_live_silence_seconds", return_value=True),
         patch.object(ph, "_set_flash_cookie"),
     ):
         ph.handle_setup_post(handler, state, auth, body)
 
     saved = json.loads(Path(state.config_path).read_text())
-    return saved, mock_reload
+    return saved, mock_reload, mock_live_apply
 
 
 class TestHandleSetupPostTrackId:
@@ -184,7 +188,7 @@ class TestHandleSetupPostTrackId:
             "owntone_volume_percent": "20",
             "silence_seconds": "30",
         }
-        saved, _ = _run_setup_post(form, tmp_path)
+        saved, *_ = _run_setup_post(form, tmp_path)
         assert "track_identification" not in saved
 
     def test_switch_checked_saves_enabled_true(self, tmp_path):
@@ -197,7 +201,7 @@ class TestHandleSetupPostTrackId:
             "track_identification_present": "1",
             "track_identification_enabled": "on",
         }
-        saved, _ = _run_setup_post(form, tmp_path)
+        saved, *_ = _run_setup_post(form, tmp_path)
         assert saved["track_identification"]["enabled"] is True
 
     def test_switch_unchecked_saves_enabled_false(self, tmp_path):
@@ -209,7 +213,7 @@ class TestHandleSetupPostTrackId:
             "silence_seconds": "30",
             "track_identification_present": "1",
         }
-        saved, _ = _run_setup_post(form, tmp_path)
+        saved, *_ = _run_setup_post(form, tmp_path)
         assert saved["track_identification"]["enabled"] is False
 
     def test_api_key_saved(self, tmp_path):
@@ -222,7 +226,7 @@ class TestHandleSetupPostTrackId:
             "track_identification_present": "1",
             "track_identification_acoustid_api_key": "mykey123",
         }
-        saved, _ = _run_setup_post(form, tmp_path)
+        saved, *_ = _run_setup_post(form, tmp_path)
         key = (
             saved.get("track_identification", {})
             .get("providers", {})
@@ -245,7 +249,13 @@ class TestHandleSetupPostTrackId:
             _run_setup_post(form, tmp_path)
         assert "supersecretkey" not in caplog.text
 
-    def test_config_reload_requested_when_enabled_changes(self, tmp_path):
+    def test_live_apply_called_when_enabled_changes(self, tmp_path):
+        # Seed audio device so daemon_changed is False; only TI changes.
+        existing = {
+            "audio1": {"capture_device": "hw:1,0", "silence_threshold": -60.0, "turntable": False},
+            "audio2": {"enabled": False, "capture_device": "", "silence_threshold": -60.0, "turntable": False},
+            "track_identification": {"enabled": False},
+        }
         form = {
             "audio_capture_device": "hw:1,0",
             "audio_silence_threshold": "-60",
@@ -255,8 +265,10 @@ class TestHandleSetupPostTrackId:
             "track_identification_present": "1",
             "track_identification_enabled": "on",
         }
-        _, mock_reload = _run_setup_post(form, tmp_path)
-        mock_reload.assert_called_once()
+        _, mock_reload, mock_live_apply = _run_setup_post(form, tmp_path, extra_cfg=existing)
+        # Track ID changes must apply the service live, not restart the coordinator.
+        mock_reload.assert_not_called()
+        mock_live_apply.assert_called_once()
 
     def test_no_reload_when_track_id_unchanged(self, tmp_path):
         # Pre-seed config with enabled=True, matching audio devices and thresholds,
@@ -279,8 +291,9 @@ class TestHandleSetupPostTrackId:
             "track_identification_enabled": "on",
             "track_identification_acoustid_api_key": "k1",
         }
-        _, mock_reload = _run_setup_post(form, tmp_path, extra_cfg=existing)
+        _, mock_reload, mock_live_apply = _run_setup_post(form, tmp_path, extra_cfg=existing)
         mock_reload.assert_not_called()
+        mock_live_apply.assert_not_called()
 
     def test_other_provider_settings_preserved(self, tmp_path):
         existing = {
@@ -301,7 +314,7 @@ class TestHandleSetupPostTrackId:
             "track_identification_present": "1",
             "track_identification_acoustid_api_key": "new_key",
         }
-        saved, _ = _run_setup_post(form, tmp_path, extra_cfg=existing)
+        saved, *_ = _run_setup_post(form, tmp_path, extra_cfg=existing)
         # future_provider settings preserved
         assert saved["track_identification"]["providers"]["future_provider"]["token"] == "xyz"
         # acoustid key updated

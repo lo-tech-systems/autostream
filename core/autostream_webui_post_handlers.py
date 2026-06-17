@@ -38,6 +38,7 @@ from autostream_config import (
     unconfigured,
 )
 from autostream_core import (
+    apply_track_id_config_live,
     request_config_reload,
     set_live_input_eq,
     set_live_input_gain,
@@ -241,9 +242,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 new_ti_enabled = "track_identification_enabled" in form
                 new_ti_key = fld("track_identification_acoustid_api_key", old_ti_key).strip()
                 ti["enabled"] = bool(new_ti_enabled)
-                ti.setdefault("provider", p.track_identification.provider)
                 from autostream_config import TRACK_ID_DEFAULT_INTERVAL, TRACK_ID_DEFAULT_PROVIDER
-                ti.setdefault("provider", TRACK_ID_DEFAULT_PROVIDER)
+                ti.setdefault("provider", p.track_identification.provider or TRACK_ID_DEFAULT_PROVIDER)
                 ti.setdefault("interval_seconds", TRACK_ID_DEFAULT_INTERVAL)
                 prov = ti.setdefault("providers", {})
                 am = prov.setdefault("acoustid_musicbrainz", {})
@@ -425,7 +425,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         if daemon_changed:
             request_config_reload()
         elif _track_id_changed:
-            request_config_reload()
+            apply_track_id_config_live(state.config_path)
     except Exception:
         logging.exception("handle_setup_post: unexpected failure during save")
         send_setup_page(handler, state, auth, flash_msg="Save failed", flash_type="error")

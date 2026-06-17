@@ -115,6 +115,31 @@ def _build_track_id_service(cfg) -> Optional[object]:
         return None
 
 
+def apply_track_id_config_live(config_path: str) -> None:
+    """Rebuild the track identification service and push it to all monitors.
+
+    Called by the web UI when track identification settings change.  Avoids
+    tearing down the audio coordinator or stopping OwnTone — only the service
+    singleton and each monitor's per-instance reference are replaced.
+    """
+    global _track_id_service
+    try:
+        from autostream_config import locked_load_config
+        cfg = locked_load_config(config_path)
+    except Exception:
+        logging.warning("track_id: live reload: cannot read config", exc_info=True)
+        return
+    _track_id_service = _build_track_id_service(cfg)
+    with _monitors_lock:
+        monitors = list(all_monitors)
+    for m in monitors:
+        m._apply_track_id_service(_track_id_service)
+    logging.info(
+        "track_id: service rebuilt live (enabled=%s)",
+        _track_id_service is not None,
+    )
+
+
 def get_track_identification_snapshot(input_index: int):
     """Return the latest TrackIdentificationSnapshot for an input channel."""
     with _monitors_lock:
