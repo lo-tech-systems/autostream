@@ -6,8 +6,6 @@ the PlaybackTracker, and stop().
 
 AudioMonitor construction patches PersistentNowPlayingCache and
 OwntoneMetadataPipePublisher to avoid filesystem/FIFO side-effects.
-VinylRecognizer is already None in this environment (not imported from
-autostream_nowplaying), so recognition paths are naturally skipped.
 """
 from __future__ import annotations
 
@@ -892,39 +890,33 @@ class TestCaptureStartOrdering:
             mon._on_capture_started(was_idle=False)
         assert not stop_called
 
-    def test_started_resets_recognition_state(self):
+    def test_started_resets_ti_state(self):
         mon = _make_monitor()
-        mon._recognition_inflight = True
-        mon._recognition_attempt_count = 5
+        mon._ti_inflight = True
+        mon._ti_next_attempt = 999.0
         with patch.object(mon, "_maybe_retry_owntone"):
             mon._on_capture_started(was_idle=False)
-        assert mon._recognition_inflight is False
-        assert mon._recognition_attempt_count == 0
+        assert mon._ti_inflight is False
+        assert mon._ti_next_attempt == 0.0
 
 
 class TestCaptureStopOrdering:
-    def test_stopped_calls_recognition_before_publish_end(self):
+    def test_stopped_calls_publish_end(self):
         mon = _make_monitor(owntone_base_url="http://localhost:3689")
-        order = []
         mock_client = MagicMock(spec=MonitorClient)
 
-        with patch.object(mon, "_trigger_recognition",
-                          side_effect=lambda client: order.append("recognition")), \
-             patch.object(mon._nowplaying_publisher, "publish_end",
-                          side_effect=lambda: order.append("publish_end")), \
-             patch.object(core, "_stop_and_disable_owntone"):
+        with patch.object(core, "_stop_and_disable_owntone"), \
+             patch.object(core, "any_monitor_capturing", return_value=False):
             mon._on_capture_stopped(mock_client)
 
-        assert order.index("recognition") < order.index("publish_end"), \
-            "_trigger_recognition must come before publish_end"
+        mon._nowplaying_publisher.publish_end.assert_called_once()
 
     def test_stopped_requests_owntone_stop_when_no_other_capturing(self):
         mon = _make_monitor(owntone_base_url="http://localhost:3689")
         mock_client = MagicMock(spec=MonitorClient)
         stop_calls = []
 
-        with patch.object(mon, "_trigger_recognition"), \
-             patch.object(core, "any_monitor_capturing", return_value=False), \
+        with patch.object(core, "any_monitor_capturing", return_value=False), \
              patch.object(core, "_stop_and_disable_owntone",
                           side_effect=lambda url, reason: stop_calls.append(url)):
             mon._on_capture_stopped(mock_client)
@@ -936,8 +928,7 @@ class TestCaptureStopOrdering:
         mock_client = MagicMock(spec=MonitorClient)
         stop_calls = []
 
-        with patch.object(mon, "_trigger_recognition"), \
-             patch.object(core, "any_monitor_capturing", return_value=True), \
+        with patch.object(core, "any_monitor_capturing", return_value=True), \
              patch.object(core, "_stop_and_disable_owntone",
                           side_effect=lambda url, reason: stop_calls.append(url)):
             mon._on_capture_stopped(mock_client)

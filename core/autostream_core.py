@@ -41,11 +41,6 @@ from autostream_nowplaying import (
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
 )
-try:
-    from autostream_nowplaying import VinylRecognizer
-except ImportError:  # Optional recognizer; core should run without it.
-    VinylRecognizer = None  # type: ignore[assignment]
-
 from autostream_player_service import (
     config_airplay_mode_to_backend,
     ensure_pipe_source_ready,
@@ -97,6 +92,39 @@ def request_config_reload() -> None:
 all_monitors: list["AudioMonitor"] = []
 _monitors_lock = threading.Lock()
 _playback_tracker: Optional[PlaybackTracker] = None
+
+# Track identification service singleton (replaced on each config reload).
+# Written only from the coordinator thread; read from worker threads under GIL.
+_track_id_service = None  # Optional[TrackIdentificationService]
+
+
+def _build_track_id_service(cfg) -> Optional[object]:
+    """Build and return a TrackIdentificationService from config, or None."""
+    try:
+        from track_id.service import build_service
+        ti = cfg.track_identification
+        settings = dict(ti.providers.get(ti.provider, {}))
+        return build_service(
+            enabled=ti.enabled,
+            provider_id=ti.provider,
+            provider_settings=settings,
+            interval_seconds=ti.interval_seconds,
+        )
+    except Exception:
+        logging.warning("track_id: failed to build service", exc_info=True)
+        return None
+
+
+def get_track_identification_snapshot(input_index: int):
+    """Return the latest TrackIdentificationSnapshot for an input channel."""
+    with _monitors_lock:
+        monitors = list(all_monitors)
+    for m in monitors:
+        if m.input_index == input_index:
+            return m._ti_snapshot  # atomic under GIL
+    from track_id.models import disabled_snapshot
+    return disabled_snapshot()
+
 
 # ---------------------------------------------------------------------------
 # mDNS playing-state lifecycle
@@ -1204,12 +1232,6 @@ class AudioMonitor:
         # --- Now-playing metadata helpers ---
         self._nowplaying_cache = PersistentNowPlayingCache()
         self._nowplaying_publisher = OwntoneMetadataPipePublisher(fifo_path)
-        self._vinyl_recognizer = (
-            VinylRecognizer(self._nowplaying_cache, input_device)
-            if VinylRecognizer else None
-        )
-        if self._vinyl_recognizer is None:
-            logging.info("Input %d: vinyl recognizer unavailable.", input_index)
         self._current_nowplaying = (
             self._nowplaying_cache.get_manual_hint(input_device)
             or NowPlayingMetadata(
@@ -1219,9 +1241,12 @@ class AudioMonitor:
             )
         )
 
-        # --- Recognition state ---
-        self._recognition_inflight = False
-        self._recognition_attempt_count = 0
+        # --- Track identification scheduling ---
+        from track_id.models import disabled_snapshot as _ds
+        self._ti_inflight: bool = False
+        self._ti_next_attempt: float = 0.0
+        self._ti_last_attempt: float = 0.0
+        self._ti_snapshot = _ds()  # replaced atomically under GIL
 
         # --- Status (updated by coordinator via _ingest_status) ---
         self.level_dbfs: float = -90.0
@@ -1342,8 +1367,11 @@ class AudioMonitor:
 
         self._maybe_retry_owntone(time.time())
 
-        self._recognition_inflight = False
-        self._recognition_attempt_count = 0
+        self._ti_inflight = False
+        self._ti_next_attempt = 0.0
+        if _track_id_service is not None:
+            from track_id.models import waiting_snapshot
+            self._ti_snapshot = waiting_snapshot()
 
         self._nowplaying_publisher.publish_start(self._current_nowplaying)
 
@@ -1356,8 +1384,12 @@ class AudioMonitor:
         """Called when the daemon transitions this channel out of capturing."""
         self._owntone_enabled_ok = False
 
-        # Request a PCM snapshot for track recognition before signalling stop.
-        self._trigger_recognition(client)
+        if _track_id_service is not None:
+            from track_id.models import waiting_snapshot
+            self._ti_snapshot = waiting_snapshot()
+        else:
+            from track_id.models import disabled_snapshot
+            self._ti_snapshot = disabled_snapshot()
 
         try:
             self._nowplaying_publisher.publish_end()
@@ -1372,79 +1404,132 @@ class AudioMonitor:
             self.input_index, self.input_device,
         )
 
-    # ── Track recognition ────────────────────────────────────────────────────
+    # ── Track identification ──────────────────────────────────────────────────
 
-    def _trigger_recognition(self, client: "MonitorClient") -> None:
-        """Fetch an ID snapshot from the daemon and queue recognition."""
-        if self._vinyl_recognizer is None:
+    def _apply_track_id_service(self, service) -> None:
+        """Set the initial snapshot based on whether the service is available."""
+        if service is not None:
+            from track_id.models import waiting_snapshot
+            self._ti_snapshot = waiting_snapshot()
+        else:
+            from track_id.models import disabled_snapshot
+            self._ti_snapshot = disabled_snapshot()
+        self._ti_inflight = False
+        self._ti_next_attempt = 0.0
+
+    def maybe_trigger_track_identification(self, client: "MonitorClient", now: float) -> None:
+        """Schedule a track identification attempt if the interval has elapsed."""
+        svc = _track_id_service
+        if svc is None:
             return
-        if self._recognition_inflight:
-            logging.info(
-                "Input %d: skipping recognition (prior attempt still running).",
-                self.input_index,
-            )
+        if not self.is_capturing or self.is_silent:
+            return
+        if self._ti_inflight:
+            return
+        if now < self._ti_next_attempt:
             return
 
-        pcm_bytes = client.get_id_snapshot(self.input_index, max_seconds=20)
+        self._ti_next_attempt = now + svc.interval_seconds
+        self._ti_last_attempt = now
+
+        pcm_bytes = client.get_id_snapshot(self.input_index, max_seconds=svc.interval_seconds)
         if not pcm_bytes:
-            logging.info(
-                "Input %d: get_id_snapshot returned no audio; skipping recognition.",
-                self.input_index,
-            )
+            logging.debug("track_id[%d]: get_id_snapshot returned no audio.", self.input_index)
             return
-
-        self._recognition_attempt_count += 1
-        attempt_no = self._recognition_attempt_count
-        self._recognition_inflight = True
 
         duration_s = len(pcm_bytes) / (22050 * 2)
         logging.info(
-            "Input %d: recognition attempt %d queued (%.1f s of audio).",
-            self.input_index, attempt_no, duration_s,
+            "track_id[%d]: queuing identification (%.1f s of audio).",
+            self.input_index, duration_s,
         )
 
+        from track_id.models import STATE_ANALYSING, state_status_text, TrackIdentificationSnapshot
+        self._ti_snapshot = TrackIdentificationSnapshot(
+            enabled=True,
+            state=STATE_ANALYSING,
+            status_text=state_status_text(STATE_ANALYSING),
+            input_index=self.input_index,
+            provider=svc.provider_id,
+            updated_at=now,
+            last_attempt_at=now,
+        )
+        self._ti_inflight = True
+
         threading.Thread(
-            target=self._recognize_nowplaying_worker,
-            args=(bytes(pcm_bytes), 22050, attempt_no),
+            target=self._ti_worker,
+            args=(bytes(pcm_bytes), 22050),
             daemon=True,
+            name=f"track-id-{self.input_index}",
         ).start()
 
-    def _recognize_nowplaying_worker(
-        self,
-        pcm16_mono: bytes,
-        samplerate: int,
-        attempt_no: int,
-    ) -> None:
-        """Resolve metadata in the background and publish updates if found."""
+    def _ti_worker(self, pcm16_mono: bytes, sample_rate: int) -> None:
+        """Run identification in the background and update the snapshot."""
         try:
-            if self._vinyl_recognizer is None:
-                return
-            meta, source = self._vinyl_recognizer.resolve_with_source(pcm16_mono, samplerate)
-            if not meta:
-                logging.info(
-                    "Input %d: recognition attempt %d found no metadata.",
-                    self.input_index, attempt_no,
-                )
+            svc = _track_id_service
+            if svc is None:
+                from track_id.models import disabled_snapshot
+                self._ti_snapshot = disabled_snapshot()
                 return
 
-            changed = meta != self._current_nowplaying
-            self._current_nowplaying = meta
-            if changed:
-                self._nowplaying_publisher.publish_start(meta)
-                logging.info(
-                    "Input %d: now-playing updated (%s): artist=%s album=%s title=%s",
-                    self.input_index, source,
-                    meta.artist, meta.album, meta.title,
+            result = svc.identify(pcm16_mono, sample_rate, input_index=self.input_index)
+            now = time.time()
+
+            from track_id.models import (
+                STATE_IDENTIFIED, STATE_NOT_FOUND, state_status_text,
+                TrackIdentificationSnapshot,
+            )
+
+            if result.matched:
+                self._ti_snapshot = TrackIdentificationSnapshot(
+                    enabled=True,
+                    state=STATE_IDENTIFIED,
+                    status_text=state_status_text(STATE_IDENTIFIED),
+                    input_index=self.input_index,
+                    provider=result.provider or svc.provider_id,
+                    title=result.title,
+                    artist=result.artist,
+                    album=result.album,
+                    artwork_url=(result.artwork.url if result.artwork else ""),
+                    confidence=result.confidence,
+                    updated_at=now,
+                    last_attempt_at=now,
                 )
+                # Publish updated now-playing metadata when a match is found.
+                if result.title or result.artist:
+                    new_meta = NowPlayingMetadata(
+                        title=result.title or self._current_nowplaying.title,
+                        artist=result.artist or self._current_nowplaying.artist,
+                        album=result.album or self._current_nowplaying.album,
+                    )
+                    if new_meta != self._current_nowplaying:
+                        self._current_nowplaying = new_meta
+                        self._nowplaying_publisher.publish_start(new_meta)
             else:
-                logging.info(
-                    "Input %d: recognition attempt %d matched existing metadata (%s).",
-                    self.input_index, attempt_no, source,
+                self._ti_snapshot = TrackIdentificationSnapshot(
+                    enabled=True,
+                    state=STATE_NOT_FOUND,
+                    status_text=state_status_text(STATE_NOT_FOUND),
+                    input_index=self.input_index,
+                    provider=svc.provider_id,
+                    updated_at=now,
+                    last_attempt_at=now,
                 )
-        except Exception as e:
-            logging.info("Input %d: recognition failed: %s", self.input_index, e)
+        except Exception as exc:
+            now = time.time()
+            logging.warning("track_id[%d]: worker error: %s", self.input_index, type(exc).__name__)
+            from track_id.models import STATE_ERROR, state_status_text, TrackIdentificationSnapshot
+            self._ti_snapshot = TrackIdentificationSnapshot(
+                enabled=True,
+                state=STATE_ERROR,
+                status_text=state_status_text(STATE_ERROR),
+                input_index=self.input_index,
+                provider=(_track_id_service.provider_id if _track_id_service else ""),
+                updated_at=now,
+                last_attempt_at=now,
+                error=type(exc).__name__,
+            )
         finally:
-            self._recognition_inflight = False
+            self._ti_inflight = False
 
     # ── OwnTone helpers ──────────────────────────────────────────────────────
 
@@ -2069,6 +2154,11 @@ def run_autostream(config_path: str, start_webui=None) -> None:
             client.close()
             return
 
+        global _track_id_service
+        _track_id_service = _build_track_id_service(cfg)
+        for m in monitors:
+            m._apply_track_id_service(_track_id_service)
+
         logging.info(
             "autostream_core is now running with %d input(s). Press Ctrl+C to exit.",
             len(monitors),
@@ -2243,9 +2333,11 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                             logging.info("No active input selected.")
 
                 # ── Flush pending allow_capture changes and OwnTone retries ───
+                now = time.time()
                 for m in monitors:
                     m.apply_allow_capture(client)
-                    m._maybe_retry_owntone(time.time())
+                    m._maybe_retry_owntone(now)
+                    m.maybe_trigger_track_identification(client, now)
 
                 tracker = _playback_tracker
                 if tracker is not None:
