@@ -43,40 +43,64 @@ from autostream_sysutils import get_system_hostname
 from autostream_webui_common import get_app_version, locked_load_config
 
 # ---------------------------------------------------------------------------
-# Output ID→name cache (server-side; never populated from browser input)
+# Output info cache (server-side; never populated from browser input)
+#
+# Keyed by owntone_base_url to avoid cross-appliance contamination.
+# Each entry maps output id → (display_name, locally_selected).
 # ---------------------------------------------------------------------------
 
-_OUTPUT_NAME_CACHE: dict[str, str] = {}   # output id (str) -> display name
+# url -> {out_id -> (name, selected)}
+_OUTPUT_INFO_CACHE: dict[str, dict[str, tuple[str, bool]]] = {}
+# url -> monotonic timestamp of last successful list_outputs
+_OUTPUT_INFO_CACHE_TIME: dict[str, float] = {}
+_OUTPUT_INFO_CACHE_TTL: float = 30.0
+_output_info_cache_lock = threading.Lock()
+
+# Keep old names as aliases so existing tests that reset these still work.
+_OUTPUT_NAME_CACHE: dict[str, str] = {}
 _OUTPUT_NAME_CACHE_TIME: float = 0.0
-_OUTPUT_NAME_CACHE_TTL: float = 30.0
-_output_name_cache_lock = threading.Lock()
 
 
-def _resolve_output_name(owntone_base_url: str, out_id: str) -> str:
-    """Return the display name for *out_id* using a short-lived cache.
-
-    The cache is populated by calling list_outputs from a trusted path
-    (this function or the home-state builder).  Browser-supplied names are
-    never used here.  Returns an empty string when the name cannot be
-    resolved; callers must treat that as fail-open.
-    """
-    global _OUTPUT_NAME_CACHE, _OUTPUT_NAME_CACHE_TIME
-    now = time.monotonic()
-    with _output_name_cache_lock:
-        if now - _OUTPUT_NAME_CACHE_TIME < _OUTPUT_NAME_CACHE_TTL:
-            return _OUTPUT_NAME_CACHE.get(out_id, "")
+def _refresh_output_info_cache(owntone_base_url: str) -> dict[str, tuple[str, bool]]:
+    """Call list_outputs and update the per-URL cache.  Returns the new mapping."""
     try:
         lr = list_outputs(owntone_base_url, timeout=1.0)
     except Exception:
-        logging.debug("_resolve_output_name: list_outputs failed for id %s", out_id)
-        return ""
+        logging.debug("_refresh_output_info_cache: list_outputs failed for %s", owntone_base_url)
+        return {}
     if not lr.ok:
-        return ""
-    mapping = {str(o.id): str(o.name or "") for o in lr.outputs}
-    with _output_name_cache_lock:
-        _OUTPUT_NAME_CACHE = mapping
-        _OUTPUT_NAME_CACHE_TIME = time.monotonic()
-    return mapping.get(out_id, "")
+        return {}
+    mapping: dict[str, tuple[str, bool]] = {
+        str(o.id): (str(o.name or ""), bool(o.selected))
+        for o in lr.outputs
+    }
+    url = owntone_base_url.rstrip("/")
+    with _output_info_cache_lock:
+        _OUTPUT_INFO_CACHE[url] = mapping
+        _OUTPUT_INFO_CACHE_TIME[url] = time.monotonic()
+    return mapping
+
+
+def _resolve_output_info(owntone_base_url: str, out_id: str) -> tuple[str, bool]:
+    """Return (display_name, locally_selected) for *out_id* using a per-URL cache.
+
+    Browser-supplied names are never used here. If the cache is fresh but does
+    not contain *out_id* (newly appeared output), a single refresh is done before
+    failing open so occupancy is enforced for new IDs too. Returns ("", False)
+    when resolution fails; callers must treat that as fail-open.
+    """
+    url = owntone_base_url.rstrip("/")
+    now = time.monotonic()
+    with _output_info_cache_lock:
+        cache_time = _OUTPUT_INFO_CACHE_TIME.get(url, 0.0)
+        if now - cache_time < _OUTPUT_INFO_CACHE_TTL:
+            mapping = _OUTPUT_INFO_CACHE.get(url, {})
+            if out_id in mapping:
+                return mapping[out_id]
+            # Cache is fresh but ID absent — fall through to refresh once.
+
+    fresh = _refresh_output_info_cache(owntone_base_url)
+    return fresh.get(out_id, ("", False))
 
 
 # ---------------------------------------------------------------------------
@@ -438,10 +462,13 @@ def apply_output_mutation(
 
     selected = bool(body.get("selected", False))
     if selected:
-        # Resolve output name from server-side trusted source only.
+        # Resolve trusted name and local selection state from OwnTone.
         # body.get("name") is intentionally ignored to prevent bypass.
-        name_to_check = output_name or _resolve_output_name(owntone_base_url, out_id_text)
-        if name_to_check:
+        resolved_name, locally_selected = _resolve_output_info(owntone_base_url, out_id_text)
+        name_to_check = output_name or resolved_name
+        # Only block enables of outputs not already locally selected.
+        # Volume changes on already-on outputs are always allowed.
+        if name_to_check and not locally_selected:
             try:
                 from autostream_output_usage import usage_for_output
                 usage = usage_for_output(name_to_check)

@@ -1176,10 +1176,11 @@ class TestSetupPostOutputUsagePollInterval:
 import autostream_appliance_models as _am
 
 
-def _make_fake_output(id_: str, name: str):
+def _make_fake_output(id_: str, name: str, *, selected: bool = False):
     o = MagicMock()
     o.id = id_
     o.name = name
+    o.selected = selected
     return o
 
 
@@ -1208,6 +1209,9 @@ def _make_usage(owner_name: str = "living-room"):
 class TestOutputMutationOccupancyProtection:
     def setup_method(self):
         # Force cache expiry so each test starts with a cold server-side cache.
+        _am._OUTPUT_INFO_CACHE.clear()
+        _am._OUTPUT_INFO_CACHE_TIME.clear()
+        # Keep old aliases in sync for any stray references.
         _am._OUTPUT_NAME_CACHE_TIME = 0.0
         _am._OUTPUT_NAME_CACHE = {}
 
@@ -1320,3 +1324,75 @@ class TestOutputMutationOccupancyProtection:
                 "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
             )
         assert list_calls == [1], "list_outputs called once; second call uses cache"
+
+    def test_volume_change_on_already_selected_output_is_allowed(self, tmp_path):
+        """selected:true for an already-on output must not be blocked by occupancy."""
+        # OwnTone reports output 42 is already selected (locally on).
+        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen", selected=True)])
+        usage = _make_usage("living-room")  # remote says Kitchen is in use
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs", return_value=lr), \
+             patch("autostream_appliance_models.update_output", return_value=ok) as mock_update, \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=usage):
+            result = _am.apply_output_mutation(
+                "http://localhost:3689", "42",
+                {"id": "42", "selected": True, "volume": 80}
+            )
+        # Must pass through to OwnTone even though remote reports it occupied.
+        assert result["ok"] is True
+        mock_update.assert_called_once()
+
+    def test_cache_miss_on_fresh_cache_triggers_refresh(self, tmp_path):
+        """If cache is warm but out_id absent, list_outputs is called again."""
+        import time as _time
+        # Pre-populate cache with a different ID so it is considered fresh.
+        url = "http://localhost:3689"
+        _am._OUTPUT_INFO_CACHE[url] = {"99": ("Other Speaker", False)}
+        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
+
+        # Now request ID 42 which is NOT in the warm cache.
+        lr_refresh = _make_list_outputs_ok([
+            _make_fake_output("99", "Other Speaker"),
+            _make_fake_output("42", "Kitchen"),
+        ])
+        usage = _make_usage("living-room")
+        ok = _make_result_ok()
+        list_calls = []
+        with patch("autostream_appliance_models.list_outputs",
+                   side_effect=lambda *a, **k: (list_calls.append(1), lr_refresh)[1]), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=usage):
+            result = _am.apply_output_mutation(
+                url, "42", {"id": "42", "selected": True, "volume": 50}
+            )
+        # Occupancy was enforced because a refresh was triggered.
+        assert result["error"] == "output_in_use"
+        assert list_calls == [1], "must refresh when out_id absent from fresh cache"
+
+    def test_cache_keyed_by_owntone_url(self, tmp_path):
+        """Cache entries for different URLs do not contaminate each other."""
+        import time as _time
+        url_a = "http://owntone-a:3689"
+        url_b = "http://owntone-b:3689"
+        # Pre-populate URL A's cache with output 42 named Kitchen (not selected).
+        _am._OUTPUT_INFO_CACHE[url_a] = {"42": ("Kitchen", False)}
+        _am._OUTPUT_INFO_CACHE_TIME[url_a] = _time.monotonic()
+
+        # URL B should not reuse URL A's cache; it must call list_outputs.
+        lr_b = _make_list_outputs_ok([_make_fake_output("42", "Lounge")])
+        ok = _make_result_ok()
+        list_calls = []
+        with patch("autostream_appliance_models.list_outputs",
+                   side_effect=lambda *a, **k: (list_calls.append(1), lr_b)[1]), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=None):
+            _am.apply_output_mutation(
+                url_b, "42", {"id": "42", "selected": True, "volume": 50}
+            )
+        assert list_calls == [1], "URL B must not reuse URL A cache"
