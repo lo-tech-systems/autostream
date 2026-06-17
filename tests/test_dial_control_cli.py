@@ -339,6 +339,41 @@ class TestExitCodes:
         data = json.loads(out.strip())
         assert data["ok"] is False
 
+    def test_ok_missing_is_exit_3(self):
+        """Missing ok field is an invalid server response, not a server-declared failure."""
+        resp = {"error": "something"}
+        code, _, err = _run(["ping"], resp)
+        assert code == 3
+        assert "autostream-dial-control:" in err
+
+    def test_ok_integer_1_is_exit_3(self):
+        """ok:1 is not a boolean — transport failure, not server-declared success."""
+        code, _, err = _run(["ping"], {"ok": 1})
+        assert code == 3
+
+    def test_ok_string_true_is_exit_3(self):
+        """ok:'true' is not a boolean."""
+        code, _, _ = _run(["ping"], {"ok": "true"})
+        assert code == 3
+
+    def test_ok_null_is_exit_3(self):
+        """ok:null is not a boolean."""
+        code, _, _ = _run(["ping"], {"ok": None})
+        assert code == 3
+
+    def test_targets_not_a_list_is_exit_3(self):
+        """targets field that is not a list is an invalid server response."""
+        resp = {"ok": True, "count": 1, "targets": "oops"}
+        code, _, err = _run(["targets"], resp)
+        assert code == 3
+        assert "autostream-dial-control:" in err
+
+    def test_targets_list_of_non_dicts_is_exit_3(self):
+        """targets list containing non-objects is an invalid server response."""
+        resp = {"ok": True, "count": 1, "targets": ["not-a-dict"]}
+        code, _, err = _run(["targets"], resp)
+        assert code == 3
+
 
 # ---------------------------------------------------------------------------
 # stderr on server failure

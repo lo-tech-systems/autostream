@@ -257,6 +257,8 @@ def main(argv: list[str] | None = None) -> None:
     resp = _send_command(CONTROL_SOCKET_PATH, req)
 
     ok = resp.get("ok")
+    if not isinstance(ok, bool):
+        _transport_error("invalid server response: ok field missing or not a boolean")
 
     if json_mode:
         print(json.dumps(resp, separators=(",", ":"), sort_keys=True))
@@ -268,6 +270,13 @@ def main(argv: list[str] | None = None) -> None:
         if msg:
             print(msg, file=sys.stderr)
         sys.exit(1)
+
+    # Validate command-specific fields before rendering to prevent crashes on
+    # malformed local-server output.
+    if args.command == "targets":
+        targets = resp.get("targets")
+        if not isinstance(targets, list) or not all(isinstance(t, dict) for t in targets):
+            _transport_error("invalid server response: targets must be a list of objects")
 
     formatter = _FORMATTERS.get(args.command)
     if formatter:

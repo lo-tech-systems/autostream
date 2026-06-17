@@ -11,6 +11,7 @@ Covers:
 25. Missing Content-Type header → bad_response.
 26. Non-JSON Content-Type → bad_response.
 27. application/json with charset parameter is accepted.
+28. ok missing, null, or integer with config_error → bad_response (ok must be exactly false).
 8.  Timeout → timeout.
 9.  Oversized response → bad_response.
 10. Malformed JSON → bad_response.
@@ -315,6 +316,27 @@ class TestEnrichFailures:
     def test_ok_false_unknown_error_returns_bad_response(self):
         t = _target()
         with _mock_conn({"ok": False, "error": "something_else"}):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_ok_missing_with_config_error_returns_bad_response(self):
+        """ok absent but error:config_error must be bad_response, not config_error."""
+        t = _target()
+        with _mock_conn({"error": "config_error"}):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_ok_null_with_config_error_returns_bad_response(self):
+        """ok:null is not ok:false — error field must not be honored."""
+        t = _target()
+        with _mock_conn({"ok": None, "error": "backend_unavailable"}):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_ok_integer_with_config_error_returns_bad_response(self):
+        """ok:0 is not ok:false — error field must not be honored."""
+        t = _target()
+        with _mock_conn({"ok": 0, "error": "config_error"}):
             result = enrich_targets([t], "dial-id")
         assert result[0]["status_error"] == "bad_response"
 

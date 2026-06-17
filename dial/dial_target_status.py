@@ -122,12 +122,16 @@ def _fetch_target_status(
         result_queue.put((index, record))
         return
 
-    # Application-level failures (ok:false)
+    # Success or application-level failure: ok must be an exact boolean.
+    # Any other value (missing, null, integer, string) is a schema violation.
     ok = data.get("ok")
     if ok is not True:
-        app_error = data.get("error", "")
-        if app_error in ("config_error", "backend_unavailable"):
-            record["status_error"] = app_error
+        if ok is False:
+            app_error = data.get("error", "")
+            record["status_error"] = (
+                app_error if app_error in ("config_error", "backend_unavailable")
+                else "bad_response"
+            )
         else:
             record["status_error"] = "bad_response"
         result_queue.put((index, record))
