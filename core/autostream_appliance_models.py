@@ -363,11 +363,15 @@ def apply_output_mutation(
     *,
     offset_ms: Optional[int] = None,
     mode: Optional[str] = None,
+    output_name: str = "",
 ) -> dict:
     """Apply an output toggle/volume change or PIN submission.
 
     *body* must contain at least {"id": ..., "op": ...} or {"id": ..., "selected": bool}.
     *offset_ms* and *mode* come from the per-output config (not from the browser body).
+    *output_name* is optional; when provided (or resolved internally) the occupancy
+    cache is checked before enabling. If the name cannot be resolved the check is
+    skipped (fail-open) and a debug message is logged.
 
     Returns a result dict with keys: ok, id, and optional error/pin_required/pin_invalid.
     """
@@ -396,6 +400,31 @@ def apply_output_mutation(
 
     selected = bool(body.get("selected", False))
     if selected:
+        name_to_check = output_name or str(body.get("name") or "")
+        if not name_to_check:
+            try:
+                lr = list_outputs(owntone_base_url, timeout=1.0)
+                if lr.ok:
+                    for o in lr.outputs:
+                        if str(o.id) == out_id_text:
+                            name_to_check = str(o.name or "")
+                            break
+            except Exception:
+                logging.debug("apply_output_mutation: could not resolve name for output %s", out_id_text)
+        if name_to_check:
+            try:
+                from autostream_output_usage import usage_for_output
+                usage = usage_for_output(name_to_check)
+                if usage is not None:
+                    return {
+                        "ok": False,
+                        "id": out_id_text,
+                        "error": "output_in_use",
+                        "owner": usage.owner_name,
+                    }
+            except Exception:
+                logging.debug("apply_output_mutation: usage check failed for %s", name_to_check)
+
         volume = max(0, min(100, int(body.get("volume", 50))))
         update_result = update_output(
             owntone_base_url,

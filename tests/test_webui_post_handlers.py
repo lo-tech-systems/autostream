@@ -1167,3 +1167,128 @@ class TestSetupPostOutputUsagePollInterval:
         result = _call_setup_post(form, tmp_path)
         if result["saved"]:
             assert "webui" not in result["saved"][0]
+
+
+# ---------------------------------------------------------------------------
+# apply_output_mutation — occupancy protection (Commit 6)
+# ---------------------------------------------------------------------------
+
+import autostream_appliance_models as _am
+
+
+def _make_fake_output(id_: str, name: str):
+    o = MagicMock()
+    o.id = id_
+    o.name = name
+    return o
+
+
+def _make_list_outputs_ok(outputs):
+    r = MagicMock()
+    r.ok = True
+    r.outputs = outputs
+    return r
+
+
+def _make_usage(owner_name: str = "living-room"):
+    from autostream_output_usage import OutputUsage
+    import time
+    now = time.monotonic()
+    return OutputUsage(
+        output_name="Kitchen",
+        owner_name=owner_name,
+        owner_ip="192.168.1.10",
+        owner_port=5353,
+        service_name="living-room._autostream-playing._tcp.local.",
+        observed_at=now,
+        expires_at=now + 10,
+    )
+
+
+class TestOutputMutationOccupancyProtection:
+    def _call(self, body, *, usage=None, list_outputs_result=None, update_result=None):
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs",
+                   return_value=list_outputs_result or _make_list_outputs_ok([])), \
+             patch("autostream_appliance_models.update_output",
+                   return_value=update_result or ok), \
+             patch("autostream_appliance_models.set_output_enabled",
+                   return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin",
+                   return_value=ok), \
+             patch("autostream_output_usage.usage_for_output",
+                   return_value=usage):
+            return _am.apply_output_mutation("http://localhost:3689", "42", body)
+
+    def test_enabling_occupied_output_returns_output_in_use(self, tmp_path):
+        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
+        usage = _make_usage("living-room")
+        result = self._call({"id": "42", "selected": True, "volume": 50},
+                            usage=usage, list_outputs_result=lr)
+        assert result["ok"] is False
+        assert result["error"] == "output_in_use"
+        assert result["owner"] == "living-room"
+
+    def test_disabling_occupied_output_is_allowed(self, tmp_path):
+        usage = _make_usage("living-room")
+        result = self._call({"id": "42", "selected": False},
+                            usage=usage)
+        assert result["ok"] is True
+
+    def test_pin_op_bypasses_occupancy_check(self, tmp_path):
+        usage = _make_usage("living-room")
+        result = self._call({"id": "42", "op": "pin", "pin": "1234"},
+                            usage=usage)
+        assert result["ok"] is True
+
+    def test_enabling_unoccupied_output_succeeds(self, tmp_path):
+        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
+        result = self._call({"id": "42", "selected": True, "volume": 50},
+                            usage=None, list_outputs_result=lr)
+        assert result["ok"] is True
+
+    def test_name_resolution_failure_fails_open(self, tmp_path):
+        """When list_outputs raises, the enable proceeds (fail-open)."""
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs", side_effect=RuntimeError("timeout")), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
+            result = _am.apply_output_mutation(
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+            )
+        assert result["ok"] is True
+
+    def test_occupancy_check_is_cache_only_no_refresh(self, tmp_path):
+        """usage_for_output is called but refresh_now is never called."""
+        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
+        ok = _make_result_ok()
+        refresh_calls = []
+        with patch("autostream_appliance_models.list_outputs", return_value=lr), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=None), \
+             patch("autostream_output_usage.refresh_now", side_effect=lambda *a, **k: refresh_calls.append(1)):
+            _am.apply_output_mutation(
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+            )
+        assert refresh_calls == [], "refresh_now must not be called from mutation path"
+
+    def test_output_name_in_body_used_without_list_outputs(self, tmp_path):
+        """When name is in the body, list_outputs is not called."""
+        usage = _make_usage("living-room")
+        list_calls = []
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs",
+                   side_effect=lambda *a, **k: list_calls.append(1) or _make_list_outputs_ok([])), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=usage):
+            result = _am.apply_output_mutation(
+                "http://localhost:3689", "42",
+                {"id": "42", "selected": True, "volume": 50, "name": "Kitchen"}
+            )
+        assert result["error"] == "output_in_use"
+        assert list_calls == [], "list_outputs must not be called when name is in body"
