@@ -118,6 +118,7 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
     form = parse_qs(body)
     def fld(n, d=""): return _fld(form, n, d)
+    _track_id_changed = False
     try:
         with CONFIG_IO_LOCK:
             cfg = load_config(state.config_path)
@@ -227,6 +228,28 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
             if not str(general.get("fifo_path", "") or "").strip():
                 general["fifo_path"] = p.general.fifo_path
+
+            # Track identification settings — only saved when sentinel is present.
+            _track_id_changed = False
+            if "track_identification_present" in form:
+                ti = cfg.setdefault("track_identification", {})
+                old_ti_enabled = p.track_identification.enabled
+                old_ti_key = str(
+                    (p.track_identification.providers.get("acoustid_musicbrainz") or {})
+                    .get("api_key", "") or ""
+                )
+                new_ti_enabled = "track_identification_enabled" in form
+                new_ti_key = fld("track_identification_acoustid_api_key", old_ti_key).strip()
+                ti["enabled"] = bool(new_ti_enabled)
+                ti.setdefault("provider", p.track_identification.provider)
+                from autostream_config import TRACK_ID_DEFAULT_INTERVAL, TRACK_ID_DEFAULT_PROVIDER
+                ti.setdefault("provider", TRACK_ID_DEFAULT_PROVIDER)
+                ti.setdefault("interval_seconds", TRACK_ID_DEFAULT_INTERVAL)
+                prov = ti.setdefault("providers", {})
+                am = prov.setdefault("acoustid_musicbrainz", {})
+                am["api_key"] = new_ti_key
+                if new_ti_enabled != old_ti_enabled or new_ti_key != old_ti_key:
+                    _track_id_changed = True
 
             save_config(state.config_path, cfg)
             mark_configured(state.config_path)
@@ -400,6 +423,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 daemon_changed = True
 
         if daemon_changed:
+            request_config_reload()
+        elif _track_id_changed:
             request_config_reload()
     except Exception:
         logging.exception("handle_setup_post: unexpected failure during save")

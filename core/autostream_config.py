@@ -28,6 +28,11 @@ STATE_PATH = "/var/lib/autostream/autostream-state.json"
 
 DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
+
+TRACK_ID_DEFAULT_PROVIDER = "acoustid_musicbrainz"
+TRACK_ID_DEFAULT_INTERVAL = 15
+TRACK_ID_MIN_INTERVAL = 10
+TRACK_ID_MAX_INTERVAL = 60
 DEFAULT_AIRPLAY_MODE = "default"
 VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
 DEFAULT_STYLUS_LIFE_HOURS = 0  # 0 = tracking disabled ("Don't track usage")
@@ -322,6 +327,28 @@ class UpdatesConfig:
     update_channel: str
 
 
+def normalize_track_id_interval(value: object) -> int:
+    """Return a valid track-identification interval in seconds (10-60), default 15."""
+    try:
+        v = int(value)  # type: ignore[arg-type]
+    except Exception:
+        return TRACK_ID_DEFAULT_INTERVAL
+    if v < TRACK_ID_MIN_INTERVAL or v > TRACK_ID_MAX_INTERVAL:
+        return TRACK_ID_DEFAULT_INTERVAL
+    return v
+
+
+@dataclass(frozen=True)
+class TrackIdentificationConfig:
+    """Track identification settings (JSON section track_identification)."""
+    enabled: bool
+    provider: str
+    interval_seconds: int
+    # Nested provider configs keyed by provider id.  Only the fields consumed by
+    # a given provider are parsed; unknown providers are preserved as raw dicts.
+    providers: dict
+
+
 @dataclass(frozen=True)
 class AutostreamConfig:
     general: GeneralConfig
@@ -332,6 +359,7 @@ class AutostreamConfig:
     webui: WebUIConfig
     output_eq: OutputEqConfig
     updates: UpdatesConfig
+    track_identification: TrackIdentificationConfig
 
 
 def _parse_audio_input_config(section: dict) -> AudioInputConfig:
@@ -456,6 +484,24 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         update_channel=normalize_update_channel(updates_d.get("update_channel")),
     )
 
+    track_id_d = data.get("track_identification") or {}
+    # Preserve unknown provider settings as raw dicts; only normalize consumed fields.
+    raw_providers = track_id_d.get("providers")
+    providers: dict = {}
+    if isinstance(raw_providers, dict):
+        for prov_id, prov_cfg in raw_providers.items():
+            providers[str(prov_id)] = dict(prov_cfg) if isinstance(prov_cfg, dict) else {}
+    # Ensure the default provider section always exists so callers don't KeyError.
+    providers.setdefault(TRACK_ID_DEFAULT_PROVIDER, {})
+    track_identification = TrackIdentificationConfig(
+        enabled=bool(track_id_d.get("enabled", False)),
+        provider=str(track_id_d.get("provider", TRACK_ID_DEFAULT_PROVIDER) or TRACK_ID_DEFAULT_PROVIDER),
+        interval_seconds=normalize_track_id_interval(
+            track_id_d.get("interval_seconds", TRACK_ID_DEFAULT_INTERVAL)
+        ),
+        providers=providers,
+    )
+
     return AutostreamConfig(
         general=general,
         audio1=audio1,
@@ -465,6 +511,7 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         webui=webui,
         output_eq=output_eq,
         updates=updates,
+        track_identification=track_identification,
     )
 
 

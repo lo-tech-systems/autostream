@@ -780,6 +780,38 @@ def send_setup_page(
               </div>
             """, margin_top="0")
 
+        # Track identification card
+        _ti = parsed.track_identification
+        _ti_enabled = bool(_ti.enabled)
+        _ti_api_key = str((_ti.providers.get("acoustid_musicbrainz") or {}).get("api_key", "") or "")
+        track_id_summary = html.escape("On" if _ti_enabled else "Off")
+        track_id_card_html = settings_card_html(f"""
+              <input type="hidden" name="track_identification_present" value="1">
+              <div class="setup-customise-row" style="margin-top:0.5rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" name="track_identification_enabled" id="track_identification_enabled"{'  checked' if _ti_enabled else ''}>
+                  <span class="switch"></span>
+                </label>
+                <span>Track identification</span>
+              </div>
+              <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.4rem;">
+                Identifies playing tracks using AcoustID and MusicBrainz. Requires internet access.
+              </div>
+              <div style="margin-top:0.75rem;">
+                <label style="display:block;">AcoustID API key:
+                  <input type="password" name="track_identification_acoustid_api_key"
+                    id="track_identification_acoustid_api_key"
+                    value="{html.escape(_ti_api_key)}"
+                    autocomplete="off"
+                    style="margin-top:0.25rem;width:100%;"
+                    placeholder="Your AcoustID application key">
+                </label>
+                <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.25rem;">
+                  Obtain a free key at acoustid.org/login.
+                </div>
+              </div>
+            """, margin_top="0")
+
         # Build dial cards data
         _all_sightings = _get_dial_sightings()
         _authorized_entries = parse_dial_entries()
@@ -867,7 +899,14 @@ def send_setup_page(
             </div>
             <span class="setup-list-chevron">\u203a</span>
           </div>
-          <div class="setup-list-card" onclick="openPanel('factory-reset')">
+          <div class="setup-list-card" onclick="openPanel('track-id')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Track Identification</span>
+              <span class="setup-list-card-sub" id="track-id-card-sub">{track_id_summary}</span>
+            </div>
+            <span class="setup-list-chevron">›</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('factory-reset')"">
             <div class="setup-list-card-body">
               <span class="setup-list-card-title">Factory Reset</span>
               <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
@@ -939,6 +978,13 @@ def send_setup_page(
             </div>
             {_setup_detail_header("Dials")}
             {_dial_cards_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-track-id">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+            </div>
+            {_setup_detail_header("Track Identification")}
+            {track_id_card_html}
           </div>
         </div>
       </div>
