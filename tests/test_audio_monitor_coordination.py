@@ -794,6 +794,75 @@ class TestAutoSelectDefaultOutput:
             result = mon._auto_select_default_output(time.time())
         assert result is False
 
+    def test_skips_auto_select_when_output_occupied(self):
+        import autostream_output_usage as _ou
+        mon = _make_monitor(owntone_output_name="Test Speaker")
+        out = _make_output(name="Test Speaker", out_id="77", selected=False)
+        ok_result = MagicMock()
+        ok_result.ok = True
+        usage = MagicMock()
+        usage.owner_name = "living-room"
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
+             patch.object(_ou, "refresh_now"), \
+             patch.object(_ou, "usage_for_output", return_value=usage), \
+             patch.object(core, "update_output", return_value=ok_result) as mock_update:
+            result = mon._auto_select_default_output(time.time())
+        assert result is False
+        mock_update.assert_not_called()
+
+    def test_auto_select_proceeds_when_output_not_occupied(self):
+        import autostream_output_usage as _ou
+        mon = _make_monitor(owntone_output_name="Test Speaker", owntone_volume_percent=30)
+        out = _make_output(name="Test Speaker", out_id="77", selected=False)
+        ok_result = MagicMock()
+        ok_result.ok = True
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
+             patch.object(_ou, "refresh_now"), \
+             patch.object(_ou, "usage_for_output", return_value=None), \
+             patch.object(core, "update_output", return_value=ok_result) as mock_update:
+            result = mon._auto_select_default_output(time.time())
+        assert result is True
+        mock_update.assert_called_once()
+
+    def test_auto_select_fails_open_when_usage_import_fails(self):
+        """If autostream_output_usage cannot be imported, auto-select continues."""
+        mon = _make_monitor(owntone_output_name="Test Speaker")
+        out = _make_output(name="Test Speaker", out_id="77", selected=False)
+        ok_result = MagicMock()
+        ok_result.ok = True
+        import builtins
+        real_import = builtins.__import__
+        def _block_ou(name, *args, **kwargs):
+            if name == "autostream_output_usage":
+                raise ImportError("not available")
+            return real_import(name, *args, **kwargs)
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
+             patch.object(core, "update_output", return_value=ok_result) as mock_update, \
+             patch("builtins.__import__", side_effect=_block_ou):
+            result = mon._auto_select_default_output(time.time())
+        assert result is True
+        mock_update.assert_called_once()
+
+    def test_refresh_now_called_before_occupancy_check(self):
+        import autostream_output_usage as _ou
+        mon = _make_monitor(owntone_output_name="Test Speaker")
+        out = _make_output(name="Test Speaker", out_id="77", selected=False)
+        call_order = []
+        ok_result = MagicMock()
+        ok_result.ok = True
+        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
+             patch.object(_ou, "refresh_now",
+                          side_effect=lambda *a, **k: call_order.append("refresh")), \
+             patch.object(_ou, "usage_for_output",
+                          side_effect=lambda *a, **k: call_order.append("check") or None), \
+             patch.object(core, "update_output", return_value=ok_result):
+            mon._auto_select_default_output(time.time())
+        assert call_order == ["refresh", "check"]
+
 
 # ---------------------------------------------------------------------------
 # _on_capture_started / _on_capture_stopped: side-effect ordering

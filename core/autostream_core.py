@@ -1585,6 +1585,19 @@ class AudioMonitor:
             )
             return False
 
+        try:
+            import autostream_output_usage as _ou
+            _ou.refresh_now("default-output-auto-select", timeout=1.5)
+            _usage = _ou.usage_for_output(default_name)
+            if _usage is not None:
+                logging.info(
+                    "Default output '%s' is in use by %s; skipping auto-select (%s).",
+                    default_name, _usage.owner_name, reason,
+                )
+                return False
+        except Exception:
+            logging.debug("_auto_select_default_output: usage check failed", exc_info=True)
+
         out_id = str(default_out.id)
         try:
             out_volume = int(self.owntone_volume_percent)
