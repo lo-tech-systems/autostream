@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -40,6 +41,43 @@ from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
 from autostream_webui_common import get_app_version, locked_load_config
+
+# ---------------------------------------------------------------------------
+# Output ID→name cache (server-side; never populated from browser input)
+# ---------------------------------------------------------------------------
+
+_OUTPUT_NAME_CACHE: dict[str, str] = {}   # output id (str) -> display name
+_OUTPUT_NAME_CACHE_TIME: float = 0.0
+_OUTPUT_NAME_CACHE_TTL: float = 30.0
+_output_name_cache_lock = threading.Lock()
+
+
+def _resolve_output_name(owntone_base_url: str, out_id: str) -> str:
+    """Return the display name for *out_id* using a short-lived cache.
+
+    The cache is populated by calling list_outputs from a trusted path
+    (this function or the home-state builder).  Browser-supplied names are
+    never used here.  Returns an empty string when the name cannot be
+    resolved; callers must treat that as fail-open.
+    """
+    global _OUTPUT_NAME_CACHE, _OUTPUT_NAME_CACHE_TIME
+    now = time.monotonic()
+    with _output_name_cache_lock:
+        if now - _OUTPUT_NAME_CACHE_TIME < _OUTPUT_NAME_CACHE_TTL:
+            return _OUTPUT_NAME_CACHE.get(out_id, "")
+    try:
+        lr = list_outputs(owntone_base_url, timeout=1.0)
+    except Exception:
+        logging.debug("_resolve_output_name: list_outputs failed for id %s", out_id)
+        return ""
+    if not lr.ok:
+        return ""
+    mapping = {str(o.id): str(o.name or "") for o in lr.outputs}
+    with _output_name_cache_lock:
+        _OUTPUT_NAME_CACHE = mapping
+        _OUTPUT_NAME_CACHE_TIME = time.monotonic()
+    return mapping.get(out_id, "")
+
 
 # ---------------------------------------------------------------------------
 # Output-list builder (shared between Home page and federation)
@@ -400,17 +438,9 @@ def apply_output_mutation(
 
     selected = bool(body.get("selected", False))
     if selected:
-        name_to_check = output_name or str(body.get("name") or "")
-        if not name_to_check:
-            try:
-                lr = list_outputs(owntone_base_url, timeout=1.0)
-                if lr.ok:
-                    for o in lr.outputs:
-                        if str(o.id) == out_id_text:
-                            name_to_check = str(o.name or "")
-                            break
-            except Exception:
-                logging.debug("apply_output_mutation: could not resolve name for output %s", out_id_text)
+        # Resolve output name from server-side trusted source only.
+        # body.get("name") is intentionally ignored to prevent bypass.
+        name_to_check = output_name or _resolve_output_name(owntone_base_url, out_id_text)
         if name_to_check:
             try:
                 from autostream_output_usage import usage_for_output

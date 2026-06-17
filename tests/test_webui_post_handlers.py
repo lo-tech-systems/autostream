@@ -1206,6 +1206,11 @@ def _make_usage(owner_name: str = "living-room"):
 
 
 class TestOutputMutationOccupancyProtection:
+    def setup_method(self):
+        # Force cache expiry so each test starts with a cold server-side cache.
+        _am._OUTPUT_NAME_CACHE_TIME = 0.0
+        _am._OUTPUT_NAME_CACHE = {}
+
     def _call(self, body, *, usage=None, list_outputs_result=None, update_result=None):
         ok = _make_result_ok()
         with patch("autostream_appliance_models.list_outputs",
@@ -1275,20 +1280,43 @@ class TestOutputMutationOccupancyProtection:
             )
         assert refresh_calls == [], "refresh_now must not be called from mutation path"
 
-    def test_output_name_in_body_used_without_list_outputs(self, tmp_path):
-        """When name is in the body, list_outputs is not called."""
+    def test_browser_supplied_name_cannot_bypass_occupancy(self, tmp_path):
+        """Browser body.name is ignored; server always resolves via OwnTone."""
         usage = _make_usage("living-room")
         list_calls = []
         ok = _make_result_ok()
+        # OwnTone returns the real name "Kitchen" for id 42.
+        real_lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
         with patch("autostream_appliance_models.list_outputs",
-                   side_effect=lambda *a, **k: list_calls.append(1) or _make_list_outputs_ok([])), \
+                   side_effect=lambda *a, **k: (list_calls.append(1), real_lr)[1]), \
              patch("autostream_appliance_models.update_output", return_value=ok), \
              patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=usage):
+            # Client tries to bypass by supplying a different (unoccupied) name.
             result = _am.apply_output_mutation(
                 "http://localhost:3689", "42",
-                {"id": "42", "selected": True, "volume": 50, "name": "Kitchen"}
+                {"id": "42", "selected": True, "volume": 50, "name": "not-occupied"}
             )
+        # Occupancy is still detected because the real name "Kitchen" was resolved.
         assert result["error"] == "output_in_use"
-        assert list_calls == [], "list_outputs must not be called when name is in body"
+        assert list_calls == [1], "list_outputs must be called to resolve trusted name"
+
+    def test_name_cache_avoids_repeat_list_outputs_call(self, tmp_path):
+        """Second enable within TTL uses cached name without calling list_outputs."""
+        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
+        ok = _make_result_ok()
+        list_calls = []
+        with patch("autostream_appliance_models.list_outputs",
+                   side_effect=lambda *a, **k: (list_calls.append(1), lr)[1]), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=None):
+            _am.apply_output_mutation(
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+            )
+            _am.apply_output_mutation(
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+            )
+        assert list_calls == [1], "list_outputs called once; second call uses cache"

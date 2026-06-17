@@ -373,19 +373,25 @@ def refresh_now(reason: str = "", timeout: float = 1.5) -> None:
     all_appeared: list[tuple] = []
     all_cleared: list[tuple] = []
 
-    with ThreadPoolExecutor(max_workers=cap) as pool:
+    pool = ThreadPoolExecutor(max_workers=cap)
+    try:
         futures = {
             pool.submit(_fetch_target, t, per_timeout, ttl): t
             for t in targets
         }
         remaining = timeout - (_now() - start_t)
-        for fut in as_completed(futures, timeout=max(0.0, remaining)):
-            try:
-                appeared, cleared = fut.result()
-                all_appeared.extend(appeared)
-                all_cleared.extend(cleared)
-            except Exception as e:
-                logger.debug("%s: refresh_now fetch error: %s", _LOG_PREFIX, e)
+        try:
+            for fut in as_completed(futures, timeout=max(0.0, remaining)):
+                try:
+                    appeared, cleared = fut.result()
+                    all_appeared.extend(appeared)
+                    all_cleared.extend(cleared)
+                except Exception as e:
+                    logger.debug("%s: refresh_now fetch error: %s", _LOG_PREFIX, e)
+        except TimeoutError:
+            logger.debug("%s: refresh_now timed out after %.2fs", _LOG_PREFIX, timeout)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     for out_name, owner in all_appeared:
         logger.info("%s: %s now in use by %s", _LOG_PREFIX, out_name, owner)

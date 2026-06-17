@@ -442,6 +442,41 @@ class TestRefreshNow:
         ou._target_provider = lambda: []
         ou.refresh_now("test")  # must not raise
 
+    def test_refresh_now_returns_before_slow_fetchers_finish(self):
+        """refresh_now must return within ~timeout even when fetchers are slow."""
+        import time as _time
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        target = _make_target()
+        ou._target_provider = lambda: [target]
+
+        def _slow_fetcher(url, timeout):
+            _time.sleep(0.3)
+            return {"playing": True, "outputs": ["Kitchen"]}
+
+        ou._http_fetcher = _slow_fetcher
+        start = _time.monotonic()
+        ou.refresh_now("test", timeout=0.05)
+        elapsed = _time.monotonic() - start
+        # Must return well before the 0.3 s fetcher sleep completes.
+        assert elapsed < 0.25, f"refresh_now took {elapsed:.3f}s, expected < 0.25s"
+
+    def test_refresh_now_does_not_raise_on_timeout(self):
+        """TimeoutError from as_completed must be swallowed, not propagated."""
+        import time as _time
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        target = _make_target()
+        ou._target_provider = lambda: [target]
+
+        def _slow_fetcher(url, timeout):
+            _time.sleep(0.3)
+            return {"playing": True, "outputs": ["Kitchen"]}
+
+        ou._http_fetcher = _slow_fetcher
+        # Must not raise even with a very tight deadline.
+        ou.refresh_now("test", timeout=0.01)
+
 
 # ---------------------------------------------------------------------------
 # annotate_outputs
