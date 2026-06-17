@@ -36,7 +36,7 @@ PROVIDER_ID = "acoustid_musicbrainz"
 
 # AcoustID constants.
 _ACOUSTID_LOOKUP_URL = "https://api.acoustid.org/v2/lookup"
-_ACOUSTID_META = "recordings+releasegroups+compress"
+_ACOUSTID_META = "recordings+releases+releasegroups+compress"
 
 # MusicBrainz constants.
 _MB_API_BASE = "https://musicbrainz.org/ws/2"
@@ -92,8 +92,13 @@ def _fingerprint_raw_pcm(
             fp = result
         if not fp:
             raise RuntimeError("empty fingerprint returned")
+        # pyacoustid may return bytes on some platforms; decode to ASCII string.
+        if isinstance(fp, bytes):
+            fp = fp.decode("latin-1")
+        else:
+            fp = str(fp)
         _log.debug("track_id: fingerprint generated (len=%d)", len(fp))
-        return duration, str(fp)
+        return duration, fp
     except Exception as raw_exc:
         _log.debug("track_id: raw PCM fingerprint failed (%s); trying fpcalc WAV path", raw_exc)
         return _fingerprint_via_wav(pcm16_mono, sample_rate, duration)
@@ -104,12 +109,17 @@ def _fingerprint_via_wav(
     sample_rate: int,
     duration: float,
 ) -> tuple[float, str]:
-    """Fallback: wrap PCM in a minimal WAV and use acoustid.fingerprint_file."""
+    """Fallback: wrap PCM in a minimal WAV file and run fpcalc on it."""
     import acoustid  # type: ignore[import]
+    import os
+    import tempfile
 
     wav_bytes = _pcm_to_wav(pcm16_mono, sample_rate)
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     try:
-        result = acoustid.fingerprint_file(io.BytesIO(wav_bytes), force_fpcalc=True)
+        tmp.write(wav_bytes)
+        tmp.close()
+        result = acoustid.fingerprint_file(tmp.name, force_fpcalc=True)
         if isinstance(result, tuple) and len(result) == 2:
             _dur, fp = result
             duration = float(_dur) if _dur else duration
@@ -117,10 +127,19 @@ def _fingerprint_via_wav(
             fp = result
         if not fp:
             raise RuntimeError("fpcalc returned empty fingerprint")
+        if isinstance(fp, bytes):
+            fp = fp.decode("latin-1")
+        else:
+            fp = str(fp)
         _log.debug("track_id: fpcalc fingerprint generated (len=%d)", len(fp))
-        return duration, str(fp)
+        return duration, fp
     except Exception as exc:
         raise RuntimeError(f"fingerprinting failed (raw and fpcalc): {exc}") from exc
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
 
 def _pcm_to_wav(pcm16_mono: bytes, sample_rate: int) -> bytes:
@@ -300,10 +319,19 @@ def _extract_recording_info(recording: dict) -> dict:
         r = releases[0]
         release_id = str(r.get("id") or "")
         album = str(r.get("title") or "").strip()
+        # release-group ID may be nested inside the release entry.
         rg = r.get("releasegroups") or r.get("release-group") or {}
         if isinstance(rg, list) and rg:
             rg = rg[0]
         release_group_id = str(rg.get("id") if isinstance(rg, dict) else "")
+
+    # AcoustID also returns a top-level releasegroups list on the recording when
+    # the "releasegroups" meta flag is requested.  Use it as a fallback for the
+    # release-group ID (needed for Cover Art Archive lookups).
+    if not release_group_id:
+        rec_rgs = recording.get("releasegroups") or []
+        if rec_rgs:
+            release_group_id = str(rec_rgs[0].get("id") or "")
 
     return {
         "title": title,
@@ -374,6 +402,14 @@ class AcoustIDMusicBrainzProvider:
     def __init__(self, settings: dict) -> None:
         self._api_key = str((settings or {}).get("api_key", "") or "").strip()
 
+    def fingerprint_pcm(self, pcm16_mono: bytes, sample_rate: int) -> Optional[str]:
+        """Return the Chromaprint fingerprint string, or None on failure."""
+        try:
+            _, fp = _fingerprint_raw_pcm(pcm16_mono, sample_rate)
+            return fp
+        except Exception:
+            return None
+
     def identify(
         self,
         pcm16_mono: bytes,
@@ -389,6 +425,7 @@ class AcoustIDMusicBrainzProvider:
                 matched=False,
                 provider=PROVIDER_ID,
                 source_detail="no_api_key",
+                is_configuration_error=True,
             )
 
         _timeout = float(timeout) if timeout is not None else _DEFAULT_TIMEOUT
@@ -427,7 +464,13 @@ class AcoustIDMusicBrainzProvider:
 
         # 3. Extract or enrich metadata.
         info = _extract_recording_info(recording)
-        if recording_id and (not info["title"] or not info["artist"]):
+        # Enrich from MusicBrainz when title/artist are missing OR when we lack
+        # release IDs (needed for Cover Art Archive lookups).
+        if recording_id and (
+            not info["title"]
+            or not info["artist"]
+            or not info["release_id"]
+        ):
             try:
                 mb_info = _enrich_from_musicbrainz(recording_id, _timeout)
                 for key in ("title", "artist", "album", "release_id", "release_group_id"):

@@ -296,6 +296,23 @@ class TestWorkerNotFound:
         mon._ti_worker(b"\x00" * (22050 * 2 * 15), 22050)
         mon._nowplaying_publisher.publish_start.assert_not_called()
 
+    def test_configuration_error_sets_error_state(self):
+        svc = MagicMock()
+        svc.provider_id = "test_provider"
+        svc.interval_seconds = 15
+        svc.identify.return_value = TrackIdentificationResult(
+            matched=False,
+            provider="test_provider",
+            source_detail="no_api_key",
+            is_configuration_error=True,
+        )
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._ti_inflight = True
+        mon._ti_worker(b"\x00" * (22050 * 2 * 15), 22050)
+        assert mon._ti_snapshot.state == STATE_ERROR
+        assert mon._ti_inflight is False
+
 
 # ---------------------------------------------------------------------------
 # Worker: exception → error state

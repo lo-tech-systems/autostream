@@ -1493,8 +1493,8 @@ class AudioMonitor:
             now = time.time()
 
             from track_id.models import (
-                STATE_IDENTIFIED, STATE_NOT_FOUND, state_status_text,
-                TrackIdentificationSnapshot,
+                STATE_ERROR, STATE_IDENTIFIED, STATE_NOT_FOUND,
+                state_status_text, TrackIdentificationSnapshot,
             )
 
             if result.matched:
@@ -1522,6 +1522,16 @@ class AudioMonitor:
                     if new_meta != self._current_nowplaying:
                         self._current_nowplaying = new_meta
                         self._nowplaying_publisher.publish_start(new_meta)
+            elif result.is_configuration_error:
+                self._ti_snapshot = TrackIdentificationSnapshot(
+                    enabled=True,
+                    state=STATE_ERROR,
+                    status_text=state_status_text(STATE_ERROR),
+                    input_index=self.input_index,
+                    provider=svc.provider_id,
+                    updated_at=now,
+                    last_attempt_at=now,
+                )
             else:
                 self._ti_snapshot = TrackIdentificationSnapshot(
                     enabled=True,

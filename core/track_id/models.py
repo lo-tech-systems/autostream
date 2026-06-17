@@ -52,6 +52,7 @@ class TrackIdentificationResult:
     confidence: Optional[float] = None
     external_ids: dict = field(default_factory=dict)
     source_detail: str = ""
+    is_configuration_error: bool = False
 
     def to_public_dict(self) -> dict:
         return {

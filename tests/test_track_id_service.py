@@ -92,3 +92,27 @@ class TestTrackIdentificationService:
     def test_interval_seconds_accessible(self):
         svc, _ = _make_service(interval=30)
         assert svc.interval_seconds == 30
+
+    def test_identify_uses_cache_when_provider_returns_fingerprint(self):
+        provider = _make_provider(matched=True)
+        provider.fingerprint_pcm.return_value = "stable_fp"
+        svc = TrackIdentificationService(provider, "test_provider", 15)
+        pcm = b"\x00" * 44100
+        # First call: cache miss → provider.identify called.
+        r1 = svc.identify(pcm, 22050, input_index=1)
+        # Second call with same fingerprint: cache hit → provider.identify NOT called again.
+        r2 = svc.identify(pcm, 22050, input_index=1)
+        assert provider.identify.call_count == 1
+        assert r1.matched is True
+        assert r2.matched is True
+
+    def test_identify_skips_cache_when_fingerprint_pcm_raises(self):
+        provider = _make_provider(matched=True)
+        provider.fingerprint_pcm.side_effect = RuntimeError("acoustid not installed")
+        svc = TrackIdentificationService(provider, "test_provider", 15)
+        pcm = b"\x00" * 44100
+        r1 = svc.identify(pcm, 22050, input_index=1)
+        r2 = svc.identify(pcm, 22050, input_index=1)
+        # No caching fallback → provider called both times.
+        assert provider.identify.call_count == 2
+        assert r1.matched is True

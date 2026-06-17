@@ -904,9 +904,9 @@ def send_setup_page(
               <span class="setup-list-card-title">Track Identification</span>
               <span class="setup-list-card-sub" id="track-id-card-sub">{track_id_summary}</span>
             </div>
-            <span class="setup-list-chevron">›</span>
+            <span class="setup-list-chevron">\u203a</span>
           </div>
-          <div class="setup-list-card" onclick="openPanel('factory-reset')"">
+          <div class="setup-list-card" onclick="openPanel('factory-reset')"
             <div class="setup-list-card-body">
               <span class="setup-list-card-title">Factory Reset</span>
               <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
@@ -981,7 +981,7 @@ def send_setup_page(
           </div>
           <div class="setup-detail-panel" id="panel-track-id">
             <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
             </div>
             {_setup_detail_header("Track Identification")}
             {track_id_card_html}

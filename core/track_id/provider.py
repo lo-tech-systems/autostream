@@ -35,3 +35,20 @@ class TrackIdentifier(Protocol):
             layer converts exceptions to state="error" at the core boundary.
         """
         ...
+
+    def fingerprint_pcm(
+        self,
+        pcm16_mono: bytes,
+        sample_rate: int,
+    ) -> Optional[str]:
+        """Return the Chromaprint fingerprint string for the given PCM, or None.
+
+        Used by the service layer to key the result cache without re-fingerprinting
+        on cache hit.  Providers that do not support separate fingerprinting should
+        return None; the service will fall back to calling identify() directly.
+
+        Raises:
+            Any exception on dependency failure.  The service catches these and
+            falls back to uncached identify().
+        """
+        ...

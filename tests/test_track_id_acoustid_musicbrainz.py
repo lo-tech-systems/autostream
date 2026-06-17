@@ -122,12 +122,13 @@ class TestPcmToWav:
 
 class TestMissingApiKey:
 
-    def test_no_key_returns_not_found_without_fingerprinting(self):
+    def test_no_key_returns_config_error_without_fingerprinting(self):
         provider = _make_provider(api_key="")
         with patch.object(amz, "_fingerprint_raw_pcm") as mock_fp:
             result = provider.identify(_SAMPLE_PCM, _SAMPLE_RATE)
         assert result.matched is False
         assert result.source_detail == "no_api_key"
+        assert result.is_configuration_error is True
         mock_fp.assert_not_called()
 
     def test_no_key_logs_warning(self, caplog):
@@ -158,6 +159,14 @@ class TestFingerprintRawPcm:
             dur, fp = _fingerprint_raw_pcm(_SAMPLE_PCM, _SAMPLE_RATE)
         assert fp == "fp_string"
         assert dur == 10.0
+
+    def test_tuple_result_bytes_decoded(self):
+        # pyacoustid may return bytes on some platforms; must decode to str.
+        mock_mod = _mock_acoustid(fp_result=(10.0, b"fp_as_bytes"))
+        with patch.dict("sys.modules", {"acoustid": mock_mod}):
+            dur, fp = _fingerprint_raw_pcm(_SAMPLE_PCM, _SAMPLE_RATE)
+        assert isinstance(fp, str)
+        assert fp == "fp_as_bytes"
 
     def test_raw_failure_falls_back_to_wav(self):
         mock_mod = MagicMock()
@@ -492,3 +501,33 @@ class TestAcoustIDMusicBrainzProviderEndToEnd:
         with patch.dict("sys.modules", {"acoustid": None}):
             with pytest.raises(ImportError):
                 provider.identify(_SAMPLE_PCM, _SAMPLE_RATE)
+
+
+# ---------------------------------------------------------------------------
+# fingerprint_pcm
+# ---------------------------------------------------------------------------
+
+class TestFingerprintPcm:
+
+    def test_returns_string_on_success(self):
+        provider = _make_provider()
+        mock_mod = _mock_acoustid(fp_result=(10.0, "fp_abc"))
+        with patch.dict("sys.modules", {"acoustid": mock_mod}):
+            fp = provider.fingerprint_pcm(_SAMPLE_PCM, _SAMPLE_RATE)
+        assert isinstance(fp, str)
+        assert fp == "fp_abc"
+
+    def test_returns_none_on_import_error(self):
+        provider = _make_provider()
+        with patch.dict("sys.modules", {"acoustid": None}):
+            fp = provider.fingerprint_pcm(_SAMPLE_PCM, _SAMPLE_RATE)
+        assert fp is None
+
+    def test_returns_none_on_fingerprint_error(self):
+        provider = _make_provider()
+        mock_mod = MagicMock()
+        mock_mod.fingerprint.side_effect = RuntimeError("failed")
+        mock_mod.fingerprint_file.side_effect = RuntimeError("also failed")
+        with patch.dict("sys.modules", {"acoustid": mock_mod}):
+            fp = provider.fingerprint_pcm(_SAMPLE_PCM, _SAMPLE_RATE)
+        assert fp is None

@@ -123,7 +123,7 @@ class TrackIdentificationService:
         input_index: int,
         timeout: Optional[float] = None,
     ) -> TrackIdentificationResult:
-        """Identify a track, using the cache for repeated fingerprints.
+        """Identify a track, using the cache when the provider supports fingerprinting.
 
         Logs attempt stages at DEBUG and result at INFO.  Converts all
         provider exceptions to a not-found result with a sanitized error
@@ -136,6 +136,22 @@ class TrackIdentificationService:
             input_index, duration, self._provider_id,
         )
         now = time.time()
+
+        # Attempt to get a fingerprint for cache lookup before calling the
+        # provider.  fingerprint_pcm() is optional on the Protocol; providers
+        # that do not implement it return None and skip the cache.
+        fp_key: Optional[str] = None
+        try:
+            fp_str = self._provider.fingerprint_pcm(pcm16_mono, sample_rate)
+            if isinstance(fp_str, str) and fp_str:
+                fp_key = _ResultCache.make_key(fp_str)
+                cached = self._cache.get(fp_key, now)
+                if cached is not None:
+                    _log.debug("track_id[%d]: cache hit", input_index)
+                    return cached
+        except Exception:
+            fp_key = None
+
         try:
             result = self._provider.identify(
                 pcm16_mono,
@@ -150,6 +166,9 @@ class TrackIdentificationService:
                 type(exc).__name__,
             )
             return R(matched=False, provider=self._provider_id, source_detail="provider_error")
+
+        if fp_key is not None:
+            self._cache.put(fp_key, result, now)
 
         if result.matched:
             _log.info(
