@@ -378,6 +378,69 @@ Run through this in order:
 
 ---
 
+### Track identification
+
+Track identification uses acoustic fingerprinting followed by lookups against AcoustID, MusicBrainz, and the Cover Art Archive. It is **off by default** and requires a free AcoustID API key (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)).
+
+#### Track identification stays "waiting" or never shows a result
+
+The Home screen shows **Waiting** when the feature is enabled but no audio is currently playing. This is normal — identification only runs while a source is active.
+
+If audio is playing but the state stays "waiting" or immediately shows "not found":
+
+1. Open **Setup → Track Identification** and confirm:
+   - The toggle is **on**.
+   - The AcoustID API key field is not empty.
+2. Check that the Pi has outbound internet access to:
+   - `api.acoustid.org`
+   - `musicbrainz.org`
+   - `coverartarchive.org`
+
+   Identification will fail silently if any of these is blocked by a firewall.
+
+3. Some recordings are not in the AcoustID/MusicBrainz database. Obscure, private-press, or bootleg releases may genuinely return "not found". This is not a bug.
+
+#### "Analysing" shows briefly then disappears without a result
+
+This is expected behaviour while a track is being fingerprinted. The system waits for the configured interval (default 30 seconds of audio) before attempting a fingerprint. If the audio stops before enough signal has accumulated, the attempt is aborted and the state resets.
+
+#### Cover art is missing
+
+Cover art is served by the Cover Art Archive and is only available for releases that have been linked to scanned artwork. Many releases — especially less common pressings — have no artwork in the database. The title, artist, and album will still be shown.
+
+If artwork was showing but has disappeared: the Cover Art Archive is occasionally slow or temporarily unavailable. The next successful identification will re-fetch it.
+
+#### Missing dependencies (`fpcalc not found` or similar in logs)
+
+Track identification requires `libchromaprint-tools` (which provides `fpcalc`) and `python3-acoustid`. These are installed automatically by the autostream installer, but may be missing on older installs.
+
+To install them manually:
+
+```bash
+sudo apt-get install -y libchromaprint-tools python3-acoustid
+```
+
+Then restart autostream:
+
+```bash
+sudo systemctl restart autostream.service
+```
+
+#### Rate limits
+
+AcoustID enforces a limit of approximately 3 requests per second. autostream spaces requests out by the configured interval (default 30 seconds) and should not exceed this limit under normal use. If the log shows `Too many requests` errors from AcoustID, increase the identification interval in **Setup → Track Identification**.
+
+#### AcoustID API key
+
+API keys are free and available from [acoustid.org](https://acoustid.org). Each key is tied to a registered application. If you registered a key but identification is not working, check:
+
+- The key was copied in full (no leading or trailing spaces).
+- The application was not revoked at acoustid.org.
+
+The key is stored in the autostream config file on the Pi and is only sent to `api.acoustid.org` during identification requests.
+
+---
+
 ## Advanced
 
 ### Downloading logs

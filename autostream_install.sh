@@ -595,6 +595,12 @@ bootstrap_phase() {
 
   apt_install --soft python3-requests
 
+  # Optional: track identification (AcoustID/MusicBrainz). fpcalc fingerprinter
+  # is provided by libchromaprint-tools; python3-acoustid is the Python binding.
+  # Installed with --soft so absence does not abort the install; the feature
+  # remains disabled until the user enables it and supplies an API key.
+  apt_install --soft libchromaprint-tools python3-acoustid
+
   # Create user and group before applying ownership — chown fails if the user
   # does not yet exist and set -e aborts the install.
   ensure_group autostream
