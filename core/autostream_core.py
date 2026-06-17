@@ -124,8 +124,9 @@ def apply_track_id_config_live(config_path: str) -> None:
     """
     global _track_id_service
     try:
-        from autostream_config import locked_load_config
-        cfg = locked_load_config(config_path)
+        from autostream_config import CONFIG_IO_LOCK
+        with CONFIG_IO_LOCK:
+            cfg = load_and_parse(config_path)
     except Exception:
         logging.warning("track_id: live reload: cannot read config", exc_info=True)
         return
@@ -1286,6 +1287,7 @@ class AudioMonitor:
 
         # --- Track identification scheduling ---
         from track_id.models import disabled_snapshot as _ds
+        self._ti_generation: int = 0   # incremented on service swap or capture start
         self._ti_inflight: bool = False
         self._ti_next_attempt: float = 0.0
         self._ti_last_attempt: float = 0.0
@@ -1410,6 +1412,7 @@ class AudioMonitor:
 
         self._maybe_retry_owntone(time.time())
 
+        self._ti_generation += 1  # invalidate any worker queued before capture started
         self._ti_inflight = False
         self._ti_next_attempt = 0.0
         if _track_id_service is not None:
@@ -1451,6 +1454,7 @@ class AudioMonitor:
 
     def _apply_track_id_service(self, service) -> None:
         """Set the initial snapshot based on whether the service is available."""
+        self._ti_generation += 1  # invalidate any in-flight worker for the old service
         if service is not None:
             from track_id.models import waiting_snapshot
             self._ti_snapshot = waiting_snapshot()
@@ -1507,15 +1511,20 @@ class AudioMonitor:
 
     def _ti_worker(self, pcm16_mono: bytes, sample_rate: int) -> None:
         """Run identification in the background and update the snapshot."""
+        my_gen = self._ti_generation  # captures generation at dispatch time
         try:
             svc = _track_id_service
             if svc is None:
-                from track_id.models import disabled_snapshot
-                self._ti_snapshot = disabled_snapshot()
+                if self._ti_generation == my_gen:
+                    from track_id.models import disabled_snapshot
+                    self._ti_snapshot = disabled_snapshot()
                 return
 
             result = svc.identify(pcm16_mono, sample_rate, input_index=self.input_index)
             now = time.time()
+
+            if self._ti_generation != my_gen:
+                return  # service was replaced or capture restarted while we ran
 
             from track_id.models import (
                 STATE_ERROR, STATE_IDENTIFIED, STATE_NOT_FOUND,
@@ -1570,19 +1579,21 @@ class AudioMonitor:
         except Exception as exc:
             now = time.time()
             logging.warning("track_id[%d]: worker error: %s", self.input_index, type(exc).__name__)
-            from track_id.models import STATE_ERROR, state_status_text, TrackIdentificationSnapshot
-            self._ti_snapshot = TrackIdentificationSnapshot(
-                enabled=True,
-                state=STATE_ERROR,
-                status_text=state_status_text(STATE_ERROR),
-                input_index=self.input_index,
-                provider=(_track_id_service.provider_id if _track_id_service else ""),
-                updated_at=now,
-                last_attempt_at=now,
-                error=type(exc).__name__,
-            )
+            if self._ti_generation == my_gen:
+                from track_id.models import STATE_ERROR, state_status_text, TrackIdentificationSnapshot
+                self._ti_snapshot = TrackIdentificationSnapshot(
+                    enabled=True,
+                    state=STATE_ERROR,
+                    status_text=state_status_text(STATE_ERROR),
+                    input_index=self.input_index,
+                    provider=(_track_id_service.provider_id if _track_id_service else ""),
+                    updated_at=now,
+                    last_attempt_at=now,
+                    error=type(exc).__name__,
+                )
         finally:
-            self._ti_inflight = False
+            if self._ti_generation == my_gen:
+                self._ti_inflight = False
 
     # ── OwnTone helpers ──────────────────────────────────────────────────────
 

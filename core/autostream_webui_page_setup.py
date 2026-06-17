@@ -906,7 +906,7 @@ def send_setup_page(
             </div>
             <span class="setup-list-chevron">\u203a</span>
           </div>
-          <div class="setup-list-card" onclick="openPanel('factory-reset')"
+          <div class="setup-list-card" onclick="openPanel('factory-reset')">
             <div class="setup-list-card-body">
               <span class="setup-list-card-title">Factory Reset</span>
               <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
