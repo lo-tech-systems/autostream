@@ -51,6 +51,7 @@ class _PlayingTarget:
     port: int
     name: str
     audio_status: bool = False
+    hostname: str = ""
 
 
 def _parse_playing_target(parts: list, txt: dict) -> tuple | None:
@@ -69,12 +70,17 @@ def _parse_playing_target(parts: list, txt: dict) -> tuple | None:
     except (IndexError, ValueError):
         return None
     svc_name = parts[3]
+    try:
+        mdns_hostname = parts[6]
+    except IndexError:
+        mdns_hostname = ""
     target = _PlayingTarget(
         service_name=svc_name,
         ip=parts[7],
         port=port,
         name=svc_name,
         audio_status=True,
+        hostname=mdns_hostname,
     )
     return (svc_name, target)
 
@@ -106,20 +112,27 @@ _target_provider: Callable[[], list] | None = None
 
 # Injectable local-IP provider for testing.  Production uses socket.getaddrinfo.
 _local_ip_provider: Callable[[], frozenset[str]] | None = None
-# Cached result of _resolve_local_ips(); never changes while the process is alive.
+# IP cache with 60-second TTL to handle DHCP startup race on Pi hardware.
 _local_ips_cache: frozenset[str] | None = None
+_local_ips_cache_time: float = 0.0
 _local_ips_cache_lock = threading.Lock()
+_LOCAL_IPS_TTL: float = 60.0
+
+# Injectable local-hostname provider for testing.  Production uses get_system_hostname().
+_local_hostname_provider: Callable[[], str] | None = None
 
 
 def _resolve_local_ips() -> frozenset[str]:
     """Return all IPv4 addresses assigned to this host.
 
-    Result is cached for the process lifetime because local IPs are static
-    across normal operation.  Returns at minimum {"127.0.0.1"}.
+    Cached for _LOCAL_IPS_TTL seconds to handle the DHCP startup race on Pi
+    hardware where getaddrinfo may return only loopback initially.
+    Returns at minimum {"127.0.0.1"}.
     """
-    global _local_ips_cache
+    global _local_ips_cache, _local_ips_cache_time
+    now = _now()
     with _local_ips_cache_lock:
-        if _local_ips_cache is not None:
+        if _local_ips_cache is not None and (now - _local_ips_cache_time) < _LOCAL_IPS_TTL:
             return _local_ips_cache
     ips: set[str] = {"127.0.0.1"}
     try:
@@ -135,6 +148,7 @@ def _resolve_local_ips() -> frozenset[str]:
     result = frozenset(ips)
     with _local_ips_cache_lock:
         _local_ips_cache = result
+        _local_ips_cache_time = _now()
     return result
 
 
@@ -144,23 +158,62 @@ def _get_local_ips() -> frozenset[str]:
     return _resolve_local_ips()
 
 
+def _get_local_hostname() -> str:
+    """Return the current system hostname for self-filter comparison.
+
+    Not cached: get_system_hostname() is a cheap syscall and the runtime
+    hostname can change (via sethostname) without restarting this process.
+    Returns "" on error; a missing hostname disables the hostname self-filter
+    (fail-open, IP filter remains as fallback).
+    """
+    if _local_hostname_provider is not None:
+        return _local_hostname_provider()
+    try:
+        from autostream_sysutils import get_system_hostname
+        return str(get_system_hostname() or "").strip()
+    except Exception:
+        logger.debug(
+            "%s: could not resolve local hostname; hostname self-filter inactive",
+            _LOG_PREFIX,
+        )
+        return ""
+
+
 def _get_playing_targets() -> list:
     if _target_provider is not None:
         targets: list = _target_provider()
     else:
         targets = list(_get_browser().get_snapshot().values())
 
+    local_hostname = _get_local_hostname()
     local_ips = _get_local_ips()
-    if local_ips:
-        n_before = len(targets)
-        targets = [t for t in targets if t.ip not in local_ips]
-        n_filtered = n_before - len(targets)
-        if n_filtered:
-            logger.debug(
-                "%s: filtered %d self-target(s) from playing list",
-                _LOG_PREFIX, n_filtered,
-            )
-    return targets
+
+    n_before = len(targets)
+    filtered = []
+    for t in targets:
+        is_self = False
+        # Primary: hostname match (strips .local, case-insensitive).
+        # Handles Pi/Debian where getaddrinfo resolves to 127.0.1.1, not the LAN IP.
+        if local_hostname:
+            t_hn = getattr(t, "hostname", "")
+            if t_hn:
+                if t_hn.lower().removesuffix(".local") == local_hostname.lower().removesuffix(".local"):
+                    is_self = True
+        # Secondary: IP match (catches targets without a hostname field and handles
+        # the case where DHCP settled and the IP is now resolvable).
+        if not is_self and local_ips:
+            if getattr(t, "ip", "") in local_ips:
+                is_self = True
+        if not is_self:
+            filtered.append(t)
+
+    n_filtered = n_before - len(filtered)
+    if n_filtered:
+        logger.debug(
+            "%s: filtered %d self-target(s) from playing list",
+            _LOG_PREFIX, n_filtered,
+        )
+    return filtered
 
 
 # ---------------------------------------------------------------------------

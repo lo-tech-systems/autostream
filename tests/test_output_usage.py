@@ -46,9 +46,10 @@ def _reset_module():
     ou._http_fetcher = None
     ou._clock = None
     ou._local_ip_provider = None
-    # Clear the cached result so tests with _local_ip_provider get a fresh call.
+    ou._local_hostname_provider = None
     with ou._local_ips_cache_lock:
         ou._local_ips_cache = None
+        ou._local_ips_cache_time = 0.0
 
 
 @pytest.fixture(autouse=True)
@@ -76,9 +77,10 @@ def _fake_clock():
 # ---------------------------------------------------------------------------
 
 class TestParsePlayingTarget:
-    def _parts(self, ip="1.2.3.4", port="8080", svc="living-room"):
+    def _parts(self, ip="1.2.3.4", port="8080", svc="living-room", hostname="living-room.local"):
         parts = [""] * 10
         parts[3] = svc
+        parts[6] = hostname
         parts[7] = ip
         parts[8] = port
         return parts
@@ -91,6 +93,27 @@ class TestParsePlayingTarget:
         key, target = result
         assert key == "living-room"
         assert target.audio_status is True
+
+    def test_hostname_stored_from_parts6(self):
+        parts = self._parts(hostname="myappliance.local")
+        txt = {"dial_api": "v1", "audio_status": "v1"}
+        result = ou._parse_playing_target(parts, txt)
+        assert result is not None
+        _, target = result
+        assert target.hostname == "myappliance.local"
+
+    def test_missing_parts6_gives_empty_hostname(self):
+        """Short parts list (no index 6) results in empty hostname, not an error."""
+        parts = [""] * 9
+        parts[3] = "svc"
+        parts[7] = "1.2.3.4"
+        parts[8] = "8080"
+        # parts[6] is "" — avahi always sends it, but guard for robustness
+        txt = {"dial_api": "v1", "audio_status": "v1"}
+        result = ou._parse_playing_target(parts, txt)
+        assert result is not None
+        _, target = result
+        assert target.hostname == ""
 
     def test_missing_dial_api_rejected(self):
         parts = self._parts()
@@ -486,10 +509,10 @@ class TestRefreshNow:
 # Self-target filter
 # ---------------------------------------------------------------------------
 
-def _make_target_at(ip: str, name: str = "self") -> object:
-    """Make a _PlayingTarget-like object at a given IP."""
+def _make_target_at(ip: str, name: str = "self", hostname: str = "") -> object:
+    """Make a _PlayingTarget-like object at a given IP (and optional mDNS hostname)."""
     from autostream_output_usage import _PlayingTarget
-    return _PlayingTarget(service_name=name, ip=ip, port=7070, name=name, audio_status=True)
+    return _PlayingTarget(service_name=name, ip=ip, port=7070, name=name, audio_status=True, hostname=hostname)
 
 
 class TestSelfTargetFilter:
@@ -570,6 +593,126 @@ class TestSelfTargetFilter:
         ou._clock = clock
         ou._poll_once(3)
         assert fetcher_calls == [1], "remote target must not be filtered when local_ips is empty"
+
+
+# ---------------------------------------------------------------------------
+# Hostname-based self-target filter
+# ---------------------------------------------------------------------------
+
+class TestSelfHostnameFilter:
+    def test_hostname_match_filters_even_with_unknown_ip(self):
+        """A target with matching hostname is filtered even if local IP set is empty."""
+        ou._local_hostname_provider = lambda: "myappliance"
+        ou._local_ip_provider = lambda: frozenset()
+        self_target = _make_target_at("192.168.1.10", "self", hostname="myappliance.local")
+        ou._target_provider = lambda: [self_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(url), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls == [], "self-target matched by hostname must not be fetched"
+        assert ou.usage_for_output("Kitchen") is None
+
+    def test_hostname_filter_strips_local_suffix(self):
+        """.local suffix on target hostname is stripped before comparison."""
+        ou._local_hostname_provider = lambda: "myappliance"
+        ou._local_ip_provider = lambda: frozenset()
+        self_target = _make_target_at("192.168.1.10", "self", hostname="myappliance.local")
+        remote_target = _make_target_at("192.168.1.20", "remote", hostname="otherappliance.local")
+        ou._target_provider = lambda: [self_target, remote_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(url), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert len(fetcher_calls) == 1, "only the remote target must be fetched"
+        assert "192.168.1.20" in fetcher_calls[0]
+
+    def test_hostname_filter_case_insensitive(self):
+        """Hostname comparison is case-insensitive."""
+        ou._local_hostname_provider = lambda: "MyAppliance"
+        ou._local_ip_provider = lambda: frozenset()
+        self_target = _make_target_at("192.168.1.10", "self", hostname="MYAPPLIANCE.local")
+        ou._target_provider = lambda: [self_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(url), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls == [], "case difference must not prevent self-filter"
+
+    def test_empty_target_hostname_falls_back_to_ip_filter(self):
+        """A target with no hostname is still filtered by IP when IP matches."""
+        ou._local_hostname_provider = lambda: "myappliance"
+        ou._local_ip_provider = lambda: frozenset({"192.168.1.10"})
+        self_target = _make_target_at("192.168.1.10", "self", hostname="")
+        ou._target_provider = lambda: [self_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(url), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls == [], "target with no hostname must be filtered by IP fallback"
+
+    def test_empty_local_hostname_disables_hostname_filter(self):
+        """Unknown local hostname disables hostname filter; IP filter still applies."""
+        ou._local_hostname_provider = lambda: ""
+        ou._local_ip_provider = lambda: frozenset()
+        target = _make_target_at("192.168.1.10", "remote", hostname="myappliance.local")
+        ou._target_provider = lambda: [target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(url), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls, "must not filter when local hostname is unknown (fail-open)"
+
+    def test_hostname_filter_reflects_runtime_change(self):
+        """Hostname comparison uses the live value each poll; no stale state after a rename."""
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._local_ip_provider = lambda: frozenset()
+
+        # First poll: provider says local hostname is "oldname".
+        ou._local_hostname_provider = lambda: "oldname"
+        target_old = _make_target_at("192.168.1.10", "self", hostname="oldname.local")
+        ou._target_provider = lambda: [target_old]
+        fetcher_calls_1 = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls_1.append(url), {"playing": True, "outputs": []})[1]
+        ou._poll_once(3)
+        assert fetcher_calls_1 == [], "old-name self-target must be filtered on first poll"
+
+        # Simulate hostname change: provider now returns "newname" (as if sethostname ran).
+        ou._local_hostname_provider = lambda: "newname"
+        target_new = _make_target_at("192.168.1.10", "self", hostname="newname.local")
+        ou._target_provider = lambda: [target_new]
+        fetcher_calls_2 = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls_2.append(url), {"playing": True, "outputs": []})[1]
+        ou._poll_once(3)
+        assert fetcher_calls_2 == [], "new-name self-target must be filtered on second poll (no stale cache)"
+
+    def test_ip_cache_ttl_expires_and_refreshes(self):
+        """_resolve_local_ips refreshes the cache after _LOCAL_IPS_TTL seconds."""
+        clock, advance = _fake_clock()
+        ou._clock = clock
+        # Seed the cache at t=0 with a known-stale value.
+        with ou._local_ips_cache_lock:
+            ou._local_ips_cache = frozenset({"10.0.0.99"})
+            ou._local_ips_cache_time = clock()
+
+        # Within TTL: stale value is returned without re-resolving.
+        result = ou._resolve_local_ips()
+        assert "10.0.0.99" in result
+
+        # Advance past TTL.
+        advance(ou._LOCAL_IPS_TTL + 1.0)
+
+        # After TTL: re-resolve is triggered; cache timestamp advances.
+        ou._resolve_local_ips()
+        with ou._local_ips_cache_lock:
+            updated_time = ou._local_ips_cache_time
+        assert updated_time > ou._LOCAL_IPS_TTL, "cache timestamp must advance after TTL expiry"
 
 
 # ---------------------------------------------------------------------------
