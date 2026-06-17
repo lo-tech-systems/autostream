@@ -45,6 +45,10 @@ def _reset_module():
     ou._target_provider = None
     ou._http_fetcher = None
     ou._clock = None
+    ou._local_ip_provider = None
+    # Clear the cached result so tests with _local_ip_provider get a fresh call.
+    with ou._local_ips_cache_lock:
+        ou._local_ips_cache = None
 
 
 @pytest.fixture(autouse=True)
@@ -476,6 +480,96 @@ class TestRefreshNow:
         ou._http_fetcher = _slow_fetcher
         # Must not raise even with a very tight deadline.
         ou.refresh_now("test", timeout=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Self-target filter
+# ---------------------------------------------------------------------------
+
+def _make_target_at(ip: str, name: str = "self") -> object:
+    """Make a _PlayingTarget-like object at a given IP."""
+    from autostream_output_usage import _PlayingTarget
+    return _PlayingTarget(service_name=name, ip=ip, port=7070, name=name, audio_status=True)
+
+
+class TestSelfTargetFilter:
+    def test_target_with_local_ip_is_excluded_from_poll(self):
+        """A target whose IP is in local_ips must not reach the fetcher."""
+        ou._local_ip_provider = lambda: frozenset({"192.168.1.10"})
+        self_target = _make_target_at("192.168.1.10", "self")
+        ou._target_provider = lambda: [self_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(url), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls == [], "self-target must not be fetched"
+        assert ou.usage_for_output("Kitchen") is None, "self-target must not populate cache"
+
+    def test_remote_target_with_different_ip_is_not_filtered(self):
+        """A target whose IP is not local must still be polled."""
+        ou._local_ip_provider = lambda: frozenset({"192.168.1.10"})
+        remote_target = _make_target_at("192.168.1.20", "remote")
+        ou._target_provider = lambda: [remote_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(url), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls, "remote target must be fetched"
+        assert ou.usage_for_output("Kitchen") is not None
+
+    def test_mixed_targets_only_remote_polled(self):
+        """When self and remote are both in the target list, only remote is polled."""
+        ou._local_ip_provider = lambda: frozenset({"10.0.0.1"})
+        self_target = _make_target_at("10.0.0.1", "self")
+        remote_target = _make_target_at("10.0.0.2", "remote")
+        ou._target_provider = lambda: [self_target, remote_target]
+        polled_ips = []
+        def fetcher(url, timeout):
+            polled_ips.append(url)
+            return {"playing": True, "outputs": ["Lounge"]}
+        ou._http_fetcher = fetcher
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert len(polled_ips) == 1
+        assert "10.0.0.1" not in polled_ips[0]
+        assert "10.0.0.2" in polled_ips[0]
+
+    def test_self_target_does_not_populate_cache_via_refresh_now(self):
+        """refresh_now also filters self-targets."""
+        ou._local_ip_provider = lambda: frozenset({"192.168.1.5"})
+        self_target = _make_target_at("192.168.1.5")
+        ou._target_provider = lambda: [self_target]
+        ou._http_fetcher = lambda url, timeout: {"playing": True, "outputs": ["Kitchen"]}
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou.refresh_now("test", timeout=1.5)
+        assert ou.usage_for_output("Kitchen") is None
+
+    def test_loopback_always_filtered(self):
+        """127.0.0.1 is always in the local set and is filtered even without injection."""
+        loopback_target = _make_target_at("127.0.0.1", "lo-self")
+        ou._target_provider = lambda: [loopback_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(1), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls == [], "loopback target must never be polled"
+
+    def test_empty_local_ips_does_not_filter_any_target(self):
+        """If local IP set is empty, no targets are filtered (fail-open)."""
+        ou._local_ip_provider = lambda: frozenset()
+        remote_target = _make_target_at("192.168.1.20", "remote")
+        ou._target_provider = lambda: [remote_target]
+        fetcher_calls = []
+        ou._http_fetcher = lambda url, timeout: (fetcher_calls.append(1), {"playing": True, "outputs": ["Kitchen"]})[1]
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        ou._poll_once(3)
+        assert fetcher_calls == [1], "remote target must not be filtered when local_ips is empty"
 
 
 # ---------------------------------------------------------------------------

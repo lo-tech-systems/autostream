@@ -20,6 +20,7 @@ Public surface
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import time
 import urllib.error
@@ -103,11 +104,63 @@ def _get_browser():
 # a list of _PlayingTarget (or duck-typed equivalent).
 _target_provider: Callable[[], list] | None = None
 
+# Injectable local-IP provider for testing.  Production uses socket.getaddrinfo.
+_local_ip_provider: Callable[[], frozenset[str]] | None = None
+# Cached result of _resolve_local_ips(); never changes while the process is alive.
+_local_ips_cache: frozenset[str] | None = None
+_local_ips_cache_lock = threading.Lock()
+
+
+def _resolve_local_ips() -> frozenset[str]:
+    """Return all IPv4 addresses assigned to this host.
+
+    Result is cached for the process lifetime because local IPs are static
+    across normal operation.  Returns at minimum {"127.0.0.1"}.
+    """
+    global _local_ips_cache
+    with _local_ips_cache_lock:
+        if _local_ips_cache is not None:
+            return _local_ips_cache
+    ips: set[str] = {"127.0.0.1"}
+    try:
+        for _, _, _, _, sockaddr in socket.getaddrinfo(
+            socket.gethostname(), None, socket.AF_INET
+        ):
+            ips.add(sockaddr[0])
+    except Exception:
+        logger.debug(
+            "%s: could not enumerate local IPs; self-filter may miss local service",
+            _LOG_PREFIX,
+        )
+    result = frozenset(ips)
+    with _local_ips_cache_lock:
+        _local_ips_cache = result
+    return result
+
+
+def _get_local_ips() -> frozenset[str]:
+    if _local_ip_provider is not None:
+        return _local_ip_provider()
+    return _resolve_local_ips()
+
 
 def _get_playing_targets() -> list:
     if _target_provider is not None:
-        return _target_provider()
-    return list(_get_browser().get_snapshot().values())
+        targets: list = _target_provider()
+    else:
+        targets = list(_get_browser().get_snapshot().values())
+
+    local_ips = _get_local_ips()
+    if local_ips:
+        n_before = len(targets)
+        targets = [t for t in targets if t.ip not in local_ips]
+        n_filtered = n_before - len(targets)
+        if n_filtered:
+            logger.debug(
+                "%s: filtered %d self-target(s) from playing list",
+                _LOG_PREFIX, n_filtered,
+            )
+    return targets
 
 
 # ---------------------------------------------------------------------------
