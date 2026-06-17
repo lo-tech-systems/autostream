@@ -824,6 +824,23 @@ class TestStaleCache:
         assert data.get("error") == "appliance_unconfigured"
         assert "stale" not in data
 
+    def test_rate_limited_not_served_stale_preserves_retry_after(self):
+        """rate_limited (429) must pass through with its retry_after intact, not serve stale."""
+        aid = "m" * 20
+        sighting = _make_sighting(appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        self._prime_stale(aid, fed_path, data={"ok": True, "cached": True})
+
+        with patch.object(gw, "_remote_request",
+                          return_value=(429, {"ok": False, "error": "rate_limited",
+                                             "retry_after": 30})):
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+
+        assert status == 429
+        assert data.get("error") == "rate_limited"
+        assert data.get("retry_after") == 30
+        assert "stale" not in data
+
     def test_waiter_gets_owner_error_for_definitive_failure(self):
         """Waiter must receive the actual application error, not stale data."""
         aid = "k" * 20

@@ -80,8 +80,10 @@ _STALE_READ_CACHE_TTL = 15.0       # seconds — stale fallback window after fre
 # Only transport-level errors get the stale fallback.  Application errors
 # (appliance_unconfigured, identity conflicts, etc.) must pass through so the
 # browser can redirect immediately rather than showing stale state.
+# rate_limited is excluded: its retry_after would be lost inside _stale_response
+# and the browser would poll again immediately via the ok:true stale path.
 _STALE_RETRYABLE_ERRORS = frozenset({
-    "remote_timeout", "remote_bad_response", "remote_backoff", "rate_limited",
+    "remote_timeout", "remote_bad_response", "remote_backoff",
 })
 _FED_VERSION_HEADER = "1"
 
