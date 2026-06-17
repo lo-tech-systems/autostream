@@ -32,6 +32,7 @@ def _make_target(name="living-room", ip="192.168.1.2", port=8080, audio_status=T
     t.port = port
     t.service_name = name
     t.audio_status = audio_status
+    t.hostname = ""
     return t
 
 
@@ -279,6 +280,110 @@ class TestOutputUsageCache:
 
         assert ou.is_output_in_use_elsewhere("Kitchen") is True
         assert ou.is_output_in_use_elsewhere("Living Room") is False
+
+
+# ---------------------------------------------------------------------------
+# Owner-name derivation
+# ---------------------------------------------------------------------------
+
+class TestOwnerName:
+    def _make_avahi_target(self, svc: str, hostname: str, ip: str = "192.168.1.2"):
+        """Return a _PlayingTarget as _parse_playing_target would produce it."""
+        from autostream_output_usage import _PlayingTarget
+        return _PlayingTarget(
+            service_name=svc,
+            ip=ip,
+            port=8080,
+            name=svc,
+            audio_status=True,
+            hostname=hostname,
+        )
+
+    def test_hostname_used_as_owner_name(self):
+        """Hostname (parts[6]) is the authoritative owner label; service name is ignored."""
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        target = self._make_avahi_target(
+            svc=r"autostream\032on\032SL-PG4",
+            hostname="SL-PG4.local",
+        )
+        ou._target_provider = lambda: [target]
+        ou._http_fetcher = lambda url, timeout: {"playing": True, "outputs": ["Kitchen"]}
+        ou._poll_once(3)
+
+        usage = ou.usage_for_output("Kitchen")
+        assert usage is not None
+        assert usage.owner_name == "SL-PG4"
+
+    def test_service_name_unchanged_as_cache_key(self):
+        """service_name on OutputUsage is the raw mDNS instance name, not the display label."""
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        raw_svc = r"autostream\032on\032SL-PG4"
+        target = self._make_avahi_target(svc=raw_svc, hostname="SL-PG4.local")
+        ou._target_provider = lambda: [target]
+        ou._http_fetcher = lambda url, timeout: {"playing": True, "outputs": ["Kitchen"]}
+        ou._poll_once(3)
+
+        usage = ou.usage_for_output("Kitchen")
+        assert usage is not None
+        assert usage.service_name == raw_svc
+
+    def test_annotate_outputs_emits_clean_remote_owner(self):
+        """annotate_outputs passes the cleaned hostname through as remote_owner."""
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        target = self._make_avahi_target(
+            svc=r"autostream\032on\032SL-PG4",
+            hostname="SL-PG4.local",
+        )
+        ou._target_provider = lambda: [target]
+        ou._http_fetcher = lambda url, timeout: {"playing": True, "outputs": ["Kitchen"]}
+        ou._poll_once(3)
+
+        annotated = ou.annotate_outputs([{"name": "Kitchen", "selected": False}])
+        assert annotated[0]["remote_owner"] == "SL-PG4"
+
+    def test_fallback_decodes_avahi_escape_and_strips_prefix(self):
+        """Without a hostname, service name is decoded: \\032→space, 'autostream on ' stripped."""
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        target = self._make_avahi_target(
+            svc=r"autostream\032on\032SL-PG4",
+            hostname="",
+        )
+        ou._target_provider = lambda: [target]
+        ou._http_fetcher = lambda url, timeout: {"playing": True, "outputs": ["Kitchen"]}
+        ou._poll_once(3)
+
+        usage = ou.usage_for_output("Kitchen")
+        assert usage is not None
+        assert usage.owner_name == "SL-PG4"
+
+    def test_fallback_bare_service_name_returned_as_is(self):
+        """A service name with no 'autostream on' prefix is returned decoded but otherwise intact."""
+        clock, _ = _fake_clock()
+        ou._clock = clock
+        target = self._make_avahi_target(svc=r"My\032Appliance", hostname="")
+        ou._target_provider = lambda: [target]
+        ou._http_fetcher = lambda url, timeout: {"playing": True, "outputs": ["Kitchen"]}
+        ou._poll_once(3)
+
+        usage = ou.usage_for_output("Kitchen")
+        assert usage is not None
+        assert usage.owner_name == "My Appliance"
+
+    def test_local_suffix_stripped_from_hostname(self):
+        """Trailing .local is removed from the hostname label."""
+        assert ou._derive_owner_name(
+            self._make_avahi_target(svc="svc", hostname="myhost.local")
+        ) == "myhost"
+
+    def test_hostname_without_local_suffix_used_as_is(self):
+        """A hostname that is already bare (no .local) is returned unchanged."""
+        assert ou._derive_owner_name(
+            self._make_avahi_target(svc="svc", hostname="myhost")
+        ) == "myhost"
 
 
 # ---------------------------------------------------------------------------

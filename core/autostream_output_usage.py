@@ -295,6 +295,38 @@ def _get_poll_interval() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Owner-name derivation
+# ---------------------------------------------------------------------------
+
+def _fallback_owner_name(service_name: str) -> str:
+    """Decode an Avahi service instance name into a readable label.
+
+    Replaces Avahi octal escapes (\032 → space) and strips the
+    'autostream on ' prefix written by avahi-publish-service.
+    """
+    name = service_name.replace("\\032", " ").strip()
+    prefix = "autostream on "
+    if name.lower().startswith(prefix):
+        name = name[len(prefix):]
+    return name.strip() or service_name
+
+
+def _derive_owner_name(target) -> str:
+    """Return the human-readable owner name for a playing target.
+
+    Prefers the Avahi-resolved hostname (parts[6]), stripped of .local, as it
+    is already a clean user-visible label (e.g. 'SL-PG4').  Falls back to
+    decoding the mDNS service instance name when the hostname field is absent.
+    """
+    hostname = str(getattr(target, "hostname", "") or "").strip().rstrip(".")
+    if hostname:
+        return hostname.removesuffix(".local").strip() or _fallback_owner_name(
+            str(getattr(target, "service_name", "") or "")
+        )
+    return _fallback_owner_name(str(getattr(target, "service_name", "") or ""))
+
+
+# ---------------------------------------------------------------------------
 # Cache helpers
 # ---------------------------------------------------------------------------
 
@@ -325,9 +357,10 @@ def _update_cache_for_target(
                 "%s: multiple owners for output %s; %s overrides %s",
                 _LOG_PREFIX, out_name, target.service_name, existing.service_name,
             )
+        owner = _derive_owner_name(target)
         new_entry = OutputUsage(
             output_name=out_name,
-            owner_name=target.name,
+            owner_name=owner,
             owner_ip=target.ip,
             owner_port=target.port,
             service_name=target.service_name,
@@ -335,7 +368,7 @@ def _update_cache_for_target(
             expires_at=now + ttl,
         )
         if existing is None or existing.service_name != target.service_name:
-            appeared.append((out_name, target.name))
+            appeared.append((out_name, owner))
         _cache[key] = new_entry
 
     # Clear entries for this target that are no longer reported.
