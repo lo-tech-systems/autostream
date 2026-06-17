@@ -258,6 +258,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         input_levels = home.get("input_levels", [])
         playback_dict = home.get("playback", {})
         warnings = home.get("warnings", {})
+        ti_dict = home.get("track_identification", {})
     else:
         input_levels = []
         try:
@@ -271,6 +272,11 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
             "belt": playback.belt_banner_text or "",
             "bearing": playback.bearing_banner_text or "",
         }
+        try:
+            from autostream_core import get_active_track_identification_snapshot
+            ti_dict = get_active_track_identification_snapshot().to_public_dict()
+        except Exception:
+            ti_dict = {}
     is_playing = any_monitor_capturing()
     send_json(handler, 200, {
         "playing": is_playing,
@@ -281,6 +287,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         "playback_banner_text": warnings.get("stylus"),
         "belt_banner_text": warnings.get("belt"),
         "bearing_banner_text": warnings.get("bearing"),
+        "track_identification": ti_dict,
     })
 
 
