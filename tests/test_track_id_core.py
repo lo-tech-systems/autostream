@@ -119,6 +119,32 @@ class TestInitialState:
         mon._apply_track_id_service(None)
         assert mon._ti_snapshot.state == STATE_DISABLED
 
+    def test_apply_service_defers_first_attempt(self):
+        mon = _make_monitor()
+        svc = _make_service(interval=15)
+        before = time.time()
+        mon._apply_track_id_service(svc)
+        assert mon._ti_next_attempt >= before + 14  # at least close to interval
+
+    def test_apply_none_service_does_not_set_future_next_attempt(self):
+        mon = _make_monitor()
+        mon._apply_track_id_service(None)
+        assert mon._ti_next_attempt == 0.0
+
+    def test_capture_start_defers_first_attempt(self):
+        svc = _make_service(interval=15)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        mon._on_capture_started(was_idle=False)
+        assert mon._ti_next_attempt >= before + 14
+
+    def test_capture_start_without_service_does_not_set_future_next_attempt(self):
+        core._track_id_service = None
+        mon = _active_monitor()
+        mon._on_capture_started(was_idle=False)
+        assert mon._ti_next_attempt == 0.0
+
 
 # ---------------------------------------------------------------------------
 # Disabled config never calls get_id_snapshot
@@ -201,6 +227,20 @@ class TestIntervalScheduling:
         now = time.time()
         mon.maybe_trigger_track_identification(client, now)
         assert mon._ti_next_attempt >= now + 28  # approximately interval away
+
+    def test_skips_worker_when_pcm_too_short(self):
+        from track_id.service import MIN_PCM_DURATION_SECONDS
+        svc = _make_service(interval=15)
+        mon = _active_monitor()
+        short_pcm = b"\x00" * int(22050 * 2 * (MIN_PCM_DURATION_SECONDS - 1))
+        client = MagicMock()
+        client.get_id_snapshot.return_value = short_pcm
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 0.0
+
+        mon.maybe_trigger_track_identification(client, time.time())
+        assert mon._ti_inflight is False  # worker must not have been queued
 
 
 # ---------------------------------------------------------------------------

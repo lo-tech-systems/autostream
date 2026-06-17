@@ -1414,10 +1414,12 @@ class AudioMonitor:
 
         self._ti_generation += 1  # invalidate any worker queued before capture started
         self._ti_inflight = False
-        self._ti_next_attempt = 0.0
         if _track_id_service is not None:
+            self._ti_next_attempt = time.time() + _track_id_service.interval_seconds
             from track_id.models import waiting_snapshot
             self._ti_snapshot = waiting_snapshot()
+        else:
+            self._ti_next_attempt = 0.0
 
         self._nowplaying_publisher.publish_start(self._current_nowplaying)
 
@@ -1458,11 +1460,12 @@ class AudioMonitor:
         if service is not None:
             from track_id.models import waiting_snapshot
             self._ti_snapshot = waiting_snapshot()
+            self._ti_next_attempt = time.time() + service.interval_seconds
         else:
             from track_id.models import disabled_snapshot
             self._ti_snapshot = disabled_snapshot()
+            self._ti_next_attempt = 0.0
         self._ti_inflight = False
-        self._ti_next_attempt = 0.0
 
     def maybe_trigger_track_identification(self, client: "MonitorClient", now: float) -> None:
         """Schedule a track identification attempt if the interval has elapsed."""
@@ -1485,6 +1488,13 @@ class AudioMonitor:
             return
 
         duration_s = len(pcm_bytes) / (22050 * 2)
+        from track_id.service import MIN_PCM_DURATION_SECONDS
+        if duration_s < MIN_PCM_DURATION_SECONDS:
+            logging.debug(
+                "track_id[%d]: audio too short (%.1f s < %.1f s), skipping.",
+                self.input_index, duration_s, MIN_PCM_DURATION_SECONDS,
+            )
+            return
         logging.info(
             "track_id[%d]: queuing identification (%.1f s of audio).",
             self.input_index, duration_s,

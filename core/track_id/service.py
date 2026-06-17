@@ -135,6 +135,14 @@ class TrackIdentificationService:
             "track_id[%d]: starting identification (%.1f s, provider=%s)",
             input_index, duration, self._provider_id,
         )
+
+        if duration < MIN_PCM_DURATION_SECONDS:
+            _log.debug(
+                "track_id[%d]: audio too short (%.1f s < %.1f s); skipping.",
+                input_index, duration, MIN_PCM_DURATION_SECONDS,
+            )
+            return R(matched=False, provider=self._provider_id, source_detail="too_short")
+
         now = time.time()
 
         # Attempt to get a fingerprint for cache lookup before calling the
