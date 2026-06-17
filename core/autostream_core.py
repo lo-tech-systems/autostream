@@ -2068,6 +2068,13 @@ def run_autostream(config_path: str, start_webui=None) -> None:
             _start_playing_reconciliation(_get_current_monitors, version)
             _reconcile_started = True
 
+        try:
+            import autostream_output_usage as _ou
+            _ou.configure(cfg.webui.output_usage_poll_interval_seconds)
+            _ou.start()
+        except Exception:
+            logging.warning("output-usage: failed to start poller", exc_info=True)
+
         current: Optional[AudioMonitor] = None
         reconnect_at: float = 0.0
         _reloading = False
