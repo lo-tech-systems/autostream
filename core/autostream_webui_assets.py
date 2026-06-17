@@ -381,6 +381,18 @@ button[type=submit] {
   color: var(--color-chip-off-text);
 }
 
+.output-state-chip.in-use {
+  background: var(--color-chip-off-bg);
+  color: var(--color-chip-off-text);
+  font-style: italic;
+}
+
+.output-card-in-use {
+  border-color: var(--color-border-card);
+  background: var(--color-surface-raised);
+  opacity: 0.7;
+}
+
 .output-toggle {
   margin: 0;
   display: inline-flex;

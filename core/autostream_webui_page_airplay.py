@@ -50,7 +50,7 @@ function normalizeVolume(v){var n=Number(v);if(!Number.isFinite(n))return 0;retu
 function formatVolume(v){return String(normalizeVolume(v))+'%';}
 function updateVolumeLabel(id,v){var s=document.getElementById('vol_label_'+id);if(s)s.textContent=formatVolume(v);}
 function reorderOutputCards(){var list=document.getElementById('outputs-list');if(!list)return;var cards=Array.from(list.querySelectorAll('.output-card'));cards.sort(function(a,b){var da=a.getAttribute('data-is-default')==='1'?1:0,db=b.getAttribute('data-is-default')==='1'?1:0;if(db!==da)return db-da;var na=((a.querySelector('.output-card-name')&&a.querySelector('.output-card-name').textContent)||'').trim().toLowerCase();var nb=((b.querySelector('.output-card-name')&&b.querySelector('.output-card-name').textContent)||'').trim().toLowerCase();return na.localeCompare(nb);});cards.forEach(function(c){list.appendChild(c);});}
-function updateOutputStateVisual(id,selected){var chip=document.getElementById('output_state_'+id);var card=document.getElementById('output_card_'+id);var wrap=document.getElementById('output_slider_wrap_'+id);if(chip){chip.textContent=selected?'On':'Off';chip.classList.toggle('on',!!selected);chip.classList.toggle('off',!selected);}if(card){card.classList.toggle('output-card-on',!!selected);card.classList.toggle('output-card-off',!selected);}if(wrap){wrap.hidden=!selected;}}
+function updateOutputStateVisual(id,selected){var cb=document.getElementById('output_enabled_'+id);if(cb&&cb.disabled)return;var chip=document.getElementById('output_state_'+id);var card=document.getElementById('output_card_'+id);var wrap=document.getElementById('output_slider_wrap_'+id);if(chip){chip.textContent=selected?'On':'Off';chip.classList.toggle('on',!!selected);chip.classList.toggle('off',!selected);}if(card){card.classList.toggle('output-card-on',!!selected);card.classList.toggle('output-card-off',!selected);}if(wrap){wrap.hidden=!selected;}}
 function computeMasterVolume(){var sum=0,count=0;document.querySelectorAll('.output-card').forEach(function(card){var id=card.getAttribute('data-output-id');if(!id)return;var cb=document.getElementById('output_enabled_'+id);var sl=document.getElementById('vol_slider_'+id);if(cb&&cb.checked&&sl){sum+=normalizeVolume(sl.value);count++;}});return count>0?Math.round(sum/count):null;}
 function updateMasterVolumeCard(){var card=document.getElementById('master-volume-card');var sl=document.getElementById('master_vol_slider');if(!card||!sl)return;var v=computeMasterVolume();var inactive=(v===null);var val=inactive?(window.__PRESET_VOLUME||20):v;card.classList.toggle('master-volume-inactive',inactive);sl.disabled=inactive;if(String(sl.value)!==String(val))sl.value=String(val);}
 function onMasterVolumeDragStart(){var sl=document.getElementById('master_vol_slider');if(!sl||sl.disabled)return;var snaps={};document.querySelectorAll('.output-card').forEach(function(card){var id=card.getAttribute('data-output-id');if(!id)return;var cb=document.getElementById('output_enabled_'+id);var vs=document.getElementById('vol_slider_'+id);if(cb&&cb.checked&&vs)snaps[id]=normalizeVolume(vs.value);});window.__MASTER_DRAG_SNAPSHOTS=snaps;window.__MASTER_DRAG_BASE=normalizeVolume(sl.value);}
@@ -61,15 +61,15 @@ function showPinModal(outputName){return new Promise(function(resolve){var m=doc
 function handleHomeSessionRejected(response){var status=Number(response&&response.status);if(status!==401&&status!==403)return false;if(window.__HOME_SESSION_REFRESHING)return true;window.__HOME_SESSION_REFRESHING=true;window.location.reload();return true;}
 async function postOutputUpdate(id,selected,volume){var r=await fetch(window.__OUTPUT_URL,{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(5000),headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},body:JSON.stringify({id:id,selected:!!selected,volume:parseInt(volume||0,10)||0,csrf_token:window.__CSRF||''})});if(handleHomeSessionRejected(r))return{ok:false,_http:r.status,session_rejected:true};var j=null;try{j=await r.json();}catch(e){j={ok:r.ok};}j._http=r.status;return j;}
 async function postPinOnly(id,pin){var r=await fetch(window.__OUTPUT_URL,{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(5000),headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},body:JSON.stringify({op:'pin',id:id,pin:String(pin||'').trim(),csrf_token:window.__CSRF||''})});if(handleHomeSessionRejected(r))return{ok:false,_http:r.status,session_rejected:true};var j=null;try{j=await r.json();}catch(e){j={ok:r.ok};}j._http=r.status;return j;}
-async function sendUpdate(id){var c=document.getElementById('output_enabled_'+id),s=document.getElementById('vol_slider_'+id);var selected=c?c.checked:false;var volume=s?normalizeVolume(parseInt(s.value,10)):0;window.__PENDING_OUTPUTS.add(String(id));try{var j=null;try{j=await postOutputUpdate(id,selected,volume);}catch(e){return;}if(selected&&j&&j.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}var nm='';try{var card=c?c.closest('.output-card'):null;var label=card?card.querySelector('.output-card-name'):null;nm=label?(label.textContent||'').trim():'';}catch(e){}while(true){var pin=await showPinModal(nm||'this speaker');if(!pin)return;var jpin=null;try{jpin=await postPinOnly(id,pin);}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}if(jpin&&jpin.ok){try{var jen=await postOutputUpdate(id,true,volume);if(jen&&jen.ok){if(c){c.checked=true;updateOutputStateVisual(String(id),true);}return;}if(jen&&jen.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}continue;}}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}return;}if(jpin&&jpin.pin_invalid)continue;return;}}}finally{window.__PENDING_OUTPUTS.delete(String(id));}}
-function onToggleOutput(id){var cb=document.getElementById('output_enabled_'+id);if(cb)updateOutputStateVisual(String(id),!!cb.checked);if(cb&&cb.checked){var sl=document.getElementById('vol_slider_'+id);if(sl){sl.value=String(window.__PRESET_VOLUME||20);updateVolumeLabel(id,sl.value);}}reorderOutputCards();updateMasterVolumeCard();sendUpdate(id);}
+async function sendUpdate(id){var c=document.getElementById('output_enabled_'+id),s=document.getElementById('vol_slider_'+id);if(c&&c.disabled)return;var selected=c?c.checked:false;var volume=s?normalizeVolume(parseInt(s.value,10)):0;window.__PENDING_OUTPUTS.add(String(id));try{var j=null;try{j=await postOutputUpdate(id,selected,volume);}catch(e){return;}if(selected&&j&&j.error==='output_in_use'){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}if(selected&&j&&j.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}var nm='';try{var card=c?c.closest('.output-card'):null;var label=card?card.querySelector('.output-card-name'):null;nm=label?(label.textContent||'').trim():'';}catch(e){}while(true){var pin=await showPinModal(nm||'this speaker');if(!pin)return;var jpin=null;try{jpin=await postPinOnly(id,pin);}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}if(jpin&&jpin.ok){try{var jen=await postOutputUpdate(id,true,volume);if(jen&&jen.ok){if(c){c.checked=true;updateOutputStateVisual(String(id),true);}return;}if(jen&&jen.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}continue;}}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}return;}if(jpin&&jpin.pin_invalid)continue;return;}}}finally{window.__PENDING_OUTPUTS.delete(String(id));}}
+function onToggleOutput(id){var cb=document.getElementById('output_enabled_'+id);if(cb&&cb.disabled)return;if(cb)updateOutputStateVisual(String(id),!!cb.checked);if(cb&&cb.checked){var sl=document.getElementById('vol_slider_'+id);if(sl){sl.value=String(window.__PRESET_VOLUME||20);updateVolumeLabel(id,sl.value);}}reorderOutputCards();updateMasterVolumeCard();sendUpdate(id);}
 function onVolumeChange(id,v){updateVolumeLabel(id,v);if(document.activeElement!==document.getElementById('master_vol_slider'))updateMasterVolumeCard();sendUpdate(id);}
 var VU_THRESHOLDS=[-60,-48,-36,-24,-12,-6,-3];var VU_COLORS=['#2196F3','#2196F3','#2196F3','#2196F3','#f0ad4e','#fd7e14','#dc3545'];var VU_BIN_MS=100;var VU_DELAY_BINS=Math.max(1,Math.round((window.__VU_DELAY_MS||2250)/VU_BIN_MS));
 var _vuQueue={};var _vuLastSeq={};var _vuActiveIdx=-1;
 function updateVuBars(l,r){var lBars=document.querySelectorAll('#np-vu-l .vu-bar');var rBars=document.querySelectorAll('#np-vu-r .vu-bar');lBars.forEach(function(bar,i){var lit=Number.isFinite(Number(l))&&Number(l)>=VU_THRESHOLDS[i];bar.style.background=lit?VU_COLORS[i]:'';});rBars.forEach(function(bar,i){var lit=Number.isFinite(Number(r))&&Number(r)>=VU_THRESHOLDS[i];bar.style.background=lit?VU_COLORS[i]:'';});}
 function vuIngestHistory(activeIdx,vu_history){if(activeIdx!==_vuActiveIdx){_vuQueue={};_vuLastSeq={};_vuActiveIdx=activeIdx;}if(!vu_history||!Array.isArray(vu_history.bins)||vu_history.bins.length===0)return;var bins=vu_history.bins;var latestSeq=vu_history.latest_seq||0;var cutoffSeq=latestSeq-VU_DELAY_BINS;if(cutoffSeq<0)return;if(!_vuQueue[activeIdx])_vuQueue[activeIdx]=[];if(!_vuLastSeq[activeIdx])_vuLastSeq[activeIdx]=0;var lastSeen=_vuLastSeq[activeIdx];if(latestSeq<lastSeen&&lastSeen>0){_vuQueue[activeIdx]=[];_vuLastSeq[activeIdx]=0;lastSeen=0;}var added=0;for(var i=0;i<bins.length;i++){var b=bins[i];if(b.seq>lastSeen&&b.seq<=cutoffSeq){_vuQueue[activeIdx].push(b);added++;}}if(added>0)_vuLastSeq[activeIdx]=cutoffSeq;var maxQ=VU_DELAY_BINS*2;var q=_vuQueue[activeIdx];if(q.length>maxQ)_vuQueue[activeIdx]=q.slice(q.length-maxQ);}
 function vuRenderTick(){var q=_vuQueue[_vuActiveIdx];var bin=(q&&q.length>0)?q.shift():null;updateVuBars(bin?bin.l:-90,bin?bin.r:-90);}
-function buildOutputCardElement(o){var id=String(o.id||'');var name=String(o.name||('Output '+id));var selected=!!o.selected;var volume=normalizeVolume(o.volume);var isDefault=!!o.is_default;var card=document.createElement('div');card.className='output-card '+(selected?'output-card-on':'output-card-off');card.id='output_card_'+id;card.setAttribute('data-output-id',id);card.setAttribute('data-is-default',isDefault?'1':'0');var head=document.createElement('div');head.className='output-card-head';var meta=document.createElement('div');meta.className='output-card-meta';var nameDiv=document.createElement('div');nameDiv.className='output-card-name';nameDiv.textContent=name;meta.appendChild(nameDiv);if(isDefault){var badge=document.createElement('span');badge.className='output-card-default';badge.textContent='Default';meta.appendChild(badge);}var chip=document.createElement('span');chip.className='output-state-chip '+(selected?'on':'off');chip.id='output_state_'+id;chip.textContent=selected?'On':'Off';meta.appendChild(chip);head.appendChild(meta);var toggle=document.createElement('label');toggle.className='output-toggle';toggle.addEventListener('click',function(e){e.stopPropagation();});var cb=document.createElement('input');cb.type='checkbox';cb.id='output_enabled_'+id;cb.checked=selected;cb.addEventListener('change',function(){onToggleOutput(id);});toggle.appendChild(cb);var sw=document.createElement('span');sw.className='switch';sw.setAttribute('aria-hidden','true');toggle.appendChild(sw);head.appendChild(toggle);card.appendChild(head);var wrap=document.createElement('div');wrap.className='output-slider-wrap';wrap.id='output_slider_wrap_'+id;wrap.addEventListener('click',function(e){e.stopPropagation();});if(!selected)wrap.hidden=true;var sliderHdr=document.createElement('div');sliderHdr.className='slider-header';var volText=document.createElement('span');volText.textContent='Volume:';sliderHdr.appendChild(volText);var volLbl=document.createElement('span');volLbl.id='vol_label_'+id;volLbl.setAttribute('data-volume-label-for',id);sliderHdr.appendChild(volLbl);wrap.appendChild(sliderHdr);var sl=document.createElement('input');sl.type='range';sl.id='vol_slider_'+id;sl.min=0;sl.max=100;sl.step=1;sl.value=volume;sl.addEventListener('input',function(){updateVolumeLabel(id,this.value);});sl.addEventListener('change',function(){onVolumeChange(id,this.value);});wrap.appendChild(sl);card.appendChild(wrap);return card;}
+function buildOutputCardElement(o){var id=String(o.id||'');var name=String(o.name||('Output '+id));var selected=!!o.selected;var volume=normalizeVolume(o.volume);var isDefault=!!o.is_default;var remoteInUse=!!o.remote_in_use;var remoteOwner=String(o.remote_owner||'');var card=document.createElement('div');card.className='output-card '+(remoteInUse?'output-card-in-use':(selected?'output-card-on':'output-card-off'));card.id='output_card_'+id;card.setAttribute('data-output-id',id);card.setAttribute('data-is-default',isDefault?'1':'0');card.setAttribute('data-remote-in-use',remoteInUse?'1':'0');card.setAttribute('data-remote-owner',remoteOwner);var head=document.createElement('div');head.className='output-card-head';var meta=document.createElement('div');meta.className='output-card-meta';var nameDiv=document.createElement('div');nameDiv.className='output-card-name';nameDiv.textContent=name;meta.appendChild(nameDiv);if(isDefault){var badge=document.createElement('span');badge.className='output-card-default';badge.textContent='Default';meta.appendChild(badge);}var chip=document.createElement('span');chip.className='output-state-chip '+(remoteInUse?'in-use':(selected?'on':'off'));chip.id='output_state_'+id;chip.textContent=remoteInUse?('In Use by '+(remoteOwner||'another appliance')):(selected?'On':'Off');meta.appendChild(chip);head.appendChild(meta);var toggle=document.createElement('label');toggle.className='output-toggle';toggle.addEventListener('click',function(e){e.stopPropagation();});var cb=document.createElement('input');cb.type='checkbox';cb.id='output_enabled_'+id;cb.checked=selected;if(remoteInUse)cb.disabled=true;cb.addEventListener('change',function(){onToggleOutput(id);});toggle.appendChild(cb);var sw=document.createElement('span');sw.className='switch';sw.setAttribute('aria-hidden','true');toggle.appendChild(sw);head.appendChild(toggle);card.appendChild(head);var wrap=document.createElement('div');wrap.className='output-slider-wrap';wrap.id='output_slider_wrap_'+id;wrap.addEventListener('click',function(e){e.stopPropagation();});if(!selected)wrap.hidden=true;var sliderHdr=document.createElement('div');sliderHdr.className='slider-header';var volText=document.createElement('span');volText.textContent='Volume:';sliderHdr.appendChild(volText);var volLbl=document.createElement('span');volLbl.id='vol_label_'+id;volLbl.setAttribute('data-volume-label-for',id);sliderHdr.appendChild(volLbl);wrap.appendChild(sliderHdr);var sl=document.createElement('input');sl.type='range';sl.id='vol_slider_'+id;sl.min=0;sl.max=100;sl.step=1;sl.value=volume;sl.addEventListener('input',function(){updateVolumeLabel(id,this.value);});sl.addEventListener('change',function(){onVolumeChange(id,this.value);});wrap.appendChild(sl);card.appendChild(wrap);return card;}
 function setOutputsPlaceholder(state){var el=document.getElementById('outputs-placeholder');if(!el)return;if(state==='hidden'){el.hidden=true;el.textContent='';}else if(state==='unreachable'){el.hidden=false;el.textContent='Waiting for owntone';}else{el.hidden=false;el.textContent='Waiting for device discovery';}}
 function renderOutputList(outputs){var list=document.getElementById('outputs-list');if(!list)return;while(list.firstChild)list.removeChild(list.firstChild);for(var i=0;i<outputs.length;i++){list.appendChild(buildOutputCardElement(outputs[i]));}list.querySelectorAll('[data-volume-label-for]').forEach(function(s){var id=s.getAttribute('data-volume-label-for');var sl=document.getElementById('vol_slider_'+id);if(sl)updateVolumeLabel(id,sl.value);var cb=document.getElementById('output_enabled_'+id);if(cb)updateOutputStateVisual(String(id),!!cb.checked);});reorderOutputCards();updateMasterVolumeCard();setOutputsPlaceholder(outputs.length>0?'hidden':'empty');}
 function renderHomeState(data){
@@ -91,7 +91,7 @@ function renderHomeState(data){
   if(showMaster)updateMasterVolumeCard();
 }
 var __lastOutputsShape='';
-function _outputShapeKey(o){return String(o.id)+'|'+String(o.name||'')+'|'+String(!!o.is_default);}
+function _outputShapeKey(o){return String(o.id)+'|'+String(o.name||'')+'|'+String(!!o.is_default)+'|'+String(!!o.remote_in_use)+'|'+String(o.remote_owner||'');}
 function _outputsShape(outputs){return outputs.map(_outputShapeKey).sort().join(',');}
 var __remoteFailCount=0;var __remotePolling=true;var __remotePollTimer=null;
 var __DEFINITIVE_ERRORS=['not_found','appliance_unconfigured','appliance_conflicted','appliance_identity_unavailable'];
@@ -275,8 +275,13 @@ def send_airplay_page(
     else:
         _placeholder_state = "hidden"
 
-    # Filter and sort outputs through the shared model helper.
+    # Filter and sort outputs through the shared model helper, then annotate with occupancy.
     output_dicts = build_output_list(parsed, raw_outputs)
+    try:
+        from autostream_output_usage import annotate_outputs as _annotate_outputs
+        output_dicts = _annotate_outputs(output_dicts)
+    except Exception:
+        pass
 
     outputs_html = ""
     for out in output_dicts:
@@ -284,14 +289,25 @@ def send_airplay_page(
         name = out["name"]
         selected = out["selected"]
         volume = out["volume"]
+        remote_in_use = bool(out.get("remote_in_use"))
+        remote_owner = str(out.get("remote_owner") or "")
         safe_name = html.escape(name)
         default_badge = '<span class="output-card-default">Default</span>' if out["is_default"] else ""
-        state_text = "On" if selected else "Off"
-        state_cls = "on" if selected else "off"
-        card_state_cls = "output-card-on" if selected else "output-card-off"
+        if remote_in_use:
+            state_text = html.escape(f"In Use by {remote_owner}" if remote_owner else "In Use")
+            state_cls = "in-use"
+            card_state_cls = "output-card-in-use"
+            cb_disabled = " disabled"
+        else:
+            state_text = "On" if selected else "Off"
+            state_cls = "on" if selected else "off"
+            card_state_cls = "output-card-on" if selected else "output-card-off"
+            cb_disabled = ""
         is_default = "1" if out["is_default"] else "0"
+        data_remote_in_use = "1" if remote_in_use else "0"
+        safe_remote_owner = html.escape(remote_owner)
         outputs_html += f"""
-          <div class="output-card {card_state_cls}" id="output_card_{out_id}" data-output-id="{out_id}" data-is-default="{is_default}">
+          <div class="output-card {card_state_cls}" id="output_card_{out_id}" data-output-id="{out_id}" data-is-default="{is_default}" data-remote-in-use="{data_remote_in_use}" data-remote-owner="{safe_remote_owner}">
             <div class="output-card-head">
               <div class="output-card-meta">
                 <div class="output-card-name">{safe_name}</div>
@@ -299,7 +315,7 @@ def send_airplay_page(
                 <span class="output-state-chip {state_cls}" id="output_state_{out_id}">{state_text}</span>
               </div>
               <label class="output-toggle" onclick="event.stopPropagation();">
-                <input type="checkbox" id="output_enabled_{out_id}"{' checked' if selected else ''} onchange="onToggleOutput('{out_id}')">
+                <input type="checkbox" id="output_enabled_{out_id}"{' checked' if selected else ''}{cb_disabled} onchange="onToggleOutput('{out_id}')">
                 <span class="switch" aria-hidden="true"></span>
               </label>
             </div>
@@ -379,6 +395,8 @@ def send_airplay_page(
           cards.forEach(card => list.appendChild(card));
         }}
         function updateOutputStateVisual(id, selected){{
+          const cb = document.getElementById('output_enabled_' + id);
+          if (cb && cb.disabled) return;
           const chip = document.getElementById('output_state_' + id);
           const card = document.getElementById('output_card_' + id);
           const wrap = document.getElementById('output_slider_wrap_' + id);
@@ -551,6 +569,7 @@ def send_airplay_page(
 
         async function sendUpdate(id){{
           const c=document.getElementById('output_enabled_'+id), s=document.getElementById('vol_slider_'+id);
+          if (c && c.disabled) return;
           const selected = c?c.checked:false;
           const volume = s?normalizeVolume(parseInt(s.value,10)):0;
           window.__PENDING_OUTPUTS.add(String(id));
@@ -560,6 +579,11 @@ def send_airplay_page(
               j = await postOutputUpdate(id, selected, volume);
             }} catch (e) {{
               // Network error or 5 s abort -> let periodic refresh reconcile UI.
+              return;
+            }}
+
+            if (selected && j && j.error === 'output_in_use') {{
+              if (c) {{ c.checked = false; updateOutputStateVisual(String(id), false); }}
               return;
             }}
 
@@ -639,6 +663,7 @@ def send_airplay_page(
 
         function onToggleOutput(id){{
           const cb = document.getElementById('output_enabled_' + id);
+          if (cb && cb.disabled) return;
           if (cb) updateOutputStateVisual(String(id), !!cb.checked);
           if (cb && cb.checked) {{
             const sl = document.getElementById('vol_slider_' + id);
@@ -788,12 +813,16 @@ def send_airplay_page(
           var selected = !!o.selected;
           var volume = normalizeVolume(o.volume);
           var isDefault = !!o.is_default;
+          var remoteInUse = !!o.remote_in_use;
+          var remoteOwner = String(o.remote_owner || '');
 
           var card = document.createElement('div');
-          card.className = 'output-card ' + (selected ? 'output-card-on' : 'output-card-off');
+          card.className = 'output-card ' + (remoteInUse ? 'output-card-in-use' : (selected ? 'output-card-on' : 'output-card-off'));
           card.id = 'output_card_' + id;
           card.setAttribute('data-output-id', id);
           card.setAttribute('data-is-default', isDefault ? '1' : '0');
+          card.setAttribute('data-remote-in-use', remoteInUse ? '1' : '0');
+          card.setAttribute('data-remote-owner', remoteOwner);
 
           var head = document.createElement('div');
           head.className = 'output-card-head';
@@ -811,9 +840,9 @@ def send_airplay_page(
             meta.appendChild(badge);
           }}
           var chip = document.createElement('span');
-          chip.className = 'output-state-chip ' + (selected ? 'on' : 'off');
+          chip.className = 'output-state-chip ' + (remoteInUse ? 'in-use' : (selected ? 'on' : 'off'));
           chip.id = 'output_state_' + id;
-          chip.textContent = selected ? 'On' : 'Off';
+          chip.textContent = remoteInUse ? ('In Use by ' + (remoteOwner || 'another appliance')) : (selected ? 'On' : 'Off');
           meta.appendChild(chip);
           head.appendChild(meta);
 
@@ -824,6 +853,7 @@ def send_airplay_page(
           cb.type = 'checkbox';
           cb.id = 'output_enabled_' + id;
           cb.checked = selected;
+          if (remoteInUse) cb.disabled = true;
           cb.addEventListener('change', function() {{ onToggleOutput(id); }});
           toggle.appendChild(cb);
           var sw = document.createElement('span');
@@ -860,7 +890,9 @@ def send_airplay_page(
           return card;
         }}
         function getOutputIdKey(outputs) {{
-          return JSON.stringify(outputs.map(function(o) {{ return String(o.id); }}).sort());
+          return JSON.stringify(outputs.map(function(o) {{
+            return String(o.id) + '|' + String(!!o.remote_in_use) + '|' + String(o.remote_owner || '');
+          }}).sort());
         }}
         function setOutputsPlaceholder(state) {{
           var el = document.getElementById('outputs-placeholder');
@@ -909,7 +941,9 @@ def send_airplay_page(
               clearTimeout(__ctrlTimer);
             }}
             var __list = document.getElementById('outputs-list');
-            var __domIds = __list ? Array.from(__list.querySelectorAll('.output-card[data-output-id]')).map(function(c) {{ return c.getAttribute('data-output-id'); }}) : [];
+            var __domIds = __list ? Array.from(__list.querySelectorAll('.output-card[data-output-id]')).map(function(c) {{
+              return c.getAttribute('data-output-id') + '|' + (c.getAttribute('data-remote-in-use') === '1' ? 'true' : 'false') + '|' + (c.getAttribute('data-remote-owner') || '');
+            }}) : [];
             var domKey = __domIds.length > 0 ? JSON.stringify(__domIds.sort()) : '';
             if (!j || !j.ok) {{
               if (domKey === '') {{ setOutputsPlaceholder('unreachable'); }}
