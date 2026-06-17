@@ -628,3 +628,30 @@ Verify:
 
 Note: physical encoder direction, GPIO pin wiring, LED polarity, and electrical
 behavior still require hands-on hardware verification.
+
+---
+
+## Output Shows "In Use by \<name\>"
+
+**Symptom:** An AirPlay output card on the Home page shows *In Use by living-room*
+(or another appliance name) and the toggle is greyed out.
+
+**Cause:** The named appliance is currently playing audio through that output.
+autostream discovers this by querying neighbouring appliances that announce
+`_autostream-playing._tcp` and checking their active output list.
+
+**Resolution:**
+- The status clears automatically a few seconds after the other appliance stops
+  playing, once the occupancy TTL expires and the next poll completes.
+- If the status persists unexpectedly, check that the other appliance is genuinely
+  stopped and that mDNS is working (see *Appliance not appearing in selector* above).
+
+**After Wi-Fi loss or crash:** If the remote appliance lost network connectivity
+without sending a goodbye packet, the occupied state can persist briefly (at most a
+few seconds beyond twice the poll interval). It will clear on its own once the TTL
+elapses.
+
+**Adjusting the refresh interval:** Go to **Setup → Preferences → Output sharing
+refresh** to increase the poll interval (range 1–30 seconds, default 3). A lower
+value means faster detection and faster clearing; a higher value reduces LAN
+traffic.

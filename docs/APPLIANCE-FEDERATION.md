@@ -272,3 +272,49 @@ an iPhone or iPad.
 
 If hardware is unavailable, record that these checks were not performed and complete
 all automated verification instead.
+
+---
+
+## Cross-Appliance Output Usage
+
+When multiple appliances share the same AirPlay speakers, autostream shows which
+outputs are in use by a neighbouring appliance so the user does not inadvertently
+take over a speaker that is already playing.
+
+### How it works
+
+Each autostream appliance that is currently playing announces itself on the LAN as
+an `_autostream-playing._tcp` Avahi service. The appliance includes
+`dial_api=v1 audio_status=v1` TXT keys in this announcement.
+
+A background poller on each appliance browses `_autostream-playing._tcp`, queries
+`GET /api/audio/status` from each discovered neighbour, and populates a local
+in-memory occupancy cache.
+
+The occupancy cache drives the Home page UI and prevents automatic or user-initiated
+enablement of an output that is actively used by a neighbour.
+
+Output names are **not** placed in mDNS TXT records; they are fetched over HTTP only.
+
+### TTL-based, best-effort
+
+The cache is TTL-based, not a distributed lock. Occupancy entries expire
+automatically. If Wi-Fi is lost or the remote appliance crashes without sending a
+goodbye packet, stale entries persist until their TTL elapses (at most a few seconds
+longer than twice the poll interval).
+
+There is no push or subscription mechanism; the poller is purely pull-based.
+
+### Poll interval
+
+The poll interval is configurable in Setup → Preferences → Output sharing refresh
+(default 3 seconds, range 1–30). A shorter interval reduces the time a stale
+occupied state is shown; a longer interval reduces LAN traffic.
+
+### Constraints
+
+- Only appliances announcing `dial_api=v1` **and** `audio_status=v1` are polled.
+- At most 4 neighbours are queried concurrently.
+- Locally selected outputs are never marked as occupied regardless of remote reports.
+- The occupancy check is cache-only on all browser-facing request paths; no remote
+  HTTP is performed during a toggle or page load.
