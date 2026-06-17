@@ -197,6 +197,13 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 # a successful privileged service operation before being persisted.
                 # That field-level update happens after this block.
 
+            if "webui_output_usage_poll_interval_present" in form:
+                from autostream_config import normalize_output_usage_poll_interval
+                webui = cfg.setdefault("webui", {})
+                webui["output_usage_poll_interval_seconds"] = normalize_output_usage_poll_interval(
+                    fld("webui_output_usage_poll_interval_seconds", "3")
+                )
+
             # Capture the intended advertise value when the panel was rendered.
             if "webui_advertise_appliance_present" in form:
                 new_advertise = bool("webui_advertise_appliance" in form)

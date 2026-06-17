@@ -1104,3 +1104,66 @@ class TestSetupPostAdvertisePreference:
         assert len(result["saved"]) >= 2, "expected field-level re-save after successful admin call"
         last_saved = result["saved"][-1]
         assert last_saved.get("webui", {}).get("advertise_appliance") is False
+
+
+# ---------------------------------------------------------------------------
+# handle_setup_post — output usage poll interval persistence
+# ---------------------------------------------------------------------------
+
+class TestSetupPostOutputUsagePollInterval:
+    def test_poll_interval_persisted_when_sentinel_present(self, tmp_path):
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "S",
+            "owntone_volume_percent": "50",
+            "webui_show_master_volume_present": "1",
+            "webui_output_usage_poll_interval_present": "1",
+            "webui_output_usage_poll_interval_seconds": "7",
+        }
+        result = _call_setup_post(form, tmp_path)
+        assert result["saved"], "save_config must be called"
+        saved = result["saved"][0]
+        assert saved.get("webui", {}).get("output_usage_poll_interval_seconds") == 7
+
+    def test_poll_interval_not_persisted_when_sentinel_absent(self, tmp_path):
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "S",
+            "owntone_volume_percent": "50",
+            # no webui_output_usage_poll_interval_present
+        }
+        result = _call_setup_post(form, tmp_path)
+        if result["saved"]:
+            saved = result["saved"][0]
+            assert "output_usage_poll_interval_seconds" not in saved.get("webui", {})
+
+    def test_poll_interval_normalized_on_invalid_input(self, tmp_path):
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "S",
+            "owntone_volume_percent": "50",
+            "webui_show_master_volume_present": "1",
+            "webui_output_usage_poll_interval_present": "1",
+            "webui_output_usage_poll_interval_seconds": "999",  # above max
+        }
+        result = _call_setup_post(form, tmp_path)
+        assert result["saved"]
+        saved = result["saved"][0]
+        # out-of-range → normalized to default (3)
+        assert saved.get("webui", {}).get("output_usage_poll_interval_seconds") == 3
+
+    def test_webui_sentinel_behavior_preserved(self, tmp_path):
+        # When webui_show_master_volume_present is absent, webui section must not be created.
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "S",
+            "owntone_volume_percent": "50",
+            # No sentinel at all
+        }
+        result = _call_setup_post(form, tmp_path)
+        if result["saved"]:
+            assert "webui" not in result["saved"][0]

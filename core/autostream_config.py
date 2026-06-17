@@ -272,6 +272,8 @@ class WebUIConfig:
     # Requires show_hostname_on_home=True to take effect.
     # Default: True (backwards-compatible; absence means allow).
     control_other_appliances: bool
+    # Poll interval for querying output usage from other playing appliances, seconds.
+    output_usage_poll_interval_seconds: int
 
 
 @dataclass(frozen=True)
@@ -285,6 +287,22 @@ class OutputEqConfig:
     peq4_db: float
     peq5_db: float
     peq6_db: float
+
+
+OUTPUT_USAGE_POLL_INTERVAL_DEFAULT = 3
+OUTPUT_USAGE_POLL_INTERVAL_MIN = 1
+OUTPUT_USAGE_POLL_INTERVAL_MAX = 30
+
+
+def normalize_output_usage_poll_interval(value: object) -> int:
+    """Return a valid poll interval in seconds, or the default on bad input."""
+    try:
+        v = int(value)  # type: ignore[arg-type]
+    except Exception:
+        return OUTPUT_USAGE_POLL_INTERVAL_DEFAULT
+    if v < OUTPUT_USAGE_POLL_INTERVAL_MIN or v > OUTPUT_USAGE_POLL_INTERVAL_MAX:
+        return OUTPUT_USAGE_POLL_INTERVAL_DEFAULT
+    return v
 
 
 def normalize_update_channel(value: object) -> str:
@@ -415,6 +433,9 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         show_hostname_on_home=bool(webui_d.get("show_hostname_on_home", False)),
         advertise_appliance=bool(webui_d.get("advertise_appliance", True)),
         control_other_appliances=bool(webui_d.get("control_other_appliances", True)),
+        output_usage_poll_interval_seconds=normalize_output_usage_poll_interval(
+            webui_d.get("output_usage_poll_interval_seconds", OUTPUT_USAGE_POLL_INTERVAL_DEFAULT)
+        ),
     )
 
     eq_d = data.get("output_eq") or {}

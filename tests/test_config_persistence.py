@@ -166,6 +166,39 @@ class TestParseConfigDefaults:
         cfg = c.parse_config({"webui": {"advertise_appliance": True}})
         assert cfg.webui.advertise_appliance is True
 
+    def test_output_usage_poll_interval_default(self):
+        cfg = c.parse_config({})
+        assert cfg.webui.output_usage_poll_interval_seconds == 3
+
+    def test_output_usage_poll_interval_explicit_valid(self):
+        cfg = c.parse_config({"webui": {"output_usage_poll_interval_seconds": 10}})
+        assert cfg.webui.output_usage_poll_interval_seconds == 10
+
+    def test_output_usage_poll_interval_below_min_normalizes(self):
+        cfg = c.parse_config({"webui": {"output_usage_poll_interval_seconds": 0}})
+        assert cfg.webui.output_usage_poll_interval_seconds == 3
+
+    def test_output_usage_poll_interval_above_max_normalizes(self):
+        cfg = c.parse_config({"webui": {"output_usage_poll_interval_seconds": 100}})
+        assert cfg.webui.output_usage_poll_interval_seconds == 3
+
+    def test_output_usage_poll_interval_string_invalid_normalizes(self):
+        cfg = c.parse_config({"webui": {"output_usage_poll_interval_seconds": "bad"}})
+        assert cfg.webui.output_usage_poll_interval_seconds == 3
+
+    def test_output_usage_poll_interval_bool_normalizes(self):
+        # bool is a subclass of int; True=1 is within range, should be preserved
+        cfg = c.parse_config({"webui": {"output_usage_poll_interval_seconds": True}})
+        assert cfg.webui.output_usage_poll_interval_seconds == 1
+
+    def test_output_usage_poll_interval_min_boundary(self):
+        cfg = c.parse_config({"webui": {"output_usage_poll_interval_seconds": 1}})
+        assert cfg.webui.output_usage_poll_interval_seconds == 1
+
+    def test_output_usage_poll_interval_max_boundary(self):
+        cfg = c.parse_config({"webui": {"output_usage_poll_interval_seconds": 30}})
+        assert cfg.webui.output_usage_poll_interval_seconds == 30
+
     def test_update_channel_normalised_to_stable_for_unknown(self):
         cfg = c.parse_config({"updates": {"update_channel": "nightly"}})
         assert cfg.updates.update_channel == "stable"
