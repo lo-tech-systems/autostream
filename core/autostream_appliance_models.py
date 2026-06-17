@@ -81,6 +81,23 @@ def _refresh_output_info_cache(owntone_base_url: str) -> dict[str, tuple[str, bo
     return mapping
 
 
+def _update_cached_selected(owntone_base_url: str, out_id: str, selected: bool) -> None:
+    """Update the locally_selected flag for one output in the per-URL cache in-place."""
+    url = owntone_base_url.rstrip("/")
+    with _output_info_cache_lock:
+        mapping = _OUTPUT_INFO_CACHE.get(url)
+        if mapping and out_id in mapping:
+            name, _ = mapping[out_id]
+            mapping[out_id] = (name, selected)
+
+
+def _invalidate_output_info_cache(owntone_base_url: str) -> None:
+    """Expire the per-URL cache so the next call refreshes from OwnTone."""
+    url = owntone_base_url.rstrip("/")
+    with _output_info_cache_lock:
+        _OUTPUT_INFO_CACHE_TIME.pop(url, None)
+
+
 def _resolve_output_info(owntone_base_url: str, out_id: str) -> tuple[str, bool]:
     """Return (display_name, locally_selected) for *out_id* using a per-URL cache.
 
@@ -493,6 +510,7 @@ def apply_output_mutation(
             timeout=3,
         )
         if not update_result.ok and update_result.error_code == "pin_required":
+            # Output was NOT enabled; cache state is unchanged.
             return {
                 "ok": False,
                 "pin_required": True,
@@ -501,15 +519,20 @@ def apply_output_mutation(
                 "error": update_result.message,
             }
         if not update_result.ok:
+            # OwnTone rejected; state uncertain — expire cache so next call re-fetches.
+            _invalidate_output_info_cache(owntone_base_url)
             return {
                 "ok": False,
                 "id": out_id_text,
                 "error": update_result.message,
                 "pin_invalid": False,
             }
+        _update_cached_selected(owntone_base_url, out_id_text, True)
         return {"ok": True, "id": out_id_text}
 
     disable_result = set_output_enabled(owntone_base_url, out_id_text, False, timeout=3)
     if not disable_result.ok:
+        _invalidate_output_info_cache(owntone_base_url)
         return {"ok": False, "id": out_id_text, "error": disable_result.message}
+    _update_cached_selected(owntone_base_url, out_id_text, False)
     return {"ok": True, "id": out_id_text}

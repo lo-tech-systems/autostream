@@ -1396,3 +1396,109 @@ class TestOutputMutationOccupancyProtection:
                 url_b, "42", {"id": "42", "selected": True, "volume": 50}
             )
         assert list_calls == [1], "URL B must not reuse URL A cache"
+
+    def test_successful_enable_updates_cache_to_selected_true(self, tmp_path):
+        """After a successful enable, cache must reflect locally_selected=True."""
+        url = "http://localhost:3689"
+        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen", selected=False)])
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs", return_value=lr), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=None):
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+
+        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", True)
+
+    def test_successful_disable_updates_cache_to_selected_false(self, tmp_path):
+        """After a successful disable, cache must reflect locally_selected=False."""
+        import time as _time
+        url = "http://localhost:3689"
+        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", True)}
+        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False})
+
+        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
+
+    def test_failed_enable_invalidates_cache(self, tmp_path):
+        """Non-PIN enable failure expires the per-URL cache."""
+        import time as _time
+        url = "http://localhost:3689"
+        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", False)}
+        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
+        err = _make_result_err("owntone_error", "OwnTone refused")
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs", return_value=_make_list_outputs_ok([])), \
+             patch("autostream_appliance_models.update_output", return_value=err), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=None):
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+
+        assert url not in _am._OUTPUT_INFO_CACHE_TIME, "cache must be expired after non-PIN failure"
+
+    def test_failed_disable_invalidates_cache(self, tmp_path):
+        """Disable failure expires the per-URL cache."""
+        import time as _time
+        url = "http://localhost:3689"
+        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", True)}
+        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
+        err = _make_result_err("owntone_error", "OwnTone refused")
+        with patch("autostream_appliance_models.set_output_enabled", return_value=err), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=_make_result_ok()):
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False})
+
+        assert url not in _am._OUTPUT_INFO_CACHE_TIME, "cache must be expired after disable failure"
+
+    def test_pin_required_does_not_change_cache(self, tmp_path):
+        """PIN-required response leaves cache unchanged (output not enabled)."""
+        import time as _time
+        url = "http://localhost:3689"
+        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", False)}
+        stamp = _time.monotonic()
+        _am._OUTPUT_INFO_CACHE_TIME[url] = stamp
+
+        pin_req = _make_result_err("pin_required", "PIN required")
+        pin_req.error_code = "pin_required"
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs",
+                   return_value=_make_list_outputs_ok([_make_fake_output("42", "Kitchen")])), \
+             patch("autostream_appliance_models.update_output", return_value=pin_req), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=None):
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+
+        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
+        assert _am._OUTPUT_INFO_CACHE_TIME.get(url) == stamp, "cache timestamp must not change"
+
+    def test_subsequent_enable_after_disable_blocked_when_occupied(self, tmp_path):
+        """Disable then re-enable: occupancy check fires because disable set selected=False."""
+        import time as _time
+        url = "http://localhost:3689"
+        ok = _make_result_ok()
+
+        # Seed cache: output 42 is currently selected (it was on before this sequence).
+        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", True)}
+        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
+
+        # Disable: cache updated in-place to selected=False.
+        with patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False})
+
+        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
+
+        # Re-enable: cache still warm with selected=False, occupancy check fires.
+        usage = _make_usage("living-room")
+        with patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=usage):
+            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+
+        assert result["error"] == "output_in_use"
