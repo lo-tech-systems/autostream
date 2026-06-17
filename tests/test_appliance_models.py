@@ -495,3 +495,143 @@ class TestBuildHomeStateFederation:
 
         assert result["ok"] is True
         assert result["outputs"] == []
+
+
+# ---------------------------------------------------------------------------
+# build_home_state — remote occupancy annotation
+# ---------------------------------------------------------------------------
+
+class TestBuildHomeStateAnnotation:
+    """Tests that build_home_state annotates outputs with remote_in_use fields."""
+
+    def _patch_home_with_outputs(self, cfg_path, owntone_outputs, *, usage_snapshot=None):
+        """Returns context manager that patches all required dependencies."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        import autostream_output_usage as ou
+
+        buf_result = MagicMock(ok=True, value="100")
+        out_result = MagicMock(ok=True, outputs=owntone_outputs)
+        playback = MagicMock()
+        playback.to_public_dict.return_value = {}
+        playback.stylus_banner_text = ""
+        playback.belt_banner_text = ""
+        playback.bearing_banner_text = ""
+
+        # Build an annotate_outputs based on a fake snapshot.
+        snapshot = usage_snapshot or {}
+
+        def _fake_annotate(outputs):
+            result = []
+            for out in outputs:
+                out = dict(out)
+                key = out.get("name", "").lower()
+                usage = snapshot.get(key)
+                locally_selected = bool(out.get("selected"))
+                if usage and not locally_selected:
+                    out["remote_in_use"] = True
+                    out["remote_owner"] = usage.owner_name
+                    out["remote_owner_service"] = usage.service_name
+                else:
+                    out["remote_in_use"] = False
+                    out["remote_owner"] = ""
+                    out["remote_owner_service"] = ""
+                result.append(out)
+            return result
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _ctx():
+            with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
+                 patch("autostream_appliance_models.list_outputs", return_value=out_result), \
+                 patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]), \
+                 patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
+                 patch("autostream_appliance_models.get_appliance_id", return_value=""), \
+                 patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
+                 patch("autostream_appliance_models.get_app_version", return_value="1.0"), \
+                 patch("autostream_output_usage.get_usage_snapshot", return_value=snapshot), \
+                 patch("autostream_output_usage.annotate_outputs", side_effect=_fake_annotate):
+                yield
+
+        return _ctx()
+
+    def _make_out(self, id_, name, selected=False):
+        return SimpleNamespace(id=id_, name=name, selected=selected, volume_percent=50)
+
+    def test_unselected_occupied_output_marked_remote_in_use(self, tmp_path):
+        from unittest.mock import MagicMock
+        import autostream_output_usage as ou
+
+        cfg_path = _make_config_file(tmp_path)
+        kitchen_usage = MagicMock()
+        kitchen_usage.owner_name = "living-room"
+        kitchen_usage.service_name = "living-room"
+        snapshot = {"kitchen": kitchen_usage}
+
+        outputs = [self._make_out("1", "Kitchen", selected=False)]
+        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
+            result = models.build_home_state(str(cfg_path))
+
+        assert result["ok"] is True
+        out_dict = result["outputs"][0]
+        assert out_dict["remote_in_use"] is True
+        assert out_dict["remote_owner"] == "living-room"
+
+    def test_locally_selected_output_not_marked_remote_in_use(self, tmp_path):
+        from unittest.mock import MagicMock
+        import autostream_output_usage as ou
+
+        cfg_path = _make_config_file(tmp_path)
+        kitchen_usage = MagicMock()
+        kitchen_usage.owner_name = "living-room"
+        kitchen_usage.service_name = "living-room"
+        snapshot = {"kitchen": kitchen_usage}
+
+        outputs = [self._make_out("1", "Kitchen", selected=True)]
+        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
+            result = models.build_home_state(str(cfg_path))
+
+        out_dict = result["outputs"][0]
+        assert out_dict["remote_in_use"] is False
+
+    def test_unoccupied_output_has_false_fields(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        outputs = [self._make_out("1", "Bedroom", selected=False)]
+        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
+            result = models.build_home_state(str(cfg_path))
+
+        out_dict = result["outputs"][0]
+        assert out_dict["remote_in_use"] is False
+        assert out_dict["remote_owner"] == ""
+        assert out_dict["remote_owner_service"] == ""
+
+    def test_sorting_preserved_default_first(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path,
+                                     extra={"owntone": {"output_name": "Zulu"}})
+        outputs = [
+            self._make_out("3", "Zulu"),
+            self._make_out("1", "Alpha"),
+            self._make_out("2", "Mango"),
+        ]
+        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
+            result = models.build_home_state(str(cfg_path))
+
+        names = [o["name"] for o in result["outputs"]]
+        assert names[0] == "Zulu"
+        assert names[1:] == sorted(names[1:])
+
+    def test_annotate_outputs_not_called_with_refresh(self, tmp_path):
+        """annotate_outputs must be cache-only — no refresh_now call."""
+        cfg_path = _make_config_file(tmp_path)
+        import autostream_output_usage as ou
+        refresh_calls = []
+        orig_refresh = ou.refresh_now
+        ou.refresh_now = lambda *a, **kw: refresh_calls.append(True)
+        try:
+            outputs = [self._make_out("1", "Kitchen")]
+            with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
+                models.build_home_state(str(cfg_path))
+        finally:
+            ou.refresh_now = orig_refresh
+        assert not refresh_calls, "build_home_state must not trigger refresh_now"

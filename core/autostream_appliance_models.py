@@ -173,6 +173,12 @@ def build_home_state(
                 if raw_outputs is not None:
                     outputs = build_output_list(parsed, raw_outputs)
 
+    try:
+        from autostream_output_usage import annotate_outputs
+        outputs = annotate_outputs(outputs)
+    except Exception:
+        pass
+
     hostname = _format_hostname(get_system_hostname())
     return {
         "ok": True,
