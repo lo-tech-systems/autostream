@@ -110,6 +110,22 @@ class TestVibraMiniInstallContract:
         ).read_text(encoding="utf-8")
         assert '${VIBRA_INSTALL_PREFIX}/bin/vibra-mini' in installer
 
+    def test_vibra_release_is_pinned(self):
+        installer = (
+            REPO_ROOT / "installer" / "lib" / "vibra.sh"
+        ).read_text(encoding="utf-8")
+        assert 'VIBRA_VERSION="v1.0.0"' in installer
+        assert '--branch "${VIBRA_VERSION}"' in installer
+        assert "--depth 1" in installer
+        assert 'VIBRA_BRANCH=' not in installer
+
+    def test_installer_summary_names_pinned_vibra_release(self):
+        installer = (REPO_ROOT / "autostream_install.sh").read_text(encoding="utf-8")
+        assert (
+            "Build and install vibra-mini ${VIBRA_VERSION} "
+            "for optional track identification"
+        ) in installer
+
 
 # ---------------------------------------------------------------------------
 # shellcheck (skipped when not installed)

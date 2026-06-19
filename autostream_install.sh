@@ -455,7 +455,7 @@ require_rpi_os_trixie() {
 }
 
 show_warnings_and_prompt() {
-  cat <<'EOF'
+  cat <<EOF
 
 =============================================================================
 AUTOSTREAM INSTALLER
@@ -463,6 +463,7 @@ AUTOSTREAM INSTALLER
 This script will:
 - Install OS packages (nginx, watchdog, dnsmasq, build tools, etc.)
 - Provision OwnTone according to the selected mode (mini by default)
+- Build and install vibra-mini ${VIBRA_VERSION} for optional track identification
 - Enable/disable systemd services
 - Create system users/groups and modify permissions
 - Modify /boot/firmware/config.txt to enable the hardware watchdog and disable Bluetooth
