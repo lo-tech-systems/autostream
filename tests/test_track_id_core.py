@@ -66,7 +66,7 @@ def _active_monitor(**overrides) -> AudioMonitor:
     return mon
 
 
-_DEFAULT_RATE = 22050
+_DEFAULT_RATE = 16000
 
 
 def _make_service(

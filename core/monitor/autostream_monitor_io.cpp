@@ -857,7 +857,7 @@ bool InputChannel::start(std::string* error_out)
         return false;
     }
 
-    // Create a libsamplerate state for stereo conversion.
+    // Create a libsamplerate state for the main stereo output conversion.
     // SRC_SINC_FASTEST provides good quality with moderate CPU usage.
     // On a Pi Zero, SRC_LINEAR can be substituted if CPU becomes a bottleneck.
     int src_error = 0;
@@ -869,6 +869,21 @@ bool InputChannel::start(std::string* error_out)
         _alsa.close();
         if (error_out)
             *error_out = "failed to initialise sample-rate converter";
+        return false;
+    }
+
+    // Create a dedicated single-channel SRC state for the 44100 → 16000 Hz ID tap.
+    int id_src_error = 0;
+    _id_src_state = src_new(SRC_LINEAR, /*channels=*/1, &id_src_error);
+    if (!_id_src_state)
+    {
+        LOG_WARN("[input%d] src_new (ID tap) failed: %s",
+                 _index, src_strerror(id_src_error));
+        src_delete(_src_state);
+        _src_state = nullptr;
+        _alsa.close();
+        if (error_out)
+            *error_out = "failed to initialise ID sample-rate converter";
         return false;
     }
 
@@ -953,6 +968,11 @@ bool InputChannel::start(std::string* error_out)
             src_delete(_src_state);
             _src_state = nullptr;
         }
+        if (_id_src_state)
+        {
+            src_delete(_id_src_state);
+            _id_src_state = nullptr;
+        }
         _started.store(false);
         LOG_WARN("[input%d] Thread creation failed: %s", _index, e.what());
         if (error_out)
@@ -997,6 +1017,11 @@ void InputChannel::stop()
     {
         src_delete(_src_state);
         _src_state = nullptr;
+    }
+    if (_id_src_state)
+    {
+        src_delete(_id_src_state);
+        _id_src_state = nullptr;
     }
 
     _capturing.store(false);
@@ -1228,7 +1253,12 @@ void InputChannel::process_thread_func()
     std::vector<float>   float_in(MAX_FRAMES * 2);        // interleaved float
     std::vector<float>   float_out(MAX_SRC_OUTPUT * 2);   // post-SRC float
     std::vector<int16_t> pcm_out(MAX_SRC_OUTPUT * 2);     // final int16
-    std::vector<int16_t> id_tmp(MAX_SRC_OUTPUT / 2);      // mono ID frames (pre-gain/EQ tap)
+    // ID-tap scratch: mono float input to the ID SRC, its float output, and
+    // the final s16le frames.  MAX_SRC_OUTPUT frames is a safe upper bound for
+    // both the downmixed mono input and the 44100→16000 SRC output.
+    std::vector<float>   id_float_mono(MAX_SRC_OUTPUT);   // downmixed mono float
+    std::vector<float>   id_float_out(MAX_SRC_OUTPUT);    // 16 kHz mono float from SRC
+    std::vector<int16_t> id_tmp(MAX_SRC_OUTPUT);          // 16 kHz mono s16le
 
     // Minimum number of samples to accumulate before processing.
     // 512 samples = 256 stereo frames = ~5 ms at 48 kHz.
@@ -1423,37 +1453,55 @@ void InputChannel::process_thread_func()
 
                 // ── ID snapshot tap (post-SRC, pre-gain, pre-EQ) ─────────
                 // Tap here to capture uncolored audio: gain and EQ reflect
-                // user preference and would skew frequency-domain fingerprints.
-                // Downsample 44100 Hz stereo → 22050 Hz mono:
-                //   - Take every other frame (2:1 decimation; no anti-aliasing
-                //     filter needed — fingerprint content is ≤ 5 kHz, well
-                //     below the 11025 Hz Nyquist of the tap output rate).
-                //   - Average L+R channels to produce a mono signal.
-                // Written under _id_mutex (held for microseconds); the control
-                // thread holds _id_mutex only during an explicit snapshot
-                // request, so contention is negligible.
-                if (!_id_buf.empty())
+                // user preference and would skew Shazam's frequency-domain
+                // fingerprints if applied.
+                // Step 1: downmix the 44100 Hz stereo float block to mono.
+                // Step 2: run through _id_src_state (SRC_LINEAR, 1 ch) to
+                //         convert 44100 → 16000 Hz.
+                // Step 3: clamp and convert to s16le, then append to _id_buf.
+                if (!_id_buf.empty() && _id_src_state)
                 {
-                    int id_count = out_frames / 2;
-                    for (int i = 0; i < id_count; ++i)
+                    // Downmix stereo → mono.
+                    for (int i = 0; i < out_frames; ++i)
                     {
-                        float L    = float_out[i * 4];      // frame i*2, left channel
-                        float R    = float_out[i * 4 + 1];  // frame i*2, right channel
-                        float mono = (L + R) * 0.5f;
-                        // Clamp before int16 conversion to guard against any
-                        // marginal SRC overshoot.
-                        if (mono >  1.0f) mono =  1.0f;
-                        if (mono < -1.0f) mono = -1.0f;
-                        id_tmp[i] = static_cast<int16_t>(mono * 32767.0f);
+                        float L = float_out[i * 2];
+                        float R = float_out[i * 2 + 1];
+                        id_float_mono[i] = (L + R) * 0.5f;
                     }
-                    if (id_count > 0)
+
+                    // Resample 44100 → 16000 Hz.
+                    SRC_DATA id_src_data;
+                    memset(&id_src_data, 0, sizeof(id_src_data));
+                    id_src_data.data_in       = id_float_mono.data();
+                    id_src_data.input_frames  = out_frames;
+                    id_src_data.data_out      = id_float_out.data();
+                    id_src_data.output_frames = static_cast<long>(id_float_out.size());
+                    id_src_data.src_ratio     = static_cast<double>(ID_BUF_RATE) /
+                                                static_cast<double>(AudioMonitor::output_rate_hz());
+                    id_src_data.end_of_input  = 0;
+
+                    int id_err = src_process(_id_src_state, &id_src_data);
+                    if (id_err != 0)
                     {
+                        LOG_WARN("[input%d] ID SRC error: %s",
+                                 _index, src_strerror(id_err));
+                    }
+                    else if (id_src_data.output_frames_gen > 0)
+                    {
+                        int id_count = static_cast<int>(id_src_data.output_frames_gen);
+                        for (int i = 0; i < id_count; ++i)
+                        {
+                            float s = id_float_out[i];
+                            if (s >  1.0f) s =  1.0f;
+                            if (s < -1.0f) s = -1.0f;
+                            id_tmp[i] = static_cast<int16_t>(s * 32767.0f);
+                        }
                         std::lock_guard<std::mutex> id_lock(_id_mutex);
                         unsigned wp = _id_write_pos;
                         for (int i = 0; i < id_count; ++i)
                             _id_buf[(wp + static_cast<unsigned>(i)) & ID_BUF_MASK] = id_tmp[i];
-                        _id_write_pos     = wp + static_cast<unsigned>(id_count);
-                        _id_frames_avail  = std::min(
+                        _id_write_pos    = wp + static_cast<unsigned>(id_count);
+                        _id_frames_avail = std::min(
                             _id_frames_avail + static_cast<unsigned>(id_count),
                             ID_BUF_FRAMES);
                     }

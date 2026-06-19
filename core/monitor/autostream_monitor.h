@@ -758,7 +758,7 @@ public:
     // detect the crashed-but-not-cleaned-up state in api_start_input().
     bool is_started() const { return _started.load(); }
 
-    // Copy the most recent min(max_frames, ID_BUF_FRAMES) mono s16le 22050 Hz
+    // Copy the most recent min(max_frames, ID_BUF_FRAMES) mono s16le 16000 Hz
     // frames into out[0..return_value-1], ordered oldest-first.  Returns the
     // number of frames actually copied (may be less than max_frames if the
     // buffer has not yet accumulated that many frames since the last start()).
@@ -772,8 +772,12 @@ public:
     std::vector<VuBin> get_vu_history() const;
 
     // Sample rate and capacity of the identification snapshot buffer.
-    static constexpr unsigned ID_BUF_RATE   = 22050;
-    static constexpr unsigned ID_BUF_FRAMES = 1u << 20;  // 1048576 ≈ 47.6 s
+    // ID_BUF_RATE matches Shazam's internal processing rate, eliminating any
+    // resampling step inside the Vibra daemon.
+    // ID_BUF_FRAMES must remain a power of two (the ring uses bitwise masking).
+    // 2^19 = 524288 frames at 16000 Hz ≈ 32.8 s — above the 20 s daemon max.
+    static constexpr unsigned ID_BUF_RATE   = 16000;
+    static constexpr unsigned ID_BUF_FRAMES = 1u << 19;  // 524288 ≈ 32.8 s
 
 private:
     // ── Thread functions ─────────────────────────────────────────────────────
@@ -822,7 +826,8 @@ private:
     AlsaCapture _alsa;
 
     // ── libsamplerate state (created in start(), freed in stop()) ────────────
-    SRC_STATE*    _src_state = nullptr;
+    SRC_STATE*    _src_state    = nullptr;  // main stereo SRC (ALSA rate → 44100 Hz)
+    SRC_STATE*    _id_src_state = nullptr;  // ID-tap SRC (44100 Hz mono → 16000 Hz)
 
     // ── Sample rate estimation ────────────────────────────────────────────────
     RateEstimator _rate_estimator;
@@ -926,25 +931,19 @@ private:
 
     // ── Identification snapshot buffer ────────────────────────────────────────
     //
-    // A separate rolling buffer that accumulates mono s16le audio at 22050 Hz
-    // for use by external fingerprinting tools (e.g. Chromaprint/AcoustID).
+    // A separate rolling buffer that accumulates mono s16le audio at 16000 Hz
+    // for Shazam-based track identification via the Vibra daemon.
     //
-    // Tap point: post-SRC (44100 Hz stereo float), pre-gain/pre-EQ.
-    //   - Post-SRC: uses a stable, device-independent rate, avoiding the need
-    //     for a second resampler.
-    //   - Pre-gain/pre-EQ: the identification buffer captures uncolored audio
-    //     content.  User gain and EQ settings reflect personal preference and
-    //     would skew frequency-domain fingerprints if included.
-    //   - Gated by _capturing: SRC only runs while _capturing is true, so the
-    //     buffer fills only during active audio sessions.  The 20-second window
-    //     is sufficient for Chromaprint (which needs ≥ ~3 s) across any normal
-    //     song.
+    // Tap point: post-main-SRC (44100 Hz stereo float), pre-gain/pre-EQ.
+    //   - Post-SRC: uses a stable, device-independent rate.
+    //   - Pre-gain/pre-EQ: captures uncolored audio; user gain and EQ reflect
+    //     personal preference and would skew frequency-domain fingerprints.
+    //   - Gated by _capturing: fills only during active audio sessions.
     //
-    // Downsampling: every other SRC output frame is averaged (L+R)*0.5 and
-    // converted to int16.  No anti-aliasing filter is applied; at 22050 Hz
-    // the useful fingerprint content (≤ 5 kHz) is well below the Nyquist of
-    // 11025 Hz, and the absence of a filter has no practical effect on
-    // fingerprint accuracy.
+    // Downsampling: a dedicated _id_src_state (SRC_LINEAR, 1 channel) converts
+    // the downmixed mono float signal from 44100 → 16000 Hz.  SRC_LINEAR is
+    // sufficient for Shazam's spectral peak fingerprinting; upgrade to
+    // SRC_SINC_FASTEST if profiling shows a measurable quality impact.
     //
     // Concurrency: _id_mutex is held by the process thread during each chunk
     // write (O(chunk_size) bytes, ~microseconds) and by the control thread for
