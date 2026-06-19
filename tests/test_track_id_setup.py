@@ -71,13 +71,13 @@ class TestTrackIdConfigDefaults:
         parsed = parse_config({"track_identification": {"interval_seconds": 30}})
         assert parsed.track_identification.interval_seconds == 30
 
-    def test_api_key_parses(self):
+    def test_unknown_provider_settings_preserved_in_parse(self):
         parsed = parse_config({
             "track_identification": {
-                "providers": {"acoustid_musicbrainz": {"api_key": "abc123"}}
+                "providers": {"future_provider": {"token": "abc123"}}
             }
         })
-        assert parsed.track_identification.providers["acoustid_musicbrainz"]["api_key"] == "abc123"
+        assert parsed.track_identification.providers["future_provider"]["token"] == "abc123"
 
     def test_unknown_provider_preserved(self):
         parsed = parse_config({
@@ -216,7 +216,7 @@ class TestHandleSetupPostTrackId:
         saved, *_ = _run_setup_post(form, tmp_path)
         assert saved["track_identification"]["enabled"] is False
 
-    def test_api_key_not_in_logs(self, tmp_path, caplog):
+    def test_sentinel_value_not_in_logs(self, tmp_path, caplog):
         form = {
             "audio_capture_device": "hw:1,0",
             "audio_silence_threshold": "-60",
@@ -224,7 +224,6 @@ class TestHandleSetupPostTrackId:
             "owntone_volume_percent": "20",
             "silence_seconds": "30",
             "track_identification_present": "1",
-            "track_identification_acoustid_api_key": "supersecretkey",
         }
         with caplog.at_level(logging.DEBUG):
             _run_setup_post(form, tmp_path)
@@ -252,15 +251,12 @@ class TestHandleSetupPostTrackId:
         mock_live_apply.assert_called_once()
 
     def test_no_reload_when_track_id_unchanged(self, tmp_path):
-        # Pre-seed config with enabled=True, matching audio devices and thresholds,
-        # and a key so that neither daemon settings nor track-id settings change.
+        # Pre-seed config with enabled=True and matching audio devices.
+        # Submitting the same enabled state must not trigger a live apply.
         existing = {
             "audio1": {"capture_device": "hw:1,0", "silence_threshold": -60.0, "turntable": False},
             "audio2": {"enabled": False, "capture_device": "", "silence_threshold": -60.0, "turntable": False},
-            "track_identification": {
-                "enabled": True,
-                "providers": {"acoustid_musicbrainz": {"api_key": "k1"}},
-            },
+            "track_identification": {"enabled": True},
         }
         form = {
             "audio_capture_device": "hw:1,0",
@@ -270,7 +266,6 @@ class TestHandleSetupPostTrackId:
             "silence_seconds": "30",
             "track_identification_present": "1",
             "track_identification_enabled": "on",
-            "track_identification_acoustid_api_key": "k1",
         }
         _, mock_reload, mock_live_apply = _run_setup_post(form, tmp_path, extra_cfg=existing)
         mock_reload.assert_not_called()

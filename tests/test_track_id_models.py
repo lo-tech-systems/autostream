@@ -53,7 +53,7 @@ class TestTrackIdentificationResult:
             title="Song",
             artist="Artist",
             album="Album",
-            provider="acoustid_musicbrainz",
+            provider="vibra_shazam",
             confidence=0.9,
         )
         assert r.matched is True
@@ -249,7 +249,7 @@ class TestBuildService:
     def test_disabled_returns_none(self):
         svc = build_service(
             enabled=False,
-            provider_id="acoustid_musicbrainz",
+            provider_id="vibra_shazam",
             provider_settings={},
             interval_seconds=15,
         )
@@ -264,15 +264,15 @@ class TestBuildService:
         )
         assert svc is None
 
-    def test_known_provider_missing_dependency_returns_none(self):
-        # acoustid_musicbrainz may not be importable in this test env.
-        # build_service must not raise; it returns None on failure.
-        import importlib
+    def test_known_provider_unavailable_returns_none(self):
+        # vibra_shazam build will fail if the vibra socket doesn't exist at test time
+        # (socket connection is lazy, so this actually succeeds). Simulate import failure
+        # instead to verify build_service never raises.
         with pytest.MonkeyPatch().context() as mp:
-            mp.setitem(sys.modules, "acoustid", None)  # simulate import failure
+            mp.setitem(sys.modules, "track_id.vibra_shazam", None)
             svc = build_service(
                 enabled=True,
-                provider_id="acoustid_musicbrainz",
+                provider_id="vibra_shazam",
                 provider_settings={},
                 interval_seconds=15,
             )

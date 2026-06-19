@@ -140,7 +140,7 @@ class TestTrackIdentificationService:
 
     def test_identify_skips_cache_when_fingerprint_pcm_raises(self):
         provider = _make_provider(matched=True)
-        provider.fingerprint_pcm.side_effect = RuntimeError("acoustid not installed")
+        provider.fingerprint_pcm.side_effect = RuntimeError("fingerprint failed")
         svc = TrackIdentificationService(provider, "test_provider", 15)
         pcm = _LONG_PCM
         r1 = svc.identify(pcm, 22050, input_index=1)
