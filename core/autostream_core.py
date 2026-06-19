@@ -1187,12 +1187,15 @@ class MonitorClient:
         with self._lock:
             return self._command({"type": "get_status"})
 
-    def get_id_snapshot(self, index: int, max_seconds: int = 20) -> Optional[bytes]:
-        """Return raw s16le mono 22050 Hz PCM bytes, or None on failure.
+    def get_id_snapshot(
+        self, index: int, max_seconds: int = 20
+    ) -> "Optional[tuple[bytes, int]]":
+        """Return (pcm_bytes, rate_hz) from the monitor's ID snapshot buffer.
 
-        Reads the JSON ack line, then reads the binary payload of exactly
-        frames * 2 bytes as declared in the ack.  Returns an empty bytes
-        object if the monitor reports zero frames available.
+        pcm_bytes is raw s16le mono PCM at rate_hz Hz.  Returns (b"", rate)
+        when no frames are available yet.  Returns None on any protocol or
+        socket failure.  The rate is read from the monitor ack so callers
+        are not hardcoded to any particular sample rate.
         """
         with self._lock:
             resp = self._command({
@@ -1203,19 +1206,26 @@ class MonitorClient:
             if not resp or not resp.get("ok"):
                 return None
             frames = resp.get("frames", 0)
+            rate = resp.get("rate")
             if not isinstance(frames, int) or isinstance(frames, bool):
                 self.close()
                 return None
             if frames < 0:
                 self.close()
                 return None
+            if not isinstance(rate, int) or isinstance(rate, bool) or rate <= 0:
+                self.close()
+                return None
             if frames == 0:
-                return b""
-            max_frames = max_seconds * 22050
+                return (b"", rate)
+            max_frames = max_seconds * rate
             if frames > max_frames:
                 self.close()
                 return None
-            return self._readbytes(frames * 2)
+            pcm = self._readbytes(frames * 2)
+            if pcm is None:
+                return None
+            return (pcm, rate)
 
 
 # --------------------------------------------------------------------------- #
@@ -1482,15 +1492,19 @@ class AudioMonitor:
         self._ti_next_attempt = now + svc.interval_seconds
         self._ti_last_attempt = now
 
-        pcm_bytes = client.get_id_snapshot(self.input_index, max_seconds=svc.interval_seconds)
+        snapshot = client.get_id_snapshot(self.input_index, max_seconds=svc.snapshot_seconds)
+        if snapshot is None:
+            logging.debug("track_id[%d]: get_id_snapshot returned no audio.", self.input_index)
+            return
+        pcm_bytes, rate = snapshot
         if not pcm_bytes:
             logging.debug("track_id[%d]: get_id_snapshot returned no audio.", self.input_index)
             return
 
-        duration_s = len(pcm_bytes) / (22050 * 2)
+        duration_s = len(pcm_bytes) / (rate * 2)
         logging.debug(
             "track_id[%d]: snapshot returned %d bytes (%.1f s, requested=%d s).",
-            self.input_index, len(pcm_bytes), duration_s, svc.interval_seconds,
+            self.input_index, len(pcm_bytes), duration_s, svc.snapshot_seconds,
         )
         from track_id.service import MIN_PCM_DURATION_SECONDS
         if duration_s < MIN_PCM_DURATION_SECONDS:
@@ -1518,7 +1532,7 @@ class AudioMonitor:
 
         threading.Thread(
             target=self._ti_worker,
-            args=(bytes(pcm_bytes), 22050),
+            args=(bytes(pcm_bytes), rate),
             daemon=True,
             name=f"track-id-{self.input_index}",
         ).start()

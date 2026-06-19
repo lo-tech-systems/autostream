@@ -105,10 +105,12 @@ class TrackIdentificationService:
         provider: TrackIdentifier,
         provider_id: str,
         interval_seconds: int,
+        snapshot_seconds: int = DEFAULT_SNAPSHOT_MAX_SECONDS,
     ) -> None:
         self._provider = provider
         self._provider_id = provider_id
         self.interval_seconds = interval_seconds
+        self.snapshot_seconds = snapshot_seconds
         self._cache = _ResultCache()
 
     @property
@@ -125,9 +127,9 @@ class TrackIdentificationService:
     ) -> TrackIdentificationResult:
         """Identify a track, using the cache when the provider supports fingerprinting.
 
-        Logs attempt stages at DEBUG and result at INFO.  Converts all
-        provider exceptions to a not-found result with a sanitized error
-        detail.  API keys are never logged.
+        Logs attempt stages at DEBUG and result at INFO.  Logs and re-raises
+        provider exceptions — callers must map them to state="error".  Only
+        the exception type name is logged; API keys are never logged.
         """
         from track_id.models import TrackIdentificationResult as R
         duration = len(pcm16_mono) / (sample_rate * 2) if sample_rate else 0.0
@@ -184,7 +186,7 @@ class TrackIdentificationService:
                 self._provider_id,
                 type(exc).__name__,
             )
-            return R(matched=False, provider=self._provider_id, source_detail="provider_error")
+            raise
 
         if fp_key is not None:
             self._cache.put(fp_key, result, now)
@@ -236,6 +238,7 @@ class _DisabledService:
 
     provider_id = ""
     interval_seconds = 15
+    snapshot_seconds = DEFAULT_SNAPSHOT_MAX_SECONDS
 
     def identify(self, *args, **kwargs) -> None:
         return None

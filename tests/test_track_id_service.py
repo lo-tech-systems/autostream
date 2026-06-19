@@ -57,18 +57,18 @@ class TestTrackIdentificationService:
         result = svc.identify(_LONG_PCM, 22050, input_index=1)
         assert result.matched is False
 
-    def test_provider_exception_returns_not_found_not_raises(self):
+    def test_provider_exception_re_raises(self):
         svc, _ = _make_service(raise_exc=RuntimeError("network error"))
-        result = svc.identify(_LONG_PCM, 22050, input_index=1)
-        assert result.matched is False
-        assert result.source_detail == "provider_error"
+        with pytest.raises(RuntimeError):
+            svc.identify(_LONG_PCM, 22050, input_index=1)
 
     def test_provider_exception_not_logged_with_secret(self, caplog):
         # The service must not log any exception message containing a key.
         provider = _make_provider(raise_exc=Exception("api_key=abc123 failed"))
         svc = TrackIdentificationService(provider, "test_provider", 15)
         with caplog.at_level(logging.DEBUG):
-            svc.identify(_LONG_PCM, 22050, input_index=1)
+            with pytest.raises(Exception):
+                svc.identify(_LONG_PCM, 22050, input_index=1)
         # We never log the exception message, only the exception type name.
         assert "abc123" not in caplog.text
 
@@ -98,6 +98,15 @@ class TestTrackIdentificationService:
     def test_interval_seconds_accessible(self):
         svc, _ = _make_service(interval=30)
         assert svc.interval_seconds == 30
+
+    def test_snapshot_seconds_defaults_to_15(self):
+        svc, _ = _make_service()
+        assert svc.snapshot_seconds == 15
+
+    def test_snapshot_seconds_independent_of_interval(self):
+        svc, _ = _make_service(interval=45)
+        assert svc.snapshot_seconds == 15
+        assert svc.interval_seconds == 45
 
     def test_identify_uses_cache_when_provider_returns_fingerprint(self):
         provider = _make_provider(matched=True)
@@ -211,34 +220,25 @@ class TestNoDoubleFingerprint:
         provider.identify_from_fingerprint.assert_not_called()
 
 
-class TestSnapshotClampAndCapacity:
-    """Buffer and clamp constants must support 45-second snapshots."""
+class TestSnapshotSecondsInvariants:
+    """snapshot_seconds must stay within the Vibra daemon's protocol limits."""
 
-    def test_id_buf_frames_holds_45_seconds(self):
-        """ID_BUF_FRAMES must be large enough for 45 s at 22050 Hz."""
-        ID_BUF_RATE = 22050
-        ID_BUF_FRAMES = 1 << 20  # must match autostream_monitor.h
-        capacity_seconds = ID_BUF_FRAMES / ID_BUF_RATE
-        assert capacity_seconds >= 45.0
+    def test_snapshot_seconds_does_not_exceed_daemon_max(self):
+        """snapshot_seconds must never exceed the 20 s Vibra protocol maximum."""
+        from track_id.service import DEFAULT_SNAPSHOT_MAX_SECONDS
+        assert DEFAULT_SNAPSHOT_MAX_SECONDS <= 20
 
-    def test_track_id_max_interval_aligned_to_buffer(self):
-        """TRACK_ID_MAX_INTERVAL must not exceed the buffer capacity."""
-        import sys
-        from pathlib import Path
-        core_path = str(Path(__file__).parent.parent / "core")
-        if core_path not in sys.path:
-            sys.path.insert(0, core_path)
-        from autostream_config import TRACK_ID_MAX_INTERVAL
-        ID_BUF_RATE = 22050
-        ID_BUF_FRAMES = 1 << 20
-        capacity_seconds = ID_BUF_FRAMES / ID_BUF_RATE
-        assert TRACK_ID_MAX_INTERVAL <= capacity_seconds
+    def test_snapshot_seconds_custom_value_stored(self):
+        """TrackIdentificationService accepts a custom snapshot_seconds."""
+        provider = MagicMock()
+        provider.provider_id = "test"
+        svc = TrackIdentificationService(provider, "test", interval_seconds=30, snapshot_seconds=12)
+        assert svc.snapshot_seconds == 12
 
-    def test_track_id_max_interval_is_45(self):
-        import sys
-        from pathlib import Path
-        core_path = str(Path(__file__).parent.parent / "core")
-        if core_path not in sys.path:
-            sys.path.insert(0, core_path)
-        from autostream_config import TRACK_ID_MAX_INTERVAL
-        assert TRACK_ID_MAX_INTERVAL == 45
+    def test_snapshot_seconds_independent_from_interval(self):
+        """Scheduling cadence and clip length are separate concepts."""
+        provider = MagicMock()
+        provider.provider_id = "test"
+        svc = TrackIdentificationService(provider, "test", interval_seconds=45)
+        assert svc.snapshot_seconds == 15
+        assert svc.interval_seconds == 45

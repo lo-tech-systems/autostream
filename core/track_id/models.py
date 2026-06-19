@@ -120,3 +120,7 @@ def waiting_snapshot(*, input_index: Optional[int] = None) -> TrackIdentificatio
         status_text=state_status_text(STATE_WAITING),
         input_index=input_index,
     )
+
+
+class TrackIDRateLimitedError(Exception):
+    """Raised by any provider that receives a rate-limit response from its upstream."""

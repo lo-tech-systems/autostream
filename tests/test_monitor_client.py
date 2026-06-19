@@ -349,20 +349,20 @@ class TestSetLogLevel:
 # ---------------------------------------------------------------------------
 
 class TestGetIdSnapshot:
-    def test_returns_pcm_bytes(self):
+    def test_returns_pcm_and_rate(self):
         frames = 10
         pcm = b"\x00\x01" * frames  # frames * 2 bytes
-        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 22050}) + "\n"
         sock = FakeSocket(ack.encode(), pcm)
         c = _client(sock)
         result = c.get_id_snapshot(0, max_seconds=5)
-        assert result == pcm
+        assert result == (pcm, 22050)
 
-    def test_zero_frames_returns_empty_bytes(self):
-        ack = json.dumps({"ok": True, "frames": 0}) + "\n"
+    def test_zero_frames_returns_empty_bytes_and_rate(self):
+        ack = json.dumps({"ok": True, "frames": 0, "rate": 22050}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0)
-        assert result == b""
+        assert result == (b"", 22050)
 
     def test_ok_false_returns_none(self):
         ack = json.dumps({"ok": False, "error": "no data"}) + "\n"
@@ -376,7 +376,7 @@ class TestGetIdSnapshot:
         assert result is None
 
     def test_sends_correct_command_fields(self):
-        ack = json.dumps({"ok": True, "frames": 0}) + "\n"
+        ack = json.dumps({"ok": True, "frames": 0, "rate": 22050}) + "\n"
         sock = FakeSocket(ack.encode())
         c = _client(sock)
         c.get_id_snapshot(index=2, max_seconds=15)
@@ -385,6 +385,38 @@ class TestGetIdSnapshot:
         assert cmd["type"] == "get_id_snapshot"
         assert cmd["input"] == 2
         assert cmd["max_seconds"] == 15
+
+    def test_missing_rate_returns_none_and_disconnects(self):
+        frames = 10
+        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0, max_seconds=5)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_zero_rate_returns_none_and_disconnects(self):
+        frames = 10
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 0}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0, max_seconds=5)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_negative_rate_returns_none_and_disconnects(self):
+        frames = 10
+        ack = json.dumps({"ok": True, "frames": frames, "rate": -1}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0, max_seconds=5)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_string_rate_returns_none_and_disconnects(self):
+        frames = 10
+        ack = json.dumps({"ok": True, "frames": frames, "rate": "22050"}) + "\n"
+        c = _client(FakeSocket(ack.encode()))
+        result = c.get_id_snapshot(0, max_seconds=5)
+        assert result is None
+        assert not c.is_connected()
 
 
 # ---------------------------------------------------------------------------
@@ -433,52 +465,51 @@ class TestCommandEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestGetIdSnapshotLengths:
+    _RATE = 22050
+
     def test_negative_frames_disconnects(self):
-        ack = json.dumps({"ok": True, "frames": -1}) + "\n"
+        ack = json.dumps({"ok": True, "frames": -1, "rate": self._RATE}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0)
         assert result is None
         assert not c.is_connected()
 
     def test_string_frames_disconnects(self):
-        ack = json.dumps({"ok": True, "frames": "100"}) + "\n"
+        ack = json.dumps({"ok": True, "frames": "100", "rate": self._RATE}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0)
         assert result is None
         assert not c.is_connected()
 
     def test_bool_frames_disconnects(self):
-        ack = json.dumps({"ok": True, "frames": True}) + "\n"
+        ack = json.dumps({"ok": True, "frames": True, "rate": self._RATE}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0)
         assert result is None
         assert not c.is_connected()
 
     def test_frames_exceeding_max_seconds_bound_disconnects(self):
-        # 22050 frames/s * 5 seconds = 110250; one more should reject
         max_seconds = 5
-        frames = max_seconds * 22050 + 1
-        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        frames = max_seconds * self._RATE + 1
+        ack = json.dumps({"ok": True, "frames": frames, "rate": self._RATE}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0, max_seconds=max_seconds)
         assert result is None
         assert not c.is_connected()
 
     def test_frames_at_max_seconds_bound_accepted(self):
-        # Exactly at the bound is allowed
         max_seconds = 5
-        frames = max_seconds * 22050
+        frames = max_seconds * self._RATE
         pcm = b"\x00\x01" * frames
-        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        ack = json.dumps({"ok": True, "frames": frames, "rate": self._RATE}) + "\n"
         c = _client(FakeSocket(ack.encode(), pcm))
         result = c.get_id_snapshot(0, max_seconds=max_seconds)
-        assert result == pcm
+        assert result == (pcm, self._RATE)
 
-    def test_excessive_frames_truncated_to_available_bytes(self):
-        # Daemon claims more frames than max_seconds allows: rejected before read
+    def test_excessive_frames_rejected_before_read(self):
         max_seconds = 1
-        frames = max_seconds * 22050 + 1000
-        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
+        frames = max_seconds * self._RATE + 1000
+        ack = json.dumps({"ok": True, "frames": frames, "rate": self._RATE}) + "\n"
         c = _client(FakeSocket(ack.encode(), b"\x00\x01\x00\x01"))
         result = c.get_id_snapshot(0, max_seconds=max_seconds)
         assert result is None
@@ -486,11 +517,10 @@ class TestGetIdSnapshotLengths:
 
     def test_truncated_payload_returns_none_and_disconnects(self):
         frames = 100
-        ack = json.dumps({"ok": True, "frames": frames}) + "\n"
-        # Only half the expected bytes provided
+        ack = json.dumps({"ok": True, "frames": frames, "rate": self._RATE}) + "\n"
         partial_pcm = b"\x00\x01" * (frames // 2)
         c = _client(FakeSocket(ack.encode(), partial_pcm))
-        result = c.get_id_snapshot(0)
+        result = c.get_id_snapshot(0, max_seconds=20)
         assert result is None
         assert not c.is_connected()
 

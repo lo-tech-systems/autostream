@@ -66,15 +66,20 @@ def _active_monitor(**overrides) -> AudioMonitor:
     return mon
 
 
+_DEFAULT_RATE = 22050
+
+
 def _make_service(
     matched: bool = True,
     interval: int = 15,
+    snapshot: int = 15,
     provider_id: str = "test_provider",
     raise_exc=None,
 ) -> MagicMock:
     svc = MagicMock()
     svc.provider_id = provider_id
     svc.interval_seconds = interval
+    svc.snapshot_seconds = snapshot
     if raise_exc is not None:
         svc.identify.side_effect = raise_exc
     else:
@@ -89,9 +94,12 @@ def _make_service(
     return svc
 
 
-def _make_client(pcm: bytes = b"\x00" * (22050 * 2 * 15)) -> MagicMock:
+def _make_client(
+    pcm: bytes = b"\x00" * (_DEFAULT_RATE * 2 * 15),
+    rate: int = _DEFAULT_RATE,
+) -> MagicMock:
     c = MagicMock(spec=MonitorClient)
-    c.get_id_snapshot.return_value = pcm
+    c.get_id_snapshot.return_value = (pcm, rate)
     return c
 
 
@@ -232,9 +240,9 @@ class TestIntervalScheduling:
         from track_id.service import MIN_PCM_DURATION_SECONDS
         svc = _make_service(interval=15)
         mon = _active_monitor()
-        short_pcm = b"\x00" * int(22050 * 2 * (MIN_PCM_DURATION_SECONDS - 1))
+        short_pcm = b"\x00" * int(_DEFAULT_RATE * 2 * (MIN_PCM_DURATION_SECONDS - 1))
         client = MagicMock()
-        client.get_id_snapshot.return_value = short_pcm
+        client.get_id_snapshot.return_value = (short_pcm, _DEFAULT_RATE)
         core._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 0.0
@@ -529,14 +537,14 @@ class TestGenerationGuard:
 # ---------------------------------------------------------------------------
 
 class TestMonitorSnapshotClamp:
-    """The Python-level request clamp must allow 30 and 45, reject values > 45."""
+    """get_id_snapshot must be called with snapshot_seconds, not interval_seconds."""
 
-    def _run_trigger(self, interval: int) -> int:
+    def _run_trigger(self, interval: int, snapshot: int = 15) -> int:
         """Trigger identification and return the max_seconds passed to get_id_snapshot."""
-        pcm = b"\x00" * int(22050 * 2 * interval)
+        pcm = b"\x00" * int(_DEFAULT_RATE * 2 * snapshot)
         client = MagicMock(spec=MonitorClient)
-        client.get_id_snapshot.return_value = pcm
-        svc = _make_service(interval=interval)
+        client.get_id_snapshot.return_value = (pcm, _DEFAULT_RATE)
+        svc = _make_service(interval=interval, snapshot=snapshot)
         mon = _active_monitor()
         core._track_id_service = svc
         mon._apply_track_id_service(svc)
@@ -545,24 +553,19 @@ class TestMonitorSnapshotClamp:
         args, kwargs = client.get_id_snapshot.call_args
         return kwargs.get("max_seconds", args[1] if len(args) > 1 else None)
 
-    def test_clamp_allows_30(self):
-        assert self._run_trigger(30) == 30
+    def test_snapshot_seconds_used_not_interval_seconds(self):
+        """max_seconds must equal snapshot_seconds (15), not interval_seconds (45)."""
+        assert self._run_trigger(interval=45, snapshot=15) == 15
 
-    def test_clamp_allows_45(self):
-        assert self._run_trigger(45) == 45
+    def test_snapshot_seconds_is_passed_for_long_interval(self):
+        """Even with a 30 s interval, snapshot request is snapshot_seconds."""
+        assert self._run_trigger(interval=30, snapshot=15) == 15
 
-    def test_30s_pcm_exceeds_min_duration_guard(self):
-        """A 30-second snapshot must be above MIN_PCM_DURATION_SECONDS."""
+    def test_snapshot_pcm_exceeds_min_duration_guard(self):
+        """Default 15-second snapshot must be above MIN_PCM_DURATION_SECONDS."""
         from track_id.service import MIN_PCM_DURATION_SECONDS
-        pcm = b"\x00" * int(22050 * 2 * 30)
-        duration_s = len(pcm) / (22050 * 2)
-        assert duration_s >= MIN_PCM_DURATION_SECONDS
-
-    def test_45s_pcm_exceeds_min_duration_guard(self):
-        """A 45-second snapshot must be above MIN_PCM_DURATION_SECONDS."""
-        from track_id.service import MIN_PCM_DURATION_SECONDS
-        pcm = b"\x00" * int(22050 * 2 * 45)
-        duration_s = len(pcm) / (22050 * 2)
+        pcm = b"\x00" * int(_DEFAULT_RATE * 2 * 15)
+        duration_s = len(pcm) / (_DEFAULT_RATE * 2)
         assert duration_s >= MIN_PCM_DURATION_SECONDS
 
 
@@ -577,9 +580,9 @@ class TestShortSnapshotLog:
         from track_id.service import MIN_PCM_DURATION_SECONDS
         svc = _make_service(interval=15)
         mon = _active_monitor()
-        short_pcm = b"\x00" * int(22050 * 2 * (MIN_PCM_DURATION_SECONDS - 1))
+        short_pcm = b"\x00" * int(_DEFAULT_RATE * 2 * (MIN_PCM_DURATION_SECONDS - 1))
         client = MagicMock(spec=MonitorClient)
-        client.get_id_snapshot.return_value = short_pcm
+        client.get_id_snapshot.return_value = (short_pcm, _DEFAULT_RATE)
         core._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 0.0
@@ -596,9 +599,9 @@ class TestShortSnapshotLog:
         import logging
         svc = _make_service(interval=15)
         mon = _active_monitor()
-        pcm = b"\x00" * int(22050 * 2 * 15)
+        pcm = b"\x00" * int(_DEFAULT_RATE * 2 * 15)
         client = MagicMock(spec=MonitorClient)
-        client.get_id_snapshot.return_value = pcm
+        client.get_id_snapshot.return_value = (pcm, _DEFAULT_RATE)
         core._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 0.0
