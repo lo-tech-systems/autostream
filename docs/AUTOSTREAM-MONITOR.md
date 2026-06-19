@@ -826,21 +826,22 @@ Behavior:
 - `max_seconds` defaults to `20`
 - values lower than `1` are clamped to `1`
 - values higher than `20` are clamped to `20`
-- audio format is mono `s16le` at `22050 Hz`
-- the snapshot is taken from a rolling buffer populated from post-SRC audio
-  before gain and EQ
+- audio format is mono `s16le` at `16000 Hz`
+- the snapshot is taken from a rolling ID buffer populated via a dedicated
+  `libsamplerate` (SRC_LINEAR) conversion from 44100 Hz to 16000 Hz, before
+  gain and EQ
 
 Success response:
 
 ```json
-{"type":"ack","command":"get_id_snapshot","input":1,"ok":true,"format":"s16le","rate":22050,"channels":1,"frames":12345}
+{"type":"ack","command":"get_id_snapshot","input":1,"ok":true,"format":"s16le","rate":16000,"channels":1,"frames":12345}
 ```
 
 On success, the JSON line is followed immediately by raw binary PCM:
 
 - sample format: signed 16-bit little-endian
 - channels: `1`
-- sample rate: `22050`
+- sample rate: `16000`
 - payload bytes: `frames * 2`
 
 The client must read exactly `frames * 2` bytes after the newline.

@@ -145,39 +145,25 @@ After servicing, tap the relevant button — **Mark Stylus Replaced**, **Mark Be
 
 ## Track Identification
 
-autostream can identify what is playing and show the artist, title, album, and cover art on the Home screen. This feature is **off by default** and requires:
+autostream can identify what is playing and show the artist, title, album, and cover art on the Home screen. This feature is **off by default** and requires network access from the Pi to Shazam's recognition servers (`amp.shazam.com`). No API key is needed.
 
-1. A free **AcoustID application API key** (one per application, not per user).
-2. Network access from the Pi to `api.acoustid.org`, `musicbrainz.org`, and `coverartarchive.org`.
-
-Identification uses acoustic fingerprinting (via `fpcalc` / Chromaprint) followed by AcoustID and MusicBrainz lookups. No audio is sent to third parties — only a short numeric fingerprint.
-
-### Obtaining an AcoustID API key
-
-1. Go to [https://acoustid.org/login](https://acoustid.org/login) and sign in or create a free account.
-2. Navigate to **Applications** → **Register application**.
-3. Enter a name (e.g. "My autostream") and click **Register**.
-4. Copy the generated **API Key**.
-
-AcoustID API keys are free. The service has a rate limit of approximately 3 requests per second; autostream spaces requests out and will not breach this in normal use.
+Identification is powered by `autostream-vibra`, a local Shazam recognition daemon that runs alongside autostream. Short clips of audio are fingerprinted on-device and matched against the Shazam catalog. No raw audio leaves the device.
 
 ### Enabling track identification
 
 1. Open the autostream **Setup page** (`/setup`).
 2. Scroll to the **Track Identification** card.
 3. Toggle **Enable track identification** on.
-4. Paste your AcoustID API key into the **AcoustID API Key** field.
-5. Tap **Save**.
+4. Tap **Save**.
 
 After saving, the Home screen will show a status indicator when audio is playing. Once a track is identified, the artist, title, album, and cover art appear.
 
 ### Privacy and network access
 
-- Acoustic fingerprints are sent to `api.acoustid.org` for matching. No raw audio leaves the device.
-- Recording and release metadata is fetched from `musicbrainz.org`.
-- Cover art thumbnails are fetched from `coverartarchive.org`.
-- All three services must be reachable from the Pi for identification to work. If the Pi is behind a firewall that blocks outbound HTTPS, identification will fail silently and the Home screen will remain in the "waiting" state.
-- The AcoustID API key is stored in the autostream config file on the Pi. It is not transmitted to anyone other than `api.acoustid.org`.
+- Audio fingerprints are computed on-device. No raw audio leaves the Pi.
+- A compact fingerprint is sent to Shazam's servers (`amp.shazam.com`) for matching.
+- Cover art thumbnails are fetched from Shazam's CDN.
+- `amp.shazam.com` must be reachable from the Pi. If it is blocked by a firewall, identification will fail silently and the Home screen will remain in the "waiting" state.
 
 ---
 

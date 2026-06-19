@@ -380,7 +380,7 @@ Run through this in order:
 
 ### Track identification
 
-Track identification uses acoustic fingerprinting followed by lookups against AcoustID, MusicBrainz, and the Cover Art Archive. It is **off by default** and requires a free AcoustID API key (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)).
+Track identification uses Shazam recognition via the `autostream-vibra` daemon. It is **off by default**. No API key is required — autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)).
 
 #### Track identification stays "waiting" or never shows a result
 
@@ -388,56 +388,45 @@ The Home screen shows **Waiting** when the feature is enabled but no audio is cu
 
 If audio is playing but the state stays "waiting" or immediately shows "not found":
 
-1. Open **Setup → Track Identification** and confirm:
-   - The toggle is **on**.
-   - The AcoustID API key field is not empty.
-2. Check that the Pi has outbound internet access to:
-   - `api.acoustid.org`
-   - `musicbrainz.org`
-   - `coverartarchive.org`
-
-   Identification will fail silently if any of these is blocked by a firewall.
-
-3. Some recordings are not in the AcoustID/MusicBrainz database. Obscure, private-press, or bootleg releases may genuinely return "not found". This is not a bug.
+1. Open **Setup → Track Identification** and confirm the toggle is **on**.
+2. Check that the `autostream-vibra` daemon is running:
+   ```bash
+   systemctl status autostream_vibra.service
+   ```
+3. Check that the Pi has outbound internet access to `amp.shazam.com`. Identification will fail silently if this is blocked by a firewall.
+4. Some recordings are not in the Shazam catalog. Obscure, private-press, or bootleg releases may genuinely return "not found". This is not a bug.
 
 #### "Analysing" shows briefly then disappears without a result
 
-This is expected behaviour while a track is being fingerprinted. The system waits for the configured interval (default 30 seconds of audio) before attempting a fingerprint. If the audio stops before enough signal has accumulated, the attempt is aborted and the state resets.
+This is expected behaviour while identification is running. The system waits for at least 8 seconds of audio before attempting recognition. If the audio stops before enough signal has accumulated, the attempt is aborted and the state resets.
 
 #### Cover art is missing
 
-Cover art is served by the Cover Art Archive and is only available for releases that have been linked to scanned artwork. Many releases — especially less common pressings — have no artwork in the database. The title, artist, and album will still be shown.
+Cover art is returned by Shazam and is only available for releases that Shazam has artwork for. The title, artist, and album will still be shown even when artwork is unavailable.
 
-If artwork was showing but has disappeared: the Cover Art Archive is occasionally slow or temporarily unavailable. The next successful identification will re-fetch it.
+#### `autostream-vibra` daemon not running
 
-#### Missing dependencies (`fpcalc not found` or similar in logs)
-
-Track identification requires `libchromaprint-tools` (which provides `fpcalc`) and `python3-acoustid`. These are installed automatically by the autostream installer, but may be missing on older installs.
-
-To install them manually:
+If `systemctl status autostream_vibra.service` shows the daemon is failed or not found:
 
 ```bash
-sudo apt-get install -y libchromaprint-tools python3-acoustid
+sudo systemctl start autostream_vibra.service
 ```
 
-Then restart autostream:
+Check the daemon log for errors:
 
 ```bash
-sudo systemctl restart autostream.service
+sudo journalctl -u autostream_vibra.service -n 50
+```
+
+If the binary is missing, re-run the autostream installer to rebuild it:
+
+```bash
+sudo /opt/autostream/autostream_install.sh --mode=update
 ```
 
 #### Rate limits
 
-AcoustID enforces a limit of approximately 3 requests per second. autostream spaces requests out by the configured interval (default 30 seconds) and should not exceed this limit under normal use. If the log shows `Too many requests` errors from AcoustID, increase the identification interval in **Setup → Track Identification**.
-
-#### AcoustID API key
-
-API keys are free and available from [acoustid.org](https://acoustid.org). Each key is tied to a registered application. If you registered a key but identification is not working, check:
-
-- The key was copied in full (no leading or trailing spaces).
-- The application was not revoked at acoustid.org.
-
-The key is stored in the autostream config file on the Pi and is only sent to `api.acoustid.org` during identification requests.
+Shazam's recognition API enforces rate limits. autostream detects `rate_limited` responses and automatically backs off for 2 minutes before retrying. If rate limiting persists, increase the identification interval in **Setup → Track Identification**.
 
 ---
 
