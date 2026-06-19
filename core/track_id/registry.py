@@ -10,6 +10,7 @@ _log = logging.getLogger(__name__)
 
 # Registered provider ids.
 PROVIDER_ACOUSTID_MUSICBRAINZ = "acoustid_musicbrainz"
+PROVIDER_VIBRA_SHAZAM = "vibra_shazam"
 
 
 def build_provider(
@@ -25,6 +26,18 @@ def build_provider(
         try:
             from track_id.acoustid_musicbrainz import AcoustIDMusicBrainzProvider
             return AcoustIDMusicBrainzProvider(provider_settings)
+        except Exception as exc:
+            _log.warning(
+                "track_id: failed to build provider '%s': %s",
+                provider_id,
+                exc,
+            )
+            return None
+
+    if provider_id == PROVIDER_VIBRA_SHAZAM:
+        try:
+            from track_id.vibra_shazam import VibraShazamProvider
+            return VibraShazamProvider(provider_settings)
         except Exception as exc:
             _log.warning(
                 "track_id: failed to build provider '%s': %s",
