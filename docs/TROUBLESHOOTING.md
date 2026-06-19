@@ -380,7 +380,7 @@ Run through this in order:
 
 ### Track identification
 
-Track identification uses Shazam recognition via the `autostream-vibra` daemon. It is **off by default**. No API key is required — autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)).
+Track identification uses Shazam recognition via the `vibra-mini` daemon. It is **off by default**. No API key is required — autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)).
 
 #### Track identification stays "waiting" or never shows a result
 
@@ -389,9 +389,9 @@ The Home screen shows **Waiting** when the feature is enabled but no audio is cu
 If audio is playing but the state stays "waiting" or immediately shows "not found":
 
 1. Open **Setup → Track Identification** and confirm the toggle is **on**.
-2. Check that the `autostream-vibra` daemon is running:
+2. Check that the `vibra-mini` daemon is running:
    ```bash
-   systemctl status autostream_vibra.service
+   systemctl status vibra-mini.service
    ```
 3. Check that the Pi has outbound internet access to `amp.shazam.com`. Identification will fail silently if this is blocked by a firewall.
 4. Some recordings are not in the Shazam catalog. Obscure, private-press, or bootleg releases may genuinely return "not found". This is not a bug.
@@ -404,18 +404,18 @@ This is expected behaviour while identification is running. The system waits for
 
 Cover art is returned by Shazam and is only available for releases that Shazam has artwork for. The title, artist, and album will still be shown even when artwork is unavailable.
 
-#### `autostream-vibra` daemon not running
+#### `vibra-mini` daemon not running
 
-If `systemctl status autostream_vibra.service` shows the daemon is failed or not found:
+If `systemctl status vibra-mini.service` shows the daemon is failed or not found:
 
 ```bash
-sudo systemctl start autostream_vibra.service
+sudo systemctl start vibra-mini.service
 ```
 
 Check the daemon log for errors:
 
 ```bash
-sudo journalctl -u autostream_vibra.service -n 50
+sudo journalctl -u vibra-mini.service -n 50
 ```
 
 If the binary is missing, re-run the autostream installer to rebuild it:
@@ -423,6 +423,9 @@ If the binary is missing, re-run the autostream installer to rebuild it:
 ```bash
 sudo /opt/autostream/autostream_install.sh --mode=update
 ```
+
+The installed executable should be `/opt/autostream/vibra/bin/vibra-mini`.
+Its stdout and stderr are also written to `/var/log/autostream/vibra-mini.log`.
 
 #### Rate limits
 

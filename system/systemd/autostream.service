@@ -1,7 +1,7 @@
 [Unit]
 Description=Autostream audio coordinator
-After=sound.target autostream_monitor.service autostream_vibra.service
-Wants=autostream_monitor.service autostream_vibra.service
+After=sound.target autostream_monitor.service vibra-mini.service
+Wants=autostream_monitor.service vibra-mini.service
 Requires=autostream_monitor.service
 
 [Service]

@@ -794,7 +794,7 @@ def send_setup_page(
                 <span>Track identification</span>
               </div>
               <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.4rem;">
-                Identifies playing tracks using Shazam via the autostream-vibra service. Requires internet access.
+                Identifies playing tracks using Shazam via the vibra-mini service. Requires internet access.
               </div>
             """, margin_top="0")
 

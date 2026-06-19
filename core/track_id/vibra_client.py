@@ -1,4 +1,4 @@
-"""track_id.vibra_client — IPC client for the autostream-vibra daemon."""
+"""track_id.vibra_client — IPC client for the vibra-mini daemon."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 
 
 class VibraClient:
-    """Unix domain socket client for the autostream-vibra Shazam daemon.
+    """Unix domain socket client for the vibra-mini Shazam daemon.
 
     Mirrors MonitorClient in structure: one connection, internal lock,
     reconnect-and-retry-once on socket/EOF/timeout failure.
@@ -21,7 +21,7 @@ class VibraClient:
     requests.
     """
 
-    DEFAULT_SOCKET_PATH = "/tmp/autostream-vibra.sock"
+    DEFAULT_SOCKET_PATH = "/tmp/vibra-mini.sock"
     COMMAND_TIMEOUT = 15.0  # seconds; covers Shazam HTTP + fingerprint + round-trip
 
     def __init__(self, socket_path: str = DEFAULT_SOCKET_PATH) -> None:

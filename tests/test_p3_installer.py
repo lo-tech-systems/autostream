@@ -43,6 +43,7 @@ INSTALLER_SCRIPTS = [
     REPO_ROOT / "bootstrap.sh",
     REPO_ROOT / "installer" / "lib" / "helpers.sh",
     REPO_ROOT / "installer" / "lib" / "owntone.sh",
+    REPO_ROOT / "installer" / "lib" / "vibra.sh",
     REPO_ROOT / "installer" / "lib" / "hardware.sh",
     REPO_ROOT / "installer" / "dial" / "helpers.sh",
     REPO_ROOT / "nginx" / "cgi" / "update-status.cgi",
@@ -87,6 +88,27 @@ class TestShellSyntax:
         assert result.returncode == 0, (
             f"bash -n failed for {script.name}:\n{result.stderr.strip()}"
         )
+
+
+class TestVibraMiniInstallContract:
+    """Autostream must launch the executable installed by vibra-mini."""
+
+    def test_service_executes_vibra_mini_binary(self):
+        unit = (
+            REPO_ROOT / "system" / "systemd" / "vibra-mini.service"
+        ).read_text(encoding="utf-8")
+        assert (
+            "ExecStart=/opt/autostream/vibra/bin/vibra-mini "
+            "--socket /tmp/vibra-mini.sock"
+        ) in unit
+        assert "StandardOutput=append:/var/log/autostream/vibra-mini.log" in unit
+        assert "StandardError=append:/var/log/autostream/vibra-mini.log" in unit
+
+    def test_installer_verifies_vibra_mini_binary(self):
+        installer = (
+            REPO_ROOT / "installer" / "lib" / "vibra.sh"
+        ).read_text(encoding="utf-8")
+        assert '${VIBRA_INSTALL_PREFIX}/bin/vibra-mini' in installer
 
 
 # ---------------------------------------------------------------------------

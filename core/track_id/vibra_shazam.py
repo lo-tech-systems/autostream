@@ -1,4 +1,4 @@
-"""track_id.vibra_shazam — Shazam provider backed by the autostream-vibra daemon."""
+"""track_id.vibra_shazam — Shazam provider backed by the vibra-mini daemon."""
 from __future__ import annotations
 
 import logging
@@ -37,7 +37,7 @@ class VibraRateLimitedError(TrackIDRateLimitedError):
 
 
 class VibraShazamProvider:
-    """Track identification provider backed by the autostream-vibra Shazam daemon."""
+    """Track identification provider backed by the vibra-mini Shazam daemon."""
 
     provider_id = PROVIDER_ID
 

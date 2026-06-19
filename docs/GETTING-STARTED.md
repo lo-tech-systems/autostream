@@ -147,7 +147,7 @@ After servicing, tap the relevant button — **Mark Stylus Replaced**, **Mark Be
 
 autostream can identify what is playing and show the artist, title, album, and cover art on the Home screen. This feature is **off by default** and requires network access from the Pi to Shazam's recognition servers (`amp.shazam.com`). No API key is needed.
 
-Identification is powered by `autostream-vibra`, a local Shazam recognition daemon that runs alongside autostream. Short clips of audio are fingerprinted on-device and matched against the Shazam catalog. No raw audio leaves the device.
+Identification is powered by `vibra-mini`, a local Shazam recognition daemon that runs alongside autostream. Short clips of audio are fingerprinted on-device and matched against the Shazam catalog. No raw audio leaves the device.
 
 ### Enabling track identification
 

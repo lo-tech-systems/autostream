@@ -27,7 +27,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 * Switches between two connected sources automatically (e.g. turntable and CD player)
 * 6-band output equaliser and per-input 3-band equaliser
 * Stylus, belt, and bearing maintenance tracking for turntable inputs
-* Optional track identification — shows artist, title, album, and artwork on the Home screen (powered by Shazam via the autostream-vibra daemon; no API key required)
+* Optional track identification — shows artist, title, album, and artwork on the Home screen (powered by Shazam via the vibra-mini daemon; no API key required)
 * Control multiple autostream appliances from a single iOS Home Screen application
 
 ---

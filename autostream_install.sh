@@ -723,7 +723,7 @@ deploy_phase() {
     -lasound -lsamplerate -lpthread -latomic
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 
-  update_progress "Building autostream-vibra..." 55
+  update_progress "Building vibra-mini..." 55
   if [[ "${INSTALL_MODE}" == "install" ]]; then
     install_vibra_from_source
   else
@@ -918,7 +918,7 @@ services_phase() {
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_update_retry.service" /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service"       /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service"       /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_vibra.service"         /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/vibra-mini.service"              /etc/systemd/system/
 
   if [[ -n "${SDMON_METHOD}" ]]; then
     install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
@@ -942,14 +942,14 @@ services_phase() {
 
   systemctl enable autostream_update_retry.service
   systemctl enable autostream_monitor.service
-  systemctl enable autostream_vibra.service
+  systemctl enable vibra-mini.service
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
     info "Restarting affected services"
     systemctl restart autostream_monitor.service || true
-    systemctl restart autostream_vibra.service   || true
+    systemctl restart vibra-mini.service         || true
     systemctl restart autostream.service         || true
     systemctl reload  nginx                      || true
   fi

@@ -2,8 +2,8 @@
 #
 # installer/lib/vibra.sh
 #
-# Builds and installs the autostream-vibra Shazam recognition daemon from the
-# lo-tech-systems/vibra-mini fork.  Sourced by autostream_install.sh; not
+# Builds and installs the vibra-mini Shazam recognition daemon.
+# Sourced by autostream_install.sh; not
 # executed directly.
 #
 # Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
@@ -17,7 +17,7 @@ install_vibra_build_dependencies() {
 }
 
 install_vibra_from_source() {
-  info "Installing autostream-vibra from lo-tech-systems source repository"
+  info "Installing vibra-mini from lo-tech-systems source repository"
 
   install_vibra_build_dependencies
 
@@ -33,11 +33,15 @@ install_vibra_from_source() {
     cmake --build build --parallel 2
     cmake --install build
   )
+  [[ -x "${VIBRA_INSTALL_PREFIX}/bin/vibra-mini" ]] || {
+    error "vibra-mini installation did not produce ${VIBRA_INSTALL_PREFIX}/bin/vibra-mini"
+    return 1
+  }
   rm -rf "${tmpdir}"
 }
 
 update_vibra_from_source() {
-  info "Updating autostream-vibra from lo-tech-systems source repository"
+  info "Updating vibra-mini from lo-tech-systems source repository"
 
   install_vibra_build_dependencies
 
@@ -53,5 +57,9 @@ update_vibra_from_source() {
     cmake --build build --parallel 2
     cmake --install build
   )
+  [[ -x "${VIBRA_INSTALL_PREFIX}/bin/vibra-mini" ]] || {
+    error "vibra-mini installation did not produce ${VIBRA_INSTALL_PREFIX}/bin/vibra-mini"
+    return 1
+  }
   rm -rf "${tmpdir}"
 }
