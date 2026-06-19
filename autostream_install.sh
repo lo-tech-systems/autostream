@@ -57,6 +57,8 @@ INSTALLER_LIB="$(cd "$(dirname "$0")/installer/lib" && pwd)"
 source "${INSTALLER_LIB}/helpers.sh"
 # shellcheck source=installer/lib/owntone.sh
 source "${INSTALLER_LIB}/owntone.sh"
+# shellcheck source=installer/lib/vibra.sh
+source "${INSTALLER_LIB}/vibra.sh"
 # shellcheck source=installer/lib/hardware.sh
 source "${INSTALLER_LIB}/hardware.sh"
 
@@ -595,11 +597,8 @@ bootstrap_phase() {
 
   apt_install --soft python3-requests
 
-  # Optional: track identification (AcoustID/MusicBrainz). fpcalc fingerprinter
-  # is provided by libchromaprint-tools; python3-acoustid is the Python binding.
-  # Installed with --soft so absence does not abort the install; the feature
-  # remains disabled until the user enables it and supplies an API key.
-  apt_install --soft libchromaprint-tools python3-acoustid
+  # Track identification: Vibra/Shazam daemon build dependencies.
+  apt_install libfftw3-dev libcurl4-openssl-dev cmake
 
   # Create user and group before applying ownership — chown fails if the user
   # does not yet exist and set -e aborts the install.
@@ -723,6 +722,13 @@ deploy_phase() {
     "${INSTALL_DIR}/monitor/autostream_monitor_utils.cpp" \
     -lasound -lsamplerate -lpthread -latomic
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
+
+  update_progress "Building autostream-vibra..." 55
+  if [[ "${INSTALL_MODE}" == "install" ]]; then
+    install_vibra_from_source
+  else
+    update_vibra_from_source
+  fi
 
   info "Installing supervisor and helper scripts"
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_support.py" "${LIBEXEC_DIR}/autostream_update_support.py" 0644 root root
@@ -912,6 +918,7 @@ services_phase() {
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_update_retry.service" /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_dnsmasq.service"       /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service"       /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_vibra.service"         /etc/systemd/system/
 
   if [[ -n "${SDMON_METHOD}" ]]; then
     install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
@@ -935,13 +942,15 @@ services_phase() {
 
   systemctl enable autostream_update_retry.service
   systemctl enable autostream_monitor.service
+  systemctl enable autostream_vibra.service
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
     info "Restarting affected services"
-    systemctl restart autostream.service         || true
     systemctl restart autostream_monitor.service || true
+    systemctl restart autostream_vibra.service   || true
+    systemctl restart autostream.service         || true
     systemctl reload  nginx                      || true
   fi
 }

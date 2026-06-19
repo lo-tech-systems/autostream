@@ -1,0 +1,30 @@
+# /etc/systemd/system/autostream_vibra.service
+#
+# This file is part of autostream.
+# Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=Autostream Vibra/Shazam recognition daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autostream
+Group=autostream
+UMask=077
+WorkingDirectory=/opt/autostream
+
+ExecStart=/opt/autostream/vibra/bin/autostream-vibra --socket /tmp/autostream-vibra.sock --log-level info
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=append:/var/log/autostream/autostream_vibra.log
+StandardError=append:/var/log/autostream/autostream_vibra.log
+
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
