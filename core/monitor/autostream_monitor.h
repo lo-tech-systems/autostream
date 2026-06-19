@@ -1094,10 +1094,10 @@ public:
     // such as the compiled-in monitor_build identifier.
     std::string api_get_status();
 
-    // Copy up to max_seconds (1..20) of recent mono 16000 Hz audio for the
-    // given input into binary_out (s16le, no header), returning a JSON ack.
-    // binary_out is populated only when "ok":true; the caller sends the bytes
-    // as a raw binary payload immediately after the JSON response line.
+    // Copy up to max_seconds (1..32, clamped to [1,32]) of recent mono 16000 Hz
+    // audio for the given input into binary_out (s16le, no header), returning a
+    // JSON ack.  binary_out is populated only when "ok":true; the caller sends
+    // the bytes as a raw binary payload immediately after the JSON response line.
     std::string api_get_id_snapshot(int input_index, int max_seconds,
                                      std::vector<int16_t>* binary_out);
 

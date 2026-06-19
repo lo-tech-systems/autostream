@@ -578,6 +578,23 @@ class TestIdSnapshotRate16kHz:
         assert len(payload) == frames * 2
         assert rate == 16000
 
+    def test_max_seconds_32_at_16khz_accepted(self):
+        """32-second snapshot (C++ ring-buffer capacity) must be accepted."""
+        frames = 16000 * 32
+        pcm = b"\x00\x01" * frames
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 16000}) + "\n"
+        result = _client(FakeSocket(ack.encode(), pcm)).get_id_snapshot(0, max_seconds=32)
+        assert result == (pcm, 16000)
+
+    def test_frames_just_over_32s_bound_rejected(self):
+        """One extra frame over 32 * 16000 must trigger disconnect."""
+        frames = 16000 * 32 + 1
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 16000}) + "\n"
+        c = _client(FakeSocket(ack.encode(), b"\x00\x01" * frames))
+        result = c.get_id_snapshot(0, max_seconds=32)
+        assert result is None
+        assert not c.is_connected()
+
 
 # ---------------------------------------------------------------------------
 # Public command methods: send correct type + field contract

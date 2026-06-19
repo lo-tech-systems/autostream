@@ -345,8 +345,8 @@ class TrackIdentificationConfig:
     enabled: bool
     provider: str
     interval_seconds: int
-    # Nested provider configs keyed by provider id.  Only the fields consumed by
-    # a given provider are parsed; unknown providers are preserved as raw dicts.
+    # Nested provider configs keyed by provider id.  Only known provider IDs
+    # (see TRACK_ID_KNOWN_PROVIDERS) are retained; others are silently discarded.
     providers: dict
 
 
