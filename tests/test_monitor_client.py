@@ -352,17 +352,17 @@ class TestGetIdSnapshot:
     def test_returns_pcm_and_rate(self):
         frames = 10
         pcm = b"\x00\x01" * frames  # frames * 2 bytes
-        ack = json.dumps({"ok": True, "frames": frames, "rate": 22050}) + "\n"
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 16000}) + "\n"
         sock = FakeSocket(ack.encode(), pcm)
         c = _client(sock)
         result = c.get_id_snapshot(0, max_seconds=5)
-        assert result == (pcm, 22050)
+        assert result == (pcm, 16000)
 
     def test_zero_frames_returns_empty_bytes_and_rate(self):
-        ack = json.dumps({"ok": True, "frames": 0, "rate": 22050}) + "\n"
+        ack = json.dumps({"ok": True, "frames": 0, "rate": 16000}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0)
-        assert result == (b"", 22050)
+        assert result == (b"", 16000)
 
     def test_ok_false_returns_none(self):
         ack = json.dumps({"ok": False, "error": "no data"}) + "\n"
@@ -376,7 +376,7 @@ class TestGetIdSnapshot:
         assert result is None
 
     def test_sends_correct_command_fields(self):
-        ack = json.dumps({"ok": True, "frames": 0, "rate": 22050}) + "\n"
+        ack = json.dumps({"ok": True, "frames": 0, "rate": 16000}) + "\n"
         sock = FakeSocket(ack.encode())
         c = _client(sock)
         c.get_id_snapshot(index=2, max_seconds=15)
@@ -412,7 +412,7 @@ class TestGetIdSnapshot:
 
     def test_string_rate_returns_none_and_disconnects(self):
         frames = 10
-        ack = json.dumps({"ok": True, "frames": frames, "rate": "22050"}) + "\n"
+        ack = json.dumps({"ok": True, "frames": frames, "rate": "16000"}) + "\n"
         c = _client(FakeSocket(ack.encode()))
         result = c.get_id_snapshot(0, max_seconds=5)
         assert result is None
@@ -465,7 +465,7 @@ class TestCommandEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestGetIdSnapshotLengths:
-    _RATE = 22050
+    _RATE = 16000
 
     def test_negative_frames_disconnects(self):
         ack = json.dumps({"ok": True, "frames": -1, "rate": self._RATE}) + "\n"
@@ -523,6 +523,60 @@ class TestGetIdSnapshotLengths:
         result = c.get_id_snapshot(0, max_seconds=20)
         assert result is None
         assert not c.is_connected()
+
+
+# ---------------------------------------------------------------------------
+# ID buffer rate and protocol boundary coverage
+# ---------------------------------------------------------------------------
+
+class TestIdSnapshotRate16kHz:
+    """Focused tests for the 16 kHz ID buffer introduced in WP A2.
+
+    The C++ daemon clamps max_seconds to 32 internally (ring buffer capacity).
+    The Python client enforces no daemon-side clamp — it sends whatever the
+    caller requests and validates the returned frames against the requested
+    max_seconds * rate bound.
+    """
+
+    def test_ack_rate_16000_returned_in_tuple(self):
+        """Client must return the daemon-reported rate of 16000."""
+        frames = 16000 * 10  # 10 s at 16 kHz
+        pcm = b"\x00\x01" * frames
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 16000}) + "\n"
+        result = _client(FakeSocket(ack.encode(), pcm)).get_id_snapshot(0, max_seconds=10)
+        assert result is not None
+        _, rate = result
+        assert rate == 16000
+
+    def test_max_seconds_20_at_16khz_accepted(self):
+        """20-second snapshot at 16 kHz (protocol cap) must be accepted."""
+        frames = 16000 * 20
+        pcm = b"\x00\x01" * frames
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 16000}) + "\n"
+        result = _client(FakeSocket(ack.encode(), pcm)).get_id_snapshot(0, max_seconds=20)
+        assert result == (pcm, 16000)
+
+    def test_frames_just_over_bound_at_16khz_rejected(self):
+        """One extra frame over max_seconds * 16000 must trigger disconnect."""
+        max_seconds = 15
+        frames = 16000 * max_seconds + 1
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 16000}) + "\n"
+        c = _client(FakeSocket(ack.encode(), b"\x00\x01" * frames))
+        result = c.get_id_snapshot(0, max_seconds=max_seconds)
+        assert result is None
+        assert not c.is_connected()
+
+    def test_payload_byte_length_is_frames_times_two(self):
+        """For s16le mono, payload must be exactly frames * 2 bytes."""
+        frames = 16000 * 5
+        pcm = bytes(range(256)) * (frames * 2 // 256) + bytes(range(frames * 2 % 256))
+        assert len(pcm) == frames * 2
+        ack = json.dumps({"ok": True, "frames": frames, "rate": 16000}) + "\n"
+        result = _client(FakeSocket(ack.encode(), pcm)).get_id_snapshot(0, max_seconds=5)
+        assert result is not None
+        payload, rate = result
+        assert len(payload) == frames * 2
+        assert rate == 16000
 
 
 # ---------------------------------------------------------------------------

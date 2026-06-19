@@ -71,21 +71,21 @@ class TestTrackIdConfigDefaults:
         parsed = parse_config({"track_identification": {"interval_seconds": 30}})
         assert parsed.track_identification.interval_seconds == 30
 
-    def test_unknown_provider_settings_preserved_in_parse(self):
+    def test_unknown_provider_discarded_in_parse(self):
         parsed = parse_config({
             "track_identification": {
                 "providers": {"future_provider": {"token": "abc123"}}
             }
         })
-        assert parsed.track_identification.providers["future_provider"]["token"] == "abc123"
+        assert "future_provider" not in parsed.track_identification.providers
 
-    def test_unknown_provider_preserved(self):
+    def test_known_provider_settings_preserved_in_parse(self):
         parsed = parse_config({
             "track_identification": {
-                "providers": {"future_provider": {"token": "xyz"}}
+                "providers": {"vibra_shazam": {"custom_key": "val"}}
             }
         })
-        assert parsed.track_identification.providers["future_provider"]["token"] == "xyz"
+        assert parsed.track_identification.providers["vibra_shazam"]["custom_key"] == "val"
 
     def test_minimal_existing_config_still_parses(self):
         # Simulate a real-world config that predates this feature.
@@ -271,11 +271,12 @@ class TestHandleSetupPostTrackId:
         mock_reload.assert_not_called()
         mock_live_apply.assert_not_called()
 
-    def test_other_provider_settings_preserved(self, tmp_path):
+    def test_unknown_provider_discarded_in_parsed_config(self, tmp_path):
         existing = {
             "track_identification": {
                 "enabled": False,
                 "providers": {
+                    "acoustid_musicbrainz": {"api_key": "old"},
                     "future_provider": {"token": "xyz"},
                 },
             }
@@ -289,5 +290,7 @@ class TestHandleSetupPostTrackId:
             "track_identification_present": "1",
         }
         saved, *_ = _run_setup_post(form, tmp_path, extra_cfg=existing)
-        # unknown provider settings are preserved across saves
-        assert saved["track_identification"]["providers"]["future_provider"]["token"] == "xyz"
+        # parse_config must discard unknown provider IDs regardless of raw file contents
+        parsed = parse_config(saved)
+        assert "acoustid_musicbrainz" not in parsed.track_identification.providers
+        assert "future_provider" not in parsed.track_identification.providers

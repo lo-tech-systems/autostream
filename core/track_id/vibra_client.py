@@ -155,6 +155,9 @@ class VibraClient:
         for attempt in range(2):
             if not self.is_connected():
                 if not self.connect():
+                    if attempt == 0:
+                        _log.debug("vibra: connect failed; retrying once")
+                        continue
                     raise OSError(
                         f"vibra: cannot connect to daemon at {self._socket_path}"
                     )

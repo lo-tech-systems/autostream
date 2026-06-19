@@ -255,7 +255,7 @@ class TestVibraClientFakeSocket:
 
 class TestVibraClientRetry:
 
-    def test_recognize_retry_succeeds_after_first_failure(self):
+    def test_recognize_retry_succeeds_after_first_io_failure(self):
         """recognize() retries once on OSError from _do_recognize."""
         client = VibraClient()
         responses = iter([OSError("eof"), {"ok": True, "matched": False}])
@@ -272,8 +272,30 @@ class TestVibraClientRetry:
             result = client._recognize_with_retry(_PCM, 16000)
         assert result == {"ok": True, "matched": False}
 
-    def test_recognize_raises_after_two_failures(self):
-        """recognize() raises OSError when both attempts fail."""
+    def test_recognize_retry_succeeds_after_initial_connect_failure(self):
+        """recognize() retries once when the first connect() returns False."""
+        client = VibraClient()
+        connect_results = iter([False, True])
+
+        def fake_connect():
+            return next(connect_results)
+
+        with patch.object(client, "connect", side_effect=fake_connect), \
+             patch.object(client, "_do_recognize", return_value={"ok": True, "matched": False}), \
+             patch.object(client, "close"):
+            result = client._recognize_with_retry(_PCM, 16000)
+        assert result == {"ok": True, "matched": False}
+
+    def test_recognize_raises_after_two_connect_failures(self):
+        """recognize() raises OSError when both connect() attempts fail."""
+        client = VibraClient()
+        with patch.object(client, "connect", return_value=False), \
+             patch.object(client, "close"):
+            with pytest.raises(OSError):
+                client._recognize_with_retry(_PCM, 16000)
+
+    def test_recognize_raises_after_two_io_failures(self):
+        """recognize() raises OSError when both _do_recognize attempts fail."""
         client = VibraClient()
 
         def always_fail(pcm, rate):

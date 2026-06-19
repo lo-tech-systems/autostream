@@ -13,7 +13,7 @@ VIBRA_BRANCH="autostream"
 VIBRA_INSTALL_PREFIX="/opt/autostream/vibra"
 
 install_vibra_build_dependencies() {
-  apt_install libfftw3-dev libcurl4-openssl-dev cmake
+  apt_install libfftw3-dev libcurl4-openssl-dev libjson-c-dev cmake
 }
 
 install_vibra_from_source() {

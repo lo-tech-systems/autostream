@@ -30,6 +30,7 @@ DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 
 TRACK_ID_DEFAULT_PROVIDER = "vibra_shazam"
+TRACK_ID_KNOWN_PROVIDERS = frozenset({"vibra_shazam"})
 TRACK_ID_DEFAULT_INTERVAL = 15
 TRACK_ID_MIN_INTERVAL = 10
 TRACK_ID_MAX_INTERVAL = 45
@@ -485,12 +486,12 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
     )
 
     track_id_d = data.get("track_identification") or {}
-    # Preserve unknown provider settings as raw dicts; only normalize consumed fields.
     raw_providers = track_id_d.get("providers")
     providers: dict = {}
     if isinstance(raw_providers, dict):
         for prov_id, prov_cfg in raw_providers.items():
-            providers[str(prov_id)] = dict(prov_cfg) if isinstance(prov_cfg, dict) else {}
+            if str(prov_id) in TRACK_ID_KNOWN_PROVIDERS:
+                providers[str(prov_id)] = dict(prov_cfg) if isinstance(prov_cfg, dict) else {}
     track_identification = TrackIdentificationConfig(
         enabled=bool(track_id_d.get("enabled", False)),
         provider=str(track_id_d.get("provider", TRACK_ID_DEFAULT_PROVIDER) or TRACK_ID_DEFAULT_PROVIDER),

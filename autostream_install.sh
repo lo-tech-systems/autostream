@@ -598,7 +598,7 @@ bootstrap_phase() {
   apt_install --soft python3-requests
 
   # Track identification: Vibra/Shazam daemon build dependencies.
-  apt_install libfftw3-dev libcurl4-openssl-dev cmake
+  apt_install libfftw3-dev libcurl4-openssl-dev libjson-c-dev cmake
 
   # Create user and group before applying ownership — chown fails if the user
   # does not yet exist and set -e aborts the install.

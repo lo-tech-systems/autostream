@@ -235,6 +235,23 @@ class TestSnapshotSecondsInvariants:
         svc = TrackIdentificationService(provider, "test", interval_seconds=30, snapshot_seconds=12)
         assert svc.snapshot_seconds == 12
 
+    def test_snapshot_seconds_clamped_at_daemon_max(self):
+        """Values over the daemon protocol max must be clamped, not stored as-is."""
+        from track_id.service import SNAPSHOT_DAEMON_MAX_SECONDS
+        provider = MagicMock()
+        provider.provider_id = "test"
+        svc = TrackIdentificationService(provider, "test", interval_seconds=15, snapshot_seconds=30)
+        assert svc.snapshot_seconds == SNAPSHOT_DAEMON_MAX_SECONDS
+
+    def test_snapshot_seconds_at_daemon_max_accepted(self):
+        """The exact daemon max must not be clamped further."""
+        from track_id.service import SNAPSHOT_DAEMON_MAX_SECONDS
+        provider = MagicMock()
+        provider.provider_id = "test"
+        svc = TrackIdentificationService(provider, "test", interval_seconds=15,
+                                         snapshot_seconds=SNAPSHOT_DAEMON_MAX_SECONDS)
+        assert svc.snapshot_seconds == SNAPSHOT_DAEMON_MAX_SECONDS
+
     def test_snapshot_seconds_independent_from_interval(self):
         """Scheduling cadence and clip length are separate concepts."""
         provider = MagicMock()

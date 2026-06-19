@@ -22,6 +22,7 @@ _log = logging.getLogger(__name__)
 
 # Default snapshot durations.
 DEFAULT_SNAPSHOT_MAX_SECONDS = 15
+SNAPSHOT_DAEMON_MAX_SECONDS = 20  # vibra protocol hard ceiling; values above this cause payload_too_large
 MIN_PCM_DURATION_SECONDS = 5.0
 
 # Cache TTLs.
@@ -110,7 +111,7 @@ class TrackIdentificationService:
         self._provider = provider
         self._provider_id = provider_id
         self.interval_seconds = interval_seconds
-        self.snapshot_seconds = snapshot_seconds
+        self.snapshot_seconds = min(int(snapshot_seconds), SNAPSHOT_DAEMON_MAX_SECONDS)
         self._cache = _ResultCache()
 
     @property
