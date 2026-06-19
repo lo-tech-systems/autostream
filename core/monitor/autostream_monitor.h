@@ -773,7 +773,7 @@ public:
 
     // Sample rate and capacity of the identification snapshot buffer.
     static constexpr unsigned ID_BUF_RATE   = 22050;
-    static constexpr unsigned ID_BUF_FRAMES = 1u << 19;  // 524288 ≈ 23.7 s
+    static constexpr unsigned ID_BUF_FRAMES = 1u << 20;  // 1048576 ≈ 47.6 s
 
 private:
     // ── Thread functions ─────────────────────────────────────────────────────

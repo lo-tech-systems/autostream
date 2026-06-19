@@ -32,7 +32,7 @@ VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 TRACK_ID_DEFAULT_PROVIDER = "acoustid_musicbrainz"
 TRACK_ID_DEFAULT_INTERVAL = 15
 TRACK_ID_MIN_INTERVAL = 10
-TRACK_ID_MAX_INTERVAL = 60
+TRACK_ID_MAX_INTERVAL = 45
 DEFAULT_AIRPLAY_MODE = "default"
 VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
 DEFAULT_STYLUS_LIFE_HOURS = 0  # 0 = tracking disabled ("Don't track usage")

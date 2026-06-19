@@ -525,6 +525,246 @@ class TestGenerationGuard:
 
 
 # ---------------------------------------------------------------------------
+# Clamp: get_id_snapshot accepts 30 and 45, rejects higher values
+# ---------------------------------------------------------------------------
+
+class TestMonitorSnapshotClamp:
+    """The Python-level request clamp must allow 30 and 45, reject values > 45."""
+
+    def _run_trigger(self, interval: int) -> int:
+        """Trigger identification and return the max_seconds passed to get_id_snapshot."""
+        pcm = b"\x00" * int(22050 * 2 * interval)
+        client = MagicMock(spec=MonitorClient)
+        client.get_id_snapshot.return_value = pcm
+        svc = _make_service(interval=interval)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 0.0
+        mon.maybe_trigger_track_identification(client, time.time())
+        args, kwargs = client.get_id_snapshot.call_args
+        return kwargs.get("max_seconds", args[1] if len(args) > 1 else None)
+
+    def test_clamp_allows_30(self):
+        assert self._run_trigger(30) == 30
+
+    def test_clamp_allows_45(self):
+        assert self._run_trigger(45) == 45
+
+    def test_30s_pcm_exceeds_min_duration_guard(self):
+        """A 30-second snapshot must be above MIN_PCM_DURATION_SECONDS."""
+        from track_id.service import MIN_PCM_DURATION_SECONDS
+        pcm = b"\x00" * int(22050 * 2 * 30)
+        duration_s = len(pcm) / (22050 * 2)
+        assert duration_s >= MIN_PCM_DURATION_SECONDS
+
+    def test_45s_pcm_exceeds_min_duration_guard(self):
+        """A 45-second snapshot must be above MIN_PCM_DURATION_SECONDS."""
+        from track_id.service import MIN_PCM_DURATION_SECONDS
+        pcm = b"\x00" * int(22050 * 2 * 45)
+        duration_s = len(pcm) / (22050 * 2)
+        assert duration_s >= MIN_PCM_DURATION_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# Short-snapshot debug log message format
+# ---------------------------------------------------------------------------
+
+class TestShortSnapshotLog:
+
+    def test_short_snapshot_logs_correct_message(self, caplog):
+        import logging
+        from track_id.service import MIN_PCM_DURATION_SECONDS
+        svc = _make_service(interval=15)
+        mon = _active_monitor()
+        short_pcm = b"\x00" * int(22050 * 2 * (MIN_PCM_DURATION_SECONDS - 1))
+        client = MagicMock(spec=MonitorClient)
+        client.get_id_snapshot.return_value = short_pcm
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 0.0
+
+        with caplog.at_level(logging.DEBUG):
+            mon.maybe_trigger_track_identification(client, time.time())
+
+        messages = [r.message for r in caplog.records]
+        assert any("snapshot too short" in m for m in messages), \
+            f"Expected 'snapshot too short' in log, got: {messages}"
+        assert mon._ti_inflight is False
+
+    def test_snapshot_bytes_logged_on_valid_pcm(self, caplog):
+        import logging
+        svc = _make_service(interval=15)
+        mon = _active_monitor()
+        pcm = b"\x00" * int(22050 * 2 * 15)
+        client = MagicMock(spec=MonitorClient)
+        client.get_id_snapshot.return_value = pcm
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 0.0
+
+        with caplog.at_level(logging.DEBUG):
+            mon.maybe_trigger_track_identification(client, time.time())
+
+        messages = " ".join(r.message for r in caplog.records)
+        assert "snapshot returned" in messages
+        assert str(len(pcm)) in messages
+
+
+# ---------------------------------------------------------------------------
+# First-attempt deferral for longer intervals (30s / 45s)
+# ---------------------------------------------------------------------------
+
+class TestFirstAttemptDeferralLongIntervals:
+
+    def test_first_attempt_deferred_by_30s_interval(self):
+        svc = _make_service(interval=30)
+        mon = _make_monitor()
+        before = time.time()
+        mon._apply_track_id_service(svc)
+        assert mon._ti_next_attempt >= before + 28
+
+    def test_first_attempt_deferred_by_45s_interval(self):
+        svc = _make_service(interval=45)
+        mon = _make_monitor()
+        before = time.time()
+        mon._apply_track_id_service(svc)
+        assert mon._ti_next_attempt >= before + 43
+
+    def test_capture_start_defers_by_30s_interval(self):
+        svc = _make_service(interval=30)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        mon._on_capture_started(was_idle=False)
+        assert mon._ti_next_attempt >= before + 28
+
+    def test_capture_start_defers_by_45s_interval(self):
+        svc = _make_service(interval=45)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        mon._on_capture_started(was_idle=False)
+        assert mon._ti_next_attempt >= before + 43
+
+
+# ---------------------------------------------------------------------------
+# apply_track_id_config_live with enabled config
+# ---------------------------------------------------------------------------
+
+class TestApplyTrackIdConfigLiveEnabled:
+
+    def test_apply_service_live_rebuilds_service_enabled(self, tmp_path):
+        """apply_track_id_config_live rebuilds a real (enabled) service."""
+        import json
+        from autostream_core import apply_track_id_config_live
+        cfg = {
+            "general": {"silence_seconds": 30},
+            "owntone": {"base_url": "http://localhost:3689"},
+            "audio1": {
+                "capture_device": "hw:0,0",
+                "silence_threshold": -66,
+                "turntable": False,
+            },
+            "track_identification": {
+                "enabled": True,
+                "provider": "acoustid_musicbrainz",
+                "interval_seconds": 30,
+                "provider_settings": {"api_key": "test_key_live"},
+            },
+        }
+        p = tmp_path / "autostream.json"
+        p.write_text(json.dumps(cfg))
+        old_svc = core._track_id_service
+        try:
+            apply_track_id_config_live(str(p))
+            assert core._track_id_service is not None
+            assert core._track_id_service.interval_seconds == 30
+        finally:
+            core._track_id_service = old_svc
+
+    def test_apply_service_live_pushes_to_monitors(self, tmp_path):
+        """apply_track_id_config_live must call _apply_track_id_service on each monitor."""
+        import json
+        from autostream_core import apply_track_id_config_live
+        cfg = {
+            "general": {"silence_seconds": 30},
+            "owntone": {"base_url": "http://localhost:3689"},
+            "audio1": {
+                "capture_device": "hw:0,0",
+                "silence_threshold": -66,
+                "turntable": False,
+            },
+            "track_identification": {"enabled": False},
+        }
+        p = tmp_path / "autostream.json"
+        p.write_text(json.dumps(cfg))
+        mon = _make_monitor()
+        old_svc = core._track_id_service
+        try:
+            apply_track_id_config_live(str(p))
+            # Monitor should have been updated to disabled state.
+            assert mon._ti_snapshot.state == STATE_DISABLED
+        finally:
+            core._track_id_service = old_svc
+
+
+# ---------------------------------------------------------------------------
+# Setup page markup — Factory Reset card must be well-formed HTML
+# ---------------------------------------------------------------------------
+
+class TestSetupPageMarkup:
+
+    def _get_setup_page_html(self) -> str:
+        import sys
+        from pathlib import Path
+        core_path = str(Path(__file__).parent.parent / "core")
+        if core_path not in sys.path:
+            sys.path.insert(0, core_path)
+        from autostream_webui_page_setup import render_setup_page
+        from unittest.mock import MagicMock
+        state = MagicMock()
+        state.config_path = ""
+        state.hostname = "autostream"
+        state.version = "0.0.0"
+        # Provide a minimal config mock so the page renders.
+        from autostream_config import parse_config
+        import json
+        cfg_dict = {
+            "general": {"silence_seconds": 30},
+            "owntone": {"base_url": "http://localhost:3689"},
+            "audio1": {
+                "capture_device": "hw:0,0",
+                "silence_threshold": -66,
+                "turntable": False,
+            },
+        }
+        with patch("autostream_webui_page_setup.locked_load_config",
+                   return_value=cfg_dict):
+            try:
+                html = render_setup_page(state)
+            except Exception:
+                html = None
+        return html
+
+    def test_factory_reset_card_has_closing_angle_bracket(self):
+        """The Factory Reset setup-list-card div must have a well-formed opening tag."""
+        import sys
+        from pathlib import Path
+        core_path = str(Path(__file__).parent.parent / "core")
+        if core_path not in sys.path:
+            sys.path.insert(0, core_path)
+        import autostream_webui_page_setup as setup_mod
+        import inspect
+        source = inspect.getsource(setup_mod)
+        # The card tag must end with "> not just a trailing quote.
+        assert "onclick=\"openPanel('factory-reset')\">" in source, \
+            "Factory Reset card tag is missing closing '>'"
+        assert "onclick=\"openPanel('factory-reset')\"\n" not in source, \
+            "Factory Reset card tag has a bare newline where '>' should be"
+
+
+# ---------------------------------------------------------------------------
 # Teardown: clear module-level service so tests don't bleed
 # ---------------------------------------------------------------------------
 

@@ -1488,11 +1488,15 @@ class AudioMonitor:
             return
 
         duration_s = len(pcm_bytes) / (22050 * 2)
+        logging.debug(
+            "track_id[%d]: snapshot returned %d bytes (%.1f s, requested=%d s).",
+            self.input_index, len(pcm_bytes), duration_s, svc.interval_seconds,
+        )
         from track_id.service import MIN_PCM_DURATION_SECONDS
         if duration_s < MIN_PCM_DURATION_SECONDS:
             logging.debug(
-                "track_id[%d]: audio too short (%.1f s < %.1f s), skipping.",
-                self.input_index, duration_s, MIN_PCM_DURATION_SECONDS,
+                "track_id[%d]: snapshot too short (%.1f s); waiting for more audio.",
+                self.input_index, duration_s,
             )
             return
         logging.info(

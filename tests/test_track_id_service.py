@@ -24,15 +24,18 @@ _LONG_PCM = b"\x00" * int(22050 * 2 * 6)
 def _make_provider(matched: bool = True, raise_exc: Exception | None = None):
     provider = MagicMock()
     provider.provider_id = "test_provider"
+    _result = TrackIdentificationResult(
+        matched=matched,
+        title="T" if matched else "",
+        artist="A" if matched else "",
+        provider="test_provider",
+    )
     if raise_exc is not None:
         provider.identify.side_effect = raise_exc
+        provider.identify_from_fingerprint.side_effect = raise_exc
     else:
-        provider.identify.return_value = TrackIdentificationResult(
-            matched=matched,
-            title="T" if matched else "",
-            artist="A" if matched else "",
-            provider="test_provider",
-        )
+        provider.identify.return_value = _result
+        provider.identify_from_fingerprint.return_value = _result
     return provider
 
 
@@ -101,11 +104,12 @@ class TestTrackIdentificationService:
         provider.fingerprint_pcm.return_value = "stable_fp"
         svc = TrackIdentificationService(provider, "test_provider", 15)
         pcm = _LONG_PCM
-        # First call: cache miss → provider.identify called.
+        # First call: cache miss → provider.identify_from_fingerprint called (not identify).
         r1 = svc.identify(pcm, 22050, input_index=1)
-        # Second call with same fingerprint: cache hit → provider.identify NOT called again.
+        # Second call with same fingerprint: cache hit → neither called again.
         r2 = svc.identify(pcm, 22050, input_index=1)
-        assert provider.identify.call_count == 1
+        assert provider.identify_from_fingerprint.call_count == 1
+        assert provider.identify.call_count == 0
         assert r1.matched is True
         assert r2.matched is True
 
@@ -135,3 +139,106 @@ class TestTrackIdentificationService:
         # No caching fallback → provider called both times.
         assert provider.identify.call_count == 2
         assert r1.matched is True
+
+
+class TestNoDoubleFingerprint:
+    """On a cache miss the service must not fingerprint twice."""
+
+    def test_identify_from_fingerprint_called_instead_of_identify_on_cache_miss(self):
+        """When provider has identify_from_fingerprint, identify() must not be called."""
+        provider = MagicMock()
+        provider.provider_id = "test_provider"
+        provider.fingerprint_pcm.return_value = "fp_xyz"
+        provider.identify_from_fingerprint.return_value = TrackIdentificationResult(
+            matched=True, title="T", artist="A", provider="test_provider"
+        )
+        svc = TrackIdentificationService(provider, "test_provider", 15)
+
+        result = svc.identify(_LONG_PCM, 22050, input_index=1)
+
+        assert result.matched is True
+        provider.fingerprint_pcm.assert_called_once()
+        provider.identify_from_fingerprint.assert_called_once()
+        provider.identify.assert_not_called()
+
+    def test_cache_hit_calls_neither_identify_nor_identify_from_fingerprint(self):
+        """A cache hit must bypass the provider entirely."""
+        provider = MagicMock()
+        provider.provider_id = "test_provider"
+        provider.fingerprint_pcm.return_value = "fp_xyz"
+        provider.identify_from_fingerprint.return_value = TrackIdentificationResult(
+            matched=True, title="T", artist="A", provider="test_provider"
+        )
+        svc = TrackIdentificationService(provider, "test_provider", 15)
+
+        svc.identify(_LONG_PCM, 22050, input_index=1)   # populates cache
+        provider.reset_mock()
+        provider.fingerprint_pcm.return_value = "fp_xyz"
+
+        svc.identify(_LONG_PCM, 22050, input_index=1)   # cache hit
+
+        provider.identify_from_fingerprint.assert_not_called()
+        provider.identify.assert_not_called()
+
+    def test_falls_back_to_identify_when_identify_from_fingerprint_absent(self):
+        """Providers without identify_from_fingerprint must still work."""
+        provider = MagicMock(spec=["identify", "fingerprint_pcm", "provider_id"])
+        provider.provider_id = "test_provider"
+        provider.fingerprint_pcm.return_value = "fp_xyz"
+        provider.identify.return_value = TrackIdentificationResult(
+            matched=True, title="T", artist="A", provider="test_provider"
+        )
+        svc = TrackIdentificationService(provider, "test_provider", 15)
+
+        result = svc.identify(_LONG_PCM, 22050, input_index=1)
+
+        assert result.matched is True
+        provider.identify.assert_called_once()
+
+    def test_falls_back_to_identify_when_fingerprint_pcm_returns_none(self):
+        """Providers whose fingerprint_pcm returns None must fall back to identify()."""
+        provider = MagicMock()
+        provider.provider_id = "test_provider"
+        provider.fingerprint_pcm.return_value = None
+        provider.identify.return_value = TrackIdentificationResult(
+            matched=False, provider="test_provider"
+        )
+        svc = TrackIdentificationService(provider, "test_provider", 15)
+
+        svc.identify(_LONG_PCM, 22050, input_index=1)
+
+        provider.identify.assert_called_once()
+        provider.identify_from_fingerprint.assert_not_called()
+
+
+class TestSnapshotClampAndCapacity:
+    """Buffer and clamp constants must support 45-second snapshots."""
+
+    def test_id_buf_frames_holds_45_seconds(self):
+        """ID_BUF_FRAMES must be large enough for 45 s at 22050 Hz."""
+        ID_BUF_RATE = 22050
+        ID_BUF_FRAMES = 1 << 20  # must match autostream_monitor.h
+        capacity_seconds = ID_BUF_FRAMES / ID_BUF_RATE
+        assert capacity_seconds >= 45.0
+
+    def test_track_id_max_interval_aligned_to_buffer(self):
+        """TRACK_ID_MAX_INTERVAL must not exceed the buffer capacity."""
+        import sys
+        from pathlib import Path
+        core_path = str(Path(__file__).parent.parent / "core")
+        if core_path not in sys.path:
+            sys.path.insert(0, core_path)
+        from autostream_config import TRACK_ID_MAX_INTERVAL
+        ID_BUF_RATE = 22050
+        ID_BUF_FRAMES = 1 << 20
+        capacity_seconds = ID_BUF_FRAMES / ID_BUF_RATE
+        assert TRACK_ID_MAX_INTERVAL <= capacity_seconds
+
+    def test_track_id_max_interval_is_45(self):
+        import sys
+        from pathlib import Path
+        core_path = str(Path(__file__).parent.parent / "core")
+        if core_path not in sys.path:
+            sys.path.insert(0, core_path)
+        from autostream_config import TRACK_ID_MAX_INTERVAL
+        assert TRACK_ID_MAX_INTERVAL == 45

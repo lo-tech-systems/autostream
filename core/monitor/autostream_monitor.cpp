@@ -1536,7 +1536,7 @@ std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
     // Clamp max_seconds to a sane range so the caller cannot request an
     // unbounded allocation.
     if (max_seconds < 1)  max_seconds = 1;
-    if (max_seconds > 20) max_seconds = 20;
+    if (max_seconds > 45) max_seconds = 45;
 
     unsigned max_frames = static_cast<unsigned>(max_seconds) * InputChannel::ID_BUF_RATE;
 

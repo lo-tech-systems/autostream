@@ -504,6 +504,84 @@ class TestAcoustIDMusicBrainzProviderEndToEnd:
 
 
 # ---------------------------------------------------------------------------
+# identify_from_fingerprint — skips Chromaprint, goes straight to AcoustID
+# ---------------------------------------------------------------------------
+
+class TestIdentifyFromFingerprint:
+    """identify_from_fingerprint must skip fingerprinting and call AcoustID directly."""
+
+    def _run_with_mocks(
+        self,
+        *,
+        api_key: str = "testkey",
+        acoustid_results=None,
+        fingerprint: str = "fp_precomputed",
+        duration_s: float = 15.0,
+    ) -> TrackIdentificationResult:
+        if acoustid_results is None:
+            acoustid_results = [_recording_entry()]
+
+        def fake_urlopen(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "acoustid" in url:
+                body = json.dumps(_acoustid_response(acoustid_results)).encode()
+            elif "musicbrainz" in url:
+                body = json.dumps({}).encode()
+            else:
+                raise urllib.error.HTTPError(None, 404, "nf", {}, None)
+            m = MagicMock()
+            m.read.return_value = body
+            m.__enter__ = lambda s: s
+            m.__exit__ = MagicMock(return_value=False)
+            return m
+
+        provider = AcoustIDMusicBrainzProvider({"api_key": api_key})
+        with patch("track_id.acoustid_musicbrainz.urllib.request.urlopen",
+                   side_effect=fake_urlopen):
+            return provider.identify_from_fingerprint(fingerprint, duration_s)
+
+    def test_returns_match_without_fingerprinting_pcm(self):
+        with patch.object(amz, "_fingerprint_raw_pcm") as mock_fp:
+            result = self._run_with_mocks()
+        mock_fp.assert_not_called()
+        assert result.matched is True
+
+    def test_match_title_and_artist_populated(self):
+        result = self._run_with_mocks()
+        assert result.title == "Song Title"
+        assert result.artist == "Artist Name"
+
+    def test_no_results_returns_not_found(self):
+        result = self._run_with_mocks(acoustid_results=[])
+        assert result.matched is False
+
+    def test_no_api_key_returns_config_error(self):
+        provider = AcoustIDMusicBrainzProvider({"api_key": ""})
+        with patch.object(amz, "_fingerprint_raw_pcm") as mock_fp:
+            result = provider.identify_from_fingerprint("fp", 15.0)
+        assert result.matched is False
+        assert result.source_detail == "no_api_key"
+        assert result.is_configuration_error is True
+        mock_fp.assert_not_called()
+
+    def test_api_key_not_logged(self, caplog):
+        def fake_urlopen(req, timeout=None):
+            body = json.dumps({"status": "ok", "results": []}).encode()
+            m = MagicMock()
+            m.read.return_value = body
+            m.__enter__ = lambda s: s
+            m.__exit__ = MagicMock(return_value=False)
+            return m
+
+        provider = AcoustIDMusicBrainzProvider({"api_key": "SUPER_SECRET"})
+        with caplog.at_level(logging.DEBUG):
+            with patch("track_id.acoustid_musicbrainz.urllib.request.urlopen",
+                       side_effect=fake_urlopen):
+                provider.identify_from_fingerprint("fp", 15.0)
+        assert "SUPER_SECRET" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # fingerprint_pcm
 # ---------------------------------------------------------------------------
 

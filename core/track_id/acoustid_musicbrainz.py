@@ -410,6 +410,32 @@ class AcoustIDMusicBrainzProvider:
         except Exception:
             return None
 
+    def identify_from_fingerprint(
+        self,
+        fingerprint: str,
+        duration_s: float,
+        *,
+        timeout: Optional[float] = None,
+    ) -> TrackIdentificationResult:
+        """Look up a pre-computed fingerprint against AcoustID.
+
+        Skips Chromaprint work entirely — use this when the caller already
+        holds a fingerprint string (e.g. the service computed it for caching).
+        """
+        if not self._api_key:
+            _log.warning(
+                "track_id: AcoustID API key not configured; identification skipped."
+            )
+            return TrackIdentificationResult(
+                matched=False,
+                provider=PROVIDER_ID,
+                source_detail="no_api_key",
+                is_configuration_error=True,
+            )
+
+        _timeout = float(timeout) if timeout is not None else _DEFAULT_TIMEOUT
+        return self._lookup_and_enrich(fingerprint, duration_s, _timeout)
+
     def identify(
         self,
         pcm16_mono: bytes,
@@ -450,7 +476,16 @@ class AcoustIDMusicBrainzProvider:
             _log.warning("track_id: fingerprinting failed: %s", exc)
             raise
 
-        # 2. AcoustID lookup.
+        return self._lookup_and_enrich(fingerprint, duration, _timeout)
+
+    def _lookup_and_enrich(
+        self,
+        fingerprint: str,
+        duration: float,
+        _timeout: float,
+    ) -> TrackIdentificationResult:
+        """Perform AcoustID lookup and MusicBrainz enrichment for a fingerprint."""
+        # AcoustID lookup.
         results = _acoustid_lookup(fingerprint, duration, self._api_key, _timeout)
         if not results:
             return TrackIdentificationResult(matched=False, provider=PROVIDER_ID)

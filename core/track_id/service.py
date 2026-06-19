@@ -149,9 +149,11 @@ class TrackIdentificationService:
         # provider.  fingerprint_pcm() is optional on the Protocol; providers
         # that do not implement it return None and skip the cache.
         fp_key: Optional[str] = None
+        fp_str: Optional[str] = None
         try:
-            fp_str = self._provider.fingerprint_pcm(pcm16_mono, sample_rate)
-            if isinstance(fp_str, str) and fp_str:
+            _raw_fp = self._provider.fingerprint_pcm(pcm16_mono, sample_rate)
+            if isinstance(_raw_fp, str) and _raw_fp:
+                fp_str = _raw_fp
                 fp_key = _ResultCache.make_key(fp_str)
                 cached = self._cache.get(fp_key, now)
                 if cached is not None:
@@ -159,13 +161,22 @@ class TrackIdentificationService:
                     return cached
         except Exception:
             fp_key = None
+            fp_str = None
 
+        # On a cache miss, reuse the fingerprint already computed above when
+        # the provider supports it.  This avoids running Chromaprint twice for
+        # the same PCM (once for the cache key, once inside identify()).
         try:
-            result = self._provider.identify(
-                pcm16_mono,
-                sample_rate,
-                timeout=timeout,
-            )
+            identify_from_fp = getattr(self._provider, "identify_from_fingerprint", None)
+            if identify_from_fp is not None and fp_str:
+                fp_duration = len(pcm16_mono) / (sample_rate * 2) if sample_rate else duration
+                result = identify_from_fp(fp_str, fp_duration, timeout=timeout)
+            else:
+                result = self._provider.identify(
+                    pcm16_mono,
+                    sample_rate,
+                    timeout=timeout,
+                )
         except Exception as exc:
             _log.warning(
                 "track_id[%d]: provider '%s' error: %s",
