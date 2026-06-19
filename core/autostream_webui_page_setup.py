@@ -783,7 +783,6 @@ def send_setup_page(
         # Track identification card
         _ti = parsed.track_identification
         _ti_enabled = bool(_ti.enabled)
-        _ti_api_key = str((_ti.providers.get("acoustid_musicbrainz") or {}).get("api_key", "") or "")
         track_id_summary = html.escape("On" if _ti_enabled else "Off")
         track_id_card_html = settings_card_html(f"""
               <input type="hidden" name="track_identification_present" value="1">
@@ -795,20 +794,7 @@ def send_setup_page(
                 <span>Track identification</span>
               </div>
               <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.4rem;">
-                Identifies playing tracks using AcoustID and MusicBrainz. Requires internet access.
-              </div>
-              <div style="margin-top:0.75rem;">
-                <label style="display:block;">AcoustID API key:
-                  <input type="password" name="track_identification_acoustid_api_key"
-                    id="track_identification_acoustid_api_key"
-                    value="{html.escape(_ti_api_key)}"
-                    autocomplete="off"
-                    style="margin-top:0.25rem;width:100%;"
-                    placeholder="Your AcoustID application key">
-                </label>
-                <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.25rem;">
-                  Obtain a free key at acoustid.org/login.
-                </div>
+                Identifies playing tracks using Shazam via the autostream-vibra service. Requires internet access.
               </div>
             """, margin_top="0")
 

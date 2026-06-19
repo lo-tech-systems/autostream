@@ -55,9 +55,9 @@ class TestTrackIdConfigDefaults:
         parsed = parse_config({})
         assert parsed.track_identification.interval_seconds == TRACK_ID_DEFAULT_INTERVAL
 
-    def test_absent_section_providers_has_default_entry(self):
+    def test_absent_section_providers_is_empty(self):
         parsed = parse_config({})
-        assert TRACK_ID_DEFAULT_PROVIDER in parsed.track_identification.providers
+        assert parsed.track_identification.providers == {}
 
     def test_enabled_true_parses(self):
         parsed = parse_config({"track_identification": {"enabled": True}})
@@ -216,25 +216,6 @@ class TestHandleSetupPostTrackId:
         saved, *_ = _run_setup_post(form, tmp_path)
         assert saved["track_identification"]["enabled"] is False
 
-    def test_api_key_saved(self, tmp_path):
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "track_identification_acoustid_api_key": "mykey123",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        key = (
-            saved.get("track_identification", {})
-            .get("providers", {})
-            .get("acoustid_musicbrainz", {})
-            .get("api_key", "")
-        )
-        assert key == "mykey123"
-
     def test_api_key_not_in_logs(self, tmp_path, caplog):
         form = {
             "audio_capture_device": "hw:1,0",
@@ -300,7 +281,6 @@ class TestHandleSetupPostTrackId:
             "track_identification": {
                 "enabled": False,
                 "providers": {
-                    "acoustid_musicbrainz": {"api_key": "old"},
                     "future_provider": {"token": "xyz"},
                 },
             }
@@ -312,13 +292,7 @@ class TestHandleSetupPostTrackId:
             "owntone_volume_percent": "20",
             "silence_seconds": "30",
             "track_identification_present": "1",
-            "track_identification_acoustid_api_key": "new_key",
         }
         saved, *_ = _run_setup_post(form, tmp_path, extra_cfg=existing)
-        # future_provider settings preserved
+        # unknown provider settings are preserved across saves
         assert saved["track_identification"]["providers"]["future_provider"]["token"] == "xyz"
-        # acoustid key updated
-        assert (
-            saved["track_identification"]["providers"]["acoustid_musicbrainz"]["api_key"]
-            == "new_key"
-        )

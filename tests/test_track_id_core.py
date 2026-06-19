@@ -671,9 +671,8 @@ class TestApplyTrackIdConfigLiveEnabled:
             },
             "track_identification": {
                 "enabled": True,
-                "provider": "acoustid_musicbrainz",
+                "provider": "vibra_shazam",
                 "interval_seconds": 30,
-                "provider_settings": {"api_key": "test_key_live"},
             },
         }
         p = tmp_path / "autostream.json"

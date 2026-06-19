@@ -29,7 +29,7 @@ STATE_PATH = "/var/lib/autostream/autostream-state.json"
 DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 
-TRACK_ID_DEFAULT_PROVIDER = "acoustid_musicbrainz"
+TRACK_ID_DEFAULT_PROVIDER = "vibra_shazam"
 TRACK_ID_DEFAULT_INTERVAL = 15
 TRACK_ID_MIN_INTERVAL = 10
 TRACK_ID_MAX_INTERVAL = 45
@@ -491,8 +491,6 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
     if isinstance(raw_providers, dict):
         for prov_id, prov_cfg in raw_providers.items():
             providers[str(prov_id)] = dict(prov_cfg) if isinstance(prov_cfg, dict) else {}
-    # Ensure the default provider section always exists so callers don't KeyError.
-    providers.setdefault(TRACK_ID_DEFAULT_PROVIDER, {})
     track_identification = TrackIdentificationConfig(
         enabled=bool(track_id_d.get("enabled", False)),
         provider=str(track_id_d.get("provider", TRACK_ID_DEFAULT_PROVIDER) or TRACK_ID_DEFAULT_PROVIDER),
