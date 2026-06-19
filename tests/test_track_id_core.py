@@ -652,6 +652,52 @@ class TestFirstAttemptDeferralLongIntervals:
 
 
 # ---------------------------------------------------------------------------
+# Rate-limit back-off
+# ---------------------------------------------------------------------------
+
+class TestRateLimitBackoff:
+
+    def _run_worker_with_exc(self, exc) -> "AudioMonitor":
+        """Run _ti_worker synchronously with a service that raises exc."""
+        from track_id.models import TrackIDRateLimitedError
+        svc = _make_service(raise_exc=exc)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_inflight = True
+        pcm = b"\x00" * (_DEFAULT_RATE * 2 * 15)
+        mon._ti_worker(pcm, _DEFAULT_RATE)
+        return mon
+
+    def test_rate_limited_error_sets_backoff(self):
+        from track_id.models import TrackIDRateLimitedError
+        from autostream_core import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        before = time.time()
+        mon = self._run_worker_with_exc(TrackIDRateLimitedError("rate_limited"))
+        assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
+
+    def test_rate_limited_error_sets_error_snapshot(self):
+        from track_id.models import TrackIDRateLimitedError, STATE_ERROR
+        mon = self._run_worker_with_exc(TrackIDRateLimitedError("rate_limited"))
+        assert mon._ti_snapshot.state == STATE_ERROR
+
+    def test_generic_exception_does_not_set_backoff(self):
+        from autostream_core import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        before = time.time()
+        mon = self._run_worker_with_exc(RuntimeError("boom"))
+        assert mon._ti_next_attempt < before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+
+    def test_generic_exception_sets_error_snapshot(self):
+        from track_id.models import STATE_ERROR
+        mon = self._run_worker_with_exc(RuntimeError("boom"))
+        assert mon._ti_snapshot.state == STATE_ERROR
+
+    def test_rate_limit_backoff_constant_is_120(self):
+        from autostream_core import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        assert TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS == 120
+
+
+# ---------------------------------------------------------------------------
 # apply_track_id_config_live with enabled config
 # ---------------------------------------------------------------------------
 

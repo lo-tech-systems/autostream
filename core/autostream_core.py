@@ -97,6 +97,9 @@ _playback_tracker: Optional[PlaybackTracker] = None
 # Written only from the coordinator thread; read from worker threads under GIL.
 _track_id_service = None  # Optional[TrackIdentificationService]
 
+# Back-off applied to _ti_next_attempt when a provider signals rate limiting.
+TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS = 120
+
 
 def _build_track_id_service(cfg) -> Optional[object]:
     """Build and return a TrackIdentificationService from config, or None."""
@@ -1606,7 +1609,15 @@ class AudioMonitor:
                 )
         except Exception as exc:
             now = time.time()
-            logging.warning("track_id[%d]: worker error: %s", self.input_index, type(exc).__name__)
+            from track_id.models import TrackIDRateLimitedError
+            if isinstance(exc, TrackIDRateLimitedError):
+                logging.warning(
+                    "track_id[%d]: rate limited; backing off %ds",
+                    self.input_index, TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS,
+                )
+                self._ti_next_attempt = now + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+            else:
+                logging.warning("track_id[%d]: worker error: %s", self.input_index, type(exc).__name__)
             if self._ti_generation == my_gen:
                 from track_id.models import STATE_ERROR, state_status_text, TrackIdentificationSnapshot
                 self._ti_snapshot = TrackIdentificationSnapshot(
