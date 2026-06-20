@@ -188,12 +188,14 @@ class TestIngestStatusTrackChangeBaseline:
         mon._ingest_status({"capturing": True, "track_change_seq": 4})
         assert mon._track_change_seq_baseline == 4
 
-    def test_baseline_not_set_on_continued_capturing(self):
+    def test_baseline_updated_on_seq_advance_while_capturing(self):
+        """Seq advance while capturing fires a track-change event which updates baseline."""
         mon = _make_monitor()
         mon.is_capturing = True
+        mon.track_change_seq = 2
         mon._track_change_seq_baseline = 2
         mon._ingest_status({"capturing": True, "track_change_seq": 6})
-        assert mon._track_change_seq_baseline == 2  # unchanged
+        assert mon._track_change_seq_baseline == 6  # updated by track-change event
 
     def test_baseline_not_set_on_stopped_transition(self):
         mon = _make_monitor()

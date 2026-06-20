@@ -1397,7 +1397,32 @@ class AudioMonitor:
             return "started"
         if not self.is_capturing and was_capturing:
             return "stopped"
+
+        # Already capturing: check for track-change events.
+        if was_capturing and self.is_capturing:
+            if self.track_change_seq != self._track_change_seq_baseline:
+                self._on_possible_track_change(self.track_change_seq)
+
         return ""
+
+    def _on_possible_track_change(self, new_seq: int) -> None:
+        """Handle a track_change_seq advance while capturing."""
+        self._track_change_seq_baseline = new_seq
+        svc = _track_id_service
+        if svc is None:
+            return
+        self._ti_generation += 1  # invalidate stale in-flight worker results
+        from track_id.models import waiting_snapshot
+        self._ti_snapshot = waiting_snapshot(input_index=self.input_index)
+        delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
+        now = time.time()
+        logging.info(
+            "track_id[%d]: possible track change seq=%d; analysis scheduled in %ds"
+            " (lead-in=%ds window=%ds)",
+            self.input_index, new_seq, delay,
+            svc.analysis_lead_in_seconds, svc.snapshot_seconds,
+        )
+        self._schedule_track_id_after(now, delay, "track_change")
 
     def apply_allow_capture(self, client: "MonitorClient") -> None:
         """Send set_allow_capture to the daemon if the value has changed."""

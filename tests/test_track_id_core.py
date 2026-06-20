@@ -1015,6 +1015,240 @@ class TestApplyTrackIdConfigLiveEnabled:
 
 
 # ---------------------------------------------------------------------------
+# T5: Track-change events connected to scheduling
+# ---------------------------------------------------------------------------
+
+def _make_capturing_monitor_with_service(svc=None, **overrides) -> AudioMonitor:
+    """Return an active monitor already baselining a track_change_seq of 0."""
+    if svc is None:
+        svc = _make_service()
+    mon = _active_monitor(**overrides)
+    core._track_id_service = svc
+    mon._apply_track_id_service(svc)
+    mon.track_change_seq = 0
+    mon._track_change_seq_baseline = 0
+    return mon
+
+
+class TestTrackChangeScheduling:
+
+    def test_seq_advance_schedules_lead_in_plus_snapshot(self):
+        """A track-change event schedules analysis_lead_in + snapshot from now."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_capturing_monitor_with_service(svc)
+        before = time.time()
+        mon._on_possible_track_change(1)
+        assert mon._ti_next_attempt >= before + 19
+        assert mon._ti_next_attempt_reason == "track_change"
+
+    def test_seq_advance_sets_waiting_snapshot(self):
+        svc = _make_service()
+        mon = _make_capturing_monitor_with_service(svc)
+        from track_id.models import TrackIdentificationSnapshot
+        mon._ti_snapshot = TrackIdentificationSnapshot(
+            enabled=True, state=STATE_IDENTIFIED,
+            status_text="", updated_at=time.time(),
+        )
+        mon._on_possible_track_change(1)
+        assert mon._ti_snapshot.state == STATE_WAITING
+
+    def test_seq_advance_increments_generation(self):
+        svc = _make_service()
+        mon = _make_capturing_monitor_with_service(svc)
+        gen_before = mon._ti_generation
+        mon._on_possible_track_change(1)
+        assert mon._ti_generation == gen_before + 1
+
+    def test_seq_advance_updates_baseline(self):
+        svc = _make_service()
+        mon = _make_capturing_monitor_with_service(svc)
+        mon._on_possible_track_change(7)
+        assert mon._track_change_seq_baseline == 7
+
+    def test_seq_advance_without_service_updates_baseline_only(self):
+        """Without a service, baseline is updated but no scheduling occurs."""
+        mon = _make_capturing_monitor_with_service()
+        core._track_id_service = None
+        before_attempt = mon._ti_next_attempt
+        mon._on_possible_track_change(3)
+        assert mon._track_change_seq_baseline == 3
+        # Scheduling unchanged (no service to schedule with).
+        assert mon._ti_next_attempt == before_attempt
+
+    def test_seq_advance_does_not_apply_jitter(self):
+        """Track-change delay must equal analysis_lead_in + snapshot exactly (no jitter)."""
+        svc = _make_service(analysis_lead_in=10, snapshot=15)
+        mon = _make_capturing_monitor_with_service(svc)
+        before = time.time()
+        mon._on_possible_track_change(1)
+        # Delay is 10+15=25, floor is now+1 from _schedule_track_id_attempt.
+        # Allow tight epsilon (only scheduling floor can push it slightly higher).
+        assert mon._ti_next_attempt <= before + 26
+        assert mon._ti_next_attempt >= before + 24
+
+    def test_multiple_seq_increments_schedule_one_attempt(self):
+        """Multiple advances in one poll produce a single rescheduling."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_capturing_monitor_with_service(svc)
+        gen_before = mon._ti_generation
+
+        # Simulate skipping from 0 → 3 (three events between polls).
+        mon.track_change_seq = 3
+        mon._track_change_seq_baseline = 0
+
+        # _ingest_status already capturing path: seq differs → one call.
+        status = {
+            "capturing": True, "silent": False,
+            "level_dbfs": -30.0, "poll_peak_dbfs": -30.0,
+            "detected_hz": 0.0, "track_change_seq": 3,
+        }
+        mon._ingest_status(status)
+        assert mon._ti_next_attempt_reason == "track_change"
+        assert mon._track_change_seq_baseline == 3
+        assert mon._ti_generation == gen_before + 1  # only one increment
+
+    def test_capture_start_seq_is_baselined_not_treated_as_event(self):
+        """On capture start, the current seq is baselined without triggering a change event."""
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        gen_before = mon._ti_generation
+
+        # Simulate capture starting with seq already at 5.
+        status = {
+            "capturing": True, "silent": False,
+            "level_dbfs": -30.0, "poll_peak_dbfs": -30.0,
+            "detected_hz": 0.0, "track_change_seq": 5,
+        }
+        mon._ingest_status(status)
+        assert mon._track_change_seq_baseline == 5
+        assert mon._ti_generation == gen_before  # no change event fired
+
+    def test_track_change_preserves_rate_limit_deadline(self):
+        """Track-change event must not shorten an active rate-limit deadline."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_capturing_monitor_with_service(svc)
+
+        # Set a rate-limit deadline far in the future.
+        rate_limit_deadline = time.time() + 200.0
+        mon._ti_next_attempt = rate_limit_deadline
+        mon._ti_next_attempt_reason = "rate_limit"
+
+        mon._on_possible_track_change(1)
+
+        assert mon._ti_next_attempt == rate_limit_deadline  # preserved
+        assert mon._ti_next_attempt_reason == "rate_limit"
+
+    def test_track_change_preserves_upstream_rejection_deadline(self):
+        """Track-change event must not shorten an upstream_rejection deadline."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_capturing_monitor_with_service(svc)
+
+        rejection_deadline = time.time() + 350.0
+        mon._ti_next_attempt = rejection_deadline
+        mon._ti_next_attempt_reason = "upstream_rejection"
+
+        mon._on_possible_track_change(1)
+
+        assert mon._ti_next_attempt == rejection_deadline
+        assert mon._ti_next_attempt_reason == "upstream_rejection"
+
+    def test_track_change_overrides_match_refresh_deadline(self):
+        """Track-change event (25s) can shorten a match-refresh deadline (300s)."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15, refresh=300)
+        mon = _make_capturing_monitor_with_service(svc)
+
+        match_deadline = time.time() + 300.0
+        mon._ti_next_attempt = match_deadline
+        mon._ti_next_attempt_reason = "match"
+
+        before = time.time()
+        mon._on_possible_track_change(1)
+
+        # New deadline should be ~25s from now, not 300s.
+        assert mon._ti_next_attempt < before + 30
+        assert mon._ti_next_attempt_reason == "track_change"
+
+    def test_stale_worker_does_not_publish_after_track_change(self):
+        """Worker started before a track-change event must not update state.
+
+        The track-change handler sets a new token-less generation; a worker
+        carrying the old token detects token mismatch and skips state updates.
+        """
+        svc = _make_service(matched=True)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        # Pre-change: stale worker has acquired gate and installed its token.
+        stale_token = object()
+        core._track_id_request_gate.acquire()
+        mon._ti_inflight = True
+        mon._ti_inflight_token = stale_token
+
+        # Track-change event fires: generation bumps, snapshot set to waiting.
+        mon._on_possible_track_change(1)
+        waiting_snap = mon._ti_snapshot
+        assert waiting_snap.state == STATE_WAITING
+
+        # Stale worker finishes: its token no longer matches _ti_inflight_token.
+        # Give the monitor a fresh token so the stale worker's token doesn't match.
+        fresh_token = object()
+        mon._ti_inflight_token = fresh_token
+
+        # Gate is still held from the first acquire (simulating the running worker).
+        # Call _ti_worker with the stale token; its finally will release the gate.
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+
+        # Snapshot must still be the waiting snapshot from _on_possible_track_change.
+        assert mon._ti_snapshot is waiting_snap
+
+    def test_ingest_status_fires_track_change_on_seq_advance(self):
+        """_ingest_status with advancing seq triggers _on_possible_track_change."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _active_monitor()
+        mon.is_capturing = True
+        mon.track_change_seq = 0
+        mon._track_change_seq_baseline = 0
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        before = time.time()
+        status = {
+            "capturing": True, "silent": False,
+            "level_dbfs": -30.0, "poll_peak_dbfs": -30.0,
+            "detected_hz": 0.0, "track_change_seq": 2,
+        }
+        transition = mon._ingest_status(status)
+        assert transition == ""  # not a start/stop
+        assert mon._track_change_seq_baseline == 2
+        assert mon._ti_next_attempt >= before + 19
+        assert mon._ti_next_attempt_reason == "track_change"
+
+    def test_ingest_status_no_event_when_seq_unchanged(self):
+        """_ingest_status does not schedule a track-change when seq is stable."""
+        svc = _make_service()
+        mon = _active_monitor()
+        mon.is_capturing = True
+        mon.track_change_seq = 3
+        mon._track_change_seq_baseline = 3
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = time.time() + 1000.0  # some future deadline
+        mon._ti_next_attempt_reason = "match"
+
+        status = {
+            "capturing": True, "silent": False,
+            "level_dbfs": -30.0, "poll_peak_dbfs": -30.0,
+            "detected_hz": 0.0, "track_change_seq": 3,  # same
+        }
+        mon._ingest_status(status)
+        assert mon._ti_next_attempt_reason == "match"  # unchanged
+
+
+# ---------------------------------------------------------------------------
 # Setup page markup
 # ---------------------------------------------------------------------------
 
