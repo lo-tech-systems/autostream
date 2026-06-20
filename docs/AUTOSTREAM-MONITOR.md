@@ -210,7 +210,8 @@ Request:
   "input":1,
   "device":"hw:1,0",
   "silence_threshold_dbfs":-66.0,
-  "silence_seconds":30
+  "silence_seconds":30,
+  "track_change_silence_seconds":1.25
 }
 ```
 
@@ -228,6 +229,14 @@ Request fields:
   - time below threshold before the input is considered silent
   - valid range: `[1, 3600]`
   - default if omitted: `30`
+- `track_change_silence_seconds`
+  - minimum below-threshold gap duration that is treated as a possible track
+    boundary; the same per-input amplitude threshold is reused, only the
+    duration is independent
+  - valid range: `[0.5, 5.0]` seconds
+  - default if omitted: `1.25`
+  - a runtime configuration change to this value clears any in-progress gap
+    candidate but does not reset the `track_change_seq` counter
 
 Important behavior:
 
@@ -795,6 +804,22 @@ Per-input fields:
     stopped/cleaned up
 - `running`
   - whether the worker threads are actively running
+- `track_change_seq`
+  - monotonic per-input counter incremented each time a possible track boundary
+    is detected; a qualifying short gap followed by resumed audio constitutes one
+    event
+  - resets to `0` when the input channel starts or restarts; Python baselines
+    the value on capture start so a reset is not mistaken for a new boundary
+  - may wrap naturally from `2^32 − 1` back to `0`; Python detects inequality
+    rather than monotonic increase, so a wrap during one uninterrupted session
+    still produces exactly one boundary event
+  - this is a heuristic signal, not a guaranteed track-boundary count; gapless
+    or noisy recordings may produce no events, while quiet passages may produce
+    false ones
+  - distinct from `silent` and `capturing`: those fields debounce silence for
+    the configured playback stop timeout (typically 30 s); `track_change_seq`
+    fires on much shorter gaps while playback remains active
+  - field is absent on older monitor builds; Python defaults a missing field to `0`
 - `vu_history`
   - rolling stereo peak history for driving a delayed VU meter display
   - `bin_ms`: bin duration in milliseconds (always `100`)

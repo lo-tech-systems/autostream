@@ -158,6 +158,17 @@ Identification is powered by `vibra-mini`, a local Shazam recognition daemon tha
 
 After saving, the Home screen will show a status indicator when audio is playing. Once a track is identified, the artist, title, album, and cover art appear.
 
+### How identification works
+
+autostream uses an event-driven approach rather than continuous polling:
+
+- **First attempt:** after roughly 25 seconds of playback, autostream analyses approximately seconds 10–25 of the track. This avoids fingerprinting intros and count-ins, which are less distinctive.
+- **If no match:** another attempt is made 5 seconds later using the latest 15-second audio window. Retries continue until a match is found or playback stops.
+- **After a match:** no further requests are sent until either a likely track boundary is detected or roughly 5 minutes have passed.
+- **Track changes:** when a short silent gap is followed by resumed audio, autostream waits another 25 seconds (the same lead-in period) before analysing the new track. This prevents the fingerprint from being dominated by the fade-out of the previous track.
+
+These timings are defaults and can be adjusted in the JSON configuration for diagnostics or unusual playback sources. See `docs/TROUBLESHOOTING.md` for tuning guidance.
+
 ### Privacy and network access
 
 - Audio fingerprints are computed on-device. No raw audio leaves the Pi.

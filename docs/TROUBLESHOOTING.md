@@ -386,7 +386,7 @@ Track identification uses Shazam recognition via the `vibra-mini` daemon. It is 
 
 The Home screen shows **Waiting** when the feature is enabled but no audio is currently playing. This is normal — identification only runs while a source is active.
 
-If audio is playing but the state stays "waiting" or immediately shows "not found":
+After playback starts, the first analysis is scheduled roughly 25 seconds in. If the state stays "waiting" for longer than a minute:
 
 1. Open **Setup → Track Identification** and confirm the toggle is **on**.
 2. Check that the `vibra-mini` daemon is running:
@@ -394,15 +394,61 @@ If audio is playing but the state stays "waiting" or immediately shows "not foun
    systemctl status vibra-mini.service
    ```
 3. Check that the Pi has outbound internet access to `amp.shazam.com`. Identification will fail silently if this is blocked by a firewall.
-4. Some recordings are not in the Shazam catalog. Obscure, private-press, or bootleg releases may genuinely return "not found". This is not a bug.
+4. Check `autostream.log` for scheduling decisions:
+   ```bash
+   sudo journalctl -u autostream.service -n 100 | grep track_id
+   ```
+5. Some recordings are not in the Shazam catalog. Obscure, private-press, or bootleg releases may genuinely return "not found". This is not a bug.
 
-#### "Analysing" shows briefly then disappears without a result
+#### Persistent "not found" despite audio playing
 
-This is expected behaviour while identification is running. The system waits for at least 8 seconds of audio before attempting recognition. If the audio stops before enough signal has accumulated, the attempt is aborted and the state resets.
+autostream retries every 5 seconds after a no-match. If the state stays "not found" for several minutes on a track that should be recognisable:
+
+- The track may not be in the Shazam catalog.
+- The audio level may be very low or noisy. Check the input level on the Home screen.
+- Identification fingerprints the audio before gain/EQ processing, so very quiet inputs may not fingerprint cleanly.
+- Check `vibra-mini.log` for repeated recognition errors:
+  ```bash
+  sudo journalctl -u vibra-mini.service -n 100
+  ```
 
 #### Cover art is missing
 
 Cover art is returned by Shazam and is only available for releases that Shazam has artwork for. The title, artist, and album will still be shown even when artwork is unavailable.
+
+#### Track changes not detected (gapless albums, live recordings, noisy vinyl)
+
+Track boundaries are detected from short silent gaps. Gapless albums and live recordings with no silence between tracks will not trigger a boundary event. In these cases, autostream falls back to a jittered periodic refresh roughly every 5 minutes. This is expected and by design — no attempt is made to fingerprint mid-track transitions.
+
+If the periodic refresh is identifying the wrong (previous) track, the most likely cause is that the refresh deadline happened to fall early in the new track. The refresh will self-correct at the next cycle.
+
+#### False track changes on quiet passages
+
+Passages that dip below the configured silence threshold for more than 1.25 seconds can trigger a false track-change event. If this is common with a particular source, the threshold duration can be increased in the JSON configuration:
+
+```bash
+sudo nano /etc/autostream/autostream.json
+```
+
+Find `track_change_silence_seconds` under `track_identification` and increase it (range 0.5–5.0 seconds). Save and restart:
+
+```bash
+sudo systemctl restart autostream.service
+```
+
+#### Advanced timing tuning
+
+The following fields under `track_identification` in `/etc/autostream/autostream.json` can be adjusted without re-enabling the feature:
+
+| Field | Default | Range | Effect |
+|---|---|---|---|
+| `analysis_lead_in_seconds` | 10 | 0–30 | Seconds of playback to skip before the first analysis window |
+| `snapshot_seconds` | 15 | 5–20 | Duration of audio sent to Shazam |
+| `retry_seconds` | 5 | 5–60 | Delay between no-match retries |
+| `refresh_seconds` | 300 | 60–900 | Base interval for periodic refresh after a match |
+| `track_change_silence_seconds` | 1.25 | 0.5–5.0 | Minimum gap to trigger a track-change event |
+
+Changes require an `autostream.service` restart to take effect.
 
 #### `vibra-mini` daemon not running
 
@@ -429,7 +475,13 @@ Its stdout and stderr are also written to `/var/log/autostream/vibra-mini.log`.
 
 #### Rate limits
 
-Shazam's recognition API enforces rate limits. autostream detects `rate_limited` responses and automatically backs off for 2 minutes before retrying. If rate limiting persists, increase the identification interval in **Setup → Track Identification**.
+Shazam's recognition API enforces rate limits. autostream detects rate-limit responses and automatically backs off for 2 minutes before retrying. If rate limiting persists, check `vibra-mini.log` for upstream HTTP status codes:
+
+```bash
+sudo journalctl -u vibra-mini.service -n 100 | grep -E "429|403|406"
+```
+
+Persistent 403 or 406 responses indicate Shazam has rejected the request. autostream backs off for 5 minutes before retrying in this case.
 
 ---
 
