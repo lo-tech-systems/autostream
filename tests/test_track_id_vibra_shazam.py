@@ -21,9 +21,14 @@ from track_id.vibra_shazam import (
     PROVIDER_ID,
     VibraRateLimitedError,
     VibraRecognitionError,
+    VibraUpstreamRejectionError,
     VibraShazamProvider,
 )
-from track_id.models import TrackIDRateLimitedError, TrackIdentificationResult
+from track_id.models import (
+    TrackIDRateLimitedError,
+    TrackIDUpstreamRejectionError,
+    TrackIdentificationResult,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +135,30 @@ class TestVibraShazamProviderErrors:
 
     def test_ok_false_no_error_field_raises_vibra_recognition_error(self):
         resp = {"ok": False}
+        provider = VibraShazamProvider({}, client=_fake_client(resp))
+        with pytest.raises(VibraRecognitionError):
+            provider.identify(_PCM, 16000)
+
+    def test_ok_false_http_403_raises_vibra_upstream_rejection_error(self):
+        resp = {"ok": False, "error": "upstream_error", "http_status": 403}
+        provider = VibraShazamProvider({}, client=_fake_client(resp))
+        with pytest.raises(VibraUpstreamRejectionError) as exc_info:
+            provider.identify(_PCM, 16000)
+        assert exc_info.value.http_status == 403
+
+    def test_ok_false_http_406_raises_vibra_upstream_rejection_error(self):
+        resp = {"ok": False, "error": "upstream_error", "http_status": 406}
+        provider = VibraShazamProvider({}, client=_fake_client(resp))
+        with pytest.raises(VibraUpstreamRejectionError) as exc_info:
+            provider.identify(_PCM, 16000)
+        assert exc_info.value.http_status == 406
+
+    def test_vibra_upstream_rejection_error_is_subclass_of_track_id_upstream_rejection_error(self):
+        assert issubclass(VibraUpstreamRejectionError, TrackIDUpstreamRejectionError)
+
+    def test_ok_false_http_200_does_not_raise_upstream_rejection(self):
+        """Non-rejection http_status must not raise VibraUpstreamRejectionError."""
+        resp = {"ok": False, "error": "fingerprint_failed", "http_status": 200}
         provider = VibraShazamProvider({}, client=_fake_client(resp))
         with pytest.raises(VibraRecognitionError):
             provider.identify(_PCM, 16000)

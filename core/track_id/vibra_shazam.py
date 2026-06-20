@@ -7,6 +7,7 @@ from typing import Optional
 from track_id.models import (
     TrackArtwork,
     TrackIDRateLimitedError,
+    TrackIDUpstreamRejectionError,
     TrackIdentificationResult,
 )
 from track_id.vibra_client import VibraClient
@@ -29,11 +30,15 @@ def _get_shared_client() -> VibraClient:
 
 
 class VibraRecognitionError(Exception):
-    """Raised when the Vibra daemon returns ok:false for any reason other than rate limiting."""
+    """Raised when the Vibra daemon returns ok:false for any reason other than rate limiting or rejection."""
 
 
 class VibraRateLimitedError(TrackIDRateLimitedError):
     """Raised when the Vibra daemon returns ok:false, error:'rate_limited'."""
+
+
+class VibraUpstreamRejectionError(TrackIDUpstreamRejectionError):
+    """Raised when the Vibra daemon reports HTTP 403 or 406 from Shazam."""
 
 
 class VibraShazamProvider:
@@ -75,8 +80,11 @@ class VibraShazamProvider:
 
         if not resp.get("ok"):
             error_code = resp.get("error", "unknown")
+            http_status = resp.get("http_status", 0)
             if error_code == "rate_limited":
                 raise VibraRateLimitedError(error_code)
+            if http_status in (403, 406):
+                raise VibraUpstreamRejectionError(http_status)
             raise VibraRecognitionError(error_code)
 
         if not resp.get("matched"):

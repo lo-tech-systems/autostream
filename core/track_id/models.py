@@ -124,3 +124,11 @@ def waiting_snapshot(*, input_index: Optional[int] = None) -> TrackIdentificatio
 
 class TrackIDRateLimitedError(Exception):
     """Raised by any provider that receives a rate-limit response from its upstream."""
+
+
+class TrackIDUpstreamRejectionError(Exception):
+    """Raised when the upstream service rejects a request with HTTP 403 or 406."""
+
+    def __init__(self, http_status: int) -> None:
+        super().__init__(f"upstream rejected request (http_status={http_status})")
+        self.http_status = http_status
