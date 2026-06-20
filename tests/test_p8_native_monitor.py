@@ -148,6 +148,30 @@ class TestControlProtocolSourceInspection:
             or r'\"ok\": false' in dispatcher_src
         ), "dispatch_command() must emit ok:false responses for error paths"
 
+    def test_track_change_seq_emitted_in_status_json(self, dispatcher_src):
+        assert "track_change_seq" in dispatcher_src, (
+            "autostream_monitor.cpp must include track_change_seq in the "
+            "get_status JSON response for each input"
+        )
+
+    def test_track_change_silence_seconds_validated_in_cpp(self, dispatcher_src):
+        assert "track_change_silence_seconds" in dispatcher_src, (
+            "autostream_monitor.cpp must accept and validate "
+            "track_change_silence_seconds in configure_input"
+        )
+
+    def test_track_change_silence_seconds_range_min_in_cpp(self, dispatcher_src):
+        assert "0.5" in dispatcher_src, (
+            "autostream_monitor.cpp must enforce the 0.5 s lower bound on "
+            "track_change_silence_seconds"
+        )
+
+    def test_track_change_silence_seconds_range_max_in_cpp(self, dispatcher_src):
+        assert "5.0" in dispatcher_src, (
+            "autostream_monitor.cpp must enforce the 5.0 s upper bound on "
+            "track_change_silence_seconds"
+        )
+
 
 # ---------------------------------------------------------------------------
 # MonitorClient edge cases
@@ -384,6 +408,20 @@ def _compile_and_run(
         )
         output = result.stdout + result.stderr
         return result.returncode == 0, output
+
+
+@linux_only
+@gpp_available
+class TestCppTrackGapDetector:
+    """Compile and run test_track_gap_detector.cpp (header-only, no extra libs)."""
+
+    def test_compile_and_run(self):
+        ok, output = _compile_and_run(
+            src_files=["core/monitor/tests/test_track_gap_detector.cpp"],
+            extra_flags=[],
+            binary_name="test_track_gap_detector",
+        )
+        assert ok, f"test_track_gap_detector failed:\n{output}"
 
 
 @linux_only

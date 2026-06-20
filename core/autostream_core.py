@@ -1495,6 +1495,14 @@ class AudioMonitor:
         """Called when the daemon transitions this channel out of capturing."""
         self._owntone_enabled_ok = False
 
+        # Invalidate any running worker and clear scheduled deadlines so a
+        # worker that completes after capture stops cannot overwrite the
+        # waiting/disabled snapshot below or leave a stale _ti_next_attempt.
+        self._ti_generation += 1
+        self._ti_next_attempt = 0.0
+        self._ti_next_attempt_reason = ""
+        self._track_change_seq_baseline = 0
+
         if _track_id_service is not None:
             from track_id.models import waiting_snapshot
             self._ti_snapshot = waiting_snapshot()

@@ -861,6 +861,81 @@ class TestCaptureStopReset:
             mon._on_capture_stopped(client)
         assert mon._ti_snapshot.state == STATE_DISABLED
 
+    def test_capture_stop_clears_next_attempt(self):
+        """_on_capture_stopped must clear any pending next-attempt deadline."""
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = time.time() + 100.0
+        mon._ti_next_attempt_reason = "match"
+        client = MagicMock(spec=MonitorClient)
+        with patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(client)
+        assert mon._ti_next_attempt == 0.0
+        assert mon._ti_next_attempt_reason == ""
+
+    def test_capture_stop_increments_generation(self):
+        """_on_capture_stopped must bump the generation to invalidate running workers."""
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        gen_before = mon._ti_generation
+        client = MagicMock(spec=MonitorClient)
+        with patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(client)
+        assert mon._ti_generation == gen_before + 1
+
+    def test_capture_stop_stale_worker_does_not_overwrite_snapshot(self):
+        """A worker completing after capture stops must not overwrite the waiting snapshot.
+
+        Concurrency: the worker captures my_gen at dispatch time; _on_capture_stopped
+        bumps the generation while the worker is blocked in svc.identify.  The worker
+        then sees the mismatch and skips all state updates.
+        """
+        svc = _make_service(matched=True)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        # Pause the worker inside svc.identify so we can call stop while it runs.
+        proceed = threading.Event()
+        result_value = svc.identify.return_value
+        def slow_identify(*a, **kw):
+            proceed.wait()
+            return result_value
+        svc.identify.side_effect = slow_identify
+
+        stale_token = object()
+        core._track_id_request_gate.acquire()
+        mon._ti_inflight = True
+        mon._ti_inflight_token = stale_token
+
+        worker = threading.Thread(
+            target=mon._ti_worker,
+            args=(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token),
+            daemon=True,
+        )
+        worker.start()
+
+        # Call stop while worker is blocked: bumps generation.
+        client = MagicMock(spec=MonitorClient)
+        with patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(client)
+
+        waiting_snap = mon._ti_snapshot
+        assert waiting_snap.state == STATE_WAITING
+
+        # Let the worker finish: it sees generation mismatch and must not overwrite.
+        proceed.set()
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+        assert mon._ti_snapshot is waiting_snap
+
 
 # ---------------------------------------------------------------------------
 # get_track_identification_snapshot
@@ -1204,6 +1279,42 @@ class TestTrackChangeScheduling:
 
         # Snapshot must still be the waiting snapshot from _on_possible_track_change.
         assert mon._ti_snapshot is waiting_snap
+
+    def test_track_change_does_not_clear_inflight_when_worker_running(self):
+        """A track-change event must not clear _ti_inflight; the old worker owns it."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_capturing_monitor_with_service(svc)
+        mon._ti_inflight = True
+        mon._ti_inflight_token = object()
+
+        mon._on_possible_track_change(1)
+
+        assert mon._ti_inflight is True
+
+    def test_stale_worker_clears_inflight_enabling_next_dispatch(self):
+        """After a track-change, the stale worker's finally clears _ti_inflight
+        so the next coordinator poll can dispatch the replacement worker."""
+        svc = _make_service(matched=True)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        # Simulate the stale worker: it holds the gate and its token.
+        stale_token = object()
+        core._track_id_request_gate.acquire()
+        mon._ti_inflight = True
+        mon._ti_inflight_token = stale_token
+
+        # Track change fires: generation bumps, deadline updated, inflight left.
+        mon._on_possible_track_change(1)
+        assert mon._ti_inflight is True  # still set; stale worker not done yet
+
+        # Stale worker finishes: sees generation mismatch, skips state, clears inflight.
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+
+        assert mon._ti_inflight is False   # cleared by stale worker's finally
+        assert mon._ti_inflight_token is None
+        assert not core._track_id_request_gate.locked()  # gate released
 
     def test_ingest_status_fires_track_change_on_seq_advance(self):
         """_ingest_status with advancing seq triggers _on_possible_track_change."""
