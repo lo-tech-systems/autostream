@@ -1029,12 +1029,15 @@ void InputChannel::stop()
     _poll_peak_sample.store(0, std::memory_order_relaxed);
     _session_raw_peak_sample.store(0, std::memory_order_relaxed);
     _session_effective_peak_linear.store(0.0f, std::memory_order_relaxed);
+    _track_change_seq.store(0, std::memory_order_relaxed);
+    _track_gap_detector.reset();
 
     {
         std::lock_guard<std::mutex> lock(_status_mutex);
-        _status.is_silent    = true;
-        _status.is_capturing = false;
-        _status.detected_hz  = 0.0;
+        _status.is_silent       = true;
+        _status.is_capturing    = false;
+        _status.detected_hz     = 0.0;
+        _status.track_change_seq = 0;
     }
 
     // Do NOT reset _id_write_pos or _id_frames_avail here.  The snapshot
@@ -1412,13 +1415,15 @@ void InputChannel::process_thread_func()
         // ── Track-gap detection ───────────────────────────────────────────────
         // Uses the raw per-block amplitude flag (not the debounced is_above_threshold)
         // so a gap that starts within silence_seconds is detected precisely.
+        // Fires on the first above-threshold block after a qualifying gap.
         {
             bool raw_above = (peak_sample >= silence_threshold_sample);
             if (_track_gap_detector.update(_capturing.load(), raw_above, now,
                                            static_cast<double>(track_change_silence_seconds)))
             {
                 uint32_t seq = _track_change_seq.fetch_add(1, std::memory_order_relaxed) + 1;
-                LOG_INFO("[input%d] Track gap detected (seq=%u)", _index, seq);
+                LOG_INFO("[input%d] Possible track change detected (gap=%.1f s, seq=%u)",
+                         _index, _track_gap_detector.last_gap_seconds(), seq);
             }
         }
 

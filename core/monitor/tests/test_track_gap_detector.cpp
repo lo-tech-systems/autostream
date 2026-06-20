@@ -5,6 +5,10 @@
 //
 // Unit tests for TrackGapDetector.
 //
+// Semantics: update() returns true on the FIRST above-threshold block after a
+// qualifying silence gap.  Never fires during silence.  Never fires on initial
+// silence before any active audio has been observed.
+//
 // Build (on Linux, from repo root):
 //   g++ -std=c++17 -O2 -I core/monitor \
 //       core/monitor/tests/test_track_gap_detector.cpp \
@@ -15,6 +19,7 @@
 #include "autostream_track_gap_detector.h"
 
 #include <cstdio>
+#include <cmath>
 
 // ---------------------------------------------------------------------------
 // Minimal assertion harness
@@ -36,24 +41,28 @@ static int g_failed = 0;
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Simulate N blocks of audio at dt seconds per block.
-// Returns the number of true (gap detected) returns.
-static int feed(TrackGapDetector& d,
-                int    n_blocks,
-                bool   capturing,
-                bool   above,
-                double start_time,
-                double dt,
-                double required_gap)
+// Feed N above-threshold blocks at dt seconds per block.
+static void feed_above(TrackGapDetector& d, int n,
+                       double start_time, double dt, double required_gap,
+                       int* fires_out = nullptr)
 {
     int fires = 0;
-    for (int i = 0; i < n_blocks; ++i)
-    {
-        double t = start_time + i * dt;
-        if (d.update(capturing, above, t, required_gap))
+    for (int i = 0; i < n; ++i)
+        if (d.update(true, true, start_time + i * dt, required_gap))
             ++fires;
-    }
-    return fires;
+    if (fires_out) *fires_out = fires;
+}
+
+// Feed N below-threshold blocks at dt seconds per block.
+static void feed_below(TrackGapDetector& d, int n,
+                       double start_time, double dt, double required_gap,
+                       int* fires_out = nullptr)
+{
+    int fires = 0;
+    for (int i = 0; i < n; ++i)
+        if (d.update(true, false, start_time + i * dt, required_gap))
+            ++fires;
+    if (fires_out) *fires_out = fires;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,136 +72,163 @@ static int feed(TrackGapDetector& d,
 static void test_no_fire_when_not_capturing()
 {
     TrackGapDetector d;
-    // Even a long silence below threshold while not capturing should not fire.
-    int fires = feed(d, 100, /*capturing=*/false, /*above=*/false,
-                     0.0, 0.1, /*required_gap=*/1.0);
-    CHECK(fires == 0, "no fire when not capturing");
+    // Neither above nor below threshold while not capturing should fire.
+    for (int i = 0; i < 100; ++i)
+        CHECK(!d.update(false, (i % 2 == 0), i * 0.1, 1.0), "no fire when not capturing");
+}
+
+static void test_no_fire_for_initial_silence_before_active_audio()
+{
+    TrackGapDetector d;
+    // Silence from the start, never any above-threshold audio.
+    // Even after a very long gap, the detector must not fire when audio finally arrives.
+    feed_below(d, 50, 0.0, 0.1, 1.25);  // 5 s of silence
+    // First above-threshold block: should NOT fire because no prior audio was seen.
+    bool fired = d.update(true, true, 5.0, 1.25);
+    CHECK(!fired, "no fire on first-ever audio after initial silence");
 }
 
 static void test_no_fire_while_above_threshold()
 {
     TrackGapDetector d;
-    // Continuous audio above threshold — no gap.
-    int fires = feed(d, 100, true, true, 0.0, 0.1, 1.0);
-    CHECK(fires == 0, "no fire while above threshold");
+    // Continuous audio above threshold — no gap, never fires.
+    int fires = 0;
+    feed_above(d, 100, 0.0, 0.1, 1.25, &fires);
+    CHECK(fires == 0, "no fire while always above threshold");
 }
 
 static void test_no_fire_if_silence_too_short()
 {
     TrackGapDetector d;
-    // First: establish "above" state.
-    feed(d, 5, true, true, 0.0, 0.1, 1.25);
-    // Then: 0.5 s of silence (5 × 0.1 s) — below the 1.25 s required gap.
-    int fires = feed(d, 5, true, false, 0.5, 0.1, 1.25);
-    CHECK(fires == 0, "no fire when silence < required_gap");
+    // Establish active audio.
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    // 0.5 s of silence — below the 1.25 s required gap.
+    feed_below(d, 5, 0.5, 0.1, 1.25);
+    // Audio resumes: gap was only 0.5 s, should not fire.
+    bool fired = d.update(true, true, 1.0, 1.25);
+    CHECK(!fired, "no fire when silence < required_gap");
 }
 
-static void test_fires_once_when_gap_reached()
+static void test_fires_on_audio_resumption_after_qualifying_gap()
 {
     TrackGapDetector d;
-    // 3 s of silence in 0.1 s blocks with required_gap = 1.25 s.
-    // First block at t=0.0 starts the silence timer (_timing_started = true, _silence_start = 0.0).
-    // Fire should happen on the first block where t - 0.0 >= 1.25, i.e. t=1.3 (block 13).
+    // Active audio phase.
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    // 2 s of silence (qualifies at ≥ 1.25 s).
+    feed_below(d, 20, 0.5, 0.1, 1.25);
+    // Audio resumes — this block should fire.
+    bool fired = d.update(true, true, 2.5, 1.25);
+    CHECK(fired, "fires when audio resumes after qualifying gap");
+}
+
+static void test_fires_exactly_once_per_gap()
+{
+    TrackGapDetector d;
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    feed_below(d, 20, 0.5, 0.1, 1.25);
+
+    // First above-threshold block after gap — fires.
     int fires = 0;
-    bool first_fire_seen = false;
-    double t = 0.0;
-    for (int i = 0; i < 30; ++i, t += 0.1)
-    {
-        bool fired = d.update(true, false, t, 1.25);
-        if (fired)
-        {
-            fires++;
-            if (!first_fire_seen)
-            {
-                first_fire_seen = true;
-                CHECK(t >= 1.25, "fires at or after required_gap");
-            }
-        }
-    }
-    CHECK(fires == 1, "fires exactly once per gap");
-}
-
-static void test_fires_again_after_audio_resumes()
-{
-    TrackGapDetector d;
-    // Gap 1: silence for 2 s → fire once.
-    int f1 = feed(d, 20, true, false, 0.0, 0.1, 1.25);
-    CHECK(f1 == 1, "gap 1 fires once");
-
-    // Audio resumes for 1 s.
-    feed(d, 10, true, true, 2.0, 0.1, 1.25);
-
-    // Gap 2: another silence for 2 s → fire once more.
-    int f2 = feed(d, 20, true, false, 3.0, 0.1, 1.25);
-    CHECK(f2 == 1, "gap 2 fires once");
-}
-
-static void test_reset_clears_state()
-{
-    TrackGapDetector d;
-    // Part-way through a silence run (5 × 0.1 s = 0.5 s elapsed, no fire yet).
-    feed(d, 5, true, false, 0.0, 0.1, 1.25);
-    d.reset();
-    // After reset the timer restarts fresh; first block at t=0.5 sets silence_start=0.5.
-    // Gap completes at t ≥ 0.5 + 1.25 = 1.75 s.
-    int fires = 0;
-    double t = 0.5;
-    for (int i = 0; i < 30; ++i, t += 0.1)
-        if (d.update(true, false, t, 1.25))
+    for (int i = 0; i < 10; ++i)
+        if (d.update(true, true, 2.5 + i * 0.1, 1.25))
             ++fires;
-    CHECK(fires == 1, "reset then re-fires after required_gap");
+    CHECK(fires == 1, "fires exactly once when audio resumes after gap");
 }
 
-static void test_not_capturing_resets_gap_fired()
+static void test_fires_again_after_second_gap()
 {
     TrackGapDetector d;
-    // Trigger a gap.
-    feed(d, 20, true, false, 0.0, 0.1, 1.25);
-    // Capture stops — gap_fired is reset internally.
-    d.update(false, false, 3.0, 1.25);
-    // Capture restarts; start above threshold to clear silence timer.
-    feed(d, 5, true, true, 4.0, 0.1, 1.25);
-    // Another silence run — should fire again.
-    int fires = feed(d, 20, true, false, 5.0, 0.1, 1.25);
-    CHECK(fires == 1, "fires again after capture stop/start cycle");
+    // Gap 1
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    feed_below(d, 20, 0.5, 0.1, 1.25);
+    bool f1 = d.update(true, true, 2.5, 1.25);
+    CHECK(f1, "gap 1 fires");
+
+    // Audio continues.
+    feed_above(d, 5, 2.6, 0.1, 1.25);
+
+    // Gap 2
+    feed_below(d, 20, 3.1, 0.1, 1.25);
+    bool f2 = d.update(true, true, 5.1, 1.25);
+    CHECK(f2, "gap 2 fires");
 }
 
-static void test_no_double_fire_without_audio_resume()
+static void test_no_fire_during_silence()
 {
     TrackGapDetector d;
-    // Long silence — 10 s in 0.1 s blocks, required_gap 1.25 s.
-    int fires = feed(d, 100, true, false, 0.0, 0.1, 1.25);
-    CHECK(fires == 1, "no double-fire during extended silence");
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    // Feed silence; it qualifies (> 1.25 s) but update() must return false throughout.
+    int fires = 0;
+    feed_below(d, 50, 0.5, 0.1, 1.25, &fires);
+    CHECK(fires == 0, "no fire while audio remains below threshold");
 }
 
-static void test_boundary_exact_gap_duration()
+static void test_reset_clears_seen_audio_and_candidate()
 {
     TrackGapDetector d;
-    // Start silence at t=0.
-    // Block at t=1.25 should be the first to fire (t - start == 1.25 >= 1.25).
-    bool fired_at_boundary = false;
-    for (int i = 0; i <= 13; ++i)
-    {
-        double t = i * 0.1;
-        bool f = d.update(true, false, t, 1.25);
-        if (i == 13)
-            fired_at_boundary = f;  // t == 1.3 ≥ 1.25
-    }
-    CHECK(fired_at_boundary, "fires at or after exact required_gap boundary");
+    // Establish active audio and start a gap.
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    feed_below(d, 20, 0.5, 0.1, 1.25);  // qualifying gap
+
+    d.reset();
+
+    // After reset: no seen-audio, no candidate.
+    // Audio resumes — should NOT fire because seen_audio was cleared.
+    bool fired = d.update(true, true, 2.5, 1.25);
+    CHECK(!fired, "no fire after reset — seen_audio cleared");
+}
+
+static void test_capture_stop_clears_candidate()
+{
+    TrackGapDetector d;
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    feed_below(d, 20, 0.5, 0.1, 1.25);  // qualifying gap
+
+    // Capture stops.
+    d.update(false, false, 2.5, 1.25);  // reset() called internally
+
+    // Capture restarts; audio resumes immediately — no fire because state was reset.
+    bool fired = d.update(true, true, 3.0, 1.25);
+    CHECK(!fired, "no fire on audio after capture stop clears candidate");
+}
+
+static void test_last_gap_seconds_populated()
+{
+    TrackGapDetector d;
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    // 2 s silence starting at t=0.5
+    feed_below(d, 20, 0.5, 0.1, 1.25);
+    // Audio resumes at t=2.5 → gap = 2.5 - 0.5 = 2.0 s
+    bool fired = d.update(true, true, 2.5, 1.25);
+    CHECK(fired, "fired");
+    // Allow up to 10% error for floating-point dt accumulation.
+    double gap = d.last_gap_seconds();
+    CHECK(gap >= 1.9 && gap <= 2.1, "last_gap_seconds approx 2.0");
 }
 
 static void test_required_gap_respected_when_changed()
 {
     TrackGapDetector d;
-    // Silence starts; run 10 blocks at dt=0.1 (1 s total).
-    // required_gap initially 2.0 s → should not fire.
-    int f1 = feed(d, 10, true, false, 0.0, 0.1, 2.0);
-    CHECK(f1 == 0, "no fire with long required_gap");
+    feed_above(d, 5, 0.0, 0.1, 2.0);
+    // 1.5 s of silence, required_gap = 2.0 — candidate active but not qualifying yet.
+    feed_below(d, 15, 0.5, 0.1, 2.0);
+    // Change required_gap to 1.0 s on the next below-threshold block.
+    // Elapsed = 1.5 s ≥ 1.0 s → candidate becomes qualifying this block.
+    d.update(true, false, 2.0, 1.0);
+    // Audio resumes: should fire (gap is now qualifying under new threshold).
+    bool fired = d.update(true, true, 2.1, 1.0);
+    CHECK(fired, "fires when required_gap shrinks to meet elapsed silence");
+}
 
-    // Now pass a smaller required_gap on the next block — fires immediately
-    // because elapsed silence (1.0 s) >= 0.5 s.
-    bool fired = d.update(true, false, 1.0, 0.5);
-    CHECK(fired, "fires when required_gap shrinks to match elapsed silence");
+static void test_wrap_detection_fires()
+{
+    // Simulate the capture-stop reset (which resets seq to 0) and verify the
+    // detector fires correctly after a fresh start.
+    TrackGapDetector d;
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    feed_below(d, 20, 0.5, 0.1, 1.25);
+    bool fired = d.update(true, true, 2.5, 1.25);
+    CHECK(fired, "fired after qualifying gap from fresh start");
 }
 
 // ---------------------------------------------------------------------------
@@ -202,15 +238,18 @@ static void test_required_gap_respected_when_changed()
 int main()
 {
     test_no_fire_when_not_capturing();
+    test_no_fire_for_initial_silence_before_active_audio();
     test_no_fire_while_above_threshold();
     test_no_fire_if_silence_too_short();
-    test_fires_once_when_gap_reached();
-    test_fires_again_after_audio_resumes();
-    test_reset_clears_state();
-    test_not_capturing_resets_gap_fired();
-    test_no_double_fire_without_audio_resume();
-    test_boundary_exact_gap_duration();
+    test_fires_on_audio_resumption_after_qualifying_gap();
+    test_fires_exactly_once_per_gap();
+    test_fires_again_after_second_gap();
+    test_no_fire_during_silence();
+    test_reset_clears_seen_audio_and_candidate();
+    test_capture_stop_clears_candidate();
+    test_last_gap_seconds_populated();
     test_required_gap_respected_when_changed();
+    test_wrap_detection_fires();
 
     std::fprintf(stdout, "%s — %d/%d tests passed\n",
                  g_failed ? "FAIL" : "PASS",

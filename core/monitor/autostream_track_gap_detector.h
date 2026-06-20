@@ -14,12 +14,24 @@
 // =============================================================================
 // TrackGapDetector
 //
-// Detects inter-track silence gaps by inspecting the raw per-block amplitude
-// flag (not the debounced silence state used for session start/stop).  When
-// a capture session is active and raw audio stays below the silence threshold
-// for at least required_gap_seconds, update() returns true exactly once per
-// gap.  It returns false again until audio rises above the threshold and then
-// drops below for another required_gap_seconds.
+// Detects inter-track silence gaps and fires on the first above-threshold block
+// after a qualifying gap.  Fire semantics match the plan exactly:
+//
+//   1. Active audio must be observed before any gap candidate is started.
+//   2. Below-threshold audio starts a gap candidate timer.
+//   3. When the gap reaches required_gap_seconds the candidate becomes qualifying.
+//   4. update() returns true on the FIRST above-threshold block after a
+//      qualifying gap — i.e. when audio resumes.  The caller increments
+//      track_change_seq when update() returns true.
+//   5. Exactly one true is returned per gap event.
+//   6. Candidate is cleared immediately on resumption.
+//
+// Rules (from section 5.2 of the scheduling plan):
+//   - Do not emit for initial silence before the first active audio.
+//   - Do not emit while audio remains below threshold.
+//   - Do not emit for a gap shorter than required_gap_seconds.
+//   - Emit once when audio resumes after a qualifying gap.
+//   - Reset all state when capturing stops.
 //
 // All state is private to the process thread; no locking is needed.
 // =============================================================================
@@ -29,12 +41,13 @@ class TrackGapDetector
 public:
     void reset()
     {
-        _silence_start   = 0.0;
-        _timing_started  = false;
-        _gap_fired       = false;
+        _state         = State::Idle;
+        _silence_start = 0.0;
+        _seen_audio    = false;
+        _last_gap      = 0.0;
     }
 
-    // Returns true the first time a complete gap is detected in each silence run.
+    // Returns true the moment audio resumes after a qualifying gap.
     // capturing:                 whether the channel is in an active capture session
     // raw_block_above_threshold: whether this block's peak is above the silence threshold
     // now_seconds:               current monotonic time
@@ -50,29 +63,42 @@ public:
 
         if (raw_block_above_threshold)
         {
-            _silence_start  = 0.0;
-            _timing_started = false;
-            _gap_fired      = false;
-            return false;
+            _seen_audio    = true;
+            bool fire      = (_state == State::QualifyingGap);
+            if (fire)
+                _last_gap = now_seconds - _silence_start;
+            _state         = State::Idle;
+            return fire;
         }
 
-        if (!_timing_started)
+        // Below threshold from here on.
+        if (!_seen_audio)
+            return false;  // no active audio yet; ignore initial silence
+
+        if (_state == State::Idle)
         {
-            _silence_start  = now_seconds;
-            _timing_started = true;
+            _state         = State::BelowCounting;
+            _silence_start = now_seconds;
         }
 
-        if (!_gap_fired && (now_seconds - _silence_start) >= required_gap_seconds)
+        if (_state == State::BelowCounting &&
+            (now_seconds - _silence_start) >= required_gap_seconds)
         {
-            _gap_fired = true;
-            return true;
+            _state = State::QualifyingGap;
         }
 
         return false;
     }
 
+    // Duration of the most recently detected gap (seconds).
+    // Valid after update() returns true; undefined otherwise.
+    double last_gap_seconds() const { return _last_gap; }
+
 private:
-    double _silence_start  = 0.0;
-    bool   _timing_started = false;
-    bool   _gap_fired      = false;
+    enum class State { Idle, BelowCounting, QualifyingGap };
+
+    State  _state         = State::Idle;
+    double _silence_start = 0.0;
+    bool   _seen_audio    = false;
+    double _last_gap      = 0.0;
 };
