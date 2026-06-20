@@ -149,6 +149,8 @@ autostream can identify what is playing and show the artist, title, album, and c
 
 Identification is powered by `vibra-mini`, a local Shazam recognition daemon that runs alongside autostream. Short clips of audio are fingerprinted on-device and matched against the Shazam catalog. No raw audio leaves the device.
 
+Vibra/Shazam is currently the only supported track-identification provider. The Setup page enables or disables identification; it does not offer a choice of recognition services.
+
 ### Enabling track identification
 
 1. Open the autostream **Setup page** (`/setup`).

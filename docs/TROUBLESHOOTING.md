@@ -380,7 +380,7 @@ Run through this in order:
 
 ### Track identification
 
-Track identification uses Shazam recognition via the `vibra-mini` daemon. It is **off by default**. No API key is required — autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)).
+Track identification uses Shazam recognition via the `vibra-mini` daemon. It is **off by default**. No API key is required — autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)). Vibra/Shazam is currently the only supported provider; the Setup page does not offer a provider selector.
 
 #### Track identification stays "waiting" or never shows a result
 

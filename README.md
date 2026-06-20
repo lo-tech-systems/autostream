@@ -86,6 +86,13 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for detailed setup instruction
 
 ---
 
+## Developer Documentation
+
+* [Adding a playback backend](docs/ADDING-AUDIO-BACKEND.md)
+* [Adding a track-identification provider](docs/ADDING-TRACK-ID-PROVIDER.md)
+
+---
+
 ## License
 
 **autostream** is **source-available** and free for **personal, non-commercial use**.
