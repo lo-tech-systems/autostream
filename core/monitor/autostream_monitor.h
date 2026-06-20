@@ -32,6 +32,7 @@
 #pragma once
 
 #include "autostream_monitor_utils.h"
+#include "autostream_track_gap_detector.h"
 
 #include <string>
 #include <vector>
@@ -81,8 +82,9 @@ std::vector<AlsaDeviceInfo> list_alsa_capture_devices();
 struct InputConfig
 {
     std::string alsa_device;               // e.g. "hw:1,0" or "hw:CARD=CODEC,DEV=0"
-    float       silence_threshold_dbfs = -66.0f; // dBFS level below which is silent
-    int         silence_seconds      = 30;      // silence duration before stopping
+    float       silence_threshold_dbfs       = -66.0f; // dBFS level below which is silent
+    int         silence_seconds              = 30;      // silence duration before stopping
+    float       track_change_silence_seconds = 1.25f;  // gap duration (s) that marks a track boundary [0.5, 5.0]
 };
 
 
@@ -670,8 +672,9 @@ struct InputChannelStatus
     // unrecoverable ALSA error but stop_input has not been called.
     // A controller that sees is_started=true && is_running=false should
     // issue stop_input then start_input to recover.
-    bool   is_started             = false;   // start() has been called and stop() not yet completed
-    bool   is_running             = false;   // capture thread is actively running
+    bool     is_started             = false;   // start() has been called and stop() not yet completed
+    bool     is_running             = false;   // capture thread is actively running
+    uint32_t track_change_seq       = 0;       // monotonically increasing; incremented on each detected track gap
 };
 
 
@@ -856,6 +859,10 @@ private:
 
     // ── Silence tracking (process thread only) ────────────────────────────────
     double _last_above_threshold_time = 0.0;   // monotonic seconds; 0 = never
+
+    // ── Track-gap detection (process thread only) ─────────────────────────────
+    TrackGapDetector       _track_gap_detector;
+    std::atomic<uint32_t>  _track_change_seq{0};
 
     // ── Fade-in ramp (process thread only) ───────────────────────────────────
     // When a capture session starts, _ramp_frames_remaining is set to

@@ -19,6 +19,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -672,6 +673,10 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         cfg.alsa_device             = json_get_string(json_command, "device");
         cfg.silence_threshold_dbfs  = json_get_float(json_command, "silence_threshold_dbfs", -66.0f);
         cfg.silence_seconds         = json_get_int(json_command, "silence_seconds", 30);
+        // track_change_silence_seconds is optional; -1 sentinel means "not provided".
+        float raw_tcs = json_get_float(json_command, "track_change_silence_seconds", -1.0f);
+        if (raw_tcs >= 0.0f)
+            cfg.track_change_silence_seconds = raw_tcs;
         return _monitor.api_configure_input(idx, cfg);
     }
     else if (type == "set_fifo")
@@ -955,6 +960,7 @@ std::string AudioMonitor::api_get_status()
             << "\"effective_peak_dbfs\":" << s.effective_peak_dbfs   << ","
             << "\"started\":"             << (s.is_started   ? "true" : "false") << ","
             << "\"running\":"             << (s.is_running   ? "true" : "false") << ","
+            << "\"track_change_seq\":"    << s.track_change_seq << ","
             << "\"vu_history\":{\"bin_ms\":100,\"latest_seq\":" << latest_seq << ",\"bins\":[";
 
         for (size_t j = 0; j < vu.size(); ++j)
@@ -995,6 +1001,11 @@ static std::string validate_input_config(const InputConfig& cfg)
 
     if (cfg.silence_seconds < 1 || cfg.silence_seconds > 3600)
         return "silence_seconds must be in the range [1, 3600]";
+
+    if (!std::isfinite(cfg.track_change_silence_seconds) ||
+        cfg.track_change_silence_seconds < 0.5f ||
+        cfg.track_change_silence_seconds > 5.0f)
+        return "track_change_silence_seconds must be in the range [0.5, 5.0]";
 
     return "";
 }

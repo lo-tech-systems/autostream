@@ -1368,11 +1368,13 @@ void InputChannel::process_thread_func()
         double now = get_monotonic_time();
 
         // _silence_threshold_sample is published atomically by configure(), so
-        // we only need to lock here to read silence_seconds.
-        int silence_seconds;
+        // we only need to lock here to read silence_seconds and track_change_silence_seconds.
+        int   silence_seconds;
+        float track_change_silence_seconds;
         {
             std::lock_guard<std::mutex> lock(_config_mutex);
-            silence_seconds = _config.silence_seconds;
+            silence_seconds              = _config.silence_seconds;
+            track_change_silence_seconds = _config.track_change_silence_seconds;
         }
         int silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
 
@@ -1405,6 +1407,19 @@ void InputChannel::process_thread_func()
             _capturing.store(false);
             LOG_INFO("[input%d] Capture session stopped (silence=%.1f s)",
                      _index, now - _last_above_threshold_time);
+        }
+
+        // ── Track-gap detection ───────────────────────────────────────────────
+        // Uses the raw per-block amplitude flag (not the debounced is_above_threshold)
+        // so a gap that starts within silence_seconds is detected precisely.
+        {
+            bool raw_above = (peak_sample >= silence_threshold_sample);
+            if (_track_gap_detector.update(_capturing.load(), raw_above, now,
+                                           static_cast<double>(track_change_silence_seconds)))
+            {
+                uint32_t seq = _track_change_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+                LOG_INFO("[input%d] Track gap detected (seq=%u)", _index, seq);
+            }
         }
 
         // ── Feed through SRC → EQ → FIFO when capturing ──────────────────────
@@ -1706,9 +1721,10 @@ void InputChannel::process_thread_func()
         // _current_peak_sample to dBFS at read time to keep log10 off this path.
         {
             std::lock_guard<std::mutex> lock(_status_mutex);
-            _status.is_silent    = !is_above_threshold;
-            _status.is_capturing = _capturing.load();
-            _status.detected_hz  = _rate_estimator.estimated_input_rate();
+            _status.is_silent       = !is_above_threshold;
+            _status.is_capturing    = _capturing.load();
+            _status.detected_hz     = _rate_estimator.estimated_input_rate();
+            _status.track_change_seq = _track_change_seq.load(std::memory_order_relaxed);
         }
     }
 }
