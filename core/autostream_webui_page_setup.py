@@ -478,6 +478,29 @@ def send_setup_page(
         -webkit-text-security: disc;
         text-security: disc;
       }
+      #savingModal .modal-panel {
+        --modal-width: 18rem;
+      }
+      .saving-modal-body {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+      }
+      .saving-spinner {
+        width: 1.4rem;
+        height: 1.4rem;
+        flex: 0 0 auto;
+        border: 3px solid var(--color-border-nav);
+        border-top-color: var(--color-btn-bg);
+        border-radius: 50%;
+        animation: saving-spin 0.8s linear infinite;
+      }
+      @keyframes saving-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .saving-spinner { animation-duration: 1.6s; }
+      }
     """
 
     # Factory reset danger zone — only shown outside initial setup
@@ -1023,7 +1046,21 @@ def send_setup_page(
     </div>
   </div>
 </div>""" if not initial_setup else "")
-    _body_prefix = f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_dial_pin_modal_div}"
+    _saving_modal_div = """\
+<div id="savingModal" class="modal-overlay" role="dialog" aria-modal="true"
+     aria-labelledby="savingModalTitle" aria-describedby="savingModalMessage">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="savingModalTitle">Saving...</div>
+    <div class="bd modal-bd saving-modal-body">
+      <span class="saving-spinner" aria-hidden="true"></span>
+      <p id="savingModalMessage">Please wait while your settings are saved.</p>
+    </div>
+  </div>
+</div>"""
+    _body_prefix = (
+        f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n"
+        f"{_dial_pin_modal_div}\n{_saving_modal_div}"
+    )
     _page_heading_html = (
         f"{BANNER_HTML}<h1>{h1}</h1>"
         if initial_setup else
@@ -1041,6 +1078,24 @@ def send_setup_page(
     )
     _body_suffix = f"""{A2HS_SCRIPT}
       <script>
+        (function setupSavingFeedback() {{
+          const form = document.getElementById('{setup_form_id}');
+          const modal = document.getElementById('savingModal');
+          if (!form || !modal) return;
+          form.addEventListener('submit', function(event) {{
+            if (form.dataset.submitting === 'true') {{
+              event.preventDefault();
+              return;
+            }}
+            form.dataset.submitting = 'true';
+            form.setAttribute('aria-busy', 'true');
+            form.querySelectorAll('button[type="submit"]').forEach(function(button) {{
+              button.disabled = true;
+            }});
+            modal.classList.add('show');
+          }});
+        }})();
+
         const pinChangeState = {{
           busy: false,
         }};

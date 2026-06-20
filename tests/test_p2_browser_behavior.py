@@ -546,6 +546,15 @@ def _render_setup_page(initial_setup_mode: bool) -> str:
 class TestSetupPageScriptRendering:
     """Verify the actual generated setup page scripts — not a hardcoded copy."""
 
+    def test_setup_page_has_saving_feedback(self):
+        """The setup form shows a busy modal while its settings POST is pending."""
+        html_out = _render_setup_page(initial_setup_mode=True)
+        assert 'id="savingModal"' in html_out
+        assert 'id="savingModalTitle">Saving...</div>' in html_out
+        assert "setupSavingFeedback" in html_out
+        assert "form.setAttribute('aria-busy', 'true')" in html_out
+        assert "button.disabled = true" in html_out
+
     def test_initial_setup_parser_and_submit_coexist(self):
         """_parseDialResponse and submitPinChange must both be in the initial-setup page."""
         html_out = _render_setup_page(initial_setup_mode=True)
