@@ -502,6 +502,7 @@ def update_live_silence_seconds(
                     monitor.input_device,
                     monitor.silence_threshold_dbfs,
                     live_silence_seconds,
+                    monitor.track_change_silence_seconds,
                 ):
                     logging.warning(
                         "Live silence timeout update failed for input %d.",
@@ -1065,6 +1066,7 @@ class MonitorClient:
         device: str,
         silence_threshold_dbfs: float,
         silence_seconds: int,
+        track_change_silence_seconds: float = 1.25,
     ) -> bool:
         with self._lock:
             resp = self._command({
@@ -1073,6 +1075,7 @@ class MonitorClient:
                 "device": device,
                 "silence_threshold_dbfs": silence_threshold_dbfs,
                 "silence_seconds": silence_seconds,
+                "track_change_silence_seconds": track_change_silence_seconds,
             })
             ok = bool(resp and resp.get("ok"))
             if not ok:
@@ -1264,6 +1267,7 @@ class AudioMonitor:
         owntone_base_url: str,
         owntone_output_name: str,
         owntone_volume_percent: int,
+        track_change_silence_seconds: float = 1.25,
         owntone_output_offsets_ms: Optional[dict[str, int]] = None,
         owntone_output_airplay_modes: Optional[dict[str, str]] = None,
         gain_db: float = 0.0,
@@ -1275,6 +1279,7 @@ class AudioMonitor:
         self.input_device = input_device
         self.silence_threshold_dbfs = silence_threshold_dbfs
         self.silence_seconds = silence_seconds
+        self.track_change_silence_seconds = track_change_silence_seconds
         self.fifo_path = fifo_path
         self.owntone_base_url = owntone_base_url
         self.owntone_output_name = owntone_output_name
@@ -1314,6 +1319,8 @@ class AudioMonitor:
         self.is_capturing: bool = False
         self._last_active_time: Optional[float] = None
         self._tracker_playback_active: bool = False
+        self.track_change_seq: int = 0           # last seq from daemon; monotonically increasing
+        self._track_change_seq_baseline: int = 0  # seq at capture session start (baselined on "started" transition)
         # Latest VU history block from the daemon (passed through as-is).
         # Replaced atomically on each status poll; Flask thread reads under GIL.
         self.vu_history: dict = {}
@@ -1367,6 +1374,9 @@ class AudioMonitor:
         self.detected_hz     = float(status_entry.get("detected_hz", 0.0))
         self.is_silent       = bool(status_entry.get("silent", True))
         self.is_capturing    = bool(status_entry.get("capturing", False))
+        raw_tcs = status_entry.get("track_change_seq")
+        if isinstance(raw_tcs, int) and raw_tcs >= 0:
+            self.track_change_seq = raw_tcs
         # Cache the whole vu_history block; Flask thread reads it as-is.
         raw_vu = status_entry.get("vu_history")
         self.vu_history = raw_vu if isinstance(raw_vu, dict) else {}
@@ -1375,6 +1385,7 @@ class AudioMonitor:
             self._last_active_time = time.time()
 
         if self.is_capturing and not was_capturing:
+            self._track_change_seq_baseline = self.track_change_seq
             return "started"
         if not self.is_capturing and was_capturing:
             return "stopped"
@@ -1942,6 +1953,7 @@ def _resync_monitor_daemon(
             m.input_device,
             m.silence_threshold_dbfs,
             m.silence_seconds,
+            m.track_change_silence_seconds,
         ):
             logging.warning(
                 "configure_input(%d, %r) failed after reconnect; will retry full resync.",
@@ -2027,6 +2039,7 @@ def _configure_startup_monitors(
         cfg.audio1.capture_device,
         cfg.audio1.silence_threshold_dbfs,
         cfg.general.silence_seconds,
+        cfg.track_identification.track_change_silence_seconds,
     ):
         logging.warning(
             "configure_input(1, %r) failed during startup; will retry.",
@@ -2061,6 +2074,7 @@ def _configure_startup_monitors(
         owntone_base_url=cfg.owntone.base_url,
         owntone_output_name=cfg.owntone.output_name,
         owntone_volume_percent=cfg.owntone.volume_percent,
+        track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
         owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
         owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
         gain_db=cfg.audio1.gain_db,
@@ -2081,6 +2095,7 @@ def _configure_startup_monitors(
             cfg.audio2.capture_device,
             cfg.audio2.silence_threshold_dbfs,
             cfg.general.silence_seconds,
+            cfg.track_identification.track_change_silence_seconds,
         ):
             logging.error(
                 "configure_input(2, %r) failed; skipping second input.",
@@ -2116,6 +2131,7 @@ def _configure_startup_monitors(
                 owntone_base_url=cfg.owntone.base_url,
                 owntone_output_name=cfg.owntone.output_name,
                 owntone_volume_percent=cfg.owntone.volume_percent,
+                track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
                 owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
                 owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
                 gain_db=cfg.audio2.gain_db,

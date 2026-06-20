@@ -154,6 +154,54 @@ class TestIngestStatusFields:
         assert mon.is_silent is True
         assert mon.is_capturing is False
 
+    def test_track_change_seq_updated(self):
+        mon = _make_monitor()
+        mon._ingest_status({"track_change_seq": 3})
+        assert mon.track_change_seq == 3
+
+    def test_track_change_seq_missing_keeps_zero(self):
+        mon = _make_monitor()
+        mon._ingest_status({})
+        assert mon.track_change_seq == 0
+
+    def test_track_change_seq_negative_ignored(self):
+        mon = _make_monitor()
+        mon.track_change_seq = 5
+        mon._ingest_status({"track_change_seq": -1})
+        assert mon.track_change_seq == 5
+
+    def test_track_change_seq_non_int_ignored(self):
+        mon = _make_monitor()
+        mon.track_change_seq = 7
+        mon._ingest_status({"track_change_seq": "bad"})
+        assert mon.track_change_seq == 7
+
+
+# ---------------------------------------------------------------------------
+# _ingest_status: track_change_seq baseline on capture start
+# ---------------------------------------------------------------------------
+
+class TestIngestStatusTrackChangeBaseline:
+
+    def test_baseline_set_on_started_transition(self):
+        mon = _make_monitor()
+        mon._ingest_status({"capturing": True, "track_change_seq": 4})
+        assert mon._track_change_seq_baseline == 4
+
+    def test_baseline_not_set_on_continued_capturing(self):
+        mon = _make_monitor()
+        mon.is_capturing = True
+        mon._track_change_seq_baseline = 2
+        mon._ingest_status({"capturing": True, "track_change_seq": 6})
+        assert mon._track_change_seq_baseline == 2  # unchanged
+
+    def test_baseline_not_set_on_stopped_transition(self):
+        mon = _make_monitor()
+        mon.is_capturing = True
+        mon._track_change_seq_baseline = 3
+        mon._ingest_status({"capturing": False, "track_change_seq": 5})
+        assert mon._track_change_seq_baseline == 3  # unchanged on stop
+
 
 # ---------------------------------------------------------------------------
 # _ingest_status: last_active_time tracking

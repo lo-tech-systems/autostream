@@ -314,6 +314,22 @@ class TestConfigureInput:
         assert cmd["device"] == "hw:1,0"
         assert cmd["silence_threshold_dbfs"] == -50.0
         assert cmd["silence_seconds"] == 5
+        assert cmd["track_change_silence_seconds"] == pytest.approx(1.25)
+
+    def test_sends_custom_track_change_silence_seconds(self):
+        payload = {"ok": True}
+        sock = FakeSocket((json.dumps(payload) + "\n").encode())
+        c = _client(sock)
+        c.configure_input(
+            index=1,
+            device="hw:1,0",
+            silence_threshold_dbfs=-60.0,
+            silence_seconds=30,
+            track_change_silence_seconds=2.5,
+        )
+        sent = b"".join(sock.sent)
+        cmd = json.loads(sent.strip())
+        assert cmd["track_change_silence_seconds"] == pytest.approx(2.5)
 
     def test_returns_false_on_ok_false(self):
         payload = {"ok": False, "error": "bad device"}
