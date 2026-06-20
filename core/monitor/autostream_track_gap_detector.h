@@ -47,6 +47,15 @@ public:
         _last_gap      = 0.0;
     }
 
+    // Discard any in-progress gap candidate without resetting _seen_audio.
+    // Called when track_change_silence_seconds changes mid-capture so that a
+    // partial gap measured against the old threshold does not fire spuriously.
+    void clear_candidate()
+    {
+        _state         = State::Idle;
+        _silence_start = 0.0;
+    }
+
     // Returns true the moment audio resumes after a qualifying gap.
     // capturing:                 whether the channel is in an active capture session
     // raw_block_above_threshold: whether this block's peak is above the silence threshold

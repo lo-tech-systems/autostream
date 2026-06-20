@@ -863,6 +863,7 @@ private:
     // ── Track-gap detection (process thread only) ─────────────────────────────
     TrackGapDetector       _track_gap_detector;
     std::atomic<uint32_t>  _track_change_seq{0};
+    float                  _prev_track_change_silence_seconds{-1.0f};
 
     // ── Fade-in ramp (process thread only) ───────────────────────────────────
     // When a capture session starts, _ramp_frames_remaining is set to

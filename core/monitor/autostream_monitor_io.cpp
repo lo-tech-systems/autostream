@@ -1417,6 +1417,14 @@ void InputChannel::process_thread_func()
         // so a gap that starts within silence_seconds is detected precisely.
         // Fires on the first above-threshold block after a qualifying gap.
         {
+            // Discard any in-progress gap candidate when the threshold changes so
+            // a partial gap measured against the old value does not fire spuriously.
+            if (track_change_silence_seconds != _prev_track_change_silence_seconds)
+            {
+                _track_gap_detector.clear_candidate();
+                _prev_track_change_silence_seconds = track_change_silence_seconds;
+            }
+
             bool raw_above = (peak_sample >= silence_threshold_sample);
             if (_track_gap_detector.update(_capturing.load(), raw_above, now,
                                            static_cast<double>(track_change_silence_seconds)))

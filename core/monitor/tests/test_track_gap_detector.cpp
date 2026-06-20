@@ -231,6 +231,39 @@ static void test_wrap_detection_fires()
     CHECK(fired, "fired after qualifying gap from fresh start");
 }
 
+static void test_clear_candidate_discards_partial_gap()
+{
+    // Establish audio and start a gap that would qualify under the old threshold.
+    TrackGapDetector d;
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    // 1.5 s of silence — qualifies under threshold 1.25 s.
+    feed_below(d, 15, 0.5, 0.1, 1.25);
+
+    // clear_candidate() discards the gap state without clearing _seen_audio.
+    d.clear_candidate();
+
+    // Audio resumes: must NOT fire because the candidate was cleared.
+    bool fired = d.update(true, true, 2.0, 1.25);
+    CHECK(!fired, "clear_candidate discards qualifying gap — no fire on resume");
+}
+
+static void test_clear_candidate_preserves_seen_audio()
+{
+    // After clear_candidate(), new gaps are still detected (seen_audio preserved).
+    TrackGapDetector d;
+    feed_above(d, 5, 0.0, 0.1, 1.25);
+    feed_below(d, 20, 0.5, 0.1, 1.25);  // qualifying gap
+    d.clear_candidate();
+
+    // Audio resumes — no fire (candidate cleared).
+    d.update(true, true, 2.5, 1.25);
+
+    // New gap after the resumed audio.
+    feed_below(d, 20, 2.6, 0.1, 1.25);
+    bool fired = d.update(true, true, 4.6, 1.25);
+    CHECK(fired, "clear_candidate preserves seen_audio — new gap fires correctly");
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -250,6 +283,8 @@ int main()
     test_last_gap_seconds_populated();
     test_required_gap_respected_when_changed();
     test_wrap_detection_fires();
+    test_clear_candidate_discards_partial_gap();
+    test_clear_candidate_preserves_seen_audio();
 
     std::fprintf(stdout, "%s — %d/%d tests passed\n",
                  g_failed ? "FAIL" : "PASS",

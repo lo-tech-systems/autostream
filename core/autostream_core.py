@@ -1310,6 +1310,7 @@ class AudioMonitor:
 
         # --- Track identification scheduling ---
         from track_id.models import disabled_snapshot as _ds
+        self._ti_state_lock = threading.Lock()  # guards dispatch setup and _apply_track_id_service
         self._ti_generation: int = 0           # incremented on service swap or capture start
         self._ti_inflight: bool = False
         self._ti_inflight_token: Optional[object] = None  # unique per worker
@@ -1474,10 +1475,15 @@ class AudioMonitor:
         self._ti_inflight_token = None
         self._ti_next_attempt = 0.0
         self._ti_next_attempt_reason = ""
+        self._ti_last_identified_at = 0.0
         if _track_id_service is not None:
             svc = _track_id_service
             delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
             self._schedule_track_id_after(time.time(), delay, "initial")
+            logging.debug(
+                "track_id[%d]: initial attempt scheduled in %.0fs (lead-in=%.0fs window=%.0fs).",
+                self.input_index, delay, svc.analysis_lead_in_seconds, svc.snapshot_seconds,
+            )
             from track_id.models import waiting_snapshot
             self._ti_snapshot = waiting_snapshot()
         else:
@@ -1527,25 +1533,26 @@ class AudioMonitor:
 
     def _apply_track_id_service(self, service) -> None:
         """Set the initial snapshot based on whether the service is available."""
-        self._ti_generation += 1  # invalidate any in-flight worker for the old service
-        if service is not None:
-            from track_id.models import waiting_snapshot
-            self._ti_snapshot = waiting_snapshot()
-            # Schedule first attempt if currently capturing; otherwise wait for capture-start.
-            if self.is_capturing:
-                delay = service.analysis_lead_in_seconds + service.snapshot_seconds
-                self._schedule_track_id_after(time.time(), delay, "initial")
+        with self._ti_state_lock:
+            self._ti_generation += 1  # invalidate any in-flight worker for the old service
+            if service is not None:
+                from track_id.models import waiting_snapshot
+                self._ti_snapshot = waiting_snapshot()
+                # Schedule first attempt if currently capturing; otherwise wait for capture-start.
+                if self.is_capturing:
+                    delay = service.analysis_lead_in_seconds + service.snapshot_seconds
+                    self._schedule_track_id_after(time.time(), delay, "initial")
+                else:
+                    self._ti_next_attempt = 0.0
+                    self._ti_next_attempt_reason = ""
             else:
+                from track_id.models import disabled_snapshot
+                self._ti_snapshot = disabled_snapshot()
                 self._ti_next_attempt = 0.0
                 self._ti_next_attempt_reason = ""
-        else:
-            from track_id.models import disabled_snapshot
-            self._ti_snapshot = disabled_snapshot()
-            self._ti_next_attempt = 0.0
-            self._ti_next_attempt_reason = ""
-        self._ti_inflight = False
-        self._ti_inflight_token = None
-        self._ti_last_identified_at = 0.0
+            self._ti_inflight = False
+            self._ti_inflight_token = None
+            self._ti_last_identified_at = 0.0
 
     def _schedule_track_id_attempt(self, when: float, reason: str) -> None:
         """Set the next attempt deadline to `when`, preserving any later protected deadline."""
@@ -1587,57 +1594,92 @@ class AudioMonitor:
             _track_id_request_gate.release()
             return
 
+        # Capture generation before the blocking snapshot call so any live
+        # reconfiguration that bumps the generation during get_id_snapshot() is
+        # detected by the recheck below.
+        dispatch_gen = self._ti_generation
+
         snapshot = client.get_id_snapshot(self.input_index, max_seconds=svc.snapshot_seconds)
-        if snapshot is None or not snapshot[0]:
-            logging.debug("track_id[%d]: get_id_snapshot returned no audio.", self.input_index)
-            _track_id_request_gate.release()
-            self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
-            return
-        pcm_bytes, rate = snapshot
 
-        duration_s = len(pcm_bytes) / (rate * 2)
-        logging.debug(
-            "track_id[%d]: snapshot returned %d bytes (%.1f s, requested=%d s).",
-            self.input_index, len(pcm_bytes), duration_s, svc.snapshot_seconds,
-        )
-        from track_id.service import MIN_PCM_DURATION_SECONDS
-        if duration_s < MIN_PCM_DURATION_SECONDS:
+        # _ti_state_lock makes the post-snapshot recheck and all state mutations
+        # atomic with respect to _apply_track_id_service(), which also holds this
+        # lock.  Without it a concurrent live reconfiguration could publish a
+        # disabled snapshot between our validation and our STATE_ANALYSING write,
+        # leaving the UI stuck in analysing with no future attempt to clear it.
+        with self._ti_state_lock:
+            # Recheck generation and service immediately after the blocking
+            # snapshot call, before interpreting its result.
+            if self._ti_generation != dispatch_gen or _track_id_service is not svc:
+                logging.debug(
+                    "track_id[%d]: generation or service changed during snapshot; aborting dispatch.",
+                    self.input_index,
+                )
+                _track_id_request_gate.release()
+                return
+
+            if snapshot is None or not snapshot[0]:
+                logging.debug(
+                    "track_id[%d]: get_id_snapshot returned no audio; retry in %.0fs.",
+                    self.input_index, svc.retry_seconds,
+                )
+                _track_id_request_gate.release()
+                self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
+                return
+            pcm_bytes, rate = snapshot
+
+            duration_s = len(pcm_bytes) / (rate * 2)
             logging.debug(
-                "track_id[%d]: snapshot too short (%.1f s); scheduling retry.",
-                self.input_index, duration_s,
+                "track_id[%d]: snapshot returned %d bytes (%.1f s, requested=%d s).",
+                self.input_index, len(pcm_bytes), duration_s, svc.snapshot_seconds,
             )
-            _track_id_request_gate.release()
-            self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
-            return
+            from track_id.service import MIN_PCM_DURATION_SECONDS
+            if duration_s < MIN_PCM_DURATION_SECONDS:
+                logging.debug(
+                    "track_id[%d]: snapshot too short (%.1f s); retry in %.0fs.",
+                    self.input_index, duration_s, svc.retry_seconds,
+                )
+                _track_id_request_gate.release()
+                self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
+                return
 
-        logging.info(
-            "track_id[%d]: queuing identification (%.1f s of audio, reason=%s).",
-            self.input_index, duration_s, self._ti_next_attempt_reason,
-        )
+            logging.info(
+                "track_id[%d]: queuing identification (%.1f s of audio, reason=%s).",
+                self.input_index, duration_s, self._ti_next_attempt_reason,
+            )
 
-        from track_id.models import STATE_ANALYSING, state_status_text, TrackIdentificationSnapshot
-        self._ti_snapshot = TrackIdentificationSnapshot(
-            enabled=True,
-            state=STATE_ANALYSING,
-            status_text=state_status_text(STATE_ANALYSING),
-            input_index=self.input_index,
-            provider=svc.provider_id,
-            updated_at=now,
-            last_attempt_at=now,
-        )
-        worker_token = object()
-        self._ti_inflight = True
-        self._ti_inflight_token = worker_token
-        self._ti_last_attempt = now
+            from track_id.models import STATE_ANALYSING, state_status_text, TrackIdentificationSnapshot
+            self._ti_snapshot = TrackIdentificationSnapshot(
+                enabled=True,
+                state=STATE_ANALYSING,
+                status_text=state_status_text(STATE_ANALYSING),
+                input_index=self.input_index,
+                provider=svc.provider_id,
+                updated_at=now,
+                last_attempt_at=now,
+            )
+            worker_token = object()
+            self._ti_inflight = True
+            self._ti_inflight_token = worker_token
+            self._ti_last_attempt = now
 
-        threading.Thread(
-            target=self._ti_worker,
-            args=(bytes(pcm_bytes), rate, worker_token),
-            daemon=True,
-            name=f"track-id-{self.input_index}",
-        ).start()
+            try:
+                threading.Thread(
+                    target=self._ti_worker,
+                    args=(bytes(pcm_bytes), rate, worker_token, dispatch_gen),
+                    daemon=True,
+                    name=f"track-id-{self.input_index}",
+                ).start()
+            except Exception:
+                logging.warning(
+                    "track_id[%d]: Thread.start() failed; releasing gate.",
+                    self.input_index, exc_info=True,
+                )
+                _track_id_request_gate.release()
+                if self._ti_inflight_token is worker_token:
+                    self._ti_inflight = False
+                    self._ti_inflight_token = None
 
-    def _ti_worker(self, pcm16_mono: bytes, sample_rate: int, worker_token: object) -> None:
+    def _ti_worker(self, pcm16_mono: bytes, sample_rate: int, worker_token: object, dispatch_gen: int) -> None:
         """Run identification in the background and schedule the next attempt."""
         from track_id.models import (
             TrackIDRateLimitedError,
@@ -1652,7 +1694,7 @@ class AudioMonitor:
             TRACK_ID_REFRESH_JITTER_SECONDS,
             TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS,
         )
-        my_gen = self._ti_generation
+        my_gen = dispatch_gen
         try:
             svc = _track_id_service
             if svc is None:
@@ -1668,6 +1710,10 @@ class AudioMonitor:
                 jitter = random.uniform(-TRACK_ID_REFRESH_JITTER_SECONDS, TRACK_ID_REFRESH_JITTER_SECONDS)
                 delay = max(1.0, svc.refresh_seconds + jitter)
                 self._schedule_track_id_after(now, delay, "match")
+                logging.debug(
+                    "track_id[%d]: identified; refresh scheduled in %.0fs (base=%.0fs jitter=%+.0fs).",
+                    self.input_index, delay, svc.refresh_seconds, jitter,
+                )
                 self._ti_last_identified_at = now
                 if result.title or result.artist:
                     new_meta = NowPlayingMetadata(
@@ -1693,7 +1739,11 @@ class AudioMonitor:
                     last_attempt_at=now,
                 )
             elif result.is_configuration_error:
-                self._schedule_track_id_after(now, svc.retry_seconds, "error")
+                self._schedule_track_id_after(now, TRACK_ID_ERROR_RETRY_SECONDS, "error")
+                logging.debug(
+                    "track_id[%d]: configuration error; retry scheduled in %.0fs.",
+                    self.input_index, TRACK_ID_ERROR_RETRY_SECONDS,
+                )
                 self._ti_snapshot = TrackIdentificationSnapshot(
                     enabled=True,
                     state=STATE_ERROR,
@@ -1705,6 +1755,10 @@ class AudioMonitor:
                 )
             else:
                 self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
+                logging.debug(
+                    "track_id[%d]: no match; retry scheduled in %.0fs.",
+                    self.input_index, svc.retry_seconds,
+                )
                 self._ti_snapshot = TrackIdentificationSnapshot(
                     enabled=True,
                     state=STATE_NOT_FOUND,
@@ -1732,7 +1786,10 @@ class AudioMonitor:
                 )
                 self._schedule_track_id_after(now, TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS, "rate_limit")
             else:
-                logging.warning("track_id[%d]: worker error: %s", self.input_index, type(exc).__name__)
+                logging.warning(
+                    "track_id[%d]: worker error: %s; retry in %.0fs.",
+                    self.input_index, type(exc).__name__, TRACK_ID_ERROR_RETRY_SECONDS,
+                )
                 self._schedule_track_id_after(now, TRACK_ID_ERROR_RETRY_SECONDS, "error")
             self._ti_snapshot = TrackIdentificationSnapshot(
                 enabled=True,

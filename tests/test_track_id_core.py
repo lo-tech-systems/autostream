@@ -117,16 +117,19 @@ def _run_worker_sync(
     pcm: bytes = None,
     rate: int = _DEFAULT_RATE,
     token: object = None,
+    dispatch_gen: int = None,
 ) -> object:
     """Acquire the gate, install the token, call _ti_worker synchronously, return token."""
     if pcm is None:
         pcm = _DEFAULT_PCM
     if token is None:
         token = object()
+    if dispatch_gen is None:
+        dispatch_gen = mon._ti_generation
     core._track_id_request_gate.acquire()
     mon._ti_inflight = True
     mon._ti_inflight_token = token
-    mon._ti_worker(bytes(pcm), rate, token)
+    mon._ti_worker(bytes(pcm), rate, token, dispatch_gen)
     return token
 
 
@@ -331,6 +334,184 @@ class TestDispatchScheduling:
 
         mon.maybe_trigger_track_identification(client, time.time())
         assert mon._ti_inflight is False
+
+    def test_generation_change_during_snapshot_aborts_dispatch(self):
+        """If the generation advances while get_id_snapshot() runs, dispatch is aborted."""
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0  # past deadline
+
+        def snapshot_and_bump(*_args, **_kw):
+            mon._ti_generation += 1
+            return (_DEFAULT_PCM, _DEFAULT_RATE)
+
+        client = MagicMock()
+        client.get_id_snapshot.side_effect = snapshot_and_bump
+
+        mon.maybe_trigger_track_identification(client, time.time())
+
+        assert not core._track_id_request_gate.locked()
+        assert mon._ti_inflight is False
+
+    def test_generation_change_during_snapshot_no_audio_aborts_without_scheduling(self):
+        """Generation race with None snapshot must not schedule a retry on the old service."""
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        def snapshot_and_bump(*_args, **_kw):
+            mon._ti_generation += 1
+            return None  # empty result — as if capture stopped mid-call
+
+        client = MagicMock()
+        client.get_id_snapshot.side_effect = snapshot_and_bump
+
+        before_deadline = mon._ti_next_attempt
+        mon.maybe_trigger_track_identification(client, time.time())
+
+        assert not core._track_id_request_gate.locked()
+        assert mon._ti_inflight is False
+        # Deadline must not have been overwritten with a stale retry from the old service.
+        assert mon._ti_next_attempt == before_deadline
+
+    def test_generation_change_during_snapshot_short_audio_aborts_without_scheduling(self):
+        """Generation race with short snapshot must not schedule a retry on the old service."""
+        from track_id.service import MIN_PCM_DURATION_SECONDS
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        short_pcm = b"\x00" * int(_DEFAULT_RATE * 2 * (MIN_PCM_DURATION_SECONDS - 1))
+
+        def snapshot_and_bump(*_args, **_kw):
+            mon._ti_generation += 1
+            return (short_pcm, _DEFAULT_RATE)
+
+        client = MagicMock()
+        client.get_id_snapshot.side_effect = snapshot_and_bump
+
+        before_deadline = mon._ti_next_attempt
+        mon.maybe_trigger_track_identification(client, time.time())
+
+        assert not core._track_id_request_gate.locked()
+        assert mon._ti_inflight is False
+        assert mon._ti_next_attempt == before_deadline
+
+    def test_service_change_during_snapshot_aborts_dispatch(self):
+        """If the service changes while get_id_snapshot() runs, dispatch is aborted."""
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        def snapshot_and_swap(*_args, **_kw):
+            core._track_id_service = _make_service()
+            return (_DEFAULT_PCM, _DEFAULT_RATE)
+
+        client = MagicMock()
+        client.get_id_snapshot.side_effect = snapshot_and_swap
+
+        mon.maybe_trigger_track_identification(client, time.time())
+
+        assert not core._track_id_request_gate.locked()
+        assert mon._ti_inflight is False
+
+    def test_service_change_during_snapshot_no_audio_aborts_without_scheduling(self):
+        """Service race with None snapshot must not schedule a retry on the replaced service."""
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        def snapshot_and_swap(*_args, **_kw):
+            core._track_id_service = _make_service()
+            return None
+
+        client = MagicMock()
+        client.get_id_snapshot.side_effect = snapshot_and_swap
+
+        before_deadline = mon._ti_next_attempt
+        mon.maybe_trigger_track_identification(client, time.time())
+
+        assert not core._track_id_request_gate.locked()
+        assert mon._ti_inflight is False
+        assert mon._ti_next_attempt == before_deadline
+
+    def test_thread_start_failure_releases_gate(self):
+        """If Thread.start() raises, the gate is released and inflight is cleared."""
+        svc = _make_service()
+        mon = _active_monitor()
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        with patch.object(threading.Thread, "start", side_effect=RuntimeError("OS thread limit")):
+            mon.maybe_trigger_track_identification(client, time.time())
+
+        # Gate must be released and inflight cleared despite the exception.
+        assert not core._track_id_request_gate.locked()
+        assert mon._ti_inflight is False
+        assert mon._ti_inflight_token is None
+
+    def test_apply_service_blocks_while_ti_state_lock_held(self):
+        """_apply_track_id_service must block while _ti_state_lock is held by dispatch."""
+        mon = _make_monitor()
+        apply_completed = threading.Event()
+
+        def run_apply():
+            mon._apply_track_id_service(None)
+            apply_completed.set()
+
+        mon._ti_state_lock.acquire()
+        t = threading.Thread(target=run_apply, daemon=True)
+        t.start()
+
+        # Give the thread time to start and attempt the lock.
+        t.join(timeout=0.1)
+        assert not apply_completed.is_set(), (
+            "_apply_track_id_service must not proceed while _ti_state_lock is held"
+        )
+
+        mon._ti_state_lock.release()
+        apply_completed.wait(timeout=2.0)
+        assert apply_completed.is_set()
+
+    def test_apply_service_after_dispatch_publishes_disabled_not_analysing(self):
+        """If identification is disabled after dispatch sets STATE_ANALYSING, the
+        final snapshot must be STATE_DISABLED — the UI must not be stuck in analysing."""
+        from track_id.models import STATE_ANALYSING, STATE_DISABLED
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        # Suppress the actual thread so maybe_trigger completes synchronously.
+        with patch.object(threading.Thread, "start"):
+            mon.maybe_trigger_track_identification(_make_client(), time.time())
+
+        # Release the gate the dispatch acquired (no real worker to release it).
+        if core._track_id_request_gate.locked():
+            core._track_id_request_gate.release()
+
+        assert mon._ti_snapshot.state == STATE_ANALYSING  # dispatch set this
+
+        # Web handler disables identification after dispatch completed.
+        core._track_id_service = None
+        mon._apply_track_id_service(None)
+
+        assert mon._ti_snapshot.state != STATE_ANALYSING, (
+            "UI must not be stuck in analysing after identification is disabled"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +905,7 @@ class TestWorkerTokenGuard:
         core._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token  # current token ≠ stale_token
-        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
 
         # Snapshot must not have changed to IDENTIFIED.
         assert mon._ti_snapshot is current_snapshot
@@ -740,7 +921,7 @@ class TestWorkerTokenGuard:
         core._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token
-        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
 
         assert mon._ti_inflight is True  # must not have been cleared
         assert mon._ti_inflight_token is fresh_token
@@ -765,7 +946,7 @@ class TestWorkerTokenGuard:
         core._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token
-        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
 
         # Gate should have been released; try acquiring it immediately.
         acquired = core._track_id_request_gate.acquire(blocking=False)
@@ -783,7 +964,7 @@ class TestWorkerTokenGuard:
         core._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token
-        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
 
         acquired = core._track_id_request_gate.acquire(blocking=False)
         assert acquired, "Gate was not released after stale-token exception path"
@@ -910,13 +1091,14 @@ class TestCaptureStopReset:
         svc.identify.side_effect = slow_identify
 
         stale_token = object()
+        old_gen = mon._ti_generation
         core._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = stale_token
 
         worker = threading.Thread(
             target=mon._ti_worker,
-            args=(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token),
+            args=(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, old_gen),
             daemon=True,
         )
         worker.start()
@@ -1249,8 +1431,8 @@ class TestTrackChangeScheduling:
     def test_stale_worker_does_not_publish_after_track_change(self):
         """Worker started before a track-change event must not update state.
 
-        The track-change handler sets a new token-less generation; a worker
-        carrying the old token detects token mismatch and skips state updates.
+        dispatch_gen is captured at dispatch time; _on_possible_track_change bumps
+        the generation so the stale worker sees a mismatch and skips state updates.
         """
         svc = _make_service(matched=True)
         mon = _active_monitor()
@@ -1259,6 +1441,7 @@ class TestTrackChangeScheduling:
 
         # Pre-change: stale worker has acquired gate and installed its token.
         stale_token = object()
+        old_gen = mon._ti_generation  # generation at dispatch time
         core._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = stale_token
@@ -1268,14 +1451,9 @@ class TestTrackChangeScheduling:
         waiting_snap = mon._ti_snapshot
         assert waiting_snap.state == STATE_WAITING
 
-        # Stale worker finishes: its token no longer matches _ti_inflight_token.
-        # Give the monitor a fresh token so the stale worker's token doesn't match.
-        fresh_token = object()
-        mon._ti_inflight_token = fresh_token
-
         # Gate is still held from the first acquire (simulating the running worker).
-        # Call _ti_worker with the stale token; its finally will release the gate.
-        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+        # Call _ti_worker with old_gen; it sees generation mismatch and skips updates.
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, old_gen)
 
         # Snapshot must still be the waiting snapshot from _on_possible_track_change.
         assert mon._ti_snapshot is waiting_snap
@@ -1301,6 +1479,7 @@ class TestTrackChangeScheduling:
 
         # Simulate the stale worker: it holds the gate and its token.
         stale_token = object()
+        old_gen = mon._ti_generation  # generation at dispatch time
         core._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = stale_token
@@ -1310,7 +1489,7 @@ class TestTrackChangeScheduling:
         assert mon._ti_inflight is True  # still set; stale worker not done yet
 
         # Stale worker finishes: sees generation mismatch, skips state, clears inflight.
-        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token)
+        mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, old_gen)
 
         assert mon._ti_inflight is False   # cleared by stale worker's finally
         assert mon._ti_inflight_token is None
