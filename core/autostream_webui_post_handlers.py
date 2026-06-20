@@ -251,6 +251,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 ti.setdefault("retry_seconds", TRACK_ID_DEFAULT_RETRY_SECONDS)
                 ti.setdefault("refresh_seconds", TRACK_ID_DEFAULT_REFRESH_SECONDS)
                 ti.setdefault("track_change_silence_seconds", TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS)
+                ti.pop("interval_seconds", None)  # remove legacy field
                 if new_ti_enabled != old_ti_enabled:
                     _track_id_changed = True
 

@@ -389,3 +389,52 @@ class TestHandleSetupPostTrackId:
         parsed = parse_config(saved)
         assert "acoustid_musicbrainz" not in parsed.track_identification.providers
         assert "future_provider" not in parsed.track_identification.providers
+
+    def test_setup_post_persists_new_scheduling_defaults(self, tmp_path):
+        """POST with sentinel present must write the five new scheduling defaults."""
+        from autostream_config import (
+            TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS,
+            TRACK_ID_DEFAULT_SNAPSHOT_SECONDS,
+            TRACK_ID_DEFAULT_RETRY_SECONDS,
+            TRACK_ID_DEFAULT_REFRESH_SECONDS,
+            TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS,
+        )
+        form = {
+            "audio_capture_device": "hw:1,0",
+            "audio_silence_threshold": "-60",
+            "owntone_output_name": "Sp",
+            "owntone_volume_percent": "20",
+            "silence_seconds": "30",
+            "track_identification_present": "1",
+        }
+        saved, *_ = _run_setup_post(form, tmp_path)
+        ti = saved.get("track_identification", {})
+        assert ti.get("analysis_lead_in_seconds") == TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS
+        assert ti.get("snapshot_seconds") == TRACK_ID_DEFAULT_SNAPSHOT_SECONDS
+        assert ti.get("retry_seconds") == TRACK_ID_DEFAULT_RETRY_SECONDS
+        assert ti.get("refresh_seconds") == TRACK_ID_DEFAULT_REFRESH_SECONDS
+        assert ti.get("track_change_silence_seconds") == TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS
+
+    def test_setup_post_does_not_write_interval_seconds(self, tmp_path):
+        """interval_seconds must never appear in the saved config."""
+        # Even if it was present in a legacy config, it must not be preserved.
+        existing = {"track_identification": {"enabled": False, "interval_seconds": 30}}
+        form = {
+            "audio_capture_device": "hw:1,0",
+            "audio_silence_threshold": "-60",
+            "owntone_output_name": "Sp",
+            "owntone_volume_percent": "20",
+            "silence_seconds": "30",
+            "track_identification_present": "1",
+        }
+        saved, *_ = _run_setup_post(form, tmp_path, extra_cfg=existing)
+        assert "interval_seconds" not in saved.get("track_identification", {})
+
+    def test_setup_page_card_describes_track_change_detection(self):
+        """Setup page card text must describe the track-change / retry behaviour."""
+        import inspect
+        import autostream_webui_page_setup as m
+        src = inspect.getsource(m)
+        assert "retries" in src.lower() or "retry" in src.lower() or "retries automatically" in src.lower() \
+            or "match is found" in src.lower(), \
+            "Setup card text should describe retry/track-change identification behaviour"

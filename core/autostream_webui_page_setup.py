@@ -794,7 +794,9 @@ def send_setup_page(
                 <span>Track identification</span>
               </div>
               <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.4rem;">
-                Identifies playing tracks using Shazam via the vibra-mini service. Requires internet access.
+                Identifies playing tracks using Shazam via the vibra-mini service. Waits for the track to
+                establish, then retries automatically until a match is found. Detects track changes and
+                refreshes every 5 minutes. Requires internet access.
               </div>
             """, margin_top="0")
 
