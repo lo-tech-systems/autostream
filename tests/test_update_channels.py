@@ -1,7 +1,4 @@
-"""Tests for update channel feature — shared support, version ordering, and main appliance.
-
-Covers the requirements from docs/working/dev-channel-implementation-plan.md sections 4–7 and 11.
-"""
+"""Tests for update-channel support, version ordering, and the main appliance."""
 from __future__ import annotations
 
 import importlib.util

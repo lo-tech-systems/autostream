@@ -486,7 +486,7 @@ class TestSudoersWwwData:
 
 
 # ---------------------------------------------------------------------------
-# Control socket deployment contract tests (WP5 spec §9.7)
+# Control socket deployment contract tests
 # ---------------------------------------------------------------------------
 
 class TestControlSocketDeployment:

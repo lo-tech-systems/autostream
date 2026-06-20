@@ -77,7 +77,7 @@ class TestDialDeploymentManifest:
         )
 
     def test_platform_python_files_not_referenced(self):
-        """After WP12 the platform/ Python copies are gone; the installer
+        """The platform/ Python copies are gone; the installer
         must not reference them (it would silently skip a missing file or
         fail loudly on a clean checkout)."""
         content = DIAL_INSTALLER.read_text(encoding="utf-8")

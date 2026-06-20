@@ -1,4 +1,4 @@
-"""WP2 — HTTP request body reading and failure handling tests.
+"""HTTP request body reading and failure handling tests.
 
 Covers:
 - Invalid, negative, and oversized Content-Length headers

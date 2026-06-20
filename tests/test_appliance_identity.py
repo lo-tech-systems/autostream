@@ -1,4 +1,4 @@
-"""WP1 + WP2 — Appliance and Dial identity tests.
+"""Appliance and Dial identity tests.
 
 Covers:
   - CPU serial normalization and validation
@@ -418,7 +418,7 @@ class TestInstallerFallbackSemantics:
 
 
 # ---------------------------------------------------------------------------
-# WP2: get_dial_id
+# Dial identity derivation
 # ---------------------------------------------------------------------------
 
 def _clear_dial_cache():
@@ -554,7 +554,7 @@ class TestGetDialId:
 
 
 # ---------------------------------------------------------------------------
-# WP2: Dial installer identity logic (structural tests)
+# Dial installer identity logic (structural tests)
 # ---------------------------------------------------------------------------
 
 class TestDialInstallerIdentity:

@@ -1,4 +1,4 @@
-"""WP1 — Critical process failure and restart tests.
+"""Critical process failure and restart tests.
 
 Verifies that:
 - An unexpected coordinator exception runs cleanup then re-raises (exits nonzero).

@@ -12,7 +12,7 @@ The module uses module-level globals (STATE, state_lock, etc.). Each test
 that mutates STATE resets it to a fresh NetworkMonitorState via a fixture.
 
 Integration tests requiring real nmcli/ip/systemctl are in a separate job;
-see docs/working/additional-test-requirements.md §P1 integration tests.
+These tests cover the Wi-Fi watcher state machine and captive-portal integration.
 """
 from __future__ import annotations
 

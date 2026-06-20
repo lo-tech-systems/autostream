@@ -1,10 +1,10 @@
-"""Regression tests for WP16 (hostname validation) and WP17 (bootstrap parsing).
+"""Regression tests for hostname validation and bootstrap parsing.
 
-WP16 — validate_hostname():
+validate_hostname():
   Covers single-label boundaries, dot rejection, whitespace rejection, and the
   label character rules enforced by HOSTNAME_LABEL_RE.
 
-WP17 — bootstrap JSON parsing:
+bootstrap JSON parsing:
   The bootstrap.sh GitHub release parsing now uses Python stdlib json.load
   instead of tr/grep/cut. Tests verify correctness and demonstrate robustness
   against the formatting variations that tripped up the old approach.
@@ -46,7 +46,7 @@ validate_hostname = _admin.validate_hostname
 
 
 # ---------------------------------------------------------------------------
-# WP16: validate_hostname
+# validate_hostname
 # ---------------------------------------------------------------------------
 
 class TestValidateHostname:
@@ -139,7 +139,7 @@ class TestValidateHostname:
 
 
 # ---------------------------------------------------------------------------
-# WP17: bootstrap.sh JSON parsing
+# bootstrap.sh JSON parsing
 # ---------------------------------------------------------------------------
 
 _SAMPLE = {

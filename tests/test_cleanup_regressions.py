@@ -1,9 +1,9 @@
-"""WP10 — Confirmed low-value code, stale comments, and asset defect tests.
+"""Tests for removed low-value code, stale comments, and asset defects.
 
 Covers:
 - No-op touch_ap_timer hook was removed from wifi_watcher.
 - Flask routes in wifi_watcher still respond correctly after the removal.
-- DR-2 and DR-6 identifiers removed from dial module docstrings.
+- Internal design identifiers removed from dial module docstrings.
 - UPDATED markers removed from autostream-nginx.conf.
 - Corrected privileged-helper default path in autostream_sysutils.py docstring.
 - Corrected module header in autostream_webui_assets.py.
@@ -87,17 +87,17 @@ class TestWatcherFlaskRoutesUnchanged:
 
 
 # ---------------------------------------------------------------------------
-# 2. DR-2 / DR-6 removed from dial module docstrings
+# 2. Internal design identifiers removed from dial module docstrings
 # ---------------------------------------------------------------------------
 
 def test_dr2_removed_from_dial_volume():
-    """DR-2 implementation-plan identifier must not appear in dial_volume.py."""
+    """The old DR-2 design identifier must not appear in dial_volume.py."""
     src = (REPO_ROOT / "dial" / "dial_volume.py").read_text(encoding="utf-8")
     assert "DR-2" not in src, "DR-2 identifier still present in dial_volume.py"
 
 
 def test_dr6_removed_from_dial_led():
-    """DR-6 implementation-plan identifier must not appear in dial_led.py."""
+    """The old DR-6 design identifier must not appear in dial_led.py."""
     src = (REPO_ROOT / "dial" / "dial_led.py").read_text(encoding="utf-8")
     assert "DR-6" not in src, "DR-6 identifier still present in dial_led.py"
 

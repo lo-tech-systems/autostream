@@ -1,4 +1,4 @@
-"""WP4 tests — autostream_dial_control CLI.
+"""Tests for the autostream_dial_control CLI.
 
 Covers:
 1.  Request JSON generated for every subcommand.

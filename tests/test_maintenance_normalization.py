@@ -1,6 +1,6 @@
 """Regression tests for maintenance-interval normalization.
 
-WP1: bearing_life_hours was normalized using normalize_maintenance_life_hours
+Historically, bearing_life_hours was normalized using normalize_maintenance_life_hours
 (valid values: 0, 1000, 2000, 3000) instead of normalize_bearing_life_hours
 (valid values: 0, 200, 500, 1000, 2000).  Values of 200 and 500 were silently
 discarded.  These tests cover every supported value for each maintenance item and
@@ -87,7 +87,7 @@ class TestNormalizeBeltLifeHours:
 class TestNormalizeBearingLifeHours:
     @pytest.mark.parametrize("value", VALID_BEARING_LIFE_HOURS)
     def test_valid_bearing_values_pass_through(self, value):
-        # Regression: 200 and 500 were silently discarded before WP1.
+        # Regression: 200 and 500 were previously silently discarded.
         assert normalize_bearing_life_hours(value) == value
 
     @pytest.mark.parametrize("value", VALID_BEARING_LIFE_HOURS)
@@ -159,7 +159,7 @@ class TestConfigParseBearingLifeHours:
 class TestPlaybackInputConfigNormalized:
     @pytest.mark.parametrize("value", VALID_BEARING_LIFE_HOURS)
     def test_all_bearing_values_survive_normalized(self, value):
-        # Regression: 200 and 500 were silently discarded before WP1.
+        # Regression: 200 and 500 were previously silently discarded.
         cfg = PlaybackInputConfig.normalized(bearing_life_hours=value)
         assert cfg.bearing_life_hours == value
 

@@ -1,4 +1,4 @@
-"""WP3 — Shared mDNS transport tests.
+"""Shared mDNS transport tests.
 
 Covers:
   - parse_avahi_txt: quoted and escaped TXT parsing, malformed TXT handling

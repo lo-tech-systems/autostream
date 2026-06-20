@@ -1,4 +1,4 @@
-"""WP7 — Maintenance documentation and focused coverage gaps.
+"""Maintenance documentation and focused coverage tests.
 
 Adds missing boundary and compatibility tests that the existing suites do not
 cover:

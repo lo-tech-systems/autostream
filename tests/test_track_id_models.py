@@ -1,4 +1,4 @@
-"""Tests for track_id.models and track_id.service (WP2)."""
+"""Tests for track_id.models and track_id.service."""
 from __future__ import annotations
 
 import sys

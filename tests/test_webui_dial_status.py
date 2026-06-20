@@ -1,4 +1,4 @@
-"""WP1 tests — POST /api/dial/status endpoint.
+"""Tests for the POST /api/dial/status endpoint.
 
 Covers:
 1.  Routing: dispatched in the UUID-auth block before session/CSRF.

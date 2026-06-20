@@ -2,7 +2,7 @@
 
 Provides build_home_state() and build_equaliser_state() plus shared
 output and EQ mutation helpers used by both local API endpoints and
-target-side federation APIs (WP6+).
+target-side federation APIs.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """

@@ -1,4 +1,4 @@
-"""WP6 — Pushbutton mute/unmute tests.
+"""Pushbutton mute/unmute tests.
 
 Covers:
 - POST /api/dial/mute host endpoint: auth, action detection, pending state,

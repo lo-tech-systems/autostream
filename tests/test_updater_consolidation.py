@@ -1,4 +1,4 @@
-"""WP4 — Updater staging and scheduling consolidation tests.
+"""Updater staging and scheduling consolidation tests.
 
 Covers the three helpers added to autostream_update_support:
   - is_active_transient_unit: fail-closed on systemctl error
@@ -438,13 +438,13 @@ class TestUpdaterUsesSharedStaging:
         """Host updater must not contain inline tarfile.open (staging moved to support)."""
         src = (REPO_ROOT / "supervisor" / "autostream_updater").read_text(encoding="utf-8")
         assert "tarfile.open" not in src, \
-            "autostream_updater must not contain inline tarfile.open after WP4 refactor"
+            "autostream_updater must not contain inline tarfile.open after consolidation"
 
     def test_dial_updater_no_inline_tarfile_open(self):
         """Dial updater must not contain inline tarfile.open (staging moved to support)."""
         src = (REPO_ROOT / "supervisor" / "autostream_dial_updater").read_text(encoding="utf-8")
         assert "tarfile.open" not in src, \
-            "autostream_dial_updater must not contain inline tarfile.open after WP4 refactor"
+            "autostream_dial_updater must not contain inline tarfile.open after consolidation"
 
     def test_host_unit_name_uses_shared_pattern(self):
         """Host unit name prefix is 'autostream-update-' (covered by shared glob)."""

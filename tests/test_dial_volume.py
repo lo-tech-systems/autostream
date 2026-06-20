@@ -1,4 +1,4 @@
-"""Tests for dial volume fan-out and partial target failures (WP18).
+"""Tests for dial volume fan-out and partial target failures.
 
 Covers send_dial_volume_post_json in autostream_webui_api:
 1. Authorization guards (missing/empty/unauthorized dial_id).

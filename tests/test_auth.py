@@ -1,4 +1,4 @@
-"""Tests for AuthManager (WP15).
+"""Tests for AuthManager.
 
 Covers:
 1. _client_key uses raw IP, not SHA-256 hash.
@@ -334,7 +334,7 @@ class TestMalformedStateFile:
 
 
 # ---------------------------------------------------------------------------
-# 8. WP8 — Multi-nonce per client and concurrency safety
+# 8. Multi-nonce per client and concurrency safety
 # ---------------------------------------------------------------------------
 
 class TestMultiNoncePerClient:

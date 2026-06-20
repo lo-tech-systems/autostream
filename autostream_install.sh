@@ -886,7 +886,7 @@ permissions_pass() {
 
   # Reclaim the entire application tree as root:root.  Existing installations
   # may have subdirectories (nginx/, images/, monitor/, venv/) still owned by
-  # the service account from before WP3; a recursive pass fixes them all.
+  # the service account from older installers; a recursive pass fixes them all.
   chown -R root:root "${INSTALL_DIR}"
   chmod 0755 "${INSTALL_DIR}"
   chown -R autostream:autostream "${APP_LOG_DIR}"

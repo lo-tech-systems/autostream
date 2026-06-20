@@ -1,4 +1,4 @@
-"""WP2 tests — dial_target_status.enrich_targets() and dial_mdns.PlayingTarget.dial_status.
+"""Tests for dial_target_status.enrich_targets() and dial_mdns.PlayingTarget.dial_status.
 
 Covers:
 1.  dial_status field in PlayingTarget parsed from TXT record.
@@ -132,7 +132,7 @@ def _mock_conn(data: dict | bytes, status: int = 200, content_type: str | None =
 
 
 # ---------------------------------------------------------------------------
-# PlayingTarget.dial_status field (WP2 prerequisite in dial_mdns)
+# PlayingTarget.dial_status field in dial_mdns
 # ---------------------------------------------------------------------------
 
 class TestPlayingTargetDialStatus:

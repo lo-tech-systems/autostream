@@ -1,4 +1,4 @@
-"""Router-level POST auth tests for ConfigWebHandler (WP15 review findings).
+"""Router-level POST authentication tests for ConfigWebHandler.
 
 Exercises do_POST directly to verify that the protected/public route
 classification is enforced at the router boundary, not just by the

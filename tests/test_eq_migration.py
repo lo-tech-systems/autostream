@@ -1,4 +1,4 @@
-"""Regression tests for the eq_8khz_db migration (WP11).
+"""Regression tests for the eq_8khz_db migration.
 
 Covers the four key scenarios:
 - new key only  → reads eq_8khz_db

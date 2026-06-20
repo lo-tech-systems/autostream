@@ -1,4 +1,4 @@
-"""Tests for WP4 — track identification scheduling in AudioMonitor.
+"""Tests for track-identification scheduling in AudioMonitor.
 
 Covers: disabled/waiting/analysing/identified/not_found/error state machine,
 outcome-driven scheduling (match→refresh+jitter, no_match→retry_seconds,

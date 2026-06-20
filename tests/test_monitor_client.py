@@ -546,7 +546,7 @@ class TestGetIdSnapshotLengths:
 # ---------------------------------------------------------------------------
 
 class TestIdSnapshotRate16kHz:
-    """Focused tests for the 16 kHz ID buffer introduced in WP A2.
+    """Focused tests for the 16 kHz ID buffer.
 
     The C++ daemon clamps max_seconds to 32 internally (ring buffer capacity).
     The Python client enforces no daemon-side clamp — it sends whatever the

@@ -1,4 +1,4 @@
-"""WP3 — Installer file ownership hardening tests.
+"""Installer file-ownership hardening tests.
 
 Verifies that:
 - autostream_install.sh does not contain a recursive chown of /opt/autostream.
@@ -42,7 +42,7 @@ class TestNoRecursiveAppDirChown:
     def test_main_installer_no_recursive_chown_install_dir_to_non_root(self):
         """autostream_install.sh must not recursively chown the app dir to a non-root user.
 
-        chown -R root:root "${INSTALL_DIR}" IS required (WP3 hardening).
+        chown -R root:root "${INSTALL_DIR}" is required for ownership hardening.
         What must NOT exist is a recursive chown to autostream or any other
         unprivileged account, which would let the service account replace code.
         """
@@ -54,7 +54,7 @@ class TestNoRecursiveAppDirChown:
         matches = pattern.findall(src)
         assert not matches, (
             f"autostream_install.sh recursively chowns the app dir to a non-root user: {matches!r}\n"
-            "Per WP3, only 'chown -R root:root' is permitted on the application directory"
+            "Only 'chown -R root:root' is permitted on the application directory"
         )
 
     def test_dial_installer_no_recursive_chown_opt_autostream(self):
@@ -113,7 +113,7 @@ class TestAppDirOwnedByRoot:
         )
         assert not pattern.search(body), (
             "permissions_pass still contains 'chown autostream:autostream \"${INSTALL_DIR}\"'; "
-            "WP3 requires this to be root:root"
+            "The application directory must be root:root"
         )
 
     def test_main_installer_no_sudo_autostream_pip(self):
@@ -122,7 +122,7 @@ class TestAppDirOwnedByRoot:
         pattern = re.compile(r'sudo\s+-u\s+autostream\s+.*pip')
         assert not pattern.search(src), (
             "autostream_install.sh invokes pip as 'sudo -u autostream'; "
-            "WP3 requires the installer (running as root) to own the venv"
+            "The installer (running as root) must own the venv"
         )
 
     def test_main_installer_no_pre_venv_autostream_chown(self):

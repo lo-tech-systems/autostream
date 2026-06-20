@@ -1,4 +1,4 @@
-"""Tests for WP1 — track identification config and settings switch.
+"""Tests for track-identification configuration and the settings switch.
 
 Covers:
 - Config defaults and normalization

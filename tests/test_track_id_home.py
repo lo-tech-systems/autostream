@@ -1,4 +1,4 @@
-"""Tests for WP5 — track identification state in build_home_state().
+"""Tests for track-identification state in build_home_state().
 
 Verifies that the `track_identification` field is always present in the Home
 state dict, covers all states, and that build_home_state() never calls provider

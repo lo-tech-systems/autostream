@@ -1,4 +1,4 @@
-"""Regression tests for Service-page display helpers (WP8).
+"""Regression tests for Service-page display helpers.
 
 Covers the warning-vs-overdue distinction: when a maintenance item is overdue
 the tracker sets overdue=True and warning=False (see autostream_playback_stats

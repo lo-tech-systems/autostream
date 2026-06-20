@@ -1,7 +1,4 @@
-"""Tests for update channel feature — dial-specific components.
-
-Covers the requirements from docs/working/dev-channel-implementation-plan.md sections 8 and 11.
-"""
+"""Tests for update-channel behaviour in dial-specific components."""
 from __future__ import annotations
 
 import copy

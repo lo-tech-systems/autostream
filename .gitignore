@@ -1,8 +1,12 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.tmp-*/
 
 # Project-specific
 AGENTS.md
+.agents/
+.codex/
 
 # Virtual environments
 venv/

@@ -1,4 +1,4 @@
-"""WP3 tests — dial_control protocol parser, dispatcher, and Unix socket server.
+"""Tests for the dial_control protocol parser, dispatcher, and Unix socket server.
 
 Covers sections 9.1, 9.2, 9.3, and 9.5 of the spec.
 
