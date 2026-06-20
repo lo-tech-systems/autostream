@@ -150,6 +150,7 @@ function renderHomeState(data){
   if(showMaster)updateMasterVolumeCard();
   updateTrackIdCard(data&&data.track_identification);
 }
+var __lastOutputsShape='';
 function _outputShapeKey(o){return String(o.id)+'|'+String(o.name||'')+'|'+String(!!o.is_default)+'|'+String(!!o.remote_in_use)+'|'+String(o.remote_owner||'');}
 function _outputsShape(outputs){return outputs.map(_outputShapeKey).sort().join(',');}
 var __remoteFailCount=0;var __remotePolling=true;var __remotePollTimer=null;

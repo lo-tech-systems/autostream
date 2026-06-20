@@ -72,6 +72,13 @@ class TestRemoteHomeOutputShape:
     def test_shape_helper_function_declared(self):
         assert '_outputsShape' in _REMOTE_HOME_SCRIPT
 
+    def test_last_shape_initialized_before_polling_starts(self):
+        """The first non-empty response must not read an undeclared shape variable."""
+        src = _REMOTE_HOME_SCRIPT
+        declaration_pos = src.index("var __lastOutputsShape='';")
+        startup_pos = src.index("window.addEventListener('DOMContentLoaded'")
+        assert declaration_pos < startup_pos
+
     def test_shape_key_includes_name(self):
         """Shape key must capture output name so name changes trigger re-render."""
         src = _REMOTE_HOME_SCRIPT
