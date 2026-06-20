@@ -31,9 +31,32 @@ VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 
 TRACK_ID_DEFAULT_PROVIDER = "vibra_shazam"
 TRACK_ID_KNOWN_PROVIDERS = frozenset({"vibra_shazam"})
-TRACK_ID_DEFAULT_INTERVAL = 15
-TRACK_ID_MIN_INTERVAL = 10
-TRACK_ID_MAX_INTERVAL = 45
+
+TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS = 10
+TRACK_ID_MIN_ANALYSIS_LEAD_IN_SECONDS = 0
+TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS = 30
+
+TRACK_ID_DEFAULT_SNAPSHOT_SECONDS = 15
+TRACK_ID_MIN_SNAPSHOT_SECONDS = 5
+TRACK_ID_MAX_SNAPSHOT_SECONDS = 20
+
+TRACK_ID_DEFAULT_RETRY_SECONDS = 5
+TRACK_ID_MIN_RETRY_SECONDS = 5
+TRACK_ID_MAX_RETRY_SECONDS = 60
+
+TRACK_ID_DEFAULT_REFRESH_SECONDS = 300
+TRACK_ID_MIN_REFRESH_SECONDS = 60
+TRACK_ID_MAX_REFRESH_SECONDS = 900
+
+TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS = 1.25
+TRACK_ID_MIN_TRACK_CHANGE_SILENCE_SECONDS = 0.5
+TRACK_ID_MAX_TRACK_CHANGE_SILENCE_SECONDS = 5.0
+
+# Internal policy constants — not user-configurable.
+TRACK_ID_REFRESH_JITTER_SECONDS = 20
+TRACK_ID_ERROR_RETRY_SECONDS = 30
+TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS = 120
+TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS = 300
 DEFAULT_AIRPLAY_MODE = "default"
 VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
 DEFAULT_STYLUS_LIFE_HOURS = 0  # 0 = tracking disabled ("Don't track usage")
@@ -328,15 +351,70 @@ class UpdatesConfig:
     update_channel: str
 
 
-def normalize_track_id_interval(value: object) -> int:
-    """Return a valid track-identification interval in seconds (10-60), default 15."""
+def _normalize_track_id_int(value: object, default: int, lo: int, hi: int) -> int:
+    """Clamp a track-ID integer setting to [lo, hi]; use default for invalid input."""
     try:
-        v = int(value)  # type: ignore[arg-type]
+        v = int(float(str(value)))  # type: ignore[arg-type]
     except Exception:
-        return TRACK_ID_DEFAULT_INTERVAL
-    if v < TRACK_ID_MIN_INTERVAL or v > TRACK_ID_MAX_INTERVAL:
-        return TRACK_ID_DEFAULT_INTERVAL
-    return v
+        return default
+    return max(lo, min(hi, v))
+
+
+def _normalize_track_id_float(value: object, default: float, lo: float, hi: float) -> float:
+    """Clamp a track-ID float setting to [lo, hi]; use default for invalid/non-finite input."""
+    import math
+    try:
+        v = float(str(value))  # type: ignore[arg-type]
+    except Exception:
+        return default
+    if not math.isfinite(v):
+        return default
+    return max(lo, min(hi, v))
+
+
+def normalize_track_id_analysis_lead_in_seconds(value: object) -> int:
+    return _normalize_track_id_int(
+        value,
+        TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS,
+        TRACK_ID_MIN_ANALYSIS_LEAD_IN_SECONDS,
+        TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS,
+    )
+
+
+def normalize_track_id_snapshot_seconds(value: object) -> int:
+    return _normalize_track_id_int(
+        value,
+        TRACK_ID_DEFAULT_SNAPSHOT_SECONDS,
+        TRACK_ID_MIN_SNAPSHOT_SECONDS,
+        TRACK_ID_MAX_SNAPSHOT_SECONDS,
+    )
+
+
+def normalize_track_id_retry_seconds(value: object) -> int:
+    return _normalize_track_id_int(
+        value,
+        TRACK_ID_DEFAULT_RETRY_SECONDS,
+        TRACK_ID_MIN_RETRY_SECONDS,
+        TRACK_ID_MAX_RETRY_SECONDS,
+    )
+
+
+def normalize_track_id_refresh_seconds(value: object) -> int:
+    return _normalize_track_id_int(
+        value,
+        TRACK_ID_DEFAULT_REFRESH_SECONDS,
+        TRACK_ID_MIN_REFRESH_SECONDS,
+        TRACK_ID_MAX_REFRESH_SECONDS,
+    )
+
+
+def normalize_track_id_track_change_silence_seconds(value: object) -> float:
+    return _normalize_track_id_float(
+        value,
+        TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS,
+        TRACK_ID_MIN_TRACK_CHANGE_SILENCE_SECONDS,
+        TRACK_ID_MAX_TRACK_CHANGE_SILENCE_SECONDS,
+    )
 
 
 @dataclass(frozen=True)
@@ -344,7 +422,11 @@ class TrackIdentificationConfig:
     """Track identification settings (JSON section track_identification)."""
     enabled: bool
     provider: str
-    interval_seconds: int
+    analysis_lead_in_seconds: int
+    snapshot_seconds: int
+    retry_seconds: int
+    refresh_seconds: int
+    track_change_silence_seconds: float
     # Nested provider configs keyed by provider id.  Only known provider IDs
     # (see TRACK_ID_KNOWN_PROVIDERS) are retained; others are silently discarded.
     providers: dict
@@ -495,8 +577,20 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
     track_identification = TrackIdentificationConfig(
         enabled=bool(track_id_d.get("enabled", False)),
         provider=str(track_id_d.get("provider", TRACK_ID_DEFAULT_PROVIDER) or TRACK_ID_DEFAULT_PROVIDER),
-        interval_seconds=normalize_track_id_interval(
-            track_id_d.get("interval_seconds", TRACK_ID_DEFAULT_INTERVAL)
+        analysis_lead_in_seconds=normalize_track_id_analysis_lead_in_seconds(
+            track_id_d.get("analysis_lead_in_seconds", TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS)
+        ),
+        snapshot_seconds=normalize_track_id_snapshot_seconds(
+            track_id_d.get("snapshot_seconds", TRACK_ID_DEFAULT_SNAPSHOT_SECONDS)
+        ),
+        retry_seconds=normalize_track_id_retry_seconds(
+            track_id_d.get("retry_seconds", TRACK_ID_DEFAULT_RETRY_SECONDS)
+        ),
+        refresh_seconds=normalize_track_id_refresh_seconds(
+            track_id_d.get("refresh_seconds", TRACK_ID_DEFAULT_REFRESH_SECONDS)
+        ),
+        track_change_silence_seconds=normalize_track_id_track_change_silence_seconds(
+            track_id_d.get("track_change_silence_seconds", TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS)
         ),
         providers=providers,
     )

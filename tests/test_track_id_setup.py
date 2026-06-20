@@ -27,12 +27,28 @@ if _CORE not in sys.path:
 
 import autostream_config as cfg_mod
 from autostream_config import (
-    TRACK_ID_DEFAULT_INTERVAL,
+    TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS,
     TRACK_ID_DEFAULT_PROVIDER,
-    TRACK_ID_MAX_INTERVAL,
-    TRACK_ID_MIN_INTERVAL,
+    TRACK_ID_DEFAULT_REFRESH_SECONDS,
+    TRACK_ID_DEFAULT_RETRY_SECONDS,
+    TRACK_ID_DEFAULT_SNAPSHOT_SECONDS,
+    TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS,
+    TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS,
+    TRACK_ID_MAX_REFRESH_SECONDS,
+    TRACK_ID_MAX_RETRY_SECONDS,
+    TRACK_ID_MAX_SNAPSHOT_SECONDS,
+    TRACK_ID_MAX_TRACK_CHANGE_SILENCE_SECONDS,
+    TRACK_ID_MIN_ANALYSIS_LEAD_IN_SECONDS,
+    TRACK_ID_MIN_REFRESH_SECONDS,
+    TRACK_ID_MIN_RETRY_SECONDS,
+    TRACK_ID_MIN_SNAPSHOT_SECONDS,
+    TRACK_ID_MIN_TRACK_CHANGE_SILENCE_SECONDS,
     TrackIdentificationConfig,
-    normalize_track_id_interval,
+    normalize_track_id_analysis_lead_in_seconds,
+    normalize_track_id_refresh_seconds,
+    normalize_track_id_retry_seconds,
+    normalize_track_id_snapshot_seconds,
+    normalize_track_id_track_change_silence_seconds,
     parse_config,
 )
 
@@ -51,9 +67,13 @@ class TestTrackIdConfigDefaults:
         parsed = parse_config({})
         assert parsed.track_identification.provider == TRACK_ID_DEFAULT_PROVIDER
 
-    def test_absent_section_default_interval(self):
-        parsed = parse_config({})
-        assert parsed.track_identification.interval_seconds == TRACK_ID_DEFAULT_INTERVAL
+    def test_absent_section_default_scheduling(self):
+        ti = parse_config({}).track_identification
+        assert ti.analysis_lead_in_seconds == TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS
+        assert ti.snapshot_seconds == TRACK_ID_DEFAULT_SNAPSHOT_SECONDS
+        assert ti.retry_seconds == TRACK_ID_DEFAULT_RETRY_SECONDS
+        assert ti.refresh_seconds == TRACK_ID_DEFAULT_REFRESH_SECONDS
+        assert ti.track_change_silence_seconds == TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS
 
     def test_absent_section_providers_is_empty(self):
         parsed = parse_config({})
@@ -67,9 +87,25 @@ class TestTrackIdConfigDefaults:
         parsed = parse_config({"track_identification": {"enabled": False}})
         assert parsed.track_identification.enabled is False
 
-    def test_custom_interval_parses(self):
+    def test_custom_scheduling_parses(self):
+        parsed = parse_config({"track_identification": {
+            "analysis_lead_in_seconds": 5,
+            "snapshot_seconds": 10,
+            "retry_seconds": 10,
+            "refresh_seconds": 120,
+            "track_change_silence_seconds": 2.0,
+        }})
+        ti = parsed.track_identification
+        assert ti.analysis_lead_in_seconds == 5
+        assert ti.snapshot_seconds == 10
+        assert ti.retry_seconds == 10
+        assert ti.refresh_seconds == 120
+        assert ti.track_change_silence_seconds == 2.0
+
+    def test_interval_seconds_discarded(self):
+        # interval_seconds is a removed field; it must not appear on the config.
         parsed = parse_config({"track_identification": {"interval_seconds": 30}})
-        assert parsed.track_identification.interval_seconds == 30
+        assert not hasattr(parsed.track_identification, "interval_seconds")
 
     def test_unknown_provider_discarded_in_parse(self):
         parsed = parse_config({
@@ -88,7 +124,6 @@ class TestTrackIdConfigDefaults:
         assert parsed.track_identification.providers["vibra_shazam"]["custom_key"] == "val"
 
     def test_minimal_existing_config_still_parses(self):
-        # Simulate a real-world config that predates this feature.
         data = {
             "general": {"fifo_path": "/tmp/x.fifo", "log_file": "/tmp/x.log"},
             "audio1": {"capture_device": "hw:1,0", "silence_threshold": -60.0},
@@ -98,31 +133,91 @@ class TestTrackIdConfigDefaults:
         assert parsed.track_identification.enabled is False
 
 
-class TestNormalizeTrackIdInterval:
+class TestNormalizeTrackIdScheduling:
 
-    def test_default_returned_for_invalid_string(self):
-        assert normalize_track_id_interval("bad") == TRACK_ID_DEFAULT_INTERVAL
+    def test_analysis_lead_in_clamps_to_min(self):
+        assert normalize_track_id_analysis_lead_in_seconds(-5) == TRACK_ID_MIN_ANALYSIS_LEAD_IN_SECONDS
 
-    def test_default_returned_for_none(self):
-        assert normalize_track_id_interval(None) == TRACK_ID_DEFAULT_INTERVAL
+    def test_analysis_lead_in_clamps_to_max(self):
+        assert normalize_track_id_analysis_lead_in_seconds(999) == TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS
 
-    def test_too_low_normalized(self):
-        assert normalize_track_id_interval(5) == TRACK_ID_DEFAULT_INTERVAL
+    def test_analysis_lead_in_min_boundary_accepted(self):
+        assert normalize_track_id_analysis_lead_in_seconds(TRACK_ID_MIN_ANALYSIS_LEAD_IN_SECONDS) == TRACK_ID_MIN_ANALYSIS_LEAD_IN_SECONDS
 
-    def test_too_high_normalized(self):
-        assert normalize_track_id_interval(120) == TRACK_ID_DEFAULT_INTERVAL
+    def test_analysis_lead_in_max_boundary_accepted(self):
+        assert normalize_track_id_analysis_lead_in_seconds(TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS) == TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS
 
-    def test_min_boundary_accepted(self):
-        assert normalize_track_id_interval(TRACK_ID_MIN_INTERVAL) == TRACK_ID_MIN_INTERVAL
+    def test_analysis_lead_in_invalid_uses_default(self):
+        assert normalize_track_id_analysis_lead_in_seconds("bad") == TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS
 
-    def test_max_boundary_accepted(self):
-        assert normalize_track_id_interval(TRACK_ID_MAX_INTERVAL) == TRACK_ID_MAX_INTERVAL
+    def test_analysis_lead_in_none_uses_default(self):
+        assert normalize_track_id_analysis_lead_in_seconds(None) == TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS
 
-    def test_mid_value_accepted(self):
-        assert normalize_track_id_interval(30) == 30
+    def test_snapshot_seconds_clamps_to_min(self):
+        assert normalize_track_id_snapshot_seconds(1) == TRACK_ID_MIN_SNAPSHOT_SECONDS
 
-    def test_zero_normalized(self):
-        assert normalize_track_id_interval(0) == TRACK_ID_DEFAULT_INTERVAL
+    def test_snapshot_seconds_clamps_to_max(self):
+        assert normalize_track_id_snapshot_seconds(999) == TRACK_ID_MAX_SNAPSHOT_SECONDS
+
+    def test_snapshot_seconds_min_boundary_accepted(self):
+        assert normalize_track_id_snapshot_seconds(TRACK_ID_MIN_SNAPSHOT_SECONDS) == TRACK_ID_MIN_SNAPSHOT_SECONDS
+
+    def test_snapshot_seconds_max_boundary_accepted(self):
+        assert normalize_track_id_snapshot_seconds(TRACK_ID_MAX_SNAPSHOT_SECONDS) == TRACK_ID_MAX_SNAPSHOT_SECONDS
+
+    def test_snapshot_seconds_invalid_uses_default(self):
+        assert normalize_track_id_snapshot_seconds("bad") == TRACK_ID_DEFAULT_SNAPSHOT_SECONDS
+
+    def test_retry_seconds_clamps_to_min(self):
+        assert normalize_track_id_retry_seconds(1) == TRACK_ID_MIN_RETRY_SECONDS
+
+    def test_retry_seconds_clamps_to_max(self):
+        assert normalize_track_id_retry_seconds(999) == TRACK_ID_MAX_RETRY_SECONDS
+
+    def test_retry_seconds_min_boundary_accepted(self):
+        assert normalize_track_id_retry_seconds(TRACK_ID_MIN_RETRY_SECONDS) == TRACK_ID_MIN_RETRY_SECONDS
+
+    def test_retry_seconds_max_boundary_accepted(self):
+        assert normalize_track_id_retry_seconds(TRACK_ID_MAX_RETRY_SECONDS) == TRACK_ID_MAX_RETRY_SECONDS
+
+    def test_retry_seconds_invalid_uses_default(self):
+        assert normalize_track_id_retry_seconds(None) == TRACK_ID_DEFAULT_RETRY_SECONDS
+
+    def test_refresh_seconds_clamps_to_min(self):
+        assert normalize_track_id_refresh_seconds(10) == TRACK_ID_MIN_REFRESH_SECONDS
+
+    def test_refresh_seconds_clamps_to_max(self):
+        assert normalize_track_id_refresh_seconds(9999) == TRACK_ID_MAX_REFRESH_SECONDS
+
+    def test_refresh_seconds_min_boundary_accepted(self):
+        assert normalize_track_id_refresh_seconds(TRACK_ID_MIN_REFRESH_SECONDS) == TRACK_ID_MIN_REFRESH_SECONDS
+
+    def test_refresh_seconds_max_boundary_accepted(self):
+        assert normalize_track_id_refresh_seconds(TRACK_ID_MAX_REFRESH_SECONDS) == TRACK_ID_MAX_REFRESH_SECONDS
+
+    def test_refresh_seconds_invalid_uses_default(self):
+        assert normalize_track_id_refresh_seconds("x") == TRACK_ID_DEFAULT_REFRESH_SECONDS
+
+    def test_track_change_silence_clamps_to_min(self):
+        assert normalize_track_id_track_change_silence_seconds(0.1) == TRACK_ID_MIN_TRACK_CHANGE_SILENCE_SECONDS
+
+    def test_track_change_silence_clamps_to_max(self):
+        assert normalize_track_id_track_change_silence_seconds(99.0) == TRACK_ID_MAX_TRACK_CHANGE_SILENCE_SECONDS
+
+    def test_track_change_silence_min_boundary_accepted(self):
+        assert normalize_track_id_track_change_silence_seconds(TRACK_ID_MIN_TRACK_CHANGE_SILENCE_SECONDS) == TRACK_ID_MIN_TRACK_CHANGE_SILENCE_SECONDS
+
+    def test_track_change_silence_max_boundary_accepted(self):
+        assert normalize_track_id_track_change_silence_seconds(TRACK_ID_MAX_TRACK_CHANGE_SILENCE_SECONDS) == TRACK_ID_MAX_TRACK_CHANGE_SILENCE_SECONDS
+
+    def test_track_change_silence_nan_uses_default(self):
+        assert normalize_track_id_track_change_silence_seconds(float("nan")) == TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS
+
+    def test_track_change_silence_inf_uses_default(self):
+        assert normalize_track_id_track_change_silence_seconds(float("inf")) == TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS
+
+    def test_track_change_silence_invalid_uses_default(self):
+        assert normalize_track_id_track_change_silence_seconds("bad") == TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS
 
 
 # ---------------------------------------------------------------------------

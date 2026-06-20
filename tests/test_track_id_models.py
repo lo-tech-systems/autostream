@@ -244,6 +244,15 @@ class TestResultCache:
 # build_service
 # ---------------------------------------------------------------------------
 
+_BUILD_SERVICE_DEFAULTS = dict(
+    analysis_lead_in_seconds=10,
+    snapshot_seconds=15,
+    retry_seconds=5,
+    refresh_seconds=300,
+    track_change_silence_seconds=1.25,
+)
+
+
 class TestBuildService:
 
     def test_disabled_returns_none(self):
@@ -251,7 +260,7 @@ class TestBuildService:
             enabled=False,
             provider_id="vibra_shazam",
             provider_settings={},
-            interval_seconds=15,
+            **_BUILD_SERVICE_DEFAULTS,
         )
         assert svc is None
 
@@ -260,7 +269,7 @@ class TestBuildService:
             enabled=True,
             provider_id="totally_unknown_provider",
             provider_settings={},
-            interval_seconds=15,
+            **_BUILD_SERVICE_DEFAULTS,
         )
         assert svc is None
 
@@ -274,7 +283,7 @@ class TestBuildService:
                 enabled=True,
                 provider_id="vibra_shazam",
                 provider_settings={},
-                interval_seconds=15,
+                **_BUILD_SERVICE_DEFAULTS,
             )
         # Either None (provider build failed) or a real service — never raises.
         assert svc is None or hasattr(svc, "identify")

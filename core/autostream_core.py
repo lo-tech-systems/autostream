@@ -97,10 +97,6 @@ _playback_tracker: Optional[PlaybackTracker] = None
 # Written only from the coordinator thread; read from worker threads under GIL.
 _track_id_service = None  # Optional[TrackIdentificationService]
 
-# Back-off applied to _ti_next_attempt when a provider signals rate limiting.
-TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS = 120
-
-
 def _build_track_id_service(cfg) -> Optional[object]:
     """Build and return a TrackIdentificationService from config, or None."""
     try:
@@ -111,7 +107,11 @@ def _build_track_id_service(cfg) -> Optional[object]:
             enabled=ti.enabled,
             provider_id=ti.provider,
             provider_settings=settings,
-            interval_seconds=ti.interval_seconds,
+            analysis_lead_in_seconds=ti.analysis_lead_in_seconds,
+            snapshot_seconds=ti.snapshot_seconds,
+            retry_seconds=ti.retry_seconds,
+            refresh_seconds=ti.refresh_seconds,
+            track_change_silence_seconds=ti.track_change_silence_seconds,
         )
     except Exception:
         logging.warning("track_id: failed to build service", exc_info=True)
@@ -1610,6 +1610,7 @@ class AudioMonitor:
         except Exception as exc:
             now = time.time()
             from track_id.models import TrackIDRateLimitedError
+            from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
             if isinstance(exc, TrackIDRateLimitedError):
                 logging.warning(
                     "track_id[%d]: rate limited; backing off %ds",

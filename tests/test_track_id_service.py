@@ -15,7 +15,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from track_id.models import TrackIdentificationResult
-from track_id.service import MIN_PCM_DURATION_SECONDS, TrackIdentificationService, _ResultCache
+from track_id.service import DEFAULT_SNAPSHOT_MAX_SECONDS, MIN_PCM_DURATION_SECONDS, TrackIdentificationService, _ResultCache
 
 # Enough PCM to pass the minimum-duration guard (6 s at 22050 Hz, 16-bit mono).
 _LONG_PCM = b"\x00" * int(22050 * 2 * 6)
@@ -39,9 +39,17 @@ def _make_provider(matched: bool = True, raise_exc: Exception | None = None):
     return provider
 
 
-def _make_service(matched: bool = True, raise_exc=None, interval: int = 15):
+def _make_service(matched: bool = True, raise_exc=None):
     provider = _make_provider(matched, raise_exc)
-    return TrackIdentificationService(provider, "test_provider", interval), provider
+    return TrackIdentificationService(
+        provider,
+        "test_provider",
+        analysis_lead_in_seconds=10,
+        snapshot_seconds=15,
+        retry_seconds=5,
+        refresh_seconds=300,
+        track_change_silence_seconds=1.25,
+    ), provider
 
 
 class TestTrackIdentificationService:
@@ -65,7 +73,11 @@ class TestTrackIdentificationService:
     def test_provider_exception_not_logged_with_secret(self, caplog):
         # The service must not log any exception message containing a key.
         provider = _make_provider(raise_exc=Exception("api_key=abc123 failed"))
-        svc = TrackIdentificationService(provider, "test_provider", 15)
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
         with caplog.at_level(logging.DEBUG):
             with pytest.raises(Exception):
                 svc.identify(_LONG_PCM, 22050, input_index=1)
@@ -95,23 +107,31 @@ class TestTrackIdentificationService:
         svc.identify_with_cache("fp2", pcm, 22050, input_index=1)
         assert provider.identify.call_count == 2
 
-    def test_interval_seconds_accessible(self):
-        svc, _ = _make_service(interval=30)
-        assert svc.interval_seconds == 30
+    def test_scheduling_params_accessible(self):
+        provider = _make_provider()
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
+        assert svc.analysis_lead_in_seconds == 10
+        assert svc.snapshot_seconds == 15
+        assert svc.retry_seconds == 5
+        assert svc.refresh_seconds == 300
+        assert svc.track_change_silence_seconds == 1.25
 
     def test_snapshot_seconds_defaults_to_15(self):
         svc, _ = _make_service()
         assert svc.snapshot_seconds == 15
 
-    def test_snapshot_seconds_independent_of_interval(self):
-        svc, _ = _make_service(interval=45)
-        assert svc.snapshot_seconds == 15
-        assert svc.interval_seconds == 45
-
     def test_identify_uses_cache_when_provider_returns_fingerprint(self):
         provider = _make_provider(matched=True)
         provider.fingerprint_pcm.return_value = "stable_fp"
-        svc = TrackIdentificationService(provider, "test_provider", 15)
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
         pcm = _LONG_PCM
         # First call: cache miss → provider.identify_from_fingerprint called (not identify).
         r1 = svc.identify(pcm, 22050, input_index=1)
@@ -141,7 +161,11 @@ class TestTrackIdentificationService:
     def test_identify_skips_cache_when_fingerprint_pcm_raises(self):
         provider = _make_provider(matched=True)
         provider.fingerprint_pcm.side_effect = RuntimeError("fingerprint failed")
-        svc = TrackIdentificationService(provider, "test_provider", 15)
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
         pcm = _LONG_PCM
         r1 = svc.identify(pcm, 22050, input_index=1)
         r2 = svc.identify(pcm, 22050, input_index=1)
@@ -161,7 +185,11 @@ class TestNoDoubleFingerprint:
         provider.identify_from_fingerprint.return_value = TrackIdentificationResult(
             matched=True, title="T", artist="A", provider="test_provider"
         )
-        svc = TrackIdentificationService(provider, "test_provider", 15)
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
 
         result = svc.identify(_LONG_PCM, 22050, input_index=1)
 
@@ -178,7 +206,11 @@ class TestNoDoubleFingerprint:
         provider.identify_from_fingerprint.return_value = TrackIdentificationResult(
             matched=True, title="T", artist="A", provider="test_provider"
         )
-        svc = TrackIdentificationService(provider, "test_provider", 15)
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
 
         svc.identify(_LONG_PCM, 22050, input_index=1)   # populates cache
         provider.reset_mock()
@@ -197,7 +229,11 @@ class TestNoDoubleFingerprint:
         provider.identify.return_value = TrackIdentificationResult(
             matched=True, title="T", artist="A", provider="test_provider"
         )
-        svc = TrackIdentificationService(provider, "test_provider", 15)
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
 
         result = svc.identify(_LONG_PCM, 22050, input_index=1)
 
@@ -212,7 +248,11 @@ class TestNoDoubleFingerprint:
         provider.identify.return_value = TrackIdentificationResult(
             matched=False, provider="test_provider"
         )
-        svc = TrackIdentificationService(provider, "test_provider", 15)
+        svc = TrackIdentificationService(
+            provider, "test_provider",
+            analysis_lead_in_seconds=10, snapshot_seconds=15,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
 
         svc.identify(_LONG_PCM, 22050, input_index=1)
 
@@ -228,34 +268,35 @@ class TestSnapshotSecondsInvariants:
         from track_id.service import DEFAULT_SNAPSHOT_MAX_SECONDS
         assert DEFAULT_SNAPSHOT_MAX_SECONDS <= 20
 
-    def test_snapshot_seconds_custom_value_stored(self):
-        """TrackIdentificationService accepts a custom snapshot_seconds."""
+    def _make_svc(self, snapshot_seconds=DEFAULT_SNAPSHOT_MAX_SECONDS):
         provider = MagicMock()
         provider.provider_id = "test"
-        svc = TrackIdentificationService(provider, "test", interval_seconds=30, snapshot_seconds=12)
+        return TrackIdentificationService(
+            provider, "test",
+            analysis_lead_in_seconds=10, snapshot_seconds=snapshot_seconds,
+            retry_seconds=5, refresh_seconds=300, track_change_silence_seconds=1.25,
+        )
+
+    def test_snapshot_seconds_custom_value_stored(self):
+        """TrackIdentificationService accepts a custom snapshot_seconds."""
+        svc = self._make_svc(snapshot_seconds=12)
         assert svc.snapshot_seconds == 12
 
     def test_snapshot_seconds_clamped_at_daemon_max(self):
         """Values over the daemon protocol max must be clamped, not stored as-is."""
         from track_id.service import SNAPSHOT_DAEMON_MAX_SECONDS
-        provider = MagicMock()
-        provider.provider_id = "test"
-        svc = TrackIdentificationService(provider, "test", interval_seconds=15, snapshot_seconds=30)
+        svc = self._make_svc(snapshot_seconds=30)
         assert svc.snapshot_seconds == SNAPSHOT_DAEMON_MAX_SECONDS
 
     def test_snapshot_seconds_at_daemon_max_accepted(self):
         """The exact daemon max must not be clamped further."""
         from track_id.service import SNAPSHOT_DAEMON_MAX_SECONDS
-        provider = MagicMock()
-        provider.provider_id = "test"
-        svc = TrackIdentificationService(provider, "test", interval_seconds=15,
-                                         snapshot_seconds=SNAPSHOT_DAEMON_MAX_SECONDS)
+        svc = self._make_svc(snapshot_seconds=SNAPSHOT_DAEMON_MAX_SECONDS)
         assert svc.snapshot_seconds == SNAPSHOT_DAEMON_MAX_SECONDS
 
-    def test_snapshot_seconds_independent_from_interval(self):
-        """Scheduling cadence and clip length are separate concepts."""
-        provider = MagicMock()
-        provider.provider_id = "test"
-        svc = TrackIdentificationService(provider, "test", interval_seconds=45)
-        assert svc.snapshot_seconds == 15
-        assert svc.interval_seconds == 45
+    def test_scheduling_params_independent_from_snapshot(self):
+        """Scheduling params and clip length are separate concepts."""
+        svc = self._make_svc(snapshot_seconds=12)
+        assert svc.analysis_lead_in_seconds == 10
+        assert svc.retry_seconds == 5
+        assert svc.refresh_seconds == 300

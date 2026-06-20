@@ -105,13 +105,20 @@ class TrackIdentificationService:
         self,
         provider: TrackIdentifier,
         provider_id: str,
-        interval_seconds: int,
+        *,
+        analysis_lead_in_seconds: int,
         snapshot_seconds: int = DEFAULT_SNAPSHOT_MAX_SECONDS,
+        retry_seconds: int,
+        refresh_seconds: int,
+        track_change_silence_seconds: float,
     ) -> None:
         self._provider = provider
         self._provider_id = provider_id
-        self.interval_seconds = interval_seconds
+        self.analysis_lead_in_seconds = int(analysis_lead_in_seconds)
         self.snapshot_seconds = min(int(snapshot_seconds), SNAPSHOT_DAEMON_MAX_SECONDS)
+        self.retry_seconds = int(retry_seconds)
+        self.refresh_seconds = int(refresh_seconds)
+        self.track_change_silence_seconds = float(track_change_silence_seconds)
         self._cache = _ResultCache()
 
     @property
@@ -238,7 +245,6 @@ class _DisabledService:
     """No-op service used when track identification is disabled or misconfigured."""
 
     provider_id = ""
-    interval_seconds = 15
     snapshot_seconds = DEFAULT_SNAPSHOT_MAX_SECONDS
 
     def identify(self, *args, **kwargs) -> None:
@@ -252,7 +258,12 @@ def build_service(
     enabled: bool,
     provider_id: str,
     provider_settings: dict,
-    interval_seconds: int,
+    *,
+    analysis_lead_in_seconds: int,
+    snapshot_seconds: int,
+    retry_seconds: int,
+    refresh_seconds: int,
+    track_change_silence_seconds: float,
 ) -> Optional[TrackIdentificationService]:
     """Build and return a service, or None when disabled / provider unavailable.
 
@@ -269,5 +280,20 @@ def build_service(
         _log.warning("track_id: provider '%s' unavailable; identification disabled.", provider_id)
         return None
 
-    _log.info("track_id: enabled with provider '%s' at %ds interval.", provider_id, interval_seconds)
-    return TrackIdentificationService(provider, provider_id, interval_seconds)
+    _log.info(
+        "track_id: enabled with provider '%s' (lead_in=%ds window=%ds retry=%ds refresh=%ds).",
+        provider_id,
+        analysis_lead_in_seconds,
+        snapshot_seconds,
+        retry_seconds,
+        refresh_seconds,
+    )
+    return TrackIdentificationService(
+        provider,
+        provider_id,
+        analysis_lead_in_seconds=analysis_lead_in_seconds,
+        snapshot_seconds=snapshot_seconds,
+        retry_seconds=retry_seconds,
+        refresh_seconds=refresh_seconds,
+        track_change_silence_seconds=track_change_silence_seconds,
+    )

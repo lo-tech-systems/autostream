@@ -671,7 +671,7 @@ class TestRateLimitBackoff:
 
     def test_rate_limited_error_sets_backoff(self):
         from track_id.models import TrackIDRateLimitedError
-        from autostream_core import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
         before = time.time()
         mon = self._run_worker_with_exc(TrackIDRateLimitedError("rate_limited"))
         assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
@@ -682,7 +682,7 @@ class TestRateLimitBackoff:
         assert mon._ti_snapshot.state == STATE_ERROR
 
     def test_generic_exception_does_not_set_backoff(self):
-        from autostream_core import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
         before = time.time()
         mon = self._run_worker_with_exc(RuntimeError("boom"))
         assert mon._ti_next_attempt < before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
@@ -693,7 +693,7 @@ class TestRateLimitBackoff:
         assert mon._ti_snapshot.state == STATE_ERROR
 
     def test_rate_limit_backoff_constant_is_120(self):
-        from autostream_core import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
         assert TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS == 120
 
 
@@ -718,7 +718,7 @@ class TestApplyTrackIdConfigLiveEnabled:
             "track_identification": {
                 "enabled": True,
                 "provider": "vibra_shazam",
-                "interval_seconds": 30,
+                "analysis_lead_in_seconds": 5,
             },
         }
         p = tmp_path / "autostream.json"
@@ -727,7 +727,7 @@ class TestApplyTrackIdConfigLiveEnabled:
         try:
             apply_track_id_config_live(str(p))
             assert core._track_id_service is not None
-            assert core._track_id_service.interval_seconds == 30
+            assert core._track_id_service.analysis_lead_in_seconds == 5
         finally:
             core._track_id_service = old_svc
 
