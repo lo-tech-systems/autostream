@@ -933,6 +933,20 @@ def send_setup_page(
             </div>
             <span class="setup-list-chevron">\u203a</span>
           </div>
+          <div class="setup-list-card" onclick="openPanel('track-id')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Track Identification</span>
+              <span class="setup-list-card-sub" id="track-id-card-sub">{track_id_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
+          <div class="setup-list-card" onclick="openPanel('dials')">
+            <div class="setup-list-card-body">
+              <span class="setup-list-card-title">Dials</span>
+              <span class="setup-list-card-sub">{_dials_summary}</span>
+            </div>
+            <span class="setup-list-chevron">\u203a</span>
+          </div>
           <div class="setup-list-card" onclick="openPanel('customise')">
             <div class="setup-list-card-body">
               <span class="setup-list-card-title">Personalisation</span>
@@ -944,20 +958,6 @@ def send_setup_page(
             <div class="setup-list-card-body">
               <span class="setup-list-card-title">System</span>
               <span class="setup-list-card-sub">{system_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('dials')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Dials</span>
-              <span class="setup-list-card-sub">{_dials_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('track-id')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Track Identification</span>
-              <span class="setup-list-card-sub" id="track-id-card-sub">{track_id_summary}</span>
             </div>
             <span class="setup-list-chevron">\u203a</span>
           </div>
@@ -1007,25 +1007,12 @@ def send_setup_page(
             {_setup_detail_header("Setup Playback Defaults")}
             {playback_fieldset_html}
           </div>
-          <div class="setup-detail-panel" id="panel-system">
+          <div class="setup-detail-panel" id="panel-track-id">
             <div class="setup-detail-back">
               <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
             </div>
-            {_setup_detail_header("System & Updates")}
-            {system_fieldset_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-customise">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("Personalisation")}
-            {customise_card_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-factory-reset">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {factory_reset_zone}
+            {_setup_detail_header("Track Identification")}
+            {track_id_card_html}
           </div>
           <div class="setup-detail-panel" id="panel-dials">
             <div class="setup-detail-back">
@@ -1034,12 +1021,25 @@ def send_setup_page(
             {_setup_detail_header("Dials")}
             {_dial_cards_html}
           </div>
-          <div class="setup-detail-panel" id="panel-track-id">
+          <div class="setup-detail-panel" id="panel-customise">
             <div class="setup-detail-back">
               <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
             </div>
-            {_setup_detail_header("Track Identification")}
-            {track_id_card_html}
+            {_setup_detail_header("Personalisation")}
+            {customise_card_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-system">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {_setup_detail_header("System & Updates")}
+            {system_fieldset_html}
+          </div>
+          <div class="setup-detail-panel" id="panel-factory-reset">
+            <div class="setup-detail-back">
+              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+            </div>
+            {factory_reset_zone}
           </div>
         </div>
       </div>
