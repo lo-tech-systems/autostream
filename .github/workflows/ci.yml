@@ -59,6 +59,38 @@ jobs:
         run: python -m pytest tests/ -q --ignore=tests/playwright
 
   # -----------------------------------------------------------------------
+  # WSL-equivalent test suite — same Linux tools as env-dependent-tests but
+  # explicitly named to mirror what `scripts/run_wsl_tests.sh` covers locally.
+  # Unlocks tests skipped on Windows: Unix sockets, mkfifo, g++, shellcheck,
+  # nginx config validation, bash CGI scripts, fcntl-based concurrency.
+  # -----------------------------------------------------------------------
+  wsl-tests:
+    name: WSL / Linux environment tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            shellcheck \
+            nginx \
+            nodejs \
+            build-essential \
+            systemd
+
+      - name: Install Python dependencies
+        run: pip install pytest flask requests
+
+      - name: Run WSL test suite
+        run: bash scripts/run_wsl_tests.sh
+
+  # -----------------------------------------------------------------------
   # Playwright browser tests — run against production-rendered HTML served
   # by the stub fixture in tests/playwright/test_ui_flows.py.
   # Set AUTOSTREAM_URL in repository variables to target a real appliance.
