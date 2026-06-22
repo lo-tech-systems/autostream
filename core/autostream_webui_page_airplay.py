@@ -45,62 +45,9 @@ from autostream_webui_common import (
 from autostream_webui_state import WebUIState
 
 
-_TI_CARD_CSS = (
-    ".ti-card{border-radius:14px;background:var(--color-surface-raised,#1a1a1a);"
-    "padding:0.9rem 1rem;margin:0.6rem 0;}"
-    ".ti-body{display:flex;align-items:flex-start;gap:0.8rem;}"
-    ".ti-art{width:80px;height:80px;border-radius:8px;object-fit:cover;flex-shrink:0;}"
-    ".ti-meta{flex:1;min-width:0;}"
-    ".ti-status{font-size:0.78rem;color:var(--color-text-muted,#888);margin-bottom:0.2rem;}"
-    ".ti-title{font-weight:600;font-size:0.98rem;overflow:hidden;text-overflow:ellipsis;"
-    "white-space:nowrap;color:var(--color-text,#eee);}"
-    ".ti-artist{font-size:0.88rem;color:var(--color-text-muted,#bbb);margin-top:0.1rem;"
-    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}"
-    ".ti-album{font-size:0.82rem;color:var(--color-text-muted,#888);margin-top:0.05rem;"
-    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}"
-)
-
-_TI_CARD_HTML_HIDDEN = (
-    '<div id="ti-card" class="ti-card" hidden>'
-    '<div class="ti-body">'
-    '<img id="ti-art" class="ti-art" src="" alt="" width="80" height="80" hidden>'
-    '<div class="ti-meta">'
-    '<div id="ti-status" class="ti-status"></div>'
-    '<div id="ti-title" class="ti-title"></div>'
-    '<div id="ti-artist" class="ti-artist"></div>'
-    '<div id="ti-album" class="ti-album"></div>'
-    '</div>'
-    '</div>'
-    '</div>'
-)
-
-_TI_UPDATE_JS = (
-    "function updateTrackIdCard(ti){"
-    "var card=document.getElementById('ti-card');"
-    "if(!card)return;"
-    "var enabled=!!(ti&&ti.enabled);"
-    "card.hidden=!enabled;"
-    "if(!enabled)return;"
-    "var statusEl=document.getElementById('ti-status');"
-    "var titleEl=document.getElementById('ti-title');"
-    "var artistEl=document.getElementById('ti-artist');"
-    "var albumEl=document.getElementById('ti-album');"
-    "var artEl=document.getElementById('ti-art');"
-    "if(statusEl)statusEl.textContent=String((ti&&ti.status_text)||'');"
-    "if(titleEl)titleEl.textContent=String((ti&&ti.title)||'');"
-    "if(artistEl)artistEl.textContent=String((ti&&ti.artist)||'');"
-    "if(albumEl)albumEl.textContent=String((ti&&ti.album)||'');"
-    "if(artEl){"
-    "var artUrl=String((ti&&ti.artwork_url)||'');"
-    "if(!artUrl){artEl.hidden=true;artEl.src='';"
-    "}else if(artEl.getAttribute('data-src')!==artUrl){"
-    "artEl.setAttribute('data-src',artUrl);"
-    "var img=new Image();"
-    "img.onload=function(){artEl.src=artUrl;artEl.hidden=false;};"
-    "img.src=artUrl;"
-    "}"
-    "}"
-    "}"
+_NP_ART_CSS = (
+    ".now-playing-icon.np-icon-art{width:48px;height:48px;border-radius:6px;overflow:hidden;}"
+    ".now-playing-icon.np-icon-art img{width:100%;height:100%;object-fit:cover;display:block;}"
 )
 
 
@@ -139,7 +86,7 @@ function renderHomeState(data){
   if(card)card.classList.toggle('np-ready',!isPlaying);if(hdrEl)hdrEl.textContent=(isPlaying?'Now Playing':'Ready')+' \\u00b7 '+(window.__REMOTE_HOSTNAME||'');
   if(!isPlaying){_vuActiveIdx=-1;_vuQueue={};updateVuBars(-90,-90);}else{
     if(!activeLevel&&levels.length>0){activeLevel=levels[0];activeIdx=0;}
-    if(activeLevel){var inputSnap=inputs[String(activeIdx+1)]||{};var isTurntable=!!inputSnap.is_turntable;var label=String(activeLevel.label||('Input '+(activeIdx+1)));var hz=Number(activeLevel.detected_hz||0);var nameEl=document.getElementById('np-name');var signalEl=document.getElementById('np-signal');var iconEl=document.getElementById('np-icon');if(nameEl)nameEl.textContent=label+' \\u00b7 '+(isTurntable?'Turntable':'Line Level');if(signalEl){var sp=[];if(window.__SHOW_INPUT_DETAIL&&Number.isFinite(hz)&&hz>0){sp.push('Locked');sp.push(Math.round(hz/1000)+' kHz');}signalEl.textContent=sp.join(' \\u00b7 ');}if(iconEl&&iconEl.dataset.iconType!==String(isTurntable)){iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.dataset.iconType=String(isTurntable);}vuIngestHistory(activeIdx,activeLevel.vu_history);}
+    if(activeLevel){var inputSnap=inputs[String(activeIdx+1)]||{};var isTurntable=!!inputSnap.is_turntable;var label=String(activeLevel.label||('Input '+(activeIdx+1)));var hz=Number(activeLevel.detected_hz||0);var nameEl=document.getElementById('np-name');var signalEl=document.getElementById('np-signal');var iconEl=document.getElementById('np-icon');var ti=(data&&data.track_identification)||{};var tiEnabled=!!(ti&&ti.enabled);var tiState=String((ti&&ti.state)||'');var tiIdentified=tiEnabled&&tiState==='identified';var tiTitle=String((ti&&ti.title)||'');var tiArtist=String((ti&&ti.artist)||'');var tiArtUrl=String((ti&&ti.artwork_url)||'');if(tiIdentified){if(nameEl)nameEl.textContent=tiTitle||'Unknown';if(signalEl)signalEl.textContent=tiArtist;if(iconEl){var artKey='art:'+tiArtUrl;if(iconEl.getAttribute('data-np-icon-key')!==artKey){iconEl.setAttribute('data-np-icon-key',artKey);if(tiArtUrl){var artImg=new Image();artImg.onload=function(){if(iconEl.getAttribute('data-np-icon-key')===artKey){iconEl.innerHTML='<img src="'+tiArtUrl+'" alt="">';iconEl.classList.add('np-icon-art');}};artImg.src=tiArtUrl;}else{iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}}}else if(tiEnabled){var inputPrefix=isTurntable?'Vinyl':'Line In';var suffix;if(tiState==='error'){suffix='Track ID function not available';}else if(tiState==='not_found'){suffix='Unknown track';}else{suffix='Identifying Track\\u2026';}if(nameEl)nameEl.textContent=inputPrefix+' \\u2013 '+suffix;if(signalEl)signalEl.textContent='';var svgKey='svg:'+String(isTurntable);if(iconEl&&iconEl.getAttribute('data-np-icon-key')!==svgKey){iconEl.setAttribute('data-np-icon-key',svgKey);iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}else{if(nameEl)nameEl.textContent=label+' \\u00b7 '+(isTurntable?'Turntable':'Line Level');if(signalEl){var sp=[];if(window.__SHOW_INPUT_DETAIL&&Number.isFinite(hz)&&hz>0){sp.push('Locked');sp.push(Math.round(hz/1000)+' kHz');}signalEl.textContent=sp.join(' \\u00b7 ');}var svgKey2='svg:'+String(isTurntable);if(iconEl&&iconEl.getAttribute('data-np-icon-key')!==svgKey2){iconEl.setAttribute('data-np-icon-key',svgKey2);iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}vuIngestHistory(activeIdx,activeLevel.vu_history);}
   }
   var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
   var outputs=Array.isArray(data.outputs)?data.outputs:[];
@@ -148,7 +95,6 @@ function renderHomeState(data){
   }
   var warnings=(data&&data.warnings)||{};['stylus','belt','bearing'].forEach(function(item){var el=document.getElementById(item+'-warning-banner');if(!el)return;var txt=String(warnings[item]||'').trim();el.style.display=txt?'block':'none';el.textContent=txt;});
   if(showMaster)updateMasterVolumeCard();
-  updateTrackIdCard(data&&data.track_identification);
 }
 var __lastOutputsShape='';
 function _outputShapeKey(o){return String(o.id)+'|'+String(o.name||'')+'|'+String(!!o.is_default)+'|'+String(!!o.remote_in_use)+'|'+String(o.remote_owner||'');}
@@ -172,7 +118,7 @@ window.addEventListener('DOMContentLoaded',function(){
   setInterval(vuRenderTick,VU_BIN_MS);
   pollHomeState();
 });
-</script>"""  # _TI_UPDATE_JS injected separately — see send_remote_home_page()
+</script>"""
 
 
 def _build_appliances_for_selector() -> list:
@@ -326,13 +272,43 @@ def send_airplay_page(
         _ti_snap = _ds()
     _ti_dict = _ti_snap.to_public_dict()
     _ti_enabled = bool(_ti_dict.get("enabled"))
-    _ti_status_text = html.escape(str(_ti_dict.get("status_text") or ""))
-    _ti_title = html.escape(str(_ti_dict.get("title") or ""))
-    _ti_artist = html.escape(str(_ti_dict.get("artist") or ""))
-    _ti_album = html.escape(str(_ti_dict.get("album") or ""))
-    _ti_artwork_url = html.escape(str(_ti_dict.get("artwork_url") or ""))
-    _ti_hidden = "" if _ti_enabled else " hidden"
-    _ti_art_hidden = "" if _ti_artwork_url else " hidden"
+    _ti_state = str(_ti_dict.get("state") or "")
+    _ti_title = str(_ti_dict.get("title") or "")
+    _ti_artist = str(_ti_dict.get("artist") or "")
+    _ti_artwork_url_raw = str(_ti_dict.get("artwork_url") or "")
+    _ti_artwork_url = html.escape(_ti_artwork_url_raw)  # safe for HTML src attribute
+
+    # Compute the initial Now Playing icon and meta text for the server render.
+    if _ti_enabled and _ti_state == "identified":
+        if _ti_artwork_url:
+            _np_icon_content = f'<img src="{_ti_artwork_url}" alt="">'
+            # Use raw URL in the key so html.escape() in the template encodes it only once.
+            _np_icon_key = f"art:{_ti_artwork_url_raw}"
+            _np_icon_extra_cls = " np-icon-art"
+        else:
+            _np_icon_content = _np_icon_svg
+            _np_icon_key = "art:"
+            _np_icon_extra_cls = ""
+        _np_display_name = html.escape(_ti_title or "Unknown")
+        _np_display_signal = html.escape(_ti_artist)
+    elif _ti_enabled:
+        _input_prefix = "Vinyl" if _np_is_turntable else "Line In"
+        if _ti_state == "error":
+            _np_display_name = html.escape(f"{_input_prefix} – Track ID function not available")
+        elif _ti_state == "not_found":
+            _np_display_name = html.escape(f"{_input_prefix} – Unknown track")
+        else:
+            _np_display_name = html.escape(f"{_input_prefix} – Identifying Track…")
+        _np_display_signal = ""
+        _np_icon_content = _np_icon_svg
+        _np_icon_key = f"svg:{str(_np_is_turntable).lower()}"
+        _np_icon_extra_cls = ""
+    else:
+        _np_display_name = html.escape(f"{_np_label} · {_np_type_label}")
+        _np_display_signal = html.escape(_np_signal)
+        _np_icon_content = _np_icon_svg
+        _np_icon_key = f"svg:{str(_np_is_turntable).lower()}"
+        _np_icon_extra_cls = ""
 
     # Fetch the OwnTone start-buffer setting so the VU meter can be aligned to
     # the AirPlay playback delay.  Fall back to the default if OwnTone is
@@ -442,7 +418,7 @@ def send_airplay_page(
         ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
         "width:10px;flex:0 0 10px;}"
     )
-    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_vu_stereo_css}\n{_TI_CARD_CSS}"
+    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_vu_stereo_css}\n{_NP_ART_CSS}"
     _head_extra = f"""{csrf_meta}
 
       <script>
@@ -860,18 +836,64 @@ def send_airplay_page(
           var nameEl = document.getElementById('np-name');
           var signalEl = document.getElementById('np-signal');
           var iconEl = document.getElementById('np-icon');
-          if (nameEl) nameEl.textContent = label + ' \u00b7 ' + (isTurntable ? 'Turntable' : 'Line Level');
-          if (signalEl) signalEl.textContent = signalParts.join(' \u00b7 ');
-          if (iconEl && iconEl.dataset.iconType !== String(isTurntable)) {{
-            iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
-            iconEl.dataset.iconType = String(isTurntable);
+          var ti = (data && data.track_identification) || {{}};
+          var tiEnabled = !!(ti && ti.enabled);
+          var tiState = String((ti && ti.state) || '');
+          var tiIdentified = tiEnabled && tiState === 'identified';
+          var tiTitle = String((ti && ti.title) || '');
+          var tiArtist = String((ti && ti.artist) || '');
+          var tiArtUrl = String((ti && ti.artwork_url) || '');
+          if (tiIdentified) {{
+            if (nameEl) nameEl.textContent = tiTitle || 'Unknown';
+            if (signalEl) signalEl.textContent = tiArtist;
+            if (iconEl) {{
+              var artKey = 'art:' + tiArtUrl;
+              if (iconEl.getAttribute('data-np-icon-key') !== artKey) {{
+                iconEl.setAttribute('data-np-icon-key', artKey);
+                if (tiArtUrl) {{
+                  var artImg = new Image();
+                  artImg.onload = function() {{
+                    if (iconEl.getAttribute('data-np-icon-key') === artKey) {{
+                      iconEl.innerHTML = '<img src="' + tiArtUrl + '" alt="">';
+                      iconEl.classList.add('np-icon-art');
+                    }}
+                  }};
+                  artImg.src = tiArtUrl;
+                }} else {{
+                  iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+                  iconEl.classList.remove('np-icon-art');
+                }}
+              }}
+            }}
+          }} else if (tiEnabled) {{
+            var inputPrefix = isTurntable ? 'Vinyl' : 'Line In';
+            var suffix;
+            if (tiState === 'error') {{ suffix = 'Track ID function not available'; }}
+            else if (tiState === 'not_found') {{ suffix = 'Unknown track'; }}
+            else {{ suffix = 'Identifying Track\u2026'; }}
+            if (nameEl) nameEl.textContent = inputPrefix + ' \u2013 ' + suffix;
+            if (signalEl) signalEl.textContent = '';
+            var svgKey = 'svg:' + String(isTurntable);
+            if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey) {{
+              iconEl.setAttribute('data-np-icon-key', svgKey);
+              iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+              iconEl.classList.remove('np-icon-art');
+            }}
+          }} else {{
+            if (nameEl) nameEl.textContent = label + ' \u00b7 ' + (isTurntable ? 'Turntable' : 'Line Level');
+            if (signalEl) signalEl.textContent = signalParts.join(' \u00b7 ');
+            var svgKey2 = 'svg:' + String(isTurntable);
+            if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey2) {{
+              iconEl.setAttribute('data-np-icon-key', svgKey2);
+              iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+              iconEl.classList.remove('np-icon-art');
+            }}
           }}
           vuIngestHistory(activeIdx, activeLevel.vu_history);
         }}
         function refreshStatus(){{
           fetch('/api/status', {{ cache: 'no-store' }}).then(r=>r.json()).then(d=>{{
             updateNowPlayingCard(d);
-            updateTrackIdCard(d && d.track_identification);
             ['stylus', 'belt', 'bearing'].forEach(function(item) {{
               var el = document.getElementById(item + '-warning-banner');
               if (!el) return;
@@ -1177,7 +1199,6 @@ def send_airplay_page(
           refreshOutputsState();
         }});
       </script>"""
-    _head_extra += f"<script>{_TI_UPDATE_JS}</script>"
     _body_prefix = """
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
   <div class="panel modal-panel">
@@ -1232,14 +1253,12 @@ def send_airplay_page(
         f'<div class="now-playing-card{_np_card_cls}" id="now-playing-card">'
         f'<div class="now-playing-hdr" id="np-hdr">{html.escape(_np_hdr_text)}</div>'
         f'<div class="now-playing-body">'
-        f'<div class="now-playing-icon" id="np-icon" data-icon-type="{str(_np_is_turntable).lower()}">'
-        f'{_np_icon_svg}'
+        f'<div class="now-playing-icon{_np_icon_extra_cls}" id="np-icon" data-np-icon-key="{html.escape(_np_icon_key)}">'
+        f'{_np_icon_content}'
         f'</div>'
         f'<div class="now-playing-meta">'
-        f'<div class="now-playing-name" id="np-name">'
-        f'{html.escape(_np_label)} \u00b7 {html.escape(_np_type_label)}'
-        f'</div>'
-        f'<div class="now-playing-signal" id="np-signal">{html.escape(_np_signal)}</div>'
+        f'<div class="now-playing-name" id="np-name">{_np_display_name}</div>'
+        f'<div class="now-playing-signal" id="np-signal">{_np_display_signal}</div>'
         f'</div>'
         f'{_vu_html}'
         f'</div>'
@@ -1263,21 +1282,6 @@ def send_airplay_page(
         f" style='text-align:center;color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>"
         f"{html.escape(_placeholder_text)}</p>"
     )
-    _ti_card_html = (
-        f'<div id="ti-card" class="ti-card"{_ti_hidden}>'
-        f'<div class="ti-body">'
-        f'<img id="ti-art" class="ti-art" src="{_ti_artwork_url}" alt=""'
-        f' width="80" height="80"{_ti_art_hidden}>'
-        f'<div class="ti-meta">'
-        f'<div id="ti-status" class="ti-status">{_ti_status_text}</div>'
-        f'<div id="ti-title" class="ti-title">{_ti_title}</div>'
-        f'<div id="ti-artist" class="ti-artist">{_ti_artist}</div>'
-        f'<div id="ti-album" class="ti-album">{_ti_album}</div>'
-        f'</div>'
-        f'</div>'
-        f'</div>'
-    )
-
     _body_html = (
         # Full-width logo
         f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
@@ -1285,8 +1289,6 @@ def send_airplay_page(
         + _top_controls_html
         # Now Playing card (contains master volume when enabled)
         + _now_playing_card_html
-        # Track identification card (hidden when disabled)
-        + _ti_card_html
         # Service warning banners
         + f"<a id='stylus-warning-banner' href='/service'"
         f" style='display:{'none' if not stylus_banner_text else 'block'};"
@@ -1388,7 +1390,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
         "width:10px;flex:0 0 10px;}"
     )
-    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_vu_stereo_css}\n{_TI_CARD_CSS}"
+    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_vu_stereo_css}\n{_NP_ART_CSS}"
 
     _head_extra = (
         f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
@@ -1406,7 +1408,6 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__OUTPUT_URL='{html.escape(output_url)}';"
         f"</script>\n"
         + _REMOTE_HOME_SCRIPT
-        + f"<script>{_TI_UPDATE_JS}</script>"
     )
 
     _body_prefix = """
@@ -1438,7 +1439,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'<div class="now-playing-card np-ready" id="now-playing-card">'
         f'<div class="now-playing-hdr" id="np-hdr">Ready · {html.escape(_remote_hostname)}</div>'
         f'<div class="now-playing-body">'
-        f'<div class="now-playing-icon" id="np-icon" data-icon-type="false">'
+        f'<div class="now-playing-icon" id="np-icon" data-np-icon-key="svg:false">'
         f'{_np_icon_svg}'
         f'</div>'
         f'<div class="now-playing-meta">'
@@ -1462,7 +1463,6 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
         + _top_controls_html
         + _now_playing_card_html
-        + _TI_CARD_HTML_HIDDEN
         + f"<a id='stylus-warning-banner' href='#'"
         f" style='display:none;margin:0.85rem 0 0.35rem;{_warn_style_base}'></a>"
         + f"<a id='belt-warning-banner' href='#'"
