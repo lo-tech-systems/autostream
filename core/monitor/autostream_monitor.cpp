@@ -1529,9 +1529,9 @@ std::string AudioMonitor::api_set_log_level(const std::string& level_text)
 // Copies up to max_seconds * ID_BUF_RATE frames from the rolling ID snapshot
 // buffer into *binary_out and returns a JSON ack with metadata.
 //
-// On success the JSON line is followed by raw binary data (s16le mono 16000 Hz)
-// sent by handle_client().  On error the JSON line has "ok":false and no binary
-// data follows.
+// On success the JSON line has "ok":true followed by raw binary data (s16le mono
+// 16000 Hz) sent by handle_client().  On error the JSON line has "ok":false and
+// no binary data follows.
 //
 std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
                                                std::vector<int16_t>* binary_out)

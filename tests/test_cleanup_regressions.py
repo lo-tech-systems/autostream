@@ -54,17 +54,18 @@ class TestWatcherFlaskRoutesUnchanged:
 
     @pytest.fixture
     def watcher_app(self):
-        import importlib, importlib.util, types
-        # Load wifi_watcher in a fresh module context so it doesn't need real netdev
-        spec = importlib.util.spec_from_file_location(
-            "wifi_watcher",
-            REPO_ROOT / "platform" / "wifi_watcher",
-        )
+        import importlib, importlib.util
+        from importlib.machinery import SourceFileLoader
+
         try:
             import flask as _fl
         except ImportError:
             pytest.skip("Flask not available")
 
+        # spec_from_file_location returns None for extensionless scripts; use
+        # SourceFileLoader explicitly (same pattern as conftest.load_supervisor_script).
+        loader = SourceFileLoader("wifi_watcher", str(REPO_ROOT / "platform" / "wifi_watcher"))
+        spec = importlib.util.spec_from_loader("wifi_watcher", loader)
         mod = importlib.util.module_from_spec(spec)
         mod.__dict__["__name__"] = "wifi_watcher"
         try:

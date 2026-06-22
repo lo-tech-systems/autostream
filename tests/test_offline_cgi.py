@@ -45,6 +45,8 @@ def _run_cgi(script_name: str, env_overrides: dict) -> subprocess.CompletedProce
         ["bash", str(script)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         timeout=10,
     )

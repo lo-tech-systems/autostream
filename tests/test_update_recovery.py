@@ -369,10 +369,10 @@ class TestDialRecover:
         mod = _load_dial(tmp_path)
         (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
         import errno as _errno
-        with patch.object(mod, "_dial_update_unit_active", return_value=False):
-            mod.fcntl.flock.side_effect = OSError(_errno.EWOULDBLOCK, "held")
+        lock_exc = OSError(_errno.EWOULDBLOCK, "held")
+        with patch.object(mod, "_dial_update_unit_active", return_value=False), \
+             patch.object(mod.fcntl, "flock", side_effect=lock_exc):
             result = mod.cmd_recover()
-            mod.fcntl.flock.side_effect = None
         assert result.get("ok") is True
         content = (tmp_path / "update-result.env").read_text()
         assert "in_progress" in content
@@ -381,9 +381,8 @@ class TestDialRecover:
         """Both guards pass: write STATUS=failure to record the interrupted update."""
         mod = _load_dial(tmp_path)
         (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
-        with patch.object(mod, "_dial_update_unit_active", return_value=False):
-            mod.fcntl.flock.side_effect = None
-            mod.fcntl.flock.return_value = None
+        with patch.object(mod, "_dial_update_unit_active", return_value=False), \
+             patch.object(mod.fcntl, "flock", return_value=None):
             result = mod.cmd_recover()
         assert result.get("ok") is True
         content = (tmp_path / "update-result.env").read_text()
@@ -395,9 +394,8 @@ class TestDialRecover:
         (tmp_path / "update-result.env").write_text("STATUS=in_progress\n")
         flag = tmp_path / "autostream-dial-updating"
         flag.touch()
-        with patch.object(mod, "_dial_update_unit_active", return_value=False):
-            mod.fcntl.flock.side_effect = None
-            mod.fcntl.flock.return_value = None
+        with patch.object(mod, "_dial_update_unit_active", return_value=False), \
+             patch.object(mod.fcntl, "flock", return_value=None):
             result = mod.cmd_recover()
         assert result.get("ok") is True
         assert not flag.exists(), "UPDATING_FLAG must be removed by boot recovery"

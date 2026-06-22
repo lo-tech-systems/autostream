@@ -118,7 +118,7 @@ class TestAtomicWriteFile:
 
 class TestRunCmd:
     def test_successful_command_returns_zero(self):
-        result = su.run_cmd(["python", "-c", "pass"])
+        result = su.run_cmd([sys.executable, "-c", "pass"])
         assert result.returncode == 0
 
     def test_timeout_returns_rc_124(self):

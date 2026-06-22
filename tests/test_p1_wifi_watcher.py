@@ -65,8 +65,13 @@ def _get_watcher() -> ModuleType:
             else:
                 _saved[stub_name] = sys.modules[stub_name]
 
-        # Flask needs specific objects at module level
+        # Flask needs specific objects at module level.
+        # Save original attrs so we can restore the real flask module afterwards
+        # (when flask IS installed, mutating its attributes would corrupt the
+        # flask_client fixture's fresh watcher load).
+        _FLASK_ATTRS = ("Flask", "request", "jsonify", "redirect", "url_for", "make_response")
         flask_stub = sys.modules["flask"]
+        _flask_saved_attrs = {a: getattr(flask_stub, a, None) for a in _FLASK_ATTRS}
         flask_stub.Flask = lambda *a, **kw: MM()
         flask_stub.request = MM()
         flask_stub.jsonify = lambda d: MM()
@@ -92,6 +97,12 @@ def _get_watcher() -> ModuleType:
             for name, orig in _saved.items():
                 if orig is None:
                     sys.modules.pop(name, None)
+            # Restore flask attrs on the real module (no-op if flask was not
+            # installed and we injected a fresh MagicMock).
+            if _saved.get("flask") is not None:
+                for attr, orig_val in _flask_saved_attrs.items():
+                    if orig_val is not None:
+                        setattr(flask_stub, attr, orig_val)
             # Restore the real sysutils attributes if we mutated the real module.
             if "autostream_sysutils" not in _saved or _saved.get("autostream_sysutils") is not None:
                 for attr, orig_val in _sysutils_saved_attrs.items():

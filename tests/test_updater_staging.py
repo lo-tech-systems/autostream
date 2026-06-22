@@ -188,10 +188,9 @@ class TestHostLockContention:
              _no_installed(mod), \
              patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
              patch("os.path.isfile", return_value=True), \
-             patch("os.access", return_value=True):
-            mod.fcntl.flock.side_effect = exc
+             patch("os.access", return_value=True), \
+             patch.object(mod.fcntl, "flock", side_effect=exc):
             result = mod.cmd_apply(auto=False)
-            mod.fcntl.flock.side_effect = None
         assert result["ok"] is False
         assert "progress" in result.get("error", "").lower()
 

@@ -504,25 +504,10 @@ def _render_setup_page(initial_setup_mode: bool) -> str:
     state = MagicMock()
     state.get_monitor_devices.return_value = []
 
-    parsed = SimpleNamespace(
-        updates=SimpleNamespace(auto_update=False, update_channel="stable"),
-        owntone=SimpleNamespace(base_url="", output_name="", volume_percent=50),
-        general=SimpleNamespace(silence_seconds=30),
-        audio1=SimpleNamespace(
-            capture_device="hw:0,0", is_turntable=False, gain_db=0,
-            eq_40hz_db=0.0, eq_100hz_db=0.0, eq_8khz_db=0.0,
-        ),
-        audio2=SimpleNamespace(
-            capture_device="", is_turntable=False, gain_db=0,
-            eq_40hz_db=0.0, eq_100hz_db=0.0, eq_8khz_db=0.0,
-        ),
-        audio2_enabled=False,
-        webui=SimpleNamespace(
-            dark_mode=False, show_master_volume=True,
-            show_input_detail=True, show_hostname_on_home=False,
-            hidden_outputs=None,
-        ),
-    )
+    import autostream_config as _cfg
+    parsed = _cfg.parse_config({
+        "audio1": {"capture_device": "hw:0,0"},
+    })
 
     list_out = MagicMock()
     list_out.ok = False

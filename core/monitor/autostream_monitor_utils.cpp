@@ -189,7 +189,7 @@ static void logger_vlog(MonitorLogLevel level, const char* fmt, va_list args)
 
 bool parse_monitor_log_level(const std::string& text, MonitorLogLevel* out_level)
 {
-    const std::string value = lowercase_copy(trim_copy(text));
+    const std::string value = trim_copy(text);
     if (value.empty())
         return false;
 
@@ -236,8 +236,9 @@ MonitorLogLevel logger_set_level(MonitorLogLevel level)
     logger_emit_repeat_summary_locked();
     g_logger.last_key.clear();
     g_logger.last_printed = 0;
+    MonitorLogLevel prev = g_logger.level.load(std::memory_order_relaxed);
     g_logger.level.store(level, std::memory_order_relaxed);
-    return level;
+    return prev;
 }
 
 void logger_flush_repeats()

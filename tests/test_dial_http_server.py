@@ -592,7 +592,6 @@ class TestUpdateEndpoints:
         assert result["data"]["ok"] is False
 
     def test_update_apply_scheduler_failure_returns_ok_false(self):
-        r = _call_handler("/update", method="POST")
         mock_run = MagicMock(returncode=1)
         result = {}
         handler_cls, _ = _make_handler_cls()

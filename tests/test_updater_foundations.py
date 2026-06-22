@@ -210,8 +210,9 @@ class TestCmdCheckFailsOnNetworkError:
             side_effect=OSError("Simulated network failure"),
         )
 
-    def test_host_updater_cmd_check_returns_error(self):
+    def test_host_updater_cmd_check_returns_error(self, tmp_path):
         mod = _load_script("autostream_updater")
+        mod.LOG_PATH = tmp_path / "update.log"
         with self._network_error_patch():
             result = mod.cmd_check()
         assert result.get("ok") is False, (
