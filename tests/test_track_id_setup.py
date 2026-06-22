@@ -431,10 +431,62 @@ class TestHandleSetupPostTrackId:
         assert "interval_seconds" not in saved.get("track_identification", {})
 
     def test_setup_page_card_describes_track_change_detection(self):
-        """Setup page card text must describe the track-change / retry behaviour."""
+        """Setup page card text must describe the track-change / re-identification behaviour."""
         import inspect
         import autostream_webui_page_setup as m
         src = inspect.getsource(m)
-        assert "retries" in src.lower() or "retry" in src.lower() or "retries automatically" in src.lower() \
-            or "match is found" in src.lower(), \
-            "Setup card text should describe retry/track-change identification behaviour"
+        assert "re-identif" in src.lower() or "track change" in src.lower(), \
+            "Setup card text should describe track-change re-identification behaviour"
+
+    def test_setup_post_saves_analysis_lead_in_from_form(self, tmp_path):
+        """Explicit ti_analysis_lead_in_seconds form value must be saved."""
+        form = {
+            "audio_capture_device": "hw:1,0",
+            "owntone_output_name": "Sp",
+            "owntone_volume_percent": "20",
+            "silence_seconds": "30",
+            "track_identification_present": "1",
+            "ti_analysis_lead_in_seconds": "20",
+        }
+        saved, *_ = _run_setup_post(form, tmp_path)
+        assert saved["track_identification"]["analysis_lead_in_seconds"] == 20
+
+    def test_setup_post_saves_refresh_seconds_from_form(self, tmp_path):
+        """Explicit ti_refresh_seconds form value must be saved."""
+        form = {
+            "audio_capture_device": "hw:1,0",
+            "owntone_output_name": "Sp",
+            "owntone_volume_percent": "20",
+            "silence_seconds": "30",
+            "track_identification_present": "1",
+            "ti_refresh_seconds": "600",
+        }
+        saved, *_ = _run_setup_post(form, tmp_path)
+        assert saved["track_identification"]["refresh_seconds"] == 600
+
+    def test_setup_post_saves_track_change_silence_from_form(self, tmp_path):
+        """Explicit ti_track_change_silence_seconds form value must be saved."""
+        form = {
+            "audio_capture_device": "hw:1,0",
+            "owntone_output_name": "Sp",
+            "owntone_volume_percent": "20",
+            "silence_seconds": "30",
+            "track_identification_present": "1",
+            "ti_track_change_silence_seconds": "2.0",
+        }
+        saved, *_ = _run_setup_post(form, tmp_path)
+        assert saved["track_identification"]["track_change_silence_seconds"] == pytest.approx(2.0)
+
+    def test_setup_post_clamps_out_of_range_lead_in(self, tmp_path):
+        """Out-of-range ti_analysis_lead_in_seconds must be clamped, not rejected."""
+        form = {
+            "audio_capture_device": "hw:1,0",
+            "owntone_output_name": "Sp",
+            "owntone_volume_percent": "20",
+            "silence_seconds": "30",
+            "track_identification_present": "1",
+            "ti_analysis_lead_in_seconds": "999",
+        }
+        saved, *_ = _run_setup_post(form, tmp_path)
+        from autostream_config import TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS
+        assert saved["track_identification"]["analysis_lead_in_seconds"] == TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS

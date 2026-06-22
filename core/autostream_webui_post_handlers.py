@@ -238,19 +238,22 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 new_ti_enabled = "track_identification_enabled" in form
                 ti["enabled"] = bool(new_ti_enabled)
                 from autostream_config import (
-                    TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS,
                     TRACK_ID_DEFAULT_PROVIDER,
-                    TRACK_ID_DEFAULT_REFRESH_SECONDS,
                     TRACK_ID_DEFAULT_RETRY_SECONDS,
                     TRACK_ID_DEFAULT_SNAPSHOT_SECONDS,
-                    TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS,
+                    normalize_track_id_analysis_lead_in_seconds,
+                    normalize_track_id_refresh_seconds,
+                    normalize_track_id_track_change_silence_seconds,
                 )
                 ti.setdefault("provider", p.track_identification.provider or TRACK_ID_DEFAULT_PROVIDER)
-                ti.setdefault("analysis_lead_in_seconds", TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS)
+                ti["analysis_lead_in_seconds"] = normalize_track_id_analysis_lead_in_seconds(
+                    fld("ti_analysis_lead_in_seconds"))
+                ti["refresh_seconds"] = normalize_track_id_refresh_seconds(
+                    fld("ti_refresh_seconds"))
+                ti["track_change_silence_seconds"] = normalize_track_id_track_change_silence_seconds(
+                    fld("ti_track_change_silence_seconds"))
                 ti.setdefault("snapshot_seconds", TRACK_ID_DEFAULT_SNAPSHOT_SECONDS)
                 ti.setdefault("retry_seconds", TRACK_ID_DEFAULT_RETRY_SECONDS)
-                ti.setdefault("refresh_seconds", TRACK_ID_DEFAULT_REFRESH_SECONDS)
-                ti.setdefault("track_change_silence_seconds", TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS)
                 ti.pop("interval_seconds", None)  # remove legacy field
                 if new_ti_enabled != old_ti_enabled:
                     _track_id_changed = True
