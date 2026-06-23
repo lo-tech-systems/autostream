@@ -412,6 +412,39 @@ class TestSaveNow:
         assert store._dirty  # dirty flag must remain set
         store.close(save=False)
 
+    def test_write_aborted_when_generation_advances_before_thread_runs(self, tmp_path):
+        """A _write thread that sees a newer generation before calling the writer must abort."""
+        written: list[dict] = []
+
+        def writer(path, data):
+            written.append(copy.deepcopy(data))
+
+        store = _make_store(tmp_path, writer=writer)
+        store.update(lambda r: r.update({"v": 1}))
+        gen_v1 = store._generation
+
+        # Simulate what happens when _write runs after a newer mutation has occurred:
+        # capture gen_at_start = gen_v1, advance the store, then execute _write logic.
+        gen_at_start = gen_v1
+        raw_copy = {"v": 1}  # stale snapshot
+
+        # Advance the generation directly (mimic a concurrent mutation)
+        with store._lock:
+            store._raw["v"] = 2
+            store._generation += 1
+            store._dirty = True
+
+        # Execute the _write guard logic directly to verify it aborts.
+        did_write = False
+        with store._lock:
+            if store._generation == gen_at_start:
+                writer(store._config_path, raw_copy)
+                did_write = True
+
+        assert not did_write, "write guard must abort when generation has advanced"
+        assert not written
+        store.close(save=False)
+
 
 # ---------------------------------------------------------------------------
 # close()

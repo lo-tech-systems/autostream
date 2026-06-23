@@ -181,8 +181,15 @@ class SettingsStore:
             gen_at_start = self._generation
 
         _result: list[bool] = []
+        _cancel = threading.Event()
 
         def _write() -> None:
+            # Abort if a newer mutation arrived while we were waiting to start.
+            with self._lock:
+                if self._generation != gen_at_start:
+                    return
+            if _cancel.is_set():
+                return
             try:
                 self._writer(self._config_path, raw_copy)
                 _result.append(True)
@@ -195,6 +202,7 @@ class SettingsStore:
         t.join(timeout)
 
         if t.is_alive():
+            _cancel.set()
             logging.error("Settings: save_now timed out after %.1fs", timeout)
             return False
 

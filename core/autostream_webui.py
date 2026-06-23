@@ -141,12 +141,15 @@ _FEDERATION_BODY_MAX = 4096  # bytes
 def _settings_save_barrier(state) -> bool:
     """Flush dirty SettingsStore to disk before a destructive operation.
 
-    Returns True if no store is present (nothing to save) or if save succeeded.
+    Returns True if save succeeded.
     Returns False if the store exists and save_now() failed or timed out.
+    Logs a warning and returns True when no store is attached (nothing to save).
     """
     from autostream_settings import SettingsStore as _SettingsStore
     settings = getattr(state, "settings", None)
     if not isinstance(settings, _SettingsStore):
+        import logging as _logging
+        _logging.warning("_settings_save_barrier: no SettingsStore attached; skipping flush")
         return True
     return settings.save_now()
 
