@@ -29,6 +29,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 * Stylus, belt, and bearing maintenance tracking for turntable inputs
 * Optional track identification — shows artist, title, album, and artwork on the Home screen; reacts to likely track changes automatically (powered by Shazam via the vibra-mini daemon; no API key required)
 * Control multiple autostream appliances from a single iOS Home Screen application
+* About > System Info page shows build versions, service health, CPU temperature, and storage status
 
 ---
 

@@ -50,3 +50,12 @@ Publish a new GitHub Release for the final `vMAJOR.MINOR.PATCH` tag (without the
 ## Draft releases
 
 Draft releases are not returned by the GitHub releases API to unauthenticated callers and are invisible to all appliance channels. No special filtering is required.
+
+---
+
+## Pi appliance verification
+
+Before tagging a release, verify on a running Pi appliance:
+
+- Open `http://autostream.local/about`, tap **System**, and confirm the System Info card populates (build versions, CPU temperature, disk usage) and all six service rows show **OK** within a few seconds.
+- If any service row shows **Failed**, investigate the unit before releasing.
