@@ -1741,3 +1741,113 @@ function doServiceReset(item, idx) {
   });
 }
 """
+
+# ---------------------------------------------------------------------------
+# Shared autosave controller for POST /api/settings (WP3+)
+# ---------------------------------------------------------------------------
+# Requires window.__CSRF to be set before this script runs (done by csrf_meta
+# injected in head_extra on every page that uses it).
+# Exports:
+#   settingsSaveField(field, value)             — send immediately (checkbox/select)
+#   settingsSaveFieldDebounced(field, value, ms) — debounced send (text/number/range)
+#   flushPendingToServer() → Promise             — drain before navigation
+# ---------------------------------------------------------------------------
+AUTOSAVE_JS = """
+<script>
+(function() {
+  var _csrf = window.__CSRF || '';
+  var _statusEl = null;
+  var _pendingTimers = {};    // field → {timer, value}
+  var _pendingRequests = {};  // field → {ctrl, promise}
+
+  function _getStatus() {
+    if (!_statusEl) _statusEl = document.getElementById('autosave-status');
+    return _statusEl;
+  }
+
+  function _setStatus(text) {
+    var el = _getStatus();
+    if (el) el.textContent = text;
+  }
+
+  function _hasPending() {
+    return Object.keys(_pendingTimers).length > 0 || Object.keys(_pendingRequests).length > 0;
+  }
+
+  function _send(field, value) {
+    var prev = _pendingRequests[field];
+    if (prev) { try { prev.ctrl.abort(); } catch(_) {} }
+    var ctrl = new AbortController();
+    _setStatus('Saving…');
+    var p = fetch('/api/settings', {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: ctrl.signal,
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrf},
+      body: JSON.stringify({field: field, value: value})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
+        delete _pendingRequests[field];
+      }
+      if (d.ok) {
+        if (!_hasPending()) _setStatus('Saved');
+        setTimeout(function() {
+          var el = _getStatus();
+          if (el && el.textContent === 'Saved') el.textContent = '';
+        }, 2000);
+      } else {
+        _setStatus('Could not save — ' + (d.error || 'error'));
+      }
+    }).catch(function(e) {
+      if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
+        delete _pendingRequests[field];
+      }
+      if (e.name !== 'AbortError') _setStatus('Could not save');
+    });
+    _pendingRequests[field] = {ctrl: ctrl, promise: p};
+    return p;
+  }
+
+  window.settingsSaveField = function(field, value) {
+    _send(field, value);
+  };
+
+  window.settingsSaveFieldDebounced = function(field, value, ms) {
+    var entry = _pendingTimers[field];
+    if (entry) clearTimeout(entry.timer);
+    _pendingTimers[field] = {
+      timer: setTimeout(function() {
+        delete _pendingTimers[field];
+        _send(field, value);
+      }, ms || 500),
+      value: value
+    };
+  };
+
+  window.flushPendingToServer = function() {
+    var promises = [];
+    Object.keys(_pendingTimers).forEach(function(field) {
+      var entry = _pendingTimers[field];
+      if (entry) {
+        clearTimeout(entry.timer);
+        var val = entry.value;
+        delete _pendingTimers[field];
+        promises.push(_send(field, val));
+      }
+    });
+    Object.keys(_pendingRequests).forEach(function(field) {
+      var entry = _pendingRequests[field];
+      if (entry && entry.promise) promises.push(entry.promise);
+    });
+    return Promise.all(promises);
+  };
+
+  window.addEventListener('beforeunload', function(e) {
+    if (_hasPending()) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+})();
+</script>
+"""

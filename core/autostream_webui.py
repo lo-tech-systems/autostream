@@ -67,6 +67,8 @@ from autostream_webui_api import (
     send_owntone_outputs_state_json,
     send_service_config_json,
     send_service_reset_json,
+    send_settings_get_json,
+    send_settings_post_json,
     send_status_json,
     send_update_check_json,
     send_update_status_json,
@@ -490,6 +492,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_rebooting_page(self, STATE, AUTH)
         elif path == "/api/audio/status":
             send_audio_status_json(self, STATE)
+        elif path == "/api/settings":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_settings_get_json(self, STATE)
         elif path == _GATEWAY_PREFIX:
             send_appliances_json(self, STATE)
         elif path.startswith(_GATEWAY_PREFIX + "/"):
@@ -723,6 +729,14 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_logs_post(self, STATE, body_str)
+
+        elif path == "/api/settings":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            if not isinstance(json_obj, dict):
+                self.send_error(400, "JSON object required")
+                return
+            send_settings_post_json(self, STATE, json_obj)
 
         elif path == "/api/output_eq/config":
             if not body_str:

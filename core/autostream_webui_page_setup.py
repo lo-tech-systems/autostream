@@ -42,6 +42,7 @@ from autostream_playback_stats import (
 from autostream_sysutils import get_ap_ssid, get_system_hostname, set_system_hostname
 from autostream_webui_assets import (
     A2HS_SCRIPT,
+    AUTOSAVE_JS,
     BANNER_HTML,
     COMMON_MODAL_CSS,
     PIN_MODAL_CSS,
@@ -356,7 +357,7 @@ def send_setup_page(
           </div>
           <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked}>
+              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked} onchange="settingsSaveField('updates.update_channel', this.checked ? 'dev' : 'stable')">
               <span class="switch"></span>
             </label>
             <span>Enable pre-release updates</span>
@@ -748,14 +749,14 @@ def send_setup_page(
               <input type="hidden" name="webui_control_other_appliances_present" value="1">
               <div class="setup-customise-row" style="margin-top:0.5rem;">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="onHostnameToggle(this.checked)">
+                  <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)">
                   <span class="switch"></span>
                 </label>
                 <span>Display Hostname</span>
               </div>
               <div id="ctrl-other-row" class="setup-customise-row" style="{_ctrl_other_row_style}">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_control_other_appliances" id="webui_control_other_appliances"{'  checked' if _ctrl_other_effective else ''}{_ctrl_other_disabled} onchange="refreshCustomiseCardSub()">
+                  <input type="checkbox" name="webui_control_other_appliances" id="webui_control_other_appliances"{'  checked' if _ctrl_other_effective else ''}{_ctrl_other_disabled} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.control_other_appliances', this.checked)">
                   <span class="switch"></span>
                 </label>
                 <span>Allow control of other appliances</span>
@@ -769,21 +770,21 @@ def send_setup_page(
               </div>
               <div class="setup-customise-row" style="margin-top:0.75rem;">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub()">
+                  <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_master_volume', this.checked)">
                   <span class="switch"></span>
                 </label>
                 <span>Show Master Volume Control</span>
               </div>
               <div class="setup-customise-row" style="margin-top:0.75rem;">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub()">
+                  <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_input_detail', this.checked)">
                   <span class="switch"></span>
                 </label>
                 <span>Display Input Detail</span>
               </div>
               <div class="setup-customise-row" style="margin-top:0.75rem;">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub()">
+                  <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)">
                   <span class="switch"></span>
                 </label>
                 <span>Dark Mode</span>
@@ -795,7 +796,8 @@ def send_setup_page(
                   id="webui_output_usage_poll_interval_seconds"
                   value="{parsed.webui.output_usage_poll_interval_seconds}"
                   min="1" max="30" step="1"
-                  style="width:4rem;margin-left:0.5rem;text-align:right;">
+                  style="width:4rem;margin-left:0.5rem;text-align:right;"
+                  oninput="settingsSaveFieldDebounced('webui.output_usage_poll_interval_seconds', parseInt(this.value,10), 500)">
                 <span style="margin-left:0.4rem;">seconds</span>
               </div>
             """, margin_top="0")
@@ -906,6 +908,7 @@ def send_setup_page(
       <div class="setup-slide-track" id="setupSlideTrack">
         <div class="setup-slide-list">
           {_setup_page_header("Setup")}
+          <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
           <p class="actions" style="display:flex;margin-bottom:1rem;">
             <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
           </p>
@@ -1118,6 +1121,7 @@ def send_setup_page(
         + "</form>"
     )
     _body_suffix = f"""{A2HS_SCRIPT}
+      {AUTOSAVE_JS}
       <script>
         (function setupSavingFeedback() {{
           const form = document.getElementById('{setup_form_id}');

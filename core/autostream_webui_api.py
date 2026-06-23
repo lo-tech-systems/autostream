@@ -34,7 +34,11 @@ from typing import Optional
 
 from autostream_config import (
     CONFIG_IO_LOCK,
+    OUTPUT_USAGE_POLL_INTERVAL_MAX,
+    OUTPUT_USAGE_POLL_INTERVAL_MIN,
     load_config,
+    normalize_output_usage_poll_interval,
+    normalize_update_channel,
     parse_config,
     save_config,
 )
@@ -1025,3 +1029,121 @@ def send_federation_eq_status_json(handler, state: WebUIState) -> None:  # noqa:
         send_json(handler, 200, {"ok": False, "error": "monitor_unavailable"})
         return
     send_json(handler, 200, {"ok": True, **status})
+
+
+# ---------------------------------------------------------------------------
+# WP3 - Generic settings API
+# ---------------------------------------------------------------------------
+
+def _validate_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError("Value must be true or false")
+
+
+def _validate_poll_interval(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    iv = int(value)
+    if iv < OUTPUT_USAGE_POLL_INTERVAL_MIN or iv > OUTPUT_USAGE_POLL_INTERVAL_MAX:
+        raise ValueError(
+            f"Value must be between {OUTPUT_USAGE_POLL_INTERVAL_MIN}"
+            f" and {OUTPUT_USAGE_POLL_INTERVAL_MAX}"
+        )
+    return iv
+
+
+def _validate_update_channel(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Value must be 'stable' or 'dev'")
+    if value.strip().lower() not in ("stable", "dev"):
+        raise ValueError("Value must be 'stable' or 'dev'")
+    return normalize_update_channel(value)
+
+
+# Maps public dotted field name → (section, key, validator)
+_SETTINGS_FIELDS: dict = {
+    "webui.dark_mode":                          ("webui",   "dark_mode",                         _validate_bool),
+    "webui.show_master_volume":                 ("webui",   "show_master_volume",                 _validate_bool),
+    "webui.show_input_detail":                  ("webui",   "show_input_detail",                  _validate_bool),
+    "webui.show_hostname_on_home":              ("webui",   "show_hostname_on_home",              _validate_bool),
+    "webui.control_other_appliances":           ("webui",   "control_other_appliances",           _validate_bool),
+    "webui.output_usage_poll_interval_seconds": ("webui",   "output_usage_poll_interval_seconds", _validate_poll_interval),
+    "updates.update_channel":                   ("updates", "update_channel",                     _validate_update_channel),
+}
+
+
+def send_settings_get_json(handler, state) -> None:
+    """GET /api/settings — return all browser-editable non-secret settings."""
+    try:
+        parsed = _config_snapshot(state)
+    except Exception as e:
+        send_json(handler, 200, {"ok": False, "error": str(e)})
+        return
+    values = {
+        "webui.dark_mode":                         parsed.webui.dark_mode,
+        "webui.show_master_volume":                parsed.webui.show_master_volume,
+        "webui.show_input_detail":                 parsed.webui.show_input_detail,
+        "webui.show_hostname_on_home":             parsed.webui.show_hostname_on_home,
+        "webui.control_other_appliances":          parsed.webui.control_other_appliances,
+        "webui.output_usage_poll_interval_seconds": parsed.webui.output_usage_poll_interval_seconds,
+        "updates.update_channel":                  parsed.updates.update_channel,
+    }
+    send_json(handler, 200, {"ok": True, "values": values})
+
+
+def send_settings_post_json(handler, state, json_obj: dict) -> None:
+    """POST /api/settings — update one named setting via the SettingsStore.
+
+    Request: {"field": "<dotted.name>", "value": <json_value>}
+
+    Success (HTTP 200):  {"ok": true, "field": "...", "value": <normalised>}
+    Validation failure (HTTP 400): {"ok": false, "field": "...", "error": "..."}
+    """
+    if not isinstance(json_obj, dict):
+        send_json(handler, 400, {"ok": False, "error": "JSON object required"})
+        return
+
+    field = json_obj.get("field")
+    if not isinstance(field, str) or not field.strip():
+        send_json(handler, 400, {"ok": False, "field": "", "error": "field must be a non-empty string"})
+        return
+    field = field.strip()
+
+    if "value" not in json_obj:
+        send_json(handler, 400, {"ok": False, "field": field, "error": "value is required"})
+        return
+
+    if field not in _SETTINGS_FIELDS:
+        send_json(handler, 400, {"ok": False, "field": field, "error": "Unknown field"})
+        return
+
+    section, key, validator = _SETTINGS_FIELDS[field]
+    raw_value = json_obj["value"]
+
+    try:
+        normalized = validator(raw_value)
+    except ValueError as e:
+        send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
+        return
+
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        send_json(handler, 200, {"ok": False, "field": field, "error": "Settings store unavailable"})
+        return
+
+    def _mutator(raw: dict) -> None:
+        raw.setdefault(section, {})[key] = normalized
+        # Turning off hostname display also forces control_other_appliances off.
+        if field == "webui.show_hostname_on_home" and not normalized:
+            raw.setdefault("webui", {})["control_other_appliances"] = False
+
+    try:
+        settings.update(_mutator)
+    except Exception:
+        logging.exception("send_settings_post_json: store update failed")
+        send_json(handler, 200, {"ok": False, "field": field, "error": "Internal error"})
+        return
+
+    send_json(handler, 200, {"ok": True, "field": field, "value": normalized})
