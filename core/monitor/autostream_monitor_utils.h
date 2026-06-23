@@ -34,7 +34,8 @@ enum class MonitorLogLevel
     Spam = 3,
 };
 
-// Parse a log level string ("warning", "info", "debug", "spam") into the enum.
+// Parse a case-insensitive log level string into the enum.  The platform
+// aliases "fatal", "log", "warning", and "warn" all map to MonitorLogLevel::Warn.
 // Returns true on success; false if the text is unrecognised.
 bool parse_monitor_log_level(const std::string& text, MonitorLogLevel* out_level);
 
@@ -45,8 +46,7 @@ void logger_init(MonitorLogLevel level);
 MonitorLogLevel logger_get_level();
 
 // Set the current log level, flushing any pending repeat summary first.
-// Returns the level that was applied.
-MonitorLogLevel logger_set_level(MonitorLogLevel level);
+void logger_set_level(MonitorLogLevel level);
 
 // Flush any pending "suppressed N duplicates" summary to stderr.
 // Call from main() just before exit.

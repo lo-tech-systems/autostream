@@ -56,9 +56,20 @@ static void test_parse_log_level()
     CHECK(parse_monitor_log_level("spam", &level), "parse 'spam'");
     CHECK(level == MonitorLogLevel::Spam, "spam maps to Spam");
 
+    CHECK(parse_monitor_log_level(" INFO ", &level), "parse uppercase info with whitespace");
+    CHECK(level == MonitorLogLevel::Info, "uppercase INFO maps to Info");
+
+    CHECK(parse_monitor_log_level("FATAL", &level), "parse uppercase fatal alias");
+    CHECK(level == MonitorLogLevel::Warn, "fatal alias maps to Warn");
+
+    CHECK(parse_monitor_log_level("log", &level), "parse log alias");
+    CHECK(level == MonitorLogLevel::Warn, "log alias maps to Warn");
+
+    CHECK(parse_monitor_log_level("warn", &level), "parse warn alias");
+    CHECK(level == MonitorLogLevel::Warn, "warn alias maps to Warn");
+
     CHECK(!parse_monitor_log_level("unknown", &level), "unknown returns false");
     CHECK(!parse_monitor_log_level("", &level),         "empty returns false");
-    CHECK(!parse_monitor_log_level("INFO", &level),     "uppercase INFO returns false (case-sensitive)");
 }
 
 // ---------------------------------------------------------------------------
@@ -80,9 +91,7 @@ static void test_protocol_log_level_name()
         CHECK(name != nullptr && name[0] != '\0', "protocol name is non-empty");
 
         MonitorLogLevel parsed;
-        std::string lower(name);
-        for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        bool ok = parse_monitor_log_level(lower, &parsed);
+        bool ok = parse_monitor_log_level(name, &parsed);
         CHECK(ok, "protocol name round-trips through parse_monitor_log_level");
         CHECK(parsed == lvl, "round-tripped level matches original");
     }
@@ -116,10 +125,8 @@ static void test_logger_set_get_level()
     logger_init(MonitorLogLevel::Warn);
     CHECK(logger_get_level() == MonitorLogLevel::Warn, "init sets level");
 
-    MonitorLogLevel prev = logger_set_level(MonitorLogLevel::Debug);
+    logger_set_level(MonitorLogLevel::Debug);
     CHECK(logger_get_level() == MonitorLogLevel::Debug, "set to debug");
-    // prev should be Warn (what we set at init).
-    CHECK(prev == MonitorLogLevel::Warn, "set_level returns previous level");
 
     logger_set_level(MonitorLogLevel::Info);
     CHECK(logger_get_level() == MonitorLogLevel::Info, "set to info");
