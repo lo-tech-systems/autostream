@@ -425,11 +425,13 @@ static void test_eq_chain_sample_rate_change_updates_rate()
 
 static void test_eq_chain_sample_rate_change_recomputes_coefficients()
 {
-    // Verifies that a coefficient-sensitive measurement differs between
-    // 44100 and 48000 Hz — i.e. reconfiguration actually changed something.
+    // EqChain stores immutable band configuration; the audio-processing
+    // consumer builds BiquadFilter instances from get_bands() and sample_rate().
+    // Mirror that path and verify that the published sample rate affects the
+    // resulting filter coefficients.
     EqBand band;
     band.type    = EqBand::Type::Peak;
-    band.freq_hz = 8000.0f;   // well above Nyquist/2 at 8 kHz, far from it at 24 kHz
+    band.freq_hz = 8000.0f;
     band.gain_db = 12.0f;
     band.q       = 1.0f;
 
@@ -438,15 +440,20 @@ static void test_eq_chain_sample_rate_change_recomputes_coefficients()
     chain44.set_bands(bands, 44100.0f);
     chain48.set_bands(bands, 48000.0f);
 
-    // Process the same impulse through each chain and compare outputs.
+    auto bands44 = chain44.get_bands();
+    auto bands48 = chain48.get_bands();
+    CHECK(bands44 && bands44->size() == 1, "44100 Hz chain publishes one band");
+    CHECK(bands48 && bands48->size() == 1, "48000 Hz chain publishes one band");
+
+    BiquadFilter filter44, filter48;
+    filter44.configure((*bands44)[0], chain44.sample_rate());
+    filter48.configure((*bands48)[0], chain48.sample_rate());
+
     std::vector<float> imp44 = {1.0f, 1.0f};
     std::vector<float> imp48 = {1.0f, 1.0f};
-    chain44.process(imp44.data(), 1);
-    chain48.process(imp48.data(), 1);
+    filter44.process(imp44.data(), 1);
+    filter48.process(imp48.data(), 1);
 
-    // The filter coefficients differ with sample rate, so outputs differ.
-    // We only assert that processing completed without crash and that at
-    // least one output value makes the chains distinguishable.
     bool differ = std::fabs(imp44[0] - imp48[0]) > 1e-4f ||
                   std::fabs(imp44[1] - imp48[1]) > 1e-4f;
     CHECK(differ, "EqChain at 44100 and 48000 Hz produce different impulse responses");
