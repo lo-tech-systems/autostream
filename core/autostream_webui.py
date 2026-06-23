@@ -991,6 +991,15 @@ def start_webui_background(
             )
             reconcile_thread.start()
 
+            # Best-effort one-shot Vibra Mini version discovery before accepting
+            # requests.  Runs in a daemon thread so it never delays startup.
+            from track_id.vibra_shazam import refresh_vibra_runtime_info
+            threading.Thread(
+                target=refresh_vibra_runtime_info,
+                name="vibra-runtime-refresh",
+                daemon=True,
+            ).start()
+
             httpd = ThreadingHTTPServer((host, port), ConfigWebHandler)
             logging.info("Web UI available at http://%s:%d", host, port)
             httpd.serve_forever()

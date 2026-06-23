@@ -10,7 +10,7 @@ from track_id.models import (
     TrackIDUpstreamRejectionError,
     TrackIdentificationResult,
 )
-from track_id.vibra_client import VibraClient
+from track_id.vibra_client import VibraClient, VibraRuntimeInfo
 
 _log = logging.getLogger(__name__)
 
@@ -27,6 +27,19 @@ def _get_shared_client() -> VibraClient:
     if _shared_client is None:
         _shared_client = VibraClient()
     return _shared_client
+
+
+def get_vibra_runtime_info() -> VibraRuntimeInfo:
+    """Return the shared client's in-memory runtime metadata without socket I/O."""
+    return _get_shared_client().get_runtime_info()
+
+
+def refresh_vibra_runtime_info(timeout: float = 1.0) -> None:
+    """Best-effort shared-client connect/handshake; never raises."""
+    try:
+        _get_shared_client().refresh_runtime_info(timeout)
+    except Exception:
+        pass
 
 
 class VibraRecognitionError(Exception):

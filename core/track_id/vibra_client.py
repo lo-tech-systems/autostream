@@ -5,9 +5,18 @@ import json
 import logging
 import socket
 import threading
+from dataclasses import dataclass
 from typing import Optional
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VibraRuntimeInfo:
+    """Snapshot of the last known Vibra daemon runtime state."""
+
+    version: str
+    connected: bool
 
 
 class VibraClient:
@@ -23,12 +32,18 @@ class VibraClient:
 
     DEFAULT_SOCKET_PATH = "/tmp/vibra-mini.sock"
     COMMAND_TIMEOUT = 15.0  # seconds; covers Shazam HTTP + fingerprint + round-trip
+    HANDSHAKE_TIMEOUT = 1.0  # seconds; short timeout for ping/pong handshake
 
     def __init__(self, socket_path: str = DEFAULT_SOCKET_PATH) -> None:
         self._socket_path = socket_path
         self._sock: Optional[socket.socket] = None
         self._recv_buf = b""
         self._lock = threading.Lock()
+        # Runtime metadata — protected by a separate short-held lock so
+        # get_runtime_info() never waits for in-progress recognition I/O.
+        self._runtime_lock = threading.Lock()
+        self._runtime_version = "unknown"
+        self._runtime_connected = False
 
     # ── Connection management ────────────────────────────────────────────────
 
@@ -50,7 +65,7 @@ class VibraClient:
             return False
 
     def close(self) -> None:
-        """Close the connection and discard the receive buffer."""
+        """Close the connection, discard the receive buffer, and mark disconnected."""
         sock = self._sock
         self._sock = None
         self._recv_buf = b""
@@ -59,6 +74,7 @@ class VibraClient:
                 sock.close()
             except OSError:
                 pass
+        self._set_runtime_info(connected=False)
 
     def is_connected(self) -> bool:
         return self._sock is not None
@@ -114,6 +130,25 @@ class VibraClient:
             self.close()
             return None
 
+    # ── Runtime metadata ─────────────────────────────────────────────────────
+
+    def _set_runtime_info(self, *, version: Optional[str] = None, connected: bool) -> None:
+        """Update the runtime snapshot.  version=None retains the last known value."""
+        with self._runtime_lock:
+            if version is not None:
+                v = str(version).strip()
+                if v:
+                    self._runtime_version = v
+            self._runtime_connected = connected
+
+    def get_runtime_info(self) -> VibraRuntimeInfo:
+        """Return the latest in-memory daemon metadata without socket I/O."""
+        with self._runtime_lock:
+            return VibraRuntimeInfo(
+                version=self._runtime_version,
+                connected=self._runtime_connected,
+            )
+
     # ── Protocol commands ────────────────────────────────────────────────────
 
     def ping(self) -> dict:
@@ -132,11 +167,71 @@ class VibraClient:
             raise OSError("vibra: no response to ping")
         return resp
 
+    def _ping_and_record_runtime_info(
+        self, handshake_timeout: float = HANDSHAKE_TIMEOUT
+    ) -> bool:
+        """Send ping, validate pong, update runtime snapshot.
+
+        Sets a short socket timeout for the exchange, then restores
+        COMMAND_TIMEOUT for subsequent recognition I/O.  Returns True on
+        success.  Returns False on any failure; the caller must then close
+        the connection (close() is called internally on I/O errors and
+        invalid pongs).
+
+        Must be called while _lock is held and the socket is connected.
+        """
+        if not self._sock:
+            return False
+        try:
+            self._sock.settimeout(handshake_timeout)
+            req = (json.dumps({"type": "ping"}, separators=(",", ":")) + "\n").encode()
+            if not self._sendall(req):
+                # _sendall calls close() on error; mark explicitly so callers
+                # do not need to rely on the inner close() cascade.
+                self._set_runtime_info(connected=False)
+                return False
+            resp = self._read_response()
+            if resp is None:
+                # _read_response calls close() on error/EOF; mark explicitly.
+                self._set_runtime_info(connected=False)
+                return False
+            # Strict validation per plan §5.1
+            if (
+                resp.get("ok") is not True
+                or resp.get("type") != "pong"
+                or not str(resp.get("version") or "").strip()
+            ):
+                self.close()
+                return False
+            version = str(resp["version"]).strip()
+            self._set_runtime_info(version=version, connected=True)
+            # Restore full command timeout before recognition I/O
+            if self._sock:
+                self._sock.settimeout(self.COMMAND_TIMEOUT)
+            return True
+        except OSError:
+            self.close()
+            return False
+
+    def refresh_runtime_info(self, timeout: float = HANDSHAKE_TIMEOUT) -> VibraRuntimeInfo:
+        """Connect/handshake if needed, update the snapshot, and return it.
+
+        Acquires the same lock as recognize() so handshake and recognition
+        cannot interleave on the shared connection.
+        """
+        with self._lock:
+            if not self.is_connected():
+                if not self.connect():
+                    return self.get_runtime_info()
+            self._ping_and_record_runtime_info(timeout)
+        return self.get_runtime_info()
+
     def recognize(self, pcm16_mono: bytes, rate: int = 16000) -> dict:
         """Send PCM to the daemon and return the parsed JSON response dict.
 
         Connects lazily on first call.  Reconnects and retries once on
-        EOF/socket/timeout failure before raising.
+        EOF/socket/timeout failure before raising.  Runs a ping/pong
+        handshake on every new connection to record the daemon version.
 
         Args:
             pcm16_mono: Raw signed 16-bit little-endian mono PCM bytes.
@@ -161,6 +256,14 @@ class VibraClient:
                     raise OSError(
                         f"vibra: cannot connect to daemon at {self._socket_path}"
                     )
+                # New connection: run handshake before recognition
+                if not self._ping_and_record_runtime_info():
+                    if attempt == 0:
+                        _log.debug(
+                            "vibra: handshake failed; reconnecting and retrying recognize"
+                        )
+                        continue
+                    raise OSError("vibra: handshake failed after reconnect")
             try:
                 return self._do_recognize(pcm16_mono, rate)
             except OSError:
