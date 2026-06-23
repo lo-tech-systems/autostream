@@ -674,7 +674,28 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(403, "CSRF validation failed")
             return
 
-        # --- 5) Route: enforce body only where needed ---
+        # --- 5) Commissioning gate ---
+        _is_commissioning = is_commissioning_required(STATE.config_path, STATE.state_path)
+        if _is_commissioning:
+            _post_commissioning_allowed = (
+                path.startswith("/api/owntone/")
+                or path.startswith("/api/auth/")
+                or path == "/first-boot/owntone/continue"
+                or path == "/first-boot/appliance/finish"
+                or path == "/logs"
+                or path == "/api/output"
+                or path == "/api/output_eq/reset"
+                or path == "/api/service/reset"
+            )
+            if not _post_commissioning_allowed:
+                send_json(self, 409, {"ok": False, "error": "appliance_unconfigured"})
+                return
+        else:
+            if path in ("/first-boot/owntone/continue", "/first-boot/appliance/finish"):
+                send_json(self, 409, {"ok": False, "error": "already_configured"})
+                return
+
+        # --- 6) Route: enforce body only where needed ---
         if path.startswith(_GATEWAY_PREFIX + "/"):
             tail = path[len(_GATEWAY_PREFIX) + 1:]
             parts = tail.split("/", 1)

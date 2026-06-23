@@ -268,3 +268,99 @@ class TestOwntonPageNoInitialSetupMode:
     def test_no_continue_button(self, tmp_path):
         html = self._render(tmp_path)
         assert ">Continue<" not in html
+
+
+# ── POST commissioning gate ───────────────────────────────────────────────────
+
+@_skip
+class TestPostCommissioningGate:
+    """do_POST enforces commissioning allowlist and blocks first-boot POST after configured."""
+
+    def _make_post_handler(self, path: str, body: bytes = b"{}") -> "ConfigWebHandler":
+        import secrets
+        import time
+        from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME
+        mgr = AuthManager(config_path="dummy.ini")
+        mgr._pin_loaded = True
+        mgr._pin_value = None  # PIN disabled
+        mgr._pin_status = "missing"
+        sess_token = secrets.token_hex(32)
+        csrf_token = secrets.token_hex(32)
+        mgr._sessions[sess_token] = Session(
+            token=sess_token,
+            expires_at=int(time.time()) + 3600,
+            csrf_token=csrf_token,
+            authenticated=True,
+        )
+        h = ConfigWebHandler.__new__(ConfigWebHandler)
+        h.path = path
+        h.command = "POST"
+        h.request_version = "HTTP/1.1"
+        h.headers = {
+            "Cookie": f"{SESSION_COOKIE_NAME}={sess_token}",
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+            "X-CSRF-Token": csrf_token,
+            "X-Forwarded-For": "",
+            "X-Real-IP": "",
+        }
+        h.client_address = ("127.0.0.1", 0)
+        h.rfile = io.BytesIO(body)
+        h.wfile = io.BytesIO()
+        h.send_response = MagicMock()
+        h.send_header = MagicMock()
+        h.end_headers = MagicMock()
+        h.send_error = MagicMock()
+        h._pending_auth_cookie = None
+        h._pending_set_cookies = []
+        return h, mgr
+
+    def _response_codes(self, handler) -> list[int]:
+        return [c for c, in [call.args for call in handler.send_response.call_args_list]]
+
+    def test_settings_post_blocked_during_commissioning(self, tmp_path):
+        """POST /api/settings must return 409 during commissioning."""
+        handler, mgr = self._make_post_handler("/api/settings", b'{"field":"x","value":"y"}')
+        state = _fake_state(tmp_path)
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", state), \
+             patch("autostream_webui.is_commissioning_required", return_value=True), \
+             patch("autostream_webui.send_json") as mock_json:
+            handler.do_POST()
+        # 409 appliance_unconfigured expected
+        calls = [(c[0][1], c[0][2]) for c in mock_json.call_args_list]
+        assert any(code == 409 for code, _ in calls), f"Expected 409 but got {calls}"
+
+    def test_first_boot_finish_blocked_when_configured(self, tmp_path):
+        """POST /first-boot/appliance/finish must return 409 when already configured."""
+        handler, mgr = self._make_post_handler("/first-boot/appliance/finish", b"{}")
+        state = _fake_state(tmp_path)
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", state), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
+             patch("autostream_webui.send_json") as mock_json:
+            handler.do_POST()
+        calls = [(c[0][1], c[0][2]) for c in mock_json.call_args_list]
+        assert any(code == 409 for code, _ in calls), f"Expected 409 but got {calls}"
+
+    def test_settings_post_allowed_when_configured(self, tmp_path):
+        """POST /api/settings must NOT be blocked by the commissioning gate when configured."""
+        handler, mgr = self._make_post_handler("/api/settings", b'{"field":"x","value":"y"}')
+        state = _fake_state(tmp_path)
+        blocked_with_commissioning_error = False
+        original_send_json = __import__("autostream_webui_api").send_json
+
+        def track_send_json(h, code, data):
+            nonlocal blocked_with_commissioning_error
+            if code == 409 and data.get("error") == "appliance_unconfigured":
+                blocked_with_commissioning_error = True
+            original_send_json(h, code, data)
+
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", state), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
+             patch("autostream_webui.send_json", side_effect=track_send_json):
+            handler.do_POST()
+        assert not blocked_with_commissioning_error, (
+            "POST /api/settings must not be blocked with commissioning error when configured"
+        )
