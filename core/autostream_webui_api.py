@@ -1558,7 +1558,10 @@ def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
                 try:
                     settings.update(lambda raw: raw.setdefault("webui", {}).update({"advertise_appliance": value}))
                 except Exception:
-                    logging.warning("send_advertisement_post_json: store write failed", exc_info=True)
+                    logging.exception("send_advertisement_post_json: store write failed")
+                    send_json(handler, 200, {"ok": True, "value": value,
+                                             "warning": "Preference applied but could not be saved — will revert on restart"})
+                    return
     except Exception:
         logging.exception("send_advertisement_post_json: unexpected failure")
         send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
@@ -1600,7 +1603,10 @@ def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
         try:
             settings.update(lambda raw: raw.setdefault("updates", {}).update({"auto_update": value}))
         except Exception:
-            logging.warning("send_auto_update_post_json: store write failed", exc_info=True)
+            logging.exception("send_auto_update_post_json: store write failed")
+            send_json(handler, 200, {"ok": True, "value": value,
+                                     "warning": "Preference applied but could not be saved — will revert on restart"})
+            return
 
     send_json(handler, 200, {"ok": True, "value": value})
 

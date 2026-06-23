@@ -251,6 +251,26 @@ class TestAdvertisementEndpoint:
         assert snap.webui.advertise_appliance is False
         store.close(save=False)
 
+    def test_store_commit_failure_returns_warning(self, tmp_path):
+        """When admin call succeeds but store update fails, return ok with a warning."""
+        from autostream_webui_api import send_advertisement_post_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        store.update = MagicMock(side_effect=RuntimeError("store full"))
+        import sys
+        mock_mod = MagicMock()
+        mock_mod.reconcile_appliance_announcement = MagicMock(return_value=True)
+        with patch.dict(sys.modules, {"autostream_appliances": mock_mod}):
+            import autostream_webui_common as _common
+            with patch.object(_common, "get_app_version", return_value="1.0.0", create=True):
+                send_advertisement_post_json(handler, state, json.dumps({"value": True}))
+        code, data = _response(handler)
+        assert code == 200
+        assert data["ok"] is True
+        assert "warning" in data
+        assert "revert" in data["warning"].lower()
+        store.close(save=False)
+
 
 # ---------------------------------------------------------------------------
 # /api/settings/auto-update
@@ -336,6 +356,20 @@ class TestAutoUpdateEndpoint:
         assert "error" in data
         assert data["error"]
         store.close(save=False)
+
+    def test_store_commit_failure_returns_warning(self, tmp_path):
+        """When the admin command succeeds but the store update fails, return ok with warning."""
+        from autostream_webui_api import send_auto_update_post_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        store.update = MagicMock(side_effect=RuntimeError("store full"))
+        with patch("autostream_webui_api.run_admin_cmd", return_value=self._admin_result()):
+            send_auto_update_post_json(handler, state, json.dumps({"value": True}))
+        code, data = _response(handler)
+        assert code == 200
+        assert data["ok"] is True
+        assert "warning" in data
+        assert "revert" in data["warning"].lower()
 
 
 # ---------------------------------------------------------------------------
