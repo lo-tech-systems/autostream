@@ -1618,11 +1618,9 @@ def send_save_now_json(handler, state: WebUIState) -> None:
     if not isinstance(settings, _SettingsStore):
         send_json(handler, 200, {"ok": False, "error": "Settings store not available"})
         return
-    try:
-        settings.save_now()
+    if settings.save_now():
         send_json(handler, 200, {"ok": True})
-    except Exception as exc:
-        logging.warning("send_save_now_json: save failed: %s", exc)
+    else:
         send_json(handler, 200, {"ok": False, "error": "Settings could not be saved"})
 
 

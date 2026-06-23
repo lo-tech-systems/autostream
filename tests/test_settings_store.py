@@ -397,6 +397,21 @@ class TestSaveNow:
         assert result is True
         store.close(save=False)
 
+    def test_save_now_returns_false_on_timeout(self, tmp_path):
+        """save_now returns False if the writer hangs longer than the timeout."""
+        released = threading.Event()
+
+        def hanging_writer(path, data):
+            released.wait()  # hangs indefinitely until test releases it
+
+        store = _make_store(tmp_path, writer=hanging_writer)
+        store.update(lambda r: r.update({"hang": True}))
+        result = store.save_now(timeout=0.05)  # 50 ms timeout
+        released.set()  # unblock the background thread
+        assert result is False
+        assert store._dirty  # dirty flag must remain set
+        store.close(save=False)
+
 
 # ---------------------------------------------------------------------------
 # close()

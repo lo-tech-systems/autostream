@@ -139,6 +139,19 @@ _APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 _FEDERATION_BODY_MAX = 4096  # bytes
 
 
+def _settings_save_barrier(state) -> bool:
+    """Flush dirty SettingsStore to disk before a destructive operation.
+
+    Returns True if no store is present (nothing to save) or if save succeeded.
+    Returns False if the store exists and save_now() failed or timed out.
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return True
+    return settings.save_now()
+
+
 def _effective_control_other_appliances(state) -> bool:
     """Return True if this appliance is configured to allow controlling other appliances.
 
@@ -819,6 +832,9 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/update/apply":
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
+            if not _settings_save_barrier(STATE):
+                send_json(self, 200, {"ok": False, "error": "Settings could not be saved before update"})
+                return
             self._start_update_apply()
 
         elif path == "/api/pin/change":
@@ -829,6 +845,9 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/reboot":
             if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            if not _settings_save_barrier(STATE):
+                send_json(self, 200, {"ok": False, "error": "Settings could not be saved before reboot"})
                 return
             reboot_system("UserRequestNormal", delay_s=3)
             send_json(self, 200, {"ok": True})

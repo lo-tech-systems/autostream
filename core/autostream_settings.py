@@ -164,25 +164,41 @@ class SettingsStore:
             self._dirty = True
         return self.snapshot()
 
-    def save_now(self) -> bool:
+    def save_now(self, timeout: float = 10.0) -> bool:
         """Synchronously write the current configuration to disk.
 
         Takes a safe copy under the store lock, releases the lock, then calls
-        the persistence writer.  Clears the dirty flag only when the generation
-        at snapshot time matches the current generation (i.e. no new mutation
-        arrived during the write).
+        the persistence writer in a daemon thread so the call can time out.
+        Clears the dirty flag only when the generation at snapshot time matches
+        the current generation (i.e. no new mutation arrived during the write).
 
-        Returns True on success, False on failure.  Failures are logged; the
-        in-memory value remains active and dirty for the next save cycle.
+        Returns True on success, False on failure or timeout.  Failures are
+        logged; the in-memory value remains active and dirty for the next save
+        cycle.
         """
         with self._lock:
             raw_copy = copy.deepcopy(self._raw)
             gen_at_start = self._generation
 
-        try:
-            self._writer(self._config_path, raw_copy)
-        except Exception:
-            logging.error("Settings: save_now failed", exc_info=True)
+        _result: list[bool] = []
+
+        def _write() -> None:
+            try:
+                self._writer(self._config_path, raw_copy)
+                _result.append(True)
+            except Exception:
+                logging.error("Settings: save_now failed", exc_info=True)
+                _result.append(False)
+
+        t = threading.Thread(target=_write, daemon=True)
+        t.start()
+        t.join(timeout)
+
+        if t.is_alive():
+            logging.error("Settings: save_now timed out after %.1fs", timeout)
+            return False
+
+        if not _result or not _result[0]:
             return False
 
         with self._lock:

@@ -358,7 +358,8 @@ class TestSaveNowEndpoint:
         from autostream_webui_api import send_save_now_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch.object(store, "save_now", side_effect=OSError("disk full")):
+        # save_now returns False on failure; it never raises
+        with patch.object(store, "save_now", return_value=False):
             send_save_now_json(handler, state)
         code, data = _response(handler)
         assert code == 200

@@ -344,12 +344,10 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             logging.warning("handle_first_boot_finish_post: hostname change failed: %s", exc)
 
     # Synchronous save — must succeed before marking configured
-    try:
-        _store.save_now()
-    except Exception as exc:
-        logging.exception("handle_first_boot_finish_post: save_now failed")
+    if not _store.save_now():
+        logging.error("handle_first_boot_finish_post: save_now failed or timed out")
         send_first_boot_appliance_page(
-            handler, state, auth, error=f"Settings could not be saved: {exc}"
+            handler, state, auth, error="Settings could not be saved. Please try again."
         )
         return
 
