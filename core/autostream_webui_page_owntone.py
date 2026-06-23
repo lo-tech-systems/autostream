@@ -29,7 +29,6 @@ from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
     load_state,
     parse_config,
-    unconfigured,
 )
 from autostream_players import (
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
@@ -476,16 +475,10 @@ def send_owntone_setup_page(
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
 
-    initial_setup = unconfigured(state.config_path)
-    h1 = "Initial Setup (1 of 2)" if initial_setup else "Owntone Setup"
     submit_label = "Continue"
     owntone_setup_form_id = "owntoneSetupForm"
 
-    page_heading_html = (
-        f"{BANNER_HTML}<h1>{h1}</h1>"
-        if initial_setup else
-        "<h1>Owntone Setup</h1>"
-    )
+    page_heading_html = "<h1>Owntone Setup</h1>"
 
     # Uncompressed audio: autosave onchange in configured mode
     _uncomp_onchange_attr = ""
@@ -557,12 +550,12 @@ def send_owntone_setup_page(
         + _buf_html
         + _grace_period_html
         + f"</fieldset>"
-        + (f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else '')
+        + ''
         + f"</form>"
     )
     _body_suffix = f"""\
 <script>
-  const liveEnabled = {str(not initial_setup).lower()};
+  const liveEnabled = true;
   function onShowToggle(i, checked) {{
     document.getElementById('spk_settings_' + i).style.display = checked ? 'block' : 'none';
   }}
@@ -586,7 +579,7 @@ def send_owntone_setup_page(
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         body_suffix=_body_suffix,
-        show_nav=not initial_setup,
+        show_nav=True,
         active_tab="setup",
         dark_mode=parsed.webui.dark_mode,
     )

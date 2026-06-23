@@ -650,16 +650,11 @@ class TestSetupPageChannelToggle:
         p.write_text(json.dumps(cfg), encoding="utf-8")
         return str(p)
 
-    def _render(self, tmp_path, channel="stable", auto_update=False, initial=False):
+    def _render(self, tmp_path, channel="stable", auto_update=False):
         """Call the actual page renderer and return the rendered HTML."""
         import autostream_webui_page_setup as _page
 
-        if initial:
-            # Empty config makes unconfigured() return True (missing required keys).
-            config_path = str(tmp_path / "config.json")
-            (tmp_path / "config.json").write_text("{}", encoding="utf-8")
-        else:
-            config_path = self._make_config(tmp_path, channel, auto_update)
+        config_path = self._make_config(tmp_path, channel, auto_update)
 
         handler = MagicMock()
         handler.wfile = io.BytesIO()
@@ -701,9 +696,6 @@ class TestSetupPageChannelToggle:
         html = self._render(tmp_path, channel="dev")
         assert 'updates_prerelease_channel" checked' in html
 
-    def test_initial_setup_omits_channel(self, tmp_path):
-        html = self._render(tmp_path, channel="dev", initial=True)
-        assert 'name="updates_channel_present"' not in html
 
 
 # ---------------------------------------------------------------------------

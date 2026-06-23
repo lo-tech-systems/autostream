@@ -206,9 +206,8 @@ class TestFederationRoutesSkipBrowserAuth:
         sent = []
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
-             patch("autostream_webui.initial_setup", 0), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             handler.do_POST()
         codes = [c for c, _ in sent]
@@ -224,9 +223,8 @@ class TestFederationRoutesSkipBrowserAuth:
         handler = self._make_post_handler("/api/federation/v1/session")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
-             patch("autostream_webui.initial_setup", 0), \
              patch("autostream_webui.send_json"), \
              patch.object(mgr, "validate_csrf") as mock_csrf:
             handler.do_POST()
@@ -263,7 +261,7 @@ class TestGatewayRoutesAuth:
         handler.send_response = lambda c, *a: redirect_codes.append(c)
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_appliances_json"):
             handler.do_GET()
         assert 302 not in redirect_codes, "Gateway list must not redirect to /auth"
@@ -276,7 +274,7 @@ class TestGatewayRoutesAuth:
         handler.send_response = lambda c, *a: redirect_codes.append(c)
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json"):
             handler.do_GET()
         assert 302 not in redirect_codes

@@ -478,7 +478,6 @@ class TestSetupPageTransactionWiring:
             suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
-            unconfigured=MagicMock(return_value=False),
         ):
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 send_setup_page(handler, state, auth, flash_msg="")

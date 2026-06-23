@@ -119,7 +119,8 @@ from autostream_webui_post_handlers import (
     handle_setup_post,
 )
 
-from autostream_config import unconfigured, STATE_PATH
+from autostream_config import STATE_PATH
+from autostream_commissioning import is_commissioning_required, required_first_boot_step
 from autostream_rpi import get_appliance_id
 from autostream_appliance_gateway import (
     send_appliances_json,
@@ -155,12 +156,6 @@ def _effective_control_other_appliances(state) -> bool:
 STATE: Optional[WebUIState] = None
 AUTH: Optional[AuthManager] = None
 
-# initial_setup values:
-# 0 - not in initial setup
-# 1 - initial setup needed and page 1 not complete
-# 2 - initial setup needed and page 1 completed (so user on page 2)
-initial_setup = 0
-_setup_lock = threading.Lock()
 
 
 
@@ -297,14 +292,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         """
         source_ip = self._get_client_ip()
 
-        # Unavailable during initial/AP setup or when identity is missing
-        if unconfigured(STATE.config_path):
-            send_json(self, 409, {"ok": False, "error": "appliance_unconfigured"})
-            return
-        global initial_setup
-        with _setup_lock:
-            in_setup = initial_setup != 0
-        if in_setup:
+        # Unavailable during commissioning or when identity is missing
+        if is_commissioning_required(STATE.config_path, STATE.state_path):
             send_json(self, 409, {"ok": False, "error": "appliance_unconfigured"})
             return
         if not get_appliance_id():
@@ -372,43 +361,41 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         send_json(self, 405, {"ok": False, "error": "method_not_allowed"})
 
     def do_GET(self):  # noqa: N802
-        global initial_setup
-
         path = self._normalized_path()
 
-        # Federation routes bypass browser auth/CSRF and initial-setup redirect.
+        # Federation routes bypass browser auth/CSRF and commissioning redirect.
         if path.startswith(_FEDERATION_PREFIX):
             self._dispatch_federation("GET", path)
             return
 
-        # If INI missing, force setup except for the setup/auth endpoints + auth verify API
-        if unconfigured(STATE.config_path):
-            with _setup_lock:
-                if initial_setup == 0:
-                    initial_setup = 1
-                setup_stage = initial_setup
+        # During commissioning, only permit auth and first-boot routes.
+        if is_commissioning_required(STATE.config_path, STATE.state_path):
             allowed = (
                 path.startswith("/auth")
                 or path.startswith("/api/auth/")
                 or path.startswith("/api/owntone/outputs")
                 or path.startswith("/api/owntone/outputs_state")
                 or path.startswith("/api/owntone/ready")
-                or path.startswith("/owntone-setup")
+                or path.startswith("/first-boot/")
                 or path.startswith("/owntone-restarting")
                 or path.startswith("/rebooting")
                 or path.startswith("/logs")
             )
-            if setup_stage == 2:
-                allowed = allowed or path.startswith("/setup")
             if not allowed:
+                step = required_first_boot_step(STATE.config_path, STATE.state_path)
+                location = f"/first-boot/{step}" if step else "/first-boot/owntone"
                 self.send_response(302)
-                self.send_header("Location", "/owntone-setup")
+                self.send_header("Location", location)
                 self.end_headers()
                 return
         else:
-            # Config exists, so we are not in initial setup anymore
-            with _setup_lock:
-                initial_setup = 0
+            # Already configured — redirect away from first-boot pages.
+            if path.startswith("/first-boot/"):
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
 
         # Serve auth page — if auth is disabled (no PIN), redirect to home.
         if path == "/auth":
@@ -577,8 +564,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
 
     def do_POST(self):  # noqa: N802
-        global initial_setup
-
         path = self._normalized_path()
 
 
@@ -730,8 +715,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_setup_post(self, STATE, AUTH, body_str)
-            with _setup_lock:
-                initial_setup = 0
 
         elif path == "/owntone-setup":
             if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/owntone-setup"):
@@ -740,9 +723,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_owntone_setup_post(self, STATE, AUTH, body_str)
-            with _setup_lock:
-                if initial_setup == 1:
-                    initial_setup = 2
 
         elif path == "/first-boot/owntone/continue":
             if not AUTH.require_authenticated_if_pin_enabled(self): return

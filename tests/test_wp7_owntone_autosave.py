@@ -375,7 +375,7 @@ class TestNativeOwntoneSettings:
 # ── Setup page rendering ──────────────────────────────────────────────────────
 
 class TestOwntoneSetupPage:
-    def _render_page(self, tmp_path, initial_setup=False):
+    def _render_page(self, tmp_path):
         from autostream_webui_page_owntone import send_owntone_setup_page
         from autostream_players import SaveSettingResult, SettingValueResult
         config_path = _make_config(str(tmp_path))
@@ -405,38 +405,33 @@ class TestOwntoneSetupPage:
         with patch("autostream_webui_page_owntone.list_outputs", return_value=_list_result), \
              patch("autostream_webui_page_owntone.get_capabilities", return_value=_cap), \
              patch("autostream_webui_page_owntone.get_setting", return_value=_sett_result), \
-             patch("autostream_webui_page_owntone.unconfigured", return_value=initial_setup), \
              patch("autostream_webui_page_owntone.load_state", return_value={}):
             send_owntone_setup_page(handler, state, auth)
 
         return b"".join(written).decode("utf-8")
 
-    def test_configured_mode_no_save_button(self, tmp_path):
-        html = self._render_page(str(tmp_path), initial_setup=False)
+    def test_no_save_button(self, tmp_path):
+        html = self._render_page(str(tmp_path))
         assert ">Save<" not in html
 
-    def test_initial_setup_has_continue_button(self, tmp_path):
-        html = self._render_page(str(tmp_path), initial_setup=True)
-        assert ">Continue<" in html
+    def test_no_continue_button(self, tmp_path):
+        html = self._render_page(str(tmp_path))
+        assert ">Continue<" not in html
 
-    def test_live_enabled_true_in_configured_mode(self, tmp_path):
-        html = self._render_page(str(tmp_path), initial_setup=False)
+    def test_live_enabled_always_true(self, tmp_path):
+        html = self._render_page(str(tmp_path))
         assert "const liveEnabled = true" in html
 
-    def test_live_enabled_false_in_initial_setup(self, tmp_path):
-        html = self._render_page(str(tmp_path), initial_setup=True)
-        assert "const liveEnabled = false" in html
-
     def test_autosave_functions_present(self, tmp_path):
-        html = self._render_page(str(tmp_path), initial_setup=False)
+        html = self._render_page(str(tmp_path))
         assert "_owntoneOffsetDebounced" in html
         assert "_owntoneNativeDebounced" in html
 
     def test_settings_transact_available(self, tmp_path):
-        html = self._render_page(str(tmp_path), initial_setup=False)
+        html = self._render_page(str(tmp_path))
         assert "settingsTransact" in html
 
     def test_refresh_link_present(self, tmp_path):
-        html = self._render_page(str(tmp_path), initial_setup=False)
+        html = self._render_page(str(tmp_path))
         assert "Refresh" in html
         assert "/owntone-setup" in html

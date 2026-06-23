@@ -113,7 +113,6 @@ class _SetupRenderer:
             suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
-            unconfigured=MagicMock(return_value=False),
         ):
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 send_setup_page(handler, state, auth, flash_msg="")
@@ -287,11 +286,12 @@ class TestSetupPageHtmlControls:
 
 
 # ---------------------------------------------------------------------------
-# Initial-setup page — liveEnabled is false so autosave is no-op
+# Setup page — liveEnabled is always true (first-boot has its own pages)
 # ---------------------------------------------------------------------------
 
-class TestInitialSetupLiveDisabled:
-    def _render_initial(self, tmp_path: Path) -> str:
+class TestSetupPageLiveEnabled:
+    def test_live_enabled_always_true(self, tmp_path):
+        """The setup page always has liveEnabled=true; first-boot uses dedicated pages."""
         from autostream_webui_page_setup import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
@@ -321,20 +321,11 @@ class TestInitialSetupLiveDisabled:
             suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
-            unconfigured=MagicMock(return_value=True),
         ):
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 send_setup_page(handler, state, auth)
 
         store.close(save=False)
-        return handler.wfile.getvalue().decode("utf-8", errors="replace")
-
-    def test_live_enabled_false_for_initial_setup(self, tmp_path):
-        html = self._render_initial(tmp_path)
-        assert "const liveEnabled = false;" in html
-
-    def test_autosave_js_is_present_but_gated_by_live_enabled(self, tmp_path):
-        html = self._render_initial(tmp_path)
-        # AUTOSAVE_JS is included but all calls are guarded by liveEnabled=false.
+        html = handler.wfile.getvalue().decode("utf-8", errors="replace")
+        assert "const liveEnabled = true;" in html
         assert "window.settingsSaveField" in html
-        assert "const liveEnabled = false;" in html

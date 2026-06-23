@@ -129,7 +129,7 @@ class TestGetAppliances:
 
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_appliances_json") as stub:
             handler.do_GET()
 
@@ -143,7 +143,7 @@ class TestGetAppliances:
 
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_appliances_json"):
             handler.send_response = lambda c, *a: send_response_codes.append(c)
             handler.do_GET()
@@ -162,7 +162,7 @@ class TestGetGatewayHome:
         handler = _make_get_handler(f"/api/appliances/{aid}/home")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json") as stub:
             handler.do_GET()
         return stub
@@ -177,7 +177,7 @@ class TestGetGatewayHome:
         handler = _make_get_handler(f"/api/appliances/{aid}/home")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json") as stub:
             handler.do_GET()
         _, call_aid = stub.call_args[0][2], stub.call_args[0][2] if stub.call_args[0] else stub.call_args[1].get("appliance_id")
@@ -191,7 +191,7 @@ class TestGetGatewayHome:
         handler.send_response = lambda c, *a: redirect_codes.append(c)
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json"):
             handler.do_GET()
         assert 302 not in redirect_codes
@@ -209,7 +209,7 @@ class TestGetGatewayEqualiser:
         handler = _make_get_handler(f"/api/appliances/{aid}/equaliser")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_equaliser_json") as stub:
             handler.do_GET()
         stub.assert_called_once()
@@ -220,7 +220,7 @@ class TestGetGatewayEqualiser:
         handler = _make_get_handler(f"/api/appliances/{aid}/equaliser/status")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_eq_status_json") as stub:
             handler.do_GET()
         stub.assert_called_once()
@@ -231,7 +231,7 @@ class TestGetGatewayEqualiser:
         handler = _make_get_handler(f"/api/appliances/{aid}/unknown")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False):
+             patch("autostream_webui.is_commissioning_required", return_value=False):
             handler.do_GET()
         handler.send_error.assert_called()
 
@@ -255,7 +255,7 @@ class TestPostGatewayRequiresCsrf:
         )
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_output_json") as stub:
             handler.do_POST()
         stub.assert_not_called()
@@ -273,7 +273,7 @@ class TestPostGatewayRequiresCsrf:
         )
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_output_json") as stub:
             handler.do_POST()
         stub.assert_called_once()
@@ -291,7 +291,7 @@ class TestPostGatewayRequiresCsrf:
         )
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_eq_config_json") as stub:
             handler.do_POST()
         stub.assert_called_once()
@@ -307,7 +307,7 @@ class TestPostGatewayRequiresCsrf:
         )
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_eq_reset_json") as stub:
             handler.do_POST()
         stub.assert_called_once()
@@ -326,7 +326,7 @@ class TestPostGatewayRequiresCsrf:
         )
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_output_json") as stub:
             handler.do_POST()
         # Handler must be reached even without authenticated session

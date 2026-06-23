@@ -223,7 +223,7 @@ class TestRouteDistinction:
         h._pending_auth_cookie = None
         h._pending_set_cookies = []
 
-        with patch("autostream_webui.unconfigured", return_value=False), \
+        with patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.AUTH", MagicMock()), \
              patch("autostream_webui.STATE", MagicMock()):
             h.do_GET()

@@ -21,7 +21,6 @@ from urllib.parse import parse_qs
 
 from autostream_config import (
     mark_configured,
-    unconfigured,
 )
 from autostream_dials import parse_dial_entries
 
@@ -322,11 +321,10 @@ def send_setup_page(
             pass
         return
 
-    initial_setup = unconfigured(state.config_path)
-    h1 = "Initial Setup (2 of 2)" if initial_setup else "Setup"
+    h1 = "Setup"
     submit_label = "Finish"
     setup_form_id = "setupForm"
-    owntone_button_html = "" if initial_setup else """
+    owntone_button_html = """
           <button type="button"
             onclick="window.location.href='/owntone-setup';"
             class="pill-btn small"
@@ -336,7 +334,7 @@ def send_setup_page(
         """
     _auto_update_checked = " checked" if parsed.updates.auto_update else ""
     _prerelease_checked = " checked" if parsed.updates.update_channel == "dev" else ""
-    update_html = "" if initial_setup else f"""
+    update_html = f"""
           <input type="hidden" name="updates_auto_update_present" value="1">
           <input type="hidden" name="updates_channel_present" value="1">
           <label>Updates:
@@ -447,12 +445,6 @@ def send_setup_page(
             <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
           {settings_close}
         """
-        if initial_setup:
-            return f"""
-        <fieldset><legend>{html.escape(title)}</legend>
-          {inner_html}
-        </fieldset>
-        """
         return settings_card_html(inner_html, margin_top="0")
 
     owntone_outputs_html = ""
@@ -501,40 +493,39 @@ def send_setup_page(
       }
     """
 
-    # Factory reset danger zone — only shown outside initial setup
+    # Factory reset danger zone
     factory_reset_modal_css = ""
     factory_reset_zone = ""
     factory_reset_modal = ""
     factory_reset_js = ""
     reboot_modal = ""
-    if not initial_setup:
-        ap_ssid = get_ap_ssid()
-        pin_val = auth.get_boot_pin_value()
-        safe_ssid = html.escape(ap_ssid)
-        if pin_val:
-            modal_body_html = (
-                f"This will erase all settings, including WiFi settings, and reboot "
-                f"the appliance.<br><br>After reboot, connect to the WiFi network "
-                f"<strong>{safe_ssid}</strong> to reconfigure the appliance. "
-                f"You will need the factory-configured PIN "
-                f"(<strong>{html.escape(pin_val)}</strong>). "
-                f"<br><br>Do you wish to continue?"
-            )
-        else:
-            modal_body_html = (
-                f"This will erase all settings, including WiFi settings, and then reboot "
-                f"the appliance. After reboot, please connect to the WiFi network "
-                f"<strong>{safe_ssid}</strong> to reconfigure the appliance. "
-                f"You will need the factory-configured PIN. "
-                f"Do you wish to continue?"
-            )
+    ap_ssid = get_ap_ssid()
+    pin_val = auth.get_boot_pin_value()
+    safe_ssid = html.escape(ap_ssid)
+    if pin_val:
+        modal_body_html = (
+            f"This will erase all settings, including WiFi settings, and reboot "
+            f"the appliance.<br><br>After reboot, connect to the WiFi network "
+            f"<strong>{safe_ssid}</strong> to reconfigure the appliance. "
+            f"You will need the factory-configured PIN "
+            f"(<strong>{html.escape(pin_val)}</strong>). "
+            f"<br><br>Do you wish to continue?"
+        )
+    else:
+        modal_body_html = (
+            f"This will erase all settings, including WiFi settings, and then reboot "
+            f"the appliance. After reboot, please connect to the WiFi network "
+            f"<strong>{safe_ssid}</strong> to reconfigure the appliance. "
+            f"You will need the factory-configured PIN. "
+            f"Do you wish to continue?"
+        )
 
-        factory_reset_modal_css = """
-          #factoryResetModal .modal-panel{--modal-width:28rem;--modal-bg:var(--color-surface-raised);}
-          #factoryResetModal .modal-hdr{--modal-title-color:var(--color-status-danger);}
-        """
+    factory_reset_modal_css = """
+      #factoryResetModal .modal-panel{--modal-width:28rem;--modal-bg:var(--color-surface-raised);}
+      #factoryResetModal .modal-hdr{--modal-title-color:var(--color-status-danger);}
+    """
 
-        factory_reset_zone = f"""
+    factory_reset_zone = f"""
       <div style="margin-top:2rem;padding:1rem 1.25rem;border:1.5px solid var(--color-status-danger);border-radius:8px;">
         <p style="margin:0 0 0.5rem;font-weight:600;color:var(--color-status-danger);">Factory Reset</p>
         <p style="margin:0 0 0.75rem;font-size:0.95rem;color:var(--color-text);">Factory Reset returns the appliance to first-run Wi-Fi setup mode. All settings will be erased.</p>
@@ -547,7 +538,7 @@ def send_setup_page(
         </button>
       </div>"""
 
-        factory_reset_modal = f"""
+    factory_reset_modal = f"""
       <div id="factoryResetModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="factoryResetModalTitle">
         <div class="panel modal-panel">
           <div class="hdr modal-hdr" id="factoryResetModalTitle">Factory Reset</div>
@@ -564,7 +555,7 @@ def send_setup_page(
         </div>
       </div>"""
 
-        reboot_modal = """
+    reboot_modal = """
       <div id="rebootModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="rebootModalTitle">
         <div class="panel modal-panel">
           <div class="hdr modal-hdr" id="rebootModalTitle">Reboot System</div>
@@ -580,7 +571,7 @@ def send_setup_page(
         </div>
       </div>"""
 
-        factory_reset_js = f"""
+    factory_reset_js = f"""
       <script>
         function showFactoryResetModal() {{
           const m = document.getElementById('factoryResetModal');
@@ -678,11 +669,7 @@ def send_setup_page(
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
           {owntone_button_html}
         """
-    playback_fieldset_html = (
-        f"<fieldset><legend>Playback</legend>{playback_inner_html}</fieldset>"
-        if initial_setup else
-        settings_card_html(playback_inner_html, margin_top="0")
-    )
+    playback_fieldset_html = settings_card_html(playback_inner_html, margin_top="0")
     system_inner_html = f"""
           <label style="display:flex;align-items:center;gap:.75rem;">
             <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}"
@@ -691,22 +678,11 @@ def send_setup_page(
           </label>
           {update_html}
         """
-    system_fieldset_html = (
-        f"<fieldset><legend>System (build: {html.escape(get_app_version())})</legend>{system_inner_html}</fieldset>"
-        if initial_setup else
-        settings_card_html(system_inner_html, margin_top="0")
-    )
+    system_fieldset_html = settings_card_html(system_inner_html, margin_top="0")
 
-    _dial_onload_js = ""  # populated in the else branch below
+    _dial_onload_js = ""
 
-    # Build the form body content — flat for initial setup, slide-panel for post-config
-    if initial_setup:
-        form_content_html = f"""{input1_html}
-        {input2_html}
-        {playback_fieldset_html}
-        {system_fieldset_html}
-        <p class="actions"><button type="submit">{submit_label}</button></p>"""
-    else:
+    if True:
         def _friendly(hw) -> str:
             """Return shortened card name for use in sub-labels (first segment before ', ')."""
             for d in monitor_devices:
@@ -1091,7 +1067,7 @@ def send_setup_page(
       <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinModalOk">Apply</button>
     </div>
   </div>
-</div>""" if not initial_setup else "")
+</div>""")
     _saving_modal_div = """\
 <div id="savingModal" class="modal-overlay" role="dialog" aria-modal="true"
      aria-labelledby="savingModalTitle" aria-describedby="savingModalMessage">
@@ -1107,15 +1083,8 @@ def send_setup_page(
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n"
         f"{_dial_pin_modal_div}\n{_saving_modal_div}"
     )
-    _page_heading_html = (
-        f"{BANNER_HTML}<h1>{h1}</h1>"
-        if initial_setup else
-        ""
-    )
     _body_html = (
-        _page_heading_html
-        + (f'<p class="actions" style="display:flex;justify-content:flex-end;"><a href="/logs" class="pill-btn">Logs</a></p>' if initial_setup else "")
-        + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
+        (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + f'<form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">'
         + f'<input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">'
@@ -1352,7 +1321,7 @@ def send_setup_page(
         function handlePinModalCancel() {{
           closePinModal();
         }}
-        const liveEnabled = {str(not initial_setup).lower()};
+        const liveEnabled = true;
         function onAudio2Toggle(checked){{
           syncInputUi(2);
           if (liveEnabled) settingsSaveField('audio2.enabled', checked);
@@ -1582,7 +1551,7 @@ def send_setup_page(
           setInterval(refreshOwntoneOutputs, 2000);
         }});
       </script>
-      {f"""<script>
+      <script>
         function _inputCardSub(captureSelName, turntableName, gainId) {{
           var sel = document.querySelector('select[name="' + captureSelName + '"]');
           var opt = sel ? sel.options[sel.selectedIndex] : null;
@@ -1942,7 +1911,7 @@ def send_setup_page(
           // Load current config for each online authorized dial
           {_dial_onload_js}
         }});
-      </script>""" if not initial_setup else ""}
+      </script>
       {factory_reset_js}"""
     html_body = build_page_html(
         "autostream",
@@ -1953,7 +1922,7 @@ def send_setup_page(
         body_suffix=_body_suffix,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
-        show_nav=not initial_setup,
+        show_nav=True,
         active_tab="setup",
         dark_mode=parsed.webui.dark_mode,
     )

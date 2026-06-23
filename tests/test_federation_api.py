@@ -128,9 +128,8 @@ def _call(handler: "ConfigWebHandler", state) -> tuple[int, dict]:
         sent_data.append(data)
 
     with patch("autostream_webui.STATE", state), \
-         patch("autostream_webui.unconfigured", return_value=False), \
+         patch("autostream_webui.is_commissioning_required", return_value=False), \
          patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-         patch("autostream_webui.initial_setup", 0), \
          patch("autostream_webui.send_json", side_effect=fake_send_json), \
          patch("autostream_webui_api.send_json", side_effect=fake_send_json):
         if handler.command == "GET":
@@ -194,36 +193,24 @@ class TestFederationSession:
         assert code == 400
         assert data["ok"] is False
 
-    def test_unavailable_during_initial_setup(self, tmp_path):
+    def test_unavailable_during_commissioning(self, tmp_path):
         state = _fake_state(tmp_path)
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         sent = []
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=True), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 1), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
         assert sent and sent[0][0] == 409
         assert sent[0][1]["error"] == "appliance_unconfigured"
-
-    def test_unavailable_when_unconfigured(self, tmp_path):
-        state = _fake_state(tmp_path)
-        h = _make_handler("POST", "/api/federation/v1/session", b"")
-        sent = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=True), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
-            h.do_POST()
-        assert sent and sent[0][0] == 409
 
     def test_unavailable_when_identity_missing(self, tmp_path):
         state = _fake_state(tmp_path)
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         sent = []
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=""), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
@@ -238,9 +225,8 @@ class TestFederationSession:
         # The handler sends 429 directly (not via send_json)
         resp_codes = []
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0):
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
+             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"):
             h.send_response = lambda code, *a: resp_codes.append(code)
             h.do_POST()
         assert resp_codes and resp_codes[0] == 429
@@ -507,9 +493,8 @@ class TestFederationOutput:
                           headers={"Authorization": bearer})
         sent = []
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
         assert sent and sent[0][0] == 400
@@ -522,9 +507,8 @@ class TestFederationOutput:
                           headers={"Authorization": bearer})
         sent = []
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_GET()
         assert sent and sent[0][0] == 400
@@ -544,9 +528,8 @@ class TestFederationRoutingClassification:
         # No CSRF token in request
         sent = []
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
         # Should NOT have returned a 403 CSRF error
@@ -558,9 +541,8 @@ class TestFederationRoutingClassification:
         state = _fake_state(tmp_path)
         h = _make_handler("GET", "/api/federation/v1/home")
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0):
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
+             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"):
             h.do_GET()
         for call in h.send_response.call_args_list:
             assert call[0][0] != 302, "Federation GET must not redirect to /auth"
@@ -571,9 +553,8 @@ class TestFederationRoutingClassification:
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         set_cookie_calls = []
         with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
-             patch("autostream_webui.initial_setup", 0), \
              patch("autostream_webui.send_json"):
             h.send_header = lambda name, val: (
                 set_cookie_calls.append(val) if name == "Set-Cookie" else None

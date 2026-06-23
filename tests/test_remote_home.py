@@ -85,7 +85,7 @@ class TestRemoteHomeRouting:
         handler = _make_get(f"/a/{_REMOTE_ID}/")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page") as stub:
             handler.do_GET()
@@ -97,7 +97,7 @@ class TestRemoteHomeRouting:
         handler = _make_get(f"/a/{_REMOTE_ID}")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page") as stub:
             handler.do_GET()
@@ -112,7 +112,7 @@ class TestRemoteHomeRouting:
         handler.send_response = MagicMock()
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         codes = [c for c, in [handler.send_response.call_args_list[i][0] for i in range(len(handler.send_response.call_args_list))]]
@@ -126,7 +126,7 @@ class TestRemoteHomeRouting:
         handler = _make_get("/a/invalid/")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         handler.send_error.assert_called()
@@ -137,7 +137,7 @@ class TestRemoteHomeRouting:
         handler = _make_get("/a/aabb/")
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         handler.send_error.assert_called()
@@ -150,7 +150,7 @@ class TestRemoteHomeRouting:
         handler.send_response = MagicMock(side_effect=lambda c, *a: redirect_codes.append(c))
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page"):
             handler.do_GET()
@@ -165,7 +165,7 @@ class TestRemoteHomeRouting:
             called_with["aid"] = aid
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.unconfigured", return_value=False), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page", side_effect=_stub):
             handler.do_GET()

@@ -477,7 +477,7 @@ class TestSetupPageDialResponseParser:
         assert "Dial did not respond in time" in self._src()
 
 
-def _render_setup_page(initial_setup_mode: bool) -> str:
+def _render_setup_page() -> str:
     """Render the full setup page HTML with all external dependencies mocked.
 
     Returns the raw HTML that would be written to the browser.  Uses the same
@@ -485,7 +485,6 @@ def _render_setup_page(initial_setup_mode: bool) -> str:
     rendering, not a hardcoded copy.
     """
     import io
-    from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
 
     m = _load_page_setup()
@@ -513,7 +512,6 @@ def _render_setup_page(initial_setup_mode: bool) -> str:
     list_out.ok = False
 
     with patch(f"{mod}._config_snapshot", new=lambda state: parsed), \
-         patch(f"{mod}.unconfigured", new=lambda p: initial_setup_mode), \
          patch(f"{mod}.list_outputs", new=lambda base_url, timeout: list_out), \
          patch(f"{mod}.build_top_banner_html", new=lambda **kw: ("", "")), \
          patch(f"{mod}.get_system_hostname", new=lambda: "test-host"), \
@@ -532,39 +530,30 @@ class TestSetupPageScriptRendering:
 
     def test_setup_page_has_saving_feedback(self):
         """The setup form shows a busy modal while its settings POST is pending."""
-        html_out = _render_setup_page(initial_setup_mode=True)
+        html_out = _render_setup_page()
         assert 'id="savingModal"' in html_out
         assert 'id="savingModalTitle">Saving...</div>' in html_out
         assert "setupSavingFeedback" in html_out
         assert "form.setAttribute('aria-busy', 'true')" in html_out
         assert "button.disabled = true" in html_out
 
-    def test_initial_setup_parser_and_submit_coexist(self):
-        """_parseDialResponse and submitPinChange must both be in the initial-setup page."""
-        html_out = _render_setup_page(initial_setup_mode=True)
+    def test_setup_page_parser_and_submit_coexist(self):
+        """_parseDialResponse and submitPinChange must both be in the setup page."""
+        html_out = _render_setup_page()
         scripts = _extract_script_blocks(html_out)
         combined = "\n".join(scripts)
         assert "_parseDialResponse" in combined, (
-            "_parseDialResponse not found in initial-setup page scripts"
+            "_parseDialResponse not found in setup page scripts"
         )
         assert "submitPinChange" in combined, (
-            "submitPinChange not found in initial-setup page scripts"
+            "submitPinChange not found in setup page scripts"
         )
 
     @node_available
-    def test_initial_setup_page_scripts_syntax(self):
-        """Every <script> block in the initial-setup page must be syntactically valid JS."""
-        html_out = _render_setup_page(initial_setup_mode=True)
+    def test_setup_page_scripts_syntax(self):
+        """Every <script> block in the setup page must be syntactically valid JS."""
+        html_out = _render_setup_page()
         scripts = _extract_script_blocks(html_out)
-        assert scripts, "No <script> blocks found in initial-setup page"
+        assert scripts, "No <script> blocks found in setup page"
         for i, script in enumerate(scripts):
-            _check_js_syntax(script, f"initial-setup page script #{i}")
-
-    @node_available
-    def test_configured_page_scripts_syntax(self):
-        """Every <script> block in the configured setup page must be syntactically valid JS."""
-        html_out = _render_setup_page(initial_setup_mode=False)
-        scripts = _extract_script_blocks(html_out)
-        assert scripts, "No <script> blocks found in configured setup page"
-        for i, script in enumerate(scripts):
-            _check_js_syntax(script, f"configured-page script #{i}")
+            _check_js_syntax(script, f"setup page script #{i}")
