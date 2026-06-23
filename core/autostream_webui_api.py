@@ -341,11 +341,17 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         return
 
     try:
-        with CONFIG_IO_LOCK:
-            cfg = load_config(state.config_path)
-            p = parse_config(cfg)
-            cfg.setdefault(section, {})[key] = normalised
-            save_config(state.config_path, cfg)
+        from autostream_settings import SettingsStore as _SettingsStore
+        _store = getattr(state, "settings", None)
+        if isinstance(_store, _SettingsStore):
+            p = _store.snapshot()
+            _store.update(lambda raw: raw.setdefault(section, {}).update({key: normalised}))
+        else:
+            with CONFIG_IO_LOCK:
+                cfg = load_config(state.config_path)
+                p = parse_config(cfg)
+                cfg.setdefault(section, {})[key] = normalised
+                save_config(state.config_path, cfg)
 
         # Build live-update args from the pre-write parse, substituting the one
         # changed key. This avoids a second parse_config call on the same object.
@@ -539,7 +545,10 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
         return
 
     try:
-        ok, normalised_str, err = apply_eq_field(state.config_path, field, value_raw)
+        ok, normalised_str, err = apply_eq_field(
+            state.config_path, field, value_raw,
+            settings=getattr(state, "settings", None),
+        )
     except ValueError as e:
         send_json(handler, 400, {"ok": False, "error": str(e)})
         return
@@ -553,7 +562,7 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
 
 def send_output_eq_reset_json(handler, state) -> None:
     """POST /api/output_eq/reset — zero all EQ bands; does not change output gain or auto-trim."""
-    ok, err = apply_eq_reset(state.config_path)
+    ok, err = apply_eq_reset(state.config_path, settings=getattr(state, "settings", None))
     if not ok:
         send_json(handler, 200, {"ok": False, "error": err})
         return
@@ -1014,7 +1023,10 @@ def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) ->
     field = str(payload.get("field", "")).strip()
     value_raw = str(payload.get("value", "")).strip()
     try:
-        ok, normalised_str, err = apply_eq_field(state.config_path, field, value_raw)
+        ok, normalised_str, err = apply_eq_field(
+            state.config_path, field, value_raw,
+            settings=getattr(state, "settings", None),
+        )
     except ValueError as e:
         send_json(handler, 400, {"ok": False, "error": str(e)})
         return
@@ -1026,7 +1038,7 @@ def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) ->
 
 def send_federation_eq_reset_json(handler, state: WebUIState) -> None:
     """POST /api/federation/v1/equaliser/reset — zero all EQ bands; does not change output gain or auto-trim."""
-    ok, err = apply_eq_reset(state.config_path)
+    ok, err = apply_eq_reset(state.config_path, settings=getattr(state, "settings", None))
     if not ok:
         send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
         return

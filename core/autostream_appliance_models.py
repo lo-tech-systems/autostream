@@ -367,12 +367,19 @@ def build_equaliser_state(config_path: str) -> dict:
 # Shared EQ mutations
 # ---------------------------------------------------------------------------
 
-def apply_eq_field(config_path: str, field: str, value_raw: str) -> tuple[bool, str, str]:
+def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=None) -> tuple[bool, str, str]:
     """Save and apply one output EQ field.
 
     Returns (ok, normalised_str, error_message).
     Raises ValueError for unknown fields or non-numeric dB values.
+
+    When *settings* is a SettingsStore instance, it is used as the sole
+    persistence mechanism (store → background disk write). The config_path
+    is only used as a fallback when no store is available.
     """
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = settings if isinstance(settings, _SettingsStore) else None
+
     if field not in _OUTPUT_EQ_ALL_FIELDS:
         raise ValueError(f"Unknown field: {field!r}")
 
@@ -380,10 +387,13 @@ def apply_eq_field(config_path: str, field: str, value_raw: str) -> tuple[bool, 
         normalised_bool = value_raw.lower() in ("true", "1", "yes")
         normalised_str = "true" if normalised_bool else "false"
         try:
-            with CONFIG_IO_LOCK:
-                cfg = load_config(config_path)
-                cfg.setdefault("output_eq", {})[field] = normalised_bool
-                save_config(config_path, cfg)
+            if _store is not None:
+                _store.update(lambda raw: raw.setdefault("output_eq", {}).update({field: normalised_bool}))
+            else:
+                with CONFIG_IO_LOCK:
+                    cfg = load_config(config_path)
+                    cfg.setdefault("output_eq", {})[field] = normalised_bool
+                    save_config(config_path, cfg)
             set_live_output_auto_trim(normalised_bool)
         except Exception as e:
             logging.exception("apply_eq_field: save failed")
@@ -399,13 +409,18 @@ def apply_eq_field(config_path: str, field: str, value_raw: str) -> tuple[bool, 
     normalised_str = f"{value:.1f}"
 
     try:
-        with CONFIG_IO_LOCK:
-            cfg = load_config(config_path)
-            p = parse_config(cfg)
-            cfg.setdefault("output_eq", {})[field] = value
-            save_config(config_path, cfg)
+        if _store is not None:
+            pre_snap = _store.snapshot()
+            _store.update(lambda raw: raw.setdefault("output_eq", {}).update({field: value}))
+            oeq = pre_snap.output_eq
+        else:
+            with CONFIG_IO_LOCK:
+                cfg = load_config(config_path)
+                p = parse_config(cfg)
+                cfg.setdefault("output_eq", {})[field] = value
+                save_config(config_path, cfg)
+            oeq = p.output_eq
 
-        oeq = p.output_eq
         if field == "gain_db":
             set_live_output_gain(value)
         else:
@@ -426,15 +441,28 @@ def apply_eq_field(config_path: str, field: str, value_raw: str) -> tuple[bool, 
     return True, normalised_str, ""
 
 
-def apply_eq_reset(config_path: str) -> tuple[bool, str]:
-    """Zero all EQ band fields (peq1–peq6). Does not change output gain or auto-trim."""
+def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
+    """Zero all EQ band fields (peq1–peq6). Does not change output gain or auto-trim.
+
+    When *settings* is a SettingsStore instance, uses it for atomic persistence.
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = settings if isinstance(settings, _SettingsStore) else None
+
     try:
-        with CONFIG_IO_LOCK:
-            cfg = load_config(config_path)
-            eq = cfg.setdefault("output_eq", {})
-            for f in _OUTPUT_EQ_BAND_FIELDS:
-                eq[f] = 0.0
-            save_config(config_path, cfg)
+        if _store is not None:
+            def _zero(raw: dict) -> None:
+                eq = raw.setdefault("output_eq", {})
+                for f in _OUTPUT_EQ_BAND_FIELDS:
+                    eq[f] = 0.0
+            _store.update(_zero)
+        else:
+            with CONFIG_IO_LOCK:
+                cfg = load_config(config_path)
+                eq = cfg.setdefault("output_eq", {})
+                for f in _OUTPUT_EQ_BAND_FIELDS:
+                    eq[f] = 0.0
+                save_config(config_path, cfg)
         set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     except Exception as e:
         logging.exception("apply_eq_reset: reset failed")

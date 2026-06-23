@@ -854,7 +854,10 @@ def send_gateway_eq_config_json(handler, state, appliance_id: str, body_str: str
 
     if resolution == "bound":
         try:
-            ok, norm, err = apply_eq_field(state.config_path, field, value_raw)
+            ok, norm, err = apply_eq_field(
+                state.config_path, field, value_raw,
+                settings=getattr(state, "settings", None),
+            )
         except ValueError as e:
             send_json(handler, 400, {"ok": False, "error": str(e)})
             return
@@ -882,7 +885,7 @@ def send_gateway_eq_reset_json(handler, state, appliance_id: str) -> None:
         return
 
     if resolution == "bound":
-        ok, err = apply_eq_reset(state.config_path)
+        ok, err = apply_eq_reset(state.config_path, settings=getattr(state, "settings", None))
         if not ok:
             send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
             return

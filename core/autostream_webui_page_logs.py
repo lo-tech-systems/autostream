@@ -220,11 +220,17 @@ def handle_logs_post(handler, state: WebUIState, body: str) -> None:
         form = parse_qs(body, keep_blank_values=True)
         new_log_level = normalize_log_level((form.get("log_level") or [""])[0])
 
-        with CONFIG_IO_LOCK:
-            cfg = load_config(state.config_path)
-            parsed = parse_config(cfg)
-            cfg.setdefault("general", {})["log_level"] = new_log_level
-            save_config(state.config_path, cfg)
+        from autostream_settings import SettingsStore as _SettingsStore
+        _store = getattr(state, "settings", None)
+        if isinstance(_store, _SettingsStore):
+            parsed = _store.snapshot()
+            _store.update(lambda raw: raw.setdefault("general", {}).update({"log_level": new_log_level}))
+        else:
+            with CONFIG_IO_LOCK:
+                cfg = load_config(state.config_path)
+                parsed = parse_config(cfg)
+                cfg.setdefault("general", {})["log_level"] = new_log_level
+                save_config(state.config_path, cfg)
 
         applied_log_level, monitor_updated = update_live_platform_log_level(new_log_level)
         player_setting_res = None
