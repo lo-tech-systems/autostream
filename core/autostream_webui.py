@@ -67,6 +67,10 @@ from autostream_webui_api import (
     send_owntone_outputs_state_json,
     send_service_config_json,
     send_service_reset_json,
+    send_advertisement_post_json,
+    send_auto_update_post_json,
+    send_hostname_post_json,
+    send_save_now_json,
     send_settings_get_json,
     send_settings_post_json,
     send_status_json,
@@ -737,6 +741,26 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "JSON object required")
                 return
             send_settings_post_json(self, STATE, json_obj)
+
+        elif path == "/api/settings/hostname":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_hostname_post_json(self, STATE, body_str)
+
+        elif path == "/api/settings/advertisement":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_advertisement_post_json(self, STATE, body_str)
+
+        elif path == "/api/settings/auto-update":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_auto_update_post_json(self, STATE, body_str)
+
+        elif path == "/api/settings/save":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_save_now_json(self, STATE)
 
         elif path == "/api/output_eq/config":
             if not body_str:

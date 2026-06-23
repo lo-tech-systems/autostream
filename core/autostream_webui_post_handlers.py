@@ -65,9 +65,6 @@ from autostream_player_service import (
 from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 
-# Dedicated lock for serializing advertisement preference changes.
-# Must not be held while CONFIG_IO_LOCK is held, and vice versa.
-_ADVERTISE_LOCK = threading.Lock()
 from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
     _set_flash_cookie,
@@ -75,7 +72,7 @@ from autostream_webui_common import (
     locked_load_config,
 )
 from autostream_webui_state import WebUIState
-from autostream_webui_api import send_json, send_settings_post_json
+from autostream_webui_api import _ADVERTISE_LOCK, send_json, send_settings_post_json
 from autostream_webui_page_setup import send_setup_page
 from autostream_webui_page_owntone import send_owntone_setup_page, start_owntone_restart_async
 
@@ -709,7 +706,17 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
     The client should navigate to /offline/resetting immediately after
     issuing this request and must not wait for a meaningful response body,
     since the service will be stopped as part of the reset sequence.
+
+    Dirty in-memory settings are discarded rather than flushed; factory reset
+    wipes the config file anyway so saving first would be misleading.
     """
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, _SettingsStore):
+        try:
+            settings.close(save=False)
+        except Exception:
+            logging.warning("handle_factory_reset_post: store close failed", exc_info=True)
     try:
         factory_reset_system()
         send_json(handler, 200, {"ok": True})

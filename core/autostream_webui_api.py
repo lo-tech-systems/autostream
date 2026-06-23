@@ -77,7 +77,8 @@ from autostream_appliance_models import (
     build_home_state,
 )
 from autostream_player_service import list_outputs, update_output
-from autostream_sysutils import run_admin_cmd
+from autostream_sysutils import get_system_hostname, run_admin_cmd, set_system_hostname
+from urllib.parse import urlparse as _urlparse
 from autostream_webui_common import _config_snapshot, _fallback_input_snapshot
 from autostream_webui_service_schema import (
     _SERVICE_ITEMS,
@@ -1458,3 +1459,152 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         if not live_ok:
             resp["live_error"] = "Live effect could not be applied"
     send_json(handler, 200, resp)
+
+
+# -----------------------------------------------------------------------------
+# WP5 — Dedicated transaction endpoints for privileged/external operations
+# -----------------------------------------------------------------------------
+
+# Serializes advertisement preference changes.
+# Must not be held while CONFIG_IO_LOCK is held, and vice versa.
+_ADVERTISE_LOCK = threading.Lock()
+
+
+def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/settings/hostname — change the system hostname.
+
+    Calls set_system_hostname(); on success, returns a redirect URL so the
+    browser can follow the appliance to its new mDNS address.
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    new_hn = str(payload.get("value") or "").strip()
+    if not new_hn:
+        send_json(handler, 400, {"ok": False, "error": "Hostname must not be empty"})
+        return
+
+    old_hn = get_system_hostname()
+    if new_hn == old_hn:
+        send_json(handler, 200, {"ok": True, "changed": False, "value": old_hn})
+        return
+
+    try:
+        set_system_hostname(new_hn)
+    except Exception as exc:
+        logging.warning("send_hostname_post_json: hostname change failed: %s", exc)
+        send_json(handler, 200, {"ok": False, "error": "Hostname could not be changed"})
+        return
+
+    host_header = str(handler.headers.get("Host", "") or "")
+    port_num = _urlparse(f"http://{host_header}").port
+    port = str(port_num) if port_num else None
+    host_p = f"{new_hn}.local:{port}" if port else f"{new_hn}.local"
+    redirect_url = f"http://{host_p}/setup"
+
+    send_json(handler, 200, {"ok": True, "changed": True, "value": new_hn, "redirect_url": redirect_url})
+
+
+def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/settings/advertisement — toggle peer advertisement.
+
+    Calls reconcile_appliance_announcement(); persists to store only on
+    success. Uses _ADVERTISE_LOCK to serialize concurrent calls.
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    value = payload.get("value")
+    if not isinstance(value, bool):
+        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        return
+
+    try:
+        from autostream_appliances import reconcile_appliance_announcement
+        from autostream_webui_common import get_app_version
+        with _ADVERTISE_LOCK:
+            ok = reconcile_appliance_announcement(get_app_version(), value)
+            if not ok:
+                logging.warning(
+                    "send_advertisement_post_json: admin call failed for advertise=%s", value
+                )
+                send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
+                return
+            from autostream_settings import SettingsStore as _SettingsStore
+            settings = getattr(state, "settings", None)
+            if isinstance(settings, _SettingsStore):
+                try:
+                    settings.update(lambda raw: raw.setdefault("webui", {}).update({"advertise_appliance": value}))
+                except Exception:
+                    logging.warning("send_advertisement_post_json: store write failed", exc_info=True)
+    except Exception:
+        logging.exception("send_advertisement_post_json: unexpected failure")
+        send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
+        return
+
+    send_json(handler, 200, {"ok": True, "value": value})
+
+
+def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/settings/auto-update — toggle the automatic update timer.
+
+    Calls the toggle-update-timer admin command; persists to store only on
+    success so a failed privileged call cannot commit an incorrect value.
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    value = payload.get("value")
+    if not isinstance(value, bool):
+        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        return
+
+    verb = "enable" if value else "disable"
+    result = run_admin_cmd(["toggle-update-timer", verb], timeout=5.0)
+    if result.returncode != 0:
+        logging.warning(
+            "send_auto_update_post_json: toggle-update-timer %s failed (rc=%d): %s",
+            verb, result.returncode, (result.stderr or "").strip(),
+        )
+        send_json(handler, 200, {"ok": False, "error": f"Auto-update timer could not be {verb}d"})
+        return
+
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, _SettingsStore):
+        try:
+            settings.update(lambda raw: raw.setdefault("updates", {}).update({"auto_update": value}))
+        except Exception:
+            logging.warning("send_auto_update_post_json: store write failed", exc_info=True)
+
+    send_json(handler, 200, {"ok": True, "value": value})
+
+
+def send_save_now_json(handler, state: WebUIState) -> None:
+    """POST /api/settings/save — flush in-memory settings to disk synchronously.
+
+    Called before durability-sensitive actions (reboot, update install) so
+    that in-flight autosave changes are not lost when the process restarts.
+    Returns an error if the store is unavailable or the save fails; the
+    caller should treat a failure as a barrier and not proceed.
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        send_json(handler, 200, {"ok": False, "error": "Settings store not available"})
+        return
+    try:
+        settings.save_now()
+        send_json(handler, 200, {"ok": True})
+    except Exception as exc:
+        logging.warning("send_save_now_json: save failed: %s", exc)
+        send_json(handler, 200, {"ok": False, "error": "Settings could not be saved"})

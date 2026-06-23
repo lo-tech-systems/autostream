@@ -1748,9 +1748,10 @@ function doServiceReset(item, idx) {
 # Requires window.__CSRF to be set before this script runs (done by csrf_meta
 # injected in head_extra on every page that uses it).
 # Exports:
-#   settingsSaveField(field, value)             — send immediately (checkbox/select)
-#   settingsSaveFieldDebounced(field, value, ms) — debounced send (text/number/range)
-#   flushPendingToServer() → Promise             — drain before navigation
+#   settingsSaveField(field, value)                  — send immediately (checkbox/select)
+#   settingsSaveFieldDebounced(field, value, ms)      — debounced send (text/number/range)
+#   flushPendingToServer() → Promise                  — drain before navigation
+#   settingsTransact(url, payload, opts)              — privileged/external transaction
 # ---------------------------------------------------------------------------
 AUTOSAVE_JS = """
 <script>
@@ -1840,6 +1841,33 @@ AUTOSAVE_JS = """
       if (entry && entry.promise) promises.push(entry.promise);
     });
     return Promise.all(promises);
+  };
+
+  window.settingsTransact = function(url, payload, opts) {
+    opts = opts || {};
+    _setStatus('Applying…');
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrf},
+      body: JSON.stringify(payload)
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) {
+        _setStatus('Could not apply — ' + (d.error || 'error'));
+        if (opts.onError) opts.onError(d);
+        return;
+      }
+      _setStatus('Saved');
+      setTimeout(function() {
+        var el = _getStatus();
+        if (el && el.textContent === 'Saved') el.textContent = '';
+      }, 2000);
+      if (d.redirect_url) { window.location.href = d.redirect_url; return; }
+      if (opts.onSuccess) opts.onSuccess(d);
+    }).catch(function(e) {
+      _setStatus('Could not apply');
+      if (opts.onError) opts.onError({error: String(e)});
+    });
   };
 
   window.addEventListener('beforeunload', function(e) {

@@ -350,7 +350,7 @@ def send_setup_page(
           </label>
           <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked}>
+              <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked} onchange="if(liveEnabled) settingsTransact('/api/settings/auto-update', {{value: this.checked}});">
               <span class="switch"></span>
             </label>
             <span>Automatic updates</span>
@@ -685,7 +685,9 @@ def send_setup_page(
     )
     system_inner_html = f"""
           <label style="display:flex;align-items:center;gap:.75rem;">
-            <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}">
+            <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}"
+              onblur="if(liveEnabled && this.value.trim()) settingsTransact('/api/settings/hostname', {{value: this.value.trim()}});"
+              onkeydown="if(event.key==='Enter'){{ this.blur(); event.preventDefault(); }}">
           </label>
           {update_html}
         """
@@ -763,7 +765,7 @@ def send_setup_page(
               </div>
               <div class="setup-customise-row" style="margin-top:0.75rem;">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub()">
+                  <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub(); if(liveEnabled) settingsTransact('/api/settings/advertisement', {{value: this.checked}});">
                   <span class="switch"></span>
                 </label>
                 <span>Allow control of this from other appliances</span>
@@ -1433,7 +1435,19 @@ def send_setup_page(
           const cbHost = document.getElementById('webui_show_hostname_on_home');
           if (cbHost) onHostnameToggle(cbHost.checked);
         }});
-        function requestReboot(){{
+        async function requestReboot(){{
+          if (liveEnabled) {{
+            try {{
+              const saveR = await fetch('/api/settings/save', {{method:'POST', headers:{{'X-CSRF-Token':window.__CSRF||''}}}});
+              const saveJ = await saveR.json().catch(()=>({{ok:false}}));
+              if (!saveJ.ok) {{
+                alert('Settings could not be saved before rebooting: ' + (saveJ.error || 'unknown error'));
+                return;
+              }}
+            }} catch(e) {{
+              // Network error — fall through; reboot will reload config from disk
+            }}
+          }}
           showRebootModal();
         }}
         (async function(){{
@@ -1478,7 +1492,21 @@ def send_setup_page(
           }};
           bInst.onclick = async () => {{
             if(!cand) return;
-            msg("Starting update..."); bCheck.disabled=true; bInst.disabled=true;
+            msg("Saving settings..."); bCheck.disabled=true; bInst.disabled=true;
+            try {{
+              const saveR = await fetch("/api/settings/save",{{method:"POST",headers:{{"X-CSRF-Token":window.__CSRF||""}}}});
+              const saveJ = await saveR.json().catch(()=>({{ok:false}}));
+              if(!saveJ.ok){{
+                msg("Could not save settings before update: " + (saveJ.error || "unknown error"));
+                bCheck.disabled=false; bInst.disabled=false;
+                return;
+              }}
+            }} catch(e) {{
+              msg("Could not save settings before update");
+              bCheck.disabled=false; bInst.disabled=false;
+              return;
+            }}
+            msg("Starting update...");
             try {{
               const r = await fetch("/api/update/apply",{{method:"POST",headers:{{"X-CSRF-Token":window.__CSRF||""}}}});
               const j = await r.json().catch(()=>({{ok:false}}));
