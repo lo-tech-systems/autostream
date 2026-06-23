@@ -323,7 +323,7 @@ def send_setup_page(
     h1 = "Setup"
     owntone_button_html = """
           <button type="button"
-            onclick="window.location.href='/owntone-setup';"
+            onclick="flushPendingToServer().then(function() { window.location.href='/owntone-setup'; })"
             class="pill-btn small"
             style="width:100%;margin-top:0.5rem;">
             More Owntone Settings

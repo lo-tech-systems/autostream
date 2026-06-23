@@ -539,6 +539,18 @@ class TestSetupPageScriptRendering:
         )
         assert 'type="submit"' not in html_out or 'form=' not in html_out
 
+    def test_owntone_button_flushes_pending(self):
+        """More Owntone Settings must drain pending autosave writes before navigating."""
+        html_out = _render_setup_page()
+        assert "flushPendingToServer" in html_out, (
+            "owntone navigation must call flushPendingToServer() before location.href"
+        )
+        owntone_idx = html_out.find("owntone-setup")
+        flush_idx = html_out.rfind("flushPendingToServer", 0, owntone_idx)
+        assert flush_idx != -1, (
+            "flushPendingToServer must appear before /owntone-setup in the navigation handler"
+        )
+
     def test_setup_page_parser_and_submit_coexist(self):
         """_parseDialResponse and submitPinChange must both be in the setup page."""
         html_out = _render_setup_page()
