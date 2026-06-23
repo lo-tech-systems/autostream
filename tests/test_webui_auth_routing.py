@@ -105,7 +105,6 @@ def _make_handler(path: str, sess_token: str, csrf_token: str) -> "ConfigWebHand
 # auth guard were absent, so assert_not_called() proves the guard fired.
 _PROTECTED = [
     ("/setup",              "autostream_webui.handle_setup_post"),
-    ("/owntone-setup",      "autostream_webui.handle_owntone_setup_post"),
     ("/logs",               "autostream_webui.handle_logs_post"),
     ("/api/input_eq",       "autostream_webui.handle_live_input_eq_update"),
     ("/api/input_gain",     "autostream_webui.handle_live_input_gain_update"),
@@ -164,6 +163,26 @@ class TestPostRouterAuthEnforcement:
             handler.do_POST()
 
         stub.assert_called_once()
+
+
+@_skip_no_webui
+class TestRetiredFormRoutes:
+    """Routes whose form POST was retired must return 405 unconditionally."""
+
+    def test_owntone_setup_post_returns_405(self):
+        """POST /owntone-setup must return 405 — form POST retired in favour of autosave."""
+        mgr = _make_manager()
+        sess_token, csrf_token = _csrf_session(mgr)
+        handler = _make_handler("/owntone-setup", sess_token, csrf_token)
+        sent = []
+        def _cap(code, *a, **kw):
+            sent.append(code)
+        handler.send_response = _cap
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.is_commissioning_required", return_value=False):
+            handler.do_POST()
+        assert sent and sent[0] == 405
 
 
 @_skip_no_webui

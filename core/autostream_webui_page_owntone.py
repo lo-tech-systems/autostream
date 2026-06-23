@@ -494,10 +494,6 @@ def send_owntone_setup_page(
     ) if grace_period_available else ""
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
-    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
-
-    submit_label = "Continue"
-    owntone_setup_form_id = "owntoneSetupForm"
 
     page_heading_html = "<h1>Owntone Setup</h1>"
 
@@ -556,8 +552,7 @@ def send_owntone_setup_page(
         + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
         + f"<a href='/owntone-setup' class='pill-btn small' style='font-weight:500;border:1px solid #ccc;'>\u21bb Refresh</a>"
         + f"</p>"
-        + f"<form id='{owntone_setup_form_id}' method='POST' action='/owntone-setup'>"
-        + f"<input type='hidden' name='csrf_token' value='{html.escape(csrf_token)}'>"
+        + f"<div>"
         + speakers_html
         + f"<fieldset><legend>Audio</legend>"
         + f"<div style='display:flex;align-items:center;gap:0.75rem;'>"
@@ -571,8 +566,7 @@ def send_owntone_setup_page(
         + _buf_html
         + _grace_period_html
         + f"</fieldset>"
-        + ''
-        + f"</form>"
+        + f"</div>"
     )
     _body_suffix = f"""\
 <script>

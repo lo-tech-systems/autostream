@@ -10,7 +10,6 @@ Contents:
   - handle_setup_post             -- POST /setup
   - handle_live_input_eq_update   -- POST /api/input_eq
   - handle_live_input_gain_update -- POST /api/input_gain
-  - handle_owntone_setup_post     -- POST /owntone-setup
   - handle_factory_reset_post     -- POST /api/factory-reset
 """
 
@@ -29,12 +28,9 @@ from autostream_config import (
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
     load_config,
-    load_state,
     mark_configured,
-    normalize_airplay_mode,
     parse_config,
     save_config,
-    save_state,
 )
 from autostream_core import (
     apply_track_id_config_live,
@@ -45,22 +41,7 @@ from autostream_core import (
     update_live_silence_seconds,
     update_playback_input_config,
 )
-from autostream_players import (
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
-    SETTING_START_BUFFER_MS,
-    SETTING_START_BUFFER_MS_DEFAULT,
-    SETTING_START_BUFFER_MS_MAX,
-    SETTING_START_BUFFER_MS_MIN,
-    SETTING_START_BUFFER_MS_STEP,
-    SETTING_UNCOMPRESSED_ALAC,
-)
-from autostream_player_service import (
-    config_airplay_mode_to_backend,
-    save_setting,
-)
+from autostream_player_service import config_airplay_mode_to_backend
 from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 
@@ -73,7 +54,6 @@ from autostream_webui_common import (
 from autostream_webui_state import WebUIState
 from autostream_webui_api import _ADVERTISE_LOCK, send_json, send_settings_post_json
 from autostream_webui_page_setup import send_setup_page
-from autostream_webui_page_owntone import send_owntone_setup_page, start_owntone_restart_async
 
 
 def _fld(form: dict, n: str, d: str = "") -> str:
@@ -529,166 +509,6 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
 
     field = f"audio{input_index}.gain_db"
     send_settings_post_json(handler, state, {"field": field, "value": payload.get("gain_db")})
-
-
-# -----------------------------------------------------------------------------
-# Owntone setup POST
-# -----------------------------------------------------------------------------
-
-def handle_owntone_setup_post(handler, state: WebUIState, auth, body: str) -> None:
-    form = parse_qs(body)
-    def fld(n, d=""): return _fld(form, n, d)
-    try:
-        cfg = locked_load_config(state.config_path)
-        state_data = load_state(state.state_path)
-
-        speakers: list[tuple[str, str, bool, str, Optional[int]]] = []
-        valid_airplay_modes = {DEFAULT_AIRPLAY_MODE, "raop", "airplay2"}
-        i = 0
-        while f"spk_{i}" in form:
-            speaker_id = fld(f"spk_id_{i}", "").strip()
-            name = fld(f"spk_{i}")
-            show = (f"show_{i}" in form)
-            mode = fld(f"mode_{i}", DEFAULT_AIRPLAY_MODE).strip().lower()
-            if mode not in valid_airplay_modes:
-                mode = DEFAULT_AIRPLAY_MODE
-            offset_ms: Optional[int] = None
-            if f"offset_{i}" in form:
-                raw_off = fld(f"offset_{i}", "0")
-                try:
-                    offset_ms = int(str(raw_off).strip())
-                except Exception:
-                    offset_ms = 0
-                offset_ms = max(-2000, min(2000, offset_ms))
-            speakers.append((speaker_id, name, show, mode, offset_ms))
-
-            i += 1
-
-        speakers.sort(key=lambda t: t[1].casefold())
-
-        hidden = [
-            spk_name
-            for (_spk_id, spk_name, show, _mode, _offset) in speakers
-            if not show
-        ]
-        cfg.setdefault("webui", {})["hidden_outputs"] = hidden
-
-        base_url = str((cfg.get("owntone") or {}).get("base_url") or "http://localhost:3689")
-
-        existing_parsed = parse_config(cfg, state_data)
-        offsets_by_id = dict(existing_parsed.owntone.output_offsets_ms)
-        runtime_airplay_modes_by_id = dict(existing_parsed.owntone.output_airplay_modes)
-        known_outputs = dict(existing_parsed.owntone.known_outputs)
-        for out_id, spk, _show, mode, offset_ms in speakers:
-            out_id = str(out_id or "").strip()
-            if out_id and spk.strip():
-                known_outputs[out_id] = spk.strip()
-            if out_id:
-                if offset_ms is not None:
-                    offsets_by_id[out_id] = offset_ms
-                runtime_airplay_modes_by_id[out_id] = normalize_airplay_mode(mode)
-
-        # offsets and airplay_modes stay in the config file
-        cfg.setdefault("owntone", {})["offsets"] = offsets_by_id
-        cfg.setdefault("owntone", {})["airplay_modes"] = runtime_airplay_modes_by_id
-        # known_outputs moves to the state file
-        state_data.setdefault("owntone", {})["known_outputs"] = known_outputs
-
-        restart_required = False
-        want_uncompressed_audio = ("uncompressed_alac" in form)
-        save_uncompressed_result = save_setting(
-            base_url,
-            SETTING_UNCOMPRESSED_ALAC,
-            want_uncompressed_audio,
-            timeout=3,
-        )
-        if not save_uncompressed_result.ok and not save_uncompressed_result.unsupported:
-            raise RuntimeError("Could not update OwnTone uncompressed_alac via API")
-        restart_required = restart_required or bool(save_uncompressed_result.restart_required)
-
-        if "start_buffer_ms" in form:
-            try:
-                want_buffer = int(fld("start_buffer_ms", str(SETTING_START_BUFFER_MS_DEFAULT)).strip())
-            except (ValueError, TypeError):
-                want_buffer = SETTING_START_BUFFER_MS_DEFAULT
-            want_buffer = max(
-                SETTING_START_BUFFER_MS_MIN,
-                min(
-                    SETTING_START_BUFFER_MS_MAX,
-                    round(want_buffer / SETTING_START_BUFFER_MS_STEP) * SETTING_START_BUFFER_MS_STEP,
-                ),
-            )
-            save_buffer_result = save_setting(
-                base_url,
-                SETTING_START_BUFFER_MS,
-                want_buffer,
-                timeout=3,
-            )
-            if not save_buffer_result.ok and not save_buffer_result.unsupported:
-                raise RuntimeError("Could not update OwnTone start_buffer_ms via API")
-            restart_required = restart_required or bool(save_buffer_result.restart_required)
-
-        if "device_removal_grace_period_minutes" in form:
-            try:
-                want_grace_minutes = int(fld("device_removal_grace_period_minutes", str(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES)).strip())
-            except (ValueError, TypeError):
-                want_grace_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
-            want_grace_minutes = max(
-                SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
-                min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, want_grace_minutes),
-            )
-            save_grace_result = save_setting(
-                base_url,
-                SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
-                want_grace_minutes * 60,
-                timeout=3,
-            )
-            if not save_grace_result.ok and not save_grace_result.unsupported:
-                raise RuntimeError("Could not update OwnTone device_removal_grace_period via API")
-            restart_required = restart_required or bool(save_grace_result.restart_required)
-
-        # Write both files under a single lock. Re-load state inside the lock so
-        # that a concurrent PIN change made while OwnTone API calls were in flight
-        # is not overwritten with the stale snapshot loaded at the start of the handler.
-        with CONFIG_IO_LOCK:
-            save_config(state.config_path, cfg)
-            live_state = load_state(state.state_path)
-            live_state.setdefault("owntone", {})["known_outputs"] = known_outputs
-            save_state(state.state_path, live_state)
-
-        saved_parsed = parse_config(cfg, live_state)
-        owntone_d = cfg.get("owntone") or {}
-        update_live_owntone_runtime(
-            output_name=str(owntone_d.get("output_name", "") or ""),
-            volume_percent=owntone_d.get("volume_percent", 20),
-            output_offsets_ms=saved_parsed.owntone.output_offsets_ms,
-            output_airplay_modes=saved_parsed.owntone.output_airplay_modes,
-        )
-
-        if restart_required:
-            start_owntone_restart_async(state)
-
-        _set_flash_cookie(handler, "Settings saved", max_age=30)
-
-        next_path = "/setup"
-        loc = (
-            "/owntone-restarting?next=" + quote(next_path, safe="/?=&")
-            if restart_required
-            else next_path
-        )
-
-        handler.send_response(303)
-        handler.send_header("Location", loc)
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
-    except Exception:
-        logging.exception("handle_owntone_setup_post failed")
-        send_owntone_setup_page(
-            handler,
-            state,
-            auth,
-            error="Save failed",
-        )
 
 
 # -----------------------------------------------------------------------------

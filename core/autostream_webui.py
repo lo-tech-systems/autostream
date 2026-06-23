@@ -115,7 +115,6 @@ from autostream_webui_post_handlers import (
     handle_live_input_eq_update,
     handle_live_input_gain_update,
     handle_output_update,
-    handle_owntone_setup_post,
     handle_setup_post,
 )
 
@@ -754,12 +753,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 send_json(self, 405, {"ok": False, "error": "form_post_disabled"})
 
         elif path == "/owntone-setup":
-            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/owntone-setup"):
-                return
-            if not body_str:
-                self.send_error(400, "Missing request body")
-                return
-            handle_owntone_setup_post(self, STATE, AUTH, body_str)
+            send_json(self, 405, {"ok": False, "error": "form_post_disabled"})
 
         elif path == "/first-boot/owntone/continue":
             if not AUTH.require_authenticated_if_pin_enabled(self): return
