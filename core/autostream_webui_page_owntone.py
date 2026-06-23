@@ -54,6 +54,7 @@ from autostream_webui_assets import (
     BANNER_HTML,
 )
 from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, locked_load_config
+from autostream_webui_assets import AUTOSAVE_JS
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
 
@@ -399,9 +400,13 @@ def send_owntone_setup_page(
                            name="offset_{i}"
                            min="-2000" max="2000" step="10"
                            value="{cur_off}"
-                           oninput="document.getElementById('off_val_{i}').textContent=this.value+' ms';">
+                           oninput="document.getElementById('off_val_{i}').textContent=this.value+' ms';
+                                    if(liveEnabled) _owntoneOffsetDebounced({json.dumps(out_id)}, parseInt(this.value,10));">
                   </label>
                 """
+
+        _out_id_js = json.dumps(out_id)
+        _out_name_js = json.dumps(spk)
 
         if can_edit_mode:
             mode_options = ""
@@ -415,23 +420,34 @@ def send_owntone_setup_page(
                     f'<option value="{supported_mode}"'
                     f'{" selected" if current_mode == supported_mode else ""}>{label}</option>'
                 )
+            _mode_change = (
+                f"if(liveEnabled) settingsTransact('/api/owntone/output-mode',"
+                f"{{output_id:{_out_id_js},mode:this.value}});"
+            )
             mode_html = f"""
             <label style="display:block;margin-bottom:0.5rem;">
               <span>Mode</span>
-              <select name="mode_{i}"{' disabled' if len(supported_config_modes) <= 1 else ''}>{mode_options}</select>
+              <select name="mode_{i}"{' disabled' if len(supported_config_modes) <= 1 else ''}
+                      onchange="{html.escape(_mode_change)}">{mode_options}</select>
             </label>{mode_note_html}"""
         else:
             mode_html = (
                 f'<input type="hidden" name="mode_{i}" value="{current_mode}">{mode_note_html}'
             )
 
+        _vis_change = (
+            f"onShowToggle({i}, this.checked);"
+            f"if(liveEnabled) settingsTransact('/api/owntone/output-visibility',"
+            f"{{output_name:{_out_name_js},output_id:{_out_id_js},visible:this.checked}});"
+        )
         speakers_html += f"""
           <fieldset><legend>{html.escape(spk)}</legend>
           <input type="hidden" name="spk_id_{i}" value="{html.escape(out_id)}">
           <input type="hidden" name="spk_{i}" value="{html.escape(spk)}">
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="show_{i}" {'checked' if show else ''} onchange="onShowToggle({i}, this.checked)">
+              <input type="checkbox" name="show_{i}" {'checked' if show else ''}
+                     onchange="{html.escape(_vis_change)}">
                 <span class="switch"></span>
             </label>
             <span>Show in autostream</span>
@@ -464,11 +480,6 @@ def send_owntone_setup_page(
     h1 = "Initial Setup (1 of 2)" if initial_setup else "Owntone Setup"
     submit_label = "Continue"
     owntone_setup_form_id = "owntoneSetupForm"
-    back_html = (
-        ""
-        if initial_setup
-        else f'<button type="submit" form="{owntone_setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>'
-    )
 
     page_heading_html = (
         f"{BANNER_HTML}<h1>{h1}</h1>"
@@ -476,12 +487,59 @@ def send_owntone_setup_page(
         "<h1>Owntone Setup</h1>"
     )
 
+    # Uncompressed audio: autosave onchange in configured mode
+    _uncomp_onchange_attr = ""
+    if uncompressed_supported:
+        _oc = "if(liveEnabled) settingsTransact('/api/owntone/uncompressed-audio', {value: this.checked});"
+        _uncomp_onchange_attr = f" onchange='{html.escape(_oc)}'"
+    _uncomp_input = (
+        f"<input type='checkbox' name='uncompressed_alac' {'checked' if uncompressed else ''}"
+        f"{' disabled' if not uncompressed_supported else ''}"
+        f"{_uncomp_onchange_attr}>"
+    )
+
+    # Start buffer: autosave (debounced) in configured mode
+    _buf_oninput = (
+        f"document.getElementById('start_buffer_val').textContent=this.value+' ms';"
+        f"if(liveEnabled) _owntoneNativeDebounced('start_buffer', this.value, '/api/owntone/start-buffer');"
+    )
+    _buf_html = (
+        '<label style="display:block;margin-top:0.75rem;">'
+        '<div class="slider-header"><span>Start Buffer (ms):</span>'
+        f'<span id="start_buffer_val">{start_buffer_ms} ms</span></div>'
+        f'<input type="range" name="start_buffer_ms"'
+        f' min="{SETTING_START_BUFFER_MS_MIN}" max="{SETTING_START_BUFFER_MS_MAX}"'
+        f' step="{SETTING_START_BUFFER_MS_STEP}" value="{start_buffer_ms}"'
+        f' oninput="{html.escape(_buf_oninput)}"></label>'
+    ) if start_buffer_available else (
+        '<div class="storage-meta" style="margin-top:0.75rem;">'
+        'This backend does not currently expose start-buffer control.</div>'
+    )
+
+    # Grace period: autosave (debounced) in configured mode
+    _gp_oninput = (
+        "document.getElementById('grace_period_val').textContent=this.value;"
+        "if(liveEnabled) _owntoneNativeDebounced('grace_period', this.value, '/api/owntone/grace-period');"
+    )
+    _grace_period_html = (
+        '<label style="display:block;margin-top:0.75rem;">'
+        '<div class="slider-header">'
+        '<span>mDNS Grace Period (minutes):</span>'
+        f'<span id="grace_period_val">{grace_period_minutes}</span>'
+        '</div>'
+        f'<input type="range" name="device_removal_grace_period_minutes"'
+        f' min="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES}"'
+        f' max="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES}"'
+        f' step="1" value="{grace_period_minutes}"'
+        f' oninput="{html.escape(_gp_oninput)}">'
+        '</label>'
+    ) if grace_period_available else ""
+
     _body_html = (
         page_heading_html
         + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
-        + f"{back_html}"
         + f"<a href='/owntone-setup' class='pill-btn small' style='font-weight:500;border:1px solid #ccc;'>\u21bb Refresh</a>"
         + f"</p>"
         + f"<form id='{owntone_setup_form_id}' method='POST' action='/owntone-setup'>"
@@ -490,23 +548,37 @@ def send_owntone_setup_page(
         + f"<fieldset><legend>Audio</legend>"
         + f"<div style='display:flex;align-items:center;gap:0.75rem;'>"
         + f"<label class='output-toggle' style='margin:0;'>"
-        + f"<input type='checkbox' name='uncompressed_alac' {'checked' if uncompressed else ''}{' disabled' if not uncompressed_supported else ''}>"
+        + _uncomp_input
         + f"<span class='switch'></span>"
         + f"</label>"
         + f"<span>Use uncompressed audio</span>"
         + f"</div>"
         + ('<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else '')
-        + ('<label style="display:block;margin-top:0.75rem;"><div class="slider-header"><span>Start Buffer (ms):</span><span id="start_buffer_val">' + str(start_buffer_ms) + ' ms</span></div><input type="range" name="start_buffer_ms" min="' + str(SETTING_START_BUFFER_MS_MIN) + '" max="' + str(SETTING_START_BUFFER_MS_MAX) + '" step="' + str(SETTING_START_BUFFER_MS_STEP) + '" value="' + str(start_buffer_ms) + '" oninput="document.getElementById(\'start_buffer_val\').textContent=this.value+\' ms\';"></label>' if start_buffer_available else '<div class="storage-meta" style="margin-top:0.75rem;">This backend does not currently expose start-buffer control.</div>')
+        + _buf_html
         + _grace_period_html
         + f"</fieldset>"
         + (f'<p class="actions"><button type="submit">{submit_label}</button></p>' if initial_setup else '')
         + f"</form>"
     )
-    _body_suffix = """\
+    _body_suffix = f"""\
 <script>
-  function onShowToggle(i, checked) {
+  const liveEnabled = {str(not initial_setup).lower()};
+  function onShowToggle(i, checked) {{
     document.getElementById('spk_settings_' + i).style.display = checked ? 'block' : 'none';
-  }
+  }}
+  var _owntoneTimers = {{}};
+  function _owntoneOffsetDebounced(outputId, offsetMs) {{
+    clearTimeout(_owntoneTimers['offset_' + outputId]);
+    _owntoneTimers['offset_' + outputId] = setTimeout(function() {{
+      settingsTransact('/api/owntone/output-offset', {{output_id: outputId, offset_ms: offsetMs}});
+    }}, 300);
+  }}
+  function _owntoneNativeDebounced(key, rawValue, url) {{
+    clearTimeout(_owntoneTimers[key]);
+    _owntoneTimers[key] = setTimeout(function() {{
+      settingsTransact(url, {{value: parseInt(rawValue, 10)}});
+    }}, 500);
+  }}
 </script>"""
     html_body = build_page_html(
         "Owntone Setup",

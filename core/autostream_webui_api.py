@@ -34,9 +34,12 @@ from typing import Optional
 
 from autostream_config import (
     CONFIG_IO_LOCK,
+    DEFAULT_AIRPLAY_MODE,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
     load_config,
+    load_state,
+    normalize_airplay_mode,
     normalize_output_usage_poll_interval,
     normalize_track_id_analysis_lead_in_seconds,
     normalize_track_id_refresh_seconds,
@@ -44,6 +47,7 @@ from autostream_config import (
     normalize_update_channel,
     parse_config,
     save_config,
+    save_state,
 )
 from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_dials import is_dial_authorized
@@ -76,7 +80,7 @@ from autostream_appliance_models import (
     build_equaliser_state,
     build_home_state,
 )
-from autostream_player_service import list_outputs, update_output
+from autostream_player_service import list_outputs, save_setting, update_output
 from autostream_sysutils import get_system_hostname, run_admin_cmd, set_system_hostname
 from urllib.parse import urlparse as _urlparse
 from autostream_webui_common import _config_snapshot, _fallback_input_snapshot
@@ -1620,3 +1624,284 @@ def send_save_now_json(handler, state: WebUIState) -> None:
     except Exception as exc:
         logging.warning("send_save_now_json: save failed: %s", exc)
         send_json(handler, 200, {"ok": False, "error": "Settings could not be saved"})
+
+
+# ---------------------------------------------------------------------------
+# WP7 — OwnTone setup per-field autosave endpoints
+# ---------------------------------------------------------------------------
+
+def _owntone_update_live_runtime(state: WebUIState) -> None:
+    """Re-apply owntone runtime from the current store or config snapshot."""
+    try:
+        snap = _config_snapshot(state)
+        update_live_owntone_runtime(
+            output_name=snap.owntone.output_name,
+            volume_percent=snap.owntone.volume_percent,
+            output_offsets_ms=snap.owntone.output_offsets_ms,
+            output_airplay_modes=snap.owntone.output_airplay_modes,
+        )
+    except Exception:
+        logging.exception("_owntone_update_live_runtime failed")
+
+
+def _owntone_state_update_known_outputs(state: WebUIState, updates: dict[str, str]) -> None:
+    """Race-safe merge of output name updates into the state file.
+
+    Re-reads the state file inside CONFIG_IO_LOCK so that concurrent PIN
+    or other state changes made while network calls were in flight are
+    preserved.
+    """
+    if not updates:
+        return
+    with CONFIG_IO_LOCK:
+        live = load_state(state.state_path)
+        ko = live.setdefault("owntone", {}).setdefault("known_outputs", {})
+        ko.update(updates)
+        save_state(state.state_path, live)
+
+
+def send_owntone_output_visibility_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/output-visibility — show or hide a named output.
+
+    Body: {"output_name": "<name>", "visible": true|false}
+    Optional "output_id" populates known_outputs when provided.
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    output_name = str(payload.get("output_name") or "").strip()
+    if not output_name:
+        send_json(handler, 400, {"ok": False, "error": "output_name required"})
+        return
+    visible = payload.get("visible")
+    if not isinstance(visible, bool):
+        send_json(handler, 400, {"ok": False, "error": "visible must be a boolean"})
+        return
+    output_id = str(payload.get("output_id") or "").strip()
+
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = getattr(state, "settings", None)
+    if not isinstance(_store, _SettingsStore):
+        send_json(handler, 200, {"ok": False, "error": "Settings store unavailable"})
+        return
+
+    def _mutator(raw: dict) -> None:
+        hidden = list(raw.setdefault("webui", {}).get("hidden_outputs") or [])
+        name_cf = output_name.casefold()
+        if visible:
+            hidden = [h for h in hidden if str(h).casefold() != name_cf]
+        else:
+            if not any(str(h).casefold() == name_cf for h in hidden):
+                hidden.append(output_name)
+        raw["webui"]["hidden_outputs"] = hidden
+
+    try:
+        _store.update(_mutator)
+    except Exception:
+        logging.exception("send_owntone_output_visibility_json: store update failed")
+        send_json(handler, 200, {"ok": False, "error": "Internal error"})
+        return
+
+    if output_id:
+        try:
+            _owntone_state_update_known_outputs(state, {output_id: output_name})
+        except Exception:
+            logging.exception("send_owntone_output_visibility_json: known_outputs update failed")
+
+    send_json(handler, 200, {"ok": True, "output_name": output_name, "visible": visible})
+
+
+def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/output-mode — set AirPlay mode for a specific output.
+
+    Body: {"output_id": "<id>", "mode": "default"|"raop"|"airplay2"}
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    output_id = str(payload.get("output_id") or "").strip()
+    if not output_id:
+        send_json(handler, 400, {"ok": False, "error": "output_id required"})
+        return
+    mode_raw = str(payload.get("mode") or DEFAULT_AIRPLAY_MODE).strip().lower()
+    valid_modes = {DEFAULT_AIRPLAY_MODE, "raop", "airplay2"}
+    if mode_raw not in valid_modes:
+        send_json(handler, 400, {"ok": False, "error": f"mode must be one of {sorted(valid_modes)}"})
+        return
+    mode = normalize_airplay_mode(mode_raw)
+
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = getattr(state, "settings", None)
+    if not isinstance(_store, _SettingsStore):
+        send_json(handler, 200, {"ok": False, "error": "Settings store unavailable"})
+        return
+
+    def _mutator(raw: dict) -> None:
+        raw.setdefault("owntone", {}).setdefault("airplay_modes", {})[output_id] = mode
+
+    try:
+        _store.update(_mutator)
+    except Exception:
+        logging.exception("send_owntone_output_mode_json: store update failed")
+        send_json(handler, 200, {"ok": False, "error": "Internal error"})
+        return
+
+    _owntone_update_live_runtime(state)
+    send_json(handler, 200, {"ok": True, "output_id": output_id, "mode": mode})
+
+
+def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/output-offset — set playback offset for a specific output.
+
+    Body: {"output_id": "<id>", "offset_ms": <int>}
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    output_id = str(payload.get("output_id") or "").strip()
+    if not output_id:
+        send_json(handler, 400, {"ok": False, "error": "output_id required"})
+        return
+    raw_offset = payload.get("offset_ms")
+    if isinstance(raw_offset, bool) or not isinstance(raw_offset, (int, float)):
+        send_json(handler, 400, {"ok": False, "error": "offset_ms must be a number"})
+        return
+    offset_ms = max(-2000, min(2000, int(raw_offset)))
+
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = getattr(state, "settings", None)
+    if not isinstance(_store, _SettingsStore):
+        send_json(handler, 200, {"ok": False, "error": "Settings store unavailable"})
+        return
+
+    def _mutator(raw: dict) -> None:
+        raw.setdefault("owntone", {}).setdefault("offsets", {})[output_id] = offset_ms
+
+    try:
+        _store.update(_mutator)
+    except Exception:
+        logging.exception("send_owntone_output_offset_json: store update failed")
+        send_json(handler, 200, {"ok": False, "error": "Internal error"})
+        return
+
+    _owntone_update_live_runtime(state)
+    send_json(handler, 200, {"ok": True, "output_id": output_id, "offset_ms": offset_ms})
+
+
+def _send_owntone_native_setting_json(
+    handler,
+    state: WebUIState,
+    setting_key: str,
+    value: object,
+    restart_threshold_s: float = 0.75,
+) -> None:
+    """Shared implementation for native OwnTone settings (uncompressed, buffer, grace).
+
+    Posts to OwnTone API and optionally triggers an async restart.
+    Returns {"ok": true, "restart_required": true|false}.
+    """
+    try:
+        parsed = _config_snapshot(state)
+        base_url = parsed.owntone.base_url
+    except Exception as exc:
+        send_json(handler, 200, {"ok": False, "error": f"Config unavailable: {exc}"})
+        return
+
+    result = save_setting(base_url, setting_key, value, timeout=5.0)
+    if not result.ok and not result.unsupported:
+        send_json(handler, 200, {"ok": False, "error": result.message or "OwnTone API error"})
+        return
+
+    restart_needed = bool(result.restart_required)
+    if restart_needed:
+        from autostream_webui_page_owntone import start_owntone_restart_async
+        start_owntone_restart_async(state)
+
+    send_json(handler, 200, {"ok": True, "restart_required": restart_needed})
+
+
+def send_owntone_uncompressed_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/uncompressed-audio — toggle ALAC uncompressed audio.
+
+    Body: {"value": true|false}
+    """
+    from autostream_players import SETTING_UNCOMPRESSED_ALAC
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+    value = payload.get("value")
+    if not isinstance(value, bool):
+        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        return
+    _send_owntone_native_setting_json(handler, state, SETTING_UNCOMPRESSED_ALAC, value)
+
+
+def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/start-buffer — set start buffer in milliseconds.
+
+    Body: {"value": <int>}
+    """
+    from autostream_players import (
+        SETTING_START_BUFFER_MS,
+        SETTING_START_BUFFER_MS_DEFAULT,
+        SETTING_START_BUFFER_MS_MAX,
+        SETTING_START_BUFFER_MS_MIN,
+        SETTING_START_BUFFER_MS_STEP,
+    )
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+    raw = payload.get("value")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        send_json(handler, 400, {"ok": False, "error": "value must be a number"})
+        return
+    value = max(
+        SETTING_START_BUFFER_MS_MIN,
+        min(
+            SETTING_START_BUFFER_MS_MAX,
+            round(int(raw) / SETTING_START_BUFFER_MS_STEP) * SETTING_START_BUFFER_MS_STEP,
+        ),
+    )
+    _send_owntone_native_setting_json(handler, state, SETTING_START_BUFFER_MS, value)
+
+
+def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/grace-period — set mDNS grace period in minutes.
+
+    Body: {"value": <int>}  (minutes; converted to seconds for OwnTone API)
+    """
+    from autostream_players import (
+        SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
+        SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
+        SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
+        SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
+    )
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+    raw = payload.get("value")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        send_json(handler, 400, {"ok": False, "error": "value must be a number"})
+        return
+    minutes = max(
+        SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
+        min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, int(raw)),
+    )
+    _send_owntone_native_setting_json(
+        handler, state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, minutes * 60
+    )

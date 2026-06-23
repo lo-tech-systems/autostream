@@ -76,6 +76,12 @@ from autostream_webui_api import (
     send_status_json,
     send_update_check_json,
     send_update_status_json,
+    send_owntone_output_visibility_json,
+    send_owntone_output_mode_json,
+    send_owntone_output_offset_json,
+    send_owntone_uncompressed_json,
+    send_owntone_start_buffer_json,
+    send_owntone_grace_period_json,
 )
 import autostream_federation
 from autostream_webui_dials import (
@@ -761,6 +767,30 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             send_save_now_json(self, STATE)
+
+        elif path == "/api/owntone/output-visibility":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_owntone_output_visibility_json(self, STATE, body_str)
+
+        elif path == "/api/owntone/output-mode":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_owntone_output_mode_json(self, STATE, body_str)
+
+        elif path == "/api/owntone/output-offset":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_owntone_output_offset_json(self, STATE, body_str)
+
+        elif path == "/api/owntone/uncompressed-audio":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_owntone_uncompressed_json(self, STATE, body_str)
+
+        elif path == "/api/owntone/start-buffer":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_owntone_start_buffer_json(self, STATE, body_str)
+
+        elif path == "/api/owntone/grace-period":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_owntone_grace_period_json(self, STATE, body_str)
 
         elif path == "/api/output_eq/config":
             if not body_str:
