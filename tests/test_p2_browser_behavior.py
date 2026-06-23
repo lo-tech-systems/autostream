@@ -231,30 +231,27 @@ XSS_PAYLOADS = [
 
 
 class TestDialCardHtmlEscaping:
-    """Dial card generation functions must escape user-controlled strings."""
+    """_dial_card_html must escape all user-controlled strings."""
 
     def _setup_stubs(self):
         sys.path.insert(0, str(REPO_ROOT / "core"))
 
     def test_new_dial_card_escapes_uuid(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_new_html
-        sighting = MagicMock()
-        sighting.uuid = '<script>bad</script>'
-        sighting.name = "safe"
-        result = _dial_card_new_html(sighting)
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid='<script>bad</script>', name="safe", authorized=False, online=True
+        )
         assert '<script>' not in result
         assert '&lt;script&gt;' in result
 
     def test_new_dial_card_escapes_name(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_new_html
+        from autostream_webui_page_setup import _dial_card_html
         for payload in XSS_PAYLOADS:
-            sighting = MagicMock()
-            sighting.uuid = "safe-uuid"
-            sighting.name = payload
-            result = _dial_card_new_html(sighting)
-            # Raw unescaped payload must not appear verbatim if it contains HTML.
+            result = _dial_card_html(
+                uuid="safe-uuid", name=payload, authorized=False, online=True
+            )
             if "<" in payload or ">" in payload or "&" in payload:
                 assert payload not in result, (
                     f"Unescaped XSS payload in dial card name: {payload!r}"
@@ -262,27 +259,25 @@ class TestDialCardHtmlEscaping:
 
     def test_offline_dial_card_escapes_name(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_offline_html
-        entry = MagicMock()
-        entry.uuid = "safe-uuid"
-        entry.current_name = '<img src=x onerror=alert(1)>'
-        entry.name = "safe"
-        entry.last_seen = "2026-01-01T00:00:00"
-        result = _dial_card_offline_html(entry)
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="safe-uuid",
+            name='<img src=x onerror=alert(1)>',
+            authorized=True,
+            online=False,
+            last_seen="2026-01-01T00:00:00",
+        )
         assert '<img src=x onerror=alert(1)>' not in result
 
     def test_online_dial_card_escapes_name(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_online_html
-        entry = MagicMock()
-        entry.uuid = "safe-uuid"
-        entry.current_name = '"><script>xss</script>'
-        entry.name = "safe"
-        sighting = MagicMock()
-        sighting.uuid = "safe-uuid"
-        sighting.name = "safe"
-        sighting.version = "1.0"
-        result = _dial_card_online_html(entry, sighting, "1.0")
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="safe-uuid",
+            name='"><script>xss</script>',
+            authorized=True,
+            online=True,
+        )
         assert '"><script>xss</script>' not in result
 
 
@@ -571,3 +566,316 @@ class TestSetupPageScriptRendering:
         assert scripts, "No <script> blocks found in setup page"
         for i, script in enumerate(scripts):
             _check_js_syntax(script, f"setup page script #{i}")
+
+
+# ---------------------------------------------------------------------------
+# §7.6  Dial card HTML structure and in-place update JS contract
+# ---------------------------------------------------------------------------
+
+class TestDialCardHtmlStructure:
+    """Structural checks on _dial_card_html output and setup page JS contract."""
+
+    def _setup_stubs(self):
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+
+    # ── _dial_card_html output ───────────────────────────────────────────────
+
+    def test_authorized_card_has_data_authorized_true(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'data-authorized="true"' in result
+
+    def test_unauthorized_card_has_data_authorized_false(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="New Dial", authorized=False, online=False)
+        assert 'data-authorized="false"' in result
+
+    def test_online_card_has_data_online_true(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'data-online="true"' in result
+
+    def test_offline_card_has_data_online_false(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=False)
+        assert 'data-online="false"' in result
+
+    def test_unauthorized_card_has_data_new(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="", authorized=False, online=False)
+        assert "data-new" in result
+
+    def test_authorized_card_dial_config_not_hidden(self):
+        """Authorized cards must have .dial-config visible (no display:none)."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        # Find .dial-config section and confirm display:none is not on it
+        idx = result.find("dial-config")
+        assert idx >= 0, ".dial-config not found in authorized card"
+        # The opening tag of .dial-config should not contain display:none
+        tag_end = result.find(">", idx)
+        tag = result[max(0, idx - 50):tag_end + 1]
+        assert "display:none" not in tag and "display: none" not in tag
+
+    def test_unauthorized_card_dial_config_is_hidden(self):
+        """Unauthorized cards must have .dial-config hidden (display:none)."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="", authorized=False, online=False)
+        idx = result.find("dial-config")
+        assert idx >= 0, ".dial-config not found in unauthorized card"
+        tag_end = result.find(">", idx)
+        tag = result[max(0, idx - 50):tag_end + 1]
+        assert "display:none" in tag or "display: none" in tag
+
+    def test_dial_name_input_present_in_all_cards(self):
+        """The .dial-name input must appear in both authorized and unauthorized cards."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        for auth in (True, False):
+            result = _dial_card_html(uuid="u1", name="Test", authorized=auth, online=False)
+            assert "dial-name" in result, f"dial-name missing for authorized={auth}"
+
+    def test_allow_toggle_present_in_all_cards(self):
+        """The .dial-allow toggle must appear in every card."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        for auth in (True, False):
+            result = _dial_card_html(uuid="u1", name="Test", authorized=auth, online=False)
+            assert "dial-allow" in result, f"dial-allow missing for authorized={auth}"
+
+    # ── JS function presence in rendered page ────────────────────────────────
+
+    def test_set_dial_authorized_function_present(self):
+        src = _setup_page_src()
+        assert "function setDialAuthorized" in src
+
+    def test_refresh_dials_card_sub_function_present(self):
+        src = _setup_page_src()
+        assert "function refreshDialsCardSub" in src
+
+    def test_refresh_setup_card_subs_calls_dials(self):
+        src = _setup_page_src()
+        assert "refreshDialsCardSub" in src
+
+    def test_dials_card_sub_id_in_rendered_page(self):
+        html_out = _render_setup_page()
+        assert 'id="dials-card-sub"' in html_out
+
+    # ── No location.reload() in authorize/revoke flows ───────────────────────
+
+    def test_dial_toggle_allow_no_page_reload(self):
+        """dialToggleAllow must not call location.reload() — it does in-place DOM updates."""
+        src = _setup_page_src()
+        # Find dialToggleAllow body
+        start = src.find("function dialToggleAllow")
+        assert start >= 0, "dialToggleAllow not found"
+        # Find the next top-level function to bound the search
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        assert "location.reload" not in body, (
+            "dialToggleAllow must not call location.reload(); use setDialAuthorized() instead"
+        )
+
+    def test_dial_revoke_no_page_reload(self):
+        """dialRevoke must not call location.reload() — it does in-place DOM updates."""
+        src = _setup_page_src()
+        start = src.find("function dialRevoke")
+        assert start >= 0, "dialRevoke not found"
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        assert "location.reload" not in body, (
+            "dialRevoke must not call location.reload(); use setDialAuthorized() instead"
+        )
+
+    def test_dial_toggle_allow_calls_set_dial_authorized(self):
+        src = _setup_page_src()
+        start = src.find("function dialToggleAllow")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        assert "setDialAuthorized" in body, (
+            "dialToggleAllow must call setDialAuthorized() to expand the card in place"
+        )
+
+    def test_dial_revoke_calls_set_dial_authorized(self):
+        src = _setup_page_src()
+        start = src.find("function dialRevoke")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        assert "setDialAuthorized" in body, (
+            "dialRevoke must call setDialAuthorized() to collapse the card in place"
+        )
+
+    def test_dial_toggle_allow_calls_refresh_dials_card_sub(self):
+        src = _setup_page_src()
+        start = src.find("function dialToggleAllow")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        assert "refreshDialsCardSub" in body
+
+    def test_dial_revoke_calls_refresh_dials_card_sub(self):
+        src = _setup_page_src()
+        start = src.find("function dialRevoke")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        assert "refreshDialsCardSub" in body
+
+    # ── setDialAuthorized structure ──────────────────────────────────────────
+
+    def test_set_dial_authorized_updates_data_authorized(self):
+        src = _setup_page_src()
+        start = src.find("function setDialAuthorized")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 2000]
+        assert "dataset.authorized" in body
+
+    def test_set_dial_authorized_updates_dial_config_visibility(self):
+        src = _setup_page_src()
+        start = src.find("function setDialAuthorized")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 2000]
+        assert "dial-config" in body
+        assert "display" in body
+
+    def test_set_dial_authorized_updates_badge(self):
+        src = _setup_page_src()
+        start = src.find("function setDialAuthorized")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 2000]
+        assert "dial-badge" in body
+
+    # ── focusout guard prevents save on unauthorized cards ───────────────────
+
+    def test_focusout_guards_authorized_before_save_config(self):
+        """focusout on .dial-name must check authorized before calling dialSaveConfig."""
+        src = _setup_page_src()
+        # Find focusout handler block
+        idx = src.find("focusout")
+        assert idx >= 0, "focusout handler not found"
+        # Find the block that references dialSaveConfig
+        save_idx = src.find("dialSaveConfig", idx)
+        assert save_idx >= 0
+        # The authorized check must appear between focusout and dialSaveConfig
+        authorized_idx = src.find("authorized", idx)
+        assert authorized_idx >= 0 and authorized_idx < save_idx, (
+            "authorized check must appear before dialSaveConfig in focusout handler"
+        )
+
+    # ── No Revoke button in .dial-config ────────────────────────────────────
+
+    def test_no_revoke_button_in_dial_config(self):
+        """The Revoke button must not appear in .dial-config; toggle is the only revoke path."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        # data-dial-action="revoke" must not appear in the config area
+        assert 'data-dial-action="revoke"' not in result
+
+    def test_revoke_button_absent_in_source(self):
+        """The source must not define a Revoke button element."""
+        src = _setup_page_src()
+        assert 'data-dial-action="revoke"' not in src
+
+    # ── dialRevoke failure restores toggle ───────────────────────────────────
+
+    def test_dial_revoke_failure_restores_toggle(self):
+        """dialRevoke must restore .dial-allow.checked=true on server error."""
+        src = _setup_page_src()
+        start = src.find("function dialRevoke")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        # Must have an else/catch branch that sets checked = true
+        assert "cb.checked = true" in body or "checked = true" in body, (
+            "dialRevoke must restore allow toggle to checked=true on failure"
+        )
+
+    def test_dial_revoke_catch_restores_toggle(self):
+        """dialRevoke catch block must also restore .dial-allow.checked=true."""
+        src = _setup_page_src()
+        start = src.find("function dialRevoke")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 3000]
+        # The catch block must restore the toggle — count two occurrences
+        assert body.count("checked = true") >= 2, (
+            "dialRevoke needs checked=true in both the else branch and the catch block"
+        )
+
+    # ── setDialAuthorized maintains data-new ────────────────────────────────
+
+    def test_set_dial_authorized_removes_data_new_on_authorize(self):
+        src = _setup_page_src()
+        start = src.find("function setDialAuthorized")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 2000]
+        assert "delete card.dataset.new" in body or "dataset.new" in body, (
+            "setDialAuthorized must clear data-new when authorizing"
+        )
+
+    def test_set_dial_authorized_adds_data_new_on_revoke(self):
+        src = _setup_page_src()
+        start = src.find("function setDialAuthorized")
+        assert start >= 0
+        next_fn = src.find("\nfunction ", start + 1)
+        body = src[start:next_fn] if next_fn > 0 else src[start:start + 2000]
+        # Both delete (authorize) and set (revoke) must be present
+        assert "dataset.new = 'true'" in body or 'dataset.new = "true"' in body, (
+            "setDialAuthorized must set data-new='true' when revoking"
+        )
+
+    # ── Firmware update button available immediately after authorize ──────────
+
+    def test_new_card_fw_update_btn_inside_dial_config(self):
+        """Unauthorized cards with a pending update must have Update firmware in .dial-config."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="New Dial", authorized=False, online=True,
+            fw_version="1.0.0", needs_update=True,
+        )
+        assert "Update firmware" in result, (
+            "Unauthorized card with needs_update=True must include Update firmware button "
+            "inside .dial-config so it is visible immediately after in-place authorize"
+        )
+
+    def test_authorized_card_fw_update_btn_present(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True,
+            fw_version="1.0.0", needs_update=True,
+        )
+        assert "Update firmware" in result
+
+    def test_no_fw_update_btn_when_not_needed(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True,
+            fw_version="2.0.0", needs_update=False,
+        )
+        assert "Update firmware" not in result
+
+    def test_no_fw_update_btn_when_offline(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=False,
+            fw_version="1.0.0", needs_update=True,
+        )
+        assert "Update firmware" not in result

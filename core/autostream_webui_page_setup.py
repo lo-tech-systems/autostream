@@ -167,132 +167,114 @@ def _relative_time(iso_str: str) -> str:
         return "unknown"
 
 
-def _dial_card_new_html(sighting) -> str:
-    """Card for a dial seen on the network but not yet authorized."""
-    su = html.escape(sighting.uuid)
-    nv = html.escape(sighting.name or "")
-    return settings_card_html(f"""
-          <div class="dial-card" data-dial-uuid="{su}" data-pin-set="false">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
-            <span style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;">UUID: {su}</span>
-            <span class="dial-badge dial-badge-new">New</span>
-          </div>
-          <label style="display:block;margin-top:0.5rem;">Name
-            <input type="text" class="dial-name" value="{nv}"
-                   placeholder="e.g. Hallway Dial" style="margin-top:0.25rem;">
-          </label>
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" class="dial-allow" data-dial-action="toggle-allow">
-              <span class="switch"></span>
-            </label>
-            <span>Allow control</span>
-          </div>
-          <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
-          </div>
-        """, margin_top="0")
+def _dial_card_html(
+    *,
+    uuid: str,
+    name: str = "",
+    authorized: bool,
+    online: bool,
+    last_seen: str = "",
+    fw_version: str = "",
+    needs_update: bool = False,
+) -> str:
+    """Normalised dial card for any authorization/online state.
 
+    Root element attributes allow JS to update cards in place without reload:
+      data-authorized  "true" | "false"
+      data-online      "true" | "false"
+      data-new         present when authorized is False
+    """
+    su = html.escape(uuid)
+    nv = html.escape(name or "")
 
-def _dial_card_offline_html(entry) -> str:
-    """Card for an authorized dial that is currently offline."""
-    su = html.escape(entry.uuid)
-    dn = html.escape(entry.current_name or entry.name)
-    ls = html.escape(_relative_time(entry.last_seen))
-    return settings_card_html(f"""
-          <div class="dial-card" data-dial-uuid="{su}" data-pin-set="false">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
-            <span class="dial-card-title">{dn}</span>
-            <span class="dial-badge dial-badge-offline">Offline</span>
-          </div>
-          <div style="font-size:0.75rem;color:var(--color-text-muted);margin-top:0.25rem;">
-            Last seen: {ls}
-          </div>
-          <div style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;margin-top:0.25rem;">
-            UUID: {su}
-          </div>
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" class="dial-allow" data-dial-action="toggle-allow" checked>
-              <span class="switch"></span>
-            </label>
-            <span>Allow control</span>
-            <button type="button" class="pill-btn small" style="margin-left:auto;"
-                    data-dial-action="revoke">Revoke</button>
-          </div>
-          <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
-          </div>
-        """, margin_top="0")
+    if authorized and online:
+        badge_cls, badge_text = "dial-badge-online", "Online"
+    elif authorized:
+        badge_cls, badge_text = "dial-badge-offline", "Offline"
+    else:
+        badge_cls, badge_text = "dial-badge-new", "New"
 
-
-def _dial_card_online_html(entry, sighting, app_version: str) -> str:
-    """Card for an authorized dial that is currently online."""
-    su = html.escape(entry.uuid)
-    dn = html.escape(entry.current_name or entry.name or sighting.name)
-    fw = html.escape(sighting.version or "")
-    nv = html.escape(entry.current_name or entry.name or sighting.name)
-    needs_update = bool(sighting.version and app_version and sighting.version != app_version)
-    update_btn = (
-        f'<button type="button" class="pill-btn small" style="flex-shrink:0;"'
-        f' data-dial-action="update">Update firmware</button>'
-    ) if needs_update else ""
+    title_text = html.escape(name if name else uuid[:16])
     fw_span = (
         f'<span style="font-size:0.75rem;color:var(--color-text-muted);'
-        f'margin-left:0.4rem;">· Firmware {fw}</span>'
-    ) if fw else ""
+        f'margin-left:0.4rem;">· Firmware {html.escape(fw_version)}</span>'
+    ) if (fw_version and authorized and online) else ""
+    allow_checked = " checked" if authorized else ""
+    config_display = "" if authorized else ' style="display:none;"'
+    data_new = ' data-new="true"' if not authorized else ""
+    last_seen_html = ""
+    if authorized and not online and last_seen:
+        ls = html.escape(_relative_time(last_seen))
+        last_seen_html = (
+            f'<div style="font-size:0.75rem;color:var(--color-text-muted);'
+            f'margin-top:0.25rem;">Last seen: {ls}</div>'
+        )
+    fw_update_btn = (
+        '<button type="button" class="pill-btn small" style="flex-shrink:0;"'
+        ' data-dial-action="update">Update firmware</button>\n                '
+    ) if (online and needs_update) else ""
+
     return settings_card_html(f"""
-          <div class="dial-card" data-dial-uuid="{su}" data-pin-set="false">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
-            <div><span class="dial-card-title">{dn}</span>{fw_span}</div>
-            <div style="display:flex;gap:0.4rem;align-items:center;flex-shrink:0;">
-              {update_btn}<span class="dial-badge dial-badge-online">Online</span>
+          <div class="dial-card" data-dial-uuid="{su}"
+               data-authorized="{'true' if authorized else 'false'}"
+               data-online="{'true' if online else 'false'}"{data_new}
+               data-pin-set="false">
+            <div class="dial-card-top"
+                 style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;flex-wrap:wrap;">
+              <div>
+                <span class="dial-card-title">{title_text}</span>{fw_span}
+                <span class="dial-badge {badge_cls}">{badge_text}</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-left:auto;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" class="dial-allow"
+                         data-dial-action="toggle-allow"{allow_checked}>
+                  <span class="switch"></span>
+                </label>
+                <span>Allow Control</span>
+              </div>
             </div>
-          </div>
-          <div style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;margin-top:0.25rem;">
-            UUID: {su}
-          </div>
-          <label style="display:block;margin-top:0.5rem;">Name
-            <input type="text" class="dial-name" value="{nv}"
-                   placeholder="Display name" style="margin-top:0.25rem;"
-                   data-dial-action="save-config">
-          </label>
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
-            Step
-            <input type="number" class="dial-step" min="1" max="10" value="2"
-                   style="width:3.5rem;" data-dial-action="save-config">
-            <span>% per click</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" class="dial-allow" data-dial-action="toggle-allow" checked>
-              <span class="switch"></span>
+            {last_seen_html}<div style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;margin-top:0.25rem;">UUID: {su}</div>
+            <label style="display:block;margin-top:0.5rem;">Name
+              <input type="text" class="dial-name" value="{nv}"
+                     placeholder="e.g. Hallway Dial" style="margin-top:0.25rem;"
+                     data-dial-action="save-config">
             </label>
-            <span>Allow control</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" class="dial-autoupdate" data-dial-action="save-config">
-              <span class="switch"></span>
-            </label>
-            <span>Auto-update</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" class="dial-channel" data-dial-action="save-config">
-              <span class="switch"></span>
-            </label>
-            <span>Pre-release updates</span>
-          </div>
-          <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
-            <button type="button" class="pill-btn small"
-                    data-dial-action="change-pin">Change PIN</button>
-            <button type="button" class="pill-btn small"
-                    data-dial-action="recover-pin">Reset lost PIN</button>
-            <button type="button" class="pill-btn small" style="margin-left:auto;"
-                    data-dial-action="revoke">Revoke</button>
-          </div>
-          <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
+            <div class="dial-config"{config_display}>
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
+                Step
+                <input type="number" class="dial-step" min="1" max="10" value="2"
+                       style="width:3.5rem;" data-dial-action="save-config">
+                <span>% per click</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" class="dial-autoupdate" data-dial-action="save-config">
+                  <span class="switch"></span>
+                </label>
+                <span>Auto-update</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                <label class="output-toggle" style="margin:0;">
+                  <input type="checkbox" class="dial-channel" data-dial-action="save-config">
+                  <span class="switch"></span>
+                </label>
+                <span>Pre-release updates</span>
+              </div>
+              <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
+                {fw_update_btn}<button type="button" class="pill-btn small"
+                        data-dial-action="change-pin">Change PIN</button>
+                <button type="button" class="pill-btn small"
+                        data-dial-action="recover-pin">Reset lost PIN</button>
+              </div>
+            </div>
+            <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
           </div>
         """, margin_top="0")
+
+
+
+
 
 
 # -----------------------------------------------------------------------------
@@ -861,21 +843,40 @@ def send_setup_page(
     _dial_cards_html = ""
     for _entry in _authorized_entries:
         _sighting = _sightings_by_uuid.get(_entry.uuid)
-        if _sighting:
-            _dial_cards_html += _dial_card_online_html(_entry, _sighting, _app_ver)
-        else:
-            _dial_cards_html += _dial_card_offline_html(_entry)
+        _is_online = _sighting is not None
+        _name = _entry.current_name or _entry.name or (_sighting.name if _sighting else "")
+        _fw = (_sighting.version or "") if _sighting else ""
+        _needs_upd = bool(_sighting and _sighting.version and _app_ver and _sighting.version != _app_ver)
+        _ls = str(getattr(_entry, "last_seen", "") or "")
+        _dial_cards_html += _dial_card_html(
+            uuid=_entry.uuid,
+            name=_name,
+            authorized=True,
+            online=_is_online,
+            last_seen=_ls,
+            fw_version=_fw,
+            needs_update=_needs_upd,
+        )
     for _sighting in _all_sightings:
         if _sighting.uuid not in _authorized_uuids:
-            _dial_cards_html += _dial_card_new_html(_sighting)
+            _new_fw = _sighting.version or ""
+            _new_needs_upd = bool(_new_fw and _app_ver and _new_fw != _app_ver)
+            _dial_cards_html += _dial_card_html(
+                uuid=_sighting.uuid,
+                name=_sighting.name or "",
+                authorized=False,
+                online=True,
+                fw_version=_new_fw,
+                needs_update=_new_needs_upd,
+            )
     if not _dial_cards_html:
         _dial_cards_html = (
             "<p style='color:var(--color-text-muted);font-style:italic;margin-top:0.5rem;'>"
             "No dials found on the network.</p>"
         )
     _dial_onload_js = (
-        "document.querySelectorAll('.dial-card .dial-step').forEach(function(el) { "
-        "dialLoadConfig(el.closest('.dial-card')); });"
+        'document.querySelectorAll(\'.dial-card[data-authorized="true"]\').forEach(function(card) { '
+        "dialLoadConfig(card); });"
     )
 
     form_content_html = f"""<div class="setup-slide-viewport">
@@ -914,7 +915,7 @@ def send_setup_page(
       <div class="setup-list-card" onclick="openPanel('dials')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Dials</span>
-          <span class="setup-list-card-sub">{_dials_summary}</span>
+          <span class="setup-list-card-sub" id="dials-card-sub">{_dials_summary}</span>
         </div>
         <span class="setup-list-chevron">\u203a</span>
       </div>
@@ -1611,6 +1612,7 @@ def send_setup_page(
           refreshTrackIdCardSub();
           refreshCustomiseCardSub();
           refreshSystemCardSub();
+          refreshDialsCardSub();
         }}
         function closePanel() {{
           refreshSetupCardSubs();
@@ -1624,6 +1626,48 @@ def send_setup_page(
         var _dialPinRecoveryTimer = null;
         var _dialPinModalCard = null;
         var _dialPinModalMode = null; // 'change' | 'recovery-wait' | 'recovery-set'
+
+        function setDialAuthorized(card, authorized) {{
+          card.dataset.authorized = authorized ? 'true' : 'false';
+          if (authorized) {{ delete card.dataset.new; }} else {{ card.dataset.new = 'true'; }}
+          var allow = card.querySelector('.dial-allow');
+          if (allow) allow.checked = authorized;
+          var config = card.querySelector('.dial-config');
+          if (config) config.style.display = authorized ? '' : 'none';
+          var badge = card.querySelector('.dial-badge');
+          if (badge) {{
+            var online = card.dataset.online === 'true';
+            badge.className = 'dial-badge ' + (authorized
+              ? (online ? 'dial-badge-online' : 'dial-badge-offline')
+              : 'dial-badge-new');
+            badge.textContent = authorized ? (online ? 'Online' : 'Offline') : 'New';
+          }}
+          if (authorized) {{
+            var titleEl = card.querySelector('.dial-card-title');
+            var nameInput = card.querySelector('.dial-name');
+            if (titleEl && nameInput && nameInput.value.trim()) {{
+              titleEl.textContent = nameInput.value.trim();
+            }}
+          }}
+        }}
+        function refreshDialsCardSub() {{
+          var sub = document.getElementById('dials-card-sub');
+          if (!sub) return;
+          var all = document.querySelectorAll('.dial-card');
+          var nAuth = 0, nOnline = 0, nNew = 0;
+          all.forEach(function(c) {{
+            if (c.dataset.authorized === 'true') {{
+              nAuth++;
+              if (c.dataset.online === 'true') nOnline++;
+            }} else {{ nNew++; }}
+          }});
+          var text;
+          if (nAuth === 0 && nNew === 0) {{ text = 'No dials'; }}
+          else if (nAuth === 0) {{ text = nNew + ' new'; }}
+          else if (nNew > 0) {{ text = nAuth + ' authorized · ' + nNew + ' new'; }}
+          else {{ text = nAuth + ' authorized' + (nOnline ? ' · ' + nOnline + ' online' : ''); }}
+          sub.textContent = text;
+        }}
 
         function dialUUID(card) {{
           return card ? (card.dataset.dialUuid || '') : '';
@@ -1673,8 +1717,13 @@ def send_setup_page(
             var name = ((nameEl ? nameEl.value : '') || uuid.slice(0, 8)).trim();
             try {{
               var result = await _dialPost('/api/dial/authorize', {{uuid: uuid, name: name}});
-              if (result.ok) {{ dialMsg(card, 'Authorized', true); setTimeout(function(){{ location.reload(); }}, 800); }}
-              else {{
+              if (result.ok) {{
+                setDialAuthorized(card, true);
+                dialLoadConfig(card);
+                refreshDialsCardSub();
+                dialMsg(card, 'Authorized', true);
+                setTimeout(function() {{ dialMsg(card, '', true); }}, 2000);
+              }} else {{
                 dialMsg(card, _dialErrorMessage(result.error), false);
                 var cb = card.querySelector('.dial-allow');
                 if (cb) cb.checked = false;
@@ -1699,9 +1748,21 @@ def send_setup_page(
           if (!uuid) return;
           try {{
             var result = await _dialPost('/api/dial/revoke', {{uuid: uuid}});
-            if (result.ok) {{ dialMsg(card, 'Revoked', true); setTimeout(function(){{ location.reload(); }}, 800); }}
-            else dialMsg(card, _dialErrorMessage(result.error), false);
-          }} catch(e) {{ dialMsg(card, 'Network error', false); }}
+            if (result.ok) {{
+              setDialAuthorized(card, false);
+              refreshDialsCardSub();
+              dialMsg(card, 'Revoked', true);
+              setTimeout(function() {{ dialMsg(card, '', true); }}, 2000);
+            }} else {{
+              dialMsg(card, _dialErrorMessage(result.error), false);
+              var cb = card.querySelector('.dial-allow');
+              if (cb) cb.checked = true;
+            }}
+          }} catch(e) {{
+            dialMsg(card, 'Network error', false);
+            var cb = card.querySelector('.dial-allow');
+            if (cb) cb.checked = true;
+          }}
         }}
 
         async function dialSaveConfig(card) {{
@@ -1886,6 +1947,7 @@ def send_setup_page(
                 ev.target.dataset.dialAction === 'save-config'
                 && !ev.target.classList.contains('dial-autoupdate')
                 && !ev.target.classList.contains('dial-channel')
+                && card.dataset.authorized === 'true'
               ) {{
                 dialSaveConfig(card);
               }}
