@@ -638,14 +638,14 @@ class TestAutosaveJs:
         from autostream_webui_assets import AUTOSAVE_JS
         assert AUTOSAVE_JS.count("{") == AUTOSAVE_JS.count("}")
 
-    def test_autosave_js_shows_restart_message_on_live_false(self):
-        """When the server returns ok:true but live:false, JS must show 'restart to apply'."""
+    def test_autosave_js_shows_live_failure_message_on_live_false(self):
+        """When the server returns ok:true but live:false, JS must show a live-failure message."""
         from autostream_webui_assets import AUTOSAVE_JS
         assert "d.live === false" in AUTOSAVE_JS, (
             "Autosave JS must check d.live to distinguish save-only from live success"
         )
-        assert "restart to apply" in AUTOSAVE_JS, (
-            "Autosave JS must display a 'restart to apply' message when live effect failed"
+        assert "could not apply live" in AUTOSAVE_JS, (
+            "Autosave JS must display 'could not apply live' when live effect failed"
         )
 
     def test_autosave_js_balanced_parens(self):

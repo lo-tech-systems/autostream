@@ -1791,11 +1791,11 @@ AUTOSAVE_JS = """
         delete _pendingRequests[field];
       }
       if (d.ok) {
-        var statusMsg = (d.live === false) ? 'Saved (restart to apply)' : 'Saved';
+        var statusMsg = (d.live === false) ? 'Saved (could not apply live)' : 'Saved';
         if (!_hasPending()) _setStatus(statusMsg);
         setTimeout(function() {
           var el = _getStatus();
-          if (el && (el.textContent === 'Saved' || el.textContent === 'Saved (restart to apply)')) el.textContent = '';
+          if (el && (el.textContent === 'Saved' || el.textContent === 'Saved (could not apply live)')) el.textContent = '';
         }, 2000);
       } else {
         _setStatus('Could not save — ' + (d.error || 'error'));
