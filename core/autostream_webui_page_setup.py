@@ -740,7 +740,7 @@ def send_setup_page(
           </div>
           <div class="setup-customise-row" style="margin-top:0.75rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)">
+              <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="applyDarkMode(this.checked); refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)">
               <span class="switch"></span>
             </label>
             <span>Dark Mode</span>
@@ -1594,6 +1594,9 @@ def send_setup_page(
           if (!sub) return;
           var cb = document.getElementById('track_identification_enabled');
           sub.textContent = (cb && cb.checked) ? 'On' : 'Off';
+        }}
+        function applyDarkMode(enabled) {{
+          document.documentElement.setAttribute('data-theme', enabled ? 'dark' : 'light');
         }}
         function refreshSystemCardSub() {{
           var sub = document.getElementById('system-card-sub');
