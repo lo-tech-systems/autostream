@@ -820,3 +820,181 @@ class TestTopLevelExceptionHandling:
         assert decoded.get("ok") is False
         assert decoded.get("error") == "system_info_unavailable"
         assert "internal secret" not in body.decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# WP3 tests — About page renders without live probes; DOM IDs and JS present
+# ---------------------------------------------------------------------------
+
+_REQUIRED_IDS = [
+    "aboutBuildAutostream",
+    "aboutBuildMonitor",
+    "aboutBuildOwntone",
+    "aboutBuildVibra",
+    "aboutPlaybackHours",
+    "aboutCpuTemperature",
+    "aboutDiskSection",
+    "aboutDiskLabel",
+    "aboutDiskBar",
+    "aboutDiskMeta",
+    "aboutSdSection",
+    "aboutSdLabel",
+    "aboutSdBar",
+    "aboutServices",
+]
+
+_FIXED_UNITS = [unit for unit, _ in _about._SERVICES]
+
+
+def _render_about_page_html() -> str:
+    """Render the About page and return the full HTML string."""
+    import io
+    handler = MagicMock()
+    buf = io.BytesIO()
+    handler.wfile = buf
+    state = MagicMock()
+
+    with patch("autostream_webui_page_about.get_app_version", return_value="1.2.3"), \
+         patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
+         patch("autostream_webui_page_about._config_snapshot", return_value=None), \
+         patch("autostream_webui_page_about.load_license_text", return_value=""), \
+         patch("autostream_webui_page_about.render_license_md", return_value=""):
+        _about.send_about_page(handler, state)
+
+    return buf.getvalue().decode("utf-8")
+
+
+class TestAboutPageDomIds:
+
+    def setup_method(self):
+        self._html = _render_about_page_html()
+
+    def test_all_required_ids_present(self):
+        for dom_id in _REQUIRED_IDS:
+            assert f"id='{dom_id}'" in self._html or f'id="{dom_id}"' in self._html, (
+                f"Required DOM ID '{dom_id}' not found in About page HTML"
+            )
+
+    def test_vibra_mini_build_row_present(self):
+        assert "aboutBuildVibra" in self._html
+
+    def test_services_heading_present(self):
+        assert "Services" in self._html
+        assert "about-services-heading" in self._html
+
+
+class TestAboutPageDiskSdInitiallyHidden:
+
+    def setup_method(self):
+        self._html = _render_about_page_html()
+
+    def test_disk_section_initially_hidden(self):
+        assert "id='aboutDiskSection'" in self._html or 'id="aboutDiskSection"' in self._html
+        # The section must carry display:none so it starts hidden.
+        import re
+        m = re.search(r"id=['\"]aboutDiskSection['\"][^>]*>|id=['\"]aboutDiskSection['\"][^<]*style=[^>]*", self._html)
+        assert m is not None
+        surrounding = self._html[max(0, m.start() - 20): m.end() + 40]
+        assert "display:none" in surrounding or "display: none" in surrounding, (
+            f"aboutDiskSection should start with display:none; got: {surrounding!r}"
+        )
+
+    def test_sd_section_initially_hidden(self):
+        import re
+        m = re.search(r"id=['\"]aboutSdSection['\"]", self._html)
+        assert m is not None
+        surrounding = self._html[max(0, m.start() - 20): m.end() + 40]
+        assert "display:none" in surrounding or "display: none" in surrounding, (
+            f"aboutSdSection should start with display:none; got: {surrounding!r}"
+        )
+
+
+class TestAboutPageAccessibility:
+
+    def test_aria_live_polite_on_system_info_container(self):
+        html = _render_about_page_html()
+        assert "aria-live='polite'" in html or 'aria-live="polite"' in html, (
+            "aria-live='polite' must be present on the System Info container"
+        )
+
+
+class TestAboutPageServiceRows:
+
+    def setup_method(self):
+        self._html = _render_about_page_html()
+
+    def test_all_six_service_units_present(self):
+        for unit in _FIXED_UNITS:
+            assert f"data-service-unit='{unit}'" in self._html or \
+                   f'data-service-unit="{unit}"' in self._html, (
+                f"Service unit '{unit}' not found in About page HTML"
+            )
+
+    def test_service_rows_have_loading_class(self):
+        assert "about-svc-loading" in self._html
+
+    def test_service_rows_have_loading_placeholder(self):
+        assert "Loading..." in self._html
+
+
+class TestAboutPageNoLiveData:
+
+    def test_no_live_probe_functions_called_during_render(self):
+        """send_about_page must call none of the six live probe functions."""
+        import io
+        handler = MagicMock()
+        handler.wfile = io.BytesIO()
+        state = MagicMock()
+
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.2.3"), \
+             patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
+             patch("autostream_webui_page_about._config_snapshot", return_value=None), \
+             patch("autostream_webui_page_about.load_license_text", return_value=""), \
+             patch("autostream_webui_page_about.render_license_md", return_value=""), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info") as m_mon, \
+             patch("autostream_webui_page_about.get_playback_snapshot") as m_play, \
+             patch("autostream_webui_page_about.get_cpu_temperature_c") as m_cpu, \
+             patch("autostream_webui_page_about.get_owntone_runtime_info") as m_owntone, \
+             patch("autostream_webui_page_about.get_root_disk_usage") as m_disk, \
+             patch("autostream_webui_page_about.get_sdcard_health_percent") as m_sd:
+            _about.send_about_page(handler, state)
+
+        m_mon.assert_not_called()
+        m_play.assert_not_called()
+        m_cpu.assert_not_called()
+        m_owntone.assert_not_called()
+        m_disk.assert_not_called()
+        m_sd.assert_not_called()
+
+
+class TestAboutPageFetchScript:
+
+    def setup_method(self):
+        self._html = _render_about_page_html()
+
+    def test_dom_content_loaded_listener_present(self):
+        assert "DOMContentLoaded" in self._html, (
+            "DOMContentLoaded listener not found in About page script"
+        )
+
+    def test_fetch_url_is_api_about_system(self):
+        assert "/api/about/system" in self._html, (
+            "/api/about/system fetch URL not found in About page script"
+        )
+
+    def test_no_inner_html_in_fetch_script(self):
+        # Only the existing copyLicenseText uses insertAdjacentHTML / innerHTML —
+        # the new fetch block must never assign innerHTML.
+        import re
+        # Find the fetch IIFE block (after the sliding-panel script)
+        fetch_start = self._html.rfind("(function()")
+        assert fetch_start != -1, "Fetch IIFE not found"
+        fetch_block = self._html[fetch_start:]
+        assert "innerHTML" not in fetch_block, (
+            "innerHTML must not be used in the fetch IIFE — use textContent"
+        )
+
+    def test_text_content_used_in_fetch_script(self):
+        assert "textContent" in self._html, (
+            "textContent not found in About page script"
+        )

@@ -74,27 +74,7 @@ def _about_detail_header(title: str) -> str:
 def send_about_page(handler, state: WebUIState) -> None:
     """Render and send the About page."""
     version = get_app_version()
-    monitor_info = get_monitor_runtime_info()
-    monitor_build_text = monitor_info.monitor_build or "unknown"
-    if not monitor_info.connected and monitor_build_text != "unknown":
-        monitor_build_text += " (last seen)"
     lic_html, lic_spacer = build_top_banner_html()
-
-    # Playback totals across both inputs (indices 1 and 2).
-    playback_snapshot = get_playback_snapshot()
-    total_playback_seconds = sum(
-        int(snap.total_playback_seconds)
-        for idx, snap in playback_snapshot.inputs.items()
-        if int(idx) in (1, 2)
-    )
-    total_playback_hours = total_playback_seconds / 3600.0
-
-    cpu_temp_c = get_cpu_temperature_c()
-    cpu_temp_text = (
-        f"{cpu_temp_c:.1f}\N{DEGREE SIGN}C"
-        if cpu_temp_c is not None
-        else "Unavailable"
-    )
 
     # Config is read defensively; the page degrades gracefully if it fails.
     parsed = None
@@ -103,42 +83,63 @@ def send_about_page(handler, state: WebUIState) -> None:
     except Exception:
         parsed = None
 
-    owntone_info = get_owntone_runtime_info(
-        parsed.owntone.base_url if parsed else "",
-    )
-    owntone_build_text = owntone_info.version or "unknown"
-    if not owntone_info.connected and owntone_build_text != "unknown":
-        owntone_build_text += " (last seen)"
-
-    # Disk usage bar.
-    du = get_root_disk_usage()
-    storage_html = ""
-    if du:
-        tot, usd, fre = du
-        pct = (usd / tot) * 100 if tot else 0
-        disk_status = "healthy" if pct < 60 else ("warning" if pct < 80 else "critical")
-        storage_html = (
-            f"<div class='bar-label'><strong>Disk Usage:</strong> {pct:.1f}%</div>"
-            f"<div class='storage-bar'><div class='used' style='width:{pct}%;' data-status='{disk_status}'></div></div>"
-            f"<div class='storage-meta'>Free: {fmt_bytes(fre)} / {fmt_bytes(tot)}</div>"
-        )
-
-    # SD card health bar (only present when the platform reports it).
-    sd_health = get_sdcard_health_percent()
-    sd_html = ""
-    if sd_health is not None:
-        sd_status = "critical" if sd_health <= 10 else ("warning" if sd_health <= 30 else "healthy")
-        sd_html = (
-            f"<div class='bar-label'><strong>SD Health:</strong> {sd_health}%</div>"
-            f"<div class='storage-bar'><div class='used' style='width:{sd_health}%;' data-status='{sd_status}'></div></div>"
-        )
-
     license_text = load_license_text()
     if license_text:
         license_inner = f'<div class="about-license-text">{render_license_md(license_text)}</div>'
     else:
         license_inner = "<div class='about-license-text'><p>License text is unavailable.</p></div>"
     license_text_js = json.dumps(license_text or "")
+
+    # Pre-render service rows from the fixed service list.  The OwnTone label
+    # defaults to "OwnTone" here; JS updates it to "OwnTone Mini" if needed.
+    _svc_rows_html = "".join(
+        f"<div class='about-svc-row' data-service-unit='{html.escape(unit)}'>"
+        f"<span class='about-svc-label'>{html.escape(label if label is not None else 'OwnTone')}</span>"
+        f"<span class='about-svc-state about-svc-loading'>Loading...</span>"
+        f"</div>"
+        for unit, label in _SERVICES
+    )
+
+    # System Info panel: static placeholders with stable DOM IDs.
+    # All values are populated by the DOMContentLoaded fetch below; no live
+    # probes run during page rendering.  Disk and SD sections start hidden and
+    # become visible only when the API reports available=true.
+    _system_panel_html = (
+        "<div aria-live='polite'>"
+        "<div class='about-info-card'>"
+        "<div class='bar-label'><strong>Autostream Build</strong>"
+        "<span id='aboutBuildAutostream'>Loading...</span></div>"
+        "<div class='bar-label' style='margin-top:0.65rem;'>"
+        "<strong>Autostream Monitor Build</strong>"
+        "<span id='aboutBuildMonitor'>Loading...</span></div>"
+        "<div class='bar-label' style='margin-top:0.65rem;'>"
+        "<strong>OwnTone Build</strong>"
+        "<span id='aboutBuildOwntone'>Loading...</span></div>"
+        "<div class='bar-label' style='margin-top:0.65rem;'>"
+        "<strong>Vibra Mini Build</strong>"
+        "<span id='aboutBuildVibra'>Loading...</span></div>"
+        "<div class='bar-label' style='margin-top:0.65rem;'>"
+        "<strong>Total Playback Time</strong>"
+        "<span id='aboutPlaybackHours'>Loading...</span></div>"
+        "<div class='bar-label' style='margin-top:1.3rem;'>"
+        "<strong>CPU Temperature</strong>"
+        "<span id='aboutCpuTemperature'>Loading...</span></div>"
+        "<div id='aboutDiskSection' style='display:none;margin-top:1.3rem;'>"
+        "<div id='aboutDiskLabel' class='bar-label'></div>"
+        "<div class='storage-bar'><div id='aboutDiskBar' class='used' style='width:0%'></div></div>"
+        "<div id='aboutDiskMeta' class='storage-meta'></div>"
+        "</div>"
+        "<div id='aboutSdSection' style='display:none;margin-top:1.3rem;'>"
+        "<div id='aboutSdLabel' class='bar-label'></div>"
+        "<div class='storage-bar'><div id='aboutSdBar' class='used' style='width:0%'></div></div>"
+        "</div>"
+        "</div>"
+        "<div class='about-info-card'>"
+        "<h3 class='about-services-heading'>Services</h3>"
+        f"<div id='aboutServices'>{_svc_rows_html}</div>"
+        "</div>"
+        "</div>"
+    )
 
     _extra_css = (
         ".about-license-text { min-height:calc(100svh - 17rem); color:var(--color-text-secondary); font-size:0.95rem; padding-bottom:4.5rem; }\n"
@@ -166,23 +167,84 @@ def send_about_page(handler, state: WebUIState) -> None:
         ".about-list-cards { margin-top:auto; padding:1rem 0 0; }\n"
         ".about-slide-detail { padding-top:0.25rem; }\n"
         ".about-info-card { margin-bottom:1.25rem; padding:1rem 0.9rem 1.1rem; border-radius:8px; border:1px solid var(--color-border); background:var(--color-surface-raised); }\n"
+        ".about-services-heading { margin:0 0 0.6rem; font-size:0.95rem; font-weight:600; color:var(--color-text-strong); }\n"
+        ".about-svc-row { display:flex; align-items:center; justify-content:space-between; padding:0.4rem 0; border-bottom:1px solid var(--color-border); }\n"
+        ".about-svc-row:last-child { border-bottom:none; }\n"
+        ".about-svc-label { font-size:0.9rem; }\n"
+        ".about-svc-state { font-size:0.8rem; font-weight:600; padding:0.15rem 0.5rem; border-radius:4px; }\n"
+        ".about-svc-state[data-state='ok'] { color:var(--color-status-success); background:color-mix(in srgb,var(--color-status-success) 15%,transparent); }\n"
+        ".about-svc-state[data-state='failed'] { color:var(--color-status-danger); background:color-mix(in srgb,var(--color-status-danger) 15%,transparent); }\n"
+        ".about-svc-loading { color:var(--color-text-secondary); font-weight:400; font-size:0.85rem; }\n"
     )
 
-    # System panel content
-    _system_panel_parts = [
-        f"<div class='about-info-card'>",
-        f"<div class='bar-label'><strong>Autostream Build</strong><span>{html.escape(version)}</span></div>",
-        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Autostream Monitor Build</strong><span>{html.escape(monitor_build_text)}</span></div>",
-        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>OwnTone Build</strong><span>{html.escape(owntone_build_text)}</span></div>",
-        f"<div class='bar-label' style='margin-top:0.65rem;'><strong>Total Playback Time</strong><span>{total_playback_hours:.1f} hours</span></div>",
-        f"<div class='bar-label' style='margin-top:1.3rem;'><strong>CPU Temperature</strong><span>{html.escape(cpu_temp_text)}</span></div>",
-    ]
-    if storage_html:
-        _system_panel_parts.append(f"<div style='margin-top:1.3rem;'>{storage_html}</div>")
-    if sd_html:
-        _system_panel_parts.append(f"<div style='margin-top:1.3rem;'>{sd_html}</div>")
-    _system_panel_parts.append("</div>")
-    _system_panel_html = "".join(_system_panel_parts)
+    # DOMContentLoaded fetch: populates System Info and Services from /api/about/system.
+    # Uses textContent throughout — never innerHTML.
+    _fetch_js = (
+        "(function(){"
+        "function _s(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}"
+        "function _gib(b){return(b/1073741824).toFixed(1)+' GB';}"
+        "function _clamp(v){var n=Number(v);return isNaN(n)?0:Math.max(0,Math.min(100,n));}"
+        "var _VS={healthy:1,warning:1,critical:1};"
+        "function _ss(s){return _VS[s]?String(s):'healthy';}"
+        "function _fail(){"
+        "['aboutBuildAutostream','aboutBuildMonitor','aboutBuildOwntone','aboutBuildVibra',"
+        "'aboutPlaybackHours','aboutCpuTemperature'].forEach(function(id){"
+        "var e=document.getElementById(id);"
+        "if(e&&e.textContent==='Loading...')e.textContent='Unavailable';});"
+        "document.querySelectorAll('#aboutServices [data-service-unit] .about-svc-state')"
+        ".forEach(function(e){"
+        "if(e.textContent==='Loading...'){"
+        "e.textContent='Failed';e.removeAttribute('data-state');"
+        "e.classList.remove('about-svc-loading');}});}"
+        "document.addEventListener('DOMContentLoaded',function(){"
+        "fetch('/api/about/system',{cache:'no-store',headers:{'Accept':'application/json'}})"
+        ".then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})"
+        ".then(function(d){"
+        "if(d.ok!==true)throw new Error('ok!=true');"
+        "var b=d.builds||{};"
+        "_s('aboutBuildAutostream',String(b.autostream||'unknown'));"
+        "_s('aboutBuildMonitor',String(b.monitor||'unknown'));"
+        "_s('aboutBuildOwntone',String(b.owntone||'unknown'));"
+        "_s('aboutBuildVibra',String(b.vibra_mini||'unknown'));"
+        "_s('aboutPlaybackHours',typeof d.playback_hours==='number'"
+        "?d.playback_hours.toFixed(1)+' hours':'Unavailable');"
+        "_s('aboutCpuTemperature',typeof d.cpu_temperature_c==='number'"
+        "?d.cpu_temperature_c.toFixed(1)+'°C':'Unavailable');"
+        "var dk=d.disk||{};"
+        "if(dk.available===true){"
+        "var dp=_clamp(dk.used_percent);"
+        "_s('aboutDiskLabel','Disk Usage: '+dp.toFixed(1)+'%');"
+        "var db=document.getElementById('aboutDiskBar');"
+        "if(db){db.style.width=dp+'%';db.setAttribute('data-status',_ss(dk.status));}"
+        "_s('aboutDiskMeta','Free: '"
+        "+_gib(typeof dk.free_bytes==='number'?dk.free_bytes:0)"
+        "+'  /  '"
+        "+_gib(typeof dk.total_bytes==='number'?dk.total_bytes:0));"
+        "var ds=document.getElementById('aboutDiskSection');if(ds)ds.style.display='';}"
+        "var sd=d.sd_card||{};"
+        "if(sd.available===true){"
+        "var sp=_clamp(sd.health_percent);"
+        "_s('aboutSdLabel','SD Health: '+Math.round(sp)+'%');"
+        "var sb=document.getElementById('aboutSdBar');"
+        "if(sb){sb.style.width=sp+'%';sb.setAttribute('data-status',_ss(sd.status));}"
+        "var ss=document.getElementById('aboutSdSection');if(ss)ss.style.display='';}"
+        "var svcs=Array.isArray(d.services)?d.services:[];"
+        "document.querySelectorAll('#aboutServices [data-service-unit]').forEach(function(row){"
+        "var unit=row.getAttribute('data-service-unit');"
+        "var svc=null;"
+        "for(var i=0;i<svcs.length;i++){if(svcs[i].unit===unit){svc=svcs[i];break;}}"
+        "if(!svc)return;"
+        "var lbl=row.querySelector('.about-svc-label');"
+        "if(lbl&&svc.label)lbl.textContent=String(svc.label);"
+        "var st=row.querySelector('.about-svc-state');"
+        "if(st){var ok=svc.state==='ok';"
+        "st.textContent=ok?'OK':'Failed';"
+        "st.setAttribute('data-state',ok?'ok':'failed');"
+        "st.classList.remove('about-svc-loading');}});})"
+        ".catch(function(){_fail();});"
+        "});"
+        "}());"
+    )
 
     # Copyright panel content
     _copyright_panel_html = (
@@ -306,6 +368,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"}}"
         f"}}"
         f"</script>"
+        f"<script>{_fetch_js}</script>"
     )
     html_body = build_page_html(
         "About",
