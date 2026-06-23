@@ -101,6 +101,12 @@ from autostream_webui_page_owntone import (
     send_owntone_restarting_page,
     send_owntone_setup_page,
 )
+from autostream_webui_page_first_boot import (
+    send_first_boot_owntone_page,
+    send_first_boot_appliance_page,
+    handle_first_boot_continue_post,
+    handle_first_boot_finish_post,
+)
 from autostream_webui_page_rebooting import send_rebooting_page
 from autostream_webui_page_service import send_service_page
 from autostream_webui_page_setup import send_setup_page
@@ -474,6 +480,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_setup_page(self, STATE, AUTH, flash_msg=msg)
         elif path == "/owntone-setup":
             send_owntone_setup_page(self, STATE, AUTH, flash_msg=msg)
+        elif path == "/first-boot/owntone":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_first_boot_owntone_page(self, STATE, AUTH)
+        elif path == "/first-boot/appliance":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_first_boot_appliance_page(self, STATE, AUTH)
         elif path == "/about":
             send_about_page(self, STATE)
         elif path == "/service":
@@ -731,6 +743,14 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             with _setup_lock:
                 if initial_setup == 1:
                     initial_setup = 2
+
+        elif path == "/first-boot/owntone/continue":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            handle_first_boot_continue_post(self, STATE, AUTH, body_str)
+
+        elif path == "/first-boot/appliance/finish":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            handle_first_boot_finish_post(self, STATE, AUTH, body_str)
 
         elif path == "/logs":
             if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/logs"):
