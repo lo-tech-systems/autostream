@@ -21,18 +21,17 @@ from __future__ import annotations
 import html
 import json
 
-from autostream_config import parse_config
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_temperature_c
 from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_health_percent
 
 from autostream_webui_common import (
+    _config_snapshot,
     build_page_html,
     build_top_banner_html,
     get_app_version,
     load_license_text,
-    locked_load_config,
     render_license_md,
 )
 
@@ -81,7 +80,7 @@ def send_about_page(handler, state: WebUIState) -> None:
     # Config is read defensively; the page degrades gracefully if it fails.
     parsed = None
     try:
-        parsed = parse_config(locked_load_config(state.config_path))
+        parsed = _config_snapshot(state)
     except Exception:
         parsed = None
 

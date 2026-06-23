@@ -64,7 +64,7 @@ from autostream_appliance_models import (
 )
 from autostream_player_service import list_outputs, update_output
 from autostream_sysutils import run_admin_cmd
-from autostream_webui_common import locked_load_config, _fallback_input_snapshot
+from autostream_webui_common import _config_snapshot, _fallback_input_snapshot
 from autostream_webui_service_schema import (
     _SERVICE_ITEMS,
     _card_display,
@@ -206,8 +206,7 @@ def _status_text_for_home(is_playing: bool, input_levels: list[dict]) -> str:
 def send_owntone_outputs_json(handler, state: WebUIState) -> None:
     """Return available Owntone output names for async refresh on /setup."""
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
     except Exception as e:
         send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
@@ -419,8 +418,7 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     _parsed       = None
     _audio_cfg    = None
     try:
-        _cfg = locked_load_config(state.config_path)
-        _parsed = parse_config(_cfg)
+        _parsed = _config_snapshot(state)
         _audio_cfg    = _parsed.audio1 if input_index == 1 else _parsed.audio2
         _life_hours   = int(getattr(_audio_cfg, f"{item}_life_hours", 0) or 0)
         _life_years   = int(getattr(_audio_cfg, f"{item}_life_years", 0) or 0) if item != "stylus" else 0
@@ -583,8 +581,7 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
     global _audio_status_fail_count
     playing = any_monitor_capturing()
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
     except Exception as e:
         logging.warning("audio/status: config load failed: %s", e)
         send_json(handler, 200, {"playing": playing, "outputs": None,
@@ -647,8 +644,7 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
     delta = max(-100, min(100, delta))
 
     try:
-        raw = locked_load_config(state.config_path)
-        parsed = parse_config(raw)
+        parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url
     except Exception as e:
         logging.warning("dial volume: config load failed: %s", e)
@@ -717,8 +713,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
     playing = any_monitor_capturing()
 
     try:
-        raw = locked_load_config(state.config_path)
-        parsed = parse_config(raw)
+        parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url
     except Exception as e:
         logging.warning("dial status: config load failed: %s", e)
@@ -766,8 +761,7 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
         return
 
     try:
-        raw = locked_load_config(state.config_path)
-        parsed = parse_config(raw)
+        parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url
         default_vol = parsed.owntone.volume_percent
     except Exception as e:
@@ -938,8 +932,7 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
         return
 
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url.rstrip("/")
         from autostream_player_service import config_airplay_mode_to_backend
         from autostream_config import DEFAULT_AIRPLAY_MODE

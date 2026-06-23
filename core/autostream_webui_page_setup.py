@@ -20,9 +20,7 @@ from typing import Optional
 from urllib.parse import parse_qs
 
 from autostream_config import (
-    CONFIG_IO_LOCK,
     mark_configured,
-    parse_config,
     unconfigured,
 )
 from autostream_dials import parse_dial_entries
@@ -49,11 +47,11 @@ from autostream_webui_assets import (
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
+    _config_snapshot,
     _set_flash_cookie,
     build_page_html,
     build_top_banner_html,
     get_app_version,
-    locked_load_config,
     settings_card_html,
 )
 from autostream_webui_state import WebUIState
@@ -313,8 +311,7 @@ def send_setup_page(
 ) -> None:
     """Render the main setup page."""
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
     except Exception:
         try:
             handler.send_response(302)

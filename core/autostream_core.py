@@ -2326,18 +2326,27 @@ def _check_webui_thread(thread) -> None:
         raise RuntimeError("Web UI thread has exited unexpectedly; shutting down")
 
 
-def run_autostream(config_path: str, start_webui=None) -> None:
+def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     """Run autostream using the given config file path.
 
     Connects to the autostream_monitor daemon, configures inputs, and runs
     the coordinator loop until a stop signal is received.
 
-    If start_webui is provided it is called with config_path to start the
-    optional web UI in a background thread.
+    If start_webui is provided it is called with (config_path, settings=settings)
+    to start the optional web UI in a background thread.
+
+    If settings is None a SettingsStore is created internally and closed when
+    the coordinator exits.  Pass an externally-owned store to share the same
+    in-memory config between the coordinator and the Web UI.
     """
+    from autostream_settings import SettingsStore as _SettingsStore
+    _own_settings = settings is None
+    if settings is None:
+        settings = _SettingsStore(config_path)
+
     global _playing_announced, _reconcile_started
     _install_signal_handlers()
-    cfg = load_and_parse(config_path)
+    cfg = settings.snapshot()
     setup_logging(cfg.general.log_file, cfg.general.log_level)
     _ensure_playback_tracker(cfg)
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))
@@ -2347,7 +2356,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
     # process exits nonzero and systemd can restart it.
     webui_thread = None
     if start_webui is not None:
-        webui_thread = start_webui(config_path)
+        webui_thread = start_webui(config_path, settings=settings)
 
     socket_path = get_monitor_socket_path()
     POLL_INTERVAL = 0.5          # seconds between get_status() polls
@@ -2379,10 +2388,10 @@ def run_autostream(config_path: str, start_webui=None) -> None:
                     time.sleep(1.0)
                 if stop_flag.is_set():
                     return
-                cfg = load_and_parse(config_path)
+                cfg = settings.snapshot()
                 continue
 
-            cfg = load_and_parse(config_path)
+            cfg = settings.snapshot()
             fifo_path = cfg.general.fifo_path
             _ensure_playback_tracker(cfg)
 
@@ -2434,7 +2443,7 @@ def run_autostream(config_path: str, start_webui=None) -> None:
 
         if stop_flag.is_set() or monitors is None:
             client.close()
-            return
+            break
 
         global _track_id_service
         _track_id_service = _build_track_id_service(cfg)
@@ -2660,6 +2669,14 @@ def run_autostream(config_path: str, start_webui=None) -> None:
         if not _reloading:
             break
         # _reloading: continue outer loop → startup phase runs again with fresh config
+
+    # Final flush: persist any pending in-memory changes before process exit.
+    try:
+        settings.save_now()
+    except Exception:
+        logging.warning("Settings: final save failed", exc_info=True)
+    if _own_settings:
+        settings.close(save=False)  # save already attempted above
 
 
 def main() -> None:

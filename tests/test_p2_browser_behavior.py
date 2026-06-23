@@ -512,8 +512,7 @@ def _render_setup_page(initial_setup_mode: bool) -> str:
     list_out = MagicMock()
     list_out.ok = False
 
-    with patch(f"{mod}.locked_load_config", new=lambda p: {}), \
-         patch(f"{mod}.parse_config", new=lambda cfg: parsed), \
+    with patch(f"{mod}._config_snapshot", new=lambda state: parsed), \
          patch(f"{mod}.unconfigured", new=lambda p: initial_setup_mode), \
          patch(f"{mod}.list_outputs", new=lambda base_url, timeout: list_out), \
          patch(f"{mod}.build_top_banner_html", new=lambda **kw: ("", "")), \

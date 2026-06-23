@@ -42,6 +42,16 @@ def locked_load_config(path: str):
         return load_config(path)
 
 
+def _config_snapshot(state):
+    """Return a parsed config snapshot, preferring the in-memory settings store."""
+    from autostream_settings import SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, SettingsStore):
+        return settings.snapshot()
+    from autostream_config import parse_config
+    return parse_config(locked_load_config(state.config_path))
+
+
 # -----------------------------------------------------------------------------
 # Flash cookie -- short-lived status message passed across a POST/redirect/GET
 # cycle (e.g. "Settings saved", "Save failed").

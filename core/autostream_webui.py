@@ -127,10 +127,8 @@ def _effective_control_other_appliances(state) -> bool:
     never inadvertently locks out functionality.
     """
     try:
-        from autostream_webui_common import locked_load_config
-        from autostream_config import parse_config
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        from autostream_webui_common import _config_snapshot
+        parsed = _config_snapshot(state)
         return parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
     except Exception:
         return True
@@ -799,11 +797,24 @@ def _scan_monitor_devices_loop() -> None:
         time.sleep(15)
 
 
-def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int = 8080) -> threading.Thread:
-    """Start the configuration web UI on a background thread."""
+def start_webui_background(
+    config_path: str,
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    *,
+    settings=None,
+) -> threading.Thread:
+    """Start the configuration web UI on a background thread.
+
+    ``settings`` is the SettingsStore shared with the coordinator.  If None,
+    a store is created locally (used when the webui runs standalone or in tests).
+    """
+    from autostream_settings import SettingsStore
     global STATE, AUTH
 
-    STATE = WebUIState(config_path, STATE_PATH)
+    if settings is None:
+        settings = SettingsStore(config_path)
+    STATE = WebUIState(config_path, STATE_PATH, settings=settings)
     AUTH = AuthManager(
         config_path=config_path,
         state_path=STATE_PATH,
@@ -817,9 +828,8 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
         """Periodically reconcile the _autostream._tcp service file (every 60 s)."""
         from autostream_appliance_gateway import sweep_token_cache
         from autostream_appliances import reconcile_appliance_announcement
-        from autostream_config import load_config, parse_config
         from autostream_federation import sweep_sessions
-        from autostream_webui_common import get_app_version
+        from autostream_webui_common import _config_snapshot, get_app_version
         while not stop_flag.is_set():
             stop_flag.wait(60)
             if stop_flag.is_set():
@@ -833,7 +843,7 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
             except Exception:
                 logging.debug("sweep_token_cache: error", exc_info=True)
             try:
-                cfg = parse_config(load_config(STATE.config_path))
+                cfg = _config_snapshot(STATE)
                 reconcile_appliance_announcement(
                     get_app_version(), cfg.webui.advertise_appliance
                 )
@@ -847,8 +857,7 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
                 reconcile_appliance_announcement,
                 start_appliance_scanner,
             )
-            from autostream_config import load_config, parse_config
-            from autostream_webui_common import get_app_version
+            from autostream_webui_common import _config_snapshot, get_app_version
 
             start_dial_scanner()
             start_appliance_scanner()
@@ -860,7 +869,7 @@ def start_webui_background(config_path: str, host: str = "127.0.0.1", port: int 
 
             # Initial announcement reconciliation (best-effort; errors are logged)
             try:
-                cfg = parse_config(load_config(config_path))
+                cfg = _config_snapshot(STATE)
                 reconcile_appliance_announcement(
                     get_app_version(), cfg.webui.advertise_appliance
                 )
@@ -889,14 +898,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     config_path = sys.argv[1]
-    # Initialize globals for local execution
-    STATE = WebUIState(config_path, STATE_PATH)
-    AUTH = AuthManager(
-        config_path=config_path,
-        state_path=STATE_PATH,
-        style_css=STYLE_CSS + "\n" + LICENSE_BANNER_CSS,
-        banner_html=BANNER_HTML,
-        nav_html=build_nav_bar_html("setup"),
-        title="autostream",
-    )
     run_autostream(config_path, start_webui=start_webui_background)

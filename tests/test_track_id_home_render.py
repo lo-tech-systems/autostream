@@ -92,8 +92,7 @@ def _render_airplay_page(ti_snapshot=None) -> str:
     buf_result = MagicMock(ok=True, value="2250")
 
     patches = [
-        patch("autostream_webui_page_airplay.locked_load_config", return_value={}),
-        patch("autostream_webui_page_airplay.parse_config", return_value=parsed),
+        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
@@ -132,8 +131,7 @@ def _render_remote_home() -> str:
     parsed.webui.dark_mode = False
 
     patches = [
-        patch("autostream_webui_page_airplay.locked_load_config", return_value={}),
-        patch("autostream_webui_page_airplay.parse_config", return_value=parsed),
+        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),

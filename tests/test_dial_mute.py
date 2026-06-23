@@ -158,8 +158,7 @@ class TestDialMuteBackend:
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
-             patch("autostream_webui_api.locked_load_config", return_value={}), \
-             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs", return_value=list_result), \
              patch("autostream_webui_api.update_output", return_value=_make_update_result(update_ok)):
             send_dial_mute_post_json(MagicMock(), MagicMock(), {"dial_id": "valid-uuid"})
@@ -210,8 +209,7 @@ class TestDialMuteAction:
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
-             patch("autostream_webui_api.locked_load_config", return_value={}), \
-             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):
@@ -274,8 +272,7 @@ class TestDialMuteAction:
 
         with patch("autostream_webui_api.send_json"), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
-             patch("autostream_webui_api.locked_load_config", return_value={}), \
-             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):
@@ -307,8 +304,7 @@ class TestDialMuteAction:
 
         with patch("autostream_webui_api.send_json"), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
-             patch("autostream_webui_api.locked_load_config", return_value={}), \
-             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):
@@ -365,8 +361,7 @@ class TestDialMuteFailures:
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
-             patch("autostream_webui_api.locked_load_config", return_value={}), \
-             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):
@@ -448,8 +443,7 @@ class TestDialMuteFailures:
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
-             patch("autostream_webui_api.locked_load_config", return_value={}), \
-             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):
@@ -491,8 +485,7 @@ class TestDialMuteFailures:
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.is_dial_authorized", return_value=True), \
-             patch("autostream_webui_api.locked_load_config", return_value={}), \
-             patch("autostream_webui_api.parse_config", return_value=parsed), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):

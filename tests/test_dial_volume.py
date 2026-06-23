@@ -84,14 +84,13 @@ def _invoke(
     parsed = MagicMock()
     parsed.owntone.base_url = BASE_URL
 
-    def _cfg_load(path):
+    def _cfg_snapshot(state):
         if config_error:
             raise OSError("disk full")
-        return ""
+        return parsed
 
     with patch("autostream_webui_api.is_dial_authorized", return_value=authorized), \
-         patch("autostream_webui_api.locked_load_config", side_effect=_cfg_load), \
-         patch("autostream_webui_api.parse_config", return_value=parsed), \
+         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot), \
          patch("autostream_webui_api.list_outputs", return_value=list_result), \
          patch("autostream_webui_api.update_output", update_mock):
         send_dial_volume_post_json(handler, state, json_obj)

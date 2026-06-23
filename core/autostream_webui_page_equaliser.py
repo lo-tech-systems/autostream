@@ -22,16 +22,15 @@ import math
 from typing import Optional
 
 from autostream_appliances import get_all_appliances
-from autostream_config import parse_config
 from autostream_core import OUTPUT_PEQ_BANDS
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
 from autostream_webui_assets import APPLIANCE_SELECTOR_CSS
 from autostream_webui_common import (
+    _config_snapshot,
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
-    locked_load_config,
 )
 from autostream_webui_state import WebUIState
 
@@ -604,7 +603,7 @@ def send_equaliser_page(
 
     parsed = None
     try:
-        parsed = parse_config(locked_load_config(state.config_path))
+        parsed = _config_snapshot(state)
     except Exception:
         pass
 
@@ -1015,8 +1014,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
     (appliance_unconfigured, identity conflicts, etc.) return to /.
     """
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
     except Exception:
         try:
             handler.send_error(500, "Configuration unavailable")

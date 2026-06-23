@@ -16,7 +16,6 @@ from typing import Optional
 
 from autostream_appliance_models import build_output_list
 from autostream_appliances import get_all_appliances
-from autostream_config import parse_config
 from autostream_core import (
     get_monitor_levels_dbfs,
     get_playback_snapshot,
@@ -37,10 +36,10 @@ from autostream_webui_assets import (
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
+    _config_snapshot,
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
-    locked_load_config,
 )
 from autostream_webui_state import WebUIState
 
@@ -169,8 +168,7 @@ def send_airplay_page(
         return hostname.strip() or "autostream"
 
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
     except Exception:
         # If we're here something bad happened - user should have been redirected to the setup page
         # if the INI is missing. Hence, take the nuclear option and inform the user that something
@@ -1347,8 +1345,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     Definitive resolution errors (not_found, etc.) return immediately to /.
     """
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
     except Exception:
         try:
             handler.send_error(500, "Configuration unavailable")

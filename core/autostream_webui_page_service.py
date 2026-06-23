@@ -25,7 +25,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from autostream_config import (
-    parse_config,
     VALID_STYLUS_LIFE_HOURS,
     VALID_MAINTENANCE_LIFE_HOURS,
     VALID_BEARING_LIFE_HOURS,
@@ -37,10 +36,10 @@ from autostream_playback_stats import InputPlaybackSnapshot
 from autostream_webui_assets import SERVICE_CSS, SERVICE_JS
 
 from autostream_webui_common import (
+    _config_snapshot,
     _fallback_input_snapshot,
     build_page_html,
     build_top_banner_html,
-    locked_load_config,
 )
 
 from autostream_webui_service_schema import (
@@ -561,7 +560,7 @@ def send_service_page(
 
     parsed = None
     try:
-        parsed = parse_config(locked_load_config(state.config_path))
+        parsed = _config_snapshot(state)
     except Exception:
         parsed = None
 

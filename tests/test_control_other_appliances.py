@@ -615,17 +615,14 @@ class TestRemoteHomeMasterVolumeLabel:
             "equaliser_path": "/equaliser",
         }
 
-        with patch("autostream_webui_page_airplay.locked_load_config") as mock_cfg, \
-             patch("autostream_webui_page_airplay.parse_config") as mock_parse, \
+        parsed = MagicMock()
+        parsed.owntone.volume_percent = 20
+        parsed.webui.dark_mode = False
+        with patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay._build_appliances_for_selector",
                    return_value=[local_appliance, remote_appliance]), \
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="local-host"):
-            mock_cfg.return_value = {}
-            parsed = MagicMock()
-            parsed.owntone.volume_percent = 20
-            parsed.webui.dark_mode = False
-            mock_parse.return_value = parsed
             send_remote_home_page(handler, state, _REMOTE_ID)
 
         return b"".join(written_chunks).decode("utf-8", errors="replace")

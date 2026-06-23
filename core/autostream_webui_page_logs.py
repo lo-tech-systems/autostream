@@ -40,6 +40,7 @@ from autostream_player_service import save_log_level
 from autostream_sysutils import tail_lines
 
 from autostream_webui_common import (
+    _config_snapshot,
     _set_flash_cookie,
     build_page_html,
     build_top_banner_html,
@@ -100,8 +101,7 @@ def send_logs_page(
     current_log_level = "info"
     dark_mode = False
     try:
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
         current_log_level = parsed.general.log_level
         dark_mode = parsed.webui.dark_mode
         log_path = _resolve_allowed_log_path(parsed.general.log_file)

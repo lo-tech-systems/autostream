@@ -8,14 +8,28 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from autostream_settings import SettingsStore
 
 
 class WebUIState:
     """Holds shared state and locks for the Web UI components."""
 
-    def __init__(self, config_path: str, state_path: str):
+    def __init__(
+        self,
+        config_path: str,
+        state_path: str,
+        *,
+        settings: "Optional[SettingsStore]" = None,
+    ) -> None:
         self.config_path = config_path
         self.state_path = state_path
+        # The canonical in-memory settings store shared with the coordinator.
+        # Set to a SettingsStore instance at process startup.  Page renderers
+        # call state.settings.snapshot() rather than re-reading the config file.
+        self.settings: "Optional[SettingsStore]" = settings
 
         # Audio device list as reported by autostream_monitor.
         # Each entry is a dict containing at least:

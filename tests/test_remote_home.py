@@ -219,16 +219,13 @@ class TestRemoteHomePageContent:
         handler._csrf_token = "testcsrf"
         handler._pending_set_cookies = []
 
-        with patch("autostream_webui_page_airplay.locked_load_config") as mock_cfg, \
-             patch("autostream_webui_page_airplay.parse_config") as mock_parse, \
+        parsed = MagicMock()
+        parsed.owntone.volume_percent = 20
+        parsed.webui.dark_mode = False
+        with patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound-host"):
-            mock_cfg.return_value = {}
-            parsed = MagicMock()
-            parsed.owntone.volume_percent = 20
-            parsed.webui.dark_mode = False
-            mock_parse.return_value = parsed
             send_remote_home_page(handler, state, aid)
 
         return b"".join(written_chunks).decode("utf-8", errors="replace")

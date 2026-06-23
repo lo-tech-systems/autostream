@@ -53,7 +53,7 @@ from autostream_sysutils import run_admin_cmd
 from autostream_webui_assets import (
     BANNER_HTML,
 )
-from autostream_webui_common import build_page_html, build_top_banner_html, locked_load_config
+from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, locked_load_config
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
 
@@ -100,7 +100,7 @@ def _restart_owntone_worker(state, token: int) -> None:
 
     # After restart command, wait for API to come back (more generous than the UI poll).
     try:
-        parsed = parse_config(locked_load_config(state.config_path))
+        parsed = _config_snapshot(state)
         ok, msg = wait_for_owntone_api(parsed.owntone.base_url, timeout_s=20.0)
     except Exception as e:
         ok, msg = False, str(e)
@@ -124,7 +124,7 @@ def start_owntone_restart_async(state) -> None:
 def send_owntone_ready_json(handler, state) -> None:
     """JSON endpoint polled by /owntone-restarting."""
     try:
-        parsed = parse_config(locked_load_config(state.config_path))
+        parsed = _config_snapshot(state)
         ready, ready_msg = _owntone_ready_quick(parsed.owntone.base_url, timeout_s=0.6)
     except Exception as e:
         ready, ready_msg = False, str(e)
@@ -222,9 +222,13 @@ def send_owntone_setup_page(
 ) -> None:
     """Render Owntone setup."""
     try:
-        cfg = locked_load_config(state.config_path)
         state_data = load_state(state.state_path)
-        parsed = parse_config(cfg, state_data)
+        if getattr(state, "settings", None) is not None:
+            raw = state.settings.raw_snapshot()
+            parsed = parse_config(raw, state_data)
+        else:
+            cfg = locked_load_config(state.config_path)
+            parsed = parse_config(cfg, state_data)
     except Exception:
         try:
             handler.send_response(302)
