@@ -283,10 +283,10 @@ class TestFirstBootFinishPost:
         auth = _make_auth()
         handler, written = _make_handler()
         with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"):
-            store.save_now = MagicMock(side_effect=RuntimeError("disk full"))
+            store.save_now = MagicMock(return_value=False)
             handle_first_boot_finish_post(handler, state, auth, self._valid_body())
         html = _render(handler, written)
-        assert "could not be saved" in html.lower() or "disk full" in html.lower()
+        assert "could not be saved" in html.lower()
 
     def test_technically_incomplete_after_save_shows_error(self, tmp_path):
         from autostream_webui_page_first_boot import handle_first_boot_finish_post

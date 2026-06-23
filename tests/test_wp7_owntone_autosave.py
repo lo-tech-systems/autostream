@@ -435,3 +435,44 @@ class TestOwntoneSetupPage:
         html = self._render_page(str(tmp_path))
         assert "Refresh" in html
         assert "/owntone-setup" in html
+
+
+# ---------------------------------------------------------------------------
+# Restart debounce
+# ---------------------------------------------------------------------------
+
+class TestOwntoneRestartDebounce:
+    """start_owntone_restart_async coalesces rapid calls into a single restart."""
+
+    def setup_method(self):
+        import autostream_webui_page_owntone as _mod
+        # Reset module-level timer state between tests
+        with _mod._restart_timer_lock:
+            if _mod._restart_timer is not None:
+                _mod._restart_timer.cancel()
+                _mod._restart_timer = None
+
+    def test_rapid_calls_fire_once(self):
+        """Two calls within the debounce window must trigger exactly one restart."""
+        import autostream_webui_page_owntone as _mod
+        state = MagicMock()
+        state.begin_owntone_restart = MagicMock(return_value=1)
+
+        with patch("autostream_webui_page_owntone._restart_owntone_worker"):
+            _mod.start_owntone_restart_async(state, delay_s=0.05)
+            _mod.start_owntone_restart_async(state, delay_s=0.05)
+            import time; time.sleep(0.15)
+
+        state.begin_owntone_restart.assert_called_once()
+
+    def test_single_call_fires(self):
+        """A single call must eventually trigger the restart."""
+        import autostream_webui_page_owntone as _mod
+        state = MagicMock()
+        state.begin_owntone_restart = MagicMock(return_value=1)
+
+        with patch("autostream_webui_page_owntone._restart_owntone_worker"):
+            _mod.start_owntone_restart_async(state, delay_s=0.05)
+            import time; time.sleep(0.15)
+
+        state.begin_owntone_restart.assert_called_once()

@@ -320,6 +320,7 @@ class TestFactoryResetFailure:
             sent.append((code, data))
         with patch("autostream_webui.AUTH", auth), \
              patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.handle_factory_reset_post",
                    side_effect=lambda h2, s, a: fake_send_json(h2, 500, {"ok": False})):
             h.do_POST()

@@ -255,9 +255,10 @@ class TestSetupPage:
                 page.locator(".setup-list-card-title", has_text=title)
             ).to_be_visible()
 
-    def test_save_button_present(self, page: "Page", base_url: str):
+    def test_save_button_absent(self, page: "Page", base_url: str):
+        """Setup page uses autosave; there is no bulk-save submit button."""
         page.goto(f"{base_url}/setup")
-        expect(page.locator("button[type=submit].pill-btn")).to_be_visible()
+        expect(page.locator("button[type=submit].pill-btn")).not_to_be_visible()
 
     def test_no_js_errors_on_load(self, page: "Page", base_url: str):
         errors: list[str] = []
@@ -320,11 +321,10 @@ class TestAccessibility:
             f"Expected data-theme='light' or 'dark' on <html>, got {theme!r}"
         )
 
-    def test_save_button_has_accessible_text(self, page: "Page", base_url: str):
+    def test_no_bulk_save_button_on_setup(self, page: "Page", base_url: str):
+        """Setup page uses per-field autosave; no bulk-submit button should exist."""
         page.goto(f"{base_url}/setup")
-        btn = page.locator("button[type=submit].pill-btn")
-        expect(btn).to_be_visible()
-        assert btn.inner_text().strip(), "Save button has no accessible text"
+        expect(page.locator("button[type=submit].pill-btn")).not_to_be_visible()
 
     def test_nav_card_titles_are_non_empty(self, page: "Page", base_url: str):
         page.goto(f"{base_url}/setup")

@@ -107,11 +107,35 @@ def _restart_owntone_worker(state, token: int) -> None:
     )
 
 
-def start_owntone_restart_async(state) -> None:
-    """Start a background restart if one isn't already running (or supersede it)."""
-    token = state.begin_owntone_restart()
-    t = threading.Thread(target=_restart_owntone_worker, args=(state, token), daemon=True)
-    t.start()
+_restart_timer_lock: threading.Lock = threading.Lock()
+_restart_timer: Optional[threading.Timer] = None
+
+
+def start_owntone_restart_async(state, delay_s: float = 0.75) -> None:
+    """Schedule a background OwnTone restart, coalescing rapid calls within delay_s.
+
+    Multiple calls within delay_s of each other are collapsed into one restart.
+    The restart token is acquired only when the timer fires, ensuring the
+    WebUIState in_progress flag is accurate.
+    """
+    global _restart_timer
+    with _restart_timer_lock:
+        if _restart_timer is not None:
+            _restart_timer.cancel()
+
+        def _fire() -> None:
+            global _restart_timer
+            with _restart_timer_lock:
+                _restart_timer = None
+            token = state.begin_owntone_restart()
+            t = threading.Thread(
+                target=_restart_owntone_worker, args=(state, token), daemon=True
+            )
+            t.start()
+
+        _restart_timer = threading.Timer(delay_s, _fire)
+        _restart_timer.daemon = True
+        _restart_timer.start()
 
 
 # -----------------------------------------------------------------------------

@@ -1822,7 +1822,7 @@ def _send_owntone_native_setting_json(
     restart_needed = bool(result.restart_required)
     if restart_needed:
         from autostream_webui_page_owntone import start_owntone_restart_async
-        start_owntone_restart_async(state)
+        start_owntone_restart_async(state, delay_s=restart_threshold_s)
 
     send_json(handler, 200, {"ok": True, "restart_required": restart_needed})
 
