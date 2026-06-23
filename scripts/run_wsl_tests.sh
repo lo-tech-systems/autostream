@@ -29,7 +29,7 @@ set -euo pipefail
 # ── Python deps (no sudo needed) ────────────────────────────────────────────
 export PATH="$HOME/.local/bin:$PATH"
 
-if ! python3 -c "import pytest" &>/dev/null; then
+if ! python3 -c "import pytest, flask, requests" &>/dev/null; then
     echo "Installing Python test dependencies..."
     python3 -m pip install --user --break-system-packages --quiet pytest flask requests
 fi
