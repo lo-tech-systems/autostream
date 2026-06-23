@@ -433,10 +433,10 @@ def send_setup_page(
         inner_html = f"""
           {enabled_html}
           {settings_open}
-            <label>Input device: <select name="{capture_name}">{build_opts(parsed_input.capture_device)}</select></label>
+            <label>Input device: <select name="{capture_name}" onchange="if(liveEnabled) settingsSaveField('audio{input_index}.capture_device', this.value);">{build_opts(parsed_input.capture_device)}</select></label>
             <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
               <label class="output-toggle" style="margin:0;">
-                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncInputUi({input_index})">
+                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncInputUi({input_index}); if(liveEnabled) settingsSaveField('audio{input_index}.turntable', this.checked);">
                 <span class="switch"></span>
               </label>
               <span>Turntable</span>
@@ -664,7 +664,7 @@ def send_setup_page(
     # Fieldset fragments shared by both layout paths
     playback_inner_html = f"""
           <label>Default Speakers:
-            <select id="owntone_output_select" name="owntone_output_name">
+            <select id="owntone_output_select" name="owntone_output_name" onchange="if(liveEnabled) settingsSaveField('owntone.output_name', this.value);">
               {owntone_outputs_html}
             </select>
             <div id="owntone_output_hint" class="helptext" style="display:none;">
@@ -816,7 +816,7 @@ def send_setup_page(
               <input type="hidden" name="track_identification_present" value="1">
               <div class="setup-customise-row" style="margin-top:0.5rem;">
                 <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="track_identification_enabled" id="track_identification_enabled"{'  checked' if _ti_enabled else ''} onchange="onTiToggle(this.checked)">
+                  <input type="checkbox" name="track_identification_enabled" id="track_identification_enabled"{'  checked' if _ti_enabled else ''} onchange="onTiToggle(this.checked); if(liveEnabled) settingsSaveField('track_identification.enabled', this.checked);">
                   <span class="switch"></span>
                 </label>
                 <span>Track identification</span>
@@ -1350,13 +1350,16 @@ def send_setup_page(
         function handlePinModalCancel() {{
           closePinModal();
         }}
-        const gainTimers = {{}};
-        const eqTimers = {{}};
-        const eqLiveEnabled = {str(not initial_setup).lower()};
+        const liveEnabled = {str(not initial_setup).lower()};
         function onAudio2Toggle(checked){{
           syncInputUi(2);
+          if (liveEnabled) settingsSaveField('audio2.enabled', checked);
         }}
-        function syncVol(v){{document.getElementById('owntone_volume_percent').value=v;document.getElementById('vol_val').textContent=v+'%';}}
+        function syncVol(v){{
+          document.getElementById('owntone_volume_percent').value=v;
+          document.getElementById('vol_val').textContent=v+'%';
+          if (liveEnabled) settingsSaveFieldDebounced('owntone.volume_percent', parseInt(v, 10), 300);
+        }}
         function thresholdPreset(checked){{ return checked ? -45 : -60; }}
         function syncInputUi(inputIndex){{
           const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
@@ -1383,72 +1386,33 @@ def send_setup_page(
           const valueEl = document.getElementById(prefix + '_gain_db_val');
           if (inputEl) inputEl.value = value;
           if (valueEl) valueEl.textContent = value + ' dB';
-          if (eqLiveEnabled) queueGainUpdate(inputIndex);
-        }}
-        function gainPayload(inputIndex){{
-          const prefix = eqPrefix(inputIndex);
-          return {{
-            input: inputIndex,
-            gain_db: Number(document.getElementById(prefix + '_gain_db').value),
-          }};
-        }}
-        async function sendGainUpdate(inputIndex){{
-          if (!eqLiveEnabled) return;
-          const payload = gainPayload(inputIndex);
-          try {{
-            await fetch('/api/input_gain', {{
-              method: 'POST',
-              headers: {{
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': window.__CSRF || ''
-              }},
-              body: JSON.stringify(payload)
-            }});
-          }} catch (e) {{
-          }}
-        }}
-        function queueGainUpdate(inputIndex){{
-          if (gainTimers[inputIndex]) clearTimeout(gainTimers[inputIndex]);
-          gainTimers[inputIndex] = setTimeout(() => sendGainUpdate(inputIndex), 120);
+          if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.gain_db', Number(value), 120);
         }}
         function syncEq(inputIndex, band, value){{
           const prefix = eqPrefix(inputIndex);
           const valueEl = document.getElementById(prefix + '_eq_' + band + '_db_val');
           if (valueEl) valueEl.textContent = value + ' dB';
-          if (eqLiveEnabled) queueEqUpdate(inputIndex);
+          if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.eq_' + band + '_db', Number(value), 120);
         }}
-        function eqPayload(inputIndex){{
-          const prefix = eqPrefix(inputIndex);
-          return {{
-            input: inputIndex,
-            eq_40hz_db: Number(document.getElementById(prefix + '_eq_40hz_db').value),
-            eq_100hz_db: Number(document.getElementById(prefix + '_eq_100hz_db').value),
-            eq_8khz_db: Number(document.getElementById(prefix + '_eq_8khz_db').value),
-          }};
+        function syncSil(v){{
+          document.getElementById('sil_val').textContent=v+'s';
+          if (liveEnabled) settingsSaveFieldDebounced('general.silence_seconds', parseInt(v, 10), 500);
         }}
-        async function sendEqUpdate(inputIndex){{
-          if (!eqLiveEnabled) return;
-          const payload = eqPayload(inputIndex);
-          try {{
-            await fetch('/api/input_eq', {{
-              method: 'POST',
-              headers: {{
-                'Content-Type': 'application/json',
-                'X-CSRF-Token': window.__CSRF || ''
-              }},
-              body: JSON.stringify(payload)
-            }});
-          }} catch (e) {{
-          }}
+        function syncTiLeadIn(v){{
+          document.getElementById('ti_lead_in_val').textContent=v+' s';
+          document.getElementById('ti_analysis_lead_in_seconds').value=v;
+          if (liveEnabled) settingsSaveFieldDebounced('track_identification.analysis_lead_in_seconds', Number(v), 500);
         }}
-        function queueEqUpdate(inputIndex){{
-          if (eqTimers[inputIndex]) clearTimeout(eqTimers[inputIndex]);
-          eqTimers[inputIndex] = setTimeout(() => sendEqUpdate(inputIndex), 120);
+        function syncTiRefresh(v){{
+          document.getElementById('ti_refresh_val').textContent=Math.round(v/60)+' min';
+          document.getElementById('ti_refresh_seconds').value=v;
+          if (liveEnabled) settingsSaveFieldDebounced('track_identification.refresh_seconds', Number(v), 500);
         }}
-        function syncSil(v){{document.getElementById('sil_val').textContent=v+'s';}}
-        function syncTiLeadIn(v){{document.getElementById('ti_lead_in_val').textContent=v+' s';document.getElementById('ti_analysis_lead_in_seconds').value=v;}}
-        function syncTiRefresh(v){{document.getElementById('ti_refresh_val').textContent=Math.round(v/60)+' min';document.getElementById('ti_refresh_seconds').value=v;}}
-        function syncTiSilence(v){{document.getElementById('ti_silence_val').textContent=parseFloat(v).toFixed(2)+' s';document.getElementById('ti_track_change_silence_seconds').value=v;}}
+        function syncTiSilence(v){{
+          document.getElementById('ti_silence_val').textContent=parseFloat(v).toFixed(2)+' s';
+          document.getElementById('ti_track_change_silence_seconds').value=v;
+          if (liveEnabled) settingsSaveFieldDebounced('track_identification.track_change_silence_seconds', Number(v), 500);
+        }}
         function onTiToggle(checked){{
           var body=document.getElementById('ti-controls');
           if(!body)return;
