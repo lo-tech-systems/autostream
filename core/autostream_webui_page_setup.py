@@ -345,14 +345,14 @@ def send_setup_page(
           </label>
           <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked} onchange="if(liveEnabled) settingsTransact('/api/settings/auto-update', {{value: this.checked}});">
+              <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked} onchange="refreshSystemCardSub(); if(liveEnabled) settingsTransact('/api/settings/auto-update', {{value: this.checked}});">
               <span class="switch"></span>
             </label>
             <span>Automatic updates</span>
           </div>
           <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked} onchange="settingsSaveField('updates.update_channel', this.checked ? 'dev' : 'stable')">
+              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked} onchange="refreshSystemCardSub(); settingsSaveField('updates.update_channel', this.checked ? 'dev' : 'stable')">
               <span class="switch"></span>
             </label>
             <span>Enable pre-release updates</span>
@@ -652,7 +652,7 @@ def send_setup_page(
     # Fieldset fragments shared by both layout paths
     playback_inner_html = f"""
           <label>Default Speakers:
-            <select id="owntone_output_select" name="owntone_output_name" onchange="if(liveEnabled) settingsSaveField('owntone.output_name', this.value);">
+            <select id="owntone_output_select" name="owntone_output_name" onchange="refreshPlaybackCardSub(); if(liveEnabled) settingsSaveField('owntone.output_name', this.value);">
               {owntone_outputs_html}
             </select>
             <div id="owntone_output_hint" class="helptext" style="display:none;">
@@ -670,7 +670,7 @@ def send_setup_page(
     system_inner_html = f"""
           <label style="display:flex;align-items:center;gap:.75rem;">
             <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}"
-              onblur="if(liveEnabled && this.value.trim()) settingsTransact('/api/settings/hostname', {{value: this.value.trim()}});"
+              onblur="refreshSystemCardSub(); if(liveEnabled && this.value.trim()) settingsTransact('/api/settings/hostname', {{value: this.value.trim()}});"
               onkeydown="if(event.key==='Enter'){{ this.blur(); event.preventDefault(); }}">
           </label>
           {update_html}
@@ -900,7 +900,7 @@ def send_setup_page(
       <div class="setup-list-card" onclick="openPanel('playback')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Playback</span>
-          <span class="setup-list-card-sub">{playback_summary}</span>
+          <span class="setup-list-card-sub" id="playback-card-sub">{playback_summary}</span>
         </div>
         <span class="setup-list-chevron">\u203a</span>
       </div>
@@ -928,7 +928,7 @@ def send_setup_page(
       <div class="setup-list-card" onclick="openPanel('system')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">System</span>
-          <span class="setup-list-card-sub">{system_summary}</span>
+          <span class="setup-list-card-sub" id="system-card-sub">{system_summary}</span>
         </div>
         <span class="setup-list-chevron">\u203a</span>
       </div>
@@ -1290,6 +1290,7 @@ def send_setup_page(
         function syncVol(v){{
           document.getElementById('owntone_volume_percent').value=v;
           document.getElementById('vol_val').textContent=v+'%';
+          refreshPlaybackCardSub();
           if (liveEnabled) settingsSaveFieldDebounced('owntone.volume_percent', parseInt(v, 10), 300);
         }}
         function thresholdPreset(checked){{ return checked ? -45 : -60; }}
@@ -1351,6 +1352,7 @@ def send_setup_page(
           body.style.opacity=checked?'':'0.4';
           body.style.pointerEvents=checked?'':'none';
           body.querySelectorAll('input[type="range"]').forEach(function(el){{el.disabled=!checked;}});
+          refreshTrackIdCardSub();
         }}
         window.addEventListener('DOMContentLoaded', () => {{
           const changePinBtn = document.getElementById('btnChangePin');
@@ -1504,6 +1506,7 @@ def send_setup_page(
           }} else {{
             sel.selectedIndex = 0;
           }}
+          refreshPlaybackCardSub();
         }}
 
         window.addEventListener("DOMContentLoaded", () => {{
@@ -1576,9 +1579,41 @@ def send_setup_page(
           var adv = (cbAdv && cbAdv.checked) ? 'Visible to peers: On' : 'Visible to peers: Off';
           sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark + ' \u00b7 ' + host + ' \u00b7 ' + ctrl + ' \u00b7 ' + adv;
         }}
-        function closePanel() {{
+        function refreshPlaybackCardSub() {{
+          var sub = document.getElementById('playback-card-sub');
+          if (!sub) return;
+          var sel = document.getElementById('owntone_output_select');
+          var speaker = sel ? (sel.value || 'No speaker selected') : 'No speaker selected';
+          var volEl = document.getElementById('owntone_volume_percent');
+          var vol = volEl ? volEl.value : '0';
+          sub.textContent = speaker + ' · ' + vol + '%';
+        }}
+        function refreshTrackIdCardSub() {{
+          var sub = document.getElementById('track-id-card-sub');
+          if (!sub) return;
+          var cb = document.getElementById('track_identification_enabled');
+          sub.textContent = (cb && cb.checked) ? 'On' : 'Off';
+        }}
+        function refreshSystemCardSub() {{
+          var sub = document.getElementById('system-card-sub');
+          if (!sub) return;
+          var hn = document.querySelector('input[name="system_hostname"]');
+          var hostname = hn ? (hn.value.trim() || 'autostream') : 'autostream';
+          var cbAu = document.getElementById('updates_auto_update');
+          var cbPre = document.getElementById('updates_prerelease_channel');
+          var auState = (cbAu && cbAu.checked) ? 'Auto-update: On' : 'Auto-update: Off';
+          if (cbPre && cbPre.checked) auState += ' - Pre-release channel';
+          sub.textContent = hostname + ' · v{_app_ver} · ' + auState;
+        }}
+        function refreshSetupCardSubs() {{
           refreshInputCardSubs();
+          refreshPlaybackCardSub();
+          refreshTrackIdCardSub();
           refreshCustomiseCardSub();
+          refreshSystemCardSub();
+        }}
+        function closePanel() {{
+          refreshSetupCardSubs();
           var track = document.getElementById('setupSlideTrack');
           if (track) track.classList.remove('panel-open');
           window.scrollTo(0, 0);
