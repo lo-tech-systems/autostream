@@ -1513,13 +1513,13 @@ std::string AudioMonitor::api_set_log_level(const std::string& level_text)
                "\"ok\":false,\"error\":\"unsupported log level\"}";
     }
 
-    MonitorLogLevel applied = logger_set_level(level);
-    LOG_INFO("[monitor] Log level changed to %s", protocol_log_level_name(applied));
+    logger_set_level(level);
+    LOG_INFO("[monitor] Log level changed to %s", protocol_log_level_name(level));
 
     std::ostringstream oss;
     oss << "{\"type\":\"ack\",\"command\":\"set_log_level\","
         << "\"ok\":true,"
-        << "\"level\":\"" << protocol_log_level_name(applied) << "\"}";
+        << "\"level\":\"" << protocol_log_level_name(level) << "\"}";
     return oss.str();
 }
 
