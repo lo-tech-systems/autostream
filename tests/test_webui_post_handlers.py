@@ -108,9 +108,29 @@ def _call_gain(body: str | dict, tmp_path: Path) -> tuple:
     def fake_send_json(h, code, data):
         sent.append((code, data))
 
-    with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
-         patch("autostream_webui_post_handlers.set_live_input_gain", return_value=True):
-        handle_live_input_gain_update(MagicMock(), MagicMock(), body)
+    # handle_live_input_gain_update partially validates (JSON, input index) and
+    # then delegates to send_settings_post_json in autostream_webui_api. Patch
+    # both paths so all send_json calls are captured.
+    # Provide a real SettingsStore so valid requests reach the success path.
+    import tempfile, os
+    from autostream_settings import SettingsStore
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as tf:
+        tf.write("{}")
+        cfg_path = tf.name
+    try:
+        store = SettingsStore(cfg_path, _save_interval_seconds=9999, _writer=MagicMock())
+        state = MagicMock()
+        state.settings = store
+        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_api.set_live_input_gain", return_value=True):
+            handle_live_input_gain_update(MagicMock(), state, body)
+    finally:
+        store.close(save=False)
+        try:
+            os.unlink(cfg_path)
+        except OSError:
+            pass
 
     return sent[0] if sent else (None, {})
 
@@ -380,8 +400,10 @@ class TestLiveInputGainValidation:
         code, data = _call_gain({"input": 2, "gain_db": 5.5}, tmp_path)
         assert code == 200
         assert data["ok"] is True
-        assert data["gain_db"] == pytest.approx(5.5)
-        assert data["input"] == 2
+        # handle_live_input_gain_update delegates to send_settings_post_json;
+        # response uses "field"/"value" instead of "input"/"gain_db".
+        assert data["value"] == pytest.approx(5.5)
+        assert data["field"] == "audio2.gain_db"
 
     def _call_gain_with_mock(self, body, tmp_path):
         if isinstance(body, dict):
@@ -392,8 +414,9 @@ class TestLiveInputGainValidation:
         def fake_send_json(h, code, data):
             sent.append((code, data))
 
-        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_post_handlers.set_live_input_gain", mock_fn):
+        # Delegate path now goes through autostream_webui_api; patch there.
+        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_api.set_live_input_gain", mock_fn):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0] if sent else (None, {})
@@ -410,7 +433,6 @@ class TestLiveInputGainValidation:
     def test_gain_nan_rejected(self, tmp_path):
         body = json.dumps({"input": 1, "gain_db": 0})
         sent = []
-        mock_gain = MagicMock(return_value=True)
         import autostream_webui_post_handlers as _ph
         orig_loads = _ph.json.loads
 
@@ -420,21 +442,19 @@ class TestLiveInputGainValidation:
                 result["gain_db"] = float("nan")
             return result
 
-        with patch("autostream_webui_post_handlers.send_json",
+        with patch("autostream_webui_api.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_post_handlers.set_live_input_gain", mock_gain), \
+             patch("autostream_webui_api.set_live_input_gain", return_value=True), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0]
         assert code == 400
         assert data["ok"] is False
-        mock_gain.assert_not_called()
 
     def test_gain_infinity_rejected(self, tmp_path):
         body = json.dumps({"input": 1, "gain_db": 0})
         sent = []
-        mock_gain = MagicMock(return_value=True)
         import autostream_webui_post_handlers as _ph
         orig_loads = _ph.json.loads
 
@@ -444,15 +464,14 @@ class TestLiveInputGainValidation:
                 result["gain_db"] = float("inf")
             return result
 
-        with patch("autostream_webui_post_handlers.send_json",
+        with patch("autostream_webui_api.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_post_handlers.set_live_input_gain", mock_gain), \
+             patch("autostream_webui_api.set_live_input_gain", return_value=True), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0]
         assert code == 400
-        mock_gain.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -75,7 +75,7 @@ from autostream_webui_common import (
     locked_load_config,
 )
 from autostream_webui_state import WebUIState
-from autostream_webui_api import send_json
+from autostream_webui_api import send_json, send_settings_post_json
 from autostream_webui_page_setup import send_setup_page
 from autostream_webui_page_owntone import send_owntone_setup_page, start_owntone_restart_async
 
@@ -443,7 +443,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 # -----------------------------------------------------------------------------
 
 def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
-    """Apply live per-input EQ changes to autostream_monitor."""
+    """Apply live per-input EQ changes to autostream_monitor and persist to the store."""
     import math
     try:
         payload = json.loads(body or "{}")
@@ -457,8 +457,8 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
             raise TypeError("bool")
         input_index = int(raw_index)
         eq_fields = ("eq_40hz_db", "eq_100hz_db", "eq_8khz_db")
-        for field in eq_fields:
-            if isinstance(payload.get(field), bool):
+        for f in eq_fields:
+            if isinstance(payload.get(f), bool):
                 raise TypeError("bool")
         eq_40hz_db = float(payload.get("eq_40hz_db", 0.0))
         eq_100hz_db = float(payload.get("eq_100hz_db", 0.0))
@@ -475,6 +475,21 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         if not math.isfinite(val) or val < -10.0 or val > 10.0:
             send_json(handler, 400, {"ok": False, "error": "EQ gain must be between -10 and 10 dB"})
             return
+
+    # Persist all three bands atomically to the store (all bands or none).
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, _SettingsStore):
+        section = f"audio{input_index}"
+        try:
+            def _mutate(raw: dict) -> None:
+                s = raw.setdefault(section, {})
+                s["eq_40hz_db"] = eq_40hz_db
+                s["eq_100hz_db"] = eq_100hz_db
+                s["eq_8khz_db"] = eq_8khz_db
+            settings.update(_mutate)
+        except Exception:
+            logging.warning("handle_live_input_eq_update: store write failed", exc_info=True)
 
     ok = set_live_input_eq(
         input_index=input_index,
@@ -496,8 +511,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
 
 
 def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None:
-    """Apply live per-input gain changes to autostream_monitor."""
-    import math
+    """Apply live per-input gain changes to autostream_monitor and persist to the store."""
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
@@ -509,9 +523,6 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
         if isinstance(raw_index, bool):
             raise TypeError("bool")
         input_index = int(raw_index)
-        if isinstance(payload.get("gain_db"), bool):
-            raise TypeError("bool")
-        gain_db = float(payload.get("gain_db", 0.0))
     except Exception:
         send_json(handler, 400, {"ok": False, "error": "Invalid gain payload"})
         return
@@ -520,23 +531,8 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
         send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
         return
 
-    if not math.isfinite(gain_db) or gain_db < -10.0 or gain_db > 10.0:
-        send_json(handler, 400, {"ok": False, "error": "Gain must be between -10 and 10 dB"})
-        return
-
-    ok = set_live_input_gain(
-        input_index=input_index,
-        gain_db=gain_db,
-    )
-    if not ok:
-        send_json(handler, 200, {"ok": False, "error": "Could not update live gain"})
-        return
-
-    send_json(handler, 200, {
-        "ok": True,
-        "input": input_index,
-        "gain_db": gain_db,
-    })
+    field = f"audio{input_index}.gain_db"
+    send_settings_post_json(handler, state, {"field": field, "value": payload.get("gain_db")})
 
 
 # -----------------------------------------------------------------------------

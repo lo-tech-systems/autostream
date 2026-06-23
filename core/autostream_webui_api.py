@@ -51,9 +51,13 @@ from autostream_core import (
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
+    set_live_input_eq,
+    set_live_input_gain,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
+    update_live_owntone_runtime,
+    update_live_silence_seconds,
     update_playback_input_config,
 )
 from autostream_appliance_models import (
@@ -1061,15 +1065,135 @@ def _validate_update_channel(value: object) -> str:
     return normalize_update_channel(value)
 
 
-# Maps public dotted field name → (section, key, validator)
+def _validate_gain_db(value: object) -> float:
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    v = float(value)
+    if not math.isfinite(v) or v < -10.0 or v > 10.0:
+        raise ValueError("Value must be between -10 and 10")
+    return v
+
+
+def _validate_volume_percent(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    v = int(value)
+    if v < 0 or v > 100:
+        raise ValueError("Value must be between 0 and 100")
+    return v
+
+
+def _validate_silence_seconds(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    v = int(value)
+    if v < 10 or v > 300:
+        raise ValueError("Value must be between 10 and 300")
+    return v
+
+
+def _validate_output_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Value must be a string")
+    v = value.strip()
+    if not v:
+        raise ValueError("Value must be a non-empty string")
+    return v
+
+
+def _live_gain_1(state: object, value: object) -> bool:
+    return bool(set_live_input_gain(1, float(value)))
+
+
+def _live_gain_2(state: object, value: object) -> bool:
+    return bool(set_live_input_gain(2, float(value)))
+
+
+def _live_eq_1(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(set_live_input_eq(
+        1,
+        eq_40hz_db=snap.audio1.eq_40hz_db,
+        eq_100hz_db=snap.audio1.eq_100hz_db,
+        eq_8khz_db=snap.audio1.eq_8khz_db,
+    ))
+
+
+def _live_eq_2(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(set_live_input_eq(
+        2,
+        eq_40hz_db=snap.audio2.eq_40hz_db,
+        eq_100hz_db=snap.audio2.eq_100hz_db,
+        eq_8khz_db=snap.audio2.eq_8khz_db,
+    ))
+
+
+def _live_owntone_name(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(update_live_owntone_runtime(
+        output_name=str(value),
+        volume_percent=snap.owntone.volume_percent,
+        output_offsets_ms=snap.owntone.output_offsets_ms,
+        output_airplay_modes=snap.owntone.output_airplay_modes,
+    ))
+
+
+def _live_owntone_volume(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(update_live_owntone_runtime(
+        output_name=snap.owntone.output_name,
+        volume_percent=int(value),
+        output_offsets_ms=snap.owntone.output_offsets_ms,
+        output_airplay_modes=snap.owntone.output_airplay_modes,
+    ))
+
+
+def _live_silence(state: object, value: object) -> bool:
+    return bool(update_live_silence_seconds(int(value)))
+
+
+# Maps public dotted field name → (section, key, validator, live_fn_or_None)
 _SETTINGS_FIELDS: dict = {
-    "webui.dark_mode":                          ("webui",   "dark_mode",                         _validate_bool),
-    "webui.show_master_volume":                 ("webui",   "show_master_volume",                 _validate_bool),
-    "webui.show_input_detail":                  ("webui",   "show_input_detail",                  _validate_bool),
-    "webui.show_hostname_on_home":              ("webui",   "show_hostname_on_home",              _validate_bool),
-    "webui.control_other_appliances":           ("webui",   "control_other_appliances",           _validate_bool),
-    "webui.output_usage_poll_interval_seconds": ("webui",   "output_usage_poll_interval_seconds", _validate_poll_interval),
-    "updates.update_channel":                   ("updates", "update_channel",                     _validate_update_channel),
+    # WP3 — personalisation (no live effect)
+    "webui.dark_mode":                          ("webui",   "dark_mode",                         _validate_bool,            None),
+    "webui.show_master_volume":                 ("webui",   "show_master_volume",                 _validate_bool,            None),
+    "webui.show_input_detail":                  ("webui",   "show_input_detail",                  _validate_bool,            None),
+    "webui.show_hostname_on_home":              ("webui",   "show_hostname_on_home",              _validate_bool,            None),
+    "webui.control_other_appliances":           ("webui",   "control_other_appliances",           _validate_bool,            None),
+    "webui.output_usage_poll_interval_seconds": ("webui",   "output_usage_poll_interval_seconds", _validate_poll_interval,   None),
+    "updates.update_channel":                   ("updates", "update_channel",                     _validate_update_channel,  None),
+    # WP4A — audio input gain/EQ (live: monitor)
+    "audio1.gain_db":                           ("audio1",  "gain_db",                            _validate_gain_db,         _live_gain_1),
+    "audio2.gain_db":                           ("audio2",  "gain_db",                            _validate_gain_db,         _live_gain_2),
+    "audio1.eq_40hz_db":                        ("audio1",  "eq_40hz_db",                         _validate_gain_db,         _live_eq_1),
+    "audio1.eq_100hz_db":                       ("audio1",  "eq_100hz_db",                        _validate_gain_db,         _live_eq_1),
+    "audio1.eq_8khz_db":                        ("audio1",  "eq_8khz_db",                         _validate_gain_db,         _live_eq_1),
+    "audio2.eq_40hz_db":                        ("audio2",  "eq_40hz_db",                         _validate_gain_db,         _live_eq_2),
+    "audio2.eq_100hz_db":                       ("audio2",  "eq_100hz_db",                        _validate_gain_db,         _live_eq_2),
+    "audio2.eq_8khz_db":                        ("audio2",  "eq_8khz_db",                         _validate_gain_db,         _live_eq_2),
+    # WP4A — OwnTone playback defaults (live: owntone runtime)
+    "owntone.output_name":                      ("owntone", "output_name",                        _validate_output_name,     _live_owntone_name),
+    "owntone.volume_percent":                   ("owntone", "volume_percent",                     _validate_volume_percent,  _live_owntone_volume),
+    # WP4A — silence detection (live: monitor)
+    "general.silence_seconds":                  ("general", "silence_seconds",                    _validate_silence_seconds, _live_silence),
 }
 
 
@@ -1118,7 +1242,7 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         send_json(handler, 400, {"ok": False, "field": field, "error": "Unknown field"})
         return
 
-    section, key, validator = _SETTINGS_FIELDS[field]
+    section, key, validator, live_fn = _SETTINGS_FIELDS[field]
     raw_value = json_obj["value"]
 
     try:
@@ -1146,4 +1270,14 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         send_json(handler, 200, {"ok": False, "field": field, "error": "Internal error"})
         return
 
-    send_json(handler, 200, {"ok": True, "field": field, "value": normalized})
+    resp: dict = {"ok": True, "field": field, "value": normalized}
+    if live_fn is not None:
+        try:
+            live_ok = bool(live_fn(state, normalized))
+        except Exception:
+            logging.exception("send_settings_post_json: live effect failed for %s", field)
+            live_ok = False
+        resp["live"] = live_ok
+        if not live_ok:
+            resp["live_error"] = "Live effect could not be applied"
+    send_json(handler, 200, resp)
