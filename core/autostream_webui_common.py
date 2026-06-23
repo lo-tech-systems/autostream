@@ -122,7 +122,9 @@ def get_app_version() -> str:
 
     The result is cached in memory after the first call. Because applying an
     update always restarts the process, the version cannot change while the
-    process is running.
+    process is running.  Every failed helper outcome (exception, nonzero exit,
+    invalid JSON, blank tag) is cached as "unknown" so repeated calls cannot
+    each incur the five-second subprocess timeout.
     """
     global _app_version_cache
     if _app_version_cache is not None:
@@ -144,15 +146,18 @@ def get_app_version() -> str:
             check=False,
         )
     except Exception:
-        return "unknown"
+        _app_version_cache = "unknown"
+        return _app_version_cache
 
     if p.returncode != 0:
-        return "unknown"
+        _app_version_cache = "unknown"
+        return _app_version_cache
 
     try:
         payload = json.loads(p.stdout or "{}")
     except Exception:
-        return "unknown"
+        _app_version_cache = "unknown"
+        return _app_version_cache
 
     version = str(payload.get("release_tag") or "").strip()
     _app_version_cache = version or "unknown"

@@ -92,7 +92,7 @@ from autostream_webui_dials import (
     handle_dial_update_status,
 )
 from autostream_webui_common import build_nav_bar_html
-from autostream_webui_page_about import send_about_page
+from autostream_webui_page_about import send_about_page, send_about_system_json
 from autostream_webui_page_equaliser import send_equaliser_page, send_remote_equaliser_page
 from autostream_webui_page_airplay import send_airplay_page, send_remote_home_page
 from autostream_webui_page_logs import handle_logs_download, handle_logs_post, send_logs_page
@@ -492,6 +492,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_first_boot_appliance_page(self, STATE, AUTH)
         elif path == "/about":
             send_about_page(self, STATE)
+        elif path == "/api/about/system":
+            send_about_system_json(self)
         elif path == "/service":
             send_service_page(self, STATE, flash_msg=msg, flash_type=flash_type)
         elif path == "/logs":
@@ -990,6 +992,10 @@ def start_webui_background(
                 target=_reconcile_announcement_loop, daemon=True,
             )
             reconcile_thread.start()
+
+            # Prime the app-version cache before the HTTP server starts so the
+            # first /api/about/system request never incurs the helper timeout.
+            get_app_version()
 
             # Best-effort one-shot Vibra Mini version discovery before accepting
             # requests.  Runs in a daemon thread so it never delays startup.

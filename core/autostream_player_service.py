@@ -150,34 +150,33 @@ def get_owntone_runtime_info(
 ) -> OwnToneRuntimeInfo:
     """Return cached OwnTone runtime metadata, refreshing if the cache is stale.
 
+    When ``refresh_if_stale=False`` the process-wide snapshot is returned
+    immediately without any I/O or base_url requirement.  This is the path
+    used by the System Info API which must not initiate OwnTone HTTP traffic.
+
     When ``base_url`` is provided and the backend-detection cache is stale (or
     absent), this triggers a lightweight re-probe via resolve_backend() so the
     version can follow a restarted/upgraded OwnTone service without requiring
     a Python process restart.
     """
+    if not refresh_if_stale:
+        return _get_owntone_runtime_info_cached()
     normalized_base_url = _normalize_base_url(base_url) if str(base_url or "").strip() else ""
     if not normalized_base_url:
-        return OwnToneRuntimeInfo(
-            base_url="",
-            backend_id="unknown",
-            version="unknown",
-            connected=False,
-            last_seen_at=0.0,
-        )
+        return _get_owntone_runtime_info_cached()
     cached_info = _get_owntone_runtime_info_cached()
-    if refresh_if_stale:
-        age = _detection_cache_age(base_url)
-        if (
-            age is None
-            or age > _DETECTION_CACHE_SECONDS
-            or cached_info.base_url != normalized_base_url
-        ):
-            try:
-                resolve_backend(base_url, timeout=timeout)
-            except Exception:
-                # resolve_backend() is defensive already; this is a final guard
-                # so version display never breaks page rendering.
-                LOG.debug("OwnTone runtime refresh failed for %s", base_url, exc_info=True)
+    age = _detection_cache_age(base_url)
+    if (
+        age is None
+        or age > _DETECTION_CACHE_SECONDS
+        or cached_info.base_url != normalized_base_url
+    ):
+        try:
+            resolve_backend(base_url, timeout=timeout)
+        except Exception:
+            # resolve_backend() is defensive already; this is a final guard
+            # so version display never breaks page rendering.
+            LOG.debug("OwnTone runtime refresh failed for %s", base_url, exc_info=True)
     return _get_owntone_runtime_info_cached()
 
 

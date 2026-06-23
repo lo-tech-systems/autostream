@@ -323,3 +323,22 @@ class TestGatewayRoutesAuth:
         mgr._pin_value = "secret"
         mgr._pin_status = "ok"
         assert mgr.requires_auth("/api/appliances/aabbccdd1122334455aa/equaliser") is False
+
+
+# ---------------------------------------------------------------------------
+# /api/about/system — GET allowlist coverage (WP2 Test 18)
+# ---------------------------------------------------------------------------
+
+class TestAboutSystemAllowlist:
+    """Unauthenticated GET to /api/about/system is allowed even with PIN enabled."""
+
+    def test_requires_auth_returns_false_for_api_about_system(self):
+        from autostream_auth import AuthManager
+        mgr = AuthManager(config_path="dummy.ini")
+        mgr._pin_loaded = True
+        mgr._pin_value = "testpin"
+        mgr._pin_status = "ok"
+        assert mgr.requires_auth("/api/about/system") is False, (
+            "/api/about/system must be in the allowlist so unauthenticated "
+            "browsers can fetch system info on PIN-protected appliances"
+        )

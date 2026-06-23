@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import html
 import json
+import logging
+import math
+import subprocess
+from typing import Optional
 
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_temperature_c
 from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_health_percent
+from track_id.vibra_shazam import get_vibra_runtime_info
 
 from autostream_webui_common import (
     _config_snapshot,
@@ -36,6 +41,20 @@ from autostream_webui_common import (
 )
 
 from autostream_webui_state import WebUIState
+
+_log = logging.getLogger(__name__)
+
+
+# Fixed service list; order and membership are immutable constants — never
+# derived from request data.
+_SERVICES = (
+    ("autostream.service",              "Autostream"),
+    ("autostream_monitor.service",      "Audio Monitor"),
+    ("autostream_wifi_watcher.service", "Wi-Fi Watcher"),
+    ("owntone.service",                 None),      # label selected at runtime
+    ("vibra-mini.service",              "Vibra Mini"),
+    ("nginx.service",                   "NGINX"),
+)
 
 
 def _about_detail_header(title: str) -> str:
@@ -303,3 +322,170 @@ def send_about_page(handler, state: WebUIState) -> None:
     handler.send_header("Content-Length", str(len(body_bytes)))
     handler.end_headers()
     handler.wfile.write(body_bytes)
+
+
+# -----------------------------------------------------------------------------
+# /api/about/system — asynchronous System Info JSON endpoint
+# -----------------------------------------------------------------------------
+
+def send_about_system_json(handler) -> None:
+    """Collect and send the JSON payload for /api/about/system."""
+    from autostream_webui_api import send_json
+    try:
+        payload = _collect_system_info()
+        send_json(handler, 200, payload)
+    except Exception:
+        _log.exception("about/system: unexpected collector error")
+        send_json(handler, 500, {"ok": False, "error": "system_info_unavailable"})
+
+
+def _build_text(version: str, connected: bool) -> str:
+    """Format a build/version string, appending '(last seen)' when disconnected."""
+    v = str(version or "").strip() or "unknown"
+    if not connected and v != "unknown":
+        return v + " (last seen)"
+    return v
+
+
+def _collect_system_info() -> dict:
+    """Collect all System Info fields.  Partial failures degrade individual fields."""
+    # 1. Autostream version (cached, immutable for process lifetime)
+    autostream_version = get_app_version()
+
+    # 2. Monitor build — read in-memory snapshot, no protocol I/O
+    monitor_info = get_monitor_runtime_info()
+    monitor_build = _build_text(monitor_info.monitor_build, monitor_info.connected)
+
+    # 3. OwnTone build — read in-memory snapshot, no OwnTone HTTP traffic
+    owntone_info = get_owntone_runtime_info(refresh_if_stale=False)
+    owntone_build = _build_text(owntone_info.version, owntone_info.connected)
+    owntone_backend_id = str(owntone_info.backend_id or "").strip() or "unknown"
+
+    # 4. Vibra Mini build — read in-memory snapshot, no socket I/O
+    vibra_info = get_vibra_runtime_info()
+    vibra_build = _build_text(vibra_info.version, vibra_info.connected)
+
+    # 5. Playback totals across inputs 1 and 2
+    playback_snapshot = get_playback_snapshot()
+    total_seconds = sum(
+        int(snap.total_playback_seconds)
+        for idx, snap in playback_snapshot.inputs.items()
+        if int(idx) in (1, 2)
+    )
+    playback_hours = round(total_seconds / 3600.0, 1)
+
+    # 6. CPU temperature (on-demand, cheap sysfs read)
+    cpu_temp_c: Optional[float] = None
+    try:
+        t = get_cpu_temperature_c()
+        if t is not None and math.isfinite(float(t)):
+            cpu_temp_c = float(t)
+    except Exception:
+        pass
+
+    # 7. Root disk usage (on-demand)
+    disk: dict = {"available": False}
+    try:
+        du = get_root_disk_usage()
+        if du is not None:
+            tot, usd, fre = du
+            pct = round((usd / tot) * 100.0, 1) if tot else 0.0
+            pct = max(0.0, min(100.0, pct))
+            status = "healthy" if pct < 60 else ("warning" if pct < 80 else "critical")
+            disk = {
+                "available": True,
+                "total_bytes": tot,
+                "free_bytes": fre,
+                "used_percent": pct,
+                "status": status,
+            }
+    except Exception:
+        pass
+
+    # 8. SD card health (on-demand file read)
+    sd_card: dict = {"available": False}
+    try:
+        sd_health = get_sdcard_health_percent()
+        if sd_health is not None:
+            sd_status = (
+                "critical" if sd_health <= 10
+                else ("warning" if sd_health <= 30 else "healthy")
+            )
+            sd_card = {
+                "available": True,
+                "health_percent": sd_health,
+                "status": sd_status,
+            }
+    except Exception:
+        pass
+
+    # 9. systemd service states (on-demand query)
+    services = _collect_service_states(owntone_backend_id)
+
+    return {
+        "ok": True,
+        "builds": {
+            "autostream": autostream_version,
+            "monitor": monitor_build,
+            "owntone": owntone_build,
+            "vibra_mini": vibra_build,
+        },
+        "playback_hours": playback_hours,
+        "cpu_temperature_c": cpu_temp_c,
+        "disk": disk,
+        "sd_card": sd_card,
+        "services": services,
+    }
+
+
+def _collect_service_states(owntone_backend_id: str) -> list:
+    """Query systemd for the six fixed service units and return state list."""
+    unit_names = [unit for unit, _ in _SERVICES]
+    parsed: dict = {}
+    try:
+        result = subprocess.run(
+            [
+                "systemctl", "show", "--no-pager",
+                "--property=Id",
+                "--property=ActiveState",
+            ] + unit_names,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        parsed = _parse_systemctl_output(result.stdout or "")
+    except Exception:
+        _log.debug("about/system: systemctl query failed", exc_info=True)
+
+    services = []
+    for unit, label in _SERVICES:
+        if label is None:
+            label = "OwnTone Mini" if owntone_backend_id == "owntone-mini" else "OwnTone"
+        block = parsed.get(unit, {})
+        active_state = block.get("ActiveState", "")
+        state = "ok" if active_state == "active" else "failed"
+        services.append({"unit": unit, "label": label, "state": state})
+    return services
+
+
+def _parse_systemctl_output(stdout: str) -> dict:
+    """Parse blank-line-separated systemctl show output into {Id: {prop: val}}."""
+    blocks: dict = {}
+    current: dict = {}
+    for line in stdout.splitlines():
+        line = line.rstrip()
+        if not line:
+            if current:
+                unit_id = current.get("Id", "")
+                if unit_id:
+                    blocks[unit_id] = current
+                current = {}
+        elif "=" in line:
+            key, _, value = line.partition("=")
+            current[key.strip()] = value
+    if current:
+        unit_id = current.get("Id", "")
+        if unit_id:
+            blocks[unit_id] = current
+    return blocks

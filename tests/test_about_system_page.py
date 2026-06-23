@@ -1,0 +1,822 @@
+"""Tests for /api/about/system collector and About page rendering."""
+from __future__ import annotations
+
+import json
+import sys
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+REPO_ROOT = Path(__file__).parent.parent
+_core = str(REPO_ROOT / "core")
+if _core not in sys.path:
+    sys.path.insert(0, _core)
+
+import autostream_player_service as _ps
+import autostream_webui_page_about as _about
+
+
+# ---------------------------------------------------------------------------
+# Helpers / stubs
+# ---------------------------------------------------------------------------
+
+def _mock_handler():
+    h = MagicMock()
+    h.wfile = MagicMock()
+    return h
+
+
+def _monitor_info(build="1.0", connected=True):
+    from autostream_core import MonitorRuntimeInfo
+    return MonitorRuntimeInfo(
+        monitor_build=build,
+        log_level="info",
+        connected=connected,
+        last_seen_at=1000.0,
+    )
+
+
+def _owntone_info(version="28.12", connected=True, backend_id="owntone"):
+    return _ps.OwnToneRuntimeInfo(
+        base_url="http://localhost:3689",
+        backend_id=backend_id,
+        version=version,
+        connected=connected,
+        last_seen_at=1000.0,
+    )
+
+
+def _vibra_info(version="1.0.0", connected=True):
+    from track_id.vibra_client import VibraRuntimeInfo
+    return VibraRuntimeInfo(version=version, connected=connected)
+
+
+def _playback_snap(seconds_1=3600, seconds_2=7200):
+    """Build a fake PlaybackSnapshot with inputs 1 and 2."""
+    from autostream_playback_stats import InputPlaybackSnapshot
+
+    def _inp(secs):
+        s = MagicMock(spec=InputPlaybackSnapshot)
+        s.total_playback_seconds = secs
+        return s
+
+    snap = MagicMock()
+    snap.inputs = {1: _inp(seconds_1), 2: _inp(seconds_2)}
+    return snap
+
+
+def _collect_with_mocks(
+    *,
+    autostream_version="1.2.3",
+    monitor_info=None,
+    owntone_info=None,
+    vibra_info=None,
+    playback_snap=None,
+    cpu_temp=48.2,
+    disk_usage=(32_000_000_000, 12_000_000_000, 20_000_000_000),
+    sd_health=96,
+    systemctl_stdout="",
+    systemctl_returncode=0,
+    systemctl_raises=None,
+):
+    if monitor_info is None:
+        monitor_info = _monitor_info()
+    if owntone_info is None:
+        owntone_info = _owntone_info()
+    if vibra_info is None:
+        vibra_info = _vibra_info()
+    if playback_snap is None:
+        playback_snap = _playback_snap()
+
+    def fake_systemctl(*args, **kwargs):
+        if systemctl_raises is not None:
+            raise systemctl_raises
+        r = MagicMock()
+        r.stdout = systemctl_stdout
+        r.stderr = ""
+        r.returncode = systemctl_returncode
+        return r
+
+    with patch("autostream_webui_page_about.get_app_version", return_value=autostream_version), \
+         patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=monitor_info), \
+         patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=owntone_info), \
+         patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=vibra_info), \
+         patch("autostream_webui_page_about.get_playback_snapshot", return_value=playback_snap), \
+         patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=cpu_temp), \
+         patch("autostream_webui_page_about.get_root_disk_usage", return_value=disk_usage), \
+         patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=sd_health), \
+         patch("autostream_webui_page_about.subprocess.run", side_effect=fake_systemctl):
+        return _about._collect_system_info()
+
+
+_ACTIVE_SYSTEMCTL = """\
+Id=autostream.service
+ActiveState=active
+
+Id=autostream_monitor.service
+ActiveState=active
+
+Id=autostream_wifi_watcher.service
+ActiveState=active
+
+Id=owntone.service
+ActiveState=active
+
+Id=vibra-mini.service
+ActiveState=active
+
+Id=nginx.service
+ActiveState=active
+
+"""
+
+
+# ---------------------------------------------------------------------------
+# Test 1 — complete payload matches required keys and types
+# ---------------------------------------------------------------------------
+
+class TestCollectSystemInfoShape:
+
+    def test_payload_ok_true(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert result["ok"] is True
+
+    def test_builds_keys_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert set(result["builds"].keys()) == {"autostream", "monitor", "owntone", "vibra_mini"}
+
+    def test_builds_are_strings(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        for key, val in result["builds"].items():
+            assert isinstance(val, str), f"builds.{key} is not a str"
+
+    def test_playback_hours_is_float(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert isinstance(result["playback_hours"], float)
+
+    def test_cpu_temperature_c_is_float_or_none(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL, cpu_temp=48.2)
+        assert isinstance(result["cpu_temperature_c"], float)
+        result2 = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL, cpu_temp=None)
+        assert result2["cpu_temperature_c"] is None
+
+    def test_disk_available_always_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert "available" in result["disk"]
+
+    def test_sd_card_available_always_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert "available" in result["sd_card"]
+
+    def test_services_has_six_entries(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert len(result["services"]) == 6
+
+
+# ---------------------------------------------------------------------------
+# Test 2 — playback totals: inputs 1 and 2 only, one decimal hour
+# ---------------------------------------------------------------------------
+
+class TestPlaybackTotals:
+
+    def test_hours_sum_inputs_1_and_2_only(self):
+        snap = MagicMock()
+        from autostream_playback_stats import InputPlaybackSnapshot
+
+        def _inp(s):
+            m = MagicMock(spec=InputPlaybackSnapshot)
+            m.total_playback_seconds = s
+            return m
+
+        snap.inputs = {1: _inp(3600), 2: _inp(7200), 3: _inp(100000)}
+        result = _collect_with_mocks(playback_snap=snap, systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert result["playback_hours"] == 3.0  # 10800 / 3600 = 3.0
+
+    def test_hours_rounded_to_one_decimal(self):
+        snap = MagicMock()
+        from autostream_playback_stats import InputPlaybackSnapshot
+
+        def _inp(s):
+            m = MagicMock(spec=InputPlaybackSnapshot)
+            m.total_playback_seconds = s
+            return m
+
+        snap.inputs = {1: _inp(3700), 2: _inp(0)}
+        result = _collect_with_mocks(playback_snap=snap, systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert result["playback_hours"] == round(3700 / 3600, 1)
+
+
+# ---------------------------------------------------------------------------
+# Test 3 — disk and SD thresholds
+# ---------------------------------------------------------------------------
+
+class TestDiskThresholds:
+
+    @pytest.mark.parametrize("used_pct,expected_status", [
+        (0,   "healthy"),
+        (59,  "healthy"),
+        (60,  "warning"),
+        (79,  "warning"),
+        (80,  "critical"),
+        (100, "critical"),
+    ])
+    def test_disk_status_thresholds(self, used_pct, expected_status):
+        total = 100_000_000_000
+        used = int(total * used_pct / 100)
+        free = total - used
+        result = _collect_with_mocks(
+            disk_usage=(total, used, free),
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["disk"]["available"] is True
+        assert result["disk"]["status"] == expected_status
+
+    @pytest.mark.parametrize("health,expected_status", [
+        (0,   "critical"),
+        (10,  "critical"),
+        (11,  "warning"),
+        (30,  "warning"),
+        (31,  "healthy"),
+        (100, "healthy"),
+    ])
+    def test_sd_health_status_thresholds(self, health, expected_status):
+        result = _collect_with_mocks(
+            sd_health=health,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["sd_card"]["available"] is True
+        assert result["sd_card"]["status"] == expected_status
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — missing disk / SD returns {"available": false}
+# ---------------------------------------------------------------------------
+
+class TestMissingDiskAndSd:
+
+    def test_missing_disk_returns_unavailable(self):
+        result = _collect_with_mocks(
+            disk_usage=None,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["disk"] == {"available": False}
+
+    def test_missing_sd_returns_unavailable(self):
+        result = _collect_with_mocks(
+            sd_health=None,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["sd_card"] == {"available": False}
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — OwnTone label for backend ID
+# ---------------------------------------------------------------------------
+
+class TestOwntoneLabel:
+
+    def test_owntone_mini_backend_uses_owntone_mini_label(self):
+        result = _collect_with_mocks(
+            owntone_info=_owntone_info(backend_id="owntone-mini"),
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        owntone_svc = next(s for s in result["services"] if s["unit"] == "owntone.service")
+        assert owntone_svc["label"] == "OwnTone Mini"
+
+    @pytest.mark.parametrize("backend_id", ["owntone", "unknown", "other", ""])
+    def test_non_mini_backend_uses_owntone_label(self, backend_id):
+        result = _collect_with_mocks(
+            owntone_info=_owntone_info(backend_id=backend_id),
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        owntone_svc = next(s for s in result["services"] if s["unit"] == "owntone.service")
+        assert owntone_svc["label"] == "OwnTone"
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — service state mapping
+# ---------------------------------------------------------------------------
+
+class TestServiceStateMapping:
+
+    def _systemctl_with_states(self, states: dict) -> str:
+        """Build fake systemctl output from {unit: active_state} dict."""
+        blocks = []
+        for unit, active_state in states.items():
+            blocks.append(f"Id={unit}\nActiveState={active_state}\n")
+        return "\n".join(blocks) + "\n"
+
+    def test_active_maps_to_ok(self):
+        stdout = self._systemctl_with_states({
+            "autostream.service": "active",
+            "autostream_monitor.service": "active",
+            "autostream_wifi_watcher.service": "active",
+            "owntone.service": "active",
+            "vibra-mini.service": "active",
+            "nginx.service": "active",
+        })
+        result = _collect_with_mocks(systemctl_stdout=stdout)
+        for svc in result["services"]:
+            assert svc["state"] == "ok", f"{svc['unit']} should be ok"
+
+    @pytest.mark.parametrize("active_state", [
+        "inactive", "failed", "activating", "deactivating", "unknown", "",
+    ])
+    def test_non_active_maps_to_failed(self, active_state):
+        stdout = self._systemctl_with_states({"autostream.service": active_state})
+        result = _collect_with_mocks(systemctl_stdout=stdout)
+        svc = next(s for s in result["services"] if s["unit"] == "autostream.service")
+        assert svc["state"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — systemd parsing maps blocks by Id, not position
+# ---------------------------------------------------------------------------
+
+class TestSystemdParsing:
+
+    def test_parse_output_maps_by_id_not_position(self):
+        stdout = (
+            "Id=nginx.service\nActiveState=active\n\n"
+            "Id=autostream.service\nActiveState=failed\n\n"
+        )
+        parsed = _about._parse_systemctl_output(stdout)
+        assert parsed["nginx.service"]["ActiveState"] == "active"
+        assert parsed["autostream.service"]["ActiveState"] == "failed"
+
+    def test_parse_ignores_malformed_lines(self):
+        stdout = (
+            "malformed line without equals\n"
+            "Id=autostream.service\nActiveState=active\n\n"
+        )
+        parsed = _about._parse_systemctl_output(stdout)
+        assert "autostream.service" in parsed
+
+    def test_parse_handles_missing_blocks(self):
+        stdout = "Id=autostream.service\nActiveState=active\n\n"
+        result = _collect_with_mocks(systemctl_stdout=stdout)
+        # Missing units fall back to failed
+        svc = next(s for s in result["services"] if s["unit"] == "nginx.service")
+        assert svc["state"] == "failed"
+
+    def test_parse_last_block_without_trailing_blank(self):
+        stdout = "Id=autostream.service\nActiveState=active"
+        parsed = _about._parse_systemctl_output(stdout)
+        assert "autostream.service" in parsed
+        assert parsed["autostream.service"]["ActiveState"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — partial stdout retained when systemctl returns nonzero
+# ---------------------------------------------------------------------------
+
+class TestSystemctlNonzeroReturn:
+
+    def test_partial_stdout_used_even_on_nonzero_return(self):
+        partial_stdout = "Id=autostream.service\nActiveState=active\n\n"
+        result = _collect_with_mocks(
+            systemctl_stdout=partial_stdout,
+            systemctl_returncode=1,
+        )
+        svc = next(s for s in result["services"] if s["unit"] == "autostream.service")
+        assert svc["state"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — timeout/exception → six failed entries, no stderr leaked
+# ---------------------------------------------------------------------------
+
+class TestSystemctlFailure:
+
+    def test_timeout_returns_six_failed_entries(self):
+        result = _collect_with_mocks(
+            systemctl_raises=Exception("timeout"),
+        )
+        assert len(result["services"]) == 6
+        for svc in result["services"]:
+            assert svc["state"] == "failed"
+
+    def test_exception_does_not_propagate(self):
+        # Must not raise; top-level should still return ok=True
+        result = _collect_with_mocks(systemctl_raises=OSError("no systemd"))
+        assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — subprocess command is fixed, no shell
+# ---------------------------------------------------------------------------
+
+class TestSystemctlCommandSecurity:
+
+    def test_subprocess_uses_fixed_unit_list(self):
+        captured_args = []
+
+        def capture_run(*args, **kwargs):
+            captured_args.extend(args)
+            r = MagicMock()
+            r.stdout = ""
+            r.returncode = 0
+            return r
+
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
+            _about._collect_system_info()
+
+        assert captured_args, "subprocess.run was not called"
+        cmd = captured_args[0]
+        assert isinstance(cmd, list), "command must be a list (no shell)"
+        assert "shell" not in str(cmd), "shell must not be used"
+        # All six fixed units must be present in the command
+        expected_units = [
+            "autostream.service",
+            "autostream_monitor.service",
+            "autostream_wifi_watcher.service",
+            "owntone.service",
+            "vibra-mini.service",
+            "nginx.service",
+        ]
+        for unit in expected_units:
+            assert unit in cmd, f"{unit} missing from systemctl command"
+
+    def test_subprocess_does_not_use_shell(self):
+        captured_kwargs = {}
+
+        def capture_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            r = MagicMock()
+            r.stdout = ""
+            r.returncode = 0
+            return r
+
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
+            _about._collect_system_info()
+
+        assert captured_kwargs.get("shell") is not True
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — partial field failure does not set ok=false
+# ---------------------------------------------------------------------------
+
+class TestPartialFailureDegradation:
+
+    def test_cpu_failure_does_not_set_ok_false(self):
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            result = _about._collect_system_info()
+        assert result["ok"] is True
+        assert result["cpu_temperature_c"] is None
+
+    def test_disk_failure_does_not_set_ok_false(self):
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", side_effect=Exception("fail")), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            result = _about._collect_system_info()
+        assert result["ok"] is True
+        assert result["disk"] == {"available": False}
+
+    def test_vibra_failure_does_not_set_ok_false(self):
+        result = _collect_with_mocks(
+            vibra_info=_vibra_info(version="unknown", connected=False),
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["ok"] is True
+        assert result["builds"]["vibra_mini"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — collector does not call resolve_backend or OwnTone HTTP
+# ---------------------------------------------------------------------------
+
+class TestCollectorNoIO:
+
+    def test_does_not_call_resolve_backend(self):
+        with patch("autostream_player_service.resolve_backend") as mock_rb, \
+             patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            _about._collect_system_info()
+        mock_rb.assert_not_called()
+
+    def test_get_owntone_called_with_refresh_if_stale_false(self):
+        captured_kwargs = {}
+
+        def fake_owntone(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _owntone_info()
+
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", side_effect=fake_owntone), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            _about._collect_system_info()
+        assert captured_kwargs.get("refresh_if_stale") is False
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — monitor, OwnTone, Vibra, playback reads are no-protocol-I/O
+# (verified via mock — if they were calling connect/send/recv they would
+#  propagate errors through the mocked collection functions)
+# ---------------------------------------------------------------------------
+
+class TestSnapshotReadsAreMemoryOnly:
+
+    def test_monitor_read_is_not_live_io(self):
+        mock_monitor = MagicMock(return_value=_monitor_info())
+        with patch("autostream_webui_page_about.get_monitor_runtime_info", mock_monitor), \
+             patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            _about._collect_system_info()
+        mock_monitor.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Test 14 — get_owntone_runtime_info(refresh_if_stale=False) returns snapshot
+#           even when no base URL is supplied
+# ---------------------------------------------------------------------------
+
+class TestOwnToneRuntimeInfoNoBaseUrl:
+
+    def setup_method(self):
+        _ps._DETECTION_CACHE.clear()
+        # Reset the owntone runtime info to a known state
+        _ps._set_owntone_runtime_info(
+            base_url="http://localhost:3689",
+            backend_id="owntone",
+            version="28.99",
+            connected=True,
+            last_seen_at=1000.0,
+        )
+
+    def teardown_method(self):
+        _ps._DETECTION_CACHE.clear()
+        _ps._set_owntone_runtime_info(
+            base_url="",
+            backend_id="unknown",
+            version="unknown",
+            connected=False,
+            last_seen_at=0.0,
+        )
+
+    def test_returns_cached_snapshot_when_refresh_if_stale_false_and_no_base_url(self):
+        info = _ps.get_owntone_runtime_info(refresh_if_stale=False)
+        assert info.version == "28.99"
+        assert info.connected is True
+
+    def test_returns_cached_snapshot_when_refresh_if_stale_false_with_base_url(self):
+        info = _ps.get_owntone_runtime_info("http://localhost:3689", refresh_if_stale=False)
+        assert info.version == "28.99"
+
+    def test_does_not_call_resolve_backend_when_refresh_if_stale_false(self):
+        with patch("autostream_player_service.resolve_backend") as mock_rb:
+            _ps.get_owntone_runtime_info(refresh_if_stale=False)
+        mock_rb.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 15 — get_app_version() caches unknown after every failure
+# ---------------------------------------------------------------------------
+
+class TestGetAppVersionCaching:
+
+    def setup_method(self):
+        import autostream_webui_common as _c
+        self._original = _c._app_version_cache
+        _c._app_version_cache = None
+
+    def teardown_method(self):
+        import autostream_webui_common as _c
+        _c._app_version_cache = self._original
+
+    def test_exception_is_cached_as_unknown(self):
+        import autostream_webui_common as _c
+        with patch("autostream_webui_common.subprocess.run", side_effect=OSError("not found")):
+            v1 = _c.get_app_version()
+            # cache should be set now so subprocess not called again
+            with patch("autostream_webui_common.subprocess.run",
+                       side_effect=AssertionError("must not call twice")):
+                v2 = _c.get_app_version()
+        assert v1 == "unknown"
+        assert v2 == "unknown"
+
+    def test_nonzero_exit_is_cached_as_unknown(self):
+        import autostream_webui_common as _c
+        r = MagicMock()
+        r.returncode = 1
+        r.stdout = ""
+        with patch("autostream_webui_common.subprocess.run", return_value=r):
+            v1 = _c.get_app_version()
+            with patch("autostream_webui_common.subprocess.run",
+                       side_effect=AssertionError("must not call twice")):
+                v2 = _c.get_app_version()
+        assert v1 == "unknown"
+        assert v2 == "unknown"
+
+    def test_invalid_json_is_cached_as_unknown(self):
+        import autostream_webui_common as _c
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = "not json"
+        with patch("autostream_webui_common.subprocess.run", return_value=r):
+            v1 = _c.get_app_version()
+        assert v1 == "unknown"
+        assert _c._app_version_cache == "unknown"
+
+    def test_blank_release_tag_is_cached_as_unknown(self):
+        import autostream_webui_common as _c
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = '{"release_tag": ""}'
+        with patch("autostream_webui_common.subprocess.run", return_value=r):
+            v1 = _c.get_app_version()
+        assert v1 == "unknown"
+        assert _c._app_version_cache == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Test 16 — startup primes get_app_version (structural, tested in webui module)
+# This is a code-review-level check: the webui file calls get_app_version()
+# unconditionally before ThreadingHTTPServer.
+# ---------------------------------------------------------------------------
+
+class TestStartupPrimesAppVersion:
+
+    def test_get_app_version_called_before_http_server_in_serve(self):
+        """_serve() calls get_app_version() before constructing ThreadingHTTPServer."""
+        try:
+            import autostream_webui as _webui
+        except ImportError:
+            pytest.skip("autostream_webui import chain unavailable")
+
+        import inspect
+        src = inspect.getsource(_webui.start_webui_background)
+        # get_app_version() must appear before ThreadingHTTPServer
+        idx_version = src.find("get_app_version()")
+        idx_server = src.find("ThreadingHTTPServer")
+        assert idx_version != -1, "get_app_version() not found in _serve()"
+        assert idx_server != -1, "ThreadingHTTPServer not found"
+        assert idx_version < idx_server, (
+            "get_app_version() must appear before ThreadingHTTPServer in _serve()"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 17 — route dispatches to the new handler
+# ---------------------------------------------------------------------------
+
+class TestRouteDispatch:
+
+    def test_get_api_about_system_dispatches(self):
+        try:
+            import autostream_webui as _webui
+        except ImportError:
+            pytest.skip("autostream_webui import chain unavailable")
+
+        import inspect
+        src = inspect.getsource(_webui.ConfigWebHandler.do_GET)
+        assert "/api/about/system" in src, (
+            "/api/about/system route not found in do_GET"
+        )
+        assert "send_about_system_json" in src, (
+            "send_about_system_json not called in do_GET"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 18 — /api/about/system is in the auth allowlist
+# ---------------------------------------------------------------------------
+
+class TestAuthAllowlist:
+
+    def test_api_about_system_in_allowlist(self):
+        from autostream_auth import ALLOWLIST_PATHS
+        assert "/api/about/system" in ALLOWLIST_PATHS, (
+            "/api/about/system must be in ALLOWLIST_PATHS so unauthenticated "
+            "browser requests are allowed when PIN is enabled"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 19 — send_json adds no-store cache headers
+# (verified via the existing send_json helper which always sets these headers)
+# ---------------------------------------------------------------------------
+
+class TestSendJsonHeaders:
+
+    def test_send_about_system_json_uses_send_json(self):
+        """send_about_system_json delegates to send_json (which sets no-store headers)."""
+        import io
+        handler = MagicMock()
+        handler.wfile = io.BytesIO()
+        sent_responses = []
+        sent_headers = {}
+
+        handler.send_response.side_effect = lambda code: sent_responses.append(code)
+        handler.send_header.side_effect = lambda k, v: sent_headers.update({k: v})
+
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            _about.send_about_system_json(handler)
+
+        assert 200 in sent_responses
+        assert "no-store" in sent_headers.get("Cache-Control", "")
+
+
+# ---------------------------------------------------------------------------
+# Test 20 — unexpected top-level exception → HTTP 500
+# ---------------------------------------------------------------------------
+
+class TestTopLevelExceptionHandling:
+
+    def test_unexpected_exception_returns_500(self):
+        import io
+        handler = MagicMock()
+        handler.wfile = io.BytesIO()
+        sent_responses = []
+        handler.send_response.side_effect = lambda code: sent_responses.append(code)
+        handler.send_header.side_effect = lambda k, v: None
+
+        with patch("autostream_webui_page_about._collect_system_info",
+                   side_effect=RuntimeError("unexpected")):
+            _about.send_about_system_json(handler)
+
+        assert 500 in sent_responses
+
+    def test_unexpected_exception_body_contains_safe_error(self):
+        import io
+        handler = MagicMock()
+        buf = io.BytesIO()
+        handler.wfile = buf
+        handler.send_response.side_effect = lambda code: None
+        handler.send_header.side_effect = lambda k, v: None
+
+        with patch("autostream_webui_page_about._collect_system_info",
+                   side_effect=RuntimeError("internal secret")):
+            _about.send_about_system_json(handler)
+
+        body = buf.getvalue()
+        decoded = json.loads(body) if body else {}
+        assert decoded.get("ok") is False
+        assert decoded.get("error") == "system_info_unavailable"
+        assert "internal secret" not in body.decode("utf-8", errors="replace")

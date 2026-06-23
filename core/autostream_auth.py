@@ -81,6 +81,7 @@ BACKOFF_MAX_SECONDS = 5 * 60
 ALLOWLIST_PATHS = {
     "/",
     "/about",
+    "/api/about/system",
     "/equaliser",
     "/logs",
     "/service",
