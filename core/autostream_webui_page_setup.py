@@ -42,7 +42,6 @@ from autostream_sysutils import get_ap_ssid, get_system_hostname, set_system_hos
 from autostream_webui_assets import (
     A2HS_SCRIPT,
     AUTOSAVE_JS,
-    BANNER_HTML,
     COMMON_MODAL_CSS,
     PIN_MODAL_CSS,
 )
@@ -682,346 +681,345 @@ def send_setup_page(
 
     _dial_onload_js = ""
 
-    if True:
-        def _friendly(hw) -> str:
-            """Return shortened card name for use in sub-labels (first segment before ', ')."""
-            for d in monitor_devices:
-                if str(d.get("hw") or "").strip() == str(hw or "").strip():
-                    c = str(d.get("card") or "").strip()
-                    return c.split(", ")[0].strip() if c else str(hw)
-            return str(hw) if hw else "Not configured"
+    def _friendly(hw) -> str:
+        """Return shortened card name for use in sub-labels (first segment before ', ')."""
+        for d in monitor_devices:
+            if str(d.get("hw") or "").strip() == str(hw or "").strip():
+                c = str(d.get("card") or "").strip()
+                return c.split(", ")[0].strip() if c else str(hw)
+        return str(hw) if hw else "Not configured"
 
-        dev1 = _friendly(parsed.audio1.capture_device)
-        mode1 = "Turntable" if parsed.audio1.is_turntable else "Line In"
-        gain1 = int(parsed.audio1.gain_db)
-        gain1_str = f"{gain1:+d} dB" if gain1 != 0 else "0 dB"
-        input1_summary = html.escape(f"{dev1} \u00b7 {mode1} \u00b7 {gain1_str}")
-        if not parsed.audio2_enabled:
-            input2_summary = "Disabled"
+    dev1 = _friendly(parsed.audio1.capture_device)
+    mode1 = "Turntable" if parsed.audio1.is_turntable else "Line In"
+    gain1 = int(parsed.audio1.gain_db)
+    gain1_str = f"{gain1:+d} dB" if gain1 != 0 else "0 dB"
+    input1_summary = html.escape(f"{dev1} \u00b7 {mode1} \u00b7 {gain1_str}")
+    if not parsed.audio2_enabled:
+        input2_summary = "Disabled"
+    else:
+        dev2 = _friendly(parsed.audio2.capture_device)
+        mode2 = "Turntable" if parsed.audio2.is_turntable else "Line In"
+        gain2 = int(parsed.audio2.gain_db)
+        gain2_str = f"{gain2:+d} dB" if gain2 != 0 else "0 dB"
+        input2_summary = html.escape(f"{dev2} \u00b7 {mode2} \u00b7 {gain2_str}")
+    speaker = str(parsed.owntone.output_name or "No speaker selected")
+    playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
+    _au_state = "Auto-update: On" if parsed.updates.auto_update else "Auto-update: Off"
+    if parsed.updates.update_channel == "dev":
+        _au_state += " - Pre-release channel"
+    system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
+    _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
+    customise_summary = html.escape(
+        ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
+        + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
+        + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
+        + (" \u00b7 Hostname: On" if parsed.webui.show_hostname_on_home else " \u00b7 Hostname: Off")
+        + (" \u00b7 Control others: On" if _ctrl_other_effective else " \u00b7 Control others: Off")
+        + (" \u00b7 Visible to peers: On" if parsed.webui.advertise_appliance else " \u00b7 Visible to peers: Off")
+    )
+    _ctrl_other_disabled = ' disabled' if not parsed.webui.show_hostname_on_home else ''
+    _ctrl_other_row_style = "margin-top:0.75rem;opacity:0.4;" if not parsed.webui.show_hostname_on_home else "margin-top:0.75rem;"
+    customise_card_html = settings_card_html(f"""
+          <input type="hidden" name="webui_show_master_volume_present" value="1">
+          <input type="hidden" name="webui_advertise_appliance_present" value="1">
+          <input type="hidden" name="webui_control_other_appliances_present" value="1">
+          <div class="setup-customise-row" style="margin-top:0.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Display Hostname</span>
+          </div>
+          <div id="ctrl-other-row" class="setup-customise-row" style="{_ctrl_other_row_style}">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="webui_control_other_appliances" id="webui_control_other_appliances"{'  checked' if _ctrl_other_effective else ''}{_ctrl_other_disabled} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.control_other_appliances', this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Allow control of other appliances</span>
+          </div>
+          <div class="setup-customise-row" style="margin-top:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub(); if(liveEnabled) settingsTransact('/api/settings/advertisement', {{value: this.checked}});">
+              <span class="switch"></span>
+            </label>
+            <span>Allow control of this from other appliances</span>
+          </div>
+          <div class="setup-customise-row" style="margin-top:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_master_volume', this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Show Master Volume Control</span>
+          </div>
+          <div class="setup-customise-row" style="margin-top:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_input_detail', this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Display Input Detail</span>
+          </div>
+          <div class="setup-customise-row" style="margin-top:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Dark Mode</span>
+          </div>
+          <input type="hidden" name="webui_output_usage_poll_interval_present" value="1">
+          <div class="setup-customise-row" style="margin-top:0.75rem;align-items:center;">
+            <label style="margin:0;white-space:nowrap;">Output sharing refresh:</label>
+            <input type="number" name="webui_output_usage_poll_interval_seconds"
+              id="webui_output_usage_poll_interval_seconds"
+              value="{parsed.webui.output_usage_poll_interval_seconds}"
+              min="1" max="30" step="1"
+              style="width:4rem;margin-left:0.5rem;text-align:right;"
+              oninput="settingsSaveFieldDebounced('webui.output_usage_poll_interval_seconds', parseInt(this.value,10), 500)">
+            <span style="margin-left:0.4rem;">seconds</span>
+          </div>
+        """, margin_top="0")
+
+    # Track identification card
+    _ti = parsed.track_identification
+    _ti_enabled = bool(_ti.enabled)
+    track_id_summary = html.escape("On" if _ti_enabled else "Off")
+    _ti_controls_style = ' style="opacity:0.4;pointer-events:none;"' if not _ti_enabled else ''
+    _ti_disabled = ' disabled' if not _ti_enabled else ''
+    _ti_lead_in_val = max(0, min(30, _ti.analysis_lead_in_seconds))
+    _ti_refresh_val = max(60, min(900, _ti.refresh_seconds))
+    _ti_refresh_label = round(_ti_refresh_val / 60)
+    _ti_silence_val = max(1.0, min(3.0, _ti.track_change_silence_seconds))
+    track_id_card_html = settings_card_html(f"""
+          <input type="hidden" name="track_identification_present" value="1">
+          <div class="setup-customise-row" style="margin-top:0.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="track_identification_enabled" id="track_identification_enabled"{'  checked' if _ti_enabled else ''} onchange="onTiToggle(this.checked); if(liveEnabled) settingsSaveField('track_identification.enabled', this.checked);">
+              <span class="switch"></span>
+            </label>
+            <span>Track identification</span>
+          </div>
+          <div class="eq-auto-trim-subtitle" style="margin-top:0.4rem;">
+            A compact frequency fingerprint is derived from a short audio sample and sent to
+            Apple&#39;s Shazam using vibra-mini. No raw audio leaves the device. The use of this
+            feature requires internet access and may be subject to third-party terms of service.
+          </div>
+          <div id="ti-controls"{_ti_controls_style}>
+            <div class="eq-auto-trim-title" style="margin-top:1rem;">Lead-in before analysis</div>
+            <div class="eq-auto-trim-subtitle">
+              When a track change is detected, audio will be ignored for this period of time.
+              Higher values reduce API usage by helping first-time identification.
+            </div>
+            <div class="slider-header" style="margin-top:0.4rem;">
+              <span>Lead-in:</span><span id="ti_lead_in_val">{_ti_lead_in_val} s</span>
+            </div>
+            <input type="hidden" name="ti_analysis_lead_in_seconds" id="ti_analysis_lead_in_seconds" value="{_ti_lead_in_val}">
+            <input type="range" id="ti_lead_in_range"
+              min="0" max="30" step="1" value="{_ti_lead_in_val}"{_ti_disabled}
+              oninput="syncTiLeadIn(this.value)">
+            <div class="eq-auto-trim-title" style="margin-top:1rem;">Re-identify Period</div>
+            <div class="eq-auto-trim-subtitle">
+              The current track will be periodically re-identified when no track changes are detected.
+              This setting helps with continuous records and noisy records. Lower values will increase API usage.
+            </div>
+            <div class="slider-header" style="margin-top:0.4rem;">
+              <span>Re-identify every:</span><span id="ti_refresh_val">{_ti_refresh_label} min</span>
+            </div>
+            <input type="hidden" name="ti_refresh_seconds" id="ti_refresh_seconds" value="{_ti_refresh_val}">
+            <input type="range" id="ti_refresh_range"
+              min="60" max="900" step="60" value="{_ti_refresh_val}"{_ti_disabled}
+              oninput="syncTiRefresh(this.value)">
+            <div class="eq-auto-trim-title" style="margin-top:1rem;">Track-change Detection</div>
+            <div class="eq-auto-trim-subtitle">
+              A silence period of this length is used to detect a track change, after which
+              re-identification is performed automatically.
+            </div>
+            <div class="slider-header" style="margin-top:0.4rem;">
+              <span>Silence gap:</span><span id="ti_silence_val">{_ti_silence_val:.2f} s</span>
+            </div>
+            <input type="hidden" name="ti_track_change_silence_seconds" id="ti_track_change_silence_seconds" value="{_ti_silence_val:.2f}">
+            <input type="range" id="ti_silence_range"
+              min="1.0" max="3.0" step="0.25" value="{_ti_silence_val:.2f}"{_ti_disabled}
+              oninput="syncTiSilence(this.value)">
+          </div>
+        """, margin_top="0")
+
+    # Build dial cards data
+    _all_sightings = _get_dial_sightings()
+    _authorized_entries = parse_dial_entries()
+    _sightings_by_uuid = {s.uuid: s for s in _all_sightings}
+    _authorized_uuids = {e.uuid for e in _authorized_entries}
+    _n_auth = len(_authorized_entries)
+    _n_online = sum(1 for e in _authorized_entries if e.uuid in _sightings_by_uuid)
+    _n_new = sum(1 for s in _all_sightings if s.uuid not in _authorized_uuids)
+    if _n_auth == 0 and _n_new == 0:
+        _dials_summary = "No dials"
+    elif _n_auth == 0:
+        _dials_summary = f"{_n_new} new"
+    elif _n_new > 0:
+        _dials_summary = f"{_n_auth} authorized · {_n_new} new"
+    else:
+        _dials_summary = f"{_n_auth} authorized" + (f" · {_n_online} online" if _n_online else "")
+    _dials_summary = html.escape(_dials_summary)
+    _app_ver = get_app_version()
+    _dial_cards_html = ""
+    for _entry in _authorized_entries:
+        _sighting = _sightings_by_uuid.get(_entry.uuid)
+        if _sighting:
+            _dial_cards_html += _dial_card_online_html(_entry, _sighting, _app_ver)
         else:
-            dev2 = _friendly(parsed.audio2.capture_device)
-            mode2 = "Turntable" if parsed.audio2.is_turntable else "Line In"
-            gain2 = int(parsed.audio2.gain_db)
-            gain2_str = f"{gain2:+d} dB" if gain2 != 0 else "0 dB"
-            input2_summary = html.escape(f"{dev2} \u00b7 {mode2} \u00b7 {gain2_str}")
-        speaker = str(parsed.owntone.output_name or "No speaker selected")
-        playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
-        _au_state = "Auto-update: On" if parsed.updates.auto_update else "Auto-update: Off"
-        if parsed.updates.update_channel == "dev":
-            _au_state += " - Pre-release channel"
-        system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
-        _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
-        customise_summary = html.escape(
-            ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
-            + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
-            + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
-            + (" \u00b7 Hostname: On" if parsed.webui.show_hostname_on_home else " \u00b7 Hostname: Off")
-            + (" \u00b7 Control others: On" if _ctrl_other_effective else " \u00b7 Control others: Off")
-            + (" \u00b7 Visible to peers: On" if parsed.webui.advertise_appliance else " \u00b7 Visible to peers: Off")
+            _dial_cards_html += _dial_card_offline_html(_entry)
+    for _sighting in _all_sightings:
+        if _sighting.uuid not in _authorized_uuids:
+            _dial_cards_html += _dial_card_new_html(_sighting)
+    if not _dial_cards_html:
+        _dial_cards_html = (
+            "<p style='color:var(--color-text-muted);font-style:italic;margin-top:0.5rem;'>"
+            "No dials found on the network.</p>"
         )
-        _ctrl_other_disabled = ' disabled' if not parsed.webui.show_hostname_on_home else ''
-        _ctrl_other_row_style = "margin-top:0.75rem;opacity:0.4;" if not parsed.webui.show_hostname_on_home else "margin-top:0.75rem;"
-        customise_card_html = settings_card_html(f"""
-              <input type="hidden" name="webui_show_master_volume_present" value="1">
-              <input type="hidden" name="webui_advertise_appliance_present" value="1">
-              <input type="hidden" name="webui_control_other_appliances_present" value="1">
-              <div class="setup-customise-row" style="margin-top:0.5rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)">
-                  <span class="switch"></span>
-                </label>
-                <span>Display Hostname</span>
-              </div>
-              <div id="ctrl-other-row" class="setup-customise-row" style="{_ctrl_other_row_style}">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_control_other_appliances" id="webui_control_other_appliances"{'  checked' if _ctrl_other_effective else ''}{_ctrl_other_disabled} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.control_other_appliances', this.checked)">
-                  <span class="switch"></span>
-                </label>
-                <span>Allow control of other appliances</span>
-              </div>
-              <div class="setup-customise-row" style="margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub(); if(liveEnabled) settingsTransact('/api/settings/advertisement', {{value: this.checked}});">
-                  <span class="switch"></span>
-                </label>
-                <span>Allow control of this from other appliances</span>
-              </div>
-              <div class="setup-customise-row" style="margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_master_volume', this.checked)">
-                  <span class="switch"></span>
-                </label>
-                <span>Show Master Volume Control</span>
-              </div>
-              <div class="setup-customise-row" style="margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_input_detail', this.checked)">
-                  <span class="switch"></span>
-                </label>
-                <span>Display Input Detail</span>
-              </div>
-              <div class="setup-customise-row" style="margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)">
-                  <span class="switch"></span>
-                </label>
-                <span>Dark Mode</span>
-              </div>
-              <input type="hidden" name="webui_output_usage_poll_interval_present" value="1">
-              <div class="setup-customise-row" style="margin-top:0.75rem;align-items:center;">
-                <label style="margin:0;white-space:nowrap;">Output sharing refresh:</label>
-                <input type="number" name="webui_output_usage_poll_interval_seconds"
-                  id="webui_output_usage_poll_interval_seconds"
-                  value="{parsed.webui.output_usage_poll_interval_seconds}"
-                  min="1" max="30" step="1"
-                  style="width:4rem;margin-left:0.5rem;text-align:right;"
-                  oninput="settingsSaveFieldDebounced('webui.output_usage_poll_interval_seconds', parseInt(this.value,10), 500)">
-                <span style="margin-left:0.4rem;">seconds</span>
-              </div>
-            """, margin_top="0")
+    _dial_onload_js = (
+        "document.querySelectorAll('.dial-card .dial-step').forEach(function(el) { "
+        "dialLoadConfig(el.closest('.dial-card')); });"
+    )
 
-        # Track identification card
-        _ti = parsed.track_identification
-        _ti_enabled = bool(_ti.enabled)
-        track_id_summary = html.escape("On" if _ti_enabled else "Off")
-        _ti_controls_style = ' style="opacity:0.4;pointer-events:none;"' if not _ti_enabled else ''
-        _ti_disabled = ' disabled' if not _ti_enabled else ''
-        _ti_lead_in_val = max(0, min(30, _ti.analysis_lead_in_seconds))
-        _ti_refresh_val = max(60, min(900, _ti.refresh_seconds))
-        _ti_refresh_label = round(_ti_refresh_val / 60)
-        _ti_silence_val = max(1.0, min(3.0, _ti.track_change_silence_seconds))
-        track_id_card_html = settings_card_html(f"""
-              <input type="hidden" name="track_identification_present" value="1">
-              <div class="setup-customise-row" style="margin-top:0.5rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" name="track_identification_enabled" id="track_identification_enabled"{'  checked' if _ti_enabled else ''} onchange="onTiToggle(this.checked); if(liveEnabled) settingsSaveField('track_identification.enabled', this.checked);">
-                  <span class="switch"></span>
-                </label>
-                <span>Track identification</span>
-              </div>
-              <div class="eq-auto-trim-subtitle" style="margin-top:0.4rem;">
-                A compact frequency fingerprint is derived from a short audio sample and sent to
-                Apple&#39;s Shazam using vibra-mini. No raw audio leaves the device. The use of this
-                feature requires internet access and may be subject to third-party terms of service.
-              </div>
-              <div id="ti-controls"{_ti_controls_style}>
-                <div class="eq-auto-trim-title" style="margin-top:1rem;">Lead-in before analysis</div>
-                <div class="eq-auto-trim-subtitle">
-                  When a track change is detected, audio will be ignored for this period of time.
-                  Higher values reduce API usage by helping first-time identification.
-                </div>
-                <div class="slider-header" style="margin-top:0.4rem;">
-                  <span>Lead-in:</span><span id="ti_lead_in_val">{_ti_lead_in_val} s</span>
-                </div>
-                <input type="hidden" name="ti_analysis_lead_in_seconds" id="ti_analysis_lead_in_seconds" value="{_ti_lead_in_val}">
-                <input type="range" id="ti_lead_in_range"
-                  min="0" max="30" step="1" value="{_ti_lead_in_val}"{_ti_disabled}
-                  oninput="syncTiLeadIn(this.value)">
-                <div class="eq-auto-trim-title" style="margin-top:1rem;">Re-identify Period</div>
-                <div class="eq-auto-trim-subtitle">
-                  The current track will be periodically re-identified when no track changes are detected.
-                  This setting helps with continuous records and noisy records. Lower values will increase API usage.
-                </div>
-                <div class="slider-header" style="margin-top:0.4rem;">
-                  <span>Re-identify every:</span><span id="ti_refresh_val">{_ti_refresh_label} min</span>
-                </div>
-                <input type="hidden" name="ti_refresh_seconds" id="ti_refresh_seconds" value="{_ti_refresh_val}">
-                <input type="range" id="ti_refresh_range"
-                  min="60" max="900" step="60" value="{_ti_refresh_val}"{_ti_disabled}
-                  oninput="syncTiRefresh(this.value)">
-                <div class="eq-auto-trim-title" style="margin-top:1rem;">Track-change Detection</div>
-                <div class="eq-auto-trim-subtitle">
-                  A silence period of this length is used to detect a track change, after which
-                  re-identification is performed automatically.
-                </div>
-                <div class="slider-header" style="margin-top:0.4rem;">
-                  <span>Silence gap:</span><span id="ti_silence_val">{_ti_silence_val:.2f} s</span>
-                </div>
-                <input type="hidden" name="ti_track_change_silence_seconds" id="ti_track_change_silence_seconds" value="{_ti_silence_val:.2f}">
-                <input type="range" id="ti_silence_range"
-                  min="1.0" max="3.0" step="0.25" value="{_ti_silence_val:.2f}"{_ti_disabled}
-                  oninput="syncTiSilence(this.value)">
-              </div>
-            """, margin_top="0")
-
-        # Build dial cards data
-        _all_sightings = _get_dial_sightings()
-        _authorized_entries = parse_dial_entries()
-        _sightings_by_uuid = {s.uuid: s for s in _all_sightings}
-        _authorized_uuids = {e.uuid for e in _authorized_entries}
-        _n_auth = len(_authorized_entries)
-        _n_online = sum(1 for e in _authorized_entries if e.uuid in _sightings_by_uuid)
-        _n_new = sum(1 for s in _all_sightings if s.uuid not in _authorized_uuids)
-        if _n_auth == 0 and _n_new == 0:
-            _dials_summary = "No dials"
-        elif _n_auth == 0:
-            _dials_summary = f"{_n_new} new"
-        elif _n_new > 0:
-            _dials_summary = f"{_n_auth} authorized · {_n_new} new"
-        else:
-            _dials_summary = f"{_n_auth} authorized" + (f" · {_n_online} online" if _n_online else "")
-        _dials_summary = html.escape(_dials_summary)
-        _app_ver = get_app_version()
-        _dial_cards_html = ""
-        for _entry in _authorized_entries:
-            _sighting = _sightings_by_uuid.get(_entry.uuid)
-            if _sighting:
-                _dial_cards_html += _dial_card_online_html(_entry, _sighting, _app_ver)
-            else:
-                _dial_cards_html += _dial_card_offline_html(_entry)
-        for _sighting in _all_sightings:
-            if _sighting.uuid not in _authorized_uuids:
-                _dial_cards_html += _dial_card_new_html(_sighting)
-        if not _dial_cards_html:
-            _dial_cards_html = (
-                "<p style='color:var(--color-text-muted);font-style:italic;margin-top:0.5rem;'>"
-                "No dials found on the network.</p>"
-            )
-        _dial_onload_js = (
-            "document.querySelectorAll('.dial-card .dial-step').forEach(function(el) { "
-            "dialLoadConfig(el.closest('.dial-card')); });"
-        )
-
-        form_content_html = f"""<div class="setup-slide-viewport">
-      <div class="setup-slide-track" id="setupSlideTrack">
-        <div class="setup-slide-list">
-          {_setup_page_header("Setup")}
-          <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
-          <p class="actions" style="display:flex;margin-bottom:1rem;">
-            <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
-          </p>
-          <div class="setup-list-card" onclick="openPanel('input1')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Input 1</span>
-              <span class="setup-list-card-sub" id="input1-card-sub">{input1_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('input2')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Input 2</span>
-              <span class="setup-list-card-sub" id="input2-card-sub">{input2_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('playback')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Playback</span>
-              <span class="setup-list-card-sub">{playback_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('track-id')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Track Identification</span>
-              <span class="setup-list-card-sub" id="track-id-card-sub">{track_id_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('dials')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Dials</span>
-              <span class="setup-list-card-sub">{_dials_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('customise')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Personalisation</span>
-              <span class="setup-list-card-sub" id="customise-card-sub">{customise_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('system')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">System</span>
-              <span class="setup-list-card-sub">{system_summary}</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
-          <div class="setup-list-card" onclick="openPanel('factory-reset')">
-            <div class="setup-list-card-body">
-              <span class="setup-list-card-title">Factory Reset</span>
-              <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
-            </div>
-            <span class="setup-list-chevron">\u203a</span>
-          </div>
+    form_content_html = f"""<div class="setup-slide-viewport">
+  <div class="setup-slide-track" id="setupSlideTrack">
+    <div class="setup-slide-list">
+      {_setup_page_header("Setup")}
+      <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
+      <p class="actions" style="display:flex;margin-bottom:1rem;">
+        <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
+      </p>
+      <div class="setup-list-card" onclick="openPanel('input1')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Input 1</span>
+          <span class="setup-list-card-sub" id="input1-card-sub">{input1_summary}</span>
         </div>
-        <div class="setup-slide-panels">
-          <div class="setup-detail-panel" id="panel-input1">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("Setup Input 1")}
-            {input1_html}
-            {_audio_controls_card_html(
-              input_index=1,
-              gain_db=parsed.audio1.gain_db,
-              eq_40hz_db=parsed.audio1.eq_40hz_db,
-              eq_100hz_db=parsed.audio1.eq_100hz_db,
-              eq_8khz_db=parsed.audio1.eq_8khz_db,
-            )}
-          </div>
-          <div class="setup-detail-panel" id="panel-input2">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("Setup Input 2")}
-            {input2_html}
-            <div id="audio2_preamp_card" style="display:{'block' if parsed.audio2_enabled else 'none'};">
-              {_audio_controls_card_html(
-                input_index=2,
-                gain_db=parsed.audio2.gain_db,
-                eq_40hz_db=parsed.audio2.eq_40hz_db,
-                eq_100hz_db=parsed.audio2.eq_100hz_db,
-                eq_8khz_db=parsed.audio2.eq_8khz_db,
-              )}
-            </div>
-          </div>
-          <div class="setup-detail-panel" id="panel-playback">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("Setup Playback Defaults")}
-            {playback_fieldset_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-track-id">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("Track Identification")}
-            {track_id_card_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-dials">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("Dials")}
-            {_dial_cards_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-customise">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("Personalisation")}
-            {customise_card_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-system">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {_setup_detail_header("System & Updates")}
-            {system_fieldset_html}
-          </div>
-          <div class="setup-detail-panel" id="panel-factory-reset">
-            <div class="setup-detail-back">
-              <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-            </div>
-            {factory_reset_zone}
-          </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('input2')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Input 2</span>
+          <span class="setup-list-card-sub" id="input2-card-sub">{input2_summary}</span>
+        </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('playback')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Playback</span>
+          <span class="setup-list-card-sub">{playback_summary}</span>
+        </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('track-id')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Track Identification</span>
+          <span class="setup-list-card-sub" id="track-id-card-sub">{track_id_summary}</span>
+        </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('dials')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Dials</span>
+          <span class="setup-list-card-sub">{_dials_summary}</span>
+        </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('customise')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Personalisation</span>
+          <span class="setup-list-card-sub" id="customise-card-sub">{customise_summary}</span>
+        </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('system')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">System</span>
+          <span class="setup-list-card-sub">{system_summary}</span>
+        </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('factory-reset')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Factory Reset</span>
+          <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
+        </div>
+        <span class="setup-list-chevron">\u203a</span>
+      </div>
+    </div>
+    <div class="setup-slide-panels">
+      <div class="setup-detail-panel" id="panel-input1">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("Setup Input 1")}
+        {input1_html}
+        {_audio_controls_card_html(
+          input_index=1,
+          gain_db=parsed.audio1.gain_db,
+          eq_40hz_db=parsed.audio1.eq_40hz_db,
+          eq_100hz_db=parsed.audio1.eq_100hz_db,
+          eq_8khz_db=parsed.audio1.eq_8khz_db,
+        )}
+      </div>
+      <div class="setup-detail-panel" id="panel-input2">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("Setup Input 2")}
+        {input2_html}
+        <div id="audio2_preamp_card" style="display:{'block' if parsed.audio2_enabled else 'none'};">
+          {_audio_controls_card_html(
+            input_index=2,
+            gain_db=parsed.audio2.gain_db,
+            eq_40hz_db=parsed.audio2.eq_40hz_db,
+            eq_100hz_db=parsed.audio2.eq_100hz_db,
+            eq_8khz_db=parsed.audio2.eq_8khz_db,
+          )}
         </div>
       </div>
-    </div>"""
+      <div class="setup-detail-panel" id="panel-playback">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("Setup Playback Defaults")}
+        {playback_fieldset_html}
+      </div>
+      <div class="setup-detail-panel" id="panel-track-id">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("Track Identification")}
+        {track_id_card_html}
+      </div>
+      <div class="setup-detail-panel" id="panel-dials">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("Dials")}
+        {_dial_cards_html}
+      </div>
+      <div class="setup-detail-panel" id="panel-customise">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("Personalisation")}
+        {customise_card_html}
+      </div>
+      <div class="setup-detail-panel" id="panel-system">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("System & Updates")}
+        {system_fieldset_html}
+      </div>
+      <div class="setup-detail-panel" id="panel-factory-reset">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {factory_reset_zone}
+      </div>
+    </div>
+  </div>
+</div>"""
 
     _dial_badge_css = """
 .dial-badge{display:inline-flex;align-items:center;font-size:0.65rem;font-weight:600;

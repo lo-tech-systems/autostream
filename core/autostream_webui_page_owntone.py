@@ -49,9 +49,6 @@ from autostream_player_service import (
     output_supported_config_modes,
 )
 from autostream_sysutils import run_admin_cmd
-from autostream_webui_assets import (
-    BANNER_HTML,
-)
 from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, locked_load_config
 from autostream_webui_assets import AUTOSAVE_JS
 from autostream_webui_state import WebUIState
