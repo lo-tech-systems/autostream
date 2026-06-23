@@ -149,6 +149,25 @@ def apply_track_id_config_live(config_path: str) -> None:
     )
 
 
+def apply_track_id_config_live_from_parsed(cfg) -> None:
+    """Rebuild the track identification service from an already-parsed config.
+
+    Preferred over apply_track_id_config_live when the caller holds a fresh
+    in-memory snapshot (e.g. from SettingsStore) and disk may not yet reflect
+    the latest accepted settings.
+    """
+    global _track_id_service
+    _track_id_service = _build_track_id_service(cfg)
+    with _monitors_lock:
+        monitors = list(all_monitors)
+    for m in monitors:
+        m._apply_track_id_service(_track_id_service)
+    logging.info(
+        "track_id: service rebuilt live from snapshot (enabled=%s)",
+        _track_id_service is not None,
+    )
+
+
 def get_track_identification_snapshot(input_index: int):
     """Return the latest TrackIdentificationSnapshot for an input channel."""
     with _monitors_lock:

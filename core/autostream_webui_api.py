@@ -38,16 +38,22 @@ from autostream_config import (
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
     load_config,
     normalize_output_usage_poll_interval,
+    normalize_track_id_analysis_lead_in_seconds,
+    normalize_track_id_refresh_seconds,
+    normalize_track_id_track_change_silence_seconds,
     normalize_update_channel,
     parse_config,
     save_config,
 )
+from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_dials import is_dial_authorized
 from autostream_core import (
     any_monitor_capturing,
+    apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
+    request_config_reload,
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
@@ -1170,6 +1176,159 @@ def _live_silence(state: object, value: object) -> bool:
     return bool(update_live_silence_seconds(int(value)))
 
 
+# ---------------------------------------------------------------------------
+# WP4B — validators, debounce helpers, and live functions
+# ---------------------------------------------------------------------------
+
+def _validate_capture_device(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Value must be a string")
+    v = value.strip()
+    if not v:
+        raise ValueError("Value must be a non-empty string")
+    return v
+
+
+def _validate_track_id_lead_in(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    return normalize_track_id_analysis_lead_in_seconds(value)
+
+
+def _validate_track_id_refresh(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    return normalize_track_id_refresh_seconds(value)
+
+
+def _validate_track_id_silence(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    return normalize_track_id_track_change_silence_seconds(value)
+
+
+# Debounce helpers — module-level timer state protected by a threading lock.
+# The coordinator reload timer calls save_now() before signalling so the
+# coordinator always reads up-to-date settings from disk.
+
+_coordinator_reload_lock = threading.Lock()
+_coordinator_reload_timer: Optional[threading.Timer] = None
+
+_track_id_rebuild_lock = threading.Lock()
+_track_id_rebuild_timer: Optional[threading.Timer] = None
+
+
+def _debounce_coordinator_reload(state: object, delay: float = 0.3) -> None:
+    global _coordinator_reload_timer
+    with _coordinator_reload_lock:
+        if _coordinator_reload_timer is not None:
+            _coordinator_reload_timer.cancel()
+
+        def _do_reload():
+            from autostream_settings import SettingsStore as _SettingsStore
+            settings = getattr(state, "settings", None)
+            if isinstance(settings, _SettingsStore):
+                settings.save_now()
+            request_config_reload()
+
+        _coordinator_reload_timer = threading.Timer(delay, _do_reload)
+        _coordinator_reload_timer.daemon = True
+        _coordinator_reload_timer.start()
+
+
+def _debounce_track_id_rebuild(state: object, delay: float = 0.3) -> None:
+    global _track_id_rebuild_timer
+    with _track_id_rebuild_lock:
+        if _track_id_rebuild_timer is not None:
+            _track_id_rebuild_timer.cancel()
+
+        def _do_rebuild():
+            from autostream_settings import SettingsStore as _SettingsStore
+            settings = getattr(state, "settings", None)
+            if isinstance(settings, _SettingsStore):
+                try:
+                    snap = settings.snapshot()
+                    apply_track_id_config_live_from_parsed(snap)
+                except Exception:
+                    logging.exception("debounced track-ID rebuild failed")
+
+        _track_id_rebuild_timer = threading.Timer(delay, _do_rebuild)
+        _track_id_rebuild_timer.daemon = True
+        _track_id_rebuild_timer.start()
+
+
+def _live_capture_1(state: object, value: object) -> bool:
+    _debounce_coordinator_reload(state)
+    return True
+
+
+def _live_capture_2(state: object, value: object) -> bool:
+    _debounce_coordinator_reload(state)
+    return True
+
+
+def _live_audio2_enabled(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, _SettingsStore):
+        snap = settings.snapshot()
+        update_playback_input_config(
+            2,
+            enabled=bool(value),
+            is_turntable=snap.audio2.is_turntable,
+            stylus_life_hours=snap.audio2.stylus_life_hours,
+            belt_life_hours=snap.audio2.belt_life_hours,
+            belt_life_years=snap.audio2.belt_life_years,
+            bearing_life_hours=snap.audio2.bearing_life_hours,
+            bearing_life_years=snap.audio2.bearing_life_years,
+        )
+    _debounce_coordinator_reload(state)
+    return True
+
+
+def _live_turntable_1(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, _SettingsStore):
+        snap = settings.snapshot()
+        update_playback_input_config(
+            1,
+            enabled=True,
+            is_turntable=bool(value),
+            stylus_life_hours=snap.audio1.stylus_life_hours,
+            belt_life_hours=snap.audio1.belt_life_hours,
+            belt_life_years=snap.audio1.belt_life_years,
+            bearing_life_hours=snap.audio1.bearing_life_hours,
+            bearing_life_years=snap.audio1.bearing_life_years,
+        )
+    _debounce_coordinator_reload(state)
+    return True
+
+
+def _live_turntable_2(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, _SettingsStore):
+        snap = settings.snapshot()
+        update_playback_input_config(
+            2,
+            enabled=snap.audio2_enabled,
+            is_turntable=bool(value),
+            stylus_life_hours=snap.audio2.stylus_life_hours,
+            belt_life_hours=snap.audio2.belt_life_hours,
+            belt_life_years=snap.audio2.belt_life_years,
+            bearing_life_hours=snap.audio2.bearing_life_hours,
+            bearing_life_years=snap.audio2.bearing_life_years,
+        )
+    _debounce_coordinator_reload(state)
+    return True
+
+
+def _live_track_id(state: object, value: object) -> bool:
+    _debounce_track_id_rebuild(state)
+    return True
+
+
 # Maps public dotted field name → (section, key, validator, live_fn_or_None)
 _SETTINGS_FIELDS: dict = {
     # WP3 — personalisation (no live effect)
@@ -1193,7 +1352,20 @@ _SETTINGS_FIELDS: dict = {
     "owntone.output_name":                      ("owntone", "output_name",                        _validate_output_name,     _live_owntone_name),
     "owntone.volume_percent":                   ("owntone", "volume_percent",                     _validate_volume_percent,  _live_owntone_volume),
     # WP4A — silence detection (live: monitor)
-    "general.silence_seconds":                  ("general", "silence_seconds",                    _validate_silence_seconds, _live_silence),
+    "general.silence_seconds":                  ("general", "silence_seconds",                    _validate_silence_seconds,        _live_silence),
+    # WP4B — audio input capture device (live: coordinator reload debounce)
+    "audio1.capture_device":                    ("audio1",  "capture_device",                     _validate_capture_device,         _live_capture_1),
+    "audio2.capture_device":                    ("audio2",  "capture_device",                     _validate_capture_device,         _live_capture_2),
+    # WP4B — audio2 enabled (live: playback tracker + coordinator reload debounce)
+    "audio2.enabled":                           ("audio2",  "enabled",                            _validate_bool,                   _live_audio2_enabled),
+    # WP4B — turntable mode (atomic mutation with derived silence_threshold; live: playback tracker + coordinator reload debounce)
+    "audio1.turntable":                         ("audio1",  "turntable",                          _validate_bool,                   _live_turntable_1),
+    "audio2.turntable":                         ("audio2",  "turntable",                          _validate_bool,                   _live_turntable_2),
+    # WP4B — track identification (live: track-ID rebuild debounce)
+    "track_identification.enabled":             ("track_identification", "enabled",               _validate_bool,                   _live_track_id),
+    "track_identification.analysis_lead_in_seconds": ("track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id),
+    "track_identification.refresh_seconds":     ("track_identification", "refresh_seconds",        _validate_track_id_refresh,       _live_track_id),
+    "track_identification.track_change_silence_seconds": ("track_identification", "track_change_silence_seconds", _validate_track_id_silence, _live_track_id),
 }
 
 
@@ -1262,6 +1434,11 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         # Turning off hostname display also forces control_other_appliances off.
         if field == "webui.show_hostname_on_home" and not normalized:
             raw.setdefault("webui", {})["control_other_appliances"] = False
+        # Turntable mode implies a derived silence threshold — keep them in sync.
+        if field in ("audio1.turntable", "audio2.turntable"):
+            raw.setdefault(section, {})["silence_threshold"] = (
+                suggested_silence_threshold_dbfs(bool(normalized))
+            )
 
     try:
         settings.update(_mutator)
