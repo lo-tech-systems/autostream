@@ -143,13 +143,15 @@ def _settings_save_barrier(state) -> bool:
 
     Returns True if save succeeded.
     Returns False if the store exists and save_now() failed or timed out.
-    Logs a warning and returns True when no store is attached (nothing to save).
+    If no SettingsStore is attached, logs an error and allows the action to
+    proceed; this indicates a program wiring fault rather than a user- or
+    network-facing risk.
     """
     from autostream_settings import SettingsStore as _SettingsStore
     settings = getattr(state, "settings", None)
     if not isinstance(settings, _SettingsStore):
         import logging as _logging
-        _logging.warning("_settings_save_barrier: no SettingsStore attached; skipping flush")
+        _logging.error("_settings_save_barrier: no SettingsStore attached; skipping flush")
         return True
     return settings.save_now()
 

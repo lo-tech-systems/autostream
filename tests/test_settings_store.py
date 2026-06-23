@@ -412,6 +412,47 @@ class TestSaveNow:
         assert store._dirty  # dirty flag must remain set
         store.close(save=False)
 
+    def test_write_lock_prevents_stale_overwrite(self, tmp_path):
+        """A newer _run_save_cycle queued behind a stale save_now write must
+        run last; _write_lock serialises writes so the cycle's newer snapshot
+        always overwrites any stale data left by the save_now thread."""
+        writes: list[dict] = []
+        inside_first = threading.Event()
+        allow_first = threading.Event()
+        call_no = [0]
+
+        def writer(path, data):
+            call_no[0] += 1
+            if call_no[0] == 1:
+                inside_first.set()
+                allow_first.wait()
+            writes.append(copy.deepcopy(data))
+
+        store = _make_store(tmp_path, writer=writer)
+        store.update(lambda r: r.update({"v": 1}))
+
+        # save_now starts; its _write thread stalls inside the writer holding _write_lock.
+        t_save = threading.Thread(target=store.save_now, daemon=True)
+        t_save.start()
+        assert inside_first.wait(timeout=2.0), "writer never entered"
+
+        # Advance to a newer generation while save_now is stalled.
+        store.update(lambda r: r.update({"v": 2}))
+
+        # Save cycle thread captures gen=2 and then blocks on _write_lock until
+        # the save_now thread releases it.
+        t_cycle = threading.Thread(target=store._run_save_cycle, daemon=True)
+        t_cycle.start()
+
+        # Release the stall: {v:1} lands on disk, then the cycle writes {v:2}.
+        allow_first.set()
+        t_save.join(timeout=2.0)
+        t_cycle.join(timeout=2.0)
+
+        assert writes, "no writes recorded"
+        assert writes[-1].get("v") == 2, f"stale write was last: {writes}"
+        store.close(save=False)
+
     def test_write_aborted_when_generation_advances_before_thread_runs(self, tmp_path):
         """A _write thread that sees a newer generation before calling the writer must abort."""
         written: list[dict] = []

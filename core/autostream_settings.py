@@ -94,6 +94,10 @@ class SettingsStore:
         # Monotonically increasing; used to detect mutations that arrive while
         # a save is in progress so that dirty state is not prematurely cleared.
         self._generation: int = 0
+        # Serialises all disk writes (save_now threads and _run_save_cycle).
+        # Ensures a timed-out save_now thread that eventually completes cannot
+        # write stale data after a newer save cycle has already written.
+        self._write_lock = threading.Lock()
 
         # Load initial raw config (errors become {} + parsed defaults).
         try:
@@ -169,6 +173,10 @@ class SettingsStore:
 
         Takes a safe copy under the store lock, releases the lock, then calls
         the persistence writer in a daemon thread so the call can time out.
+        The thread holds _write_lock for the duration of the disk write, which
+        serialises concurrent writes from _run_save_cycle: whichever holds the
+        lock last writes last, so a timed-out thread that eventually finishes
+        cannot overwrite a newer save that ran while it was stalled.
         Clears the dirty flag only when the generation at snapshot time matches
         the current generation (i.e. no new mutation arrived during the write).
 
@@ -184,18 +192,20 @@ class SettingsStore:
         _cancel = threading.Event()
 
         def _write() -> None:
-            # Abort if a newer mutation arrived while we were waiting to start.
-            with self._lock:
-                if self._generation != gen_at_start:
+            with self._write_lock:
+                # Re-check generation after acquiring the write lock: a newer
+                # save may have run while we were queued behind it.
+                with self._lock:
+                    if self._generation != gen_at_start:
+                        return
+                if _cancel.is_set():
                     return
-            if _cancel.is_set():
-                return
-            try:
-                self._writer(self._config_path, raw_copy)
-                _result.append(True)
-            except Exception:
-                logging.error("Settings: save_now failed", exc_info=True)
-                _result.append(False)
+                try:
+                    self._writer(self._config_path, raw_copy)
+                    _result.append(True)
+                except Exception:
+                    logging.error("Settings: save_now failed", exc_info=True)
+                    _result.append(False)
 
         t = threading.Thread(target=_write, daemon=True)
         t.start()
@@ -273,19 +283,28 @@ class SettingsStore:
                 return
             raw_copy = copy.deepcopy(self._raw)
             gen_at_start = self._generation
+        # _lock released before acquiring _write_lock to avoid inversion with
+        # the lock order used inside save_now's _write thread.
 
-        try:
-            self._writer(self._config_path, raw_copy)
-        except Exception:
-            logging.error(
-                "Settings: periodic save to %s failed; will retry.",
-                self._config_path,
-                exc_info=True,
-            )
-            return
+        with self._write_lock:
+            # Re-check after queuing: a save_now thread may have written the
+            # same generation while we were waiting for the write lock.
+            with self._lock:
+                if not self._dirty or self._generation != gen_at_start:
+                    return
 
-        with self._lock:
-            if self._generation == gen_at_start:
-                self._dirty = False
-                logging.debug("Settings: periodic save complete.")
-            # else: a new mutation arrived during the write; store stays dirty.
+            try:
+                self._writer(self._config_path, raw_copy)
+            except Exception:
+                logging.error(
+                    "Settings: periodic save to %s failed; will retry.",
+                    self._config_path,
+                    exc_info=True,
+                )
+                return
+
+            with self._lock:
+                if self._generation == gen_at_start:
+                    self._dirty = False
+                    logging.debug("Settings: periodic save complete.")
+                # else: a new mutation arrived during the write; store stays dirty.
