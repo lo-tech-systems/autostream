@@ -321,8 +321,6 @@ def send_setup_page(
         return
 
     h1 = "Setup"
-    submit_label = "Finish"
-    setup_form_id = "setupForm"
     owntone_button_html = """
           <button type="button"
             onclick="window.location.href='/owntone-setup';"
@@ -885,9 +883,6 @@ def send_setup_page(
     <div class="setup-slide-list">
       {_setup_page_header("Setup")}
       <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
-      <p class="actions" style="display:flex;margin-bottom:1rem;">
-        <button type="submit" form="{setup_form_id}" class="pill-btn small" style="width:auto;">Save</button>
-      </p>
       <div class="setup-list-card" onclick="openPanel('input1')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Input 1</span>
@@ -1066,50 +1061,18 @@ def send_setup_page(
     </div>
   </div>
 </div>""")
-    _saving_modal_div = """\
-<div id="savingModal" class="modal-overlay" role="dialog" aria-modal="true"
-     aria-labelledby="savingModalTitle" aria-describedby="savingModalMessage">
-  <div class="panel modal-panel">
-    <div class="hdr modal-hdr" id="savingModalTitle">Saving...</div>
-    <div class="bd modal-bd saving-modal-body">
-      <span class="saving-spinner" aria-hidden="true"></span>
-      <p id="savingModalMessage">Please wait while your settings are saved.</p>
-    </div>
-  </div>
-</div>"""
     _body_prefix = (
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n"
-        f"{_dial_pin_modal_div}\n{_saving_modal_div}"
+        f"{_dial_pin_modal_div}"
     )
     _body_html = (
         (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
-        + f'<form id="{setup_form_id}" method="POST" action="/setup" autocomplete="off">'
-        + f'<input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">'
         + form_content_html
-        + "</form>"
     )
     _body_suffix = f"""{A2HS_SCRIPT}
       {AUTOSAVE_JS}
       <script>
-        (function setupSavingFeedback() {{
-          const form = document.getElementById('{setup_form_id}');
-          const modal = document.getElementById('savingModal');
-          if (!form || !modal) return;
-          form.addEventListener('submit', function(event) {{
-            if (form.dataset.submitting === 'true') {{
-              event.preventDefault();
-              return;
-            }}
-            form.dataset.submitting = 'true';
-            form.setAttribute('aria-busy', 'true');
-            form.querySelectorAll('button[type="submit"]').forEach(function(button) {{
-              button.disabled = true;
-            }});
-            modal.classList.add('show');
-          }});
-        }})();
-
         const pinChangeState = {{
           busy: false,
         }};

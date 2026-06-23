@@ -709,12 +709,15 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             handle_live_input_gain_update(self, STATE, body_str)
 
         elif path == "/setup":
-            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/setup"):
-                return
-            if not body_str:
-                self.send_error(400, "Missing request body")
-                return
-            handle_setup_post(self, STATE, AUTH, body_str)
+            if is_commissioning_required(STATE.config_path, STATE.state_path):
+                if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/setup"):
+                    return
+                if not body_str:
+                    self.send_error(400, "Missing request body")
+                    return
+                handle_setup_post(self, STATE, AUTH, body_str)
+            else:
+                send_json(self, 405, {"ok": False, "error": "form_post_disabled"})
 
         elif path == "/owntone-setup":
             if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/owntone-setup"):

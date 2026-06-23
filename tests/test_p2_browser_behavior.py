@@ -528,14 +528,16 @@ def _render_setup_page() -> str:
 class TestSetupPageScriptRendering:
     """Verify the actual generated setup page scripts — not a hardcoded copy."""
 
-    def test_setup_page_has_saving_feedback(self):
-        """The setup form shows a busy modal while its settings POST is pending."""
+    def test_setup_page_has_no_bulk_save_form(self):
+        """Configured setup page must not have a full-form POST (autosave-only mode)."""
         html_out = _render_setup_page()
-        assert 'id="savingModal"' in html_out
-        assert 'id="savingModalTitle">Saving...</div>' in html_out
-        assert "setupSavingFeedback" in html_out
-        assert "form.setAttribute('aria-busy', 'true')" in html_out
-        assert "button.disabled = true" in html_out
+        assert 'action="/setup"' not in html_out, (
+            "Bulk form POST to /setup must be absent; use autosave endpoints instead"
+        )
+        assert 'id="savingModal"' not in html_out, (
+            "Saving modal is only needed with the form POST and must be removed"
+        )
+        assert 'type="submit"' not in html_out or 'form=' not in html_out
 
     def test_setup_page_parser_and_submit_coexist(self):
         """_parseDialResponse and submitPinChange must both be in the setup page."""
