@@ -1,0 +1,1345 @@
+#!/usr/bin/env python3
+"""autostream_storage_guard
+
+Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+
+Conservative storage-maintenance service for the Autostream appliance.
+
+Runs as root via a daily systemd timer (04:00 + up to 30 min random).
+Uses only the Python 3 standard library; no venv dependency.
+
+Exit codes:
+  0  normal run, safe skip, or best-effort action failure
+  1  guard-level failure preventing measurement or safe execution
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import tempfile
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional
+from urllib import request as urllib_request
+from urllib.error import URLError
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+GUARD_LOCK_PATH = Path("/run/autostream-storage-guard.lock")
+UPDATE_LOCK_PATH = Path("/run/autostream-update.lock")
+DIAL_UPDATE_LOCK_PATH = Path("/run/autostream-dial-update.lock")
+
+STATE_PATH = Path("/var/lib/autostream/storage-guard.json")
+SDCARD_HEALTH_PATH = Path("/var/lib/autostream/sdcardhealth.json")
+
+API_BASE = "http://127.0.0.1:8080"
+API_TIMEOUT = 3.0
+
+NORMAL_FREE_BYTES_MIN = 1 * 1024 ** 3        # 1 GiB
+NORMAL_FREE_PCT_MIN = 15.0
+NORMAL_FREE_INODE_PCT_MIN = 10.0
+
+WARNING_FREE_BYTES_MIN = 512 * 1024 ** 2     # 512 MiB
+WARNING_FREE_PCT_MIN = 8.0
+WARNING_FREE_INODE_PCT_MIN = 5.0
+
+CRITICAL_FREE_BYTES_MIN = 128 * 1024 ** 2    # 128 MiB
+CRITICAL_FREE_PCT_MIN = 3.0
+CRITICAL_FREE_INODE_PCT_MIN = 1.0
+
+RECOVER_WARN_FREE_BYTES = int(1.25 * 1024 ** 3)   # 1.25 GiB
+RECOVER_WARN_FREE_PCT = 17.0
+RECOVER_WARN_FREE_INODE_PCT = 12.0
+
+RECOVER_CRIT_FREE_BYTES = 768 * 1024 ** 2    # 768 MiB
+RECOVER_CRIT_FREE_PCT = 10.0
+RECOVER_CRIT_FREE_INODE_PCT = 6.0
+
+# File deletion caps
+NORMAL_DELETE_CAP = 512 * 1024 ** 2         # 512 MiB
+EMERGENCY_DELETE_CAP = 1024 * 1024 ** 2     # 1 GiB
+
+# Log-level policy constants
+LEVEL_ORDER = ("fatal", "log", "warning", "info", "debug", "spam")
+VALID_LEVELS = frozenset(LEVEL_ORDER)
+DIAG_LEVELS = frozenset({"debug", "spam"})
+EXPIRY_TIER1_HOURS = 48
+EXPIRY_TIER2_HOURS = 168
+
+SD_HEALTH_LOW_THRESHOLD = 20
+SD_HEALTH_RECOVER_THRESHOLD = 25
+SD_HEALTH_STALE_HOURS = 36
+SD_HEALTH_RETAIN_HOURS = 72
+
+# Large-file diagnostic scan roots (do not follow symlinks)
+LARGE_FILE_SCAN_ROOTS = (
+    Path("/var/log/autostream"),
+    Path("/var/log"),
+    Path("/var/log/nginx"),
+    Path("/var/cache/apt/archives"),
+    Path("/var/lib/systemd/coredump"),
+    Path("/var/crash"),
+)
+LARGE_FILE_REPORT_MAX = 20
+DELETED_OPEN_MIN_BYTES = 64 * 1024 ** 2
+
+# Tmpfiles once-per-24h guard key
+TMPFILES_INTERVAL_HOURS = 24
+
+# ---------------------------------------------------------------------------
+# Archive allowlist
+# ---------------------------------------------------------------------------
+
+# Mapping from directory path -> permitted base log names.
+_ARCHIVE_ALLOWLIST: dict[str, frozenset[str]] = {
+    "/var/log/autostream": frozenset(),  # all rotated archives; base name is irrelevant
+    "/var/log/nginx": frozenset({"access.log", "error.log"}),
+    "/var/log": frozenset({
+        "syslog", "auth.log", "kern.log", "daemon.log",
+        "user.log", "messages", "debug",
+        "mail.log", "mail.warn", "mail.err", "mail.info",
+        "dpkg.log", "alternatives.log",
+    }),
+}
+
+# Compiled archive name pattern: <base>.<N>[.ext] or <base>-<YYYYMMDD>[.ext]
+# Note: for /var/log/autostream, the base name varies; we match *any* rotated name.
+_ARCHIVE_EXTS = r"(?:\.gz|\.bz2|\.xz|\.zst)?"
+_ARCHIVE_NUMBERED_RE = re.compile(
+    r"^(.+?)\.(\d+)" + _ARCHIVE_EXTS + r"$"
+)
+_ARCHIVE_DATED_RE = re.compile(
+    r"^(.+?)-(\d{8})" + _ARCHIVE_EXTS + r"$"
+)
+
+
+def _is_eligible_archive(directory: str, filename: str) -> bool:
+    """Return True if `filename` in `directory` is an allowlisted rotated archive.
+
+    The active base log (name equals <base> exactly, no numeric/date suffix)
+    is never eligible.  Unknown directories are not eligible.
+    """
+    allowed_bases = _ARCHIVE_ALLOWLIST.get(directory)
+    if allowed_bases is None:
+        return False
+
+    m = _ARCHIVE_NUMBERED_RE.match(filename) or _ARCHIVE_DATED_RE.match(filename)
+    if not m:
+        return False
+
+    base = m.group(1)
+
+    # /var/log/autostream: any rotated file with numeric or dated suffix is eligible.
+    if directory == "/var/log/autostream":
+        return True
+
+    # Nginx and /var/log: base must be an exact permitted name.
+    # Compare against the base name without any compression extension.
+    return base in allowed_bases
+
+
+# ---------------------------------------------------------------------------
+# Storage measurement
+# ---------------------------------------------------------------------------
+
+def measure_storage() -> dict:
+    """Return a dict with total/free bytes, percentages, and inode info."""
+    du = shutil.disk_usage("/")
+    sv = os.statvfs("/")
+
+    total_bytes = du.total
+    free_bytes = du.free
+    used_bytes = du.used
+    free_pct = (free_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
+
+    total_inodes = sv.f_files
+    free_inodes = sv.f_favail
+    free_inode_pct = (free_inodes / total_inodes * 100.0) if total_inodes > 0 else 100.0
+
+    return {
+        "total_bytes": total_bytes,
+        "free_bytes": free_bytes,
+        "used_bytes": used_bytes,
+        "free_percent": round(free_pct, 2),
+        "free_inodes_percent": round(free_inode_pct, 2),
+        "total_inodes": total_inodes,
+        "free_inodes": free_inodes,
+    }
+
+
+def classify_storage(m: dict) -> str:
+    """Classify storage state: 'normal', 'warning', 'critical', or 'emergency'."""
+    free_bytes = m["free_bytes"]
+    free_pct = m["free_percent"]
+    free_inode_pct = m["free_inodes_percent"]
+
+    if (free_pct < CRITICAL_FREE_PCT_MIN
+            or free_bytes < CRITICAL_FREE_BYTES_MIN
+            or free_inode_pct < CRITICAL_FREE_INODE_PCT_MIN):
+        return "emergency"
+
+    if (free_pct < WARNING_FREE_PCT_MIN
+            or free_bytes < WARNING_FREE_BYTES_MIN
+            or free_inode_pct < WARNING_FREE_INODE_PCT_MIN):
+        return "critical"
+
+    if (free_pct < NORMAL_FREE_PCT_MIN
+            or free_bytes < NORMAL_FREE_BYTES_MIN
+            or free_inode_pct < NORMAL_FREE_INODE_PCT_MIN):
+        return "warning"
+
+    return "normal"
+
+
+def has_recovered_from_warning(m: dict) -> bool:
+    return (
+        m["free_bytes"] >= RECOVER_WARN_FREE_BYTES
+        and m["free_percent"] >= RECOVER_WARN_FREE_PCT
+        and m["free_inodes_percent"] >= RECOVER_WARN_FREE_INODE_PCT
+    )
+
+
+def has_recovered_from_critical(m: dict) -> bool:
+    return (
+        m["free_bytes"] >= RECOVER_CRIT_FREE_BYTES
+        and m["free_percent"] >= RECOVER_CRIT_FREE_PCT
+        and m["free_inodes_percent"] >= RECOVER_CRIT_FREE_INODE_PCT
+    )
+
+
+# ---------------------------------------------------------------------------
+# SD-card health
+# ---------------------------------------------------------------------------
+
+def _parse_sdcard_health_percent(data: dict) -> Optional[int]:
+    """Duplicate of autostream_sysutils._parse_sdcard_health_percent (stdlib only)."""
+    def _coerce_float(v):
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    def _coerce_bool(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            if v.strip().lower() in ("true", "yes", "1"):
+                return True
+            if v.strip().lower() in ("false", "no", "0"):
+                return False
+        return None
+
+    success = _coerce_bool(data.get("success"))
+    if success is not True:
+        return None
+
+    remaining = None
+    if "enduranceRemainLifePercent" in data:
+        remaining = _coerce_float(data.get("enduranceRemainLifePercent"))
+    elif "healthStatusPercentUsed" in data:
+        used = _coerce_float(data.get("healthStatusPercentUsed"))
+        if used is not None:
+            remaining = 100.0 - used
+
+    if remaining is None:
+        return None
+    if remaining < -0.5 or remaining > 100.5:
+        return None
+    return max(0, min(100, int(round(remaining))))
+
+
+def read_sdcard_health() -> dict:
+    """Return {status, remaining_percent, sampled_at} from sdcardhealth.json.
+
+    status: 'valid', 'stale', 'unavailable', or 'error'.
+    """
+    path = SDCARD_HEALTH_PATH
+    try:
+        if not path.is_file():
+            return {"status": "unavailable", "remaining_percent": None, "sampled_at": None}
+
+        # Reject symlinks
+        if path.is_symlink():
+            return {"status": "unavailable", "remaining_percent": None, "sampled_at": None}
+
+        stat = path.stat()
+        age_hours = (time.time() - stat.st_mtime) / 3600.0
+        if age_hours > SD_HEALTH_STALE_HOURS:
+            return {"status": "stale", "remaining_percent": None,
+                    "sampled_at": _utc_ts_from_mtime(stat.st_mtime)}
+
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {"status": "unavailable", "remaining_percent": None, "sampled_at": None}
+
+        pct = _parse_sdcard_health_percent(data)
+        if pct is None:
+            return {"status": "unavailable", "remaining_percent": None, "sampled_at": None}
+
+        return {
+            "status": "valid",
+            "remaining_percent": pct,
+            "sampled_at": _utc_ts_from_mtime(stat.st_mtime),
+        }
+    except Exception as e:
+        return {"status": "error", "remaining_percent": None, "sampled_at": None}
+
+
+def _utc_ts_from_mtime(mtime: float) -> str:
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _utc_now_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_utc_ts(ts: object) -> Optional[datetime]:
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# API client
+# ---------------------------------------------------------------------------
+
+def _api_get(path: str) -> Optional[dict]:
+    """GET the given path; return the parsed JSON dict or None."""
+    url = f"{API_BASE}{path}"
+    try:
+        req = urllib_request.Request(url, method="GET")
+        with urllib_request.urlopen(req, timeout=API_TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+            if ct != "application/json":
+                return None
+            body = resp.read(16384).decode("utf-8", errors="replace")
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                return None
+            return data
+    except (URLError, OSError, json.JSONDecodeError, Exception):
+        return None
+
+
+def _api_put_log_level(level: str) -> Optional[dict]:
+    """PUT /api/log-level; return parsed response or None."""
+    url = f"{API_BASE}/api/log-level"
+    body = json.dumps({"level": level}).encode("utf-8")
+    try:
+        req = urllib_request.Request(
+            url,
+            data=body,
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib_request.urlopen(req, timeout=API_TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read(16384).decode("utf-8", errors="replace"))
+            if not isinstance(data, dict):
+                return None
+            return data
+    except Exception:
+        return None
+
+
+def get_playing_status() -> Optional[bool]:
+    """Return True if playing, False if idle, None if unreachable."""
+    data = _api_get("/api/playing-status")
+    if data is None:
+        return None
+    return bool(data.get("playing"))
+
+
+def get_log_level_state() -> Optional[dict]:
+    """Return the log-level API state dict, or None if unreachable."""
+    data = _api_get("/api/log-level")
+    if data is None:
+        return None
+    if not data.get("ok"):
+        return None
+    level = str(data.get("level") or "")
+    if level not in VALID_LEVELS:
+        return None
+    return {
+        "level": level,
+        "changed_by": str(data.get("changed_by") or "user"),
+        "changed_at": data.get("changed_at") if isinstance(data.get("changed_at"), str) else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Log-level policy helpers
+# ---------------------------------------------------------------------------
+
+def _level_quieter_than(a: str, b: str) -> bool:
+    """Return True if level `a` is quieter (less verbose) than `b`."""
+    order = {lvl: i for i, lvl in enumerate(LEVEL_ORDER)}
+    return order.get(a, 9999) < order.get(b, 9999)
+
+
+def compute_desired_ceiling(disk_state: str, sd_health: dict) -> Optional[str]:
+    """Return the quietest automatic log-level ceiling, or None if no restriction."""
+    ceilings: list[str] = []
+
+    if disk_state == "warning":
+        ceilings.append("info")
+    elif disk_state in ("critical", "emergency"):
+        ceilings.append("warning")
+
+    if sd_health.get("status") == "valid":
+        pct = sd_health.get("remaining_percent")
+        if isinstance(pct, int) and pct < SD_HEALTH_LOW_THRESHOLD:
+            ceilings.append("warning")
+
+    if not ceilings:
+        return None
+
+    # Pick the quietest (most restrictive) ceiling.
+    order = {lvl: i for i, lvl in enumerate(LEVEL_ORDER)}
+    return min(ceilings, key=lambda lvl: order.get(lvl, 9999))
+
+
+def compute_expiry_target(api_state: dict, now: datetime) -> Optional[str]:
+    """Return the expiry target level, or None if no expiry is due."""
+    level = api_state.get("level")
+    changed_at = _parse_utc_ts(api_state.get("changed_at"))
+    if changed_at is None:
+        return None
+
+    elapsed = now - changed_at
+
+    if level in DIAG_LEVELS and elapsed >= timedelta(hours=EXPIRY_TIER1_HOURS):
+        return "info"
+
+    if level == "info" and elapsed >= timedelta(hours=EXPIRY_TIER2_HOURS):
+        return "warning"
+
+    return None
+
+
+def apply_expiry_to_saved(saved_level: str, saved_at_str: Optional[str], now: datetime) -> str:
+    """Apply expiry rules to a saved restoration candidate level."""
+    saved_at = _parse_utc_ts(saved_at_str)
+    if saved_at is None:
+        return saved_level
+
+    elapsed = now - saved_at
+
+    if saved_level in DIAG_LEVELS and elapsed >= timedelta(hours=EXPIRY_TIER1_HOURS):
+        saved_level = "info"
+        elapsed = timedelta(0)  # info clock starts at expiry event; no second-tier expiry
+
+    if saved_level == "info" and elapsed >= timedelta(hours=EXPIRY_TIER2_HOURS):
+        return "warning"
+
+    return saved_level
+
+
+# ---------------------------------------------------------------------------
+# Command runner
+# ---------------------------------------------------------------------------
+
+_APT_GET_CANDIDATES = ("/usr/bin/apt-get",)
+_JOURNALCTL_CANDIDATES = ("/usr/bin/journalctl",)
+_LOGROTATE_CANDIDATES = ("/usr/sbin/logrotate", "/sbin/logrotate", "/usr/bin/logrotate")
+_SYSTEMCTL_CANDIDATES = ("/usr/bin/systemctl", "/bin/systemctl")
+_TMPFILES_CANDIDATES = ("/usr/bin/systemd-tmpfiles", "/bin/systemd-tmpfiles")
+
+
+def _find_cmd(candidates: tuple) -> Optional[str]:
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def _run(cmd: list, *, timeout: int = 60, env: Optional[dict] = None) -> dict:
+    """Run a command, return {ok, rc, stdout_head, stderr_head}."""
+    try:
+        merged_env = dict(os.environ)
+        if env:
+            merged_env.update(env)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=merged_env,
+        )
+        ok = result.returncode == 0
+        return {
+            "ok": ok,
+            "rc": result.returncode,
+            "stdout_head": (result.stdout or "")[:512],
+            "stderr_head": (result.stderr or "")[:512],
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "rc": -1, "stdout_head": "", "stderr_head": "timeout"}
+    except FileNotFoundError:
+        return {"ok": False, "rc": -1, "stdout_head": "", "stderr_head": "not found"}
+    except Exception as e:
+        return {"ok": False, "rc": -1, "stdout_head": "", "stderr_head": str(e)[:200]}
+
+
+_APT_NONINTERACTIVE_ENV = {"DEBIAN_FRONTEND": "noninteractive"}
+_APT_LOCK_OPTS = ["-o", "DPkg::Lock::Timeout=0"]
+
+
+# ---------------------------------------------------------------------------
+# Large-file scanning
+# ---------------------------------------------------------------------------
+
+def scan_largest_files(roots: tuple, *, root_dev: int) -> list:
+    """Scan allowed roots for largest regular files; return sorted list of dicts."""
+    found: list[tuple[int, str]] = []  # (size, path)
+
+    def _scan_dir(directory: Path, *, toplevel: bool = False) -> None:
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                # Never follow symlinks
+                if entry.is_symlink():
+                    continue
+                st = entry.stat(follow_symlinks=False)
+                # Stay on root filesystem
+                if st.st_dev != root_dev:
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    # For /var/log, only descend into 'nginx' and 'autostream' subdirs
+                    if directory == Path("/var/log") and toplevel:
+                        if entry.name not in ("nginx", "autostream"):
+                            continue
+                    _scan_dir(entry)
+                elif entry.is_file(follow_symlinks=False):
+                    found.append((st.st_size, str(entry)))
+            except OSError:
+                continue
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        _scan_dir(root, toplevel=(root == Path("/var/log")))
+
+    found.sort(reverse=True)
+    top = found[:LARGE_FILE_REPORT_MAX]
+    return [{"size_bytes": sz, "path": p} for sz, p in top]
+
+
+def scan_deleted_open_files() -> list:
+    """Find large deleted-but-open files via /proc. Returns list of dicts."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return []
+    results = []
+    try:
+        for pid_dir in proc.iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            fd_dir = pid_dir / "fd"
+            try:
+                for fd_link in fd_dir.iterdir():
+                    try:
+                        target = os.readlink(str(fd_link))
+                        if "(deleted)" not in target:
+                            continue
+                        st = fd_link.stat()
+                        if st.st_size < DELETED_OPEN_MIN_BYTES:
+                            continue
+                        # Get bounded process name
+                        try:
+                            comm = (pid_dir / "comm").read_text(errors="replace").strip()[:64]
+                        except OSError:
+                            comm = "unknown"
+                        results.append({
+                            "pid": pid_dir.name,
+                            "comm": comm,
+                            "fd": fd_link.name,
+                            "size_bytes": st.st_size,
+                            "path": target[:256],
+                        })
+                        if len(results) >= 20:
+                            return results
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Cleanup actions
+# ---------------------------------------------------------------------------
+
+def action_start_logrotate(actions: list) -> dict:
+    sc = _find_cmd(_SYSTEMCTL_CANDIDATES)
+    if not sc:
+        r = {"name": "logrotate_start", "ok": False, "reason": "systemctl not found"}
+        actions.append(r)
+        return r
+    result = _run([sc, "start", "--no-ask-password", "logrotate.service"], timeout=60)
+    r = {"name": "logrotate_start", "ok": result["ok"]}
+    actions.append(r)
+    return r
+
+
+def action_apt_autoclean(actions: list) -> dict:
+    apt = _find_cmd(_APT_GET_CANDIDATES)
+    if not apt:
+        r = {"name": "apt_autoclean", "ok": False, "reason": "apt-get not found"}
+        actions.append(r)
+        return r
+    result = _run(
+        [apt, "autoclean", *_APT_LOCK_OPTS],
+        timeout=60,
+        env=_APT_NONINTERACTIVE_ENV,
+    )
+    r = {"name": "apt_autoclean", "ok": result["ok"]}
+    actions.append(r)
+    return r
+
+
+def action_journal_vacuum(actions: list, *, time_spec: str = "14d", size_spec: str = "128M") -> dict:
+    jctl = _find_cmd(_JOURNALCTL_CANDIDATES)
+    if not jctl:
+        r = {"name": "journal_vacuum", "ok": False, "reason": "journalctl not found"}
+        actions.append(r)
+        return r
+    result = _run(
+        [jctl, f"--vacuum-time={time_spec}", f"--vacuum-size={size_spec}"],
+        timeout=90,
+    )
+    r = {"name": "journal_vacuum", "ok": result["ok"]}
+    actions.append(r)
+    return r
+
+
+def action_tmpfiles_clean(actions: list) -> dict:
+    tf = _find_cmd(_TMPFILES_CANDIDATES)
+    if not tf:
+        r = {"name": "tmpfiles_clean", "ok": False, "reason": "systemd-tmpfiles not found"}
+        actions.append(r)
+        return r
+    result = _run([tf, "--clean"], timeout=60)
+    r = {"name": "tmpfiles_clean", "ok": result["ok"]}
+    actions.append(r)
+    return r
+
+
+def action_apt_clean(actions: list) -> dict:
+    apt = _find_cmd(_APT_GET_CANDIDATES)
+    if not apt:
+        r = {"name": "apt_clean", "ok": False, "reason": "apt-get not found"}
+        actions.append(r)
+        return r
+    result = _run(
+        [apt, "clean", *_APT_LOCK_OPTS],
+        timeout=60,
+        env=_APT_NONINTERACTIVE_ENV,
+    )
+    r = {"name": "apt_clean", "ok": result["ok"]}
+    actions.append(r)
+    return r
+
+
+def action_apt_autoremove_simulate(actions: list) -> dict:
+    apt = _find_cmd(_APT_GET_CANDIDATES)
+    if not apt:
+        r = {"name": "apt_autoremove_simulate", "ok": False, "reason": "apt-get not found"}
+        actions.append(r)
+        return r
+    result = _run(
+        [apt, "--simulate", "autoremove", *_APT_LOCK_OPTS],
+        timeout=60,
+        env=_APT_NONINTERACTIVE_ENV,
+    )
+    pkg_count = None
+    if result["ok"]:
+        # Count "Remv " lines in output
+        pkg_count = result["stdout_head"].count("Remv ")
+    r = {"name": "apt_autoremove_simulate", "ok": result["ok"], "packages_proposed": pkg_count}
+    actions.append(r)
+    return r
+
+
+def action_enable_logrotate_timer(actions: list) -> dict:
+    sc = _find_cmd(_SYSTEMCTL_CANDIDATES)
+    if not sc:
+        r = {"name": "enable_logrotate_timer", "ok": False, "reason": "systemctl not found"}
+        actions.append(r)
+        return r
+    result = _run([sc, "enable", "--now", "logrotate.timer"], timeout=30)
+    r = {"name": "enable_logrotate_timer", "ok": result["ok"]}
+    actions.append(r)
+    return r
+
+
+def _logrotate_timer_status() -> dict:
+    """Return {exists, enabled, active}."""
+    sc = _find_cmd(_SYSTEMCTL_CANDIDATES)
+    if not sc:
+        return {"exists": False, "enabled": False, "active": False}
+    # Check exists
+    r = _run([sc, "status", "logrotate.timer"], timeout=10)
+    if r["rc"] == 4:  # unit not found
+        return {"exists": False, "enabled": False, "active": False}
+    exists = True
+    is_r = _run([sc, "is-enabled", "logrotate.timer"], timeout=10)
+    enabled = is_r["ok"]
+    ia_r = _run([sc, "is-active", "logrotate.timer"], timeout=10)
+    active = ia_r["ok"]
+    return {"exists": exists, "enabled": enabled, "active": active}
+
+
+def delete_archive_files(
+    directory: str,
+    *,
+    min_age_days: Optional[int],
+    delete_cap_bytes: int,
+    bytes_deleted: list,  # single-element list used as accumulator
+    actions: list,
+    preserve_newest: bool = True,
+    emergency: bool = False,
+) -> None:
+    """Delete eligible rotated archives from `directory`.
+
+    Only deletes files that pass _is_eligible_archive.
+    In emergency mode, `min_age_days` is ignored and newest is not preserved.
+    """
+    dir_path = Path(directory)
+    if not dir_path.is_dir():
+        return
+
+    try:
+        sv = os.stat(str(dir_path))
+        dir_dev = sv.st_dev
+    except OSError:
+        return
+
+    # Group eligible files by base name so we can preserve the newest.
+    from collections import defaultdict
+    by_base: dict[str, list[tuple[float, int, Path]]] = defaultdict(list)
+
+    try:
+        entries = list(dir_path.iterdir())
+    except OSError:
+        return
+
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        try:
+            st = entry.stat(follow_symlinks=False)
+            if st.st_dev != dir_dev:
+                continue
+        except OSError:
+            continue
+        if not _is_eligible_archive(directory, entry.name):
+            continue
+        by_base[entry.name.split(".")[0]].append((st.st_mtime, st.st_size, entry))
+
+    # Flatten and sort oldest first.
+    candidates: list[tuple[float, int, Path, str]] = []
+    for base, files in by_base.items():
+        files_sorted = sorted(files)  # oldest first
+        if preserve_newest and not emergency and len(files_sorted) > 1:
+            # Exclude the newest (last in sorted list)
+            files_sorted = files_sorted[:-1]
+        for mtime, size, path in files_sorted:
+            if min_age_days is not None and not emergency:
+                age_days = (time.time() - mtime) / 86400.0
+                if age_days < min_age_days:
+                    continue
+            candidates.append((mtime, size, path, base))
+
+    candidates.sort()  # oldest first
+
+    for mtime, size, path, base in candidates:
+        if bytes_deleted[0] >= delete_cap_bytes:
+            break
+        try:
+            os.unlink(str(path))
+            bytes_deleted[0] += size
+            actions.append({"name": "delete_archive", "ok": True,
+                            "path": str(path), "size_bytes": size})
+        except OSError as e:
+            actions.append({"name": "delete_archive", "ok": False,
+                            "path": str(path), "error": str(e)[:200]})
+
+
+def delete_crash_files(
+    directory: str,
+    *,
+    min_age_days: Optional[int],
+    delete_cap_bytes: int,
+    bytes_deleted: list,
+    actions: list,
+    emergency: bool = False,
+) -> None:
+    """Delete regular files from a crash/coredump directory."""
+    dir_path = Path(directory)
+    if not dir_path.is_dir():
+        return
+
+    try:
+        sv = os.stat(str(dir_path))
+        dir_dev = sv.st_dev
+    except OSError:
+        return
+
+    try:
+        entries = list(dir_path.iterdir())
+    except OSError:
+        return
+
+    candidates = []
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        try:
+            st = entry.stat(follow_symlinks=False)
+            if st.st_dev != dir_dev:
+                continue
+            if min_age_days is not None and not emergency:
+                age_days = (time.time() - st.st_mtime) / 86400.0
+                if age_days < min_age_days:
+                    continue
+            candidates.append((st.st_mtime, st.st_size, entry))
+        except OSError:
+            continue
+
+    candidates.sort()  # oldest first
+    for mtime, size, path in candidates:
+        if bytes_deleted[0] >= delete_cap_bytes:
+            break
+        try:
+            os.unlink(str(path))
+            bytes_deleted[0] += size
+            actions.append({"name": "delete_crash", "ok": True,
+                            "path": str(path), "size_bytes": size})
+        except OSError as e:
+            actions.append({"name": "delete_crash", "ok": False,
+                            "path": str(path), "error": str(e)[:200]})
+
+
+# ---------------------------------------------------------------------------
+# State file
+# ---------------------------------------------------------------------------
+
+def load_state() -> dict:
+    try:
+        if not STATE_PATH.is_file():
+            return {}
+        raw = STATE_PATH.read_text(encoding="utf-8", errors="replace")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_state(data: dict) -> bool:
+    try:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".storage-guard.", suffix=".tmp.json",
+            dir=str(STATE_PATH.parent),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp_name, 0o644)
+            os.replace(tmp_name, str(STATE_PATH))
+            return True
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        logging.warning("storage guard: could not save state: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Lock helpers
+# ---------------------------------------------------------------------------
+
+def _acquire_lock(path: Path, *, exclusive: bool, nonblocking: bool) -> Optional[int]:
+    """Open and lock the file. Returns fd on success, None on failure."""
+    flags = os.O_CREAT | os.O_RDWR
+    try:
+        fd = os.open(str(path), flags, 0o600)
+    except OSError:
+        return None
+    flock_flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    if nonblocking:
+        flock_flags |= fcntl.LOCK_NB
+    try:
+        fcntl.flock(fd, flock_flags)
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Guard log-level policy execution
+# ---------------------------------------------------------------------------
+
+def run_log_level_policy(
+    *,
+    disk_state: str,
+    sd_health: dict,
+    guard_state: dict,
+    actions: list,
+    now: datetime,
+) -> dict:
+    """Apply automatic log-level policy. Returns updated log_policy dict."""
+    log_policy = dict(guard_state.get("log_policy") or {})
+    if not isinstance(log_policy, dict):
+        log_policy = {}
+
+    # Fetch current API state.
+    api_state = get_log_level_state()
+    if api_state is None:
+        logging.warning("storage guard: log-level API unavailable; skipping policy")
+        return log_policy
+
+    current_level = api_state["level"]
+    current_changed_at = api_state.get("changed_at")
+
+    # Compute automatic ceiling.
+    ceiling = compute_desired_ceiling(disk_state, sd_health)
+
+    active_reasons: list[str] = []
+    if disk_state == "warning":
+        active_reasons.append("disk_warning")
+    elif disk_state == "critical":
+        active_reasons.append("disk_critical")
+    elif disk_state == "emergency":
+        active_reasons.append("disk_emergency")
+
+    sd_status = sd_health.get("status")
+    sd_pct = sd_health.get("remaining_percent")
+    if sd_status == "valid" and isinstance(sd_pct, int) and sd_pct < SD_HEALTH_LOW_THRESHOLD:
+        active_reasons.append("low_sd_health")
+        logging.warning(
+            "storage guard: SD card health %d%% below threshold %d%%",
+            sd_pct, SD_HEALTH_LOW_THRESHOLD,
+        )
+
+    guard_owns_reduction = bool(log_policy.get("guard_owns_reduction"))
+    saved_level = log_policy.get("saved_level")
+    saved_changed_at = log_policy.get("saved_changed_at")
+    applied_level = log_policy.get("applied_level")
+
+    # Check log-level expiry (runs regardless of disk state or ceiling).
+    expiry_target = compute_expiry_target(api_state, now)
+    if expiry_target is not None:
+        if _level_quieter_than(expiry_target, current_level):
+            reason_map = {
+                ("debug", "info"): "debug_expired",
+                ("spam", "info"): "spam_expired",
+                ("info", "warning"): "info_expired",
+            }
+            reason = reason_map.get((current_level, expiry_target), "level_expired")
+            logging.info(
+                "storage guard: expiring %s → %s (%s)", current_level, expiry_target, reason
+            )
+            result = _api_put_log_level(expiry_target)
+            if result and result.get("ok"):
+                actions.append({"name": "log_level_expire", "ok": True,
+                                "from": current_level, "to": expiry_target, "reason": reason})
+                # Refresh API state after expiry change.
+                api_state = get_log_level_state() or api_state
+                current_level = api_state["level"]
+                current_changed_at = api_state.get("changed_at")
+            else:
+                actions.append({"name": "log_level_expire", "ok": False,
+                                "reason": reason})
+
+    if ceiling is not None:
+        # Need to apply a ceiling.
+        if _level_quieter_than(ceiling, current_level):
+            # Capture restoration candidate if not already owned.
+            if not guard_owns_reduction:
+                saved_level = current_level
+                saved_changed_at = current_changed_at
+                guard_owns_reduction = True
+                logging.info(
+                    "storage guard: capturing restoration candidate level=%s", saved_level
+                )
+            # Apply ceiling.
+            logging.warning(
+                "storage guard: applying ceiling %s (current=%s, reasons=%s)",
+                ceiling, current_level, active_reasons,
+            )
+            result = _api_put_log_level(ceiling)
+            if result and result.get("ok"):
+                applied_level = ceiling
+                actions.append({"name": "log_level_ceiling", "ok": True,
+                                "ceiling": ceiling, "previous": current_level,
+                                "reasons": active_reasons})
+            else:
+                actions.append({"name": "log_level_ceiling", "ok": False,
+                                "ceiling": ceiling, "reasons": active_reasons})
+        else:
+            # User may have changed level while guard reduction is active; update candidate.
+            if guard_owns_reduction and api_state.get("changed_by") == "user":
+                saved_level = current_level
+                saved_changed_at = current_changed_at
+    else:
+        # No ceiling needed; attempt restoration if owned.
+        if guard_owns_reduction and saved_level:
+            # Check preconditions for restoration.
+            if (
+                api_state.get("changed_by") == "system"
+                and current_level == applied_level
+            ):
+                # Apply expiry to saved candidate.
+                restore_target = apply_expiry_to_saved(saved_level, saved_changed_at, now)
+                if restore_target in VALID_LEVELS and restore_target != current_level:
+                    logging.info(
+                        "storage guard: restoring level %s → %s", current_level, restore_target
+                    )
+                    result = _api_put_log_level(restore_target)
+                    if result and result.get("ok"):
+                        guard_owns_reduction = False
+                        saved_level = None
+                        saved_changed_at = None
+                        applied_level = None
+                        actions.append({"name": "log_level_restore", "ok": True,
+                                        "to": restore_target})
+                    else:
+                        actions.append({"name": "log_level_restore", "ok": False})
+                else:
+                    guard_owns_reduction = False
+                    saved_level = None
+                    saved_changed_at = None
+                    applied_level = None
+            else:
+                # User action won; abandon ownership.
+                guard_owns_reduction = False
+                saved_level = None
+                saved_changed_at = None
+                applied_level = None
+
+    return {
+        "active_reasons": active_reasons,
+        "guard_owns_reduction": guard_owns_reduction,
+        "applied_level": applied_level,
+        "saved_level": saved_level,
+        "saved_changed_at": saved_changed_at,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cleanup orchestration
+# ---------------------------------------------------------------------------
+
+def run_cleanup(
+    *,
+    initial_state: str,
+    actions: list,
+    root_dev: int,
+    guard_state: dict,
+    now: datetime,
+    emergency: bool = False,
+) -> str:
+    """Run cleanup stages appropriate for the given initial_state.
+
+    Re-measures storage after each group and stops when recovery target is met.
+    Returns the final storage state.
+    """
+    cap = EMERGENCY_DELETE_CAP if emergency else NORMAL_DELETE_CAP
+    bytes_deleted = [0]
+
+    def _remeasure() -> tuple[dict, str]:
+        m = measure_storage()
+        return m, classify_storage(m)
+
+    current_state = initial_state
+
+    if current_state == "normal":
+        # Only run tmpfiles at most once per 24h.
+        last_tmpfiles = guard_state.get("last_tmpfiles_run_at")
+        last_dt = _parse_utc_ts(last_tmpfiles)
+        should_run = last_dt is None or (now - last_dt) >= timedelta(hours=TMPFILES_INTERVAL_HOURS)
+        if should_run:
+            action_tmpfiles_clean(actions)
+            guard_state["last_tmpfiles_run_at"] = _utc_now_str()
+        return "normal"
+
+    # Warning+ cleanup
+    if current_state in ("warning", "critical", "emergency"):
+        action_start_logrotate(actions)
+        action_apt_autoclean(actions)
+        action_journal_vacuum(actions)
+        action_tmpfiles_clean(actions)
+        guard_state["last_tmpfiles_run_at"] = _utc_now_str()
+
+        m, current_state = _remeasure()
+        if has_recovered_from_warning(m):
+            return current_state
+
+    if current_state in ("critical", "emergency"):
+        action_apt_clean(actions)
+        m, current_state = _remeasure()
+        if has_recovered_from_critical(m):
+            return current_state
+
+        # Delete crash/coredump files
+        for crash_dir in ("/var/lib/systemd/coredump", "/var/crash"):
+            delete_crash_files(
+                crash_dir,
+                min_age_days=7,
+                delete_cap_bytes=cap,
+                bytes_deleted=bytes_deleted,
+                actions=actions,
+                emergency=emergency,
+            )
+
+        # Delete rotated log archives
+        for directory in (
+            "/var/log/autostream",
+            "/var/log/nginx",
+            "/var/log",
+        ):
+            delete_archive_files(
+                directory,
+                min_age_days=7,
+                delete_cap_bytes=cap,
+                bytes_deleted=bytes_deleted,
+                actions=actions,
+                preserve_newest=True,
+                emergency=emergency,
+            )
+            m, current_state = _remeasure()
+            if has_recovered_from_critical(m):
+                return current_state
+
+        action_apt_autoremove_simulate(actions)
+
+    if emergency and current_state == "emergency":
+        action_journal_vacuum(actions, time_spec="1d", size_spec="64M")
+        m, current_state = _remeasure()
+        if has_recovered_from_critical(m):
+            return current_state
+
+        # Emergency: delete remaining archives including newest
+        for directory in (
+            "/var/log/autostream",
+            "/var/log/nginx",
+            "/var/log",
+        ):
+            delete_archive_files(
+                directory,
+                min_age_days=None,
+                delete_cap_bytes=cap,
+                bytes_deleted=bytes_deleted,
+                actions=actions,
+                preserve_newest=False,
+                emergency=True,
+            )
+
+        # Emergency crash files regardless of age
+        for crash_dir in ("/var/lib/systemd/coredump", "/var/crash"):
+            delete_crash_files(
+                crash_dir,
+                min_age_days=None,
+                delete_cap_bytes=cap,
+                bytes_deleted=bytes_deleted,
+                actions=actions,
+                emergency=True,
+            )
+
+    m, current_state = _remeasure()
+    return current_state
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stdout,
+    )
+
+    now = datetime.now(timezone.utc)
+    started_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = "ok"
+    skipped_reason = None
+    actions: list[dict] = []
+    storage_before: Optional[dict] = None
+    storage_after: Optional[dict] = None
+    log_policy: dict = {}
+
+    guard_state = load_state()
+
+    # 1. Singleton guard lock.
+    guard_fd = _acquire_lock(GUARD_LOCK_PATH, exclusive=True, nonblocking=True)
+    if guard_fd is None:
+        logging.info("storage guard: another instance is running; exiting")
+        return 0
+
+    update_fd = None
+    dial_fd = None
+    try:
+        # 2. Shared updater locks.
+        update_fd = _acquire_lock(UPDATE_LOCK_PATH, exclusive=False, nonblocking=True)
+        dial_fd = _acquire_lock(DIAL_UPDATE_LOCK_PATH, exclusive=False, nonblocking=True)
+        if update_fd is None or dial_fd is None:
+            logging.info("storage guard: update in progress; skipping run")
+            skipped_reason = "update_in_progress"
+            result = "skipped"
+            _save_partial_state(guard_state, started_at, result, skipped_reason, actions, log_policy)
+            return 0
+
+        # 3. Playing check.
+        playing = get_playing_status()
+        if playing is True:
+            logging.info("storage guard: appliance is playing; skipping run")
+            skipped_reason = "playing"
+            result = "skipped"
+            _save_partial_state(guard_state, started_at, result, skipped_reason, actions, log_policy)
+            return 0
+
+        # 4. Measure storage.
+        try:
+            storage_before = measure_storage()
+        except Exception as e:
+            logging.error("storage guard: could not measure storage: %s", e)
+            return 1
+
+        initial_state = classify_storage(storage_before)
+        root_dev = os.stat("/").st_dev
+
+        # 5-6. Logrotate timer check.
+        timer_status = _logrotate_timer_status()
+        if timer_status["exists"] and not (timer_status["enabled"] and timer_status["active"]):
+            action_enable_logrotate_timer(actions)
+
+        # 7. SD-card health.
+        sd_health = read_sdcard_health()
+
+        # 8. Log-level policy (expiry and ceiling).
+        log_policy = run_log_level_policy(
+            disk_state=initial_state,
+            sd_health=sd_health,
+            guard_state=guard_state,
+            actions=actions,
+            now=now,
+        )
+
+        # 9-10. Diagnostic scan.
+        largest_files = scan_largest_files(LARGE_FILE_SCAN_ROOTS, root_dev=root_dev)
+        deleted_open = scan_deleted_open_files()
+
+        # Cleanup.
+        final_state = run_cleanup(
+            initial_state=initial_state,
+            actions=actions,
+            root_dev=root_dev,
+            guard_state=guard_state,
+            now=now,
+            emergency=(initial_state == "emergency"),
+        )
+
+        storage_after = measure_storage()
+        bytes_deleted = sum(
+            a.get("size_bytes", 0)
+            for a in actions
+            if a.get("name", "").startswith("delete_") and a.get("ok")
+        )
+
+        completed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        state_to_save = dict(guard_state)
+        state_to_save.update({
+            "schema_version": 1,
+            "last_run_started_at": started_at,
+            "last_run_completed_at": completed_at,
+            "result": result,
+            "skipped_reason": skipped_reason,
+            "storage_state_before": initial_state,
+            "storage_state_after": final_state,
+            "before": storage_before,
+            "after": storage_after,
+            "bytes_deleted_directly": bytes_deleted,
+            "actions": actions[:50],  # cap
+            "sd_health": sd_health,
+            "log_policy": log_policy,
+            "largest_files": largest_files[:LARGE_FILE_REPORT_MAX],
+            "deleted_open_files": deleted_open[:20],
+        })
+        save_state(state_to_save)
+
+        logging.info(
+            "storage guard: done. state %s→%s, freed %d bytes, %d actions",
+            initial_state, final_state, bytes_deleted, len(actions),
+        )
+        return 0
+
+    except Exception as e:
+        logging.error("storage guard: fatal: %s", e)
+        return 1
+    finally:
+        for fd in (guard_fd, update_fd, dial_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def _save_partial_state(
+    guard_state: dict, started_at: str, result: str, skipped_reason: Optional[str],
+    actions: list, log_policy: dict,
+) -> None:
+    completed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    state_to_save = dict(guard_state)
+    state_to_save.update({
+        "schema_version": 1,
+        "last_run_started_at": started_at,
+        "last_run_completed_at": completed_at,
+        "result": result,
+        "skipped_reason": skipped_reason,
+        "actions": actions,
+        "log_policy": log_policy,
+    })
+    save_state(state_to_save)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
