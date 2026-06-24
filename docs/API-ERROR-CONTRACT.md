@@ -315,4 +315,4 @@ explicit corresponding API-contract update.
 | `system/nginx/autostream-dial-nginx.conf` | Dial NGINX (different interception set) |
 | `tests/test_browser_api_error_contract.py` | Helper tests, NGINX policy tests, route distinction tests |
 | `tests/test_webui_dial_proxy.py` | Dial proxy contract tests |
-| `DIAL_PROTOCOL.md` | Wire protocol spec including management proxy section |
+| `docs/dial/DIAL_PROTOCOL.md` | Wire protocol spec including management proxy section |

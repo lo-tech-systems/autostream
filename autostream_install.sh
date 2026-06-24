@@ -1010,11 +1010,13 @@ network_state_phase() {
   local default_dev wifi_candidates wifi_conn wifi_mode
   default_dev="$(ip route show default 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)"
   wifi_candidates="$(
-    nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
+    nmcli --escape no -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
       | awk -F: -v prefer="${default_dev}" '
-          $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {
-            if ($1==prefer) { preferred=$4 }
-            else { others[++n]=$4 }
+          NF>=4 && $2=="wifi" && ($3=="connected" || $3=="activated") {
+            conn=""; for(i=4;i<=NF;i++) conn=conn (i>4?":":"") $i
+            if (conn=="") next
+            if ($1==prefer) { preferred=conn }
+            else { others[++n]=conn }
           }
           END {
             if (preferred!="") print preferred

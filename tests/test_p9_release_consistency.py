@@ -198,7 +198,7 @@ class TestDialProtocolDocJson:
 
     @pytest.fixture(scope="class")
     def doc_path(self):
-        p = REPO_ROOT / "DIAL_PROTOCOL.md"
+        p = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
         if not p.exists():
             pytest.skip("DIAL_PROTOCOL.md not found")
         return p
@@ -213,10 +213,11 @@ class TestDialProtocolDocJson:
             f"found {len(json_blocks)}"
         )
 
+    _DIAL_PROTOCOL = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
     @pytest.mark.parametrize("idx,block", [
         (i, b) for i, b in enumerate(
-            _extract_json_blocks(_read(REPO_ROOT / "DIAL_PROTOCOL.md"))
-            if (REPO_ROOT / "DIAL_PROTOCOL.md").exists()
+            _extract_json_blocks(_read(_DIAL_PROTOCOL))
+            if _DIAL_PROTOCOL.exists()
             else []
         )
     ])
@@ -236,7 +237,7 @@ class TestDialProtocolSchemaFields:
 
     @pytest.fixture(scope="class")
     def doc_text(self):
-        p = REPO_ROOT / "DIAL_PROTOCOL.md"
+        p = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
         if not p.exists():
             pytest.skip("DIAL_PROTOCOL.md not found")
         return _read(p)

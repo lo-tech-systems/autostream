@@ -1274,42 +1274,62 @@ class TestControlAuthLogic:
 # ---------------------------------------------------------------------------
 
 class TestStartupWindowUsbReprobe:
-    """USB adapter that appears after boot but within BOOT_AP_GRACE triggers
-    startup_connect_usb_first() via the monitor loop's new-USB branch."""
+    """Delayed startup USB enumeration re-probe (Section 4.3 / WP4).
 
-    def test_new_usb_within_grace_triggers_usb_first(self, watcher):
-        """A USB adapter that was not present at the initial boot probe but
-        appears later (still inside BOOT_AP_GRACE) must update
-        _startup_window_usb_tried_macs and trigger startup_connect_usb_first."""
+    Tests the module-level _startup_window_usb_tried_macs gate and the
+    startup_connect_usb_first() function it guards.  Full loop-ordering
+    coverage (verifying the branch fires at exactly the right point inside
+    network_monitor_loop) requires an integration test with a controllable
+    monitor loop and is not in scope for the offline unit suite.
+    """
+
+    def test_new_usb_mac_not_in_tried_set_initially(self, watcher):
+        """_startup_window_usb_tried_macs starts empty; a fresh MAC is considered new."""
+        watcher._startup_window_usb_tried_macs.clear()
         usb_mac = "cc:dd:ee:ff:00:01"
-        # Ensure the MAC has NOT yet been seen by the startup window tracker.
-        watcher._startup_window_usb_tried_macs.discard(usb_mac)
+        new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
+        assert new_usb == {usb_mac}
 
-        usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
-
-        # Simulate the monitor loop discovering the new adapter.
-        with patch.object(watcher, "startup_connect_usb_first", return_value=True) as start_usb:
-            # Mimic the new-USB branch: add the mac to the tried set and call.
-            new_usb = {usb.permanent_mac} - watcher._startup_window_usb_tried_macs
-            if new_usb:
-                watcher._startup_window_usb_tried_macs.update({usb.permanent_mac})
-                watcher.startup_connect_usb_first()
-
-        start_usb.assert_called_once()
-        assert usb_mac in watcher._startup_window_usb_tried_macs
-
-    def test_already_tried_usb_does_not_re_probe(self, watcher):
-        """A USB MAC already in _startup_window_usb_tried_macs must NOT trigger
-        another startup_connect_usb_first call."""
+    def test_mac_in_tried_set_is_not_new(self, watcher):
+        """Once added to _startup_window_usb_tried_macs, the MAC is no longer
+        'new' — startup_connect_usb_first must not be re-triggered for it."""
         usb_mac = "cc:dd:ee:ff:00:02"
-        watcher._startup_window_usb_tried_macs.add(usb_mac)  # already tried
+        watcher._startup_window_usb_tried_macs.clear()
+        watcher._startup_window_usb_tried_macs.add(usb_mac)
+        new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
+        assert not new_usb, (
+            "USB MAC already in _startup_window_usb_tried_macs must not "
+            "appear in the new_usb set used by the loop to gate re-probing"
+        )
 
-        with patch.object(watcher, "startup_connect_usb_first") as start_usb:
-            new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs  # empty
-            if new_usb:
-                watcher.startup_connect_usb_first()
+    def test_startup_connect_usb_first_succeeds_on_new_adapter(self, watcher):
+        """startup_connect_usb_first() connects on the first available USB
+        adapter and returns True; the MAC can then be recorded as tried."""
+        usb_mac = "cc:dd:ee:ff:00:03"
+        watcher._startup_window_usb_tried_macs.clear()
+        usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
 
-        start_usb.assert_not_called()
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+             patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
+             patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False), \
+             patch.object(watcher, "get_configured_network_state") as gcns, \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+            gcns.return_value = MagicMock(
+                is_configured=True,
+                connection_uuid="uuid-abc",
+                connection_name="HomeNetwork",
+            )
+            result = watcher.startup_connect_usb_first()
+
+        assert result is True
+        # After success the loop records the MAC; verify the set gate works.
+        watcher._startup_window_usb_tried_macs.add(usb_mac)
+        new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
+        assert not new_usb, "MAC must be gated out after being recorded as tried"
 
 
 # ---------------------------------------------------------------------------
