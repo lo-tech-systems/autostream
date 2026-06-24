@@ -1971,11 +1971,16 @@ def send_log_level_put_json(
 def send_playing_status_json(handler) -> None:
     """GET /api/playing-status — return whether the appliance is streaming.
 
-    Returns `playing: true` when any monitor is actively capturing.
-    Safe to call before OwnTone or monitor are connected.
+    Returns ``{"ok": true, "playing": <bool>}`` when monitor state can be
+    determined.  When it cannot (internal error), returns HTTP 200 with an
+    explicit *uncertain* body ``{"ok": false, "error": "playing status
+    unavailable"}`` rather than falsely reporting stopped playback, so local
+    automation conservatively treats the state as unknown (Section 8.3).
     """
     try:
         playing = any_monitor_capturing()
     except Exception:
-        playing = False
+        logging.warning("playing status unavailable (monitor query failed)")
+        send_json(handler, 200, {"ok": False, "error": "playing status unavailable"})
+        return
     send_json(handler, 200, {"ok": True, "playing": bool(playing)})

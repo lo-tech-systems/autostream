@@ -791,3 +791,218 @@ class TestRecoveryAdapter:
             # Asking to write for a USB interface (wlan1) must be refused.
             watcher._write_dnsmasq_runtime("wlan1")
         assert not runtime.exists()
+
+
+# ---------------------------------------------------------------------------
+# WP5 — multi-adapter failure fallback and runtime USB adoption
+# ---------------------------------------------------------------------------
+
+def _adapter(mod, ifname, mac, is_usb=False, is_builtin=False):
+    return mod.wifi_net.WifiAdapter(
+        ifname=ifname, permanent_mac=mac, current_mac=mac,
+        is_builtin=is_builtin, is_usb=is_usb, managed=True,
+        state="connected", description=ifname,
+    )
+
+
+class TestQueryPlayingStatus:
+    def test_dial_mode_always_idle(self, watcher):
+        with patch.object(watcher, "_DIAL_MODE", True):
+            assert watcher.query_playing_status() is False
+
+    def test_ok_true_playing_false(self, watcher):
+        body = json.dumps({"ok": True, "playing": False}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is False
+
+    def test_ok_true_playing_true(self, watcher):
+        body = json.dumps({"ok": True, "playing": True}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is True
+
+    def test_ok_false_is_uncertain(self, watcher):
+        body = json.dumps({"ok": False, "error": "x"}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is None
+
+    def test_non_boolean_playing_is_uncertain(self, watcher):
+        body = json.dumps({"ok": True, "playing": "yes"}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is None
+
+    def test_transport_failure_is_uncertain(self, watcher):
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", side_effect=OSError("refused")):
+            assert watcher.query_playing_status() is None
+
+
+class TestUsbFailureFallback:
+    def test_absent_active_usb_triggers_immediate_fallback(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb_mac = "bb:bb:bb:bb:bb:01"
+        watcher._known_usb_macs.add(usb_mac)
+        watcher.STATE.active_client_mac = usb_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        adapters = [builtin]  # USB gone
+        with patch.object(watcher, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            acted = watcher.handle_usb_failure_fallback(adapters, None)
+        assert acted is True
+        act.assert_called_once_with("wlan0")
+        assert watcher.STATE.using_builtin_fallback is True
+
+    def test_one_transient_unhealthy_pass_does_not_switch(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
+        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_do_builtin_fallback_or_recovery") as fb:
+            acted = watcher.handle_usb_failure_fallback(adapters, usb)
+        assert acted is False
+        fb.assert_not_called()
+        assert watcher.STATE.active_usb_unhealthy_checks == 1
+
+    def test_two_unhealthy_passes_trigger_fallback(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
+        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.active_usb_unhealthy_checks = 1
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_do_builtin_fallback_or_recovery", return_value=True) as fb:
+            acted = watcher.handle_usb_failure_fallback(adapters, usb)
+        assert acted is True
+        fb.assert_called_once()
+
+    def test_builtin_fallback_restores_lan(self, watcher):
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            acted = watcher._do_builtin_fallback_or_recovery(adapters, "test")
+        assert acted is True
+        assert watcher.STATE.using_builtin_fallback is True
+
+    def test_usb_only_enters_recovery_hotspot(self, watcher):
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            acted = watcher._do_builtin_fallback_or_recovery(adapters, "usb-only")
+        assert acted is True
+        enter.assert_called_once()
+        assert watcher.STATE.setup_purpose == "automatic_recovery"
+
+
+class TestRuntimeUsbAdoption:
+    def _builtin_and_usb(self, watcher):
+        return (
+            _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:10", is_usb=True),
+        )
+
+    def test_adopts_after_two_passes_when_idle(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=False), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
+            first = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            second = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert first is False   # first pass only records the candidate
+        assert second is True   # adopted on the second stable pass
+        assert watcher.STATE.active_client_ifname == "wlan1"
+
+    def test_deferred_while_playing(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=True), \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        act.assert_not_called()  # never handed over while playing
+
+    def test_deferred_then_adopted_when_idle(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        # Pass 1 records the candidate (checks=1) and returns before querying
+        # playback; passes 2 and 3 query playback (active, then idle).
+        playing = [True, False]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", side_effect=lambda: playing.pop(0)), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
+            r1 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r2 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r3 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert (r1, r2, r3) == (False, False, True)
+
+    def test_uncertain_status_defers(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=None), \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        act.assert_not_called()
+
+    def test_ethernet_blocks_adoption(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=True)
+        assert r is False
+        act.assert_not_called()
+
+    def test_does_not_switch_between_usb_adapters(self, watcher):
+        builtin, usb1 = self._builtin_and_usb(watcher)
+        usb2 = _adapter(watcher, "wlan2", "bb:bb:bb:bb:bb:20", is_usb=True)
+        adapters = [builtin, usb1, usb2]
+        with patch.object(watcher, "resolve_active_client", return_value=usb1), \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is False
+        act.assert_not_called()
+
+    def test_failed_adoption_sets_retry_suppression(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=False), \
+             patch.object(watcher, "_activate_committed_on", return_value=False):
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is False
+        assert watcher.STATE.usb_adoption_retry_after > 0
+        assert watcher.STATE.using_builtin_fallback is False
