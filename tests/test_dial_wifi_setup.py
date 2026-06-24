@@ -116,36 +116,45 @@ def _fn_body(src: str, fn_name: str, end_marker: str) -> str:
 # configure_wifi_with_nmcli — no SSID-named profile deletion
 # ---------------------------------------------------------------------------
 
-class TestConfigureWifiNoProfileDelete:
+class TestConfigureWifiCandidateTransaction:
+    """The credential-apply path uses the rollback-safe candidate sequence
+    (Section 6.5) rather than ``nmcli device wifi connect``."""
+
+    def test_does_not_use_device_wifi_connect(self):
+        """``nmcli device wifi connect`` reuses/modifies an existing profile and
+        undermines rollback; it must not be used to submit credentials."""
+        src = _watcher_src()
+        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "render_setup_page")
+        assert '"connect"' not in fn_body, (
+            "credential submission must not call nmcli device wifi connect"
+        )
+
     def test_does_not_delete_connection_by_ssid_name(self):
-        """configure_wifi_with_nmcli must not run 'nmcli connection delete <ssid>'.
-
-        Deleting by SSID name destroys saved user profiles.  Only the AP
-        profile (AP_CONNECTION_NAME='Hotspot') may be deleted by name.
-        """
         src = _watcher_src()
-        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "wait_for_connection")
-        # The old pattern was: run_cmd(["nmcli", "connection", "delete", ssid])
-        # This matches any delete of a variable named 'ssid' (not the fixed AP name)
+        fn_body = _fn_body(src, "_try_candidate_on_adapter", "configure_wifi_with_nmcli")
         assert '"connection", "delete", ssid' not in fn_body, (
-            "configure_wifi_with_nmcli must not delete a profile by the ssid variable; "
-            "this would destroy saved user profiles"
+            "the candidate transaction must not delete a profile by the ssid variable"
         )
 
-    def test_rescan_still_present(self):
-        """nmcli rescan must still be called before connect."""
+    def test_creates_uniquely_named_candidate(self):
         src = _watcher_src()
-        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "wait_for_connection")
-        assert "rescan" in fn_body, (
-            "configure_wifi_with_nmcli must still call nmcli dev wifi rescan"
+        fn_body = _fn_body(src, "_try_candidate_on_adapter", "configure_wifi_with_nmcli")
+        assert "generate_candidate_name" in fn_body, (
+            "the apply path must create a uniquely named candidate profile"
         )
 
-    def test_connect_still_present(self):
-        """nmcli wifi connect must still be called."""
+    def test_deletes_only_candidate_by_uuid_on_failure(self):
         src = _watcher_src()
-        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "wait_for_connection")
-        assert '"connect"' in fn_body, (
-            "configure_wifi_with_nmcli must still call nmcli device wifi connect"
+        fn_body = _fn_body(src, "_try_candidate_on_adapter", "configure_wifi_with_nmcli")
+        assert "delete_connection_cmd" in fn_body, (
+            "candidate failure must delete only the candidate by UUID"
+        )
+
+    def test_clears_cross_adapter_restrictions(self):
+        src = _watcher_src()
+        fn_body = _fn_body(src, "_try_candidate_on_adapter", "configure_wifi_with_nmcli")
+        assert "clear_restrictions_cmd" in fn_body, (
+            "candidate success must clear cross-adapter restrictions"
         )
 
 

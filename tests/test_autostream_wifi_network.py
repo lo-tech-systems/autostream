@@ -445,3 +445,97 @@ class TestCommandConstruction:
     def test_delete_by_uuid(self):
         assert wifi_net.delete_connection_cmd("uuid-1") == [
             "nmcli", "connection", "delete", "uuid", "uuid-1"]
+
+
+# ---------------------------------------------------------------------------
+# WP3 — scan parsing and exact-SSID merging
+# ---------------------------------------------------------------------------
+
+class TestScanMerge:
+    def test_parse_skips_hidden_and_nonnumeric(self):
+        out = "Home:80\n:60\nBad:notnum\n"
+        assert wifi_net.parse_scan_output(out) == {"Home": 80}
+
+    def test_parse_keeps_strongest(self):
+        out = "Home:50\nHome:75\nHome:30\n"
+        assert wifi_net.parse_scan_output(out) == {"Home": 75}
+
+    def test_parse_escaped_colon_ssid(self):
+        out = r"My\:Net:42" + "\n"
+        assert wifi_net.parse_scan_output(out) == {"My:Net": 42}
+
+    def test_same_ssid_across_adapters_appears_once(self):
+        merged = wifi_net.merge_scans(
+            {"Home": 60}, [{"Home": 81}],
+            builtin_mac="aa:aa:aa:aa:aa:aa", usb_macs=["bb:bb:bb:bb:bb:bb"],
+        )
+        assert len(merged) == 1
+        rec = merged[0]
+        assert rec["ssid"] == "Home"
+        assert rec["signal"] == 81  # strongest wins
+        assert rec["builtin_visible"] is True
+        assert rec["usb_visible"] is True
+        assert set(rec["adapter_macs"]) == {"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"}
+
+    def test_builtin_only_network(self):
+        merged = wifi_net.merge_scans({"OnlyBuiltin": 70}, [{}])
+        rec = next(r for r in merged if r["ssid"] == "OnlyBuiltin")
+        assert rec["builtin_visible"] is True
+        assert rec["usb_visible"] is False
+
+    def test_usb_only_network(self):
+        merged = wifi_net.merge_scans({}, [{"OnlyUsb": 70}])
+        rec = next(r for r in merged if r["ssid"] == "OnlyUsb")
+        assert rec["builtin_visible"] is False
+        assert rec["usb_visible"] is True
+
+    def test_failed_builtin_scan_marks_unknown(self):
+        # builtin_scan None -> no built-in visibility contributed.
+        merged = wifi_net.merge_scans(None, [{"X": 50}])
+        rec = next(r for r in merged if r["ssid"] == "X")
+        assert rec["builtin_visible"] is False
+
+    def test_failed_usb_scan_isolated(self):
+        merged = wifi_net.merge_scans({"X": 50}, [None])
+        rec = next(r for r in merged if r["ssid"] == "X")
+        assert rec["builtin_visible"] is True
+        assert rec["usb_visible"] is False
+
+    def test_sorted_by_signal_descending(self):
+        merged = wifi_net.merge_scans({"A": 40, "B": 80, "C": 60}, [])
+        assert [r["ssid"] for r in merged] == ["B", "C", "A"]
+
+
+class TestConnectionTargetOrder:
+    def _adapters(self):
+        return [
+            _adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            _adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+        ]
+
+    def test_usb_only_targets_usb(self):
+        adapters = self._adapters()
+        merged = [{
+            "ssid": "UsbNet", "signal": 70, "builtin_visible": False,
+            "usb_visible": True, "adapter_macs": ["aa:bb:cc:00:00:02"],
+        }]
+        order = wifi_net.connection_target_order("UsbNet", adapters, merged, True)
+        assert order[0].ifname == "wlan1"
+
+    def test_shared_ssid_usb_first(self):
+        adapters = self._adapters()
+        merged = [{
+            "ssid": "Shared", "signal": 70, "builtin_visible": True,
+            "usb_visible": True,
+            "adapter_macs": ["aa:bb:cc:00:00:01", "aa:bb:cc:00:00:02"],
+        }]
+        order = wifi_net.connection_target_order("Shared", adapters, merged, True)
+        assert [a.ifname for a in order][:2] == ["wlan1", "wlan0"]
+
+    def test_unknown_ssid_falls_back_to_best_effort(self):
+        adapters = self._adapters()
+        merged = []  # SSID not in any scan
+        order = wifi_net.connection_target_order("Mystery", adapters, merged, False)
+        # USB best-effort, then built-in best-effort (builtin scan unknown).
+        assert "wlan1" in [a.ifname for a in order]
+        assert "wlan0" in [a.ifname for a in order]

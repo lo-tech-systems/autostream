@@ -529,94 +529,106 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
         logger.error("Could not persist network state for '%s': %s", conn_name, e)
 
 
-def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
-    """Configure WiFi using nmcli for the given SSID and password.
+def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
+    """Create, activate and validate a candidate profile on one adapter.
 
-    Returns True on apparent success, False otherwise.
+    Implements the rollback-safe candidate sequence (Section 6.5). The PSK never
+    appears in logs. On success the new connection is committed (name+UUID) and
+    the legacy mirror is updated; on failure only the candidate profile is
+    deleted by UUID, leaving the previous committed profile untouched.
     """
-    # Rescan...
-    result = run_cmd(["nmcli", "dev", "wifi", "rescan"])
-    if result.returncode == 0:
-        logger.info("nmcli rescan successful.")
-    else:
-        logger.warning("nmcli rescan failed. Unable to connect to WiFi at this time.")
-        return False
-    # Then attempt connection...
-    cmd = [
-        "nmcli",
-        "device",
-        "wifi",
-        "connect",
-        ssid,
-    ]
+    ifname = target.ifname
+    con_name = wifi_net.generate_candidate_name()
 
-    # Build a sanitised version for logging to avoid writing WiFi password into log
-    log_cmd = cmd.copy()
-
-    if password:
-        cmd.extend(["password", password])
-        log_cmd.extend(["password", "*" * len(password)])
-    else:
-        logger.info("WiFi configuration requested with empty password (open network)")
-
-    logger.info("Running WiFi connect command: %s", " ".join(log_cmd))
-
-    # Note: passing in log_cmd so run_cmd() warnings don't leak cleartext password
-    result = run_cmd(cmd, log_cmd=log_cmd)
-
-    if result.returncode == 0:
-        logger.info("nmcli reported successful WiFi configuration")
-        # Store only if the device is truly connected; avoids saving on auth failure.
-        conn_name = _get_active_wifi_connection_name(AP_IFNAME)
-        if not conn_name:
-            logger.warning("nmcli connect returned success but device is not connected; not saving config")
+    # 1-2) create + configure the uniquely named candidate.
+    cmds, log_cmds = wifi_net.configure_candidate_cmds(con_name, ifname, ssid, password)
+    for cmd, log_cmd in zip(cmds, log_cmds):
+        r = run_cmd(cmd, log_cmd=log_cmd)
+        if r.returncode != 0:
+            logger.warning("Candidate profile setup step failed on %s", ifname)
+            # Best-effort cleanup of a partially created profile by name.
+            run_cmd(["nmcli", "connection", "delete", con_name])
             return False
-        _commit_network_state(conn_name)
-        return True
-    else:
-        # nmcli can report failure even if NetworkManager ultimately connects
-        # (e.g., auto-activating an existing profile). Verify actual connectivity
-        # before declaring failure / returning to SetupMode.
-        logger.warning("nmcli failed to configure WiFi; see previous logs for details")
-        if result.stderr.strip():
-            logger.debug("nmcli stderr: %s", result.stderr.strip())
 
-        # Fast-fail on obvious credential/auth problems to avoid ~10s delay.
-        err = (result.stderr or "").lower()
-        if "secrets were required" in err or "invalid secrets" in err or "wrong password" in err:
-            return False
- 
-        if wait_for_connection(timeout=10, interval=1):
-            active_ssid = _get_active_wifi_ssid(AP_IFNAME)
-            conn_name = _get_active_wifi_connection_name(AP_IFNAME)
-            if active_ssid == ssid and conn_name:
-                logger.info(
-                    "WiFi appears connected despite nmcli rc!=0 "
-                    "(active SSID='%s', connection='%s'); treating as success",
-                    active_ssid, conn_name,
-                )
-                _commit_network_state(conn_name)
-                return True
-
+    # 3) obtain its UUID.
+    uuid = wifi_net.get_profile_uuid(con_name)
+    if not uuid:
+        logger.warning("Could not resolve candidate UUID for '%s'", con_name)
+        run_cmd(["nmcli", "connection", "delete", con_name])
         return False
 
+    # 4) clear cross-adapter restrictions EXCEPT connection.interface-name,
+    #    which may remain set until the first activation succeeds.
+    pre_keys = tuple(
+        k for k in wifi_net.CROSS_ADAPTER_RESTRICTIONS
+        if k != "connection.interface-name"
+    )
+    run_cmd(wifi_net.clear_restrictions_cmd(uuid, pre_keys))
 
-def wait_for_connection(timeout: int = 20, interval: int = 2) -> bool:
-    """Wait up to 'timeout' seconds for *local* IPv4 readiness.
+    # 5) activate explicitly on the target interface.
+    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, con_name, ifname))
+    if r_up.returncode != 0:
+        logger.warning("Candidate activation failed on %s (rc=%d)", ifname, r_up.returncode)
 
-    This appliance is designed to operate local-only, so after applying WiFi
-    credentials we treat success as:
-      - NetworkManager reports wlan0 connected/activated
-      - wlan0 has a non-link-local RFC1918 IPv4 address
+    # 6) validate local IPv4 + interface-specific gateway.
+    ok = wait_for_connection(
+        ifname,
+        timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+        interval=WAIT_FOR_CONNECTION_INTERVAL,
+    ) and is_wifi_client_healthy(ifname)
 
-    (The ongoing health monitor can still use the gateway heuristic separately.)
+    if not ok:
+        # 9) on failure delete only the candidate; keep the previous committed profile.
+        logger.warning("Candidate validation failed on %s; deleting candidate", ifname)
+        run_cmd(wifi_net.delete_connection_cmd(uuid))
+        return False
+
+    # 7) clear connection.interface-name so the committed profile is portable.
+    run_cmd(wifi_net.clear_restrictions_cmd(uuid, ("connection.interface-name",)))
+
+    # 8) commit name/UUID + legacy mirror.
+    _commit_network_state(con_name, uuid)
+    logger.info("WiFi candidate committed on %s (ssid='%s')", ifname, ssid)
+    return True
+
+
+def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
+    """Apply submitted credentials using the rollback-safe candidate sequence.
+
+    Does NOT use ``nmcli device wifi connect`` (which would reuse/modify an
+    existing profile and undermine rollback). A uniquely named candidate profile
+    is created, validated, and only committed on success (Section 6.5).
+
+    Adapter order follows Section 6.4: USB adapters that saw the SSID first, then
+    built-in, then best-effort. If a USB attempt fails and built-in saw the SSID,
+    built-in is attempted once before giving up.
+    """
+    merged, builtin_scan_known = scan_all_networks()
+    adapters = wifi_net.discover_adapters()
+    order = wifi_net.connection_target_order(ssid, adapters, merged, builtin_scan_known)
+    if not order:
+        logger.warning("No usable Wi-Fi adapter to apply credentials for '%s'", ssid)
+        return False
+
+    for target in order:
+        if _try_candidate_on_adapter(ssid, password, target):
+            return True
+    return False
+
+
+def wait_for_connection(ifname: str = AP_IFNAME, timeout: int = 20, interval: int = 2) -> bool:
+    """Wait up to 'timeout' seconds for *local* IPv4 readiness on *ifname*.
+
+    Success means NetworkManager reports the interface connected/activated with
+    a non-link-local RFC1918 IPv4 address. (The ongoing health monitor uses the
+    gateway heuristic separately.)
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if is_local_ipv4_ready(AP_IFNAME):
+        if is_local_ipv4_ready(ifname):
             return True
         time.sleep(interval)
-    logger.info("Timed out waiting %ds for local IPv4 on %s", timeout, AP_IFNAME)
+    logger.info("Timed out waiting %ds for local IPv4 on %s", timeout, ifname)
     return False
 
 
@@ -688,60 +700,46 @@ def stop_ap_mode() -> None:
 
 
 def scan_wifi_networks(ifname: str = AP_IFNAME):
-    """Scan for WiFi networks and return a list of dicts with ssid and signal.
+    """Scan one interface and return ``[{"ssid", "signal"}]`` (legacy shape).
 
-    - Deduplicates SSIDs
-    - Keeps the strongest signal per SSID
-    - Returns networks ordered by signal strength (highest first)
+    Retained for backward compatibility; the captive portal uses the combined
+    multi-adapter scan below.
     """
-    cmd = [
-        "nmcli",
-        "-t",
-        "-f",
-        "SSID,SIGNAL",
-        "device",
-        "wifi",
-        "list",
-        "ifname",
-        ifname,
-    ]
-
+    cmd = ["nmcli", "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list", "ifname", ifname]
     result = run_cmd(cmd)
     if result.returncode != 0:
         logger.warning("Error scanning WiFi networks: %s", result.stderr.strip())
         return []
-
-    strongest_by_ssid: dict[str, int] = {}
-
-    for line in result.stdout.splitlines():
-        if not line:
-            continue
-
-        # nmcli -t uses ':' as field separator
-        ssid, _, signal = line.partition(":")
-        ssid = ssid.strip()
-
-        if not ssid:
-            continue
-
-        try:
-            signal_val = int(signal)
-        except ValueError:
-            continue
-
-        # Keep only the strongest signal per SSID
-        if signal_val > strongest_by_ssid.get(ssid, -1):
-            strongest_by_ssid[ssid] = signal_val
-
-    # Convert to list of dicts and sort by signal strength (descending)
+    strongest = wifi_net.parse_scan_output(result.stdout)
     return sorted(
-        (
-            {"ssid": ssid, "signal": signal}
-            for ssid, signal in strongest_by_ssid.items()
-        ),
-        key=lambda n: n["signal"],
-        reverse=True,
+        ({"ssid": s, "signal": sig} for s, sig in strongest.items()),
+        key=lambda n: n["signal"], reverse=True,
     )
+
+
+def scan_all_networks() -> tuple[list[dict], bool]:
+    """Live-scan every detected, managed Wi-Fi adapter and merge by exact SSID.
+
+    Returns ``(networks, builtin_scan_known)`` where each network record carries
+    ssid/signal/builtin_visible/usb_visible/adapter_macs (Section 6.1).  No
+    caching is performed; an individual adapter scan failure marks that
+    adapter's visibility unknown for this response only.
+    """
+    adapters = wifi_net.discover_adapters()
+    builtin = wifi_net.resolve_builtin(adapters)
+    usb = wifi_net.usb_candidates(adapters)
+
+    builtin_scan = wifi_net.scan_adapter(builtin) if builtin is not None else None
+    builtin_scan_known = builtin_scan is not None
+
+    usb_scans = [wifi_net.scan_adapter(a) for a in usb]
+    merged = wifi_net.merge_scans(
+        builtin_scan,
+        usb_scans,
+        builtin_mac=(builtin.permanent_mac if builtin else ""),
+        usb_macs=[a.permanent_mac for a in usb],
+    )
+    return merged, builtin_scan_known
 
 
 def apply_wifi_async(ssid: str, pw: str) -> None:
@@ -754,25 +752,16 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
         time.sleep(0.5)
         leave_setup_mode("Applying WiFi configuration")
 
+        # The candidate transaction already validates local IPv4 and the
+        # interface-specific gateway on the chosen adapter before committing,
+        # so a True result means connectivity has been verified.
         success = configure_wifi_with_nmcli(ssid, pw)
         if success:
-            connected = wait_for_connection(
-                timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                interval=WAIT_FOR_CONNECTION_INTERVAL,
-            )
-            if connected:
-                with state_lock:
-                    STATE.last_apply_result = "ok"
-                    STATE.last_apply_error = ""
-                    STATE.force_setup_mode = False
-                logger.info("WiFi configuration and connectivity verified")
-            else:
-                with state_lock:
-                    STATE.last_apply_result = "failed"
-                    STATE.last_apply_error = "no-local-ip"
-                    STATE.force_setup_mode = True
-                logger.warning("Local IPv4 check failed after WiFi configuration; entering SetupMode")
-                enter_setup_mode("Local IPv4 check failed after WiFi configuration")
+            with state_lock:
+                STATE.last_apply_result = "ok"
+                STATE.last_apply_error = ""
+                STATE.force_setup_mode = False
+            logger.info("WiFi configuration and connectivity verified")
         else:
             with state_lock:
                 STATE.last_apply_result = "failed"
@@ -891,11 +880,37 @@ def render_setup_page(error_code: str = "") -> str:
                 _didInitialFocus = true;
             }}
 
+            // Latest merged network list + built-in scan state for warning logic.
+            let _networks = [];
+            let _builtinScanKnown = false;
+
+            function updateUsbOnlyWarning() {{
+                const warn = document.getElementById('usb-only-warning');
+                const select = document.getElementById('ssid-select');
+                if (!warn || !select) return;
+                const ssid = select.value;
+                let show = false;
+                if (ssid && _builtinScanKnown) {{
+                    const rec = _networks.find(n => (n.ssid || '') === ssid);
+                    // Show only for a KNOWN USB-only network: built-in scan
+                    // succeeded, built-in did not see it, USB did.
+                    if (rec && rec.builtin_visible === false && rec.usb_visible === true) {{
+                        show = true;
+                    }}
+                }}
+                warn.style.display = show ? 'block' : 'none';
+            }}
+
             async function fetchNetworks() {{
                 try {{
                     const resp = await fetch('/networks', {{ cache: 'no-store' }});
                     if (!resp.ok) return;
                     const data = await resp.json();
+                    // New shape: {{networks:[...], builtin_scan_known:bool}}.
+                    const list = Array.isArray(data) ? data : (data.networks || []);
+                    _networks = list;
+                    _builtinScanKnown = Array.isArray(data) ? false : !!data.builtin_scan_known;
+
                     const select = document.getElementById('ssid-select');
                     if (!select) return;
 
@@ -907,7 +922,7 @@ def render_setup_page(error_code: str = "") -> str:
                     ph.textContent = 'Select a WiFi network…';
                     select.appendChild(ph);
 
-                    for (const n of data) {{
+                    for (const n of list) {{
                         const opt = document.createElement('option');
                         opt.value = n.ssid || '';
                         const sig = (typeof n.signal === 'number') ? (' (' + n.signal + '%)') : '';
@@ -916,6 +931,7 @@ def render_setup_page(error_code: str = "") -> str:
                     }}
 
                     if (current) select.value = current;
+                    updateUsbOnlyWarning();
 
                     // After first successful population, guide focus to the SSID dropdown (iOS).
                     focusSsidSelectSoon();
@@ -938,6 +954,7 @@ def render_setup_page(error_code: str = "") -> str:
                 if (select) {{
                     select.addEventListener('change', () => {{
                     enable();
+                    updateUsbOnlyWarning();
                     // Only nudge focus to key if they picked a real SSID
                     if (select.value) setTimeout(() => {{ try {{ key.focus(); }} catch (e) {{}} }}, 100);
                     }});
@@ -1043,6 +1060,12 @@ def render_setup_page(error_code: str = "") -> str:
             <select id="ssid-select" name="s" autocomplete="off">
                 <option value="">Scanning…</option>
             </select>
+
+            <div id="usb-only-warning" class="alert" style="display:none;">
+              This network is currently available only with the USB Wi-Fi
+              adapter. If removed, {html.escape(APP_TITLE)} will revert to
+              hotspot setup mode.
+            </div>
 
             <label for="key-field">WiFi Passphrase/Password</label>
             <div class="row">
@@ -1229,9 +1252,14 @@ def setup():
 
 @app.route("/networks", methods=["GET"])
 def networks():
-    """Return a JSON list of available WiFi networks (SSID + signal)."""
-    nets = scan_wifi_networks()
-    return jsonify(nets)
+    """Return merged, deduplicated networks seen by all detected adapters.
+
+    Response shape (Section 6.2):
+        {"networks": [{ssid, signal, builtin_visible, usb_visible,
+                       adapter_macs}, ...], "builtin_scan_known": bool}
+    """
+    nets, builtin_scan_known = scan_all_networks()
+    return jsonify({"networks": nets, "builtin_scan_known": builtin_scan_known})
 
 
 @app.route("/status", methods=["GET"])

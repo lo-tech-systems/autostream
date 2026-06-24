@@ -788,3 +788,195 @@ def delete_connection_cmd(connection_uuid: str) -> list[str]:
 
 def get_connection_uuid_by_name_cmd(name: str) -> list[str]:
     return ["nmcli", "-t", "-f", "NAME,UUID", "connection", "show", name]
+
+
+# ===========================================================================
+# Captive-portal scanning and exact-SSID merging (WP3)
+# ===========================================================================
+
+def parse_scan_output(stdout: str) -> dict[str, int]:
+    """Parse ``nmcli -t -f SSID,SIGNAL device wifi list`` output.
+
+    Returns a map of SSID -> strongest signal seen.  Hidden/empty SSIDs are
+    omitted.  Honours nmcli escaping so SSIDs with colons survive.
+    """
+    strongest: dict[str, int] = {}
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = split_nmcli_terse(line, maxsplit=1)
+        if len(parts) != 2:
+            continue
+        ssid = parts[0]
+        if not ssid:
+            continue
+        try:
+            signal = int(parts[1])
+        except ValueError:
+            continue
+        if signal > strongest.get(ssid, -1):
+            strongest[ssid] = signal
+    return strongest
+
+
+def scan_adapter(adapter: "WifiAdapter") -> Optional[dict[str, int]]:
+    """Live-scan a single adapter.
+
+    Returns SSID->signal on success, or None when the scan failed (so the
+    caller can mark that adapter's visibility *unknown* for this response).
+    """
+    # A rescan request is best-effort; the list call returns cached+fresh APs.
+    run_cmd(rescan_cmd(adapter.ifname))
+    r = run_cmd([
+        "nmcli", "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list",
+        "ifname", adapter.ifname,
+    ])
+    if r.returncode != 0:
+        logger.debug("Scan failed on %s: %s", adapter.ifname, r.stderr.strip())
+        return None
+    return parse_scan_output(r.stdout)
+
+
+def merge_scans(
+    builtin_scan: Optional[dict[str, int]],
+    usb_scans: list[dict[str, int]],
+    builtin_mac: str = "",
+    usb_macs: Optional[list[str]] = None,
+) -> list[dict]:
+    """Merge per-adapter scan results by exact SSID.
+
+    Each merged record carries:
+      ssid, signal (strongest from any adapter), builtin_visible, usb_visible,
+      adapter_macs (the MACs that saw it).
+
+    A scan that is None (failed/unavailable) does not contribute visibility for
+    that adapter.  Sorted by strongest signal descending.
+    """
+    usb_macs = usb_macs or []
+    merged: dict[str, dict] = {}
+
+    def _add(ssid: str, signal: int, *, builtin: bool, mac: str):
+        rec = merged.setdefault(ssid, {
+            "ssid": ssid, "signal": -1,
+            "builtin_visible": False, "usb_visible": False,
+            "adapter_macs": [],
+        })
+        if signal > rec["signal"]:
+            rec["signal"] = signal
+        if builtin:
+            rec["builtin_visible"] = True
+        else:
+            rec["usb_visible"] = True
+        if mac and mac not in rec["adapter_macs"]:
+            rec["adapter_macs"].append(mac)
+
+    if builtin_scan is not None:
+        for ssid, sig in builtin_scan.items():
+            _add(ssid, sig, builtin=True, mac=builtin_mac)
+
+    for idx, scan in enumerate(usb_scans):
+        if scan is None:
+            continue
+        mac = usb_macs[idx] if idx < len(usb_macs) else ""
+        for ssid, sig in scan.items():
+            _add(ssid, sig, builtin=False, mac=mac)
+
+    return sorted(merged.values(), key=lambda r: r["signal"], reverse=True)
+
+
+def connection_target_order(
+    ssid: str,
+    adapters: list["WifiAdapter"],
+    merged: list[dict],
+    builtin_scan_known: bool,
+) -> list["WifiAdapter"]:
+    """Adapter order to try when applying credentials for *ssid* (Section 6.4).
+
+    1. USB adapters that saw the SSID (by permanent MAC);
+    2. built-in adapter if it saw the SSID;
+    3. other managed USB adapters as best-effort when their visibility is unknown;
+    4. built-in as a final best-effort when its visibility is unknown.
+    """
+    rec = next((r for r in merged if r["ssid"] == ssid), None)
+    saw_macs = set(rec["adapter_macs"]) if rec else set()
+    builtin_visible = bool(rec and rec["builtin_visible"])
+
+    usb = usb_candidates(adapters)
+    builtin = resolve_builtin(adapters)
+
+    order: list[WifiAdapter] = []
+    # 1) USB adapters that saw the SSID.
+    for a in usb:
+        if a.permanent_mac and a.permanent_mac in saw_macs:
+            order.append(a)
+    # 2) built-in if it saw the SSID.
+    if builtin is not None and builtin_visible:
+        order.append(builtin)
+    # 3) other USB adapters (visibility unknown) as best-effort.
+    for a in usb:
+        if a not in order:
+            order.append(a)
+    # 4) built-in as final best-effort when its visibility is unknown.
+    if builtin is not None and builtin not in order and not builtin_scan_known:
+        order.append(builtin)
+    return order
+
+
+# ===========================================================================
+# Candidate-profile transaction primitives (WP3 / Section 6.5)
+# ===========================================================================
+
+def generate_candidate_name(rand_hex: Optional[str] = None) -> str:
+    """Return a uniquely named candidate profile, e.g. autostream-wifi-<8hex>."""
+    import secrets
+    suffix = rand_hex or secrets.token_hex(4)
+    return f"autostream-wifi-{suffix}"
+
+
+def configure_candidate_cmds(
+    con_name: str, ifname: str, ssid: str, password: str,
+) -> tuple[list[list[str]], list[list[str]]]:
+    """Build the create+configure command list for a candidate profile.
+
+    Returns ``(cmds, log_cmds)`` where ``log_cmds`` masks the PSK so callers can
+    pass the sanitised form to run_cmd's log_cmd argument. The created profile
+    uses infrastructure mode, ipv4.method auto, and (for protected networks)
+    wpa-psk with the submitted key. Open networks set no security.
+    """
+    add = add_wifi_profile_cmd(con_name, ifname, ssid)
+    modify = [
+        "nmcli", "connection", "modify", con_name,
+        "802-11-wireless.mode", "infrastructure",
+        "ipv4.method", "auto",
+    ]
+    cmds = [add, modify]
+    log_cmds = [add, modify]
+    if password:
+        sec = [
+            "nmcli", "connection", "modify", con_name,
+            "802-11-wireless-security.key-mgmt", "wpa-psk",
+            "802-11-wireless-security.psk", password,
+        ]
+        sec_log = [
+            "nmcli", "connection", "modify", con_name,
+            "802-11-wireless-security.key-mgmt", "wpa-psk",
+            "802-11-wireless-security.psk", "*" * len(password),
+        ]
+        cmds.append(sec)
+        log_cmds.append(sec_log)
+    return cmds, log_cmds
+
+
+def get_profile_uuid(con_name: str) -> str:
+    """Return the UUID of a profile by exact name, or "" if not found/ambiguous."""
+    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"])
+    if r.returncode != 0:
+        return ""
+    matches = []
+    for line in r.stdout.splitlines():
+        if not line:
+            continue
+        parts = split_nmcli_terse(line, maxsplit=1)
+        if len(parts) == 2 and parts[0] == con_name:
+            matches.append(parts[1])
+    return matches[0] if len(matches) == 1 else ""
