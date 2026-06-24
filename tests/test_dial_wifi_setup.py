@@ -23,6 +23,12 @@ REPO_ROOT = Path(__file__).parent.parent
 WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
 DIAL_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_dial_wifi_watcher.service"
 
+# The watcher imports its sibling helper `autostream_wifi_network` (deployed
+# alongside it). Make core/ importable so the load succeeds.
+_CORE = str(REPO_ROOT / "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
 
 # ---------------------------------------------------------------------------
 # Helpers to load wifi_watcher as a module (it has no .py extension)

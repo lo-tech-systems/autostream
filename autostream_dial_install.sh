@@ -84,6 +84,10 @@ fi
 install -m 0644 "$DEPLOY/core/autostream_rpi.py"      /opt/autostream/autostream_rpi.py
 install -m 0644 "$DEPLOY/core/autostream_sysutils.py" /opt/autostream/autostream_sysutils.py
 install -m 0644 "$DEPLOY/core/autostream_mdns.py"     /opt/autostream/autostream_mdns.py
+# Dedicated Wi-Fi recovery helper — deployed alongside the watcher (root:root
+# 0644) so the recovery executable's import resolves on every install/update.
+install -m 0644 -o root -g root "$DEPLOY/core/autostream_wifi_network.py" \
+    /opt/autostream/autostream_wifi_network.py
 cp -a "$DEPLOY/dial/."     /opt/autostream/
 install -m 0644 "$DEPLOY/dial/autostream_dial_control.py" \
     /opt/autostream/autostream_dial_control.py

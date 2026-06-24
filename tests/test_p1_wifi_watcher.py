@@ -33,6 +33,12 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
 
+# The watcher imports its sibling helper `autostream_wifi_network` (deployed
+# alongside it in /opt/autostream). Make core/ importable so the load succeeds.
+_CORE = str(REPO_ROOT / "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
 
 # ---------------------------------------------------------------------------
 # Module loader — stubs Flask and autostream_sysutils so import works offline

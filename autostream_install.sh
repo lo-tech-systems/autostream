@@ -904,9 +904,26 @@ permissions_pass() {
   chmod 0755 "${INSTALL_DIR}/nginx/cgi"/*.cgi  2>/dev/null || true
   chmod 0644 "${INSTALL_DIR}/nginx/offline"/*.html 2>/dev/null || true
 
+  # The Wi-Fi recovery watcher and its dedicated helper are one inseparable
+  # root-owned recovery component. Enforce root:root and a non-writable mode so
+  # the unprivileged autostream/www-data accounts cannot modify either file.
+  chown root:root "${INSTALL_DIR}/autostream_wifi_watcher"
+  chmod 0755 "${INSTALL_DIR}/autostream_wifi_watcher"
+  if [[ -f "${INSTALL_DIR}/autostream_wifi_network.py" ]]; then
+    chown root:root "${INSTALL_DIR}/autostream_wifi_network.py"
+    chmod 0644 "${INSTALL_DIR}/autostream_wifi_network.py"
+  fi
+
   if [[ -f "${INSTALL_DIR}/ssid" ]]; then
     chown root:root "${INSTALL_DIR}/ssid"
     chmod 0644 "${INSTALL_DIR}/ssid"
+  fi
+
+  # Enforce root:root 0644 on the persistent network-state file when present.
+  # The installer never creates it; the watcher writes it on migration/commit.
+  if [[ -f /etc/autostream-network.json ]]; then
+    chown root:root /etc/autostream-network.json
+    chmod 0644 /etc/autostream-network.json
   fi
 
   # Create dial authorization store if absent (under /var/lib/autostream/).

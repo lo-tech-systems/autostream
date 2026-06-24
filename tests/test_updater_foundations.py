@@ -91,6 +91,34 @@ class TestDialDeploymentManifest:
             "alongside autostream_dial_updater"
         )
 
+    def test_wifi_network_helper_deployed_by_dial_installer(self):
+        """The recovery watcher imports autostream_wifi_network at runtime; the
+        dial installer must deploy the helper so the import resolves."""
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        assert "core/autostream_wifi_network.py" in content, (
+            "Dial installer must deploy core/autostream_wifi_network.py "
+            "alongside the watcher"
+        )
+        assert "/opt/autostream/autostream_wifi_network.py" in content
+
+
+class TestRecoveryHelperManifest:
+    """Both installers deploy the watcher and its helper together (WP1)."""
+
+    def test_host_installer_deploys_helper(self):
+        content = HOST_INSTALLER.read_text(encoding="utf-8")
+        assert "autostream_wifi_network.py" in content
+
+    def test_host_installer_enforces_helper_ownership(self):
+        content = HOST_INSTALLER.read_text(encoding="utf-8")
+        assert 'chown root:root "${INSTALL_DIR}/autostream_wifi_network.py"' in content
+        assert 'chmod 0644 "${INSTALL_DIR}/autostream_wifi_network.py"' in content
+
+    def test_dial_installer_root_owns_helper(self):
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        assert "-o root -g root" in content
+        assert "autostream_wifi_network.py" in content
+
 
 class TestHostDeploymentManifest:
     def test_update_support_deployed_by_host_installer(self):

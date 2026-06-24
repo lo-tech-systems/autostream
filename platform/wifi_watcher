@@ -66,6 +66,7 @@ from flask import Flask, request, jsonify, redirect, url_for, make_response
 from dataclasses import dataclass
 
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
+import autostream_wifi_network as wifi_net
 
 APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 APP_BANNER_IMAGE = os.environ.get('APP_BANNER_IMAGE', '').strip()
@@ -103,7 +104,10 @@ input:focus, select:focus { outline: 2px solid #0070f3; border-color: transparen
 
 # File locations
 LOG_FILE = "/var/log/autostream/wifi_setup.log"
-CONFIGURED_SSID = "/opt/autostream/ssid"
+# Legacy compatibility mirror (connection NAME, not an SSID). The authoritative
+# network state now lives in /etc/autostream-network.json, parsed by the helper.
+CONFIGURED_SSID = wifi_net.LEGACY_SSID_PATH
+NETWORK_STATE_PATH = wifi_net.NETWORK_STATE_PATH
 AP_MODE_FLAG_PATH = os.environ.get('APP_APMODE_FLAG', '/tmp/apmode')
 AP_PREFIX = os.environ.get('APP_AP_PREFIX', 'autostream')
 DNSMASQ_SERVICE = os.environ.get('APP_DNSMASQ_SERVICE', 'autostream_dnsmasq.service')
@@ -361,22 +365,28 @@ def leave_setup_mode(reason: str = "") -> None:
     stop_ap_mode()
     update_apmode_flag(False)
 
+def get_configured_network_state() -> "wifi_net.NetworkState":
+    """Return the resolved configured network state (helper-validated).
+
+    Resolution order: valid network.json -> legacy /opt/autostream/ssid ->
+    unconfigured.  Paths are taken from the watcher's (test-redirectable)
+    constants so the helper and watcher agree on locations.
+    """
+    return wifi_net.load_network_state(
+        state_path=NETWORK_STATE_PATH,
+        legacy_path=CONFIGURED_SSID,
+    )
+
+
 def get_configured_wifi_connection_name() -> Optional[str]:
     """Return the configured *client* WiFi connection name, if any.
 
-    The configuration UI stores the intended NetworkManager connection name in
-    CONFIGURED_SSID. If that file is missing or empty, we treat WiFi as
+    The authoritative source is /etc/autostream-network.json, with the legacy
+    /opt/autostream/ssid file as a compatibility fallback.  Empty means WiFi is
     unconfigured.
     """
-    try:
-        if not os.path.isfile(CONFIGURED_SSID):
-            return None
-        with open(CONFIGURED_SSID, "r", encoding="utf-8") as f:
-            name = f.read().strip()
-        return name or None
-    except Exception as e:
-        logger.error("Error reading %s: %s", CONFIGURED_SSID, e)
-        return None
+    name = get_configured_network_state().connection_name
+    return name or None
 
 
 def is_wifi_configured() -> bool:
@@ -668,6 +678,32 @@ def _get_active_wifi_ssid(ifname: str = "wlan0") -> str:
             return ssid
     return ""
 
+def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
+    """Persist a successfully validated connection to both state files.
+
+    Writes /etc/autostream-network.json (authoritative) plus the legacy
+    /opt/autostream/ssid mirror.  Resolves the NetworkManager UUID when not
+    supplied so future activation/deletion can prefer ``uuid <...>``.
+    """
+    if not conn_uuid:
+        try:
+            conn_uuid = wifi_net.resolve_connection_uuid_for_name(conn_name)
+        except Exception:
+            conn_uuid = ""
+    try:
+        wifi_net.save_network_state(
+            wifi_net.NetworkState(connection_name=conn_name, connection_uuid=conn_uuid),
+            state_path=NETWORK_STATE_PATH,
+            legacy_path=CONFIGURED_SSID,
+        )
+        logger.info(
+            "Committed network state for connection '%s' (uuid=%s)",
+            conn_name, conn_uuid or "unresolved",
+        )
+    except Exception as e:
+        logger.error("Could not persist network state for '%s': %s", conn_name, e)
+
+
 def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
     """Configure WiFi using nmcli for the given SSID and password.
 
@@ -710,12 +746,7 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
         if not conn_name:
             logger.warning("nmcli connect returned success but device is not connected; not saving config")
             return False
-        try:
-            with open(CONFIGURED_SSID, "w") as f:
-                f.write(f"{conn_name}\n")
-            logger.info("WiFi connection name stored in %s: '%s'", CONFIGURED_SSID, conn_name)
-        except Exception as e:
-            logger.error("Could not create or update %s: %s", CONFIGURED_SSID, e)
+        _commit_network_state(conn_name)
         return True
     else:
         # nmcli can report failure even if NetworkManager ultimately connects
@@ -739,12 +770,7 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
                     "(active SSID='%s', connection='%s'); treating as success",
                     active_ssid, conn_name,
                 )
-                try:
-                    with open(CONFIGURED_SSID, "w") as f:
-                        f.write(f"{conn_name}\n")
-                    logger.info("WiFi connection name stored in %s: '%s'", CONFIGURED_SSID, conn_name)
-                except Exception as e:
-                    logger.error("Could not create or update %s: %s", CONFIGURED_SSID, e)
+                _commit_network_state(conn_name)
                 return True
 
         return False
@@ -1943,6 +1969,16 @@ if __name__ == "__main__":
     if os.environ.get('APP_CHECK_CPU', 'yes') == 'yes':
         from autostream_rpi import check_cpu
         check_cpu()
+
+    # Migrate legacy /opt/autostream/ssid into /etc/autostream-network.json when
+    # needed.  The watcher (running as root) is the only writer of network.json.
+    try:
+        wifi_net.migrate_legacy_state(
+            state_path=NETWORK_STATE_PATH,
+            legacy_path=CONFIGURED_SSID,
+        )
+    except Exception as e:
+        logger.warning("Legacy network-state migration failed: %s", e)
 
     # First, remove any lingering Hotspot connections configured that would otherwise
     # force the Pi to setup mode even though the WiFi is probably OK, and connect to
