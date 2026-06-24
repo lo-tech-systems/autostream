@@ -482,3 +482,19 @@ def remove_avahi_playing_service() -> bool:
         "remove_avahi_playing_service: admin call failed (rc=%s)", p.returncode
     )
     return False
+
+
+def set_nginx_verbose_logging(enabled: bool) -> bool:
+    """Switch NGINX access logging between verbose (all requests) and normal (2xx suppressed).
+
+    Calls autostream_admin set-nginx-access-log verbose|normal via sudo.
+    Returns True on success; False on any failure.  Non-fatal: logs a warning.
+    """
+    mode = "verbose" if enabled else "normal"
+    p = run_admin_cmd(["set-nginx-access-log", mode], timeout=10.0)
+    if p.returncode == 0:
+        return True
+    logger.warning(
+        "set_nginx_verbose_logging: admin call failed (rc=%s, mode=%s)", p.returncode, mode
+    )
+    return False

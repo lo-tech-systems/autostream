@@ -29,6 +29,12 @@ STATE_PATH = "/var/lib/autostream/autostream-state.json"
 DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 
+DEFAULT_LOG_LEVEL_CHANGED_BY = "user"
+VALID_LOG_LEVEL_CHANGED_BY = ("user", "system")
+
+# Canonical UTC timestamp written by Autostream: YYYY-MM-DDTHH:MM:SSZ
+_UTC_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
 TRACK_ID_DEFAULT_PROVIDER = "vibra_shazam"
 TRACK_ID_KNOWN_PROVIDERS = frozenset({"vibra_shazam"})
 
@@ -156,6 +162,22 @@ def normalize_log_level(value: object, default: str = DEFAULT_LOG_LEVEL) -> str:
     return fallback if fallback in VALID_LOG_LEVELS else DEFAULT_LOG_LEVEL
 
 
+def normalize_log_level_changed_by(value: object) -> str:
+    """Return a valid changed_by value, defaulting to 'user' for invalid/missing input."""
+    text = str(value or "").strip().lower()
+    return text if text in VALID_LOG_LEVEL_CHANGED_BY else DEFAULT_LOG_LEVEL_CHANGED_BY
+
+
+def normalize_log_level_changed_at(value: object) -> Optional[str]:
+    """Return a canonical UTC timestamp string or None for invalid/missing input."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if _UTC_TS_RE.match(text):
+        return text
+    return None
+
+
 def python_log_level_value(level_name: object) -> int:
     """Map a platform log-level name to Python's logging constants."""
     return _PYTHON_LOG_LEVELS[normalize_log_level(level_name)]
@@ -275,6 +297,8 @@ class GeneralConfig:
     log_level: str
     silence_seconds: int
     fifo_path: str
+    log_level_changed_by: str
+    log_level_changed_at: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -483,6 +507,8 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         log_level=normalize_log_level(general_d.get("log_level", DEFAULT_LOG_LEVEL)),
         silence_seconds=int(general_d.get("silence_seconds", 30) or 30),
         fifo_path=str(general_d.get("fifo_path", "/tmp/autostream-pipes/autostream.fifo") or ""),
+        log_level_changed_by=normalize_log_level_changed_by(general_d.get("log_level_changed_by")),
+        log_level_changed_at=normalize_log_level_changed_at(general_d.get("log_level_changed_at")),
     )
 
     audio1 = _parse_audio_input_config(data.get("audio1") or {})

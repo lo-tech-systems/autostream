@@ -2391,6 +2391,11 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     _install_signal_handlers()
     cfg = settings.snapshot()
     setup_logging(cfg.general.log_file, cfg.general.log_level)
+    try:
+        from autostream_log_policy import apply_startup_log_level as _apply_startup_log_level
+        _apply_startup_log_level(config_path)
+    except Exception:
+        logging.warning("apply_startup_log_level: import or apply failed; continuing")
     _ensure_playback_tracker(cfg)
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))
     version = _install_state.get("AUTOSTREAM_RELEASE_TAG", "")

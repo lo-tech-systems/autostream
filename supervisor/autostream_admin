@@ -1281,6 +1281,71 @@ def _toggle_update_timer(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# NGINX access-log mode
+# ---------------------------------------------------------------------------
+
+_NGINX_ACCESS_LOG_CONF = Path("/etc/nginx/conf.d/99-autostream-access-log.conf")
+
+_NGINX_ACCESS_LOG_NORMAL = (
+    "map $status $autostream_access_log_level {\n"
+    "    ~^2   0;\n"
+    "    default 1;\n"
+    "}\n"
+)
+
+_NGINX_ACCESS_LOG_VERBOSE = (
+    "map $status $autostream_access_log_level {\n"
+    "    default 1;\n"
+    "}\n"
+)
+
+_NGINX_CANDIDATES = (
+    "/usr/sbin/nginx",
+    "/usr/bin/nginx",
+    "/sbin/nginx",
+    "/bin/nginx",
+)
+
+
+def _find_nginx() -> Optional[str]:
+    for path in _NGINX_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    p = shutil.which("nginx")
+    if p and os.path.isabs(p) and os.access(p, os.X_OK):
+        return p
+    return None
+
+
+def _set_nginx_access_log(args) -> int:
+    mode = args.mode
+    if mode == "verbose":
+        content = _NGINX_ACCESS_LOG_VERBOSE
+    else:
+        content = _NGINX_ACCESS_LOG_NORMAL
+
+    try:
+        _NGINX_ACCESS_LOG_CONF.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(_NGINX_ACCESS_LOG_CONF, content, mode=0o644)
+        log("INFO", f"set-nginx-access-log: wrote {_NGINX_ACCESS_LOG_CONF} (mode={mode})")
+    except Exception as e:
+        log("ERROR", f"set-nginx-access-log: failed writing config: {e!r}")
+        return 1
+
+    nginx = _find_nginx()
+    if nginx is None:
+        log("WARN", "set-nginx-access-log: nginx not found; config written but not reloaded")
+        return 0
+
+    rc, out, err = run_cmd([nginx, "-s", "reload"])
+    if rc == 0:
+        log("INFO", "set-nginx-access-log: nginx reloaded")
+    else:
+        log("WARN", f"set-nginx-access-log: nginx reload failed rc={rc} stderr='{err}'")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AutoStream admin helper (run via sudo)."
@@ -1407,6 +1472,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p_tut.add_argument("verb", choices=["enable", "disable"],
                        help="'enable' or 'disable' the autostream update timer.")
 
+    p_nal = subparsers.add_parser(
+        "set-nginx-access-log",
+        help="Switch NGINX access logging between normal (2xx suppressed) and verbose.",
+    )
+    p_nal.add_argument("mode", choices=["verbose", "normal"],
+                       help="'verbose' enables full access logging; 'normal' suppresses 2xx.")
+
     args = parser.parse_args(argv)
     return args
 
@@ -1468,6 +1540,9 @@ def main(argv: list[str]) -> int:
 
         if args.command == "toggle-update-timer":
             return _toggle_update_timer(args)
+
+        if args.command == "set-nginx-access-log":
+            return _set_nginx_access_log(args)
 
         log("ERROR", "no action specified")
         return 2
