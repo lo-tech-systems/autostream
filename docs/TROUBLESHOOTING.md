@@ -263,6 +263,27 @@ To inspect which `_autostream._tcp` services are visible from an appliance's con
 avahi-browse _autostream._tcp -t -r
 ```
 
+#### mDNS browser log messages
+
+Autostream uses `avahi-browse` subprocesses to discover services on the local network. Two classes of message appear in the log:
+
+* **`Files changed, reloading`** — this is normal. It means Avahi has reloaded its service-file configuration, typically because Autostream updated an advertisement. No action needed.
+
+* **`avahi-browse exited rc=X; restarting`** — an isolated occurrence means the `avahi-browse` process exited unexpectedly. Autostream will retry with an increasing backoff (5 s, 10 s, 20 s, 30 s …). This is recoverable; discovery resumes automatically once the retry succeeds.
+
+* **`avahi-browse exited; restarting`** messages emitted *during a normal shutdown* should no longer appear. If you see them during shutdown, check that you are running a recent version of Autostream.
+
+If you see repeated unexpected exits, check the Avahi, D-Bus, and Autostream journals together:
+
+```bash
+journalctl --since "-5 min" \
+  -u avahi-daemon \
+  -u dbus.service \
+  -u autostream.service
+```
+
+Note: the D-Bus unit name may differ on some distributions (e.g. `dbus` rather than `dbus.service`).
+
 #### Duplicate appliance identity
 
 Each autostream derives a stable identity from its Raspberry Pi CPU serial (with a persistent random fallback when the serial is unavailable). If two appliances produce the same identity — not expected under normal operation — both are suppressed from each other's selectors and a warning is logged. Check the autostream log:
