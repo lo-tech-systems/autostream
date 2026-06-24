@@ -513,12 +513,27 @@ class TestRunLogLevelPolicySdHealth:
         assert new_ts != old_ts
         assert new_ts == _NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def test_hysteresis_zone_preserves_timestamp(self):
-        # In [20 %, 25 %]: timestamp should NOT be updated (no time-bound for valid readings).
-        ts = (_NOW - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        guard = {"log_policy": {"sd_health_restricted_at": ts}}
+    def test_hysteresis_zone_refreshes_timestamp(self):
+        # Valid readings in [20 %, 25 %] must also refresh the timestamp so that
+        # a subsequent transition to stale/unavailable data still gets the full
+        # 72-hour retention window measured from the most recent valid reading.
+        old_ts = (_NOW - timedelta(hours=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        guard = {"log_policy": {"sd_health_restricted_at": old_ts}}
         result, _ = self._run(self._sd("valid", 22), guard)
-        assert result["sd_health_restricted_at"] == ts
+        new_ts = result["sd_health_restricted_at"]
+        assert new_ts != old_ts
+        assert new_ts == _NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_hysteresis_to_stale_transition_retains_ceiling(self):
+        # Scenario: health was at 22 % for several days (timestamp refreshed each run).
+        # Data then becomes unavailable.  The 72-hour retention window should run from
+        # the last valid reading, not the original trigger — so restriction is kept.
+        recent_ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        guard = {"log_policy": {"sd_health_restricted_at": recent_ts}}
+        result, _ = self._run(self._sd("stale"), guard)
+        assert "low_sd_health" in result["active_reasons"]
+        # Timestamp must be unchanged (stale data does not refresh it).
+        assert result["sd_health_restricted_at"] == recent_ts
 
     def test_no_restriction_clears_timestamp(self):
         ts = (_NOW - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")

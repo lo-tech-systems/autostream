@@ -1001,9 +1001,12 @@ def run_log_level_policy(
     sd_status = sd_health.get("status")
     sd_pct = sd_health.get("remaining_percent")
     if sd_now_restricting:
-        # Refresh the timestamp on each valid below-threshold reading so stale-data
-        # retention is measured from the last valid restricted decision, not initial.
-        if sd_status == "valid" and isinstance(sd_pct, int) and sd_pct < SD_HEALTH_LOW_THRESHOLD:
+        # Refresh the timestamp on every valid reading that keeps restriction active
+        # (both pct < 20 % and the [20 %, 25 %] hysteresis zone).  This ensures the
+        # 72-hour stale-data retention window is measured from the most recent valid
+        # decision, not the original trigger — so a transition from a days-long
+        # hysteresis-zone run to unavailable data still grants the full 72-hour window.
+        if sd_status == "valid" and isinstance(sd_pct, int):
             sd_health_restricted_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         elif sd_health_restricted_at is None:
             sd_health_restricted_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
