@@ -317,6 +317,19 @@ ap_mode_lock = threading.Lock()
 # Manual AP-mode request (from the normal WebUI via localhost)
 ap_request_event = threading.Event()
 
+# Queued local-control action consumed by the monitor loop (WP6).
+control_action_event = threading.Event()
+
+# Per-boot control token (Section 10.1).  Generated at startup; the normal Web
+# UI reads the token file and supplies it as an X-Autostream-Wifi-Control header
+# on direct-localhost requests.  Never sent to the browser or logged.
+CONTROL_TOKEN_DIR = os.environ.get('APP_RUN_DIR', '/run/autostream')
+CONTROL_TOKEN_PATH = os.environ.get(
+    'APP_WIFI_CONTROL_TOKEN', '/run/autostream/wifi-control.token'
+)
+CONTROL_TOKEN_HEADER = "X-Autostream-Wifi-Control"
+_control_token: str = ""
+
 # AP / host configuration.
 # AP_IFNAME remains the compatibility default for interface-aware helper calls;
 # hotspot operations resolve the *built-in* recovery interface dynamically via
@@ -867,6 +880,9 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
                 STATE.last_apply_result = "ok"
                 STATE.last_apply_error = ""
                 STATE.force_setup_mode = False
+            # A successful new connection ends any explicit-reconfiguration
+            # session and clears the rollback snapshot (Section 11.2).
+            _clear_reconfigure_state()
             logger.info("WiFi configuration and connectivity verified")
         else:
             with state_lock:
@@ -881,11 +897,24 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
 
 # ** WEB APP **
 
-def render_setup_page(error_code: str = "") -> str:
+def render_setup_page(error_code: str = "", show_reconnect: bool = False) -> str:
     """Return the HTML for the WiFi setup page (styled like autostream_webui.py),
     while trying hard to avoid iOS credential-save prompts.
     Includes iOS-friendly focus handling (avoid auto-focus in key field).
+
+    ``show_reconnect`` adds a "Reconnect to saved network" action; it must be
+    False during first-run unconfigured setup (no saved network exists).
     """
+    reconnect_html = ""
+    if show_reconnect:
+        reconnect_html = """
+        <hr>
+        <div class="hint">Already configured before? You can return to your
+        previous network without re-entering its key.</div>
+        <button id="reconnect-btn" class="pill-btn small" type="button"
+                onclick="reconnectSaved()">Reconnect to saved network</button>
+        <div class="status" id="reconnect-status"></div>
+        """
 
     # Map internal error codes to a user-friendly message
     msg = ""
@@ -1131,6 +1160,21 @@ def render_setup_page(error_code: str = "") -> str:
                 }}
             }}
 
+            async function reconnectSaved() {{
+                const btn = document.getElementById('reconnect-btn');
+                const st = document.getElementById('reconnect-status');
+                if (btn) btn.disabled = true;
+                if (st) st.textContent = 'Reconnecting to your saved network…';
+                try {{
+                    await fetch('/reconnect_saved', {{ method: 'POST', cache: 'no-store' }});
+                    if (st) st.textContent =
+                        'Reconnecting. You may lose this setup network shortly.';
+                }} catch (e) {{
+                    if (st) st.textContent = 'Request failed. Please try again.';
+                    if (btn) btn.disabled = false;
+                }}
+            }}
+
             window.addEventListener('load', () => {{
                 // Ensure key field won't be auto-focused by iOS, and only becomes editable on interaction.
                 armKeyField();
@@ -1222,6 +1266,7 @@ def render_setup_page(error_code: str = "") -> str:
             </form>
             <br>
             <div class="status" id="status">Status: unknown</div>
+            {reconnect_html}
         </div>
         </body>
         </html>
@@ -1353,7 +1398,10 @@ def setup():
 
     logger.info("User requested /setup (error: %s)", e)
 
-    return _captive_response(render_setup_page(e))
+    # Offer "Reconnect to saved network" only when a saved network exists —
+    # never during first-run unconfigured setup (Section 11.5).
+    show_reconnect = _has_saved_network()
+    return _captive_response(render_setup_page(e, show_reconnect=show_reconnect))
 
 
 @app.route("/networks", methods=["GET"])
@@ -1366,6 +1414,36 @@ def networks():
     """
     nets, builtin_scan_known = scan_all_networks()
     return jsonify({"networks": nets, "builtin_scan_known": builtin_scan_known})
+
+
+def _has_saved_network() -> bool:
+    """True if a committed or rollback connection exists (Section 11.5)."""
+    if get_configured_network_state().is_configured:
+        return True
+    with state_lock:
+        return bool(STATE.rollback_connection_name)
+
+
+@app.route("/reconnect_saved", methods=["POST"])
+def reconnect_saved():
+    """Narrowly handled captive-page action: reconnect to the saved network.
+
+    Available to AP clients (not loopback) but strictly limited to reconnecting
+    an existing committed/rollback profile — it does NOT expose the general
+    network-control API.  Queues the work for the monitor loop; the browser may
+    lose AP connectivity, so success does not depend on a final acknowledgement.
+    """
+    if not _has_saved_network():
+        return jsonify({"ok": False, "error": "no_saved_network"}), 409
+    with state_lock:
+        if STATE.apply_in_progress:
+            return jsonify({"ok": False, "error": "apply_in_progress"}), 409
+        if STATE.pending_control_action or STATE.control_in_progress:
+            return jsonify({"ok": False, "error": "busy"}), 409
+        STATE.pending_control_action = "reconnect_saved"
+        control_action_event.set()
+    logger.info("Captive-page reconnect_saved queued")
+    return jsonify({"ok": True, "queued": True})
 
 
 @app.route("/status", methods=["GET"])
@@ -1458,16 +1536,158 @@ def captive_portal_api():
     return resp
 
 
+# ** LOCAL CONTROL API (WP6, Section 10.1) **
+
+def init_control_token() -> str:
+    """Generate the per-boot control token and write it root:autostream 0640.
+
+    The runtime dir is created root:autostream 0750 when needed.  Replacement at
+    each startup is authoritative.  Returns the token (also stored in module
+    state).  Never logged.
+    """
+    global _control_token
+    _control_token = secrets.token_urlsafe(32)
+    try:
+        os.makedirs(CONTROL_TOKEN_DIR, exist_ok=True)
+        try:
+            os.chmod(CONTROL_TOKEN_DIR, 0o750)
+        except OSError:
+            pass
+        wifi_net._atomic_write(CONTROL_TOKEN_PATH, _control_token + "\n", mode=0o640)
+        # Best-effort group ownership so the unprivileged Web UI can read it.
+        try:
+            import grp
+            gid = grp.getgrnam("autostream").gr_gid
+            os.chown(CONTROL_TOKEN_PATH, 0, gid)
+            os.chown(CONTROL_TOKEN_DIR, 0, gid)
+        except (KeyError, OSError, ImportError):
+            pass
+    except Exception as e:
+        logger.error("Failed to write control token file: %s", e)
+    return _control_token
+
+
+def remove_control_token() -> None:
+    try:
+        os.unlink(CONTROL_TOKEN_PATH)
+    except OSError:
+        pass
+
+
+def _is_loopback_remote() -> bool:
+    return (request.remote_addr or "") in ("127.0.0.1", "127.0.1.1", "::1")
+
+
+def _control_authorised() -> bool:
+    """Require BOTH a loopback source AND a matching per-boot token header.
+
+    Loopback alone is insufficient: during AP mode nginx proxies external
+    captive-portal clients to the watcher, so Flask may see loopback.  Tokens are
+    compared with hmac.compare_digest.
+    """
+    if not _is_loopback_remote():
+        return False
+    supplied = request.headers.get(CONTROL_TOKEN_HEADER, "")
+    if not supplied or not _control_token:
+        return False
+    return hmac.compare_digest(supplied, _control_token)
+
+
+def _network_status_payload() -> dict:
+    """Build the non-secret /network_status payload (Section 10.1)."""
+    try:
+        adapters = wifi_net.discover_adapters()
+    except Exception:
+        adapters = []
+    builtin = wifi_net.resolve_builtin(adapters)
+    with state_lock:
+        active_ifname = STATE.active_client_ifname
+        active_mac = STATE.active_client_mac
+        using_fallback = STATE.using_builtin_fallback
+        cip = STATE.control_in_progress
+        lca = STATE.last_control_action
+        lcr = STATE.last_control_result
+        lce = STATE.last_control_error
+    active = wifi_net.find_adapter_by_ifname(adapters, active_ifname) if active_ifname else None
+    usb_detected = any(a.is_usb for a in adapters)
+
+    def _ad(a):
+        if a is None:
+            return None
+        return {
+            "ifname": a.ifname, "permanent_mac": a.permanent_mac,
+            "kind": a.kind, "description": a.description,
+            "is_builtin": a.is_builtin, "is_usb": a.is_usb,
+        }
+
+    return {
+        "ok": True,
+        "configured_connection": get_configured_network_state().connection_name,
+        "active_adapter_mac": active_mac,
+        "active_adapter_ifname": active_ifname,
+        "active_adapter_kind": (active.kind if active else ""),
+        "active_adapter_description": (active.description if active else ""),
+        "usb_adapter_detected": usb_detected,
+        "using_builtin_fallback": using_fallback,
+        "builtin_adapter": _ad(builtin),
+        "adapters": [_ad(a) for a in adapters],
+        "control_in_progress": cip,
+        "last_control_action": lca,
+        "last_control_result": lcr,
+        "last_control_error": lce,
+    }
+
+
+_VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved"}
+
+
+@app.route("/network_status", methods=["GET"])
+def network_status():
+    if not _control_authorised():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    return jsonify(_network_status_payload())
+
+
+@app.route("/network_control", methods=["POST"])
+def network_control():
+    """Queue a disruptive network action; never execute it in the request thread.
+
+    Validates/authenticates, stores one pending action under the state lock,
+    signals the monitor loop, and returns a queued response before any interface
+    is disconnected.  Rejects unknown actions/fields and a second conflicting
+    action while one is pending or in progress.
+    """
+    if not _control_authorised():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_body"}), 400
+    action = payload.get("action")
+    extra = set(payload.keys()) - {"action"}
+    if action not in _VALID_CONTROL_ACTIONS or extra:
+        return jsonify({"ok": False, "error": "invalid_action"}), 400
+
+    with state_lock:
+        if STATE.pending_control_action or STATE.control_in_progress:
+            return jsonify({"ok": False, "error": "busy"}), 409
+        STATE.pending_control_action = action
+        control_action_event.set()
+
+    logger.info("Queued network control action: %s", action)
+    return jsonify({"ok": True, "queued": True, "action": action})
+
+
 @app.route("/request_ap_mode", methods=["POST"])
 def request_ap_mode():
     """Allow the normal (non-setup) WebUI to request AP/setup mode.
 
-    This endpoint is intentionally only reachable from localhost.
-    The network monitor loop will action the request asynchronously.
+    Retained for compatibility but now requires both a loopback source and the
+    per-boot control token, so no unauthenticated privileged loopback-only route
+    remains behind nginx.
     """
-    remote = request.remote_addr or ""
-    if remote not in ("127.0.0.1", "127.0.1.1", "::1"):
-        logger.warning("Rejected /request_ap_mode from non-localhost: %s", remote)
+    if not _control_authorised():
+        logger.warning("Rejected /request_ap_mode (unauthenticated/non-loopback)")
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
     reason = ""
@@ -1493,6 +1713,138 @@ def request_ap_mode():
 
     logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")
     return jsonify({"ok": True, "queued": True})
+
+
+# ** TRANSACTIONAL CHANGE-WI-FI FLOW (WP6) **
+
+def _snapshot_rollback() -> None:
+    """Record the current committed profile and active adapter for rollback."""
+    state = get_configured_network_state()
+    with state_lock:
+        active_mac = STATE.active_client_mac
+        STATE.rollback_connection_name = state.connection_name
+        STATE.rollback_connection_uuid = state.connection_uuid
+        STATE.rollback_adapter_mac = active_mac
+
+
+def process_control_action(action: str) -> None:
+    """Consume one queued control action in the monitor loop (Section 10.1)."""
+    with state_lock:
+        STATE.control_in_progress = True
+        STATE.last_control_action = action
+        STATE.last_control_error = ""
+    try:
+        if action == "start_setup":
+            start_explicit_setup()
+            result = "ok"
+        elif action == "reconnect_saved":
+            result = "ok" if reconnect_saved_network() else "failed"
+        else:
+            result = "failed"
+    except Exception as e:
+        logger.warning("Control action '%s' raised: %s", action, e)
+        result = "failed"
+        with state_lock:
+            STATE.last_control_error = str(e)
+    with state_lock:
+        STATE.control_in_progress = False
+        STATE.last_control_result = result
+
+
+def start_explicit_setup() -> None:
+    """Begin an explicit Change-Wi-Fi reconfiguration session (Section 11.1).
+
+    Snapshots the current profile/adapter, disconnects the current client
+    session (without deleting its profile), enters the built-in hotspot, and
+    starts the 30-minute deadline.  Bypasses the once-per-boot ap_exhausted
+    latch via force_setup_mode.
+    """
+    _snapshot_rollback()
+    # Disconnect the current client session without deleting its profile.
+    with state_lock:
+        active_ifname = STATE.active_client_ifname
+    if active_ifname:
+        run_cmd(["nmcli", "device", "disconnect", active_ifname])
+    with state_lock:
+        STATE.reconfigure_active = True
+        STATE.reconfigure_started_at = time.monotonic()
+        STATE.setup_purpose = "explicit_reconfigure"
+        STATE.force_setup_mode = True  # bypass ap_exhausted for explicit setup
+        STATE.manual_ap_active = True
+    logger.info("Explicit network setup starting (explicit_reconfigure)")
+    enter_setup_mode(reason="explicit_reconfigure")
+
+
+def reconnect_saved_network() -> bool:
+    """Reconnect to the saved/rollback network and exit hotspot mode on success.
+
+    During explicit reconfiguration the snapshotted rollback profile is restored
+    on its previous adapter first; otherwise USB-first deterministic order then
+    built-in is used.  On success leave_setup_mode() is called and session state
+    cleared; on failure the hotspot is retained.
+    """
+    with state_lock:
+        purpose = STATE.setup_purpose
+        rb_name = STATE.rollback_connection_name
+        rb_uuid = STATE.rollback_connection_uuid
+        rb_mac = STATE.rollback_adapter_mac
+    adapters = wifi_net.discover_adapters()
+
+    targets: list = []
+    if purpose == "explicit_reconfigure" and rb_name:
+        prev = wifi_net.find_adapter_by_mac(adapters, rb_mac)
+        if prev is not None:
+            targets.append(prev)
+        # Then fall back to USB-first, then built-in.
+        for a in wifi_net.client_candidate_order(adapters):
+            if a not in targets:
+                targets.append(a)
+        committed = wifi_net.NetworkState(connection_name=rb_name, connection_uuid=rb_uuid)
+    else:
+        targets = wifi_net.client_candidate_order(adapters)
+        committed = get_configured_network_state()
+
+    if not committed.is_configured:
+        return False
+
+    for target in targets:
+        run_cmd(wifi_net.activate_connection_cmd(
+            committed.connection_uuid, committed.connection_name, target.ifname))
+        if wait_for_connection(target.ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+                               interval=WAIT_FOR_CONNECTION_INTERVAL) \
+                and is_wifi_client_healthy(target.ifname):
+            _set_active_client(target)
+            _clear_reconfigure_state()
+            leave_setup_mode("reconnect_saved succeeded")
+            verify_avahi_after_handover()
+            logger.info("Reconnected to saved network on %s", target.ifname)
+            return True
+
+    logger.warning("Reconnect to saved network failed; retaining hotspot")
+    return False
+
+
+def handle_reconfigure_timeout() -> None:
+    """30-minute explicit-reconfiguration timeout rollback (Section 11.4)."""
+    logger.info("Explicit network setup timed out after %ds; restoring previous", AP_MAX_DURATION)
+    if reconnect_saved_network():
+        return
+    # Restoration failed: retain hotspot, convert to automatic recovery.
+    with state_lock:
+        STATE.reconfigure_active = False
+        STATE.reconfigure_started_at = None
+        STATE.setup_purpose = "automatic_recovery"
+    logger.warning("Timeout restore failed; remaining in recovery hotspot")
+
+
+def _clear_reconfigure_state() -> None:
+    with state_lock:
+        STATE.reconfigure_active = False
+        STATE.reconfigure_started_at = None
+        STATE.rollback_connection_name = ""
+        STATE.rollback_connection_uuid = ""
+        STATE.rollback_adapter_mac = ""
+        STATE.setup_purpose = "manual"
 
 
 
@@ -1561,6 +1913,27 @@ def network_monitor_loop():
             else:
                 with state_lock:
                     STATE.manual_ap_active = True
+
+        # Handle queued local-control actions (start_setup / reconnect_saved).
+        if control_action_event.is_set():
+            with state_lock:
+                action = STATE.pending_control_action
+                STATE.pending_control_action = ""
+                control_action_event.clear()
+            if action:
+                process_control_action(action)
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
+
+        # Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4).
+        with state_lock:
+            reconfigure_active = STATE.reconfigure_active
+            reconfigure_started = STATE.reconfigure_started_at
+        if reconfigure_active and reconfigure_started is not None:
+            if (now - reconfigure_started) >= AP_MAX_DURATION:
+                handle_reconfigure_timeout()
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
 
         wifi_cfg = is_wifi_configured()
         wired_connected = is_wired_connected()
@@ -2232,6 +2605,9 @@ if __name__ == "__main__":
         is_wifi_configured(), is_wired_connected(),
     )
 
+    # Generate the per-boot control token before accepting any control request.
+    init_control_token()
+
     # Start the network monitor in a background thread
     monitor_thread = threading.Thread(target=network_monitor_loop, daemon=True)
     monitor_thread.start()
@@ -2240,4 +2616,9 @@ if __name__ == "__main__":
     update_apmode_flag(False)
 
     # Start the Flask app (HTTP server) on port 9080
-    app.run(host="127.0.0.1", port=9080)
+    try:
+        app.run(host="127.0.0.1", port=9080)
+    finally:
+        # Best-effort token removal on orderly shutdown; the next startup is
+        # authoritative regardless.
+        remove_control_token()

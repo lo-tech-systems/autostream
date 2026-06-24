@@ -725,22 +725,127 @@ class TestStatusRoute:
 
     def test_request_ap_mode_rejected_from_non_localhost(self, flask_client):
         client, mod = flask_client
+        mod._control_token = "tok"
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "10.0.0.5"},
         )
         assert rv.status_code == 403
 
-    def test_request_ap_mode_accepted_from_localhost(self, flask_client):
+    def test_request_ap_mode_rejected_without_token(self, flask_client):
         client, mod = flask_client
+        mod._control_token = "tok"
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
+        # No token header -> forbidden even from loopback (no unauthenticated
+        # privileged route remains behind nginx).
+        assert rv.status_code == 403
+
+    def test_request_ap_mode_accepted_with_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/request_ap_mode",
+            json={"reason": "test"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
         # If AP exhausted or other condition, might return 409; accept that too.
         assert rv.status_code in (200, 409)
+
+
+class TestNetworkControlRoutes:
+    """WP6: per-boot-token-protected control surface."""
+
+    def test_network_status_requires_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.get("/network_status", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert rv.status_code == 403
+
+    def test_network_status_ok_with_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.get(
+            "/network_status",
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        data = json.loads(rv.data)
+        assert data["ok"] is True
+        assert "active_adapter_ifname" in data
+
+    def test_network_control_rejects_non_loopback(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "start_setup"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        )
+        assert rv.status_code == 403
+
+    def test_network_control_rejects_unknown_action(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "wipe_everything"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_network_control_rejects_extra_fields(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "start_setup", "evil": 1},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_network_control_queues_before_disconnect(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        # Reset pending state.
+        mod.STATE.pending_control_action = ""
+        mod.STATE.control_in_progress = False
+        rv = client.post(
+            "/network_control",
+            json={"action": "start_setup"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        assert json.loads(rv.data).get("queued") is True
+        assert mod.STATE.pending_control_action == "start_setup"
+        # Clean up the queued action so other tests are unaffected.
+        mod.STATE.pending_control_action = ""
+        mod.control_action_event.clear()
+
+    def test_second_conflicting_action_rejected(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        mod.STATE.pending_control_action = "start_setup"
+        rv = client.post(
+            "/network_control",
+            json={"action": "reconnect_saved"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 409
+        mod.STATE.pending_control_action = ""
+        mod.control_action_event.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1006,3 +1111,159 @@ class TestRuntimeUsbAdoption:
         assert r is False
         assert watcher.STATE.usb_adoption_retry_after > 0
         assert watcher.STATE.using_builtin_fallback is False
+
+
+# ---------------------------------------------------------------------------
+# WP6 — transactional change-Wi-Fi flow and local control API
+# ---------------------------------------------------------------------------
+
+class TestControlToken:
+    def test_token_file_written_with_mode(self, watcher, tmp_path):
+        token_path = tmp_path / "run" / "wifi-control.token"
+        watcher.CONTROL_TOKEN_DIR = str(tmp_path / "run")
+        watcher.CONTROL_TOKEN_PATH = str(token_path)
+        tok = watcher.init_control_token()
+        assert tok and token_path.exists()
+        # Token never empty; file content matches.
+        assert token_path.read_text(encoding="utf-8").strip() == tok
+        import stat
+        mode = stat.S_IMODE(token_path.stat().st_mode)
+        # On POSIX should be 0o640; on Windows chmod is approximate, so only
+        # assert it is not world-writable.
+        assert not (mode & 0o007) or sys.platform == "win32"
+
+    def test_remove_token_best_effort(self, watcher, tmp_path):
+        token_path = tmp_path / "wifi-control.token"
+        token_path.write_text("x", encoding="utf-8")
+        watcher.CONTROL_TOKEN_PATH = str(token_path)
+        watcher.remove_control_token()
+        assert not token_path.exists()
+        watcher.remove_control_token()  # no error when absent
+
+
+class TestStartExplicitSetup:
+    def test_snapshots_and_enters_setup(self, watcher):
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.active_client_mac = "bb:bb:bb:bb:bb:01"
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            watcher.start_explicit_setup()
+        assert watcher.STATE.reconfigure_active is True
+        assert watcher.STATE.setup_purpose == "explicit_reconfigure"
+        assert watcher.STATE.rollback_connection_name == "Home"
+        assert watcher.STATE.rollback_adapter_mac == "bb:bb:bb:bb:bb:01"
+        assert watcher.STATE.force_setup_mode is True  # bypass ap_exhausted
+        enter.assert_called_once()
+
+    def test_disconnects_active_client_session(self, watcher):
+        watcher.STATE.active_client_ifname = "wlan1"
+        calls = []
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "run_cmd", side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)), \
+             patch.object(watcher, "enter_setup_mode"):
+            watcher.start_explicit_setup()
+        assert any("disconnect" in c and "wlan1" in c for c in calls)
+
+
+class TestReconnectSavedNetwork:
+    def test_success_clears_state_and_leaves_setup(self, watcher):
+        watcher.STATE.setup_purpose = "explicit_reconfigure"
+        watcher.STATE.rollback_connection_name = "Home"
+        watcher.STATE.rollback_connection_uuid = "uuid-1"
+        watcher.STATE.rollback_adapter_mac = "aa:bb:cc:00:00:01"
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            ok = watcher.reconnect_saved_network()
+        assert ok is True
+        leave.assert_called_once()
+        assert watcher.STATE.reconfigure_active is False
+        assert watcher.STATE.rollback_connection_name == ""
+
+    def test_failure_retains_hotspot(self, watcher):
+        watcher.STATE.setup_purpose = "explicit_reconfigure"
+        watcher.STATE.rollback_connection_name = "Home"
+        watcher.STATE.rollback_connection_uuid = "uuid-1"
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            ok = watcher.reconnect_saved_network()
+        assert ok is False
+        leave.assert_not_called()
+
+
+class TestReconfigureTimeout:
+    def test_timeout_restores_previous(self, watcher):
+        with patch.object(watcher, "reconnect_saved_network", return_value=True) as rc:
+            watcher.handle_reconfigure_timeout()
+        rc.assert_called_once()
+
+    def test_timeout_restore_failure_enters_recovery(self, watcher):
+        watcher.STATE.reconfigure_active = True
+        with patch.object(watcher, "reconnect_saved_network", return_value=False):
+            watcher.handle_reconfigure_timeout()
+        assert watcher.STATE.reconfigure_active is False
+        assert watcher.STATE.setup_purpose == "automatic_recovery"
+
+
+class TestSavedNetworkGating:
+    def test_has_saved_network_committed(self, watcher):
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "u")):
+            assert watcher._has_saved_network() is True
+
+    def test_has_saved_network_rollback_only(self, watcher):
+        watcher.STATE.rollback_connection_name = "Old"
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("", "")):
+            assert watcher._has_saved_network() is True
+
+    def test_no_saved_network_first_run(self, watcher):
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("", "")):
+            assert watcher._has_saved_network() is False
+
+
+class TestControlAuthLogic:
+    def test_authorised_requires_token_match(self, watcher):
+        watcher._control_token = "secret"
+        # Simulate request object with header + remote.
+        req = MagicMock()
+        req.remote_addr = "127.0.0.1"
+        req.headers = {watcher.CONTROL_TOKEN_HEADER: "secret"}
+        with patch.object(watcher, "request", req):
+            assert watcher._control_authorised() is True
+
+    def test_authorised_rejects_wrong_token(self, watcher):
+        watcher._control_token = "secret"
+        req = MagicMock()
+        req.remote_addr = "127.0.0.1"
+        req.headers = {watcher.CONTROL_TOKEN_HEADER: "wrong"}
+        with patch.object(watcher, "request", req):
+            assert watcher._control_authorised() is False
+
+    def test_authorised_rejects_non_loopback(self, watcher):
+        watcher._control_token = "secret"
+        req = MagicMock()
+        req.remote_addr = "10.0.0.5"
+        req.headers = {watcher.CONTROL_TOKEN_HEADER: "secret"}
+        with patch.object(watcher, "request", req):
+            assert watcher._control_authorised() is False
+
+    def test_process_control_action_start_setup(self, watcher):
+        with patch.object(watcher, "start_explicit_setup") as ss:
+            watcher.process_control_action("start_setup")
+        ss.assert_called_once()
+        assert watcher.STATE.last_control_action == "start_setup"
+        assert watcher.STATE.last_control_result == "ok"
+        assert watcher.STATE.control_in_progress is False
