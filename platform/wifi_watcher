@@ -111,6 +111,18 @@ AP_MODE_FLAG_PATH = os.environ.get('APP_APMODE_FLAG', '/tmp/apmode')
 AP_PREFIX = os.environ.get('APP_AP_PREFIX', 'autostream')
 DNSMASQ_SERVICE = os.environ.get('APP_DNSMASQ_SERVICE', 'autostream_dnsmasq.service')
 
+# Runtime dnsmasq config binding (Section 7.2).  The product-specific template
+# is installed outside dnsmasq's automatic include dir; the watcher substitutes
+# the resolved recovery interface and writes a runtime file the service reads.
+DNSMASQ_TEMPLATE_PATH = os.environ.get(
+    'APP_DNSMASQ_TEMPLATE',
+    '/usr/local/share/autostream/dnsmasq/autostream-setup.conf',
+)
+DNSMASQ_RUNTIME_PATH = os.environ.get(
+    'APP_DNSMASQ_RUNTIME',
+    '/run/autostream/autostream-setup.conf',
+)
+
 # Timers (all in seconds)
 NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
 
@@ -266,9 +278,31 @@ ap_mode_lock = threading.Lock()
 # Manual AP-mode request (from the normal WebUI via localhost)
 ap_request_event = threading.Event()
 
-# AP / host configuration
+# AP / host configuration.
+# AP_IFNAME remains the compatibility default for interface-aware helper calls;
+# hotspot operations resolve the *built-in* recovery interface dynamically via
+# resolve_recovery_ifname() so USB removal can never remove the recovery path.
 AP_IFNAME = "wlan0"
 AP_CONNECTION_NAME = "Hotspot"  # default/fixed name for our AP connection
+
+
+def resolve_recovery_ifname() -> Optional[str]:
+    """Return the resolved built-in (recovery) interface name, or None.
+
+    The recovery hotspot must always use the built-in radio; a USB adapter must
+    never become the only recovery path.  Returns None when no built-in adapter
+    can be identified (the caller logs an error and does not host an AP on USB).
+    """
+    try:
+        adapters = wifi_net.discover_adapters()
+    except Exception as e:
+        logger.warning("Adapter discovery failed while resolving recovery interface: %s", e)
+        adapters = []
+    builtin = wifi_net.resolve_builtin(adapters)
+    if builtin is not None:
+        return builtin.ifname
+    logger.warning("No built-in Wi-Fi adapter identified for recovery hotspot")
+    return None
 
 # Resolved once at startup; None disables avahi mDNS hostname monitoring.
 _DBUS_SEND: Optional[str] = shutil.which("dbus-send")
@@ -632,6 +666,30 @@ def wait_for_connection(ifname: str = AP_IFNAME, timeout: int = 20, interval: in
     return False
 
 
+def _write_dnsmasq_runtime(recovery_ifname: str) -> None:
+    """Validate the recovery interface and write the runtime dnsmasq config.
+
+    Fails loudly (logs WARNING) if the interface is not the resolved built-in
+    adapter or the template token is missing/duplicated; in that case dnsmasq is
+    not started with a stale or wrong config.
+    """
+    # Validate against discovered adapters: must be the resolved built-in.
+    resolved = resolve_recovery_ifname()
+    if resolved is not None and recovery_ifname != resolved:
+        logger.warning(
+            "Refusing dnsmasq runtime config: %s is not the resolved built-in (%s)",
+            recovery_ifname, resolved,
+        )
+        return
+    try:
+        wifi_net.write_dnsmasq_runtime_config(
+            DNSMASQ_TEMPLATE_PATH, DNSMASQ_RUNTIME_PATH, recovery_ifname,
+        )
+        logger.info("Wrote dnsmasq runtime config for interface %s", recovery_ifname)
+    except Exception as e:
+        logger.warning("dnsmasq runtime setup failed: %s", e)
+
+
 def start_ap_mode() -> None:
     """Put the WiFi adapter into open AP (hotspot) mode using nmcli.
 
@@ -652,21 +710,23 @@ def start_ap_mode() -> None:
 
         logger.info("Enabling AP mode for SetupMode")
 
-        ssid = get_ap_ssid(AP_IFNAME)
+        # The recovery hotspot must always use the built-in radio.
+        recovery_ifname = resolve_recovery_ifname() or AP_IFNAME
 
-        # Try to bring down any existing hotspot connection first
-        # run_cmd(["nmcli", "connection", "down", AP_CONNECTION_NAME])
+        ssid = get_ap_ssid(recovery_ifname)
 
-        # Delete any existing connection with the same name
-        # this also takes it down, if running)
+        # Delete any existing connection with the same name (also takes it down).
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
 
-        # Create the connection
-        logger.info("Creating AP connection '%s' with SSID '%s'", AP_CONNECTION_NAME, ssid)
+        # Create the connection on the built-in recovery interface.
+        logger.info(
+            "Creating AP connection '%s' with SSID '%s' on %s",
+            AP_CONNECTION_NAME, ssid, recovery_ifname,
+        )
         run_cmd([
             "nmcli", "connection", "add",
             "type", "wifi",
-            "ifname", AP_IFNAME,
+            "ifname", recovery_ifname,
             "con-name", AP_CONNECTION_NAME,
             "autoconnect", "no",
             "ssid", ssid,
@@ -677,8 +737,12 @@ def start_ap_mode() -> None:
             "ipv6.method", "ignore",
         ])
 
+        # Generate the runtime dnsmasq config bound to the validated recovery
+        # interface, then start the dedicated dnsmasq service that reads it.
+        _write_dnsmasq_runtime(recovery_ifname)
+
         # Bring up the AP connection
-        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME])
+        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME, "ifname", recovery_ifname])
         run_cmd(["systemctl", "start", DNSMASQ_SERVICE])
 
         # Hostname may change at runtime; construct the portal URL dynamically.
@@ -693,7 +757,10 @@ def stop_ap_mode() -> None:
     """
     with ap_mode_lock:
         logger.info("Disabling AP mode after leaving SetupMode")
+        # Stop the dedicated dnsmasq service before removing its runtime config
+        # so the service never observes a half-deleted file.
         run_cmd(["systemctl", "stop", DNSMASQ_SERVICE])
+        wifi_net.remove_dnsmasq_runtime_config(DNSMASQ_RUNTIME_PATH)
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
         with state_lock:
             STATE.ap_exhausted = True

@@ -18,6 +18,8 @@ ExecStart=/opt/autostream/autostream_wifi_watcher
 Environment=APP_AP_PREFIX=autostream-dial
 Environment=APP_APMODE_FLAG=/tmp/autostream-dial-apmode
 Environment=APP_DNSMASQ_SERVICE=autostream_dial_dnsmasq.service
+Environment=APP_DNSMASQ_TEMPLATE=/usr/local/share/autostream/dnsmasq/autostream-dial-setup.conf
+Environment=APP_DNSMASQ_RUNTIME=/run/autostream/autostream-dial-setup.conf
 Environment="APP_TITLE=autostream dial"
 Environment=APP_CHECK_CPU=no
 Environment=APP_BANNER_IMAGE=/autostream-dial-badge.png

@@ -539,3 +539,55 @@ class TestConnectionTargetOrder:
         # USB best-effort, then built-in best-effort (builtin scan unknown).
         assert "wlan1" in [a.ifname for a in order]
         assert "wlan0" in [a.ifname for a in order]
+
+
+# ---------------------------------------------------------------------------
+# WP4 — runtime dnsmasq interface binding
+# ---------------------------------------------------------------------------
+
+class TestDnsmasqRuntime:
+    TEMPLATE = (
+        "# comment\n"
+        "interface=__AUTOSTREAM_WIFI_IFACE__\n"
+        "bind-interfaces\n"
+        "dhcp-range=192.168.4.50,192.168.4.200,255.255.255.0,12h\n"
+    )
+
+    def test_substitutes_token(self):
+        out = wifi_net.render_dnsmasq_runtime_config(self.TEMPLATE, "wlan0")
+        assert "interface=wlan0" in out
+        assert "__AUTOSTREAM_WIFI_IFACE__" not in out
+
+    def test_missing_token_fails(self):
+        with pytest.raises(ValueError):
+            wifi_net.render_dnsmasq_runtime_config("interface=wlan0\n", "wlan0")
+
+    def test_duplicated_token_fails(self):
+        dup = self.TEMPLATE + "interface=__AUTOSTREAM_WIFI_IFACE__\n"
+        with pytest.raises(ValueError):
+            wifi_net.render_dnsmasq_runtime_config(dup, "wlan0")
+
+    def test_unsafe_ifname_rejected(self):
+        for bad in ("wlan0\ninterface=evil", "wlan 0", "", "a;b"):
+            with pytest.raises(ValueError):
+                wifi_net.render_dnsmasq_runtime_config(self.TEMPLATE, bad)
+
+    def test_write_runtime_atomic(self, tmp_path):
+        tpl = tmp_path / "tpl.conf"
+        tpl.write_text(self.TEMPLATE, encoding="utf-8")
+        runtime = tmp_path / "run" / "out.conf"
+        wifi_net.write_dnsmasq_runtime_config(
+            str(tpl), str(runtime), "wlan0", runtime_dir=str(tmp_path / "run"),
+        )
+        text = runtime.read_text(encoding="utf-8")
+        assert "interface=wlan0" in text
+        # Static DHCP/DNS behaviour preserved verbatim.
+        assert "dhcp-range=192.168.4.50,192.168.4.200,255.255.255.0,12h" in text
+
+    def test_remove_runtime_best_effort(self, tmp_path):
+        runtime = tmp_path / "out.conf"
+        runtime.write_text("x", encoding="utf-8")
+        wifi_net.remove_dnsmasq_runtime_config(str(runtime))
+        assert not runtime.exists()
+        # No error when already absent.
+        wifi_net.remove_dnsmasq_runtime_config(str(runtime))

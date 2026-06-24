@@ -980,3 +980,64 @@ def get_profile_uuid(con_name: str) -> str:
         if len(parts) == 2 and parts[0] == con_name:
             matches.append(parts[1])
     return matches[0] if len(matches) == 1 else ""
+
+
+# ===========================================================================
+# Runtime dnsmasq interface binding (WP4 / Section 7.2)
+# ===========================================================================
+
+DNSMASQ_IFACE_TOKEN = "__AUTOSTREAM_WIFI_IFACE__"
+RUNTIME_DIR = "/run/autostream"
+
+
+def render_dnsmasq_runtime_config(template_text: str, ifname: str) -> str:
+    """Substitute the single interface token in a dnsmasq template.
+
+    Fails (ValueError) if the token is absent or appears more than once, so a
+    malformed template cannot silently produce a misconfigured captive portal.
+    The interface name itself must be a plain device name (no whitespace / token
+    characters) so it cannot inject extra config lines.
+    """
+    count = template_text.count(DNSMASQ_IFACE_TOKEN)
+    if count == 0:
+        raise ValueError("dnsmasq template missing interface token")
+    if count > 1:
+        raise ValueError("dnsmasq template has a duplicated interface token")
+    if not ifname or not _is_safe_ifname(ifname):
+        raise ValueError(f"unsafe interface name for dnsmasq config: {ifname!r}")
+    return template_text.replace(DNSMASQ_IFACE_TOKEN, ifname)
+
+
+def _is_safe_ifname(ifname: str) -> bool:
+    if not ifname or len(ifname) > 64:
+        return False
+    return all(c.isalnum() or c in "-_." for c in ifname)
+
+
+def write_dnsmasq_runtime_config(
+    template_path: str,
+    runtime_path: str,
+    ifname: str,
+    runtime_dir: Optional[str] = None,
+) -> None:
+    """Read a dnsmasq template, substitute the validated interface, and write
+    the runtime file atomically under the (root-owned) runtime directory.
+
+    The runtime directory is created if needed.  Caller (the watcher) is
+    responsible for having already validated that *ifname* is the resolved
+    built-in adapter.
+    """
+    directory = runtime_dir or os.path.dirname(runtime_path) or RUNTIME_DIR
+    os.makedirs(directory, exist_ok=True)
+    with open(template_path, "r", encoding="utf-8") as f:
+        template_text = f.read()
+    rendered = render_dnsmasq_runtime_config(template_text, ifname)
+    _atomic_write(runtime_path, rendered, mode=0o644)
+
+
+def remove_dnsmasq_runtime_config(runtime_path: str) -> None:
+    """Best-effort removal of the generated runtime config."""
+    try:
+        os.unlink(runtime_path)
+    except OSError:
+        pass

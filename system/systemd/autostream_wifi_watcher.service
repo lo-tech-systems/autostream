@@ -19,6 +19,8 @@ ExecStart=/opt/autostream/autostream_wifi_watcher
 Environment=APP_AP_PREFIX=autostream
 Environment=APP_TITLE=autostream
 Environment=APP_CHECK_CPU=yes
+Environment=APP_DNSMASQ_TEMPLATE=/usr/local/share/autostream/dnsmasq/autostream-setup.conf
+Environment=APP_DNSMASQ_RUNTIME=/run/autostream/autostream-setup.conf
 # APP_APMODE_FLAG and APP_DNSMASQ_SERVICE are intentionally unset here so the
 # defaults (/tmp/apmode and autostream_dnsmasq.service) are used, preserving
 # existing nginx and autostream_updater AP-mode check behaviour.

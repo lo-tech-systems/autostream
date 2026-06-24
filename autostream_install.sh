@@ -798,8 +798,17 @@ configure_phase() {
   # logrotate
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/logrotate/autostream" /etc/logrotate.d/autostream
 
-  # dnsmasq
-  cp -a "${AUTOSTREAM_DIR}/system/dnsmasq/autostream-setup.conf" /etc/dnsmasq.d/
+  # dnsmasq — install the captive-portal config as a root-owned TEMPLATE outside
+  # dnsmasq's automatic include directory.  The watcher substitutes the resolved
+  # built-in recovery interface into a runtime file under /run/autostream and the
+  # dedicated service reads only that runtime file.  Remove the obsolete
+  # /etc/dnsmasq.d/ copy so a manually started system dnsmasq cannot read a
+  # placeholder-bearing or stale config.
+  mkdir -p /usr/local/share/autostream/dnsmasq
+  install -m 0644 -o root -g root \
+      "${AUTOSTREAM_DIR}/system/dnsmasq/autostream-setup.conf" \
+      /usr/local/share/autostream/dnsmasq/autostream-setup.conf
+  rm -f /etc/dnsmasq.d/autostream-setup.conf
   systemctl disable dnsmasq || true
 
   # NetworkManager

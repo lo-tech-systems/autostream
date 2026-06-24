@@ -621,6 +621,60 @@ class TestDnsmasqConfig:
         text = self._conf("autostream-dial-setup.conf")
         assert re.search(r"^\s*dhcp-range\s*=", text, re.MULTILINE)
 
+    # --- WP4: runtime interface-binding template mechanism ---
+
+    def test_setup_conf_uses_interface_token(self):
+        text = self._conf("autostream-setup.conf")
+        assert "interface=__AUTOSTREAM_WIFI_IFACE__" in text, (
+            "template must use the interface token, not a literal wlan0"
+        )
+        assert "interface=wlan0" not in text
+
+    def test_dial_setup_conf_uses_interface_token(self):
+        text = self._conf("autostream-dial-setup.conf")
+        assert "interface=__AUTOSTREAM_WIFI_IFACE__" in text
+        assert "interface=wlan0" not in text
+
+    def test_setup_conf_dhcp_dns_unchanged(self):
+        text = self._conf("autostream-setup.conf")
+        assert "dhcp-range=192.168.4.50,192.168.4.200,255.255.255.0,12h" in text
+        assert "dhcp-option=option:router,192.168.4.1" in text
+        assert "address=/#/192.168.4.1" in text
+
+    def test_dnsmasq_services_read_runtime_config(self):
+        main = (SYSTEMD_DIR / "autostream_dnsmasq.service").read_text(encoding="utf-8")
+        dial = (SYSTEMD_DIR / "autostream_dial_dnsmasq.service").read_text(encoding="utf-8")
+        assert "/run/autostream/autostream-setup.conf" in main
+        assert "/etc/dnsmasq.d/autostream-setup.conf" not in main
+        assert "/run/autostream/autostream-dial-setup.conf" in dial
+        assert "/etc/dnsmasq.d/autostream-dial-setup.conf" not in dial
+
+    def test_installers_deploy_templates_and_remove_obsolete(self):
+        main = (REPO_ROOT / "autostream_install.sh").read_text(encoding="utf-8")
+        dial = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")
+        assert "/usr/local/share/autostream/dnsmasq/autostream-setup.conf" in main
+        assert "rm -f /etc/dnsmasq.d/autostream-setup.conf" in main
+        assert "/usr/local/share/autostream/dnsmasq/autostream-dial-setup.conf" in dial
+        assert "rm -f /etc/dnsmasq.d/autostream-dial-setup.conf" in dial
+
+
+class TestDispatcherPowerSave:
+    def _text(self):
+        return (NM_DIR / "99-wlan-fix").read_text(encoding="utf-8")
+
+    def test_not_limited_to_literal_wlan0(self):
+        text = self._text()
+        # Must not gate the whole action on IFACE == wlan0.
+        assert 'IFACE" = "wlan0"' not in text
+
+    def test_powersave_disabled_generically(self):
+        assert "power_save off" in self._text()
+
+    def test_usb_txpower_guarded(self):
+        text = self._text()
+        # txpower must not be applied unconditionally to USB adapters.
+        assert "IS_USB" in text or "usb" in text.lower()
+
 
 # ---------------------------------------------------------------------------
 # Logrotate configuration

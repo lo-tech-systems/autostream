@@ -741,3 +741,53 @@ class TestStatusRoute:
         )
         # If AP exhausted or other condition, might return 409; accept that too.
         assert rv.status_code in (200, 409)
+
+
+# ---------------------------------------------------------------------------
+# WP4 — recovery adapter and runtime dnsmasq binding
+# ---------------------------------------------------------------------------
+
+class TestRecoveryAdapter:
+    def _adapter(self, ifname, mac, is_usb=False, is_builtin=False):
+        mod = _get_watcher()
+        return mod.wifi_net.WifiAdapter(
+            ifname=ifname, permanent_mac=mac, current_mac=mac,
+            is_builtin=is_builtin, is_usb=is_usb, managed=True,
+            state="connected", description=ifname,
+        )
+
+    def test_recovery_is_builtin_even_with_usb(self, watcher):
+        adapters = [
+            self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+            self._adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+        ]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            assert watcher.resolve_recovery_ifname() == "wlan0"
+
+    def test_recovery_none_when_no_builtin(self, watcher):
+        adapters = [self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True)]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            assert watcher.resolve_recovery_ifname() is None
+
+    def test_write_dnsmasq_runtime_uses_validated_builtin(self, watcher, tmp_path):
+        tpl = tmp_path / "tpl.conf"
+        tpl.write_text("interface=__AUTOSTREAM_WIFI_IFACE__\nbind-interfaces\n", encoding="utf-8")
+        runtime = tmp_path / "run" / "out.conf"
+        watcher.DNSMASQ_TEMPLATE_PATH = str(tpl)
+        watcher.DNSMASQ_RUNTIME_PATH = str(runtime)
+        adapters = [self._adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            watcher._write_dnsmasq_runtime("wlan0")
+        assert "interface=wlan0" in runtime.read_text(encoding="utf-8")
+
+    def test_write_dnsmasq_runtime_refuses_non_builtin(self, watcher, tmp_path):
+        tpl = tmp_path / "tpl.conf"
+        tpl.write_text("interface=__AUTOSTREAM_WIFI_IFACE__\n", encoding="utf-8")
+        runtime = tmp_path / "run" / "out.conf"
+        watcher.DNSMASQ_TEMPLATE_PATH = str(tpl)
+        watcher.DNSMASQ_RUNTIME_PATH = str(runtime)
+        adapters = [self._adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            # Asking to write for a USB interface (wlan1) must be refused.
+            watcher._write_dnsmasq_runtime("wlan1")
+        assert not runtime.exists()

@@ -190,8 +190,15 @@ fi
     update-dial-service "${AUTOSTREAM_RELEASE_TAG}" "${DIAL_UUID}" "${DIAL_NAME:-${DIAL_UUID}}"
 
 # ---- dnsmasq, sudoers, logrotate --------------------------------------------
-install -m 0644 "$DEPLOY/system/dnsmasq/autostream-dial-setup.conf" \
-    /etc/dnsmasq.d/autostream-dial-setup.conf
+# Install the captive-portal config as a root-owned TEMPLATE outside dnsmasq's
+# automatic include directory.  The watcher substitutes the resolved built-in
+# recovery interface into a runtime file under /run/autostream and the dedicated
+# dnsmasq service reads only that runtime file.  Remove the obsolete
+# /etc/dnsmasq.d/ copy so a manually started system dnsmasq cannot read it.
+mkdir -p /usr/local/share/autostream/dnsmasq
+install -m 0644 -o root -g root "$DEPLOY/system/dnsmasq/autostream-dial-setup.conf" \
+    /usr/local/share/autostream/dnsmasq/autostream-dial-setup.conf
+rm -f /etc/dnsmasq.d/autostream-dial-setup.conf
 install -m 0440 "$DEPLOY/system/sudoers/autostream_dial" \
     /etc/sudoers.d/autostream_dial
 install -m 0644 "$DEPLOY/system/logrotate/autostream-dial" \
