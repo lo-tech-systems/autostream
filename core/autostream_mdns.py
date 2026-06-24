@@ -11,7 +11,8 @@ This module owns only transport and registry mechanics:
   - deduplicating multiple interfaces via a caller-supplied identity key
   - thread-safe snapshots
   - add, update and remove event handling
-  - clearing stale state when avahi-browse exits
+  - clearing stale state after an unexpected avahi-browse exit
+  - orderly shutdown: stopping the subprocess and the browser thread cleanly
   - retrying with per-browser exponential delays: 5, 10, 20, 30 seconds
   - resetting the retry delay after a valid event or 60 seconds of uptime
   - idempotent daemon-thread startup
@@ -89,6 +90,8 @@ class MdnsBrowser(Generic[_T]):
         self._on_remove = on_remove
         self._on_change = on_change
 
+        # Registry lock — guards _by_key, _by_identity, _has_browse_event,
+        # _started, and _start_monotonic.
         self._lock = threading.Lock()
         # Five-tuple key → (identity_key, model)
         self._by_key: dict[tuple, tuple[Any, _T]] = {}
@@ -99,23 +102,86 @@ class MdnsBrowser(Generic[_T]):
         self._start_monotonic: float = 0.0
         self._has_browse_event: bool = False
 
+        # Lifecycle state
+        self._stop_event = threading.Event()
+        self._app_shutdown: Optional[threading.Event] = None
+        # Lifecycle/process lock — guards _current_proc and _browse_thread.
+        # Never held while calling terminate(), wait(), kill(), or join().
+        self._proc_lock = threading.Lock()
+        self._current_proc: Optional[subprocess.Popen] = None
+        self._browse_thread: Optional[threading.Thread] = None
+
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
-        """Start the background browse thread.  Idempotent; safe to call multiple times."""
+    def start(self, shutdown_event: Optional[threading.Event] = None) -> None:
+        """Start the background browse thread.
+
+        Idempotent; safe to call multiple times.  Accepts an optional
+        application-level shutdown event; when that event (or the browser's own
+        stop event) is set the browse loop exits cleanly without retrying.
+        """
         with self._lock:
             if self._started:
                 return
+            if self._stop_event.is_set():
+                return
+            if shutdown_event is not None and shutdown_event.is_set():
+                return
+            self._app_shutdown = shutdown_event
             self._started = True
             self._start_monotonic = time.monotonic()
+
         t = threading.Thread(
             target=self._browse_loop,
             daemon=True,
             name=f"mdns-{self._service_type}",
         )
         t.start()
+        with self._proc_lock:
+            self._browse_thread = t
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Stop the browse loop and terminate any running avahi-browse child.
+
+        Idempotent.  Safe to call before start(), during active browsing,
+        during retry backoff, and after a previous stop().  Never blocks
+        indefinitely.  Clears the in-memory registry without firing callbacks.
+        """
+        self._stop_event.set()
+
+        with self._proc_lock:
+            proc = self._current_proc
+            thread = self._browse_thread
+
+        deadline = time.monotonic() + timeout
+
+        if proc is not None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            graceful = min(0.5, max(0.0, (deadline - time.monotonic()) / 2))
+            try:
+                proc.wait(timeout=graceful)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+                except (subprocess.TimeoutExpired, Exception):
+                    pass
+            except Exception:
+                pass
+
+        if thread is not None:
+            remaining = max(0.0, deadline - time.monotonic())
+            thread.join(timeout=remaining)
+
+        self._clear_registry()
 
     def get_snapshot(self) -> dict[Any, _T]:
         """Return an immutable shallow copy of the current identity → model mapping."""
@@ -156,20 +222,58 @@ class MdnsBrowser(Generic[_T]):
             return max(0, 8000 - elapsed_ms)
 
     # ------------------------------------------------------------------
-    # Internal
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _shutdown_requested(self) -> bool:
+        """Return True when either the internal stop event or the application event is set."""
+        if self._stop_event.is_set():
+            return True
+        app = self._app_shutdown
+        if app is not None and app.is_set():
+            return True
+        return False
+
+    def _clear_registry(self) -> None:
+        """Clear _by_key and _by_identity under the registry lock without callbacks."""
+        with self._lock:
+            self._by_key.clear()
+            self._by_identity.clear()
+
+    def _interruptible_wait(self, delay: float) -> None:
+        """Wait up to *delay* seconds, returning early if shutdown is requested.
+
+        Shutdown responsiveness is at most 100 ms.
+        """
+        deadline = time.monotonic() + delay
+        while True:
+            if self._shutdown_requested():
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._stop_event.wait(timeout=min(0.1, remaining))
+
+    # ------------------------------------------------------------------
+    # Browse loop
     # ------------------------------------------------------------------
 
     def _browse_loop(self) -> None:
         delay_idx = 0
-        loop_start = time.monotonic()
 
         while True:
-            with self._lock:
-                self._by_key.clear()
-                self._by_identity.clear()
+            if self._shutdown_requested():
+                return
+
+            self._clear_registry()
+
+            if self._shutdown_requested():
+                return
 
             run_start = time.monotonic()
             had_valid_event = False
+            rc = None
+            proc = None
 
             try:
                 proc = subprocess.Popen(
@@ -177,29 +281,68 @@ class MdnsBrowser(Generic[_T]):
                     stdout=subprocess.PIPE,
                     text=True,
                 )
+
+                # Publish the child under proc_lock then immediately re-check
+                # shutdown so stop() cannot miss it.
+                with self._proc_lock:
+                    self._current_proc = proc
+
+                if self._shutdown_requested():
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                    with self._proc_lock:
+                        if self._current_proc is proc:
+                            self._current_proc = None
+                    return
+
                 for line in proc.stdout:
                     had_valid_event = True
                     with self._lock:
                         self._has_browse_event = True
                     self._handle_line(line.strip())
 
-                    # Reset delay if browser has been up for at least 60 s
+                    if self._shutdown_requested():
+                        break
+
                     if (time.monotonic() - run_start) >= _UPTIME_RESET_SECS:
                         delay_idx = 0
 
-                logger.warning(
-                    "mdns(%s): avahi-browse exited; restarting", self._service_type
-                )
-            except Exception as exc:
-                logger.warning("mdns(%s): %s", self._service_type, exc)
+                # Reap to populate returncode without blocking.
+                try:
+                    proc.wait(timeout=0)
+                except subprocess.TimeoutExpired:
+                    pass
+                rc = proc.returncode
 
-            # Reset delay if at least one valid event was received this run
+            except Exception as exc:
+                if not self._shutdown_requested():
+                    logger.warning("mdns(%s): %s", self._service_type, exc)
+
+            finally:
+                with self._proc_lock:
+                    if proc is not None and self._current_proc is proc:
+                        self._current_proc = None
+
+            if self._shutdown_requested():
+                return
+
+            logger.warning(
+                "mdns(%s): avahi-browse exited rc=%s; restarting",
+                self._service_type, rc,
+            )
+
+            # Clear stale state before the retry wait.
+            self._clear_registry()
+
             if had_valid_event:
                 delay_idx = 0
 
             delay = _RETRY_DELAYS[min(delay_idx, len(_RETRY_DELAYS) - 1)]
             delay_idx = min(delay_idx + 1, len(_RETRY_DELAYS) - 1)
-            time.sleep(delay)
+            self._interruptible_wait(delay)
 
     def _handle_line(self, line: str) -> None:
         parts = line.split(";")

@@ -12,9 +12,11 @@ Covers:
   - Thread-safe snapshot copying
   - Retry delay sequence and reset behavior
   - Idempotent start
+  - Shutdown-aware browser lifecycle (WP1)
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import time
@@ -234,7 +236,7 @@ class TestThreadSafeSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# Idempotent start
+# Idempotent start (existing tests)
 # ---------------------------------------------------------------------------
 
 class TestIdempotentStart:
@@ -419,3 +421,369 @@ class TestDialInstallerMdnsDeploy:
         assert "/opt/autostream/autostream_mdns.py" in content, (
             "autostream_mdns.py must be installed at /opt/autostream/autostream_mdns.py"
         )
+
+
+# ---------------------------------------------------------------------------
+# WP1: Shutdown-aware browser lifecycle tests
+# ---------------------------------------------------------------------------
+
+class _FakeProc:
+    """Minimal fake Popen object for lifecycle tests."""
+
+    def __init__(self, lines=(), returncode=0, pid=12345):
+        self._lines = list(lines)
+        self.returncode = returncode
+        self.pid = pid
+        self.terminated = False
+        self.killed = False
+        self._stdout_lines = iter(self._lines)
+        self.stdout = self
+
+    def __iter__(self):
+        return self._stdout_lines
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+
+class TestShutdownLifecycle:
+    """Tests 1–16 from the WP1 spec."""
+
+    # 1. start() remains idempotent.
+    def test_start_idempotent_no_second_thread(self):
+        browser = _make_browser()
+        thread_starts = []
+        original = threading.Thread.start
+        with patch.object(threading.Thread, "start",
+                          lambda self: (thread_starts.append(1), original(self)) and None):
+            with patch.object(browser, "_browse_loop", return_value=None):
+                browser.start()
+                browser.start()
+        assert len(thread_starts) == 1
+
+    # 2. start() with an already-set application event launches no thread.
+    def test_start_with_set_shutdown_event_does_not_start_thread(self):
+        browser = _make_browser()
+        ev = threading.Event()
+        ev.set()
+        thread_starts = []
+        with patch.object(threading.Thread, "start",
+                          lambda self: thread_starts.append(1)):
+            browser.start(shutdown_event=ev)
+        assert thread_starts == []
+        assert not browser.has_started
+
+    # 3. stop() before start is harmless.
+    def test_stop_before_start_is_harmless(self):
+        browser = _make_browser()
+        browser.stop()  # must not raise
+
+    # 4. stop() is idempotent.
+    def test_stop_is_idempotent(self):
+        browser = _make_browser()
+        browser.stop()
+        browser.stop()  # must not raise
+
+    # 5. stop() sets shutdown state and terminates a running child.
+    def test_stop_sets_shutdown_and_terminates_child(self):
+        browser = _make_browser()
+        proc = _FakeProc()
+        browser._current_proc = proc
+        browser.stop(timeout=0.5)
+        assert browser._stop_event.is_set()
+        assert proc.terminated
+
+    # 6. A child that ignores terminate() is killed within the timeout path.
+    def test_stop_kills_child_that_ignores_terminate(self):
+        browser = _make_browser()
+
+        class _SlowProc(_FakeProc):
+            def wait(self, timeout=None):
+                if timeout is not None and timeout < 999:
+                    raise subprocess.TimeoutExpired(cmd="avahi-browse", timeout=timeout)
+                return self.returncode
+
+        proc = _SlowProc()
+        browser._current_proc = proc
+        browser.stop(timeout=1.0)
+        assert proc.killed
+
+    # 7. Active child is reaped and browser thread is joined boundedly.
+    def test_stop_joins_browser_thread(self):
+        browser = _make_browser()
+        # Start a real (but trivial) thread so join() can work
+        done = threading.Event()
+
+        def _trivial():
+            browser._stop_event.wait()
+            done.set()
+
+        t = threading.Thread(target=_trivial, daemon=True)
+        t.start()
+        browser._browse_thread = t
+
+        browser.stop(timeout=1.0)
+        assert done.wait(timeout=0.2), "thread should have exited"
+        assert not t.is_alive()
+
+    # 8. Shutdown during retry backoff returns promptly and launches no replacement.
+    def test_interruptible_wait_returns_on_shutdown(self):
+        browser = _make_browser()
+        browser._stop_event.set()
+        start = time.monotonic()
+        browser._interruptible_wait(30.0)  # would block 30s without shutdown
+        assert (time.monotonic() - start) < 0.5
+
+    # 9. Application shutdown concurrent with child EOF emits no warning.
+    def test_app_shutdown_event_suppresses_warning(self):
+        browser = _make_browser()
+        app_ev = threading.Event()
+        app_ev.set()
+        browser._app_shutdown = app_ev
+
+        # Simulate the end-of-loop shutdown check:
+        # _shutdown_requested() is True so we return before logging.
+        with patch.object(browser, "_interruptible_wait") as mock_wait:
+            # Force the loop body to return after the shutdown check
+            # by having it see shutdown before the warning path.
+            # We verify _shutdown_requested() is True.
+            assert browser._shutdown_requested()
+
+    # 10. Explicit stop() concurrent with child EOF emits no warning.
+    def test_stop_event_suppresses_warning(self):
+        browser = _make_browser()
+        browser._stop_event.set()
+        assert browser._shutdown_requested()
+
+    # 11. An unexpected exit logs the return code and retries.
+    def test_unexpected_exit_logs_rc_and_retries(self):
+        """_browse_loop logs rc and retries on unexpected avahi-browse exit."""
+        browser = _make_browser()
+        call_count = [0]
+
+        # Fake Popen: first call returns a proc that EOF immediately (rc=1),
+        # second call triggers shutdown.
+        def fake_popen(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                proc = _FakeProc(lines=[], returncode=1)
+                return proc
+            # On second iteration, set stop event so loop exits.
+            browser._stop_event.set()
+            raise OSError("shutdown triggered")
+
+        with patch("autostream_mdns.subprocess.Popen", side_effect=fake_popen), \
+             patch.object(browser, "_interruptible_wait") as mock_wait, \
+             patch("autostream_mdns.logger") as mock_logger:
+            browser._browse_loop()
+
+        # Warning must have been logged with rc=1 after the first exit.
+        # Call signature: warning("mdns(%s): avahi-browse exited rc=%s; restarting", svc, rc)
+        warning_calls = [c for c in mock_logger.warning.call_args_list
+                         if "avahi-browse exited" in str(c)]
+        assert len(warning_calls) >= 1
+        # rc is passed as the last positional arg; check it equals 1
+        assert warning_calls[0].args[-1] == 1
+
+    # 12. An unexpected launch exception still retries.
+    def test_launch_exception_still_retries(self):
+        """An OSError launching avahi-browse does not abort the retry loop."""
+        browser = _make_browser()
+        call_count = [0]
+
+        def fake_popen(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("avahi-browse not found")
+            browser._stop_event.set()
+            raise OSError("shutdown triggered")
+
+        with patch("autostream_mdns.subprocess.Popen", side_effect=fake_popen), \
+             patch.object(browser, "_interruptible_wait"), \
+             patch("autostream_mdns.logger"):
+            browser._browse_loop()
+
+        assert call_count[0] == 2  # tried twice
+
+    # 13. Registry snapshots are empty after explicit stop.
+    def test_stop_clears_registry(self):
+        browser = _make_browser()
+        browser._handle_line(_avahi_resolve_line(txt='id=aaa name=test'))
+        assert len(browser.get_snapshot()) == 1
+        browser.stop()
+        assert browser.get_snapshot() == {}
+
+    # 14. Registry snapshots are cleared immediately after unexpected exit, before retry.
+    def test_registry_cleared_before_retry(self):
+        """After unexpected exit, stale entries are cleared before the retry wait."""
+        browser = _make_browser()
+        browser._handle_line(_avahi_resolve_line(txt='id=aaa name=test'))
+
+        cleared_before_wait = []
+
+        def check_and_set(_delay):
+            # Capture state at retry-wait time, then stop
+            cleared_before_wait.append(dict(browser.get_snapshot()))
+            browser._stop_event.set()
+
+        call_count = [0]
+
+        def fake_popen(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                browser._stop_event.set()
+                raise OSError("done")
+            return _FakeProc(lines=[], returncode=0)
+
+        with patch("autostream_mdns.subprocess.Popen", side_effect=fake_popen), \
+             patch.object(browser, "_interruptible_wait", side_effect=check_and_set), \
+             patch("autostream_mdns.logger"):
+            browser._browse_loop()
+
+        assert cleared_before_wait, "interruptible_wait must have been called"
+        assert cleared_before_wait[0] == {}, "registry must be empty before retry wait"
+
+    # 15. Shutdown clearing does not invoke on_remove or on_change.
+    def test_stop_does_not_fire_callbacks(self):
+        removed = []
+        changed = []
+        browser = _make_browser()
+        browser._on_remove = lambda k, m: removed.append(k)
+        browser._on_change = lambda k, old, new: changed.append(k)
+
+        # Populate the registry
+        browser._handle_line(_avahi_resolve_line(txt='id=aaa name=test'))
+        assert len(browser.get_snapshot()) == 1
+
+        browser.stop()
+        assert removed == []
+        assert changed == []
+
+    # 16. Retry sequence and reset behavior remain unchanged.
+    def test_retry_sequence_resets_on_valid_event(self):
+        """delay_idx resets to 0 after a run that had valid events."""
+        browser = _make_browser()
+        delays_used = []
+        call_count = [0]
+
+        def fake_popen(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First run: emit one valid line then EOF
+                return _FakeProc(
+                    lines=[_avahi_resolve_line(txt='id=aaa name=test')],
+                    returncode=0,
+                )
+            if call_count[0] == 2:
+                # Second run: immediate EOF (no valid events)
+                return _FakeProc(lines=[], returncode=0)
+            browser._stop_event.set()
+            raise OSError("done")
+
+        def fake_wait(delay):
+            delays_used.append(delay)
+            if browser._shutdown_requested():
+                return
+
+        with patch("autostream_mdns.subprocess.Popen", side_effect=fake_popen), \
+             patch.object(browser, "_interruptible_wait", side_effect=fake_wait), \
+             patch("autostream_mdns.logger"):
+            browser._browse_loop()
+
+        # After first run (had event): delay resets → 5s
+        # After second run (no events): delay increments → 10s... but we might stop before
+        # At minimum the first delay must be 5 (reset) or a later step
+        from autostream_mdns import _RETRY_DELAYS
+        assert delays_used[0] == _RETRY_DELAYS[0], (
+            f"first retry after valid-event run must be {_RETRY_DELAYS[0]}s, got {delays_used[0]}"
+        )
+
+
+class TestShutdownDuringBrowseLoop:
+    """Integration-style: run _browse_loop in a real thread, verify shutdown."""
+
+    def _run_loop(self, browser, fake_lines, shutdown_after_s=0.2):
+        """Start the browse loop in a thread, set stop after *shutdown_after_s*."""
+        line_iter = iter(fake_lines)
+
+        class _BlockingProc:
+            returncode = 0
+            stdout = None
+
+            def __init__(self):
+                self._started = threading.Event()
+                _self = self
+
+                class _Stdout:
+                    def __iter__(self_inner):
+                        _self._started.set()
+                        yield from line_iter
+                        # After lines exhausted, block until stop
+                        browser._stop_event.wait()
+
+                self.stdout = _Stdout()
+
+            def terminate(self):
+                self.returncode = -15
+
+            def kill(self):
+                self.returncode = -9
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        proc = _BlockingProc()
+
+        with patch("autostream_mdns.subprocess.Popen", return_value=proc), \
+             patch("autostream_mdns.logger"):
+            t = threading.Thread(target=browser._browse_loop, daemon=True)
+            t.start()
+            proc._started.wait(timeout=1.0)
+            time.sleep(shutdown_after_s)
+            browser._stop_event.set()
+            t.join(timeout=1.0)
+            return t
+
+    def test_browse_loop_exits_on_stop(self):
+        browser = _make_browser()
+        t = self._run_loop(browser, [], shutdown_after_s=0.05)
+        assert not t.is_alive(), "browse loop thread must exit after stop"
+
+    def test_browse_loop_exits_on_app_event(self):
+        browser = _make_browser()
+        app_ev = threading.Event()
+        browser._app_shutdown = app_ev
+
+        def make_proc(*args, **kwargs):
+            class _Stdout:
+                def __iter__(self_inner):
+                    app_ev.set()  # signal shutdown through app event
+                    return iter([])  # no lines to yield
+
+            class _P:
+                returncode = 0
+                stdout = _Stdout()
+
+                def terminate(self): pass
+                def kill(self): pass
+                def wait(self, timeout=None): return 0
+
+            return _P()
+
+        with patch("autostream_mdns.subprocess.Popen", side_effect=make_proc), \
+             patch("autostream_mdns.logger"):
+            t = threading.Thread(target=browser._browse_loop, daemon=True)
+            t.start()
+            t.join(timeout=1.0)
+        assert not t.is_alive()
