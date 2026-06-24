@@ -58,4 +58,5 @@ Draft releases are not returned by the GitHub releases API to unauthenticated ca
 Before tagging a release, verify on a running Pi appliance:
 
 - Open `http://autostream.local/about`, tap **System**, and confirm the System Info card populates (build versions, CPU temperature, disk usage) and all six service rows show **OK** within a few seconds.
-- If any service row shows **Failed**, investigate the unit before releasing.
+- Run `sudo systemctl stop vibra-mini.service`, reload the System page, and confirm the **Vibra Mini** row changes to **Failed**. Then `sudo systemctl start vibra-mini.service` and confirm it returns to **OK**.
+- If any other service row shows **Failed** before the stop/start test, investigate the unit before releasing.

@@ -983,13 +983,10 @@ class TestAboutPageFetchScript:
         )
 
     def test_no_inner_html_in_fetch_script(self):
-        # Only the existing copyLicenseText uses insertAdjacentHTML / innerHTML —
-        # the new fetch block must never assign innerHTML.
-        import re
-        # Find the fetch IIFE block (after the sliding-panel script)
-        fetch_start = self._html.rfind("(function()")
-        assert fetch_start != -1, "Fetch IIFE not found"
-        fetch_block = self._html[fetch_start:]
+        # Only the existing copyLicenseText uses innerHTML — the fetch IIFE must not.
+        iife_start = self._html.find("function _s(id,t)")
+        assert iife_start != -1, "Fetch IIFE helper _s(id,t) not found in page HTML"
+        fetch_block = self._html[iife_start:]
         assert "innerHTML" not in fetch_block, (
             "innerHTML must not be used in the fetch IIFE — use textContent"
         )
@@ -998,3 +995,90 @@ class TestAboutPageFetchScript:
         assert "textContent" in self._html, (
             "textContent not found in About page script"
         )
+
+    def test_fail_sets_data_state_failed_not_removes_it(self):
+        """_fail() must setAttribute('data-state','failed') so CSS error styling applies."""
+        # Locate the fetch IIFE by its unique first helper function.
+        iife_start = self._html.find("function _s(id,t)")
+        assert iife_start != -1, "Fetch IIFE helper _s(id,t) not found in page HTML"
+        fetch_block = self._html[iife_start:]
+        assert "setAttribute('data-state','failed')" in fetch_block, (
+            "_fail() must set data-state='failed' on service state spans; "
+            "removeAttribute would suppress the CSS error colouring"
+        )
+        assert "removeAttribute('data-state')" not in fetch_block
+
+
+# ---------------------------------------------------------------------------
+# Snapshot-exception isolation — individual accessor errors must not 500
+# ---------------------------------------------------------------------------
+
+class TestSnapshotExceptionIsolation:
+    """Exceptions thrown by in-memory snapshot accessors must not produce HTTP 500.
+
+    The plan requires partial failures to affect only their own field; the
+    top-level ok:true must be preserved even if individual getters raise.
+    """
+
+    def _make_result(self, *, raise_at: str) -> dict:
+        boom = RuntimeError("simulated accessor failure")
+
+        patches = {
+            "autostream_webui_page_about.get_app_version":
+                (boom if raise_at == "app_version" else "1.0"),
+            "autostream_webui_page_about.get_monitor_runtime_info":
+                (boom if raise_at == "monitor" else _monitor_info()),
+            "autostream_webui_page_about.get_owntone_runtime_info":
+                (boom if raise_at == "owntone" else _owntone_info()),
+            "autostream_webui_page_about.get_vibra_runtime_info":
+                (boom if raise_at == "vibra" else _vibra_info()),
+            "autostream_webui_page_about.get_playback_snapshot":
+                (boom if raise_at == "playback" else _playback_snap()),
+        }
+
+        ctx = {}
+        for target, val in patches.items():
+            if isinstance(val, Exception):
+                ctx[target] = patch(target, side_effect=val)
+            else:
+                ctx[target] = patch(target, return_value=val)
+
+        with patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            with ctx["autostream_webui_page_about.get_app_version"], \
+                 ctx["autostream_webui_page_about.get_monitor_runtime_info"], \
+                 ctx["autostream_webui_page_about.get_owntone_runtime_info"], \
+                 ctx["autostream_webui_page_about.get_vibra_runtime_info"], \
+                 ctx["autostream_webui_page_about.get_playback_snapshot"]:
+                return _about._collect_system_info()
+
+    @pytest.mark.parametrize("field", [
+        "app_version", "monitor", "owntone", "vibra", "playback",
+    ])
+    def test_exception_does_not_propagate(self, field):
+        """Accessor exception must not escape _collect_system_info()."""
+        result = self._make_result(raise_at=field)
+        assert result["ok"] is True
+
+    def test_app_version_exception_yields_unknown(self):
+        result = self._make_result(raise_at="app_version")
+        assert result["builds"]["autostream"] == "unknown"
+
+    def test_monitor_exception_yields_unknown(self):
+        result = self._make_result(raise_at="monitor")
+        assert result["builds"]["monitor"] == "unknown"
+
+    def test_owntone_exception_yields_unknown(self):
+        result = self._make_result(raise_at="owntone")
+        assert result["builds"]["owntone"] == "unknown"
+
+    def test_vibra_exception_yields_unknown(self):
+        result = self._make_result(raise_at="vibra")
+        assert result["builds"]["vibra_mini"] == "unknown"
+
+    def test_playback_exception_yields_zero_hours(self):
+        result = self._make_result(raise_at="playback")
+        assert result["playback_hours"] == 0.0

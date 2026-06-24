@@ -194,7 +194,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         "document.querySelectorAll('#aboutServices [data-service-unit] .about-svc-state')"
         ".forEach(function(e){"
         "if(e.textContent==='Loading...'){"
-        "e.textContent='Failed';e.removeAttribute('data-state');"
+        "e.textContent='Failed';e.setAttribute('data-state','failed');"
         "e.classList.remove('about-svc-loading');}});}"
         "document.addEventListener('DOMContentLoaded',function(){"
         "fetch('/api/about/system',{cache:'no-store',headers:{'Accept':'application/json'}})"
@@ -413,29 +413,47 @@ def _build_text(version: str, connected: bool) -> str:
 def _collect_system_info() -> dict:
     """Collect all System Info fields.  Partial failures degrade individual fields."""
     # 1. Autostream version (cached, immutable for process lifetime)
-    autostream_version = get_app_version()
+    try:
+        autostream_version = get_app_version()
+    except Exception:
+        autostream_version = "unknown"
 
     # 2. Monitor build — read in-memory snapshot, no protocol I/O
-    monitor_info = get_monitor_runtime_info()
-    monitor_build = _build_text(monitor_info.monitor_build, monitor_info.connected)
+    try:
+        monitor_info = get_monitor_runtime_info()
+        monitor_build = _build_text(monitor_info.monitor_build, monitor_info.connected)
+    except Exception:
+        monitor_build = "unknown"
 
     # 3. OwnTone build — read in-memory snapshot, no OwnTone HTTP traffic
-    owntone_info = get_owntone_runtime_info(refresh_if_stale=False)
-    owntone_build = _build_text(owntone_info.version, owntone_info.connected)
-    owntone_backend_id = str(owntone_info.backend_id or "").strip() or "unknown"
+    owntone_build = "unknown"
+    owntone_backend_id = "unknown"
+    try:
+        owntone_info = get_owntone_runtime_info(refresh_if_stale=False)
+        owntone_build = _build_text(owntone_info.version, owntone_info.connected)
+        owntone_backend_id = str(owntone_info.backend_id or "").strip() or "unknown"
+    except Exception:
+        pass
 
     # 4. Vibra Mini build — read in-memory snapshot, no socket I/O
-    vibra_info = get_vibra_runtime_info()
-    vibra_build = _build_text(vibra_info.version, vibra_info.connected)
+    try:
+        vibra_info = get_vibra_runtime_info()
+        vibra_build = _build_text(vibra_info.version, vibra_info.connected)
+    except Exception:
+        vibra_build = "unknown"
 
     # 5. Playback totals across inputs 1 and 2
-    playback_snapshot = get_playback_snapshot()
-    total_seconds = sum(
-        int(snap.total_playback_seconds)
-        for idx, snap in playback_snapshot.inputs.items()
-        if int(idx) in (1, 2)
-    )
-    playback_hours = round(total_seconds / 3600.0, 1)
+    playback_hours = 0.0
+    try:
+        playback_snapshot = get_playback_snapshot()
+        total_seconds = sum(
+            int(snap.total_playback_seconds)
+            for idx, snap in playback_snapshot.inputs.items()
+            if int(idx) in (1, 2)
+        )
+        playback_hours = round(total_seconds / 3600.0, 1)
+    except Exception:
+        pass
 
     # 6. CPU temperature (on-demand, cheap sysfs read)
     cpu_temp_c: Optional[float] = None
