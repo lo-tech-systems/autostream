@@ -2335,9 +2335,11 @@ def startup_connect_usb_first() -> bool:
     # Resolve UUID (lazily persisting if missing) then clear cross-adapter
     # restrictions before any USB activation attempt so a legacy profile bound
     # to built-in by interface-name/MAC/BSSID/band/channel can be activated on
-    # a USB interface.  Must happen here, before the first nmcli up.
+    # a USB interface.  Only cleared when USB adapters are present; modifying
+    # an active profile when no cross-adapter move is needed can cause NM to
+    # briefly re-activate, disrupting the existing connection.
     uuid = _resolve_committed_uuid(state)
-    if uuid:
+    if uuid and usb:
         run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
 
     for candidate in usb:

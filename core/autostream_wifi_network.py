@@ -435,24 +435,33 @@ def _nmcli_wifi_devices() -> list[dict]:
 
 def _nmcli_device_detail(ifname: str) -> dict:
     """Return GENERAL.HWADDR / permanent address / product description for a device."""
-    fields = [
+    base_fields = [
         "GENERAL.HWADDR",
         "GENERAL.STATE",
         "GENERAL.PRODUCT",
         "GENERAL.VENDOR",
-        "WIFI-PROPERTIES.PERM-HW-ADDRESS",
     ]
-    r = run_cmd(["nmcli", "-t", "-f", ",".join(fields), "device", "show", ifname])
     out: dict[str, str] = {}
-    if r.returncode != 0:
-        return out
-    for line in r.stdout.splitlines():
-        if not line:
-            continue
-        parts = split_nmcli_terse(line, maxsplit=1)
-        if len(parts) != 2:
-            continue
-        out[parts[0]] = parts[1]
+    r = run_cmd(["nmcli", "-t", "-f", ",".join(base_fields), "device", "show", ifname])
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            if not line:
+                continue
+            parts = split_nmcli_terse(line, maxsplit=1)
+            if len(parts) == 2:
+                out[parts[0]] = parts[1]
+
+    # WIFI-PROPERTIES.PERM-HW-ADDRESS is absent from older NM builds; query
+    # separately so its absence does not discard the base fields above.
+    r2 = run_cmd(["nmcli", "-t", "-f", "WIFI-PROPERTIES.PERM-HW-ADDRESS",
+                  "device", "show", ifname])
+    if r2.returncode == 0:
+        for line in r2.stdout.splitlines():
+            if not line:
+                continue
+            parts = split_nmcli_terse(line, maxsplit=1)
+            if len(parts) == 2:
+                out[parts[0]] = parts[1]
     return out
 
 

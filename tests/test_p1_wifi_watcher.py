@@ -1448,6 +1448,38 @@ class TestStartupWindowUsbReprobe:
         new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
         assert not new_usb, "MAC must be gated out after being recorded as tried"
 
+    def test_no_usb_adapters_does_not_clear_restrictions(self, watcher):
+        """When no USB adapters are present, startup_connect_usb_first must NOT
+        call clear_restrictions_cmd.  Modifying an active connection profile
+        when no cross-adapter move is needed can trigger NM to briefly re-
+        activate, causing client_ok=False during the boot health window."""
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        calls = []
+
+        def capture_run_cmd(cmd, **_):
+            calls.append(cmd)
+            return MagicMock(returncode=0)
+
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+             patch.object(watcher.wifi_net, "usb_candidates", return_value=[]), \
+             patch.object(watcher, "get_configured_network_state") as gcns, \
+             patch.object(watcher, "run_cmd", side_effect=capture_run_cmd), \
+             patch.object(watcher, "connect_to_configured_wifi", return_value=True):
+            gcns.return_value = MagicMock(
+                is_configured=True,
+                connection_uuid="uuid-abc",
+                connection_name="HomeNetwork",
+            )
+            watcher.startup_connect_usb_first()
+
+        modify_calls = [c for c in calls if "modify" in c]
+        assert not modify_calls, (
+            "startup_connect_usb_first must not call 'nmcli connection modify' "
+            "when no USB adapters are present; doing so can disturb the active "
+            f"connection and cause client_ok=False at boot: {modify_calls}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Regression: two-pass NM-disconnected USB debounce (Section 8.5 / WP5)
