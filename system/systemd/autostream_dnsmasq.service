@@ -5,7 +5,11 @@ Wants=NetworkManager.service
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/dnsmasq --no-daemon --conf-file=/etc/dnsmasq.d/autostream-setup.conf
+# Read only the watcher-generated runtime config (the built-in recovery
+# interface token is resolved into this file by the watcher before start).
+# The dedicated service is started only by the watcher; a stale runtime file
+# must never cause it to start on its own.
+ExecStart=/usr/sbin/dnsmasq --no-daemon --conf-file=/run/autostream/autostream-setup.conf
 Restart=on-failure
 
 [Install]

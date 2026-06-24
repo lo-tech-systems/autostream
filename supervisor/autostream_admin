@@ -152,6 +152,7 @@ FACTORY_RESET_DELETE_FILES = (
     Path("/etc/autostream/autostream.json"),
     Path("/var/lib/autostream/autostream-state.json"),
     Path("/opt/autostream/ssid"),
+    Path("/etc/autostream-network.json"),
     Path("/var/lib/autostream/playback_stats.json"),
     Path("/etc/autostream/nowplaying_hints.json"),
     Path("/var/lib/autostream/sdcardhealth.json"),

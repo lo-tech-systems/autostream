@@ -29,6 +29,35 @@ sg = load_supervisor_script("autostream_storage_guard", "storage_guard_wp3")
 
 
 # ---------------------------------------------------------------------------
+# get_playing_status — uncertain/malformed treated as None (Section 8.3)
+# ---------------------------------------------------------------------------
+
+class TestGetPlayingStatus:
+    def _run(self, api_data):
+        from unittest.mock import patch
+        with patch.object(sg, "_api_get", return_value=api_data):
+            return sg.get_playing_status()
+
+    def test_ok_true_playing_true(self):
+        assert self._run({"ok": True, "playing": True}) is True
+
+    def test_ok_true_playing_false(self):
+        assert self._run({"ok": True, "playing": False}) is False
+
+    def test_ok_false_is_none(self):
+        assert self._run({"ok": False, "error": "playing status unavailable"}) is None
+
+    def test_missing_ok_is_none(self):
+        assert self._run({"playing": True}) is None
+
+    def test_non_boolean_playing_is_none(self):
+        assert self._run({"ok": True, "playing": "yes"}) is None
+
+    def test_unreachable_is_none(self):
+        assert self._run(None) is None
+
+
+# ---------------------------------------------------------------------------
 # classify_storage
 # ---------------------------------------------------------------------------
 

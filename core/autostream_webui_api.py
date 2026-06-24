@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -1968,14 +1969,153 @@ def send_log_level_put_json(
     send_json(handler, 200, result)
 
 
+# ---------------------------------------------------------------------------
+# Network status / setup — bounded proxy to the root watcher (WP7)
+# ---------------------------------------------------------------------------
+
+# The watcher's localhost control interface.  The normal Web UI never executes
+# nmcli or reads/writes network.json directly; it proxies bounded JSON requests
+# to the root watcher and supplies the per-boot control token from the
+# root:autostream-readable token file.
+WATCHER_CONTROL_BASE = os.environ.get(
+    "APP_WATCHER_CONTROL_BASE", "http://127.0.0.1:9080"
+)
+WATCHER_CONTROL_TOKEN_PATH = os.environ.get(
+    "APP_WIFI_CONTROL_TOKEN", "/run/autostream/wifi-control.token"
+)
+WATCHER_CONTROL_HEADER = "X-Autostream-Wifi-Control"
+_WATCHER_TIMEOUT = 4.0
+
+
+def _read_watcher_control_token() -> str:
+    try:
+        with open(WATCHER_CONTROL_TOKEN_PATH, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _watcher_request(method: str, path: str, body: Optional[dict] = None):
+    """Perform a bounded request to a *fixed* watcher control path.
+
+    Only the two known paths are permitted; arbitrary paths/commands are never
+    forwarded.  Uses the Python standard library only.  Returns (status, data)
+    or raises on transport failure.
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    if path not in ("/network_status", "/network_control"):
+        raise ValueError("disallowed watcher path")
+    token = _read_watcher_control_token()
+    url = WATCHER_CONTROL_BASE + path
+    data = None
+    headers = {WATCHER_CONTROL_HEADER: token}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = _ur.Request(url, data=data, method=method, headers=headers)
+    try:
+        with _ur.urlopen(req, timeout=_WATCHER_TIMEOUT) as resp:
+            raw = resp.read()
+            status = resp.status
+    except _ue.HTTPError as e:
+        raw = e.read()
+        status = e.code
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        parsed = {}
+    return status, parsed
+
+
+def format_active_adapter(status: dict) -> str:
+    """Return the exact two-line active-adapter display text (Section 9.2).
+
+    Returns only the second line (the first line is the static "Wi-Fi adapter"
+    label rendered in the page).  Honours the exact required wordings.
+    """
+    usb_detected = bool(status.get("usb_adapter_detected"))
+    active_kind = status.get("active_adapter_kind") or ""
+    using_fallback = bool(status.get("using_builtin_fallback"))
+    adapters = status.get("adapters") or []
+
+    def _first_usb_desc() -> str:
+        for a in adapters:
+            if a and a.get("is_usb"):
+                return (a.get("description") or a.get("ifname") or "").strip()
+        return ""
+
+    if active_kind == "usb":
+        desc = (status.get("active_adapter_description")
+                or status.get("active_adapter_ifname") or "").strip()
+        line = f"USB Wi-Fi · {desc}" if desc else "USB Wi-Fi"
+    elif not usb_detected:
+        line = "Built-in Wi-Fi · No USB adapter detected"
+    else:
+        # USB detected but built-in is the active (or next) Wi-Fi adapter.
+        line = "Built-in Wi-Fi · USB adapter detected"
+
+    if using_fallback:
+        line += " · USB connection unavailable"
+    return line
+
+
+def send_network_status_json(handler) -> None:
+    """GET /api/network/status — proxy the watcher's non-secret network status."""
+    try:
+        status, data = _watcher_request("GET", "/network_status")
+    except Exception:
+        send_browser_api_error(handler, 503, "Network service unavailable")
+        return
+    if status != 200 or not isinstance(data, dict) or not data.get("ok"):
+        send_browser_api_error(handler, 503, "Network service unavailable")
+        return
+    data["display"] = format_active_adapter(data)
+    send_json(handler, 200, data)
+
+
+_NETWORK_SETUP_ALLOWED_ACTIONS = frozenset({"start_setup", "reconnect_saved"})
+
+
+def send_network_setup_json(handler, json_obj: dict) -> None:
+    """POST /api/network/setup — proxy a bounded setup action to the watcher."""
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    action = json_obj.get("action")
+    extra = set(json_obj.keys()) - {"action", "csrf_token"}
+    if action not in _NETWORK_SETUP_ALLOWED_ACTIONS or extra:
+        send_browser_api_error(handler, 400, "Invalid action")
+        return
+    try:
+        status, data = _watcher_request("POST", "/network_control", {"action": action})
+    except Exception:
+        send_browser_api_error(handler, 503, "Network service unavailable")
+        return
+    if status == 200 and isinstance(data, dict) and data.get("ok"):
+        send_json(handler, 200, {"ok": True, "queued": True, "action": action})
+        return
+    # Surface watcher conflict (busy) without breaking the Setup page.
+    if status == 409:
+        send_browser_api_error(handler, 409, "A network change is already in progress")
+        return
+    send_browser_api_error(handler, 503, "Network service unavailable")
+
+
 def send_playing_status_json(handler) -> None:
     """GET /api/playing-status — return whether the appliance is streaming.
 
-    Returns `playing: true` when any monitor is actively capturing.
-    Safe to call before OwnTone or monitor are connected.
+    Returns ``{"ok": true, "playing": <bool>}`` when monitor state can be
+    determined.  When it cannot (internal error), returns HTTP 200 with an
+    explicit *uncertain* body ``{"ok": false, "error": "playing status
+    unavailable"}`` rather than falsely reporting stopped playback, so local
+    automation conservatively treats the state as unknown (Section 8.3).
     """
     try:
         playing = any_monitor_capturing()
     except Exception:
-        playing = False
+        logging.warning("playing status unavailable (monitor query failed)")
+        send_json(handler, 200, {"ok": False, "error": "playing status unavailable"})
+        return
     send_json(handler, 200, {"ok": True, "playing": bool(playing)})

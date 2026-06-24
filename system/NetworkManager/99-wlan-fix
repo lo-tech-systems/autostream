@@ -1,11 +1,37 @@
 #!/bin/bash
+#
+# NetworkManager dispatcher: disable Wi-Fi power-save on any wireless interface
+# (built-in or USB) and apply the built-in-specific transmit-power setting only
+# where it is known to be appropriate.  All actions are best-effort and must
+# never fail the dispatcher run.
+#
+# Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
 IFACE="$1"
 STATUS="$2"
 
-if [ "$IFACE" = "wlan0" ] && [ "$STATUS" = "up" ]; then
-    logger -t wlan-fix "Applying txpower and power_save settings to $IFACE"
-    iwconfig "$IFACE" txpower 12
-    iw "$IFACE" set power_save off
+[ "$STATUS" = "up" ] || exit 0
+
+# Apply only to wireless interfaces.  A device is wireless if it exposes a
+# /sys/class/net/<iface>/wireless directory or /sys/class/net/<iface>/phy80211.
+if [ ! -d "/sys/class/net/${IFACE}/wireless" ] && \
+   [ ! -e "/sys/class/net/${IFACE}/phy80211" ]; then
+    exit 0
+fi
+
+logger -t wlan-fix "Disabling Wi-Fi power_save on ${IFACE}"
+# Generic, safe power-save disable for any supported wireless adapter.
+iw "$IFACE" set power_save off 2>/dev/null || \
+    logger -t wlan-fix "power_save off not supported on ${IFACE} (ignored)"
+
+# The hard-coded transmit-power setting is known-good for the built-in radio
+# only.  Do not assume every USB adapter supports `iwconfig txpower`.
+IS_USB=0
+case "$(readlink -f "/sys/class/net/${IFACE}/device" 2>/dev/null)" in
+    *"/usb"*) IS_USB=1 ;;
+esac
+if [ "$IS_USB" = "0" ]; then
+    iwconfig "$IFACE" txpower 12 2>/dev/null || \
+        logger -t wlan-fix "txpower set not supported on ${IFACE} (ignored)"
 fi
 

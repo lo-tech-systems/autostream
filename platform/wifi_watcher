@@ -52,8 +52,9 @@ controls which web server (this or autostream_webui.py) services requests via th
 """
 
 import glob
-import ipaddress
+import hmac
 import os
+import secrets
 import shutil
 import time
 import threading
@@ -61,11 +62,13 @@ import logging
 import sys
 import html
 import json
+import urllib.request
 from typing import Optional
 from flask import Flask, request, jsonify, redirect, url_for, make_response
 from dataclasses import dataclass
 
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
+import autostream_wifi_network as wifi_net
 
 APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 APP_BANNER_IMAGE = os.environ.get('APP_BANNER_IMAGE', '').strip()
@@ -103,10 +106,25 @@ input:focus, select:focus { outline: 2px solid #0070f3; border-color: transparen
 
 # File locations
 LOG_FILE = "/var/log/autostream/wifi_setup.log"
-CONFIGURED_SSID = "/opt/autostream/ssid"
+# Legacy compatibility mirror (connection NAME, not an SSID). The authoritative
+# network state now lives in /etc/autostream-network.json, parsed by the helper.
+CONFIGURED_SSID = wifi_net.LEGACY_SSID_PATH
+NETWORK_STATE_PATH = wifi_net.NETWORK_STATE_PATH
 AP_MODE_FLAG_PATH = os.environ.get('APP_APMODE_FLAG', '/tmp/apmode')
 AP_PREFIX = os.environ.get('APP_AP_PREFIX', 'autostream')
 DNSMASQ_SERVICE = os.environ.get('APP_DNSMASQ_SERVICE', 'autostream_dnsmasq.service')
+
+# Runtime dnsmasq config binding (Section 7.2).  The product-specific template
+# is installed outside dnsmasq's automatic include dir; the watcher substitutes
+# the resolved recovery interface and writes a runtime file the service reads.
+DNSMASQ_TEMPLATE_PATH = os.environ.get(
+    'APP_DNSMASQ_TEMPLATE',
+    '/usr/local/share/autostream/dnsmasq/autostream-setup.conf',
+)
+DNSMASQ_RUNTIME_PATH = os.environ.get(
+    'APP_DNSMASQ_RUNTIME',
+    '/run/autostream/autostream-setup.conf',
+)
 
 # Timers (all in seconds)
 NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
@@ -119,6 +137,15 @@ AP_POST_CLOSE_REBOOT_AFTER = 24 * 60 * 60  # if still offline 24h after closing 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
 GW_DOWN_REBOOT_AFTER = 30 * 60          # gateway unreachable for this long -> reboot
 RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts
+
+# Multi-adapter failure/adoption tuning (WP5).
+USB_UNHEALTHY_DEBOUNCE = 2              # consecutive unhealthy passes before adapter fallback
+USB_ADOPTION_STABLE_PASSES = 2         # consecutive passes a USB candidate must be present
+PLAYING_STATUS_URL = os.environ.get(
+    'APP_PLAYING_STATUS_URL', 'http://127.0.0.1:8080/api/playing-status'
+)
+PLAYING_STATUS_TIMEOUT = 2.0            # seconds
+PLAYING_STATUS_WARN_THROTTLE = 5 * 60   # throttle "playing status unavailable" warnings
 
 # After applying WiFi config, this appliance only requires *local* IPv4
 # connectivity (it does not require Internet access):
@@ -251,6 +278,33 @@ class NetworkMonitorState:
     last_avahi_restart: Optional[float] = None
     avahi_restart_count: int = 0
 
+    # ---- Multi-adapter failure / adoption (WP5, Section 8.1) ----
+    active_usb_unhealthy_checks: int = 0
+    using_builtin_fallback: bool = False
+    active_client_ifname: str = ""
+    active_client_mac: str = ""
+    pending_usb_adoption_mac: Optional[str] = None
+    pending_usb_adoption_checks: int = 0
+    usb_adoption_retry_after: float = 0.0
+    last_detected_adapter_macs: Optional[frozenset] = None
+    last_playing_status_warn: float = 0.0
+
+    # ---- Explicit reconfiguration session (WP6, Section 3.3) ----
+    reconfigure_active: bool = False
+    reconfigure_started_at: Optional[float] = None
+    rollback_connection_name: str = ""
+    rollback_connection_uuid: str = ""
+    rollback_adapter_mac: str = ""
+    # first_run | automatic_recovery | explicit_reconfigure | manual
+    setup_purpose: str = "first_run"
+
+    # ---- Local control API (WP6, Section 10.1) ----
+    pending_control_action: str = ""
+    control_in_progress: bool = False
+    last_control_action: str = ""
+    last_control_result: str = ""
+    last_control_error: str = ""
+
 
 STATE = NetworkMonitorState()
 
@@ -263,9 +317,44 @@ ap_mode_lock = threading.Lock()
 # Manual AP-mode request (from the normal WebUI via localhost)
 ap_request_event = threading.Event()
 
-# AP / host configuration
+# Queued local-control action consumed by the monitor loop (WP6).
+control_action_event = threading.Event()
+
+# Per-boot control token (Section 10.1).  Generated at startup; the normal Web
+# UI reads the token file and supplies it as an X-Autostream-Wifi-Control header
+# on direct-localhost requests.  Never sent to the browser or logged.
+CONTROL_TOKEN_DIR = os.environ.get('APP_RUN_DIR', '/run/autostream')
+CONTROL_TOKEN_PATH = os.environ.get(
+    'APP_WIFI_CONTROL_TOKEN', '/run/autostream/wifi-control.token'
+)
+CONTROL_TOKEN_HEADER = "X-Autostream-Wifi-Control"
+_control_token: str = ""
+
+# AP / host configuration.
+# AP_IFNAME remains the compatibility default for interface-aware helper calls;
+# hotspot operations resolve the *built-in* recovery interface dynamically via
+# resolve_recovery_ifname() so USB removal can never remove the recovery path.
 AP_IFNAME = "wlan0"
 AP_CONNECTION_NAME = "Hotspot"  # default/fixed name for our AP connection
+
+
+def resolve_recovery_ifname() -> Optional[str]:
+    """Return the resolved built-in (recovery) interface name, or None.
+
+    The recovery hotspot must always use the built-in radio; a USB adapter must
+    never become the only recovery path.  Returns None when no built-in adapter
+    can be identified (the caller logs an error and does not host an AP on USB).
+    """
+    try:
+        adapters = wifi_net.discover_adapters()
+    except Exception as e:
+        logger.warning("Adapter discovery failed while resolving recovery interface: %s", e)
+        adapters = []
+    builtin = wifi_net.resolve_builtin(adapters)
+    if builtin is not None:
+        return builtin.ifname
+    logger.warning("No built-in Wi-Fi adapter identified for recovery hotspot")
+    return None
 
 # Resolved once at startup; None disables avahi mDNS hostname monitoring.
 _DBUS_SEND: Optional[str] = shutil.which("dbus-send")
@@ -361,22 +450,28 @@ def leave_setup_mode(reason: str = "") -> None:
     stop_ap_mode()
     update_apmode_flag(False)
 
+def get_configured_network_state() -> "wifi_net.NetworkState":
+    """Return the resolved configured network state (helper-validated).
+
+    Resolution order: valid network.json -> legacy /opt/autostream/ssid ->
+    unconfigured.  Paths are taken from the watcher's (test-redirectable)
+    constants so the helper and watcher agree on locations.
+    """
+    return wifi_net.load_network_state(
+        state_path=NETWORK_STATE_PATH,
+        legacy_path=CONFIGURED_SSID,
+    )
+
+
 def get_configured_wifi_connection_name() -> Optional[str]:
     """Return the configured *client* WiFi connection name, if any.
 
-    The configuration UI stores the intended NetworkManager connection name in
-    CONFIGURED_SSID. If that file is missing or empty, we treat WiFi as
+    The authoritative source is /etc/autostream-network.json, with the legacy
+    /opt/autostream/ssid file as a compatibility fallback.  Empty means WiFi is
     unconfigured.
     """
-    try:
-        if not os.path.isfile(CONFIGURED_SSID):
-            return None
-        with open(CONFIGURED_SSID, "r", encoding="utf-8") as f:
-            name = f.read().strip()
-        return name or None
-    except Exception as e:
-        logger.error("Error reading %s: %s", CONFIGURED_SSID, e)
-        return None
+    name = get_configured_network_state().connection_name
+    return name or None
 
 
 def is_wifi_configured() -> bool:
@@ -384,63 +479,38 @@ def is_wifi_configured() -> bool:
     return get_configured_wifi_connection_name() is not None
 
 
-def is_wifi_connected() -> bool:
-    """True if wlan0 is connected to a non-AP WiFi network."""
-    result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
-    if result.returncode != 0:
-        logger.warning("Error while checking WiFi connection state: %s", result.stderr.strip())
-        return False
+def is_wifi_connected(ifname: str = AP_IFNAME) -> bool:
+    """True if *ifname* is connected to a non-AP WiFi network.
 
-    for line in result.stdout.splitlines():
-        if not line:
-            continue
-        parts = line.split(":", 3)
-        if len(parts) != 4:
-            continue
-        device, dev_type, state, conn = parts
-        if device != AP_IFNAME:
-            continue
-        if dev_type != "wifi":
-            continue
-        if state not in ("connected", "activated") or not conn:
-            return False
-
-        # Ensure we are not in AP mode
-        mode_result = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", conn])
-        if mode_result.returncode != 0:
-            logger.warning("Error checking mode for connection '%s': %s", conn, mode_result.stderr.strip())
-            return False
-
-        mode_line = mode_result.stdout.strip()
-        _, _, mode = mode_line.partition(":")
-        mode = mode.strip().lower()
-
-        return mode != "ap"
-
-    return False
+    Thin policy wrapper over the interface-aware helper.
+    """
+    return wifi_net.is_wifi_connected(ifname)
 
 def is_wifi_client_healthy(
     ifname: str = AP_IFNAME,
     wifi_connected: Optional[bool] = None,
 ) -> bool:
     """
-    WiFi "health" using the same logic as initial validation:
-    - must be connected to a non-AP WiFi profile (is_wifi_connected)
-    - must have a non-link-local RFC1918 IPv4 address (is_local_ipv4_ready)
-    - must have a reachable default gateway (is_gateway_reachable)
+    Interface-specific WiFi "health" using the same logic as initial validation:
+    - connected to a non-AP WiFi profile on *ifname*;
+    - non-link-local RFC1918 IPv4 address on *ifname*;
+    - interface-specific reachable default gateway on *ifname*.
+
+    The gateway check is now scoped to *ifname* so another adapter's route or
+    Ethernet cannot make a failed Wi-Fi adapter look healthy.
     """
     if wifi_connected is None:
-        wifi_connected = is_wifi_connected()
+        wifi_connected = is_wifi_connected(ifname)
 
     if not wifi_connected:
-        logger.debug("WiFi client health: not connected")
+        logger.debug("WiFi client health: not connected on %s", ifname)
         return False
     if not is_local_ipv4_ready(ifname):
         logger.debug("WiFi client health: no local IPv4 on %s", ifname)
         return False
-    gw_ok = is_gateway_reachable()
+    gw_ok = is_gateway_reachable(ifname)
     if not gw_ok:
-        logger.debug("WiFi client health: gateway unreachable")
+        logger.debug("WiFi client health: gateway unreachable on %s", ifname)
     return gw_ok
 
 
@@ -465,153 +535,31 @@ def is_wired_connected() -> bool:
     return False
 
 
-_OK_NEIGH_STATES = {"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"}
+# Interface-aware health/routing primitives live in the helper.  These names
+# are re-exported so existing call sites and tests keep working.
+_OK_NEIGH_STATES = wifi_net._OK_NEIGH_STATES
+_RFC1918_NETS = wifi_net._RFC1918_NETS
+_LINK_LOCAL_NET = wifi_net._LINK_LOCAL_NET
+_stateset = wifi_net._stateset
+_is_rfc1918_ipv4 = wifi_net._is_rfc1918_ipv4
+_nmcli_dev_show_fields = wifi_net._nmcli_dev_show_fields
+
 
 def _run_ip_json(args: list[str]) -> list[dict]:
-    p = run_cmd(["ip", "-j", *args], timeout=2.0)
-    if p.returncode != 0:
-        raise RuntimeError(
-            f"`ip -j {' '.join(args)}` failed: rc={p.returncode}, stderr={p.stderr.strip()}"
-        )
-    out = p.stdout.strip()
-    return json.loads(out) if out else []
+    return wifi_net._run_ip_json(args)
 
-def _stateset(state_field) -> set[str]:
-    # ip -j may return "state": "STALE" or "state": ["STALE"]
-    if isinstance(state_field, list):
-        return {str(s).upper() for s in state_field}
-    if isinstance(state_field, str):
-        return {state_field.upper()}
-    return set()
 
-def is_gateway_reachable() -> bool:
+def is_gateway_reachable(ifname: str = AP_IFNAME) -> bool:
+    """Interface-specific kernel gateway reachability (policy wrapper).
+
+    Scoped to *ifname* so another adapter's route cannot mask a failed adapter.
     """
-    Kernel-based gateway reachability:
-    - Read default gateway IP (and default dev if available)
-    - Read all neighbor entries for that gateway (across all devs)
-    - Prefer an OK-state entry on the default dev, else any OK-state entry.
-    - Primes gateway (icmp echo) prior to testing if possible
-    """
-    try:
-        routes = _run_ip_json(["route", "show", "default"])
-        if not routes:
-            return False
+    return wifi_net.is_gateway_reachable(ifname, prime_fn=prime_gateway)
 
-        r0 = routes[0]
-        gw = r0.get("gateway")
-        default_dev = r0.get("dev")  # may be None
-
-        if not gw:
-            return False
-
-        try:
-            ipaddress.ip_address(gw)
-        except ValueError:
-            return False
-
-        # Prime neighbor state before inspecting ip neigh if possibile
-        # This does not define reachability; it just causes the kernel to resolve/refresh.
-        if default_dev:
-            prime_gateway(gw)
-
-        neigh = _run_ip_json(["neigh", "show", "to", gw])  # NOTE: no dev filter
-        if not neigh:
-            return False
-
-        # 1) Prefer an OK-state neighbor on the default route's interface
-        if default_dev:
-            for n in neigh:
-                if n.get("dev") == default_dev and (_stateset(n.get("state")) & _OK_NEIGH_STATES):
-                    return True
-
-        # 2) Otherwise accept any OK-state neighbor entry
-        for n in neigh:
-            if _stateset(n.get("state")) & _OK_NEIGH_STATES:
-                return True
-
-        return False
-
-    except Exception as e:
-        logger.warning("Kernel gateway reachability check failed: %s", e)
-        return False
-
-
-_RFC1918_NETS = (
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-)
-_LINK_LOCAL_NET = ipaddress.ip_network("169.254.0.0/16")
-
-def _is_rfc1918_ipv4(ip: ipaddress.IPv4Address) -> bool:
-    return any(ip in n for n in _RFC1918_NETS)
-
-def _nmcli_dev_show_fields(ifname: str, fields: list[str]) -> dict[str, list[str]]:
-    """Return selected `nmcli -t ... dev show <ifname>` fields.
-
-    Returns a dict mapping field-name to list of values (nmcli can emit multiple
-    keys like IP4.ADDRESS[1], IP4.ADDRESS[2], ...).
-    """
-    r = run_cmd(["nmcli", "-t", "-f", ",".join(fields), "device", "show", ifname])
-    if r.returncode != 0:
-        return {}
-    out: dict[str, list[str]] = {}
-    for line in r.stdout.splitlines():
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        k = k.strip()
-        v = v.strip()
-        if not k:
-            continue
-        base = k.split("[", 1)[0]  # normalise e.g. IP4.ADDRESS[1] -> IP4.ADDRESS
-        out.setdefault(base, []).append(v)
-    return out
 
 def is_local_ipv4_ready(ifname: str = AP_IFNAME) -> bool:
-    """Local-only connectivity check.
-
-    True when NetworkManager reports the device connected/activated AND the
-    interface has a non-link-local RFC1918 IPv4 address.
-    """
-    try:
-        info = _nmcli_dev_show_fields(ifname, ["GENERAL.STATE", "IP4.ADDRESS"])
-        if not info:
-            return False
-
-        # GENERAL.STATE is like: "100 (connected)" or "30 (disconnected)"
-        state_vals = info.get("GENERAL.STATE", [])
-        if not state_vals:
-            return False
-        state_str = state_vals[0]
-        try:
-            state_code = int(state_str.split()[0])
-        except Exception:
-            state_code = -1
-        if state_code != 100:
-            return False
-
-        addrs = info.get("IP4.ADDRESS", [])
-        if not addrs:
-            return False
-
-        for a in addrs:
-            # nmcli returns "192.168.1.42/24"
-            try:
-                ip = ipaddress.ip_interface(a).ip
-            except Exception:
-                continue
-            if not isinstance(ip, ipaddress.IPv4Address):
-                continue
-            if ip in _LINK_LOCAL_NET:
-                continue
-            if _is_rfc1918_ipv4(ip):
-                return True
-
-        return False
-    except Exception as e:
-        logger.warning("Local IPv4 readiness check failed: %s", e)
-        return False
+    """Local-only connectivity check on *ifname* (policy wrapper)."""
+    return wifi_net.is_local_ipv4_ready(ifname)
 
 
 def get_ap_ssid(ifname: str) -> str:
@@ -633,140 +581,165 @@ def get_ap_ssid(ifname: str) -> str:
 
 # ** WIFI CONFIGURATION **
 
-def _get_active_wifi_connection_name(ifname: str = "wlan0") -> str:
-    """
-    Return the active connection profile name for a wifi device, or "" if unknown.
-    Uses device status, so it works even if profiles are named 'netplan-wlan0-<SSID>'.
-    """
-    r = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
-    if r.returncode != 0:
-        return ""
-    for line in r.stdout.splitlines():
-        parts = line.split(":")
-        if len(parts) != 4:
-            continue
-        dev, dev_type, state, conn = parts
-        if dev == ifname and dev_type == "wifi" and state in ("connected", "activated") and conn:
-            return conn
-    return ""
+def _get_active_wifi_connection_name(ifname: str = AP_IFNAME) -> str:
+    """Active connection profile name on *ifname* (policy wrapper over helper)."""
+    return wifi_net.get_active_wifi_connection_name(ifname)
 
-def _get_active_wifi_ssid(ifname: str = "wlan0") -> str:
+def _get_active_wifi_ssid(ifname: str = AP_IFNAME) -> str:
+    """SSID currently in use on *ifname* (policy wrapper over helper)."""
+    return wifi_net.get_active_wifi_ssid(ifname)
+
+def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
+    """Persist a successfully validated connection to both state files.
+
+    Writes /etc/autostream-network.json (authoritative) plus the legacy
+    /opt/autostream/ssid mirror.  Resolves the NetworkManager UUID when not
+    supplied so future activation/deletion can prefer ``uuid <...>``.
     """
-    Return the SSID currently in use on the given wifi interface, or "" if unknown.
-    Uses `nmcli device wifi list ifname <ifname>` and looks for the in-use marker.
+    if not conn_uuid:
+        try:
+            conn_uuid = wifi_net.resolve_connection_uuid_for_name(conn_name)
+        except Exception:
+            conn_uuid = ""
+    try:
+        wifi_net.save_network_state(
+            wifi_net.NetworkState(connection_name=conn_name, connection_uuid=conn_uuid),
+            state_path=NETWORK_STATE_PATH,
+            legacy_path=CONFIGURED_SSID,
+        )
+        logger.info(
+            "Committed network state for connection '%s' (uuid=%s)",
+            conn_name, conn_uuid or "unresolved",
+        )
+    except Exception as e:
+        logger.error("Could not persist network state for '%s': %s", conn_name, e)
+
+
+def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
+    """Create, activate and validate a candidate profile on one adapter.
+
+    Implements the rollback-safe candidate sequence (Section 6.5). The PSK never
+    appears in logs. On success the new connection is committed (name+UUID) and
+    the legacy mirror is updated; on failure only the candidate profile is
+    deleted by UUID, leaving the previous committed profile untouched.
     """
-    r = run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID", "device", "wifi", "list", "ifname", ifname])
-    if r.returncode != 0:
-        return ""
-    for line in r.stdout.splitlines():
-        # Format: "*:MySSID" or ":OtherSSID"
-        parts = line.split(":", 1)
-        if len(parts) != 2:
-            continue
-        in_use, ssid = parts
-        if in_use.strip() == "*" and ssid:
-            return ssid
-    return ""
+    ifname = target.ifname
+    con_name = wifi_net.generate_candidate_name()
+
+    # 1-2) create + configure the uniquely named candidate.
+    cmds, log_cmds = wifi_net.configure_candidate_cmds(con_name, ifname, ssid, password)
+    for cmd, log_cmd in zip(cmds, log_cmds):
+        r = run_cmd(cmd, log_cmd=log_cmd)
+        if r.returncode != 0:
+            logger.warning("Candidate profile setup step failed on %s", ifname)
+            # Best-effort cleanup of a partially created profile by name.
+            run_cmd(["nmcli", "connection", "delete", con_name])
+            return False
+
+    # 3) obtain its UUID.
+    uuid = wifi_net.get_profile_uuid(con_name)
+    if not uuid:
+        logger.warning("Could not resolve candidate UUID for '%s'", con_name)
+        run_cmd(["nmcli", "connection", "delete", con_name])
+        return False
+
+    # 4) clear cross-adapter restrictions EXCEPT connection.interface-name,
+    #    which may remain set until the first activation succeeds.
+    pre_keys = tuple(
+        k for k in wifi_net.CROSS_ADAPTER_RESTRICTIONS
+        if k != "connection.interface-name"
+    )
+    run_cmd(wifi_net.clear_restrictions_cmd(uuid, pre_keys))
+
+    # 5) activate explicitly on the target interface.
+    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, con_name, ifname))
+    if r_up.returncode != 0:
+        logger.warning("Candidate activation failed on %s (rc=%d)", ifname, r_up.returncode)
+
+    # 6) validate local IPv4 + interface-specific gateway.
+    ok = wait_for_connection(
+        ifname,
+        timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+        interval=WAIT_FOR_CONNECTION_INTERVAL,
+    ) and is_wifi_client_healthy(ifname)
+
+    if not ok:
+        # 9) on failure delete only the candidate; keep the previous committed profile.
+        logger.warning("Candidate validation failed on %s; deleting candidate", ifname)
+        run_cmd(wifi_net.delete_connection_cmd(uuid))
+        return False
+
+    # 7) clear connection.interface-name so the committed profile is portable.
+    run_cmd(wifi_net.clear_restrictions_cmd(uuid, ("connection.interface-name",)))
+
+    # 8) commit name/UUID + legacy mirror.
+    _commit_network_state(con_name, uuid)
+    logger.info("WiFi candidate committed on %s (ssid='%s')", ifname, ssid)
+    return True
+
 
 def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
-    """Configure WiFi using nmcli for the given SSID and password.
+    """Apply submitted credentials using the rollback-safe candidate sequence.
 
-    Returns True on apparent success, False otherwise.
+    Does NOT use ``nmcli device wifi connect`` (which would reuse/modify an
+    existing profile and undermine rollback). A uniquely named candidate profile
+    is created, validated, and only committed on success (Section 6.5).
+
+    Adapter order follows Section 6.4: USB adapters that saw the SSID first, then
+    built-in, then best-effort. If a USB attempt fails and built-in saw the SSID,
+    built-in is attempted once before giving up.
     """
-    # Rescan...
-    result = run_cmd(["nmcli", "dev", "wifi", "rescan"])
-    if result.returncode == 0:
-        logger.info("nmcli rescan successful.")
-    else:
-        logger.warning("nmcli rescan failed. Unable to connect to WiFi at this time.")
-        return False
-    # Then attempt connection...
-    cmd = [
-        "nmcli",
-        "device",
-        "wifi",
-        "connect",
-        ssid,
-    ]
-
-    # Build a sanitised version for logging to avoid writing WiFi password into log
-    log_cmd = cmd.copy()
-
-    if password:
-        cmd.extend(["password", password])
-        log_cmd.extend(["password", "*" * len(password)])
-    else:
-        logger.info("WiFi configuration requested with empty password (open network)")
-
-    logger.info("Running WiFi connect command: %s", " ".join(log_cmd))
-
-    # Note: passing in log_cmd so run_cmd() warnings don't leak cleartext password
-    result = run_cmd(cmd, log_cmd=log_cmd)
-
-    if result.returncode == 0:
-        logger.info("nmcli reported successful WiFi configuration")
-        # Store only if the device is truly connected; avoids saving on auth failure.
-        conn_name = _get_active_wifi_connection_name(AP_IFNAME)
-        if not conn_name:
-            logger.warning("nmcli connect returned success but device is not connected; not saving config")
-            return False
-        try:
-            with open(CONFIGURED_SSID, "w") as f:
-                f.write(f"{conn_name}\n")
-            logger.info("WiFi connection name stored in %s: '%s'", CONFIGURED_SSID, conn_name)
-        except Exception as e:
-            logger.error("Could not create or update %s: %s", CONFIGURED_SSID, e)
-        return True
-    else:
-        # nmcli can report failure even if NetworkManager ultimately connects
-        # (e.g., auto-activating an existing profile). Verify actual connectivity
-        # before declaring failure / returning to SetupMode.
-        logger.warning("nmcli failed to configure WiFi; see previous logs for details")
-        if result.stderr.strip():
-            logger.debug("nmcli stderr: %s", result.stderr.strip())
-
-        # Fast-fail on obvious credential/auth problems to avoid ~10s delay.
-        err = (result.stderr or "").lower()
-        if "secrets were required" in err or "invalid secrets" in err or "wrong password" in err:
-            return False
- 
-        if wait_for_connection(timeout=10, interval=1):
-            active_ssid = _get_active_wifi_ssid(AP_IFNAME)
-            conn_name = _get_active_wifi_connection_name(AP_IFNAME)
-            if active_ssid == ssid and conn_name:
-                logger.info(
-                    "WiFi appears connected despite nmcli rc!=0 "
-                    "(active SSID='%s', connection='%s'); treating as success",
-                    active_ssid, conn_name,
-                )
-                try:
-                    with open(CONFIGURED_SSID, "w") as f:
-                        f.write(f"{conn_name}\n")
-                    logger.info("WiFi connection name stored in %s: '%s'", CONFIGURED_SSID, conn_name)
-                except Exception as e:
-                    logger.error("Could not create or update %s: %s", CONFIGURED_SSID, e)
-                return True
-
+    merged, builtin_scan_known = scan_all_networks()
+    adapters = wifi_net.discover_adapters()
+    order = wifi_net.connection_target_order(ssid, adapters, merged, builtin_scan_known)
+    if not order:
+        logger.warning("No usable Wi-Fi adapter to apply credentials for '%s'", ssid)
         return False
 
+    for target in order:
+        if _try_candidate_on_adapter(ssid, password, target):
+            return True
+    return False
 
-def wait_for_connection(timeout: int = 20, interval: int = 2) -> bool:
-    """Wait up to 'timeout' seconds for *local* IPv4 readiness.
 
-    This appliance is designed to operate local-only, so after applying WiFi
-    credentials we treat success as:
-      - NetworkManager reports wlan0 connected/activated
-      - wlan0 has a non-link-local RFC1918 IPv4 address
+def wait_for_connection(ifname: str = AP_IFNAME, timeout: int = 20, interval: int = 2) -> bool:
+    """Wait up to 'timeout' seconds for *local* IPv4 readiness on *ifname*.
 
-    (The ongoing health monitor can still use the gateway heuristic separately.)
+    Success means NetworkManager reports the interface connected/activated with
+    a non-link-local RFC1918 IPv4 address. (The ongoing health monitor uses the
+    gateway heuristic separately.)
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if is_local_ipv4_ready(AP_IFNAME):
+        if is_local_ipv4_ready(ifname):
             return True
         time.sleep(interval)
-    logger.info("Timed out waiting %ds for local IPv4 on %s", timeout, AP_IFNAME)
+    logger.info("Timed out waiting %ds for local IPv4 on %s", timeout, ifname)
     return False
+
+
+def _write_dnsmasq_runtime(recovery_ifname: str) -> None:
+    """Validate the recovery interface and write the runtime dnsmasq config.
+
+    Fails loudly (logs WARNING) if the interface is not the resolved built-in
+    adapter or the template token is missing/duplicated; in that case dnsmasq is
+    not started with a stale or wrong config.
+    """
+    # Validate against discovered adapters: must be the resolved built-in.
+    resolved = resolve_recovery_ifname()
+    if resolved is not None and recovery_ifname != resolved:
+        logger.warning(
+            "Refusing dnsmasq runtime config: %s is not the resolved built-in (%s)",
+            recovery_ifname, resolved,
+        )
+        return
+    try:
+        wifi_net.write_dnsmasq_runtime_config(
+            DNSMASQ_TEMPLATE_PATH, DNSMASQ_RUNTIME_PATH, recovery_ifname,
+        )
+        logger.info("Wrote dnsmasq runtime config for interface %s", recovery_ifname)
+    except Exception as e:
+        logger.warning("dnsmasq runtime setup failed: %s", e)
 
 
 def start_ap_mode() -> None:
@@ -789,21 +762,23 @@ def start_ap_mode() -> None:
 
         logger.info("Enabling AP mode for SetupMode")
 
-        ssid = get_ap_ssid(AP_IFNAME)
+        # The recovery hotspot must always use the built-in radio.
+        recovery_ifname = resolve_recovery_ifname() or AP_IFNAME
 
-        # Try to bring down any existing hotspot connection first
-        # run_cmd(["nmcli", "connection", "down", AP_CONNECTION_NAME])
+        ssid = get_ap_ssid(recovery_ifname)
 
-        # Delete any existing connection with the same name
-        # this also takes it down, if running)
+        # Delete any existing connection with the same name (also takes it down).
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
 
-        # Create the connection
-        logger.info("Creating AP connection '%s' with SSID '%s'", AP_CONNECTION_NAME, ssid)
+        # Create the connection on the built-in recovery interface.
+        logger.info(
+            "Creating AP connection '%s' with SSID '%s' on %s",
+            AP_CONNECTION_NAME, ssid, recovery_ifname,
+        )
         run_cmd([
             "nmcli", "connection", "add",
             "type", "wifi",
-            "ifname", AP_IFNAME,
+            "ifname", recovery_ifname,
             "con-name", AP_CONNECTION_NAME,
             "autoconnect", "no",
             "ssid", ssid,
@@ -814,8 +789,12 @@ def start_ap_mode() -> None:
             "ipv6.method", "ignore",
         ])
 
+        # Generate the runtime dnsmasq config bound to the validated recovery
+        # interface, then start the dedicated dnsmasq service that reads it.
+        _write_dnsmasq_runtime(recovery_ifname)
+
         # Bring up the AP connection
-        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME])
+        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME, "ifname", recovery_ifname])
         run_cmd(["systemctl", "start", DNSMASQ_SERVICE])
 
         # Hostname may change at runtime; construct the portal URL dynamically.
@@ -830,67 +809,56 @@ def stop_ap_mode() -> None:
     """
     with ap_mode_lock:
         logger.info("Disabling AP mode after leaving SetupMode")
+        # Stop the dedicated dnsmasq service before removing its runtime config
+        # so the service never observes a half-deleted file.
         run_cmd(["systemctl", "stop", DNSMASQ_SERVICE])
+        wifi_net.remove_dnsmasq_runtime_config(DNSMASQ_RUNTIME_PATH)
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
         with state_lock:
             STATE.ap_exhausted = True
 
 
 def scan_wifi_networks(ifname: str = AP_IFNAME):
-    """Scan for WiFi networks and return a list of dicts with ssid and signal.
+    """Scan one interface and return ``[{"ssid", "signal"}]`` (legacy shape).
 
-    - Deduplicates SSIDs
-    - Keeps the strongest signal per SSID
-    - Returns networks ordered by signal strength (highest first)
+    Retained for backward compatibility; the captive portal uses the combined
+    multi-adapter scan below.
     """
-    cmd = [
-        "nmcli",
-        "-t",
-        "-f",
-        "SSID,SIGNAL",
-        "device",
-        "wifi",
-        "list",
-        "ifname",
-        ifname,
-    ]
-
+    cmd = ["nmcli", "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list", "ifname", ifname]
     result = run_cmd(cmd)
     if result.returncode != 0:
         logger.warning("Error scanning WiFi networks: %s", result.stderr.strip())
         return []
-
-    strongest_by_ssid: dict[str, int] = {}
-
-    for line in result.stdout.splitlines():
-        if not line:
-            continue
-
-        # nmcli -t uses ':' as field separator
-        ssid, _, signal = line.partition(":")
-        ssid = ssid.strip()
-
-        if not ssid:
-            continue
-
-        try:
-            signal_val = int(signal)
-        except ValueError:
-            continue
-
-        # Keep only the strongest signal per SSID
-        if signal_val > strongest_by_ssid.get(ssid, -1):
-            strongest_by_ssid[ssid] = signal_val
-
-    # Convert to list of dicts and sort by signal strength (descending)
+    strongest = wifi_net.parse_scan_output(result.stdout)
     return sorted(
-        (
-            {"ssid": ssid, "signal": signal}
-            for ssid, signal in strongest_by_ssid.items()
-        ),
-        key=lambda n: n["signal"],
-        reverse=True,
+        ({"ssid": s, "signal": sig} for s, sig in strongest.items()),
+        key=lambda n: n["signal"], reverse=True,
     )
+
+
+def scan_all_networks() -> tuple[list[dict], bool]:
+    """Live-scan every detected, managed Wi-Fi adapter and merge by exact SSID.
+
+    Returns ``(networks, builtin_scan_known)`` where each network record carries
+    ssid/signal/builtin_visible/usb_visible/adapter_macs (Section 6.1).  No
+    caching is performed; an individual adapter scan failure marks that
+    adapter's visibility unknown for this response only.
+    """
+    adapters = wifi_net.discover_adapters()
+    builtin = wifi_net.resolve_builtin(adapters)
+    usb = wifi_net.usb_candidates(adapters)
+
+    builtin_scan = wifi_net.scan_adapter(builtin) if builtin is not None else None
+    builtin_scan_known = builtin_scan is not None
+
+    usb_scans = [wifi_net.scan_adapter(a) for a in usb]
+    merged = wifi_net.merge_scans(
+        builtin_scan,
+        usb_scans,
+        builtin_mac=(builtin.permanent_mac if builtin else ""),
+        usb_macs=[a.permanent_mac for a in usb],
+    )
+    return merged, builtin_scan_known
 
 
 def apply_wifi_async(ssid: str, pw: str) -> None:
@@ -903,25 +871,19 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
         time.sleep(0.5)
         leave_setup_mode("Applying WiFi configuration")
 
+        # The candidate transaction already validates local IPv4 and the
+        # interface-specific gateway on the chosen adapter before committing,
+        # so a True result means connectivity has been verified.
         success = configure_wifi_with_nmcli(ssid, pw)
         if success:
-            connected = wait_for_connection(
-                timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                interval=WAIT_FOR_CONNECTION_INTERVAL,
-            )
-            if connected:
-                with state_lock:
-                    STATE.last_apply_result = "ok"
-                    STATE.last_apply_error = ""
-                    STATE.force_setup_mode = False
-                logger.info("WiFi configuration and connectivity verified")
-            else:
-                with state_lock:
-                    STATE.last_apply_result = "failed"
-                    STATE.last_apply_error = "no-local-ip"
-                    STATE.force_setup_mode = True
-                logger.warning("Local IPv4 check failed after WiFi configuration; entering SetupMode")
-                enter_setup_mode("Local IPv4 check failed after WiFi configuration")
+            with state_lock:
+                STATE.last_apply_result = "ok"
+                STATE.last_apply_error = ""
+                STATE.force_setup_mode = False
+            # A successful new connection ends any explicit-reconfiguration
+            # session and clears the rollback snapshot (Section 11.2).
+            _clear_reconfigure_state()
+            logger.info("WiFi configuration and connectivity verified")
         else:
             with state_lock:
                 STATE.last_apply_result = "failed"
@@ -935,11 +897,24 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
 
 # ** WEB APP **
 
-def render_setup_page(error_code: str = "") -> str:
+def render_setup_page(error_code: str = "", show_reconnect: bool = False) -> str:
     """Return the HTML for the WiFi setup page (styled like autostream_webui.py),
     while trying hard to avoid iOS credential-save prompts.
     Includes iOS-friendly focus handling (avoid auto-focus in key field).
+
+    ``show_reconnect`` adds a "Reconnect to saved network" action; it must be
+    False during first-run unconfigured setup (no saved network exists).
     """
+    reconnect_html = ""
+    if show_reconnect:
+        reconnect_html = """
+        <hr>
+        <div class="hint">Already configured before? You can return to your
+        previous network without re-entering its key.</div>
+        <button id="reconnect-btn" class="pill-btn small" type="button"
+                onclick="reconnectSaved()">Reconnect to saved network</button>
+        <div class="status" id="reconnect-status"></div>
+        """
 
     # Map internal error codes to a user-friendly message
     msg = ""
@@ -1040,11 +1015,37 @@ def render_setup_page(error_code: str = "") -> str:
                 _didInitialFocus = true;
             }}
 
+            // Latest merged network list + built-in scan state for warning logic.
+            let _networks = [];
+            let _builtinScanKnown = false;
+
+            function updateUsbOnlyWarning() {{
+                const warn = document.getElementById('usb-only-warning');
+                const select = document.getElementById('ssid-select');
+                if (!warn || !select) return;
+                const ssid = select.value;
+                let show = false;
+                if (ssid && _builtinScanKnown) {{
+                    const rec = _networks.find(n => (n.ssid || '') === ssid);
+                    // Show only for a KNOWN USB-only network: built-in scan
+                    // succeeded, built-in did not see it, USB did.
+                    if (rec && rec.builtin_visible === false && rec.usb_visible === true) {{
+                        show = true;
+                    }}
+                }}
+                warn.style.display = show ? 'block' : 'none';
+            }}
+
             async function fetchNetworks() {{
                 try {{
                     const resp = await fetch('/networks', {{ cache: 'no-store' }});
                     if (!resp.ok) return;
                     const data = await resp.json();
+                    // New shape: {{networks:[...], builtin_scan_known:bool}}.
+                    const list = Array.isArray(data) ? data : (data.networks || []);
+                    _networks = list;
+                    _builtinScanKnown = Array.isArray(data) ? false : !!data.builtin_scan_known;
+
                     const select = document.getElementById('ssid-select');
                     if (!select) return;
 
@@ -1056,7 +1057,7 @@ def render_setup_page(error_code: str = "") -> str:
                     ph.textContent = 'Select a WiFi network…';
                     select.appendChild(ph);
 
-                    for (const n of data) {{
+                    for (const n of list) {{
                         const opt = document.createElement('option');
                         opt.value = n.ssid || '';
                         const sig = (typeof n.signal === 'number') ? (' (' + n.signal + '%)') : '';
@@ -1065,6 +1066,7 @@ def render_setup_page(error_code: str = "") -> str:
                     }}
 
                     if (current) select.value = current;
+                    updateUsbOnlyWarning();
 
                     // After first successful population, guide focus to the SSID dropdown (iOS).
                     focusSsidSelectSoon();
@@ -1087,6 +1089,7 @@ def render_setup_page(error_code: str = "") -> str:
                 if (select) {{
                     select.addEventListener('change', () => {{
                     enable();
+                    updateUsbOnlyWarning();
                     // Only nudge focus to key if they picked a real SSID
                     if (select.value) setTimeout(() => {{ try {{ key.focus(); }} catch (e) {{}} }}, 100);
                     }});
@@ -1157,6 +1160,21 @@ def render_setup_page(error_code: str = "") -> str:
                 }}
             }}
 
+            async function reconnectSaved() {{
+                const btn = document.getElementById('reconnect-btn');
+                const st = document.getElementById('reconnect-status');
+                if (btn) btn.disabled = true;
+                if (st) st.textContent = 'Reconnecting to your saved network…';
+                try {{
+                    await fetch('/reconnect_saved', {{ method: 'POST', cache: 'no-store' }});
+                    if (st) st.textContent =
+                        'Reconnecting. You may lose this setup network shortly.';
+                }} catch (e) {{
+                    if (st) st.textContent = 'Request failed. Please try again.';
+                    if (btn) btn.disabled = false;
+                }}
+            }}
+
             window.addEventListener('load', () => {{
                 // Ensure key field won't be auto-focused by iOS, and only becomes editable on interaction.
                 armKeyField();
@@ -1192,6 +1210,12 @@ def render_setup_page(error_code: str = "") -> str:
             <select id="ssid-select" name="s" autocomplete="off">
                 <option value="">Scanning…</option>
             </select>
+
+            <div id="usb-only-warning" class="alert" style="display:none;">
+              This network is currently available only with the USB Wi-Fi
+              adapter. If removed, {html.escape(APP_TITLE)} will revert to
+              hotspot setup mode.
+            </div>
 
             <label for="key-field">WiFi Passphrase/Password</label>
             <div class="row">
@@ -1242,6 +1266,7 @@ def render_setup_page(error_code: str = "") -> str:
             </form>
             <br>
             <div class="status" id="status">Status: unknown</div>
+            {reconnect_html}
         </div>
         </body>
         </html>
@@ -1373,14 +1398,52 @@ def setup():
 
     logger.info("User requested /setup (error: %s)", e)
 
-    return _captive_response(render_setup_page(e))
+    # Offer "Reconnect to saved network" only when a saved network exists —
+    # never during first-run unconfigured setup (Section 11.5).
+    show_reconnect = _has_saved_network()
+    return _captive_response(render_setup_page(e, show_reconnect=show_reconnect))
 
 
 @app.route("/networks", methods=["GET"])
 def networks():
-    """Return a JSON list of available WiFi networks (SSID + signal)."""
-    nets = scan_wifi_networks()
-    return jsonify(nets)
+    """Return merged, deduplicated networks seen by all detected adapters.
+
+    Response shape (Section 6.2):
+        {"networks": [{ssid, signal, builtin_visible, usb_visible,
+                       adapter_macs}, ...], "builtin_scan_known": bool}
+    """
+    nets, builtin_scan_known = scan_all_networks()
+    return jsonify({"networks": nets, "builtin_scan_known": builtin_scan_known})
+
+
+def _has_saved_network() -> bool:
+    """True if a committed or rollback connection exists (Section 11.5)."""
+    if get_configured_network_state().is_configured:
+        return True
+    with state_lock:
+        return bool(STATE.rollback_connection_name)
+
+
+@app.route("/reconnect_saved", methods=["POST"])
+def reconnect_saved():
+    """Narrowly handled captive-page action: reconnect to the saved network.
+
+    Available to AP clients (not loopback) but strictly limited to reconnecting
+    an existing committed/rollback profile — it does NOT expose the general
+    network-control API.  Queues the work for the monitor loop; the browser may
+    lose AP connectivity, so success does not depend on a final acknowledgement.
+    """
+    if not _has_saved_network():
+        return jsonify({"ok": False, "error": "no_saved_network"}), 409
+    with state_lock:
+        if STATE.apply_in_progress:
+            return jsonify({"ok": False, "error": "apply_in_progress"}), 409
+        if STATE.pending_control_action or STATE.control_in_progress:
+            return jsonify({"ok": False, "error": "busy"}), 409
+        STATE.pending_control_action = "reconnect_saved"
+        control_action_event.set()
+    logger.info("Captive-page reconnect_saved queued")
+    return jsonify({"ok": True, "queued": True})
 
 
 @app.route("/status", methods=["GET"])
@@ -1473,16 +1536,158 @@ def captive_portal_api():
     return resp
 
 
+# ** LOCAL CONTROL API (WP6, Section 10.1) **
+
+def init_control_token() -> str:
+    """Generate the per-boot control token and write it root:autostream 0640.
+
+    The runtime dir is created root:autostream 0750 when needed.  Replacement at
+    each startup is authoritative.  Returns the token (also stored in module
+    state).  Never logged.
+    """
+    global _control_token
+    _control_token = secrets.token_urlsafe(32)
+    try:
+        os.makedirs(CONTROL_TOKEN_DIR, exist_ok=True)
+        try:
+            os.chmod(CONTROL_TOKEN_DIR, 0o750)
+        except OSError:
+            pass
+        wifi_net._atomic_write(CONTROL_TOKEN_PATH, _control_token + "\n", mode=0o640)
+        # Best-effort group ownership so the unprivileged Web UI can read it.
+        try:
+            import grp
+            gid = grp.getgrnam("autostream").gr_gid
+            os.chown(CONTROL_TOKEN_PATH, 0, gid)
+            os.chown(CONTROL_TOKEN_DIR, 0, gid)
+        except (KeyError, OSError, ImportError):
+            pass
+    except Exception as e:
+        logger.error("Failed to write control token file: %s", e)
+    return _control_token
+
+
+def remove_control_token() -> None:
+    try:
+        os.unlink(CONTROL_TOKEN_PATH)
+    except OSError:
+        pass
+
+
+def _is_loopback_remote() -> bool:
+    return (request.remote_addr or "") in ("127.0.0.1", "127.0.1.1", "::1")
+
+
+def _control_authorised() -> bool:
+    """Require BOTH a loopback source AND a matching per-boot token header.
+
+    Loopback alone is insufficient: during AP mode nginx proxies external
+    captive-portal clients to the watcher, so Flask may see loopback.  Tokens are
+    compared with hmac.compare_digest.
+    """
+    if not _is_loopback_remote():
+        return False
+    supplied = request.headers.get(CONTROL_TOKEN_HEADER, "")
+    if not supplied or not _control_token:
+        return False
+    return hmac.compare_digest(supplied, _control_token)
+
+
+def _network_status_payload() -> dict:
+    """Build the non-secret /network_status payload (Section 10.1)."""
+    try:
+        adapters = wifi_net.discover_adapters()
+    except Exception:
+        adapters = []
+    builtin = wifi_net.resolve_builtin(adapters)
+    with state_lock:
+        active_ifname = STATE.active_client_ifname
+        active_mac = STATE.active_client_mac
+        using_fallback = STATE.using_builtin_fallback
+        cip = STATE.control_in_progress
+        lca = STATE.last_control_action
+        lcr = STATE.last_control_result
+        lce = STATE.last_control_error
+    active = wifi_net.find_adapter_by_ifname(adapters, active_ifname) if active_ifname else None
+    usb_detected = any(a.is_usb for a in adapters)
+
+    def _ad(a):
+        if a is None:
+            return None
+        return {
+            "ifname": a.ifname, "permanent_mac": a.permanent_mac,
+            "kind": a.kind, "description": a.description,
+            "is_builtin": a.is_builtin, "is_usb": a.is_usb,
+        }
+
+    return {
+        "ok": True,
+        "configured_connection": get_configured_network_state().connection_name,
+        "active_adapter_mac": active_mac,
+        "active_adapter_ifname": active_ifname,
+        "active_adapter_kind": (active.kind if active else ""),
+        "active_adapter_description": (active.description if active else ""),
+        "usb_adapter_detected": usb_detected,
+        "using_builtin_fallback": using_fallback,
+        "builtin_adapter": _ad(builtin),
+        "adapters": [_ad(a) for a in adapters],
+        "control_in_progress": cip,
+        "last_control_action": lca,
+        "last_control_result": lcr,
+        "last_control_error": lce,
+    }
+
+
+_VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved"}
+
+
+@app.route("/network_status", methods=["GET"])
+def network_status():
+    if not _control_authorised():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    return jsonify(_network_status_payload())
+
+
+@app.route("/network_control", methods=["POST"])
+def network_control():
+    """Queue a disruptive network action; never execute it in the request thread.
+
+    Validates/authenticates, stores one pending action under the state lock,
+    signals the monitor loop, and returns a queued response before any interface
+    is disconnected.  Rejects unknown actions/fields and a second conflicting
+    action while one is pending or in progress.
+    """
+    if not _control_authorised():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_body"}), 400
+    action = payload.get("action")
+    extra = set(payload.keys()) - {"action"}
+    if action not in _VALID_CONTROL_ACTIONS or extra:
+        return jsonify({"ok": False, "error": "invalid_action"}), 400
+
+    with state_lock:
+        if STATE.pending_control_action or STATE.control_in_progress:
+            return jsonify({"ok": False, "error": "busy"}), 409
+        STATE.pending_control_action = action
+        control_action_event.set()
+
+    logger.info("Queued network control action: %s", action)
+    return jsonify({"ok": True, "queued": True, "action": action})
+
+
 @app.route("/request_ap_mode", methods=["POST"])
 def request_ap_mode():
     """Allow the normal (non-setup) WebUI to request AP/setup mode.
 
-    This endpoint is intentionally only reachable from localhost.
-    The network monitor loop will action the request asynchronously.
+    Retained for compatibility but now requires both a loopback source and the
+    per-boot control token, so no unauthenticated privileged loopback-only route
+    remains behind nginx.
     """
-    remote = request.remote_addr or ""
-    if remote not in ("127.0.0.1", "127.0.1.1", "::1"):
-        logger.warning("Rejected /request_ap_mode from non-localhost: %s", remote)
+    if not _control_authorised():
+        logger.warning("Rejected /request_ap_mode (unauthenticated/non-loopback)")
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
     reason = ""
@@ -1508,6 +1713,138 @@ def request_ap_mode():
 
     logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")
     return jsonify({"ok": True, "queued": True})
+
+
+# ** TRANSACTIONAL CHANGE-WI-FI FLOW (WP6) **
+
+def _snapshot_rollback() -> None:
+    """Record the current committed profile and active adapter for rollback."""
+    state = get_configured_network_state()
+    with state_lock:
+        active_mac = STATE.active_client_mac
+        STATE.rollback_connection_name = state.connection_name
+        STATE.rollback_connection_uuid = state.connection_uuid
+        STATE.rollback_adapter_mac = active_mac
+
+
+def process_control_action(action: str) -> None:
+    """Consume one queued control action in the monitor loop (Section 10.1)."""
+    with state_lock:
+        STATE.control_in_progress = True
+        STATE.last_control_action = action
+        STATE.last_control_error = ""
+    try:
+        if action == "start_setup":
+            start_explicit_setup()
+            result = "ok"
+        elif action == "reconnect_saved":
+            result = "ok" if reconnect_saved_network() else "failed"
+        else:
+            result = "failed"
+    except Exception as e:
+        logger.warning("Control action '%s' raised: %s", action, e)
+        result = "failed"
+        with state_lock:
+            STATE.last_control_error = str(e)
+    with state_lock:
+        STATE.control_in_progress = False
+        STATE.last_control_result = result
+
+
+def start_explicit_setup() -> None:
+    """Begin an explicit Change-Wi-Fi reconfiguration session (Section 11.1).
+
+    Snapshots the current profile/adapter, disconnects the current client
+    session (without deleting its profile), enters the built-in hotspot, and
+    starts the 30-minute deadline.  Bypasses the once-per-boot ap_exhausted
+    latch via force_setup_mode.
+    """
+    _snapshot_rollback()
+    # Disconnect the current client session without deleting its profile.
+    with state_lock:
+        active_ifname = STATE.active_client_ifname
+    if active_ifname:
+        run_cmd(["nmcli", "device", "disconnect", active_ifname])
+    with state_lock:
+        STATE.reconfigure_active = True
+        STATE.reconfigure_started_at = time.monotonic()
+        STATE.setup_purpose = "explicit_reconfigure"
+        STATE.force_setup_mode = True  # bypass ap_exhausted for explicit setup
+        STATE.manual_ap_active = True
+    logger.info("Explicit network setup starting (explicit_reconfigure)")
+    enter_setup_mode(reason="explicit_reconfigure")
+
+
+def reconnect_saved_network() -> bool:
+    """Reconnect to the saved/rollback network and exit hotspot mode on success.
+
+    During explicit reconfiguration the snapshotted rollback profile is restored
+    on its previous adapter first; otherwise USB-first deterministic order then
+    built-in is used.  On success leave_setup_mode() is called and session state
+    cleared; on failure the hotspot is retained.
+    """
+    with state_lock:
+        purpose = STATE.setup_purpose
+        rb_name = STATE.rollback_connection_name
+        rb_uuid = STATE.rollback_connection_uuid
+        rb_mac = STATE.rollback_adapter_mac
+    adapters = wifi_net.discover_adapters()
+
+    targets: list = []
+    if purpose == "explicit_reconfigure" and rb_name:
+        prev = wifi_net.find_adapter_by_mac(adapters, rb_mac)
+        if prev is not None:
+            targets.append(prev)
+        # Then fall back to USB-first, then built-in.
+        for a in wifi_net.client_candidate_order(adapters):
+            if a not in targets:
+                targets.append(a)
+        committed = wifi_net.NetworkState(connection_name=rb_name, connection_uuid=rb_uuid)
+    else:
+        targets = wifi_net.client_candidate_order(adapters)
+        committed = get_configured_network_state()
+
+    if not committed.is_configured:
+        return False
+
+    for target in targets:
+        run_cmd(wifi_net.activate_connection_cmd(
+            committed.connection_uuid, committed.connection_name, target.ifname))
+        if wait_for_connection(target.ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+                               interval=WAIT_FOR_CONNECTION_INTERVAL) \
+                and is_wifi_client_healthy(target.ifname):
+            _set_active_client(target)
+            _clear_reconfigure_state()
+            leave_setup_mode("reconnect_saved succeeded")
+            verify_avahi_after_handover()
+            logger.info("Reconnected to saved network on %s", target.ifname)
+            return True
+
+    logger.warning("Reconnect to saved network failed; retaining hotspot")
+    return False
+
+
+def handle_reconfigure_timeout() -> None:
+    """30-minute explicit-reconfiguration timeout rollback (Section 11.4)."""
+    logger.info("Explicit network setup timed out after %ds; restoring previous", AP_MAX_DURATION)
+    if reconnect_saved_network():
+        return
+    # Restoration failed: retain hotspot, convert to automatic recovery.
+    with state_lock:
+        STATE.reconfigure_active = False
+        STATE.reconfigure_started_at = None
+        STATE.setup_purpose = "automatic_recovery"
+    logger.warning("Timeout restore failed; remaining in recovery hotspot")
+
+
+def _clear_reconfigure_state() -> None:
+    with state_lock:
+        STATE.reconfigure_active = False
+        STATE.reconfigure_started_at = None
+        STATE.rollback_connection_name = ""
+        STATE.rollback_connection_uuid = ""
+        STATE.rollback_adapter_mac = ""
+        STATE.setup_purpose = "manual"
 
 
 
@@ -1577,21 +1914,60 @@ def network_monitor_loop():
                 with state_lock:
                     STATE.manual_ap_active = True
 
+        # Handle queued local-control actions (start_setup / reconnect_saved).
+        if control_action_event.is_set():
+            with state_lock:
+                action = STATE.pending_control_action
+                STATE.pending_control_action = ""
+                control_action_event.clear()
+            if action:
+                process_control_action(action)
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
+
+        # Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4).
+        with state_lock:
+            reconfigure_active = STATE.reconfigure_active
+            reconfigure_started = STATE.reconfigure_started_at
+        if reconfigure_active and reconfigure_started is not None:
+            if (now - reconfigure_started) >= AP_MAX_DURATION:
+                handle_reconfigure_timeout()
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
+
         wifi_cfg = is_wifi_configured()
         wired_connected = is_wired_connected()
-        wifi_connected = is_wifi_connected() if wifi_cfg else False
 
-        # Requested health check change: reuse the same validation logic as initial wifi checks
-        # Connectivity determination:
-        # - Ethernet up => healthy
-        # - Else WiFi must be (a) nmcli connected/activated to non-AP, (b) have RFC1918 IPv4,
-        #   and (c) have reachable default gateway (kernel neighbor view)
+        # --- Multi-adapter discovery and active-client resolution (WP5) ---
+        adapters = wifi_net.discover_adapters()
+        update_known_adapters(adapters)
+        active_client = resolve_active_client(adapters)
+        _set_active_client(active_client)
+        # Health is scoped to the *active client* adapter; fall back to the
+        # built-in interface name for an unconfigured/idle device.
+        health_ifname = active_client.ifname if active_client else AP_IFNAME
+        wifi_connected = wifi_net.is_wifi_connected(health_ifname) if wifi_cfg else False
+
         client_ok = (
-            is_wifi_client_healthy(AP_IFNAME, wifi_connected=wifi_connected)
+            is_wifi_client_healthy(health_ifname, wifi_connected=wifi_connected)
             if wifi_cfg
             else False
         )
         conn_ok = bool(wired_connected or client_ok)
+
+        # --- Active-USB failure fallback (immediate/debounced; never gated by
+        # playback). If it acts, skip the rest of this pass to avoid racing the
+        # ordinary reconnect/reboot logic. ---
+        if wifi_cfg and not wired_connected and not STATE.setup_mode:
+            if handle_usb_failure_fallback(adapters, active_client):
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
+
+        # --- Optional idle-time USB adoption from a healthy built-in client. ---
+        if wifi_cfg and conn_ok and not STATE.setup_mode:
+            if handle_runtime_usb_adoption(adapters, wired_connected):
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
 
         with state_lock:
             STATE.wifistate = "configured" if wifi_cfg else "unconfigured"
@@ -1794,6 +2170,268 @@ def connect_to_configured_wifi() -> bool:
     return True
 
 
+# ** MULTI-ADAPTER FAILURE, FALLBACK, AND RUNTIME USB ADOPTION (WP5) **
+#
+# All fallback/adoption *policy* lives here in the watcher.  The helper only
+# reports facts (discovery, health, scans) and performs bounded primitives.
+
+
+def query_playing_status() -> Optional[bool]:
+    """Return True/False playback state, or None when uncertain (Section 8.3).
+
+    In Dial mode there is no local player, so playback is always treated as
+    idle.  On the main appliance the watcher performs a read-only loopback GET
+    to /api/playing-status with a short timeout and accepts state only when the
+    response is exactly ok:true with a boolean playing.  Any failure, malformed
+    body, or explicit uncertainty returns None (defer, never assume idle).
+    """
+    if _DIAL_MODE:
+        return False
+    try:
+        with urllib.request.urlopen(PLAYING_STATUS_URL, timeout=PLAYING_STATUS_TIMEOUT) as resp:
+            raw = resp.read()
+        data = json.loads(raw)
+    except Exception:
+        _warn_playing_status_unavailable()
+        return None
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        _warn_playing_status_unavailable()
+        return None
+    playing = data.get("playing")
+    if not isinstance(playing, bool):
+        _warn_playing_status_unavailable()
+        return None
+    return playing
+
+
+def _warn_playing_status_unavailable() -> None:
+    """Throttled WARNING when playback status is unavailable during pending adoption."""
+    now = time.monotonic()
+    with state_lock:
+        pending = STATE.pending_usb_adoption_mac is not None
+        last = STATE.last_playing_status_warn
+        if pending and (now - last) >= PLAYING_STATUS_WARN_THROTTLE:
+            STATE.last_playing_status_warn = now
+            do_warn = True
+        else:
+            do_warn = False
+    if do_warn:
+        logger.warning("Playing status unavailable while USB adoption pending; deferring")
+
+
+def _activate_committed_on(ifname: str) -> bool:
+    """Activate the committed profile on *ifname* and validate health.
+
+    Returns True only when the interface becomes a healthy, non-AP client.
+    """
+    state = get_configured_network_state()
+    if not state.is_configured:
+        return False
+    run_cmd(wifi_net.activate_connection_cmd(state.connection_uuid, state.connection_name, ifname))
+    return wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+                               interval=WAIT_FOR_CONNECTION_INTERVAL) \
+        and is_wifi_client_healthy(ifname)
+
+
+def verify_avahi_after_handover() -> None:
+    """Promptly verify the Avahi hostname after a successful adapter handover.
+
+    Reuses the existing hostname verification path rather than introducing a new
+    mDNS manager; does not restart Avahi on every healthy pass.
+    """
+    try:
+        check_and_repair_avahi_hostname()
+    except Exception as e:
+        logger.warning("Avahi handover verification failed: %s", e)
+
+
+def _set_active_client(adapter) -> None:
+    with state_lock:
+        changed = STATE.active_client_ifname != (adapter.ifname if adapter else "")
+        STATE.active_client_ifname = adapter.ifname if adapter else ""
+        STATE.active_client_mac = adapter.permanent_mac if adapter else ""
+    if changed and adapter:
+        logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
+
+
+def resolve_active_client(adapters: list) -> Optional[object]:
+    """Return the adapter currently carrying a non-AP Wi-Fi client connection."""
+    for a in adapters:
+        if wifi_net.is_wifi_connected(a.ifname):
+            return a
+    return None
+
+
+def handle_usb_failure_fallback(adapters: list, active_client) -> bool:
+    """Debounced active-USB failure handling (Sections 8.4/8.5).
+
+    Returns True when a transition (built-in fallback or recovery hotspot) was
+    performed on this pass; the caller then skips its ordinary reconnect/reboot
+    logic for this pass to avoid racing.  This path is never gated by playback.
+    """
+    with state_lock:
+        recorded_mac = STATE.active_client_mac
+
+    active_is_usb = bool(active_client and active_client.is_usb)
+    recorded_usb_present = bool(recorded_mac) and any(
+        a.is_usb and a.permanent_mac == recorded_mac for a in adapters
+    )
+
+    # Case 1: the recorded active USB device is physically absent.
+    # Trigger immediate built-in fallback on this single pass.
+    if recorded_mac and _recorded_usb(recorded_mac) and not recorded_usb_present:
+        logger.info("Active USB adapter (%s) absent; attempting built-in fallback", recorded_mac)
+        return _do_builtin_fallback_or_recovery(adapters, reason="active-USB-absent")
+
+    # Only debounce the present-but-unhealthy case for an active USB client.
+    if not active_is_usb:
+        with state_lock:
+            STATE.active_usb_unhealthy_checks = 0
+        return False
+
+    if is_wifi_client_healthy(active_client.ifname):
+        with state_lock:
+            STATE.active_usb_unhealthy_checks = 0
+        return False
+
+    # Case 2: present but unhealthy -> two consecutive unhealthy passes.
+    with state_lock:
+        STATE.active_usb_unhealthy_checks += 1
+        count = STATE.active_usb_unhealthy_checks
+    logger.debug("Active USB unhealthy check %d/%d", count, USB_UNHEALTHY_DEBOUNCE)
+    if count >= USB_UNHEALTHY_DEBOUNCE:
+        logger.info("Active USB adapter unhealthy for %d passes; attempting fallback", count)
+        with state_lock:
+            STATE.active_usb_unhealthy_checks = 0
+        return _do_builtin_fallback_or_recovery(adapters, reason="active-USB-unhealthy")
+    return False
+
+
+# Remember which permanent MACs were last seen as USB, so that an absent active
+# adapter can still be classified as USB after it disappears from discovery.
+_known_usb_macs: set[str] = set()
+
+
+def _recorded_usb(mac: str) -> bool:
+    return mac in _known_usb_macs
+
+
+def _do_builtin_fallback_or_recovery(adapters: list, reason: str) -> bool:
+    """Attempt built-in LAN fallback; enter recovery hotspot if it fails."""
+    builtin = wifi_net.resolve_builtin(adapters)
+    if builtin is not None and _activate_committed_on(builtin.ifname):
+        with state_lock:
+            STATE.using_builtin_fallback = True
+            STATE.conn_down_start = None
+            STATE.last_reconnect_attempt = None
+        _set_active_client(builtin)
+        logger.info("Built-in LAN fallback connected (%s)", reason)
+        verify_avahi_after_handover()
+        return True
+
+    logger.warning("Built-in LAN fallback failed (%s); entering recovery hotspot", reason)
+    with state_lock:
+        STATE.setup_purpose = "automatic_recovery"
+    enter_setup_mode(reason=f"automatic_recovery: {reason}")
+    return True
+
+
+def handle_runtime_usb_adoption(adapters: list, wired_connected: bool) -> bool:
+    """Optional idle-time adoption of a newly available USB adapter (Section 8.2).
+
+    Adopts USB only when: Ethernet is not active; built-in carries a healthy
+    Wi-Fi client (or built-in fallback is active); no USB is already the active
+    client; the same deterministic USB candidate has been present for two passes;
+    and (main appliance) playback is confirmed idle.  Returns True if a handover
+    was performed.
+    """
+    now = time.monotonic()
+    with state_lock:
+        retry_after = STATE.usb_adoption_retry_after
+        in_setup = STATE.setup_mode
+    if in_setup or wired_connected:
+        _clear_pending_adoption()
+        return False
+    if retry_after and now < retry_after:
+        return False
+
+    usb = wifi_net.usb_candidates(adapters)
+    if not usb:
+        _clear_pending_adoption()
+        return False
+    candidate = usb[0]
+
+    active_client = resolve_active_client(adapters)
+    # Do not switch from a healthy USB client to another USB adapter.
+    if active_client is not None and active_client.is_usb:
+        _clear_pending_adoption()
+        return False
+    # Built-in must currently carry a healthy client (direct or fallback).
+    builtin = wifi_net.resolve_builtin(adapters)
+    if builtin is None or not is_wifi_client_healthy(builtin.ifname):
+        _clear_pending_adoption()
+        return False
+
+    # Two-pass stability on the same deterministic candidate.
+    with state_lock:
+        if STATE.pending_usb_adoption_mac == candidate.permanent_mac:
+            STATE.pending_usb_adoption_checks += 1
+        else:
+            STATE.pending_usb_adoption_mac = candidate.permanent_mac
+            STATE.pending_usb_adoption_checks = 1
+        checks = STATE.pending_usb_adoption_checks
+    if checks < USB_ADOPTION_STABLE_PASSES:
+        return False
+
+    # Playback gating (main appliance only).
+    playing = query_playing_status()
+    if playing is None:
+        logger.debug("USB adoption deferred: playback status uncertain")
+        return False
+    if playing:
+        log_on_change("usb_adopt_deferred_playing", True,
+                      "USB adoption deferred because playback is active")
+        return False
+
+    # Transactional handover: validate USB before deactivating built-in.
+    logger.info("Runtime USB adoption starting on %s", candidate.ifname)
+    if _activate_committed_on(candidate.ifname):
+        # Deactivate the previous built-in client connection.
+        run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
+        with state_lock:
+            STATE.using_builtin_fallback = False
+        _set_active_client(candidate)
+        _clear_pending_adoption()
+        logger.info("Runtime USB adoption succeeded on %s", candidate.ifname)
+        verify_avahi_after_handover()
+        return True
+
+    logger.warning("Runtime USB adoption failed on %s; retaining built-in", candidate.ifname)
+    with state_lock:
+        STATE.usb_adoption_retry_after = now + RECONNECT_ATTEMPT_INTERVAL
+    _clear_pending_adoption()
+    return False
+
+
+def _clear_pending_adoption() -> None:
+    with state_lock:
+        STATE.pending_usb_adoption_mac = None
+        STATE.pending_usb_adoption_checks = 0
+
+
+def update_known_adapters(adapters: list) -> None:
+    """Track USB MACs and log adapter-set changes at INFO on transition."""
+    macs = frozenset(a.permanent_mac for a in adapters if a.permanent_mac)
+    for a in adapters:
+        if a.is_usb and a.permanent_mac:
+            _known_usb_macs.add(a.permanent_mac)
+    with state_lock:
+        prev = STATE.last_detected_adapter_macs
+        STATE.last_detected_adapter_macs = macs
+    if prev is not None and prev != macs:
+        logger.info("Detected Wi-Fi adapter set changed: %s", sorted(macs))
+
+
 # ** AVAHI mDNS HOSTNAME MONITORING **
 
 def get_avahi_registered_hostname() -> Optional[str]:
@@ -1944,6 +2582,16 @@ if __name__ == "__main__":
         from autostream_rpi import check_cpu
         check_cpu()
 
+    # Migrate legacy /opt/autostream/ssid into /etc/autostream-network.json when
+    # needed.  The watcher (running as root) is the only writer of network.json.
+    try:
+        wifi_net.migrate_legacy_state(
+            state_path=NETWORK_STATE_PATH,
+            legacy_path=CONFIGURED_SSID,
+        )
+    except Exception as e:
+        logger.warning("Legacy network-state migration failed: %s", e)
+
     # First, remove any lingering Hotspot connections configured that would otherwise
     # force the Pi to setup mode even though the WiFi is probably OK, and connect to
     # whatever network is configured (if it is configured).
@@ -1957,6 +2605,9 @@ if __name__ == "__main__":
         is_wifi_configured(), is_wired_connected(),
     )
 
+    # Generate the per-boot control token before accepting any control request.
+    init_control_token()
+
     # Start the network monitor in a background thread
     monitor_thread = threading.Thread(target=network_monitor_loop, daemon=True)
     monitor_thread.start()
@@ -1965,4 +2616,9 @@ if __name__ == "__main__":
     update_apmode_flag(False)
 
     # Start the Flask app (HTTP server) on port 9080
-    app.run(host="127.0.0.1", port=9080)
+    try:
+        app.run(host="127.0.0.1", port=9080)
+    finally:
+        # Best-effort token removal on orderly shutdown; the next startup is
+        # authoritative regardless.
+        remove_control_token()

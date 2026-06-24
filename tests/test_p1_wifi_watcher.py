@@ -33,6 +33,12 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
 
+# The watcher imports its sibling helper `autostream_wifi_network` (deployed
+# alongside it in /opt/autostream). Make core/ importable so the load succeeds.
+_CORE = str(REPO_ROOT / "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
 
 # ---------------------------------------------------------------------------
 # Module loader — stubs Flask and autostream_sysutils so import works offline
@@ -236,13 +242,13 @@ class TestIsWifiConnected:
         output = "wlan0:wifi:connected:MySSID\n"
         # mode query returns "802-11-wireless.mode:infrastructure"
         mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:infrastructure\n", stderr="")
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
             assert watcher.is_wifi_connected() is True
 
     def test_disconnected_returns_false(self, watcher):
         output = "wlan0:wifi:disconnected:\n"
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.return_value = self._run_cmd_ok(output)
             assert watcher.is_wifi_connected() is False
 
@@ -250,38 +256,37 @@ class TestIsWifiConnected:
         # Device is "connected" but the connection is in AP mode.
         output = "wlan0:wifi:connected:Hotspot\n"
         mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:ap\n", stderr="")
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
             assert watcher.is_wifi_connected() is False
 
     def test_command_failure_returns_false(self, watcher):
         result = MagicMock(returncode=1, stdout="", stderr="Error")
-        with patch.object(watcher, "run_cmd", return_value=result):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=result):
             assert watcher.is_wifi_connected() is False
 
     def test_empty_output_returns_false(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok("")):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._run_cmd_ok("")):
             assert watcher.is_wifi_connected() is False
 
     def test_wrong_device_ignored(self, watcher):
         # eth0 connected but wlan0 is not
         output = "eth0:ethernet:connected:Wired\nwlan0:wifi:disconnected:\n"
-        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._run_cmd_ok(output)):
             assert watcher.is_wifi_connected() is False
 
     def test_malformed_line_skipped(self, watcher):
         output = "bad-line-without-colons\nwlan0:wifi:disconnected:\n"
-        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._run_cmd_ok(output)):
             assert watcher.is_wifi_connected() is False
 
     def test_escaped_ssid_with_colon(self, watcher):
-        # nmcli -t uses ':' as separator; a colon in the SSID name shouldn't crash
-        output = "wlan0:wifi:connected:My:SSID:with:colons\n"
+        # nmcli -t escapes ':' in SSIDs as '\:'; the helper's parser handles it.
+        output = "wlan0:wifi:connected:My\\:SSID\\:with\\:colons\n"
         mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:infrastructure\n", stderr="")
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
-            # Should not raise; whether it returns True/False depends on parse
-            watcher.is_wifi_connected()
+            assert watcher.is_wifi_connected() is True
 
 
 # ---------------------------------------------------------------------------
@@ -294,36 +299,36 @@ class TestIsLocalIpv4Ready:
 
     def test_rfc1918_address_returns_true(self, watcher):
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:192.168.1.42/24\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is True
 
     def test_link_local_address_returns_false(self, watcher):
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:169.254.1.1/16\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_public_ip_returns_false(self, watcher):
         # Only RFC1918 addresses count as "local"
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:8.8.8.8/24\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_disconnected_state_returns_false(self, watcher):
         output = "GENERAL.STATE:30 (disconnected)\nIP4.ADDRESS[1]:192.168.1.42/24\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_no_addresses_returns_false(self, watcher):
         output = "GENERAL.STATE:100 (connected)\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_empty_output_returns_false(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("")):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd("")):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_command_failure_returns_false(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("", rc=1)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd("", rc=1)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_multiple_addresses_accepts_first_rfc1918(self, watcher):
@@ -332,12 +337,12 @@ class TestIsLocalIpv4Ready:
             "IP4.ADDRESS[1]:169.254.0.1/16\n"
             "IP4.ADDRESS[2]:10.0.0.5/8\n"
         )
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is True
 
     def test_malformed_json_address_skipped(self, watcher):
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:not-an-ip\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
 
@@ -346,71 +351,89 @@ class TestIsLocalIpv4Ready:
 # ---------------------------------------------------------------------------
 
 class TestIsGatewayReachable:
+    """Interface-specific gateway reachability (WP2).
+
+    Health is scoped to the requested interface: the default route's dev must
+    equal the interface, and only a neighbour entry on that same interface
+    counts.  Another adapter's route/neighbour cannot make a failed adapter
+    appear healthy.
+    """
+
     def test_reachable_gateway_returns_true(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
         neigh = [{"dev": "wlan0", "state": "REACHABLE"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            assert watcher.is_gateway_reachable("wlan0") is True
 
     def test_stale_state_returns_true(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
         neigh = [{"dev": "wlan0", "state": "STALE"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            assert watcher.is_gateway_reachable("wlan0") is True
 
     def test_failed_state_returns_false(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
         neigh = [{"dev": "wlan0", "state": "FAILED"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is False
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_no_routes_returns_false(self, watcher):
-        with patch.object(watcher, "_run_ip_json", return_value=[]):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", return_value=[]):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_missing_gateway_key_returns_false(self, watcher):
         routes = [{"dev": "wlan0"}]  # no "gateway" key
-        with patch.object(watcher, "_run_ip_json", return_value=routes):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", return_value=routes):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_invalid_gateway_ip_returns_false(self, watcher):
         routes = [{"gateway": "not-an-ip", "dev": "wlan0"}]
-        with patch.object(watcher, "_run_ip_json", return_value=routes):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", return_value=routes):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_empty_neigh_list_returns_false(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, []]
-            assert watcher.is_gateway_reachable() is False
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_state_as_list_works(self, watcher):
         routes = [{"gateway": "10.0.0.1", "dev": "eth0"}]
         neigh = [{"dev": "eth0", "state": ["REACHABLE"]}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            # Must query the interface that actually carries the default route.
+            assert watcher.is_gateway_reachable("eth0") is True
 
     def test_ip_json_exception_returns_false(self, watcher):
-        with patch.object(watcher, "_run_ip_json", side_effect=RuntimeError("ip failed")):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", side_effect=RuntimeError("ip failed")):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
-    def test_fallback_to_any_dev_neigh_when_no_default_dev_match(self, watcher):
-        # Route has dev=wlan0, but neigh is on eth0; should fall back to any OK neigh.
-        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
-        neigh = [{"dev": "eth0", "state": "REACHABLE"}]  # different dev
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+    def test_other_interface_route_does_not_satisfy_requested_interface(self, watcher):
+        # Default route is on eth0; querying wlan0 must NOT be satisfied by it.
+        routes = [{"gateway": "192.168.1.1", "dev": "eth0"}]
+        neigh = [{"dev": "eth0", "state": "REACHABLE"}]
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            assert watcher.is_gateway_reachable("wlan0") is False
+
+    def test_neigh_on_other_dev_does_not_count(self, watcher):
+        # Route on wlan0, but the only OK neighbour is on eth0 -> not healthy.
+        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
+        neigh = [{"dev": "eth0", "state": "REACHABLE"}]
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, neigh]
+            assert watcher.is_gateway_reachable("wlan0") is False
 
 
 # ---------------------------------------------------------------------------
@@ -702,19 +725,545 @@ class TestStatusRoute:
 
     def test_request_ap_mode_rejected_from_non_localhost(self, flask_client):
         client, mod = flask_client
+        mod._control_token = "tok"
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "10.0.0.5"},
         )
         assert rv.status_code == 403
 
-    def test_request_ap_mode_accepted_from_localhost(self, flask_client):
+    def test_request_ap_mode_rejected_without_token(self, flask_client):
         client, mod = flask_client
+        mod._control_token = "tok"
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
+        # No token header -> forbidden even from loopback (no unauthenticated
+        # privileged route remains behind nginx).
+        assert rv.status_code == 403
+
+    def test_request_ap_mode_accepted_with_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/request_ap_mode",
+            json={"reason": "test"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
         # If AP exhausted or other condition, might return 409; accept that too.
         assert rv.status_code in (200, 409)
+
+
+class TestNetworkControlRoutes:
+    """WP6: per-boot-token-protected control surface."""
+
+    def test_network_status_requires_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.get("/network_status", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert rv.status_code == 403
+
+    def test_network_status_ok_with_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.get(
+            "/network_status",
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        data = json.loads(rv.data)
+        assert data["ok"] is True
+        assert "active_adapter_ifname" in data
+
+    def test_network_control_rejects_non_loopback(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "start_setup"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        )
+        assert rv.status_code == 403
+
+    def test_network_control_rejects_unknown_action(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "wipe_everything"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_network_control_rejects_extra_fields(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "start_setup", "evil": 1},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_network_control_queues_before_disconnect(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        # Reset pending state.
+        mod.STATE.pending_control_action = ""
+        mod.STATE.control_in_progress = False
+        rv = client.post(
+            "/network_control",
+            json={"action": "start_setup"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        assert json.loads(rv.data).get("queued") is True
+        assert mod.STATE.pending_control_action == "start_setup"
+        # Clean up the queued action so other tests are unaffected.
+        mod.STATE.pending_control_action = ""
+        mod.control_action_event.clear()
+
+    def test_second_conflicting_action_rejected(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        mod.STATE.pending_control_action = "start_setup"
+        rv = client.post(
+            "/network_control",
+            json={"action": "reconnect_saved"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 409
+        mod.STATE.pending_control_action = ""
+        mod.control_action_event.clear()
+
+
+# ---------------------------------------------------------------------------
+# WP4 — recovery adapter and runtime dnsmasq binding
+# ---------------------------------------------------------------------------
+
+class TestRecoveryAdapter:
+    def _adapter(self, ifname, mac, is_usb=False, is_builtin=False):
+        mod = _get_watcher()
+        return mod.wifi_net.WifiAdapter(
+            ifname=ifname, permanent_mac=mac, current_mac=mac,
+            is_builtin=is_builtin, is_usb=is_usb, managed=True,
+            state="connected", description=ifname,
+        )
+
+    def test_recovery_is_builtin_even_with_usb(self, watcher):
+        adapters = [
+            self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+            self._adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+        ]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            assert watcher.resolve_recovery_ifname() == "wlan0"
+
+    def test_recovery_none_when_no_builtin(self, watcher):
+        adapters = [self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True)]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            assert watcher.resolve_recovery_ifname() is None
+
+    def test_write_dnsmasq_runtime_uses_validated_builtin(self, watcher, tmp_path):
+        tpl = tmp_path / "tpl.conf"
+        tpl.write_text("interface=__AUTOSTREAM_WIFI_IFACE__\nbind-interfaces\n", encoding="utf-8")
+        runtime = tmp_path / "run" / "out.conf"
+        watcher.DNSMASQ_TEMPLATE_PATH = str(tpl)
+        watcher.DNSMASQ_RUNTIME_PATH = str(runtime)
+        adapters = [self._adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            watcher._write_dnsmasq_runtime("wlan0")
+        assert "interface=wlan0" in runtime.read_text(encoding="utf-8")
+
+    def test_write_dnsmasq_runtime_refuses_non_builtin(self, watcher, tmp_path):
+        tpl = tmp_path / "tpl.conf"
+        tpl.write_text("interface=__AUTOSTREAM_WIFI_IFACE__\n", encoding="utf-8")
+        runtime = tmp_path / "run" / "out.conf"
+        watcher.DNSMASQ_TEMPLATE_PATH = str(tpl)
+        watcher.DNSMASQ_RUNTIME_PATH = str(runtime)
+        adapters = [self._adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            # Asking to write for a USB interface (wlan1) must be refused.
+            watcher._write_dnsmasq_runtime("wlan1")
+        assert not runtime.exists()
+
+
+# ---------------------------------------------------------------------------
+# WP5 — multi-adapter failure fallback and runtime USB adoption
+# ---------------------------------------------------------------------------
+
+def _adapter(mod, ifname, mac, is_usb=False, is_builtin=False):
+    return mod.wifi_net.WifiAdapter(
+        ifname=ifname, permanent_mac=mac, current_mac=mac,
+        is_builtin=is_builtin, is_usb=is_usb, managed=True,
+        state="connected", description=ifname,
+    )
+
+
+class TestQueryPlayingStatus:
+    def test_dial_mode_always_idle(self, watcher):
+        with patch.object(watcher, "_DIAL_MODE", True):
+            assert watcher.query_playing_status() is False
+
+    def test_ok_true_playing_false(self, watcher):
+        body = json.dumps({"ok": True, "playing": False}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is False
+
+    def test_ok_true_playing_true(self, watcher):
+        body = json.dumps({"ok": True, "playing": True}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is True
+
+    def test_ok_false_is_uncertain(self, watcher):
+        body = json.dumps({"ok": False, "error": "x"}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is None
+
+    def test_non_boolean_playing_is_uncertain(self, watcher):
+        body = json.dumps({"ok": True, "playing": "yes"}).encode()
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = body
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert watcher.query_playing_status() is None
+
+    def test_transport_failure_is_uncertain(self, watcher):
+        with patch.object(watcher, "_DIAL_MODE", False), \
+             patch("urllib.request.urlopen", side_effect=OSError("refused")):
+            assert watcher.query_playing_status() is None
+
+
+class TestUsbFailureFallback:
+    def test_absent_active_usb_triggers_immediate_fallback(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb_mac = "bb:bb:bb:bb:bb:01"
+        watcher._known_usb_macs.add(usb_mac)
+        watcher.STATE.active_client_mac = usb_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        adapters = [builtin]  # USB gone
+        with patch.object(watcher, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            acted = watcher.handle_usb_failure_fallback(adapters, None)
+        assert acted is True
+        act.assert_called_once_with("wlan0")
+        assert watcher.STATE.using_builtin_fallback is True
+
+    def test_one_transient_unhealthy_pass_does_not_switch(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
+        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_do_builtin_fallback_or_recovery") as fb:
+            acted = watcher.handle_usb_failure_fallback(adapters, usb)
+        assert acted is False
+        fb.assert_not_called()
+        assert watcher.STATE.active_usb_unhealthy_checks == 1
+
+    def test_two_unhealthy_passes_trigger_fallback(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
+        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.active_usb_unhealthy_checks = 1
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_do_builtin_fallback_or_recovery", return_value=True) as fb:
+            acted = watcher.handle_usb_failure_fallback(adapters, usb)
+        assert acted is True
+        fb.assert_called_once()
+
+    def test_builtin_fallback_restores_lan(self, watcher):
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            acted = watcher._do_builtin_fallback_or_recovery(adapters, "test")
+        assert acted is True
+        assert watcher.STATE.using_builtin_fallback is True
+
+    def test_usb_only_enters_recovery_hotspot(self, watcher):
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            acted = watcher._do_builtin_fallback_or_recovery(adapters, "usb-only")
+        assert acted is True
+        enter.assert_called_once()
+        assert watcher.STATE.setup_purpose == "automatic_recovery"
+
+
+class TestRuntimeUsbAdoption:
+    def _builtin_and_usb(self, watcher):
+        return (
+            _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:10", is_usb=True),
+        )
+
+    def test_adopts_after_two_passes_when_idle(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=False), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
+            first = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            second = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert first is False   # first pass only records the candidate
+        assert second is True   # adopted on the second stable pass
+        assert watcher.STATE.active_client_ifname == "wlan1"
+
+    def test_deferred_while_playing(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=True), \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        act.assert_not_called()  # never handed over while playing
+
+    def test_deferred_then_adopted_when_idle(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        # Pass 1 records the candidate (checks=1) and returns before querying
+        # playback; passes 2 and 3 query playback (active, then idle).
+        playing = [True, False]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", side_effect=lambda: playing.pop(0)), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
+            r1 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r2 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r3 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert (r1, r2, r3) == (False, False, True)
+
+    def test_uncertain_status_defers(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=None), \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        act.assert_not_called()
+
+    def test_ethernet_blocks_adoption(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=True)
+        assert r is False
+        act.assert_not_called()
+
+    def test_does_not_switch_between_usb_adapters(self, watcher):
+        builtin, usb1 = self._builtin_and_usb(watcher)
+        usb2 = _adapter(watcher, "wlan2", "bb:bb:bb:bb:bb:20", is_usb=True)
+        adapters = [builtin, usb1, usb2]
+        with patch.object(watcher, "resolve_active_client", return_value=usb1), \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is False
+        act.assert_not_called()
+
+    def test_failed_adoption_sets_retry_suppression(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "query_playing_status", return_value=False), \
+             patch.object(watcher, "_activate_committed_on", return_value=False):
+            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is False
+        assert watcher.STATE.usb_adoption_retry_after > 0
+        assert watcher.STATE.using_builtin_fallback is False
+
+
+# ---------------------------------------------------------------------------
+# WP6 — transactional change-Wi-Fi flow and local control API
+# ---------------------------------------------------------------------------
+
+class TestControlToken:
+    def test_token_file_written_with_mode(self, watcher, tmp_path):
+        token_path = tmp_path / "run" / "wifi-control.token"
+        watcher.CONTROL_TOKEN_DIR = str(tmp_path / "run")
+        watcher.CONTROL_TOKEN_PATH = str(token_path)
+        tok = watcher.init_control_token()
+        assert tok and token_path.exists()
+        # Token never empty; file content matches.
+        assert token_path.read_text(encoding="utf-8").strip() == tok
+        import stat
+        mode = stat.S_IMODE(token_path.stat().st_mode)
+        # On POSIX should be 0o640; on Windows chmod is approximate, so only
+        # assert it is not world-writable.
+        assert not (mode & 0o007) or sys.platform == "win32"
+
+    def test_remove_token_best_effort(self, watcher, tmp_path):
+        token_path = tmp_path / "wifi-control.token"
+        token_path.write_text("x", encoding="utf-8")
+        watcher.CONTROL_TOKEN_PATH = str(token_path)
+        watcher.remove_control_token()
+        assert not token_path.exists()
+        watcher.remove_control_token()  # no error when absent
+
+
+class TestStartExplicitSetup:
+    def test_snapshots_and_enters_setup(self, watcher):
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.active_client_mac = "bb:bb:bb:bb:bb:01"
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            watcher.start_explicit_setup()
+        assert watcher.STATE.reconfigure_active is True
+        assert watcher.STATE.setup_purpose == "explicit_reconfigure"
+        assert watcher.STATE.rollback_connection_name == "Home"
+        assert watcher.STATE.rollback_adapter_mac == "bb:bb:bb:bb:bb:01"
+        assert watcher.STATE.force_setup_mode is True  # bypass ap_exhausted
+        enter.assert_called_once()
+
+    def test_disconnects_active_client_session(self, watcher):
+        watcher.STATE.active_client_ifname = "wlan1"
+        calls = []
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "run_cmd", side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)), \
+             patch.object(watcher, "enter_setup_mode"):
+            watcher.start_explicit_setup()
+        assert any("disconnect" in c and "wlan1" in c for c in calls)
+
+
+class TestReconnectSavedNetwork:
+    def test_success_clears_state_and_leaves_setup(self, watcher):
+        watcher.STATE.setup_purpose = "explicit_reconfigure"
+        watcher.STATE.rollback_connection_name = "Home"
+        watcher.STATE.rollback_connection_uuid = "uuid-1"
+        watcher.STATE.rollback_adapter_mac = "aa:bb:cc:00:00:01"
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            ok = watcher.reconnect_saved_network()
+        assert ok is True
+        leave.assert_called_once()
+        assert watcher.STATE.reconfigure_active is False
+        assert watcher.STATE.rollback_connection_name == ""
+
+    def test_failure_retains_hotspot(self, watcher):
+        watcher.STATE.setup_purpose = "explicit_reconfigure"
+        watcher.STATE.rollback_connection_name = "Home"
+        watcher.STATE.rollback_connection_uuid = "uuid-1"
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            ok = watcher.reconnect_saved_network()
+        assert ok is False
+        leave.assert_not_called()
+
+
+class TestReconfigureTimeout:
+    def test_timeout_restores_previous(self, watcher):
+        with patch.object(watcher, "reconnect_saved_network", return_value=True) as rc:
+            watcher.handle_reconfigure_timeout()
+        rc.assert_called_once()
+
+    def test_timeout_restore_failure_enters_recovery(self, watcher):
+        watcher.STATE.reconfigure_active = True
+        with patch.object(watcher, "reconnect_saved_network", return_value=False):
+            watcher.handle_reconfigure_timeout()
+        assert watcher.STATE.reconfigure_active is False
+        assert watcher.STATE.setup_purpose == "automatic_recovery"
+
+
+class TestSavedNetworkGating:
+    def test_has_saved_network_committed(self, watcher):
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "u")):
+            assert watcher._has_saved_network() is True
+
+    def test_has_saved_network_rollback_only(self, watcher):
+        watcher.STATE.rollback_connection_name = "Old"
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("", "")):
+            assert watcher._has_saved_network() is True
+
+    def test_no_saved_network_first_run(self, watcher):
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("", "")):
+            assert watcher._has_saved_network() is False
+
+
+class TestControlAuthLogic:
+    def test_authorised_requires_token_match(self, watcher):
+        watcher._control_token = "secret"
+        # Simulate request object with header + remote.
+        req = MagicMock()
+        req.remote_addr = "127.0.0.1"
+        req.headers = {watcher.CONTROL_TOKEN_HEADER: "secret"}
+        with patch.object(watcher, "request", req):
+            assert watcher._control_authorised() is True
+
+    def test_authorised_rejects_wrong_token(self, watcher):
+        watcher._control_token = "secret"
+        req = MagicMock()
+        req.remote_addr = "127.0.0.1"
+        req.headers = {watcher.CONTROL_TOKEN_HEADER: "wrong"}
+        with patch.object(watcher, "request", req):
+            assert watcher._control_authorised() is False
+
+    def test_authorised_rejects_non_loopback(self, watcher):
+        watcher._control_token = "secret"
+        req = MagicMock()
+        req.remote_addr = "10.0.0.5"
+        req.headers = {watcher.CONTROL_TOKEN_HEADER: "secret"}
+        with patch.object(watcher, "request", req):
+            assert watcher._control_authorised() is False
+
+    def test_process_control_action_start_setup(self, watcher):
+        with patch.object(watcher, "start_explicit_setup") as ss:
+            watcher.process_control_action("start_setup")
+        ss.assert_called_once()
+        assert watcher.STATE.last_control_action == "start_setup"
+        assert watcher.STATE.last_control_result == "ok"
+        assert watcher.STATE.control_in_progress is False

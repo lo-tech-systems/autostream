@@ -360,11 +360,22 @@ def _api_put_log_level(level: str) -> Optional[dict]:
 
 
 def get_playing_status() -> Optional[bool]:
-    """Return True if playing, False if idle, None if unreachable."""
+    """Return True if playing, False if idle, None if unknown/uncertain.
+
+    Accepts playback state only when the response is exactly ``ok: true`` and
+    ``playing`` is a JSON boolean.  Any unreachable, malformed, or explicitly
+    uncertain (``ok: false``) response is treated conservatively as None
+    rather than as stopped playback (Section 8.3).
+    """
     data = _api_get("/api/playing-status")
     if data is None:
         return None
-    return bool(data.get("playing"))
+    if data.get("ok") is not True:
+        return None
+    playing = data.get("playing")
+    if not isinstance(playing, bool):
+        return None
+    return playing
 
 
 def get_log_level_state() -> Optional[dict]:

@@ -271,7 +271,9 @@ class TestSendPlayingStatusJson:
 
         assert sent[0][1]["playing"] is False
 
-    def test_exception_returns_playing_false(self, tmp_path):
+    def test_exception_returns_explicit_uncertainty(self, tmp_path):
+        """Monitor-query failure returns explicit uncertainty (ok:false), never
+        a false idle (Section 8.3)."""
         h = _make_handler()
         sent = []
 
@@ -279,7 +281,10 @@ class TestSendPlayingStatusJson:
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
-        assert sent[0][1]["playing"] is False
+        assert sent[0][0] == 200  # HTTP 200 with explicit uncertain body
+        assert sent[0][1]["ok"] is False
+        assert "playing" not in sent[0][1]
+        assert sent[0][1].get("error") == "playing status unavailable"
 
 
 # ---------------------------------------------------------------------------
