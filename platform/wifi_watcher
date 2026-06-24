@@ -1831,6 +1831,13 @@ def reconnect_saved_network() -> bool:
     if not committed.is_configured:
         return False
 
+    # Resolve UUID (lazily persisting if missing) and clear cross-adapter
+    # restrictions once, before iterating over target adapters, so a legacy
+    # profile bound to a specific interface/MAC can be activated on any adapter.
+    committed_uuid = _resolve_committed_uuid(committed)
+    if committed_uuid:
+        run_cmd(wifi_net.clear_restrictions_cmd(committed_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
+
     builtin = wifi_net.resolve_builtin(wifi_net.discover_adapters())
     for target in targets:
         # When the built-in adapter currently hosts the AP, activating a client
@@ -1845,7 +1852,7 @@ def reconnect_saved_network() -> bool:
             ap_stopped_for_builtin = True
 
         run_cmd(wifi_net.activate_connection_cmd(
-            committed.connection_uuid, committed.connection_name, target.ifname))
+            committed_uuid, committed.connection_name, target.ifname))
         if wait_for_connection(target.ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
                                interval=WAIT_FOR_CONNECTION_INTERVAL) \
                 and is_wifi_client_healthy(target.ifname):
@@ -2575,10 +2582,17 @@ def _try_recovery_reconnect(adapters: list) -> None:
     if not candidates:
         logger.debug("Auto-recovery: no USB candidates; hotspot retained")
         return
+
+    # Resolve UUID (lazily persisting if missing) and clear cross-adapter
+    # restrictions once before probing USB candidates.
+    recovery_uuid = _resolve_committed_uuid(state)
+    if recovery_uuid:
+        run_cmd(wifi_net.clear_restrictions_cmd(recovery_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
+
     for candidate in candidates:
         logger.info("Auto-recovery: probing USB %s", candidate.ifname)
         run_cmd(wifi_net.activate_connection_cmd(
-            state.connection_uuid, state.connection_name, candidate.ifname,
+            recovery_uuid, state.connection_name, candidate.ifname,
         ))
         if (wait_for_connection(candidate.ifname,
                                 timeout=WAIT_FOR_CONNECTION_TIMEOUT,

@@ -1201,6 +1201,41 @@ class TestReconnectSavedNetwork:
         assert ok is False
         leave.assert_not_called()
 
+    def test_clears_restrictions_before_activation_with_empty_uuid(self, watcher):
+        """reconnect_saved_network must resolve and clear cross-adapter restrictions
+        before the first activation attempt, even when the stored UUID is empty."""
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        calls = []
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin]), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          return_value="resolved-uuid"), \
+             patch.object(watcher.wifi_net, "save_network_state"), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "")), \
+             patch.object(watcher, "run_cmd",
+                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "leave_setup_mode"), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            watcher.reconnect_saved_network()
+
+        str_calls = [str(c) for c in calls]
+        modify_before_up = next(
+            (i for i, c in enumerate(str_calls) if "modify" in c and "resolved-uuid" in c), None
+        )
+        up_call = next(
+            (i for i, c in enumerate(str_calls) if "connection" in c and "up" in c), None
+        )
+        assert modify_before_up is not None, (
+            "reconnect_saved_network must issue clear_restrictions_cmd with resolved UUID"
+        )
+        assert up_call is not None, "reconnect_saved_network must issue an activation command"
+        assert modify_before_up < up_call, (
+            "cross-adapter restrictions must be cleared BEFORE activation"
+        )
+
 
 class TestReconfigureTimeout:
     def test_timeout_restores_previous(self, watcher):
@@ -1560,3 +1595,41 @@ class TestAutoRecoveryUsbReconnect:
             watcher._try_recovery_reconnect(adapters)
 
         leave.assert_not_called()
+
+    def test_clears_restrictions_before_probe_with_empty_uuid(self, watcher):
+        """_try_recovery_reconnect must resolve and clear cross-adapter restrictions
+        before the first USB probe attempt, even when the stored UUID is empty."""
+        usb = _adapter(watcher, "wlan1", "cc:cc:cc:cc:cc:03", is_usb=True)
+        adapters = [
+            _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            usb,
+        ]
+        calls = []
+        with patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          return_value="resolved-uuid"), \
+             patch.object(watcher.wifi_net, "save_network_state"), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("HomeNetwork", "")), \
+             patch.object(watcher, "run_cmd",
+                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "leave_setup_mode"), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            watcher._try_recovery_reconnect(adapters)
+
+        str_calls = [str(c) for c in calls]
+        modify_idx = next(
+            (i for i, c in enumerate(str_calls) if "modify" in c and "resolved-uuid" in c), None
+        )
+        up_idx = next(
+            (i for i, c in enumerate(str_calls) if "connection" in c and "up" in c), None
+        )
+        assert modify_idx is not None, (
+            "_try_recovery_reconnect must issue clear_restrictions_cmd with resolved UUID"
+        )
+        assert up_idx is not None
+        assert modify_idx < up_idx, (
+            "cross-adapter restrictions must be cleared BEFORE the USB probe activation"
+        )
