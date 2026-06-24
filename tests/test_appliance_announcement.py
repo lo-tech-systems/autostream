@@ -38,7 +38,8 @@ def _make_module():
         def __init__(self, **kwargs):
             self._kwargs = kwargs
             self._started = False
-        def start(self): self._started = True
+        def start(self, shutdown_event=None): self._started = True
+        def stop(self): pass
         def get_snapshot(self): return {}
         def scanner_ready(self): return True
         def grace_remaining_ms(self): return 0
