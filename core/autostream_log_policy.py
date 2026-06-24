@@ -92,7 +92,9 @@ def set_log_level(
         if level_str not in VALID_LOG_LEVELS:
             return {"ok": False, "error": f"Unsupported log level: {requested_level!r}"}
 
-    changed_by_str = normalize_log_level_changed_by(changed_by)
+    # Validate before normalizing: normalize_log_level_changed_by silently maps
+    # unknown values to "user", so the post-normalize check would never trigger.
+    changed_by_str = str(changed_by or "").strip().lower()
     if changed_by_str not in VALID_LOG_LEVEL_CHANGED_BY:
         return {"ok": False, "error": f"Invalid changed_by value: {changed_by!r}"}
 

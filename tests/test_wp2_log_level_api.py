@@ -63,7 +63,7 @@ def _make_handler(
         headers["X-CSRF-Token"] = csrf_header
     h.headers = headers
 
-    # Simulate _is_direct_local logic from ConfigWebHandler
+    # Simulate _is_direct_local logic from ConfigWebHandler (no Content-Type check)
     def _is_direct_local():
         peer_ip = h.client_address[0]
         is_loopback = peer_ip.startswith("127.") or peer_ip == "::1"
@@ -73,8 +73,7 @@ def _make_handler(
             return False
         if h.headers.get("X-Real-IP"):
             return False
-        ct = (h.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        return ct == "application/json"
+        return True
 
     h._is_direct_local = _is_direct_local
 
@@ -97,26 +96,29 @@ class TestIsDirectLocal:
         h = _make_handler(**kwargs)
         return h._is_direct_local()
 
+    def test_loopback_no_proxy_is_direct(self):
+        # No Content-Type required; GET requests don't carry one
+        assert self._check(peer="127.0.0.1") is True
+
     def test_loopback_no_proxy_json_is_direct(self):
         assert self._check(peer="127.0.0.1", content_type="application/json") is True
 
     def test_loopback_ipv6_is_direct(self):
-        assert self._check(peer="::1", content_type="application/json") is True
+        assert self._check(peer="::1") is True
 
     def test_xff_present_is_not_direct(self):
-        assert self._check(peer="127.0.0.1", xff="10.0.0.1", content_type="application/json") is False
+        assert self._check(peer="127.0.0.1", xff="10.0.0.1") is False
 
     def test_xri_present_is_not_direct(self):
-        assert self._check(peer="127.0.0.1", xri="10.0.0.1", content_type="application/json") is False
+        assert self._check(peer="127.0.0.1", xri="10.0.0.1") is False
 
     def test_non_loopback_is_not_direct(self):
-        assert self._check(peer="192.168.1.1", content_type="application/json") is False
+        assert self._check(peer="192.168.1.1") is False
 
-    def test_wrong_content_type_is_not_direct(self):
-        assert self._check(peer="127.0.0.1", content_type="text/plain") is False
-
-    def test_form_content_type_is_not_direct(self):
-        assert self._check(peer="127.0.0.1", content_type="application/x-www-form-urlencoded") is False
+    def test_any_content_type_still_direct_on_loopback(self):
+        # Content-Type is not part of the check; it should have no effect
+        assert self._check(peer="127.0.0.1", content_type="text/plain") is True
+        assert self._check(peer="127.0.0.1", content_type="application/x-www-form-urlencoded") is True
 
     def test_content_type_with_charset_is_direct(self):
         assert self._check(peer="127.0.0.1", content_type="application/json; charset=utf-8") is True

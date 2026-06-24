@@ -215,6 +215,13 @@ class TestSetLogLevelValidation:
         result = lp.set_log_level(p, None, changed_by="user")
         assert result["ok"] is False
 
+    def test_invalid_changed_by_rejected(self, tmp_path):
+        import autostream_log_policy as lp
+        p = _write_config(tmp_path, _minimal_config())
+        result = lp.set_log_level(p, "info", changed_by="robot")
+        assert result["ok"] is False
+        assert "changed_by" in result["error"].lower() or "invalid" in result["error"].lower()
+
     def test_valid_levels_accepted(self, tmp_path, monkeypatch):
         import autostream_log_policy as lp
         _make_no_op_apply(monkeypatch)

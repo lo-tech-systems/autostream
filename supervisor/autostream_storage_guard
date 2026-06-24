@@ -394,8 +394,46 @@ def _level_quieter_than(a: str, b: str) -> bool:
     return order.get(a, 9999) < order.get(b, 9999)
 
 
-def compute_desired_ceiling(disk_state: str, sd_health: dict) -> Optional[str]:
-    """Return the quietest automatic log-level ceiling, or None if no restriction."""
+def _sd_health_ceiling_applies(
+    sd_health: dict,
+    prev_sd_restricted_at: Optional[str],
+    now: datetime,
+) -> bool:
+    """Return True if SD-card health should apply a warning ceiling.
+
+    Implements trigger (< 20%), hysteresis (retain until > 25%), and
+    72-hour retention when health data is stale or unavailable.
+    """
+    status = sd_health.get("status")
+    pct = sd_health.get("remaining_percent")
+
+    if status == "valid" and isinstance(pct, int) and pct < SD_HEALTH_LOW_THRESHOLD:
+        return True  # fresh trigger
+
+    if prev_sd_restricted_at is not None:
+        prev_dt = _parse_utc_ts(prev_sd_restricted_at)
+        if prev_dt is not None and (now - prev_dt) < timedelta(hours=SD_HEALTH_RETAIN_HOURS):
+            # Within 72-hour retention window.  Clear only when status is valid
+            # AND health is above the hysteresis recovery threshold.
+            if not (status == "valid" and isinstance(pct, int) and pct >= SD_HEALTH_RECOVER_THRESHOLD):
+                return True
+
+    return False
+
+
+def compute_desired_ceiling(
+    disk_state: str,
+    sd_health: dict,
+    *,
+    prev_sd_restricted_at: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[str]:
+    """Return the quietest automatic log-level ceiling, or None if no restriction.
+
+    Pass prev_sd_restricted_at (from persisted log_policy) and now so that
+    SD-health hysteresis (25% recovery) and 72-hour stale-data retention apply.
+    Without these kwargs the function falls back to a simple threshold check.
+    """
     ceilings: list[str] = []
 
     if disk_state == "warning":
@@ -403,10 +441,9 @@ def compute_desired_ceiling(disk_state: str, sd_health: dict) -> Optional[str]:
     elif disk_state in ("critical", "emergency"):
         ceilings.append("warning")
 
-    if sd_health.get("status") == "valid":
-        pct = sd_health.get("remaining_percent")
-        if isinstance(pct, int) and pct < SD_HEALTH_LOW_THRESHOLD:
-            ceilings.append("warning")
+    _now = now if now is not None else datetime.now(timezone.utc)
+    if _sd_health_ceiling_applies(sd_health, prev_sd_restricted_at, _now):
+        ceilings.append("warning")
 
     if not ceilings:
         return None
@@ -759,7 +796,11 @@ def delete_archive_files(
             continue
         if not _is_eligible_archive(directory, entry.name):
             continue
-        by_base[entry.name.split(".")[0]].append((st.st_mtime, st.st_size, entry))
+        # Use the regex base (e.g. "mail.log", "mail.warn") as the group key,
+        # not split(".")[0] which incorrectly merges e.g. "mail.log" and "mail.warn".
+        _m = _ARCHIVE_NUMBERED_RE.match(entry.name) or _ARCHIVE_DATED_RE.match(entry.name)
+        base_key = _m.group(1) if _m else entry.name
+        by_base[base_key].append((st.st_mtime, st.st_size, entry))
 
     # Flatten and sort oldest first.
     candidates: list[tuple[float, int, Path, str]] = []
@@ -778,7 +819,7 @@ def delete_archive_files(
     candidates.sort()  # oldest first
 
     for mtime, size, path, base in candidates:
-        if bytes_deleted[0] >= delete_cap_bytes:
+        if bytes_deleted[0] + size > delete_cap_bytes:
             break
         try:
             os.unlink(str(path))
@@ -835,7 +876,7 @@ def delete_crash_files(
 
     candidates.sort()  # oldest first
     for mtime, size, path in candidates:
-        if bytes_deleted[0] >= delete_cap_bytes:
+        if bytes_deleted[0] + size > delete_cap_bytes:
             break
         try:
             os.unlink(str(path))
@@ -936,8 +977,22 @@ def run_log_level_policy(
     current_level = api_state["level"]
     current_changed_at = api_state.get("changed_at")
 
-    # Compute automatic ceiling.
-    ceiling = compute_desired_ceiling(disk_state, sd_health)
+    # Track SD-health restriction timestamp for hysteresis / retention.
+    sd_health_restricted_at: Optional[str] = log_policy.get("sd_health_restricted_at")
+
+    # Compute automatic ceiling (passes hysteresis state).
+    ceiling = compute_desired_ceiling(
+        disk_state, sd_health,
+        prev_sd_restricted_at=sd_health_restricted_at,
+        now=now,
+    )
+
+    # Update sd_health_restricted_at.
+    sd_now_restricting = _sd_health_ceiling_applies(sd_health, sd_health_restricted_at, now)
+    if sd_now_restricting and sd_health_restricted_at is None:
+        sd_health_restricted_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    elif not sd_now_restricting:
+        sd_health_restricted_at = None
 
     active_reasons: list[str] = []
     if disk_state == "warning":
@@ -962,10 +1017,8 @@ def run_log_level_policy(
     applied_level = log_policy.get("applied_level")
 
     # Check log-level expiry only for system-set levels; user changes are never
-    # auto-reverted.
-    expiry_target = None
-    if api_state.get("changed_by") == "system":
-        expiry_target = compute_expiry_target(api_state, now)
+    # Check log-level expiry (applies regardless of changed_by).
+    expiry_target = compute_expiry_target(api_state, now)
     if expiry_target is not None:
         if _level_quieter_than(expiry_target, current_level):
             reason_map = {
@@ -1061,6 +1114,7 @@ def run_log_level_policy(
         "applied_level": applied_level,
         "saved_level": saved_level,
         "saved_changed_at": saved_changed_at,
+        "sd_health_restricted_at": sd_health_restricted_at,
     }
 
 
@@ -1102,6 +1156,7 @@ def run_cleanup(
         return "normal"
 
     # Warning+ cleanup
+    m = None
     if current_state in ("warning", "critical", "emergency"):
         action_start_logrotate(actions)
         action_apt_autoclean(actions)
@@ -1113,7 +1168,11 @@ def run_cleanup(
         if has_recovered_from_warning(m):
             return current_state
 
-    if current_state in ("critical", "emergency"):
+    # Critical+ cleanup: branch on initial_state, not current_state.
+    # Warning-stage cleanup may reduce critical to warning without reaching the
+    # warning-recovery target; using current_state would incorrectly skip
+    # critical-stage actions in that case.
+    if initial_state in ("critical", "emergency"):
         action_apt_clean(actions)
         m, current_state = _remeasure()
         if has_recovered_from_critical(m):

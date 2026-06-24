@@ -447,14 +447,14 @@ The ceiling is lifted automatically when the disk returns to a normal state.
 
 #### Automatic log-level expiry
 
-The storage guard also enforces two expiry rules on system-set log levels:
+The storage guard enforces two expiry rules on verbose log levels regardless of who set them:
 
 | Rule | Condition | Action |
 |---|---|---|
-| Tier 1 | `changed_by = "system"`, level is `debug` or `spam`, older than 48 h | Restore to `info` |
-| Tier 2 | `changed_by = "system"`, level is `info`, older than 7 days | Restore to `warning` |
+| Tier 1 | Level is `debug` or `spam`, older than 48 h | Restore to `info` |
+| Tier 2 | Level is `info`, older than 7 days | Restore to `warning` |
 
-User-set levels (`changed_by = "user"`) are **never** automatically reverted.
+This applies to both user-set and system-set levels. Diagnostic levels left running for many days on a constrained SD-card appliance are retired automatically to limit log growth.
 
 #### Checking and changing the log level via API
 

@@ -327,52 +327,89 @@ class TestApplyExpiryToSaved:
 
 
 # ---------------------------------------------------------------------------
-# run_log_level_policy — user-set level expiry guard
+# SD-health hysteresis and retention
 # ---------------------------------------------------------------------------
 
-class TestRunLogLevelPolicyUserExpiry:
-    """User-set log levels must never be automatically expired."""
+class TestSdHealthCeilingApplies:
+    def _sd(self, status="valid", pct=None):
+        return {"status": status, "remaining_percent": pct}
 
+    def test_below_threshold_no_history(self):
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 15), None, _NOW) is True
+
+    def test_above_threshold_no_history(self):
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 30), None, _NOW) is False
+
+    def test_in_hysteresis_zone_with_recent_history(self):
+        # 22% is between 20% (trigger) and 25% (recover) — retain within 72h
+        ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 22), ts, _NOW) is True
+
+    def test_above_hysteresis_clears_within_retention(self):
+        # 26% is above 25% recover threshold — clear even within 72h
+        ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 26), ts, _NOW) is False
+
+    def test_stale_within_72h_retains_ceiling(self):
+        ts = (_NOW - timedelta(hours=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert sg._sd_health_ceiling_applies(self._sd("stale"), ts, _NOW) is True
+
+    def test_stale_beyond_72h_clears(self):
+        ts = (_NOW - timedelta(hours=73)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert sg._sd_health_ceiling_applies(self._sd("stale"), ts, _NOW) is False
+
+    def test_stale_no_history(self):
+        assert sg._sd_health_ceiling_applies(self._sd("stale"), None, _NOW) is False
+
+
+class TestComputeDesiredCeilingHysteresis:
+    """compute_desired_ceiling uses hysteresis/retention when context is passed."""
+
+    def _sd(self, status="valid", pct=None):
+        return {"status": status, "remaining_percent": pct}
+
+    def test_hysteresis_zone_retains_ceiling(self):
+        ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result = sg.compute_desired_ceiling(
+            "normal", self._sd("valid", 22),
+            prev_sd_restricted_at=ts, now=_NOW,
+        )
+        assert result == "warning"
+
+    def test_above_hysteresis_clears(self):
+        ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result = sg.compute_desired_ceiling(
+            "normal", self._sd("valid", 26),
+            prev_sd_restricted_at=ts, now=_NOW,
+        )
+        assert result is None
+
+    def test_stale_retains_within_72h(self):
+        ts = (_NOW - timedelta(hours=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result = sg.compute_desired_ceiling(
+            "normal", self._sd("stale"),
+            prev_sd_restricted_at=ts, now=_NOW,
+        )
+        assert result == "warning"
+
+
+# ---------------------------------------------------------------------------
+# run_log_level_policy — expiry applies regardless of changed_by
+# ---------------------------------------------------------------------------
+
+class TestRunLogLevelPolicyExpiry:
     def _make_guard_state(self):
-        return {"log_level_policy": {}}
+        return {"log_policy": {}}
 
     def _make_sd_health(self):
-        return {"percent": 95.0, "stale": False}
+        return {"status": "unavailable", "remaining_percent": None}
 
-    def test_user_debug_not_expired(self):
-        # A user-set debug level that is 200h old must not be expired.
-        from unittest.mock import patch, MagicMock
-        ts = (_NOW - timedelta(hours=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        api_state = {
-            "ok": True, "level": "debug",
-            "changed_by": "user", "changed_at": ts,
-        }
-        actions = []
-        with patch.object(sg, "get_log_level_state", return_value=api_state), \
-             patch.object(sg, "_api_put_log_level") as mock_put, \
-             patch.object(sg, "get_playing_status", return_value=False):
-            sg.run_log_level_policy(
-                disk_state="normal",
-                sd_health=self._make_sd_health(),
-                guard_state=self._make_guard_state(),
-                actions=actions,
-                now=_NOW,
-            )
-        mock_put.assert_not_called()
-
-    def test_system_debug_is_expired(self):
-        # A system-set debug level that is 200h old must be expired to info.
-        from unittest.mock import patch, MagicMock
-        ts = (_NOW - timedelta(hours=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        api_state = {
-            "ok": True, "level": "debug",
-            "changed_by": "system", "changed_at": ts,
-        }
-        actions = []
+    def _run(self, api_state):
+        from unittest.mock import patch
         ok_result = {"ok": True, "level": "info"}
+        actions = []
         with patch.object(sg, "get_log_level_state", return_value=api_state), \
-             patch.object(sg, "_api_put_log_level", return_value=ok_result) as mock_put, \
-             patch.object(sg, "get_playing_status", return_value=False):
+             patch.object(sg, "_api_put_log_level", return_value=ok_result) as mock_put:
             sg.run_log_level_policy(
                 disk_state="normal",
                 sd_health=self._make_sd_health(),
@@ -380,7 +417,25 @@ class TestRunLogLevelPolicyUserExpiry:
                 actions=actions,
                 now=_NOW,
             )
+        return mock_put
+
+    def test_user_debug_expired_after_48h(self):
+        ts = (_NOW - timedelta(hours=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        api_state = {"level": "debug", "changed_by": "user", "changed_at": ts}
+        mock_put = self._run(api_state)
         mock_put.assert_called_with("info")
+
+    def test_system_debug_expired_after_48h(self):
+        ts = (_NOW - timedelta(hours=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        api_state = {"level": "debug", "changed_by": "system", "changed_at": ts}
+        mock_put = self._run(api_state)
+        mock_put.assert_called_with("info")
+
+    def test_recent_debug_not_expired(self):
+        ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        api_state = {"level": "debug", "changed_by": "user", "changed_at": ts}
+        mock_put = self._run(api_state)
+        mock_put.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

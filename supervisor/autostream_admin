@@ -1336,14 +1336,14 @@ def _set_nginx_access_log(args) -> int:
     nginx = _find_nginx()
     if nginx is None:
         log("WARN", "set-nginx-access-log: nginx not found; config written but not reloaded")
-        return 0
+        return 1
 
     rc, out, err = run_cmd([nginx, "-s", "reload"])
     if rc == 0:
         log("INFO", "set-nginx-access-log: nginx reloaded")
-    else:
-        log("WARN", f"set-nginx-access-log: nginx reload failed rc={rc} stderr='{err}'")
-    return 0
+        return 0
+    log("WARN", f"set-nginx-access-log: nginx reload failed rc={rc} stderr='{err}'")
+    return 1
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

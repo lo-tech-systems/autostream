@@ -200,11 +200,15 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
     def _is_direct_local(self) -> bool:
         """Return True iff this request arrived directly on the loopback socket.
 
-        All four conditions must hold:
+        Three conditions must all hold:
         1. Socket peer is a loopback address (127.x.x.x or ::1).
         2. No X-Forwarded-For header (NGINX always sets this for proxied requests).
         3. No X-Real-IP header.
-        4. Content-Type is application/json.
+
+        Content-Type is intentionally not checked here: GET requests carry no body
+        and no Content-Type, so requiring it would break GET callers (e.g. the
+        storage guard's _api_get). Conditions 2 and 3 are sufficient because NGINX
+        always sets both headers when proxying browser requests over loopback.
 
         Do NOT use _get_client_ip() here — it trusts proxy headers intentionally
         for logging, which would defeat this security check.
@@ -217,8 +221,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             return False
         if self.headers.get("X-Real-IP"):
             return False
-        ct = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        return ct == "application/json"
+        return True
 
     def _read_post_body_bytes(self) -> Optional[bytes]:
         try:

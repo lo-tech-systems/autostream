@@ -132,10 +132,10 @@ The storage guard service (`autostream_storage_guard`) applies two automatic exp
 
 | Tier | Condition | Target |
 |---|---|---|
-| 1 | `changed_by = "system"` and level is `spam` or `debug`, older than 48 h | Restore to `info` |
-| 2 | `changed_by = "system"` and level is `info`, older than 168 h (7 days) | Restore to `warning` |
+| 1 | Level is `spam` or `debug`, older than 48 h | Restore to `info` |
+| 2 | Level is `info`, older than 168 h (7 days) | Restore to `warning` |
 
-Expiry only applies to system-initiated changes. User-initiated changes (`changed_by = "user"`) are never automatically reverted.
+Expiry applies regardless of `changed_by`. Both user-selected verbose levels and system-applied ones are eligible. The intent is that diagnostic levels left running for many days on a constrained SD-card appliance should be retired automatically.
 
 ---
 
