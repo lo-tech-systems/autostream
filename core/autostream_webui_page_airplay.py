@@ -45,7 +45,7 @@ from autostream_webui_state import WebUIState
 
 
 _NP_ART_CSS = (
-    ".now-playing-icon.np-icon-art{width:48px;height:48px;border-radius:6px;overflow:hidden;}"
+    ".now-playing-icon.np-icon-art{width:72px;height:72px;border-radius:6px;overflow:hidden;}"
     ".now-playing-icon.np-icon-art img{width:100%;height:100%;object-fit:cover;display:block;}"
 )
 
