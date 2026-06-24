@@ -52,7 +52,6 @@ controls which web server (this or autostream_webui.py) services requests via th
 """
 
 import glob
-import ipaddress
 import os
 import shutil
 import time
@@ -394,63 +393,38 @@ def is_wifi_configured() -> bool:
     return get_configured_wifi_connection_name() is not None
 
 
-def is_wifi_connected() -> bool:
-    """True if wlan0 is connected to a non-AP WiFi network."""
-    result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
-    if result.returncode != 0:
-        logger.warning("Error while checking WiFi connection state: %s", result.stderr.strip())
-        return False
+def is_wifi_connected(ifname: str = AP_IFNAME) -> bool:
+    """True if *ifname* is connected to a non-AP WiFi network.
 
-    for line in result.stdout.splitlines():
-        if not line:
-            continue
-        parts = line.split(":", 3)
-        if len(parts) != 4:
-            continue
-        device, dev_type, state, conn = parts
-        if device != AP_IFNAME:
-            continue
-        if dev_type != "wifi":
-            continue
-        if state not in ("connected", "activated") or not conn:
-            return False
-
-        # Ensure we are not in AP mode
-        mode_result = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", conn])
-        if mode_result.returncode != 0:
-            logger.warning("Error checking mode for connection '%s': %s", conn, mode_result.stderr.strip())
-            return False
-
-        mode_line = mode_result.stdout.strip()
-        _, _, mode = mode_line.partition(":")
-        mode = mode.strip().lower()
-
-        return mode != "ap"
-
-    return False
+    Thin policy wrapper over the interface-aware helper.
+    """
+    return wifi_net.is_wifi_connected(ifname)
 
 def is_wifi_client_healthy(
     ifname: str = AP_IFNAME,
     wifi_connected: Optional[bool] = None,
 ) -> bool:
     """
-    WiFi "health" using the same logic as initial validation:
-    - must be connected to a non-AP WiFi profile (is_wifi_connected)
-    - must have a non-link-local RFC1918 IPv4 address (is_local_ipv4_ready)
-    - must have a reachable default gateway (is_gateway_reachable)
+    Interface-specific WiFi "health" using the same logic as initial validation:
+    - connected to a non-AP WiFi profile on *ifname*;
+    - non-link-local RFC1918 IPv4 address on *ifname*;
+    - interface-specific reachable default gateway on *ifname*.
+
+    The gateway check is now scoped to *ifname* so another adapter's route or
+    Ethernet cannot make a failed Wi-Fi adapter look healthy.
     """
     if wifi_connected is None:
-        wifi_connected = is_wifi_connected()
+        wifi_connected = is_wifi_connected(ifname)
 
     if not wifi_connected:
-        logger.debug("WiFi client health: not connected")
+        logger.debug("WiFi client health: not connected on %s", ifname)
         return False
     if not is_local_ipv4_ready(ifname):
         logger.debug("WiFi client health: no local IPv4 on %s", ifname)
         return False
-    gw_ok = is_gateway_reachable()
+    gw_ok = is_gateway_reachable(ifname)
     if not gw_ok:
-        logger.debug("WiFi client health: gateway unreachable")
+        logger.debug("WiFi client health: gateway unreachable on %s", ifname)
     return gw_ok
 
 
@@ -475,153 +449,31 @@ def is_wired_connected() -> bool:
     return False
 
 
-_OK_NEIGH_STATES = {"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"}
+# Interface-aware health/routing primitives live in the helper.  These names
+# are re-exported so existing call sites and tests keep working.
+_OK_NEIGH_STATES = wifi_net._OK_NEIGH_STATES
+_RFC1918_NETS = wifi_net._RFC1918_NETS
+_LINK_LOCAL_NET = wifi_net._LINK_LOCAL_NET
+_stateset = wifi_net._stateset
+_is_rfc1918_ipv4 = wifi_net._is_rfc1918_ipv4
+_nmcli_dev_show_fields = wifi_net._nmcli_dev_show_fields
+
 
 def _run_ip_json(args: list[str]) -> list[dict]:
-    p = run_cmd(["ip", "-j", *args], timeout=2.0)
-    if p.returncode != 0:
-        raise RuntimeError(
-            f"`ip -j {' '.join(args)}` failed: rc={p.returncode}, stderr={p.stderr.strip()}"
-        )
-    out = p.stdout.strip()
-    return json.loads(out) if out else []
+    return wifi_net._run_ip_json(args)
 
-def _stateset(state_field) -> set[str]:
-    # ip -j may return "state": "STALE" or "state": ["STALE"]
-    if isinstance(state_field, list):
-        return {str(s).upper() for s in state_field}
-    if isinstance(state_field, str):
-        return {state_field.upper()}
-    return set()
 
-def is_gateway_reachable() -> bool:
+def is_gateway_reachable(ifname: str = AP_IFNAME) -> bool:
+    """Interface-specific kernel gateway reachability (policy wrapper).
+
+    Scoped to *ifname* so another adapter's route cannot mask a failed adapter.
     """
-    Kernel-based gateway reachability:
-    - Read default gateway IP (and default dev if available)
-    - Read all neighbor entries for that gateway (across all devs)
-    - Prefer an OK-state entry on the default dev, else any OK-state entry.
-    - Primes gateway (icmp echo) prior to testing if possible
-    """
-    try:
-        routes = _run_ip_json(["route", "show", "default"])
-        if not routes:
-            return False
+    return wifi_net.is_gateway_reachable(ifname, prime_fn=prime_gateway)
 
-        r0 = routes[0]
-        gw = r0.get("gateway")
-        default_dev = r0.get("dev")  # may be None
-
-        if not gw:
-            return False
-
-        try:
-            ipaddress.ip_address(gw)
-        except ValueError:
-            return False
-
-        # Prime neighbor state before inspecting ip neigh if possibile
-        # This does not define reachability; it just causes the kernel to resolve/refresh.
-        if default_dev:
-            prime_gateway(gw)
-
-        neigh = _run_ip_json(["neigh", "show", "to", gw])  # NOTE: no dev filter
-        if not neigh:
-            return False
-
-        # 1) Prefer an OK-state neighbor on the default route's interface
-        if default_dev:
-            for n in neigh:
-                if n.get("dev") == default_dev and (_stateset(n.get("state")) & _OK_NEIGH_STATES):
-                    return True
-
-        # 2) Otherwise accept any OK-state neighbor entry
-        for n in neigh:
-            if _stateset(n.get("state")) & _OK_NEIGH_STATES:
-                return True
-
-        return False
-
-    except Exception as e:
-        logger.warning("Kernel gateway reachability check failed: %s", e)
-        return False
-
-
-_RFC1918_NETS = (
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-)
-_LINK_LOCAL_NET = ipaddress.ip_network("169.254.0.0/16")
-
-def _is_rfc1918_ipv4(ip: ipaddress.IPv4Address) -> bool:
-    return any(ip in n for n in _RFC1918_NETS)
-
-def _nmcli_dev_show_fields(ifname: str, fields: list[str]) -> dict[str, list[str]]:
-    """Return selected `nmcli -t ... dev show <ifname>` fields.
-
-    Returns a dict mapping field-name to list of values (nmcli can emit multiple
-    keys like IP4.ADDRESS[1], IP4.ADDRESS[2], ...).
-    """
-    r = run_cmd(["nmcli", "-t", "-f", ",".join(fields), "device", "show", ifname])
-    if r.returncode != 0:
-        return {}
-    out: dict[str, list[str]] = {}
-    for line in r.stdout.splitlines():
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        k = k.strip()
-        v = v.strip()
-        if not k:
-            continue
-        base = k.split("[", 1)[0]  # normalise e.g. IP4.ADDRESS[1] -> IP4.ADDRESS
-        out.setdefault(base, []).append(v)
-    return out
 
 def is_local_ipv4_ready(ifname: str = AP_IFNAME) -> bool:
-    """Local-only connectivity check.
-
-    True when NetworkManager reports the device connected/activated AND the
-    interface has a non-link-local RFC1918 IPv4 address.
-    """
-    try:
-        info = _nmcli_dev_show_fields(ifname, ["GENERAL.STATE", "IP4.ADDRESS"])
-        if not info:
-            return False
-
-        # GENERAL.STATE is like: "100 (connected)" or "30 (disconnected)"
-        state_vals = info.get("GENERAL.STATE", [])
-        if not state_vals:
-            return False
-        state_str = state_vals[0]
-        try:
-            state_code = int(state_str.split()[0])
-        except Exception:
-            state_code = -1
-        if state_code != 100:
-            return False
-
-        addrs = info.get("IP4.ADDRESS", [])
-        if not addrs:
-            return False
-
-        for a in addrs:
-            # nmcli returns "192.168.1.42/24"
-            try:
-                ip = ipaddress.ip_interface(a).ip
-            except Exception:
-                continue
-            if not isinstance(ip, ipaddress.IPv4Address):
-                continue
-            if ip in _LINK_LOCAL_NET:
-                continue
-            if _is_rfc1918_ipv4(ip):
-                return True
-
-        return False
-    except Exception as e:
-        logger.warning("Local IPv4 readiness check failed: %s", e)
-        return False
+    """Local-only connectivity check on *ifname* (policy wrapper)."""
+    return wifi_net.is_local_ipv4_ready(ifname)
 
 
 def get_ap_ssid(ifname: str) -> str:
@@ -643,40 +495,13 @@ def get_ap_ssid(ifname: str) -> str:
 
 # ** WIFI CONFIGURATION **
 
-def _get_active_wifi_connection_name(ifname: str = "wlan0") -> str:
-    """
-    Return the active connection profile name for a wifi device, or "" if unknown.
-    Uses device status, so it works even if profiles are named 'netplan-wlan0-<SSID>'.
-    """
-    r = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
-    if r.returncode != 0:
-        return ""
-    for line in r.stdout.splitlines():
-        parts = line.split(":")
-        if len(parts) != 4:
-            continue
-        dev, dev_type, state, conn = parts
-        if dev == ifname and dev_type == "wifi" and state in ("connected", "activated") and conn:
-            return conn
-    return ""
+def _get_active_wifi_connection_name(ifname: str = AP_IFNAME) -> str:
+    """Active connection profile name on *ifname* (policy wrapper over helper)."""
+    return wifi_net.get_active_wifi_connection_name(ifname)
 
-def _get_active_wifi_ssid(ifname: str = "wlan0") -> str:
-    """
-    Return the SSID currently in use on the given wifi interface, or "" if unknown.
-    Uses `nmcli device wifi list ifname <ifname>` and looks for the in-use marker.
-    """
-    r = run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID", "device", "wifi", "list", "ifname", ifname])
-    if r.returncode != 0:
-        return ""
-    for line in r.stdout.splitlines():
-        # Format: "*:MySSID" or ":OtherSSID"
-        parts = line.split(":", 1)
-        if len(parts) != 2:
-            continue
-        in_use, ssid = parts
-        if in_use.strip() == "*" and ssid:
-            return ssid
-    return ""
+def _get_active_wifi_ssid(ifname: str = AP_IFNAME) -> str:
+    """SSID currently in use on *ifname* (policy wrapper over helper)."""
+    return wifi_net.get_active_wifi_ssid(ifname)
 
 def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
     """Persist a successfully validated connection to both state files.

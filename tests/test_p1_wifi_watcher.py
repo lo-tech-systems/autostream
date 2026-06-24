@@ -242,13 +242,13 @@ class TestIsWifiConnected:
         output = "wlan0:wifi:connected:MySSID\n"
         # mode query returns "802-11-wireless.mode:infrastructure"
         mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:infrastructure\n", stderr="")
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
             assert watcher.is_wifi_connected() is True
 
     def test_disconnected_returns_false(self, watcher):
         output = "wlan0:wifi:disconnected:\n"
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.return_value = self._run_cmd_ok(output)
             assert watcher.is_wifi_connected() is False
 
@@ -256,38 +256,37 @@ class TestIsWifiConnected:
         # Device is "connected" but the connection is in AP mode.
         output = "wlan0:wifi:connected:Hotspot\n"
         mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:ap\n", stderr="")
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
             assert watcher.is_wifi_connected() is False
 
     def test_command_failure_returns_false(self, watcher):
         result = MagicMock(returncode=1, stdout="", stderr="Error")
-        with patch.object(watcher, "run_cmd", return_value=result):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=result):
             assert watcher.is_wifi_connected() is False
 
     def test_empty_output_returns_false(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok("")):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._run_cmd_ok("")):
             assert watcher.is_wifi_connected() is False
 
     def test_wrong_device_ignored(self, watcher):
         # eth0 connected but wlan0 is not
         output = "eth0:ethernet:connected:Wired\nwlan0:wifi:disconnected:\n"
-        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._run_cmd_ok(output)):
             assert watcher.is_wifi_connected() is False
 
     def test_malformed_line_skipped(self, watcher):
         output = "bad-line-without-colons\nwlan0:wifi:disconnected:\n"
-        with patch.object(watcher, "run_cmd", return_value=self._run_cmd_ok(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._run_cmd_ok(output)):
             assert watcher.is_wifi_connected() is False
 
     def test_escaped_ssid_with_colon(self, watcher):
-        # nmcli -t uses ':' as separator; a colon in the SSID name shouldn't crash
-        output = "wlan0:wifi:connected:My:SSID:with:colons\n"
+        # nmcli -t escapes ':' in SSIDs as '\:'; the helper's parser handles it.
+        output = "wlan0:wifi:connected:My\\:SSID\\:with\\:colons\n"
         mode_result = MagicMock(returncode=0, stdout="802-11-wireless.mode:infrastructure\n", stderr="")
-        with patch.object(watcher, "run_cmd") as mock_run:
+        with patch.object(watcher.wifi_net, "run_cmd") as mock_run:
             mock_run.side_effect = [self._run_cmd_ok(output), mode_result]
-            # Should not raise; whether it returns True/False depends on parse
-            watcher.is_wifi_connected()
+            assert watcher.is_wifi_connected() is True
 
 
 # ---------------------------------------------------------------------------
@@ -300,36 +299,36 @@ class TestIsLocalIpv4Ready:
 
     def test_rfc1918_address_returns_true(self, watcher):
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:192.168.1.42/24\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is True
 
     def test_link_local_address_returns_false(self, watcher):
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:169.254.1.1/16\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_public_ip_returns_false(self, watcher):
         # Only RFC1918 addresses count as "local"
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:8.8.8.8/24\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_disconnected_state_returns_false(self, watcher):
         output = "GENERAL.STATE:30 (disconnected)\nIP4.ADDRESS[1]:192.168.1.42/24\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_no_addresses_returns_false(self, watcher):
         output = "GENERAL.STATE:100 (connected)\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_empty_output_returns_false(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("")):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd("")):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_command_failure_returns_false(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("", rc=1)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd("", rc=1)):
             assert watcher.is_local_ipv4_ready() is False
 
     def test_multiple_addresses_accepts_first_rfc1918(self, watcher):
@@ -338,12 +337,12 @@ class TestIsLocalIpv4Ready:
             "IP4.ADDRESS[1]:169.254.0.1/16\n"
             "IP4.ADDRESS[2]:10.0.0.5/8\n"
         )
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is True
 
     def test_malformed_json_address_skipped(self, watcher):
         output = "GENERAL.STATE:100 (connected)\nIP4.ADDRESS[1]:not-an-ip\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
+        with patch.object(watcher.wifi_net, "run_cmd", return_value=self._make_run_cmd(output)):
             assert watcher.is_local_ipv4_ready() is False
 
 
@@ -352,71 +351,89 @@ class TestIsLocalIpv4Ready:
 # ---------------------------------------------------------------------------
 
 class TestIsGatewayReachable:
+    """Interface-specific gateway reachability (WP2).
+
+    Health is scoped to the requested interface: the default route's dev must
+    equal the interface, and only a neighbour entry on that same interface
+    counts.  Another adapter's route/neighbour cannot make a failed adapter
+    appear healthy.
+    """
+
     def test_reachable_gateway_returns_true(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
         neigh = [{"dev": "wlan0", "state": "REACHABLE"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            assert watcher.is_gateway_reachable("wlan0") is True
 
     def test_stale_state_returns_true(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
         neigh = [{"dev": "wlan0", "state": "STALE"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            assert watcher.is_gateway_reachable("wlan0") is True
 
     def test_failed_state_returns_false(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
         neigh = [{"dev": "wlan0", "state": "FAILED"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is False
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_no_routes_returns_false(self, watcher):
-        with patch.object(watcher, "_run_ip_json", return_value=[]):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", return_value=[]):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_missing_gateway_key_returns_false(self, watcher):
         routes = [{"dev": "wlan0"}]  # no "gateway" key
-        with patch.object(watcher, "_run_ip_json", return_value=routes):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", return_value=routes):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_invalid_gateway_ip_returns_false(self, watcher):
         routes = [{"gateway": "not-an-ip", "dev": "wlan0"}]
-        with patch.object(watcher, "_run_ip_json", return_value=routes):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", return_value=routes):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_empty_neigh_list_returns_false(self, watcher):
         routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, []]
-            assert watcher.is_gateway_reachable() is False
+            assert watcher.is_gateway_reachable("wlan0") is False
 
     def test_state_as_list_works(self, watcher):
         routes = [{"gateway": "10.0.0.1", "dev": "eth0"}]
         neigh = [{"dev": "eth0", "state": ["REACHABLE"]}]
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            # Must query the interface that actually carries the default route.
+            assert watcher.is_gateway_reachable("eth0") is True
 
     def test_ip_json_exception_returns_false(self, watcher):
-        with patch.object(watcher, "_run_ip_json", side_effect=RuntimeError("ip failed")):
-            assert watcher.is_gateway_reachable() is False
+        with patch.object(watcher.wifi_net, "_run_ip_json", side_effect=RuntimeError("ip failed")):
+            assert watcher.is_gateway_reachable("wlan0") is False
 
-    def test_fallback_to_any_dev_neigh_when_no_default_dev_match(self, watcher):
-        # Route has dev=wlan0, but neigh is on eth0; should fall back to any OK neigh.
-        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
-        neigh = [{"dev": "eth0", "state": "REACHABLE"}]  # different dev
-        with patch.object(watcher, "_run_ip_json") as mock_ip, \
+    def test_other_interface_route_does_not_satisfy_requested_interface(self, watcher):
+        # Default route is on eth0; querying wlan0 must NOT be satisfied by it.
+        routes = [{"gateway": "192.168.1.1", "dev": "eth0"}]
+        neigh = [{"dev": "eth0", "state": "REACHABLE"}]
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
              patch.object(watcher, "prime_gateway", MagicMock()):
             mock_ip.side_effect = [routes, neigh]
-            assert watcher.is_gateway_reachable() is True
+            assert watcher.is_gateway_reachable("wlan0") is False
+
+    def test_neigh_on_other_dev_does_not_count(self, watcher):
+        # Route on wlan0, but the only OK neighbour is on eth0 -> not healthy.
+        routes = [{"gateway": "192.168.1.1", "dev": "wlan0"}]
+        neigh = [{"dev": "eth0", "state": "REACHABLE"}]
+        with patch.object(watcher.wifi_net, "_run_ip_json") as mock_ip, \
+             patch.object(watcher, "prime_gateway", MagicMock()):
+            mock_ip.side_effect = [routes, neigh]
+            assert watcher.is_gateway_reachable("wlan0") is False
 
 
 # ---------------------------------------------------------------------------

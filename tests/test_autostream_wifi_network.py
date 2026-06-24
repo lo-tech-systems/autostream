@@ -282,3 +282,166 @@ class TestResolveUuid:
         with patch.object(wifi_net, "run_cmd",
                           return_value=MagicMock(returncode=1, stdout="", stderr="x")):
             assert wifi_net.resolve_connection_uuid_for_name("Home") == ""
+
+
+# ---------------------------------------------------------------------------
+# WP2 — MAC normalisation
+# ---------------------------------------------------------------------------
+
+class TestNormaliseMac:
+    def test_lowercases_and_keeps_colons(self):
+        assert wifi_net.normalise_mac("AA:BB:CC:DD:EE:FF") == "aa:bb:cc:dd:ee:ff"
+
+    def test_converts_dashes(self):
+        assert wifi_net.normalise_mac("aa-bb-cc-dd-ee-ff") == "aa:bb:cc:dd:ee:ff"
+
+    def test_pads_single_hex_digits(self):
+        assert wifi_net.normalise_mac("a:b:c:d:e:f") == "0a:0b:0c:0d:0e:0f"
+
+    def test_rejects_zero_mac(self):
+        assert wifi_net.normalise_mac("00:00:00:00:00:00") == ""
+
+    def test_rejects_empty(self):
+        assert wifi_net.normalise_mac("") == ""
+        assert wifi_net.normalise_mac(None) == ""
+
+    def test_rejects_malformed(self):
+        assert wifi_net.normalise_mac("not-a-mac") == ""
+        assert wifi_net.normalise_mac("aa:bb:cc") == ""
+
+
+# ---------------------------------------------------------------------------
+# WP2 — adapter discovery and classification
+# ---------------------------------------------------------------------------
+
+def _adapter(ifname, mac, is_usb=False, is_builtin=False, managed=True, state="connected"):
+    return wifi_net.WifiAdapter(
+        ifname=ifname, permanent_mac=mac, current_mac=mac,
+        is_builtin=is_builtin, is_usb=is_usb, managed=managed,
+        state=state, description=ifname,
+    )
+
+
+class TestDiscovery:
+    def _dev_status(self, lines):
+        return MagicMock(returncode=0, stdout="".join(lines), stderr="")
+
+    def test_classifies_builtin_and_usb(self, tmp_path):
+        # Build a fake /sys/class/net tree: wlan0 builtin, wlan1 usb.
+        sysroot = tmp_path / "net"
+        (sysroot / "wlan0").mkdir(parents=True)
+        (sysroot / "wlan1").mkdir(parents=True)
+        # Device symlink targets distinguishing usb vs platform.
+        (tmp_path / "platform_wlan0").mkdir()
+        (tmp_path / "usb_wlan1").mkdir()
+        # Simulate realpath by writing 'device' dirs we can detect via _sys_path_is_usb.
+        # Easier: monkeypatch _sys_path_is_usb.
+        (sysroot / "wlan0" / "address").write_text("aa:bb:cc:00:00:01\n")
+        (sysroot / "wlan1" / "address").write_text("aa:bb:cc:00:00:02\n")
+
+        status = self._dev_status([
+            "wlan0:wifi:connected:Home\n",
+            "wlan1:wifi:disconnected:\n",
+            "eth0:ethernet:connected:Wired\n",
+        ])
+
+        def fake_run_cmd(cmd, *a, **k):
+            if "status" in cmd:
+                return status
+            # device show <ifname>
+            ifname = cmd[-1]
+            mac = "aa:bb:cc:00:00:01" if ifname == "wlan0" else "aa:bb:cc:00:00:02"
+            out = f"GENERAL.HWADDR:{mac.upper()}\nGENERAL.STATE:100 (connected)\n"
+            return MagicMock(returncode=0, stdout=out, stderr="")
+
+        def fake_is_usb(ifname, sys_root="/sys/class/net"):
+            return ifname == "wlan1"
+
+        with patch.object(wifi_net, "run_cmd", side_effect=fake_run_cmd), \
+             patch.object(wifi_net, "_sys_path_is_usb", side_effect=fake_is_usb):
+            adapters = wifi_net.discover_adapters(sys_root=str(sysroot))
+
+        by = {a.ifname: a for a in adapters}
+        assert set(by) == {"wlan0", "wlan1"}  # ethernet excluded
+        assert by["wlan0"].is_builtin and not by["wlan0"].is_usb
+        assert by["wlan1"].is_usb and not by["wlan1"].is_builtin
+
+    def test_resolve_builtin_prefers_classified(self):
+        adapters = [
+            _adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+            _adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+        ]
+        assert wifi_net.resolve_builtin(adapters).ifname == "wlan0"
+
+    def test_resolve_builtin_wlan0_fallback(self):
+        # No classified builtin; falls back to literal wlan0.
+        adapters = [_adapter("wlan0", "", is_usb=False, is_builtin=False)]
+        assert wifi_net.resolve_builtin(adapters).ifname == "wlan0"
+
+    def test_resolve_builtin_none(self):
+        adapters = [_adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True)]
+        assert wifi_net.resolve_builtin(adapters) is None
+
+    def test_usb_candidates_sorted_by_permanent_mac(self):
+        adapters = [
+            _adapter("wlan2", "aa:bb:cc:00:00:09", is_usb=True),
+            _adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+            _adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+        ]
+        order = wifi_net.usb_candidates(adapters)
+        assert [a.ifname for a in order] == ["wlan1", "wlan2"]
+
+    def test_ifname_change_does_not_affect_identity(self):
+        # Same permanent MAC under a different ifname keeps deterministic order.
+        a = [
+            _adapter("wlanX", "aa:bb:cc:00:00:02", is_usb=True),
+            _adapter("wlanY", "aa:bb:cc:00:00:01", is_usb=True),
+        ]
+        order = wifi_net.usb_candidates(a)
+        assert order[0].permanent_mac == "aa:bb:cc:00:00:01"
+
+    def test_client_order_usb_then_builtin(self):
+        adapters = [
+            _adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            _adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+        ]
+        order = wifi_net.client_candidate_order(adapters)
+        assert [a.ifname for a in order] == ["wlan1", "wlan0"]
+
+
+# ---------------------------------------------------------------------------
+# WP2 — explicit-interface command construction
+# ---------------------------------------------------------------------------
+
+class TestCommandConstruction:
+    def test_activate_prefers_uuid_with_ifname(self):
+        cmd = wifi_net.activate_connection_cmd("uuid-1", "Home", "wlan1")
+        assert cmd == ["nmcli", "connection", "up", "uuid", "uuid-1", "ifname", "wlan1"]
+
+    def test_activate_falls_back_to_id(self):
+        cmd = wifi_net.activate_connection_cmd("", "Home", "wlan0")
+        assert cmd == ["nmcli", "connection", "up", "id", "Home", "ifname", "wlan0"]
+
+    def test_rescan_targets_interface(self):
+        assert wifi_net.rescan_cmd("wlan1") == [
+            "nmcli", "device", "wifi", "rescan", "ifname", "wlan1"]
+
+    def test_add_profile_targets_interface(self):
+        cmd = wifi_net.add_wifi_profile_cmd("autostream-wifi-abcd1234", "wlan1", "My SSID")
+        assert "ifname" in cmd and "wlan1" in cmd
+        assert cmd[cmd.index("ifname") + 1] == "wlan1"
+        assert cmd[cmd.index("ssid") + 1] == "My SSID"
+
+    def test_clear_restrictions_lists_all_keys(self):
+        cmd = wifi_net.clear_restrictions_cmd("uuid-1", wifi_net.CROSS_ADAPTER_RESTRICTIONS)
+        for key in ("connection.interface-name", "802-11-wireless.mac-address",
+                    "802-11-wireless.bssid", "802-11-wireless.band",
+                    "802-11-wireless.channel"):
+            assert key in cmd
+        # SSID and security must never be cleared here.
+        assert "802-11-wireless.ssid" not in cmd
+        assert "802-11-wireless-security.key-mgmt" not in cmd
+
+    def test_delete_by_uuid(self):
+        assert wifi_net.delete_connection_cmd("uuid-1") == [
+            "nmcli", "connection", "delete", "uuid", "uuid-1"]
