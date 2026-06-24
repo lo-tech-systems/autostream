@@ -380,7 +380,7 @@ class TestNginxPolicy403:
 
 class TestDialProtocolDoc:
     def test_dial_protocol_documents_dial_status_v1(self):
-        doc = REPO_ROOT / "DIAL_PROTOCOL.md"
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
         text = doc.read_text(encoding="utf-8")
         assert "dial_status" in text, "DIAL_PROTOCOL.md does not mention dial_status"
         assert "/api/dial/status" in text, \

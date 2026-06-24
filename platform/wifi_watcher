@@ -2295,7 +2295,12 @@ def startup_connect_usb_first() -> bool:
                                 timeout=WAIT_FOR_CONNECTION_TIMEOUT,
                                 interval=WAIT_FOR_CONNECTION_INTERVAL)
                 and is_wifi_client_healthy(candidate.ifname)):
-            # USB validated; deactivate built-in client connection if still active.
+            # USB validated; clear cross-adapter restrictions so future
+            # fallbacks aren't blocked by stale interface-name or MAC bindings.
+            run_cmd(wifi_net.clear_restrictions_cmd(
+                state.connection_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS
+            ))
+            # Deactivate built-in client connection if still active.
             if builtin and wifi_net.is_wifi_connected(builtin.ifname):
                 logger.info("Startup USB-first: disconnecting built-in client on %s", builtin.ifname)
                 run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
@@ -2364,14 +2369,21 @@ def _activate_committed_on(ifname: str) -> bool:
     """Activate the committed profile on *ifname* and validate health.
 
     Returns True only when the interface becomes a healthy, non-AP client.
+    On success, clears cross-adapter NM restrictions so future fallbacks are
+    not blocked by a stale interface-name or MAC binding.
     """
     state = get_configured_network_state()
     if not state.is_configured:
         return False
     run_cmd(wifi_net.activate_connection_cmd(state.connection_uuid, state.connection_name, ifname))
-    return wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                               interval=WAIT_FOR_CONNECTION_INTERVAL) \
-        and is_wifi_client_healthy(ifname)
+    ok = (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+                              interval=WAIT_FOR_CONNECTION_INTERVAL)
+          and is_wifi_client_healthy(ifname))
+    if ok:
+        run_cmd(wifi_net.clear_restrictions_cmd(
+            state.connection_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS
+        ))
+    return ok
 
 
 def verify_avahi_after_handover() -> None:
@@ -2388,6 +2400,12 @@ def verify_avahi_after_handover() -> None:
 
 def _set_active_client(adapter) -> None:
     with state_lock:
+        if adapter is None and STATE.active_usb_unhealthy_checks > 0:
+            # Debounce in progress: clear ifname so the loop knows there is no
+            # active client, but keep active_client_mac so that the next pass of
+            # handle_usb_failure_fallback can still match the recorded USB adapter.
+            STATE.active_client_ifname = ""
+            return
         changed = STATE.active_client_ifname != (adapter.ifname if adapter else "")
         STATE.active_client_ifname = adapter.ifname if adapter else ""
         STATE.active_client_mac = adapter.permanent_mac if adapter else ""

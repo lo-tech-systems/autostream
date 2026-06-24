@@ -860,7 +860,7 @@ class TestDialNetworkStatePhase:
         content = HELPERS_SH.read_text(encoding="utf-8")
         start = content.find("network_state_phase()")
         assert start != -1
-        body = content[start: start + 1500]
+        body = content[start: start + 2000]
         assert "802-11-wireless.mode" in body or "wireless.mode" in body, (
             "network_state_phase must check 802-11-wireless.mode to reject AP connections"
         )
@@ -873,7 +873,7 @@ class TestDialNetworkStatePhase:
         content = HELPERS_SH.read_text(encoding="utf-8")
         start = content.find("network_state_phase()")
         assert start != -1
-        body = content[start: start + 1500]
+        body = content[start: start + 2000]
         assert "/opt/autostream/ssid" in body, (
             "network_state_phase must write to /opt/autostream/ssid"
         )

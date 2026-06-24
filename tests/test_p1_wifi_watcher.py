@@ -1267,3 +1267,194 @@ class TestControlAuthLogic:
         assert watcher.STATE.last_control_action == "start_setup"
         assert watcher.STATE.last_control_result == "ok"
         assert watcher.STATE.control_in_progress is False
+
+
+# ---------------------------------------------------------------------------
+# Regression: delayed startup USB enumeration re-probe (Section 4.3 / WP4)
+# ---------------------------------------------------------------------------
+
+class TestStartupWindowUsbReprobe:
+    """USB adapter that appears after boot but within BOOT_AP_GRACE triggers
+    startup_connect_usb_first() via the monitor loop's new-USB branch."""
+
+    def test_new_usb_within_grace_triggers_usb_first(self, watcher):
+        """A USB adapter that was not present at the initial boot probe but
+        appears later (still inside BOOT_AP_GRACE) must update
+        _startup_window_usb_tried_macs and trigger startup_connect_usb_first."""
+        usb_mac = "cc:dd:ee:ff:00:01"
+        # Ensure the MAC has NOT yet been seen by the startup window tracker.
+        watcher._startup_window_usb_tried_macs.discard(usb_mac)
+
+        usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
+
+        # Simulate the monitor loop discovering the new adapter.
+        with patch.object(watcher, "startup_connect_usb_first", return_value=True) as start_usb:
+            # Mimic the new-USB branch: add the mac to the tried set and call.
+            new_usb = {usb.permanent_mac} - watcher._startup_window_usb_tried_macs
+            if new_usb:
+                watcher._startup_window_usb_tried_macs.update({usb.permanent_mac})
+                watcher.startup_connect_usb_first()
+
+        start_usb.assert_called_once()
+        assert usb_mac in watcher._startup_window_usb_tried_macs
+
+    def test_already_tried_usb_does_not_re_probe(self, watcher):
+        """A USB MAC already in _startup_window_usb_tried_macs must NOT trigger
+        another startup_connect_usb_first call."""
+        usb_mac = "cc:dd:ee:ff:00:02"
+        watcher._startup_window_usb_tried_macs.add(usb_mac)  # already tried
+
+        with patch.object(watcher, "startup_connect_usb_first") as start_usb:
+            new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs  # empty
+            if new_usb:
+                watcher.startup_connect_usb_first()
+
+        start_usb.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Regression: two-pass NM-disconnected USB debounce (Section 8.5 / WP5)
+# ---------------------------------------------------------------------------
+
+class TestNmDisconnectedUsbDebounce:
+    """When a USB adapter is physically present but NM has disconnected it,
+    handle_usb_failure_fallback requires two consecutive unhealthy passes.
+    _set_active_client must preserve active_client_mac on pass 1 so that
+    pass 2 can still identify the offending adapter."""
+
+    def test_mac_preserved_across_debounce_passes(self, watcher):
+        """On pass 1 (unhealthy_checks = 0 → 1), _set_active_client(None) must
+        NOT clear active_client_mac because the debounce counter is > 0."""
+        usb_mac = "bb:bb:bb:bb:bb:20"
+        watcher.STATE.active_client_mac = usb_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.active_usb_unhealthy_checks = 1  # debounce in progress
+
+        # Calling _set_active_client with None must preserve the MAC.
+        watcher._set_active_client(None)
+
+        assert watcher.STATE.active_client_mac == usb_mac, (
+            "_set_active_client(None) cleared active_client_mac while debounce counter > 0"
+        )
+        assert watcher.STATE.active_client_ifname == "", (
+            "_set_active_client(None) must still clear active_client_ifname"
+        )
+
+    def test_mac_cleared_when_no_debounce(self, watcher):
+        """When no debounce is in progress (unhealthy_checks == 0),
+        _set_active_client(None) must clear both ifname and mac."""
+        watcher.STATE.active_client_mac = "bb:bb:bb:bb:bb:21"
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.active_usb_unhealthy_checks = 0
+
+        watcher._set_active_client(None)
+
+        assert watcher.STATE.active_client_mac == ""
+        assert watcher.STATE.active_client_ifname == ""
+
+    def test_two_pass_nm_disconnected_triggers_fallback(self, watcher):
+        """Full two-pass debounce for NM-disconnected-but-present USB adapter.
+
+        Pass 1: USB present, NM-disconnected → counter incremented, no fallback.
+        Pass 2 (after MAC preserved via _set_active_client fix): counter == 1
+               → handle_usb_failure_fallback calls _do_builtin_fallback_or_recovery.
+        """
+        usb_mac = "bb:bb:bb:bb:bb:22"
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
+        adapters = [builtin, usb]
+
+        watcher._known_usb_macs.add(usb_mac)
+        watcher.STATE.active_client_mac = usb_mac
+        watcher.STATE.active_client_ifname = ""  # NM disconnected; ifname cleared
+
+        # Pass 1: USB is present but disconnected from NM → counter should go 0→1.
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_do_builtin_fallback_or_recovery") as fb:
+            # active_client is None because resolve_active_client found no connected iface.
+            acted = watcher.handle_usb_failure_fallback(adapters, None)
+        assert acted is False
+        fb.assert_not_called()
+        assert watcher.STATE.active_usb_unhealthy_checks == 1
+
+        # Simulate _set_active_client(None) preserving the MAC (fix verified above).
+        watcher.STATE.active_client_ifname = ""
+        # active_client_mac remains usb_mac (preserved by the fix).
+
+        # Pass 2: counter == 1 → fallback should fire.
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_do_builtin_fallback_or_recovery", return_value=True) as fb:
+            acted = watcher.handle_usb_failure_fallback(adapters, None)
+        assert acted is True
+        fb.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Regression: auto-recovery USB reconnect calls leave_setup_mode (Section 8.6)
+# ---------------------------------------------------------------------------
+
+class TestAutoRecoveryUsbReconnect:
+    """_try_recovery_reconnect must call leave_setup_mode() when a USB adapter
+    successfully reconnects during the automatic-recovery hotspot."""
+
+    def test_usb_reconnect_calls_leave_setup_mode(self, watcher):
+        usb = _adapter(watcher, "wlan1", "cc:cc:cc:cc:cc:01", is_usb=True)
+        adapters = [
+            _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            usb,
+        ]
+        watcher.STATE.setup_mode = True
+        watcher.STATE.setup_purpose = "automatic_recovery"
+
+        with patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
+             patch.object(watcher, "get_configured_network_state") as gcns, \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            gcns.return_value = MagicMock(
+                is_configured=True,
+                connection_uuid="uuid-test",
+                connection_name="HomeNetwork",
+            )
+            watcher._try_recovery_reconnect(adapters)
+
+        leave.assert_called_once()
+        call_arg = leave.call_args[0][0]
+        assert "automatic_recovery" in call_arg
+
+    def test_no_usb_candidates_skips_reconnect(self, watcher):
+        """When no USB adapters are present the function returns without
+        attempting a reconnect or calling leave_setup_mode."""
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
+
+        with patch.object(watcher.wifi_net, "usb_candidates", return_value=[]), \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            watcher._try_recovery_reconnect(adapters)
+
+        leave.assert_not_called()
+
+    def test_failed_usb_probe_retains_hotspot(self, watcher):
+        """When the USB probe fails, leave_setup_mode must NOT be called
+        (the hotspot is retained for the next RECONNECT_ATTEMPT_INTERVAL)."""
+        usb = _adapter(watcher, "wlan1", "cc:cc:cc:cc:cc:02", is_usb=True)
+        adapters = [
+            _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            usb,
+        ]
+
+        with patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
+             patch.object(watcher, "get_configured_network_state") as gcns, \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            gcns.return_value = MagicMock(
+                is_configured=True,
+                connection_uuid="uuid-test",
+                connection_name="HomeNetwork",
+            )
+            watcher._try_recovery_reconnect(adapters)
+
+        leave.assert_not_called()

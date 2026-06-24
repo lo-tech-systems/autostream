@@ -1003,34 +1003,43 @@ network_state_phase() {
     return 0
   fi
 
-  # Prefer the Wi-Fi client on the interface carrying the default route;
-  # fall back to the first active non-AP Wi-Fi client on any interface.
-  # Avoid hard-coding wlan0 so USB adapters are also considered.
-  local default_dev wifi_conn
+  # Collect all active Wi-Fi connections: preferred-interface first, others
+  # after (one per line).  Iterate in bash and AP-filter each candidate so
+  # that a hotspot on the first row does not prevent recording a valid client
+  # connection on a subsequent row.
+  local default_dev wifi_candidates wifi_conn wifi_mode
   default_dev="$(ip route show default 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)"
-  wifi_conn="$(
+  wifi_candidates="$(
     nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
       | awk -F: -v prefer="${default_dev}" '
           $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {
-            if ($1==prefer && !found) { found=$4 }
-            else if (!first) { first=$4 }
+            if ($1==prefer) { preferred=$4 }
+            else { others[++n]=$4 }
           }
-          END { if (found) print found; else if (first) print first }
+          END {
+            if (preferred!="") print preferred
+            for (i=1; i<=n; i++) print others[i]
+          }
         '
   )"
 
-  if [[ -n "${wifi_conn}" ]]; then
-    local wifi_mode
+  wifi_conn=""
+  while IFS= read -r _candidate; do
+    [[ -z "${_candidate}" ]] && continue
     wifi_mode="$(
-      nmcli -t -f 802-11-wireless.mode connection show "${wifi_conn}" 2>/dev/null \
+      nmcli -t -f 802-11-wireless.mode connection show "${_candidate}" 2>/dev/null \
         | awk -F: '{print tolower($2)}' | head -n1
     )"
     if [[ "${wifi_mode}" != "ap" ]]; then
-      printf "%s\n" "${wifi_conn}" > "${INSTALL_DIR}/ssid"
-      info "Recorded WiFi connection '${wifi_conn}' to ${INSTALL_DIR}/ssid"
-    else
-      info "Current WiFi connection '${wifi_conn}' is AP mode; not recording"
+      wifi_conn="${_candidate}"
+      break
     fi
+    info "Wi-Fi connection '${_candidate}' is AP mode; skipping"
+  done <<< "${wifi_candidates}"
+
+  if [[ -n "${wifi_conn}" ]]; then
+    printf "%s\n" "${wifi_conn}" > "${INSTALL_DIR}/ssid"
+    info "Recorded WiFi connection '${wifi_conn}' to ${INSTALL_DIR}/ssid"
   else
     info "No active WiFi client connection detected; hotspot mode will be used if wired connection is not detected"
   fi
