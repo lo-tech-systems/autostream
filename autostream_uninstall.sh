@@ -170,6 +170,7 @@ main() {
   remove_path /etc/avahi/services/autostream.service
   remove_path /etc/logrotate.d/autostream
   remove_path /etc/dnsmasq.d/autostream-setup.conf
+  remove_path /etc/autostream-network.json
   remove_path /etc/NetworkManager/dispatcher.d/99-wlan-fix
   remove_path /etc/NetworkManager/conf.d/mdns.conf
   remove_path /etc/NetworkManager/conf.d/wifi-powersave.conf
