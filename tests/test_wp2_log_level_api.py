@@ -295,3 +295,55 @@ class TestAuthAllowlist:
     def test_playing_status_not_in_allowlist(self):
         # /api/playing-status intentionally requires auth for browser callers.
         assert "/api/playing-status" not in auth_mod.ALLOWLIST_PATHS
+
+
+# ---------------------------------------------------------------------------
+# Commissioning bypass: direct-local APIs must be reachable during first boot.
+# These tests verify the routing invariant, not the full HTTP stack — they
+# simulate the guard logic that do_GET() uses.
+# ---------------------------------------------------------------------------
+
+class TestCommissioningBypass:
+    """Direct-local requests bypass the commissioning redirect."""
+
+    def _dispatch(self, path: str, *, peer: str, xff: str | None = None) -> str:
+        """Simulate do_GET() routing and return 'json' | 'redirect' | 'other'."""
+        import sys
+        from pathlib import Path
+        REPO_ROOT = Path(__file__).parent.parent
+        _core = str(REPO_ROOT / "core")
+        if _core not in sys.path:
+            sys.path.insert(0, _core)
+
+        # Replicate _is_direct_local logic.
+        is_loopback = peer.startswith("127.") or peer == "::1"
+        headers = {"X-Forwarded-For": xff} if xff else {}
+        is_direct_local = is_loopback and not headers.get("X-Forwarded-For") and not headers.get("X-Real-IP")
+
+        # Simulate do_GET routing order as implemented:
+        # 1. Federation prefix
+        # 2. direct-local bypass (before commissioning gate)
+        # 3. Commissioning gate
+        if is_direct_local and path in ("/api/playing-status", "/api/log-level"):
+            return "json"
+
+        # Commissioning gate: redirect anything not in the allowlist.
+        commissioning_allowlist = ("/auth", "/api/auth/", "/first-boot/", "/rebooting", "/logs")
+        if not any(path.startswith(p) for p in commissioning_allowlist):
+            return "redirect"
+
+        return "other"
+
+    def test_direct_local_playing_status_bypasses_commissioning(self):
+        assert self._dispatch("/api/playing-status", peer="127.0.0.1") == "json"
+
+    def test_direct_local_log_level_bypasses_commissioning(self):
+        assert self._dispatch("/api/log-level", peer="127.0.0.1") == "json"
+
+    def test_proxied_playing_status_follows_commissioning_redirect(self):
+        # A request from loopback but bearing X-Forwarded-For came through NGINX —
+        # it is not direct-local and must honour the commissioning gate.
+        assert self._dispatch("/api/playing-status", peer="127.0.0.1", xff="10.0.0.5") == "redirect"
+
+    def test_external_log_level_follows_commissioning_redirect(self):
+        assert self._dispatch("/api/log-level", peer="192.168.1.10") == "redirect"

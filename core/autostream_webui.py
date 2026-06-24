@@ -415,6 +415,18 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             self._dispatch_federation("GET", path)
             return
 
+        # Direct-local callers (loopback, no proxy headers) bypass browser auth
+        # and commissioning redirect for playing-status and log-level reads.
+        # This must come before the commissioning gate so the storage guard can
+        # reach these APIs over loopback even during first-boot setup.
+        if self._is_direct_local():
+            if path == "/api/playing-status":
+                send_playing_status_json(self)
+                return
+            if path == "/api/log-level":
+                send_log_level_get_json(self, STATE)
+                return
+
         # During commissioning, only permit auth and first-boot routes.
         if is_commissioning_required(STATE.config_path, STATE.state_path):
             allowed = (
@@ -455,17 +467,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             query = urlparse(self.path).query
             AUTH.handle_auth_get(self, query)
             return
-
-        # Direct-local callers (loopback, no proxy headers) bypass browser auth
-        # for playing-status and log-level reads.  Browser-proxied callers
-        # reach the normal auth gate below.
-        if self._is_direct_local():
-            if path == "/api/playing-status":
-                send_playing_status_json(self)
-                return
-            if path == "/api/log-level":
-                send_log_level_get_json(self, STATE)
-                return
 
         # Gate protected pages
         if AUTH.requires_auth(path) and not AUTH.is_authenticated(self.headers):

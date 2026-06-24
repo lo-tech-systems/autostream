@@ -401,22 +401,31 @@ def _sd_health_ceiling_applies(
 ) -> bool:
     """Return True if SD-card health should apply a warning ceiling.
 
-    Implements trigger (< 20%), hysteresis (retain until > 25%), and
-    72-hour retention when health data is stale or unavailable.
+    Three cases:
+    - Fresh trigger: valid reading below SD_HEALTH_LOW_THRESHOLD (< 20%).
+    - Hysteresis: valid reading in [20 %, 25 %] when previously restricted.
+      This is NOT time-bounded — only clears when health rises strictly above
+      SD_HEALTH_RECOVER_THRESHOLD (> 25%).
+    - Stale/unavailable retention: non-valid data within SD_HEALTH_RETAIN_HOURS
+      of the last valid restricted reading.  Valid in-range readings bypass
+      this window entirely (covered by the hysteresis case above).
     """
     status = sd_health.get("status")
     pct = sd_health.get("remaining_percent")
 
-    if status == "valid" and isinstance(pct, int) and pct < SD_HEALTH_LOW_THRESHOLD:
-        return True  # fresh trigger
+    if status == "valid" and isinstance(pct, int):
+        if pct < SD_HEALTH_LOW_THRESHOLD:
+            return True  # fresh trigger
+        if prev_sd_restricted_at is not None and pct <= SD_HEALTH_RECOVER_THRESHOLD:
+            return True  # hysteresis zone [20 %, 25 %] — retain until strictly above 25 %
+        # pct > 25 % (fully recovered) or no previous restriction: clear
+        return False
 
+    # Status is stale, unavailable, or error: apply 72-hour retention window.
     if prev_sd_restricted_at is not None:
         prev_dt = _parse_utc_ts(prev_sd_restricted_at)
         if prev_dt is not None and (now - prev_dt) < timedelta(hours=SD_HEALTH_RETAIN_HOURS):
-            # Within 72-hour retention window.  Clear only when status is valid
-            # AND health is above the hysteresis recovery threshold.
-            if not (status == "valid" and isinstance(pct, int) and pct >= SD_HEALTH_RECOVER_THRESHOLD):
-                return True
+            return True
 
     return False
 
@@ -989,9 +998,16 @@ def run_log_level_policy(
 
     # Update sd_health_restricted_at.
     sd_now_restricting = _sd_health_ceiling_applies(sd_health, sd_health_restricted_at, now)
-    if sd_now_restricting and sd_health_restricted_at is None:
-        sd_health_restricted_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    elif not sd_now_restricting:
+    sd_status = sd_health.get("status")
+    sd_pct = sd_health.get("remaining_percent")
+    if sd_now_restricting:
+        # Refresh the timestamp on each valid below-threshold reading so stale-data
+        # retention is measured from the last valid restricted decision, not initial.
+        if sd_status == "valid" and isinstance(sd_pct, int) and sd_pct < SD_HEALTH_LOW_THRESHOLD:
+            sd_health_restricted_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        elif sd_health_restricted_at is None:
+            sd_health_restricted_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
         sd_health_restricted_at = None
 
     active_reasons: list[str] = []
@@ -1002,21 +1018,21 @@ def run_log_level_policy(
     elif disk_state == "emergency":
         active_reasons.append("disk_emergency")
 
-    sd_status = sd_health.get("status")
-    sd_pct = sd_health.get("remaining_percent")
-    if sd_status == "valid" and isinstance(sd_pct, int) and sd_pct < SD_HEALTH_LOW_THRESHOLD:
+    if sd_now_restricting:
         active_reasons.append("low_sd_health")
-        logging.warning(
-            "storage guard: SD card health %d%% below threshold %d%%",
-            sd_pct, SD_HEALTH_LOW_THRESHOLD,
-        )
+        if sd_status == "valid" and isinstance(sd_pct, int) and sd_pct < SD_HEALTH_LOW_THRESHOLD:
+            logging.warning(
+                "storage guard: SD card health %d%% below threshold %d%%",
+                sd_pct, SD_HEALTH_LOW_THRESHOLD,
+            )
+        else:
+            logging.info("storage guard: SD card health restriction retained (hysteresis/stale)")
 
     guard_owns_reduction = bool(log_policy.get("guard_owns_reduction"))
     saved_level = log_policy.get("saved_level")
     saved_changed_at = log_policy.get("saved_changed_at")
     applied_level = log_policy.get("applied_level")
 
-    # Check log-level expiry only for system-set levels; user changes are never
     # Check log-level expiry (applies regardless of changed_by).
     expiry_target = compute_expiry_target(api_state, now)
     if expiry_target is not None:
@@ -1045,13 +1061,22 @@ def run_log_level_policy(
     if ceiling is not None:
         # Need to apply a ceiling.
         if _level_quieter_than(ceiling, current_level):
-            # Capture restoration candidate if not already owned.
+            # Capture or update the restoration candidate.  When the guard already
+            # owns the reduction and the user has since raised their chosen level
+            # above the ceiling, the new selection becomes the candidate so it is
+            # correctly restored once the ceiling is lifted.
             if not guard_owns_reduction:
                 saved_level = current_level
                 saved_changed_at = current_changed_at
                 guard_owns_reduction = True
                 logging.info(
                     "storage guard: capturing restoration candidate level=%s", saved_level
+                )
+            elif api_state.get("changed_by") == "user":
+                saved_level = current_level
+                saved_changed_at = current_changed_at
+                logging.info(
+                    "storage guard: updating restoration candidate level=%s", saved_level
                 )
             # Apply ceiling.
             logging.warning(
@@ -1210,7 +1235,7 @@ def run_cleanup(
 
         action_apt_autoremove_simulate(actions)
 
-    if emergency and current_state == "emergency":
+    if emergency and not has_recovered_from_critical(m):
         action_journal_vacuum(actions, time_spec="1d", size_spec="64M")
         m, current_state = _remeasure()
         if has_recovered_from_critical(m):

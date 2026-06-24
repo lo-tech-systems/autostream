@@ -361,6 +361,26 @@ class TestSdHealthCeilingApplies:
     def test_stale_no_history(self):
         assert sg._sd_health_ceiling_applies(self._sd("stale"), None, _NOW) is False
 
+    def test_in_hysteresis_zone_beyond_72h_still_retains(self):
+        # Valid in-band readings are NOT subject to the 72-hour expiry —
+        # only stale/unavailable data uses that window.
+        ts = (_NOW - timedelta(hours=80)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 22), ts, _NOW) is True
+
+    def test_exactly_at_recover_threshold_retained(self):
+        # Exactly 25 % must still be restricted; release only when strictly above 25 %.
+        ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 25), ts, _NOW) is True
+
+    def test_one_above_recover_threshold_clears(self):
+        # 26 % is strictly above 25 % — clear.
+        ts = (_NOW - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 26), ts, _NOW) is False
+
+    def test_in_hysteresis_no_history_no_retain(self):
+        # If in [20 %, 25 %] but never previously restricted, no ceiling applies.
+        assert sg._sd_health_ceiling_applies(self._sd("valid", 22), None, _NOW) is False
+
 
 class TestComputeDesiredCeilingHysteresis:
     """compute_desired_ceiling uses hysteresis/retention when context is passed."""
@@ -436,6 +456,76 @@ class TestRunLogLevelPolicyExpiry:
         api_state = {"level": "debug", "changed_by": "user", "changed_at": ts}
         mock_put = self._run(api_state)
         mock_put.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_log_level_policy — SD health active_reasons and timestamp management
+# ---------------------------------------------------------------------------
+
+class TestRunLogLevelPolicySdHealth:
+    """Verify active_reasons and sd_health_restricted_at updates."""
+
+    _API_STATE = {"level": "spam", "changed_by": "user", "changed_at": None}
+
+    def _run(self, sd_health, guard_state):
+        from unittest.mock import patch
+        ok_result = {"ok": True, "level": "warning"}
+        result = {}
+        actions = []
+        with patch.object(sg, "get_log_level_state", return_value=self._API_STATE), \
+             patch.object(sg, "_api_put_log_level", return_value=ok_result):
+            result = sg.run_log_level_policy(
+                disk_state="normal",
+                sd_health=sd_health,
+                guard_state=guard_state,
+                actions=actions,
+                now=_NOW,
+            )
+        return result, actions
+
+    def _sd(self, status="valid", pct=None):
+        return {"status": status, "remaining_percent": pct}
+
+    def test_fresh_trigger_adds_reason_and_sets_timestamp(self):
+        result, _ = self._run(self._sd("valid", 10), {"log_policy": {}})
+        assert "low_sd_health" in result["active_reasons"]
+        assert result["sd_health_restricted_at"] is not None
+
+    def test_hysteresis_zone_adds_reason(self):
+        ts = (_NOW - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        guard = {"log_policy": {"sd_health_restricted_at": ts}}
+        result, _ = self._run(self._sd("valid", 22), guard)
+        assert "low_sd_health" in result["active_reasons"]
+
+    def test_stale_retention_adds_reason(self):
+        ts = (_NOW - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        guard = {"log_policy": {"sd_health_restricted_at": ts}}
+        result, _ = self._run(self._sd("stale"), guard)
+        assert "low_sd_health" in result["active_reasons"]
+
+    def test_fresh_trigger_refreshes_existing_timestamp(self):
+        # When pct < 20 % on subsequent runs, timestamp must be updated to now,
+        # not left at the original activation time.
+        old_ts = (_NOW - timedelta(hours=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        guard = {"log_policy": {"sd_health_restricted_at": old_ts}}
+        result, _ = self._run(self._sd("valid", 10), guard)
+        new_ts = result["sd_health_restricted_at"]
+        assert new_ts != old_ts
+        assert new_ts == _NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_hysteresis_zone_preserves_timestamp(self):
+        # In [20 %, 25 %]: timestamp should NOT be updated (no time-bound for valid readings).
+        ts = (_NOW - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        guard = {"log_policy": {"sd_health_restricted_at": ts}}
+        result, _ = self._run(self._sd("valid", 22), guard)
+        assert result["sd_health_restricted_at"] == ts
+
+    def test_no_restriction_clears_timestamp(self):
+        ts = (_NOW - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        guard = {"log_policy": {"sd_health_restricted_at": ts}}
+        result, _ = self._run(self._sd("valid", 90), guard)
+        assert "low_sd_health" not in result.get("active_reasons", [])
+        assert result["sd_health_restricted_at"] is None
 
 
 # ---------------------------------------------------------------------------
