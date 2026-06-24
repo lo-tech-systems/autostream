@@ -24,6 +24,35 @@ The default `owntone-mini` build supports AirPlay and Chromecast. Use `--owntone
 
 ---
 
+## Wi-Fi and USB Adapters
+
+### Connecting to Wi-Fi
+
+During first install, autostream opens a setup hotspot named **autostream\_XXXX** (where XXXX is part of the built-in adapter's MAC address). Connect to it from your phone or laptop, then open `http://autostream.local/` and follow the on-screen steps to select your Wi-Fi network and enter the password.
+
+The setup hotspot uses the **built-in** Wi-Fi radio and is always available as a recovery path, even if a USB adapter is in use.
+
+### USB Wi-Fi adapters
+
+autostream automatically uses a USB Wi-Fi adapter when one is detected:
+
+- The setup hotspot page combines networks visible to both the built-in and USB adapters into a single, deduplicated list. A network appears once even if seen by both radios.
+- If a network is only visible through the USB adapter, a notice explains that removing the adapter would return autostream to hotspot mode.
+- On boot, autostream prefers a USB adapter over the built-in when one is found. No configuration is needed.
+- While a healthy built-in connection is active and playback is idle, autostream will automatically move to a newly inserted USB adapter after two stable detection passes.
+- The built-in adapter always remains the recovery hotspot. A USB adapter is never used for hotspot mode.
+
+**Adapter shown in the System pane:** Go to **Setup → System** to see which Wi-Fi adapter is currently active and to change the Wi-Fi network.
+
+### Changing the Wi-Fi network
+
+1. Go to **Setup → System → Network → Change Wi-Fi Network**.
+2. The setup hotspot opens for up to 30 minutes.
+3. Connect to the hotspot SSID and select the new network.
+4. If setup is not completed within 30 minutes, autostream reconnects to the previous network automatically.
+
+---
+
 ## Network Access
 
 Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`). **HTTPS is not supported.** Publicly trusted certificates are not available for `.local` hostnames; private HTTPS would require installing and trusting a local certificate authority on every phone or computer, which conflicts with autostream's zero-configuration setup and recovery design. Do not use `https://`.

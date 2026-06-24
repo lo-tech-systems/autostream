@@ -292,6 +292,34 @@ Connect to `autostream-dial_SETUP` and enter the new credentials.
 
 ---
 
+## Wi-Fi and USB Adapters
+
+autostream dial uses the same Wi-Fi watcher service as the main appliance.
+
+### USB Wi-Fi adapters
+
+- The setup hotspot page shows networks from all detected adapters, deduplicated by SSID.
+- If a network is only visible through the USB adapter, a notice explains that removing the adapter would return the dial to hotspot mode.
+- On boot, dial automatically prefers a USB adapter when one is found. No configuration is needed.
+- While a healthy built-in connection is active, dial adopts a newly inserted USB adapter after two stable detection passes. **Dial has no local playback, so there is no playback gating for USB adoption.**
+- The built-in adapter is always used for the recovery hotspot.
+
+### USB failure fallback
+
+If the active USB adapter is removed or becomes unreachable:
+
+1. Dial immediately tries the configured profile on the built-in adapter.
+2. If built-in connects, the dial continues operating on built-in.
+3. If built-in cannot reach the network (e.g. USB-only SSID), the recovery hotspot opens.
+
+### mDNS during adapter transitions
+
+When the active interface or IP address changes, the `_autostream-dial._tcp` mDNS service may briefly disappear and reappear. The main appliance's discovery registry handles transient removals; the dial reappears within a few seconds of the new interface becoming stable.
+
+Note: there is no Network card in the dial management UI in this release. Factory reset deletes the saved Wi-Fi connection (`/etc/autostream-network.json` and `/opt/autostream/ssid`).
+
+---
+
 ## Update Channels
 
 Each dial has its own update channel setting — it is independent of the main appliance and of any other dials on the network.

@@ -431,7 +431,12 @@ def enter_setup_mode(reason: str = "") -> None:
 
     logger.info("Entering SetupMode. Reason: %s", reason)
     start_ap_mode()
-    update_apmode_flag(True)
+    # start_ap_mode() may abort and clear setup_mode (e.g. no built-in adapter).
+    # Only set the nginx AP-mode flag when setup is still genuinely active.
+    with state_lock:
+        still_in_setup = STATE.setup_mode
+    if still_in_setup:
+        update_apmode_flag(True)
 
 def leave_setup_mode(reason: str = "") -> None:
     """Transition out of SetupMode and stop AP mode, if currently active."""
@@ -1860,7 +1865,8 @@ def reconnect_saved_network() -> bool:
                 STATE.ap_enter_time = time.monotonic()
             start_ap_mode()
             update_apmode_flag(True)
-            break  # no further adapters to try
+            # Continue to try any remaining USB targets — they use a separate
+            # radio and do not require the AP to be stopped first.
 
     logger.warning("Reconnect to saved network failed; retaining hotspot")
     return False
@@ -1984,6 +1990,30 @@ def network_monitor_loop():
         adapters = wifi_net.discover_adapters()
         update_known_adapters(adapters)
         active_client = resolve_active_client(adapters)
+
+        # --- Startup USB-adoption window: re-probe when a new USB adapter
+        # appears while BOOT_AP_GRACE is still open (Section 4.3).
+        # USB firmware/drivers may finish enumeration after the initial
+        # startup_connect_usb_first() call; triggering it again for any new
+        # USB MAC prevents a USB-only network from falling to hotspot mode.
+        boot_age_now = now - boot_time
+        if (boot_age_now < BOOT_AP_GRACE
+                and wifi_cfg
+                and not wired_connected
+                and not STATE.setup_mode):
+            usb_macs_now = {a.permanent_mac for a in wifi_net.usb_candidates(adapters)}
+            new_usb = usb_macs_now - _startup_window_usb_tried_macs
+            if new_usb:
+                _startup_window_usb_tried_macs.update(usb_macs_now)
+                active_is_usb = active_client is not None and active_client.is_usb
+                if not active_is_usb:
+                    logger.info(
+                        "Startup USB-adoption window: new USB adapter(s) appeared %s;"
+                        " retrying USB-first connection", sorted(new_usb),
+                    )
+                    if startup_connect_usb_first():
+                        time.sleep(NETWORK_MONITOR_INTERVAL)
+                        continue
 
         # --- Active-USB failure fallback (immediate/debounced; never gated by
         # playback). Must run BEFORE _set_active_client() so that
@@ -2152,7 +2182,7 @@ def network_monitor_loop():
                 with state_lock:
                     STATE.last_reconnect_attempt = now
                 logger.info("Post-AP reconnect attempt (offline_for=%.0fs)", offline_for)
-                connect_to_configured_wifi()
+                startup_connect_usb_first()
 
             if offline_for >= AP_POST_CLOSE_REBOOT_AFTER:
                 logger.warning(
@@ -2394,33 +2424,50 @@ def handle_usb_failure_fallback(adapters: list, active_client) -> bool:
         logger.info("Active USB adapter (%s) absent; attempting built-in fallback", recorded_mac)
         return _do_builtin_fallback_or_recovery(adapters, reason="active-USB-absent")
 
-    # Only debounce the present-but-unhealthy case for an active USB client.
-    if not active_is_usb:
+    # Case 2 (debounced): the recorded USB adapter is present in the discovered
+    # adapter list but NetworkManager has disconnected it (no longer the active
+    # client).  Treat identically to a present-but-unhealthy active USB client.
+    recorded_usb_disconnected = (
+        bool(recorded_mac)
+        and _recorded_usb(recorded_mac)
+        and recorded_usb_present
+        and not active_is_usb
+    )
+
+    # No USB involvement at all; reset counter and exit.
+    if not active_is_usb and not recorded_usb_disconnected:
         with state_lock:
             STATE.active_usb_unhealthy_checks = 0
         return False
 
-    if is_wifi_client_healthy(active_client.ifname):
+    # Active USB client is healthy; reset counter and exit.
+    if active_is_usb and is_wifi_client_healthy(active_client.ifname):
         with state_lock:
             STATE.active_usb_unhealthy_checks = 0
         return False
 
-    # Case 2: present but unhealthy -> two consecutive unhealthy passes.
+    # Case 2: USB present but unhealthy or NM-disconnected → two consecutive passes.
     with state_lock:
         STATE.active_usb_unhealthy_checks += 1
         count = STATE.active_usb_unhealthy_checks
-    logger.debug("Active USB unhealthy check %d/%d", count, USB_UNHEALTHY_DEBOUNCE)
+    reason_tag = "active-USB-disconnected" if recorded_usb_disconnected else "active-USB-unhealthy"
+    logger.debug("%s check %d/%d", reason_tag, count, USB_UNHEALTHY_DEBOUNCE)
     if count >= USB_UNHEALTHY_DEBOUNCE:
-        logger.info("Active USB adapter unhealthy for %d passes; attempting fallback", count)
+        logger.info("USB adapter %s for %d passes; attempting fallback", reason_tag, count)
         with state_lock:
             STATE.active_usb_unhealthy_checks = 0
-        return _do_builtin_fallback_or_recovery(adapters, reason="active-USB-unhealthy")
+        return _do_builtin_fallback_or_recovery(adapters, reason=reason_tag)
     return False
 
 
 # Remember which permanent MACs were last seen as USB, so that an absent active
 # adapter can still be classified as USB after it disappears from discovery.
 _known_usb_macs: set[str] = set()
+
+# Track USB MACs already attempted during the startup adoption window so that
+# startup_connect_usb_first() is triggered at most once per new USB device
+# appearing within BOOT_AP_GRACE.
+_startup_window_usb_tried_macs: set[str] = set()
 
 
 def _recorded_usb(mac: str) -> bool:
@@ -2458,9 +2505,16 @@ def _try_recovery_reconnect(adapters: list) -> None:
     state = get_configured_network_state()
     if not state.is_configured:
         return
-    for candidate in wifi_net.client_candidate_order(adapters):
-        logger.info("Auto-recovery: probing %s (%s)", candidate.ifname,
-                    "USB" if candidate.is_usb else "built-in")
+    # Only probe USB adapters while the recovery hotspot is running on the
+    # built-in radio.  Activating a client on the built-in while it hosts the
+    # AP would displace the hotspot; that path is handled by the 30-minute
+    # timeout rollback in handle_reconfigure_timeout/leave_setup_mode.
+    candidates = wifi_net.usb_candidates(adapters)
+    if not candidates:
+        logger.debug("Auto-recovery: no USB candidates; hotspot retained")
+        return
+    for candidate in candidates:
+        logger.info("Auto-recovery: probing USB %s", candidate.ifname)
         run_cmd(wifi_net.activate_connection_cmd(
             state.connection_uuid, state.connection_name, candidate.ifname,
         ))
@@ -2738,6 +2792,15 @@ if __name__ == "__main__":
     run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
     # an any associated hotspot request markers
     clear_apmode_flag()
+    # Seed the startup-window tried-set with adapters already present so the
+    # monitor loop only re-probes adapters that appear *after* this point.
+    try:
+        _initial_adapters = wifi_net.discover_adapters()
+        _startup_window_usb_tried_macs.update(
+            a.permanent_mac for a in wifi_net.usb_candidates(_initial_adapters)
+        )
+    except Exception:
+        pass
     startup_connect_usb_first()
 
     logger.info(

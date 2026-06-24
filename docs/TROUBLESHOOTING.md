@@ -899,3 +899,111 @@ elapses.
 refresh** to increase the poll interval (range 1–30 seconds, default 3). A lower
 value means faster detection and faster clearing; a higher value reduces LAN
 traffic.
+
+---
+
+## Wi-Fi and USB adapter diagnostics
+
+### Checking the active adapter
+
+```bash
+# What adapter is autostream currently using?
+cat /etc/autostream-network.json
+
+# All detected and managed Wi-Fi devices (name, type, state, connection)
+nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status
+
+# Legacy connection name (compatibility mirror)
+cat /opt/autostream/ssid
+```
+
+The watcher binary and its helper are at:
+```
+/opt/autostream/autostream_wifi_watcher
+/opt/autostream/autostream_wifi_network.py
+```
+
+### Watcher journal
+
+```bash
+journalctl -u autostream_wifi_watcher -n 100 --no-pager
+```
+
+Key log messages:
+
+| Message | Meaning |
+|---|---|
+| `Startup USB-first: connection established on wlanX` | USB adapter adopted at boot |
+| `Active client adapter changed` | Client adapter switched |
+| `Active USB adapter … absent; attempting built-in fallback` | USB unplugged; fallback in progress |
+| `Built-in LAN fallback connected` | Built-in reconnected after USB loss |
+| `Built-in LAN fallback failed … entering recovery hotspot` | LAN unavailable on built-in; hotspot started |
+| `Auto-recovery resolved on wlanX` | USB returned while in recovery hotspot; reconnected |
+| `Runtime USB adoption succeeded` | USB adopted while playback was idle |
+| `Runtime USB adoption … deferred … playback active` | Adoption pending; playback in progress |
+
+### USB adapter not detected or not working
+
+- The adapter must be supported by Raspberry Pi OS, NetworkManager, and its driver.
+- Check NetworkManager: `nmcli device status` — the adapter must appear as `wifi` and `managed`.
+- If it appears as `unmanaged`, check `/etc/NetworkManager/NetworkManager.conf`.
+- Unsupported or unmanaged adapters are not candidates for USB-first selection.
+- Some adapters require additional firmware packages (`apt list --installed | grep firmware`).
+
+### USB-only network (5 GHz or hidden from built-in radio)
+
+If the network is only visible through the USB adapter, the setup page shows a notice. Removing the USB adapter while connected to such a network will trigger hotspot recovery mode.
+
+To reconnect after USB loss on a USB-only network:
+
+1. Reinsert the USB adapter.
+2. autostream reconnects automatically (allow one to two 15-second monitor passes).
+3. If the hotspot stays up, connect to it and use **Reconnect to saved network**.
+
+### LAN fallback vs. hotspot recovery
+
+When the active USB adapter fails:
+
+1. autostream immediately tries the configured profile on the built-in adapter.
+2. If the built-in connects and validates, operation continues on built-in (LAN fallback). The System pane shows `Built-in Wi-Fi · USB connection unavailable`.
+3. If built-in LAN also fails (e.g. USB-only network), the recovery hotspot opens on the built-in adapter.
+
+### Runtime USB adoption
+
+autostream automatically adopts a newly inserted USB adapter while built-in Wi-Fi is active, provided:
+
+- Ethernet is not connected.
+- No USB adapter is already the active client.
+- The same adapter has been present for two consecutive 15-second monitor passes.
+- On the main appliance: playback is confirmed idle. If playback status is unavailable, adoption is deferred (never assumed idle).
+
+Adoption is never delayed by playback for failure fallback — only for the optional upgrade from healthy built-in to USB.
+
+### Change Wi-Fi Network flow
+
+**Setup → System → Network → Change Wi-Fi Network** opens the setup hotspot for 30 minutes.
+
+- If setup is not completed, autostream reconnects to the previous network at timeout.
+- The **Reconnect to saved network** link in the setup page bypasses the timeout immediately.
+- After a successful change, the hotspot closes and nginx returns to the application.
+
+### dnsmasq (captive portal DHCP)
+
+dnsmasq runs only during hotspot mode and is stopped otherwise.
+
+```bash
+systemctl status autostream_dnsmasq    # main appliance
+systemctl status autostream_dial_dnsmasq  # dial
+cat /run/autostream/autostream-setup.conf  # runtime config (interface binding)
+```
+
+### Avahi after adapter handover
+
+After switching adapters, autostream triggers an Avahi hostname check. If mDNS breaks after a handover, check:
+
+```bash
+avahi-resolve -n autostream.local
+journalctl -u avahi-daemon -n 30 --no-pager
+```
+
+A transient disappearance of `_autostream._tcp` during network transition is expected; it reappears within a few seconds.

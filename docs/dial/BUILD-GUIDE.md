@@ -121,6 +121,26 @@ Installation takes approximately 5 minutes on a Pi Zero W.
 
 ---
 
+## Optional: USB Wi-Fi Adapter
+
+autostream dial can use a USB Wi-Fi adapter for improved range or 5 GHz access.
+
+**Requirements:**
+
+- The adapter must be supported by Raspberry Pi OS and its driver must be available.
+- NetworkManager must manage the adapter (check `nmcli device status`; state must be `managed`).
+- The adapter must be capable of infrastructure (client) mode.
+
+**Limitations:**
+
+- 5 GHz availability depends on the adapter, its driver, regulatory domain settings, and the access point.
+- autostream does not guarantee compatibility with every USB Wi-Fi adapter.
+- The recovery hotspot always uses the built-in radio; USB is never used for the hotspot.
+- USB power draw matters on Pi Zero hardware. Use a powered USB hub or a low-current adapter if the Pi resets under load.
+- Autostream Dial has no local playback, so USB adapter adoption is not gated by playback state.
+
+---
+
 ## Verifying the Installation
 
 ```bash

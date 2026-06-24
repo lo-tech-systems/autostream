@@ -318,3 +318,17 @@ occupied state is shown; a longer interval reduces LAN traffic.
 - Locally selected outputs are never marked as occupied regardless of remote reports.
 - The occupancy check is cache-only on all browser-facing request paths; no remote
   HTTP is performed during a toggle or page load.
+
+---
+
+## Wi-Fi adapter changes and mDNS
+
+When an autostream appliance switches its active Wi-Fi interface (for example, adopting a USB adapter or falling back to built-in after USB loss), Avahi publishes over the new interface. The mDNS service types, TXT record schema, and appliance identity are unchanged; only the source address of the announcement changes.
+
+Discovery registries on peer appliances track sightings by service identity, not by IP address. When an adapter change produces a remove event followed by an add event with a new IP:
+
+- The old sighting is replaced by the new one.
+- HTTP requests to a peer automatically use the updated address after the next discovery poll.
+- A brief gap (typically one to a few seconds) may occur between the remove and add events. The peer appliance's UI shows the remote as offline during this window.
+
+`dnsmasq` is used only during the setup hotspot (captive portal DHCP/DNS). It is not involved in normal mDNS service announcements.

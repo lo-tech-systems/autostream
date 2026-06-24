@@ -52,8 +52,11 @@ it should not be treated as a full system rollback.
   (`/etc/systemd/journald.conf.d/99-autostream-storage.conf`) and restarts
   `systemd-journald` to apply the removal.
 - Removes a few other installer-managed files we can identify confidently, such as
-  the autostream logrotate file, the autostream dnsmasq snippet, and the
-  NetworkManager files copied by the installer.
+  the autostream logrotate file, the autostream dnsmasq snippet, the
+  NetworkManager files copied by the installer, the network state file
+  `/etc/autostream-network.json`, the dnsmasq template at
+  `/usr/local/share/autostream/dnsmasq/`, and the runtime dnsmasq configuration
+  at `/run/autostream/autostream-setup.conf`.
 - Runs `systemctl daemon-reload` and prompts for reboot.
 
 ## What the script does not do

@@ -222,10 +222,10 @@ network_state_phase() {
         nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
             | awk -F: -v prefer="${default_dev}" '
                 $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {
-                  if ($1==prefer) { print $4; exit }
-                  if (!first) { first=$4 }
+                  if ($1==prefer && !found) { found=$4 }
+                  else if (!first) { first=$4 }
                 }
-                END { if (!found && first) print first }
+                END { if (found) print found; else if (first) print first }
               '
     )"
 
