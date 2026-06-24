@@ -85,6 +85,8 @@ from autostream_webui_api import (
     send_owntone_grace_period_json,
     send_log_level_get_json,
     send_log_level_put_json,
+    send_network_setup_json,
+    send_network_status_json,
     send_playing_status_json,
 )
 import autostream_federation
@@ -566,6 +568,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_log_level_get_json(self, STATE)
         elif path == "/api/playing-status":
             send_playing_status_json(self)
+        elif path == "/api/network/status":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_network_status_json(self)
         elif path == "/api/settings":
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
@@ -935,6 +941,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_dial_update_post(self, path.rsplit("/", 1)[-1])
+
+        elif path == "/api/network/setup":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_network_setup_json(self, json_obj)
 
         else:
             self.send_error(404, "Not found")

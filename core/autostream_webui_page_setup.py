@@ -649,6 +649,25 @@ def send_setup_page(
           {owntone_button_html}
         """
     playback_fieldset_html = settings_card_html(playback_inner_html, margin_top="0")
+    # Network card (Section 9.x): active-adapter information + Change Wi-Fi
+    # Network action.  This is informational, not a selector; the active adapter
+    # is fetched from the authenticated network-status API on panel open.
+    network_card_html = """
+          <div id="networkCard" style="margin-top:0.5rem;padding-top:0.75rem;border-top:1px solid var(--color-border,#ddd);">
+            <p style="margin:0 0 0.25rem;font-weight:600;">Wi-Fi adapter</p>
+            <p id="networkAdapterInfo" style="margin:0 0 0.5rem;font-size:0.9rem;color:var(--color-text);">Built-in Wi-Fi</p>
+            <p style="margin:0 0 0.75rem;font-size:0.8rem;color:var(--color-text-muted,#888);">
+              USB Wi-Fi adapters are adopted automatically when playback is idle.
+            </p>
+            <p style="margin:0 0 0.5rem;font-size:0.85rem;color:var(--color-text);">
+              Starts the setup hotspot for 30 minutes. If setup is not completed,
+              autostream reconnects to the previous network. Other settings are
+              not affected.
+            </p>
+            <button type="button" class="pill-btn small" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
+            <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
+          </div>
+        """
     system_inner_html = f"""
           <label style="display:flex;align-items:center;gap:.75rem;">
             <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}"
@@ -656,6 +675,7 @@ def send_setup_page(
               onkeydown="if(event.key==='Enter'){{ this.blur(); event.preventDefault(); }}">
           </label>
           {update_html}
+          {network_card_html}
         """
     system_fieldset_html = settings_card_html(system_inner_html, margin_top="0")
 
@@ -1548,6 +1568,7 @@ def send_setup_page(
           var track = document.getElementById('setupSlideTrack');
           if (track) track.classList.add('panel-open');
           window.scrollTo(0, 0);
+          if (id === 'system') refreshNetworkAdapterInfo();
         }}
         function onHostnameToggle(checked) {{
           var cb = document.getElementById('webui_control_other_appliances');
@@ -1972,6 +1993,54 @@ def send_setup_page(
           // Load current config for each online authorized dial
           {_dial_onload_js}
         }});
+      </script>
+      <script>
+        // ── Network adapter status and Change Wi-Fi (WP7) ─────────────────
+        async function refreshNetworkAdapterInfo() {{
+          var el = document.getElementById('networkAdapterInfo');
+          if (!el) return;
+          try {{
+            var r = await fetch('/api/network/status', {{
+              credentials: 'same-origin',
+              cache: 'no-store',
+              headers: {{ 'X-CSRF-Token': (window.__CSRF || '') }}
+            }});
+            if (!r.ok) return;
+            var j = await r.json();
+            if (j && j.display) el.textContent = j.display;
+          }} catch (e) {{ /* ignore — static default text remains */ }}
+        }}
+
+        async function changeWifiNetwork() {{
+          var btn = document.querySelector('#networkCard .pill-btn');
+          var msg = document.getElementById('networkSetupMsg');
+          if (btn) btn.disabled = true;
+          if (msg) {{ msg.textContent = 'Starting setup hotspot…'; msg.style.color = ''; }}
+          try {{
+            var r = await fetch('/api/network/setup', {{
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: {{
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': (window.__CSRF || '')
+              }},
+              body: JSON.stringify({{ action: 'start_setup', csrf_token: (window.__CSRF || '') }})
+            }});
+            var j = await r.json().catch(function() {{ return {{}}; }});
+            if (r.ok && j && j.ok) {{
+              if (msg) {{ msg.textContent = 'Hotspot starting. Connect to the “autostream-setup” network to complete setup.'; msg.style.color = ''; }}
+            }} else if (r.status === 409) {{
+              if (msg) {{ msg.textContent = 'A network change is already in progress.'; msg.style.color = 'var(--color-error,#c00)'; }}
+              if (btn) btn.disabled = false;
+            }} else {{
+              if (msg) {{ msg.textContent = 'Could not start setup. Please try again.'; msg.style.color = 'var(--color-error,#c00)'; }}
+              if (btn) btn.disabled = false;
+            }}
+          }} catch (e) {{
+            if (msg) {{ msg.textContent = 'Network error. Please try again.'; msg.style.color = 'var(--color-error,#c00)'; }}
+            if (btn) btn.disabled = false;
+          }}
+        }}
       </script>
       {factory_reset_js}"""
     html_body = build_page_html(
