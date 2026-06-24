@@ -187,3 +187,32 @@ class TestHandleLineDeduplication:
     def test_too_few_fields_in_add_line_ignored(self):
         dm._browser._handle_line("=;eth0;IPv4;Service;_tcp;local")
         assert dm.get_playing_targets() == []
+
+
+# ---------------------------------------------------------------------------
+# WP3: start/stop wrappers (plan section 6, tests 1-2)
+# ---------------------------------------------------------------------------
+
+class TestPlayingBrowserWrappers:
+    def test_start_playing_browser_forwards_shutdown_event(self):
+        """start_playing_browser() passes shutdown_event to the underlying browser."""
+        import threading
+        from unittest.mock import patch
+        ev = threading.Event()
+        with patch.object(dm._browser, "start") as mock_start:
+            dm.start_playing_browser(shutdown_event=ev)
+        mock_start.assert_called_once_with(shutdown_event=ev)
+
+    def test_start_playing_browser_without_event_passes_none(self):
+        """start_playing_browser() with no args passes shutdown_event=None."""
+        from unittest.mock import patch
+        with patch.object(dm._browser, "start") as mock_start:
+            dm.start_playing_browser()
+        mock_start.assert_called_once_with(shutdown_event=None)
+
+    def test_stop_playing_browser_delegates_to_browser(self):
+        """stop_playing_browser() calls stop() on the underlying browser exactly once."""
+        from unittest.mock import patch
+        with patch.object(dm._browser, "stop") as mock_stop:
+            dm.stop_playing_browser()
+        mock_stop.assert_called_once()

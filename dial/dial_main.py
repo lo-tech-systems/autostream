@@ -10,13 +10,14 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 from dial_config import load_config
 from dial_control import DialControlServer
 from dial_http_server import ADMIN_CMD, VERSION, DialHTTPServer, _announce_self
 from dial_led import DialLED
-from dial_mdns import get_playing_targets, start_playing_browser
+from dial_mdns import get_playing_targets, start_playing_browser, stop_playing_browser
 from dial_target_status import enrich_targets
 from dial_volume import enqueue_delta, enqueue_mute_toggle, start_volume_worker
 
@@ -61,11 +62,18 @@ def _reconcile_update_timer(auto_update: bool) -> None:
 def main() -> None:
     _configure_logging()
 
+    shutdown_event = threading.Event()
+
     def _on_sigterm(sig, frame):
         logging.info("autostream-dial stopping")
-        raise SystemExit(0)
+        shutdown_event.set()
+
+    def _on_sigint(sig, frame):
+        logging.info("autostream-dial stopping")
+        shutdown_event.set()
 
     signal.signal(signal.SIGTERM, _on_sigterm)
+    signal.signal(signal.SIGINT, _on_sigint)
 
     cfg = load_config()
     logging.info("autostream-dial starting (version %s, uuid %s)", VERSION, cfg.uuid)
@@ -81,7 +89,7 @@ def main() -> None:
     if cfg.pin:
         http_server.begin_recovery_window()
 
-    start_playing_browser()
+    start_playing_browser(shutdown_event=shutdown_event)
     start_volume_worker(cfg, get_playing_targets, led)
 
     # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
@@ -141,10 +149,10 @@ def main() -> None:
         if setup_button is not None and cfg.sw_gpio is not None:
             button = setup_button(cfg.sw_gpio, on_press)
 
-        while True:
+        while not shutdown_event.wait(5):
             led.set_playing() if get_playing_targets() else led.set_idle()
-            time.sleep(5)
     finally:
+        stop_playing_browser()
         control_server.stop()
         http_server._server.shutdown()
 

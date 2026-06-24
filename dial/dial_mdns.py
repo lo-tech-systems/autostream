@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import sys
 import os
+import threading
 
 # The dial deployment copies core modules into /opt/autostream/ at the same
 # level as the dial package, so autostream_mdns is importable directly there.
@@ -100,6 +101,13 @@ def get_playing_targets() -> list[PlayingTarget]:
     return list(_browser.get_snapshot().values())
 
 
-def start_playing_browser() -> None:
+def start_playing_browser(
+    shutdown_event: "threading.Event | None" = None,
+) -> None:
     """Start the background mDNS browser for _autostream-playing._tcp.  Idempotent."""
-    _browser.start()
+    _browser.start(shutdown_event=shutdown_event)
+
+
+def stop_playing_browser() -> None:
+    """Stop the background mDNS browser for _autostream-playing._tcp.  Idempotent."""
+    _browser.stop()
