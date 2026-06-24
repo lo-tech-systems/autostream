@@ -164,6 +164,7 @@ FACTORY_RESET_DELETE_FILES = (
 FACTORY_RESET_DIAL_DELETE_FILES = (
     Path("/var/lib/autostream/dial-settings.json"),
     Path("/opt/autostream/ssid"),
+    Path("/etc/autostream-network.json"),
 )
 
 # Valid AUTOSTREAM_PRODUCT values

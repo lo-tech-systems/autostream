@@ -214,10 +214,19 @@ network_state_phase() {
         return 0
     fi
 
-    local wifi_conn
+    # Prefer the Wi-Fi client on the interface carrying the default route;
+    # fall back to the first active non-AP Wi-Fi client on any interface.
+    local default_dev wifi_conn
+    default_dev="$(ip route show default 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)"
     wifi_conn="$(
         nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
-            | awk -F: '$1=="wlan0" && $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {print $4; exit}'
+            | awk -F: -v prefer="${default_dev}" '
+                $2=="wifi" && ($3=="connected" || $3=="activated") && $4!="" {
+                  if ($1==prefer) { print $4; exit }
+                  if (!first) { first=$4 }
+                }
+                END { if (!found && first) print first }
+              '
     )"
 
     if [[ -n "${wifi_conn}" ]]; then
@@ -233,7 +242,7 @@ network_state_phase() {
             echo "Current WiFi connection '${wifi_conn}' is AP mode; not recording"
         fi
     else
-        echo "No active WiFi connection on wlan0; hotspot mode will be used if wired connection is not detected"
+        echo "No active WiFi client connection detected; hotspot mode will be used if wired connection is not detected"
     fi
 }
 

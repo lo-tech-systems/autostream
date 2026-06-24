@@ -839,20 +839,28 @@ class TestDialNetworkStatePhase:
             "network_state_phase must query nmcli device status"
         )
 
-    def test_network_state_phase_checks_wlan0(self):
-        """network_state_phase must specifically check the wlan0 interface."""
+    def test_network_state_phase_is_interface_neutral(self):
+        """network_state_phase must not hard-code wlan0; it should select the
+        active Wi-Fi client on whichever interface carries the default route."""
         content = HELPERS_SH.read_text(encoding="utf-8")
         start = content.find("network_state_phase()")
         assert start != -1
         body = content[start: start + 800]
-        assert "wlan0" in body, "network_state_phase must check wlan0"
+        # Must use nmcli device status to enumerate all Wi-Fi devices.
+        assert "nmcli" in body and "device" in body and "status" in body, (
+            "network_state_phase must query nmcli device status"
+        )
+        # Must not limit selection to only wlan0.
+        assert "wlan0" not in body, (
+            "network_state_phase must not hard-code wlan0; use interface-neutral selection"
+        )
 
     def test_network_state_phase_rejects_ap_mode(self):
         """network_state_phase must not record a connection that is in AP mode."""
         content = HELPERS_SH.read_text(encoding="utf-8")
         start = content.find("network_state_phase()")
         assert start != -1
-        body = content[start: start + 1000]
+        body = content[start: start + 1500]
         assert "802-11-wireless.mode" in body or "wireless.mode" in body, (
             "network_state_phase must check 802-11-wireless.mode to reject AP connections"
         )
@@ -865,7 +873,7 @@ class TestDialNetworkStatePhase:
         content = HELPERS_SH.read_text(encoding="utf-8")
         start = content.find("network_state_phase()")
         assert start != -1
-        body = content[start: start + 1000]
+        body = content[start: start + 1500]
         assert "/opt/autostream/ssid" in body, (
             "network_state_phase must write to /opt/autostream/ssid"
         )

@@ -43,7 +43,9 @@ rm -rf /usr/local/share/autostream
 
 rm -rf /opt/autostream         # dial-only device; no autostream appliance present
 rm -rf /etc/autostream
+rm -f  /etc/autostream-network.json
 rm -rf /var/lib/autostream
+rm -f  /run/autostream/autostream-dial-setup.conf 2>/dev/null || true
 
 userdel autostream 2>/dev/null || true
 echo "autostream dial uninstalled."

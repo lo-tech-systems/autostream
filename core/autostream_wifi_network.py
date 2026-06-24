@@ -504,15 +504,17 @@ def discover_adapters(sys_root: str = "/sys/class/net") -> list[WifiAdapter]:
 def resolve_builtin(adapters: list[WifiAdapter]) -> Optional[WifiAdapter]:
     """Return the built-in (recovery) adapter, or None if none can be identified.
 
-    Prefers a classified built-in; falls back to an adapter literally named
-    ``wlan0`` when classification is inconclusive.
+    Prefers a classified built-in; falls back to a non-USB adapter literally
+    named ``wlan0`` when classification is inconclusive.  A USB adapter named
+    ``wlan0`` is never returned as the built-in to preserve the recovery
+    guarantee (a USB adapter must never become the only recovery path).
     """
     builtins = [a for a in adapters if a.is_builtin]
     if builtins:
         # Deterministic if (unexpectedly) more than one.
         return sorted(builtins, key=lambda a: a.stable_id)[0]
     for a in adapters:
-        if a.ifname == BUILTIN_FALLBACK_IFNAME:
+        if a.ifname == BUILTIN_FALLBACK_IFNAME and not a.is_usb:
             return a
     return None
 

@@ -143,13 +143,38 @@ Expiry applies regardless of `changed_by`. Both user-selected verbose levels and
 
 Returns whether the appliance is currently capturing audio.
 
-**Response (200)**
+**Direct-local access:** a loopback socket peer with no `X-Forwarded-For` or
+`X-Real-IP` headers may call this endpoint without a PIN, CSRF token, agent ID,
+or API key. Browser and proxied requests require normal session authentication.
+A plain GET without a `Content-Type` header is accepted on the direct-local path.
+
+**Response — known state (200)**
 
 ```json
 { "ok": true, "playing": false }
 ```
 
-This endpoint has a direct-local bypass: the storage guard calls it over loopback before potentially raising the log level ceiling, so it can avoid noisy log-level changes while audio is playing. Browser requests require normal PIN authentication.
+`playing` is always a JSON boolean when `ok` is `true`.
+
+**Response — uncertain state (200)**
+
+When the appliance cannot determine playback state (e.g. the audio monitor has
+not started, or an internal query fails):
+
+```json
+{ "ok": false, "error": "playing status unavailable" }
+```
+
+**Consumers must treat uncertain responses conservatively.** Accept playback
+state only when `ok` is exactly `true` and `playing` is a JSON boolean. Any
+other shape — including `ok: false`, missing fields, or a non-boolean `playing`
+— must be treated as unknown (not as stopped). The wifi watcher defers optional
+USB adapter handover on uncertain responses; the storage guard does not raise
+the log-level ceiling.
+
+This endpoint has a direct-local bypass: the storage guard and wifi watcher call
+it over loopback to check whether audio is playing before taking potentially
+disruptive actions.
 
 ---
 

@@ -171,6 +171,8 @@ main() {
   remove_path /etc/logrotate.d/autostream
   remove_path /etc/dnsmasq.d/autostream-setup.conf
   remove_path /etc/autostream-network.json
+  remove_path /usr/local/share/autostream/dnsmasq/autostream-setup.conf
+  remove_path /run/autostream/autostream-setup.conf
   remove_path /etc/NetworkManager/dispatcher.d/99-wlan-fix
   remove_path /etc/NetworkManager/conf.d/mdns.conf
   remove_path /etc/NetworkManager/conf.d/wifi-powersave.conf

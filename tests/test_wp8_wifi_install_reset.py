@@ -39,14 +39,15 @@ class TestFactoryResetDeletesNetworkFile:
             "/etc/autostream-network.json must be in FACTORY_RESET_DELETE_FILES"
         )
 
-    def test_network_json_not_in_dial_reset_list(self):
-        """The dial product does not use the wi-fi watcher, so its reset list
-        should not reference /etc/autostream-network.json to avoid surprises."""
-        # This is a soft expectation: the dial list may or may not include it,
-        # but it must not cause confusion.  If it is in there, the test still
-        # passes (dual-product scenario); we just document the expectation.
-        # The main product list is the authoritative check (above).
-        pass  # no hard assertion needed
+    def test_network_json_in_dial_reset_list(self):
+        """/etc/autostream-network.json must also be deleted on Dial factory reset.
+
+        Dial uses the shared wifi_watcher, which writes /etc/autostream-network.json.
+        Retaining it after factory reset would leave stale connection state.
+        """
+        assert NETWORK_JSON in _admin.FACTORY_RESET_DIAL_DELETE_FILES, (
+            "/etc/autostream-network.json must be in FACTORY_RESET_DIAL_DELETE_FILES"
+        )
 
 
 # ---------------------------------------------------------------------------
