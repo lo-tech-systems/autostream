@@ -374,6 +374,121 @@ If you miss the AP window:
 
 ---
 
+### Storage guard and log-level management
+
+autostream runs a **storage guard** service once a day (04:00, ± 30 min jitter) to keep disk use within safe bounds and to prevent verbose log levels from accumulating indefinitely on an SD-card appliance.
+
+#### Storage guard states
+
+| State | Condition |
+|---|---|
+| normal | ≥ 15 % free, ≥ 1 GiB free, ≥ 10 % inodes |
+| warning | below normal |
+| critical | < 8 % free **or** < 512 MiB **or** < 5 % inodes |
+| emergency | < 3 % free **or** < 128 MiB **or** < 1 % inodes |
+
+#### What it cleans up
+
+The guard uses a conservative, allowlist-based cleanup sequence. It only ever removes **rotated archive files** — numbered (`logfile.1`, `logfile.2.gz`) or dated (`logfile-20260601.gz`) copies of known base log files. It never touches current log files, application data, configuration, databases, or files outside `/var/log`.
+
+Cleanup steps (escalating with state severity):
+
+| Step | State |
+|---|---|
+| `logrotate` | warning + |
+| `apt-get autoclean` | warning + |
+| `journald --vacuum-size` | warning + |
+| `tmpfiles.d` cleanup | warning + |
+| `apt-get clean` | critical + |
+| Delete eligible archive files | critical + |
+| Delete crash/core files | critical + |
+| Emergency journal vacuum to 64 MiB | emergency |
+
+`apt autoremove` is **never** run automatically.
+
+#### Checking the storage guard state
+
+```bash
+# Last run result and storage state
+cat /var/lib/autostream/storage-guard.json
+
+# Timer next fire time
+systemctl status autostream_storage_guard.timer
+
+# Last run log
+journalctl -u autostream_storage_guard.service -n 100
+```
+
+#### Running the storage guard manually
+
+```bash
+sudo systemctl start autostream_storage_guard.service
+```
+
+This runs a single immediate pass. To watch it in real time:
+
+```bash
+sudo journalctl -fu autostream_storage_guard.service
+```
+
+#### Log-level ceilings
+
+When disk pressure is high, the storage guard lowers the maximum log level to reduce future growth:
+
+| State | Ceiling |
+|---|---|
+| warning | info |
+| critical | warning |
+| emergency | warning |
+
+The storage guard calls `PUT /api/log-level` over loopback (direct-local, no PIN) to apply a ceiling. It does not lower the level below the ceiling already in place, and it does not override a user-set level with a more restrictive one unless disk state requires it.
+
+The ceiling is lifted automatically when the disk returns to a normal state.
+
+#### Automatic log-level expiry
+
+The storage guard also enforces two expiry rules on system-set log levels:
+
+| Rule | Condition | Action |
+|---|---|---|
+| Tier 1 | `changed_by = "system"`, level is `debug` or `spam`, older than 48 h | Restore to `info` |
+| Tier 2 | `changed_by = "system"`, level is `info`, older than 7 days | Restore to `warning` |
+
+User-set levels (`changed_by = "user"`) are **never** automatically reverted.
+
+#### Checking and changing the log level via API
+
+From the appliance console (direct-local, no PIN required):
+
+```bash
+# Read current level
+curl -s http://127.0.0.1:8080/api/log-level | python3 -m json.tool
+
+# Set level to debug (for temporary diagnostics)
+curl -s -X PUT http://127.0.0.1:8080/api/log-level \
+  -H 'Content-Type: application/json' \
+  -d '{"level": "debug"}'
+```
+
+From a browser: use the **Logs** page in the web UI. Changes made from the browser are marked `changed_by = "user"` and are not automatically reverted by the storage guard.
+
+See [LOG-LEVEL-API.md](LOG-LEVEL-API.md) for the full API reference.
+
+#### journald storage limits
+
+The installer applies a fixed journald configuration at `/etc/systemd/journald.conf.d/99-autostream-storage.conf`:
+
+| Setting | Value |
+|---|---|
+| SystemMaxUse | 128 MiB |
+| SystemKeepFree | 512 MiB |
+| MaxRetentionSec | 14 days |
+| Compress | yes |
+
+These limits do not restrict log severity. `MaxLevelStore` and `MaxLevelSystem` are deliberately not set — all log severities remain available for diagnosis.
+
+---
+
 ### If nothing works (quick checklist)
 
 Run through this in order:
@@ -603,6 +718,7 @@ sudo systemctl restart autostream_dnsmasq.service
 Other repo-provided units you may see enabled (depending on install):
 
 * `autostream_sdcardhealth.service` + `.timer`
+* `autostream_storage_guard.service` + `.timer`
 * (see `system/systemd/`)
 
 ---

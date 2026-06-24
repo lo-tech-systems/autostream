@@ -28,7 +28,8 @@ it should not be treated as a full system rollback.
 - Shows a warning and asks for confirmation before continuing.
 - Stops and disables these services when present:
   `autostream.service`, `autostream_monitor.service`,
-  `autostream_wifi_watcher.service`, `autostream_sdcardhealth.service`,
+  `autostream_wifi_watcher.service`, `autostream_storage_guard.timer`,
+  `autostream_storage_guard.service`, `autostream_sdcardhealth.service`,
   `autostream_sdcardhealth.timer`, `autostream_dnsmasq.service`,
   `owntone.service`, and `nginx.service`.
 - Removes the main application directories:
@@ -43,9 +44,13 @@ it should not be treated as a full system rollback.
 - Removes the autostream nginx config files:
   `/etc/nginx/sites-enabled/autostream-nginx.conf`,
   `/etc/nginx/sites-available/autostream-nginx.conf`,
-  and `/etc/nginx/conf.d/autostream-nginxd.conf`.
+  `/etc/nginx/conf.d/autostream-nginxd.conf`,
+  and `/etc/nginx/conf.d/99-autostream-access-log.conf`.
 - Removes the systemd unit files created by the installer for autostream.
 - Removes the sudoers snippets created by the installer.
+- Removes the journald storage drop-in
+  (`/etc/systemd/journald.conf.d/99-autostream-storage.conf`) and restarts
+  `systemd-journald` to apply the removal.
 - Removes a few other installer-managed files we can identify confidently, such as
   the autostream logrotate file, the autostream dnsmasq snippet, and the
   NetworkManager files copied by the installer.
