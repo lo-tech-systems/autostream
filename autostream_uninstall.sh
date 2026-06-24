@@ -118,6 +118,8 @@ main() {
   stop_and_disable_service autostream.service
   stop_and_disable_service autostream_monitor.service
   stop_and_disable_service autostream_wifi_watcher.service
+  stop_and_disable_service autostream_storage_guard.timer
+  stop_and_disable_service autostream_storage_guard.service
   stop_and_disable_service autostream_sdcardhealth.timer
   stop_and_disable_service autostream_sdcardhealth.service
   stop_and_disable_service autostream_dnsmasq.service
@@ -145,6 +147,7 @@ main() {
   remove_path /etc/nginx/sites-enabled/autostream-nginx.conf
   remove_path /etc/nginx/sites-available/autostream-nginx.conf
   remove_path /etc/nginx/conf.d/autostream-nginxd.conf
+  remove_path /etc/nginx/conf.d/99-autostream-access-log.conf
 
   info "Removing autostream systemd units"
   remove_path /etc/systemd/system/autostream_update_retry.service
@@ -156,6 +159,8 @@ main() {
   remove_path /etc/systemd/system/autostream_dnsmasq.service
   remove_path /etc/systemd/system/autostream_sdcardhealth.service
   remove_path /etc/systemd/system/autostream_sdcardhealth.timer
+  remove_path /etc/systemd/system/autostream_storage_guard.service
+  remove_path /etc/systemd/system/autostream_storage_guard.timer
 
   info "Removing autostream sudoers snippets"
   remove_path /etc/sudoers.d/autostream_updater
@@ -168,6 +173,8 @@ main() {
   remove_path /etc/NetworkManager/dispatcher.d/99-wlan-fix
   remove_path /etc/NetworkManager/conf.d/mdns.conf
   remove_path /etc/NetworkManager/conf.d/wifi-powersave.conf
+  remove_path /etc/systemd/journald.conf.d/99-autostream-storage.conf
+  systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
 
   info "Reloading systemd manager configuration"
   systemctl daemon-reload || warn "systemctl daemon-reload failed"

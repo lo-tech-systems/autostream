@@ -1,0 +1,25 @@
+# /etc/systemd/system/autostream_storage_guard.service
+#
+# This file is part of autostream.
+# Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+
+[Unit]
+Description=Autostream Storage Guard
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/libexec/autostream/autostream_storage_guard
+TimeoutStartSec=10min
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=10
+IOWeight=10
+NoNewPrivileges=true
+ProtectHome=true
+PrivateDevices=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autostream-storage-guard

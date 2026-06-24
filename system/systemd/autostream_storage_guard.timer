@@ -1,0 +1,15 @@
+# /etc/systemd/system/autostream_storage_guard.timer
+#
+# This file is part of autostream.
+# Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+
+[Unit]
+Description=Daily Autostream Storage Guard
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

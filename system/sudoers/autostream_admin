@@ -33,6 +33,10 @@ Cmnd_Alias AUTOSTREAM_ADMIN_FACTORY_RESET = /usr/local/libexec/autostream/autost
 Cmnd_Alias AUTOSTREAM_ADMIN_TOGGLE_TIMER_EN = /usr/local/libexec/autostream/autostream_admin toggle-update-timer enable
 Cmnd_Alias AUTOSTREAM_ADMIN_TOGGLE_TIMER_DI = /usr/local/libexec/autostream/autostream_admin toggle-update-timer disable
 
+# allow NGINX access log mode switching (verbose/normal)
+Cmnd_Alias AUTOSTREAM_ADMIN_NGINX_LOG_V = /usr/local/libexec/autostream/autostream_admin set-nginx-access-log verbose
+Cmnd_Alias AUTOSTREAM_ADMIN_NGINX_LOG_N = /usr/local/libexec/autostream/autostream_admin set-nginx-access-log normal
+
 # Full list of allowed actions for autostream user:
 Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URN,        \
@@ -46,7 +50,9 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_HOST,              \
                               AUTOSTREAM_ADMIN_FACTORY_RESET,     \
                               AUTOSTREAM_ADMIN_TOGGLE_TIMER_EN,   \
-                              AUTOSTREAM_ADMIN_TOGGLE_TIMER_DI
+                              AUTOSTREAM_ADMIN_TOGGLE_TIMER_DI,   \
+                              AUTOSTREAM_ADMIN_NGINX_LOG_V,       \
+                              AUTOSTREAM_ADMIN_NGINX_LOG_N
 
 Defaults!AUTOSTREAM_ADMIN env_reset
 Defaults!AUTOSTREAM_ADMIN secure_path="/usr/sbin:/usr/bin:/sbin:/bin"

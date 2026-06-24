@@ -732,11 +732,12 @@ deploy_phase() {
   fi
 
   info "Installing supervisor and helper scripts"
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_support.py" "${LIBEXEC_DIR}/autostream_update_support.py" 0644 root root
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater"           "${LIBEXEC_DIR}/autostream_updater"           0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"             "${LIBEXEC_DIR}/autostream_admin"             0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry"      "${LIBEXEC_DIR}/autostream_update_retry"      0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/tools/autostream_migrate.py"             "${LIBEXEC_DIR}/autostream_migrate.py"        0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_support.py"  "${LIBEXEC_DIR}/autostream_update_support.py"  0644 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_updater"            "${LIBEXEC_DIR}/autostream_updater"            0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"              "${LIBEXEC_DIR}/autostream_admin"              0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry"       "${LIBEXEC_DIR}/autostream_update_retry"       0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_storage_guard"      "${LIBEXEC_DIR}/autostream_storage_guard"      0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/tools/autostream_migrate.py"              "${LIBEXEC_DIR}/autostream_migrate.py"         0755 root root
 
   update_progress "Updating Python packages..." 57
   info "Creating/updating Python virtual environment"
@@ -777,8 +778,9 @@ configure_phase() {
   info "Configuring nginx"
   cp -a "${AUTOSTREAM_DIR}/nginx"  "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/images" "${INSTALL_DIR}/"
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/autostream-nginx.conf"  /etc/nginx/sites-available/autostream-nginx.conf
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/autostream-nginxd.conf" /etc/nginx/conf.d/autostream-nginxd.conf
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/autostream-nginx.conf"          /etc/nginx/sites-available/autostream-nginx.conf
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/autostream-nginxd.conf"         /etc/nginx/conf.d/autostream-nginxd.conf
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/99-autostream-access-log.conf"  /etc/nginx/conf.d/99-autostream-access-log.conf
 
   if [[ -e /etc/nginx/sites-enabled/default ]]; then
     rm -f /etc/nginx/sites-enabled/default
@@ -786,6 +788,12 @@ configure_phase() {
   ln -sf /etc/nginx/sites-available/autostream-nginx.conf /etc/nginx/sites-enabled/autostream-nginx.conf
   nginx -t
   systemctl enable nginx
+
+  # journald storage drop-in (fixed appliance bounds; does not restrict log severity)
+  mkdir -p /etc/systemd/journald.conf.d
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/journald/99-autostream-storage.conf" \
+    /etc/systemd/journald.conf.d/99-autostream-storage.conf
+  systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
 
   # logrotate
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/logrotate/autostream" /etc/logrotate.d/autostream
@@ -932,6 +940,8 @@ services_phase() {
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_wifi_watcher.service" /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_updater.service"      /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_updater.timer"        /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_storage_guard.service" /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_storage_guard.timer"   /etc/systemd/system/
 
   systemctl daemon-reload
 
@@ -946,6 +956,7 @@ services_phase() {
   systemctl enable vibra-mini.service
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
+  systemctl enable autostream_storage_guard.timer
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
     info "Restarting affected services"
