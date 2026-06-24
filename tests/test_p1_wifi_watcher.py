@@ -1270,6 +1270,88 @@ class TestControlAuthLogic:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_committed_uuid — lazy UUID resolution for legacy profiles
+# ---------------------------------------------------------------------------
+
+class TestResolveCommittedUuid:
+    """_resolve_committed_uuid() resolves and persists missing UUIDs so that
+    cross-adapter restriction clearing is not skipped for legacy profiles."""
+
+    def _state(self, watcher, name="HomeNetwork", uuid=""):
+        return watcher.wifi_net.NetworkState(connection_name=name, connection_uuid=uuid)
+
+    def test_returns_uuid_when_already_present(self, watcher):
+        state = self._state(watcher, uuid="existing-uuid")
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name") as resolve, \
+             patch.object(watcher.wifi_net, "save_network_state") as save:
+            result = watcher._resolve_committed_uuid(state)
+        assert result == "existing-uuid"
+        resolve.assert_not_called()
+        save.assert_not_called()
+
+    def test_resolves_and_persists_when_uuid_empty(self, watcher):
+        state = self._state(watcher, uuid="")
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          return_value="resolved-uuid") as resolve, \
+             patch.object(watcher.wifi_net, "save_network_state") as save:
+            result = watcher._resolve_committed_uuid(state)
+        assert result == "resolved-uuid"
+        resolve.assert_called_once_with("HomeNetwork")
+        save.assert_called_once()
+        saved_state = save.call_args[0][0]
+        assert saved_state.connection_uuid == "resolved-uuid"
+        assert saved_state.connection_name == "HomeNetwork"
+
+    def test_returns_empty_when_resolution_fails(self, watcher):
+        state = self._state(watcher, uuid="")
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          return_value="") as resolve, \
+             patch.object(watcher.wifi_net, "save_network_state") as save:
+            result = watcher._resolve_committed_uuid(state)
+        assert result == ""
+        resolve.assert_called_once_with("HomeNetwork")
+        save.assert_not_called()
+
+    def test_returns_empty_when_name_empty(self, watcher):
+        state = self._state(watcher, name="", uuid="")
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name") as resolve:
+            result = watcher._resolve_committed_uuid(state)
+        assert result == ""
+        resolve.assert_not_called()
+
+    def test_still_returns_uuid_when_persist_fails(self, watcher):
+        """A persistence failure must not suppress the resolved UUID — the
+        restriction clear should still proceed using the in-memory value."""
+        state = self._state(watcher, uuid="")
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          return_value="resolved-uuid"), \
+             patch.object(watcher.wifi_net, "save_network_state",
+                          side_effect=OSError("disk full")):
+            result = watcher._resolve_committed_uuid(state)
+        assert result == "resolved-uuid"
+
+    def test_activate_committed_on_resolves_uuid_before_restriction_clear(self, watcher):
+        """When the committed state has an empty UUID, _activate_committed_on
+        must resolve it and clear restrictions before activating."""
+        with patch.object(watcher, "get_configured_network_state") as gcns, \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          return_value="resolved-uuid"), \
+             patch.object(watcher.wifi_net, "save_network_state"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as rc, \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+            gcns.return_value = watcher.wifi_net.NetworkState(
+                connection_name="HomeNetwork", connection_uuid=""
+            )
+            watcher._activate_committed_on("wlan1")
+
+        calls = [str(c) for c in rc.call_args_list]
+        assert any("resolved-uuid" in c and "modify" in c for c in calls), (
+            "_activate_committed_on must call clear_restrictions_cmd with the resolved UUID"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Regression: delayed startup USB enumeration re-probe (Section 4.3 / WP4)
 # ---------------------------------------------------------------------------
 

@@ -2264,6 +2264,48 @@ def connect_to_configured_wifi() -> bool:
     return True
 
 
+def _resolve_committed_uuid(state: "wifi_net.NetworkState") -> str:
+    """Return the UUID for the committed profile, resolving and persisting if absent.
+
+    When network.json was written without a UUID (e.g. migrated from the legacy
+    ssid file), this resolves the UUID from NetworkManager at operation time and
+    atomically persists it so future calls have it immediately.  Returns "" when
+    the profile cannot be uniquely identified, in which case restriction clearing
+    must be skipped.
+    """
+    if state.connection_uuid:
+        return state.connection_uuid
+    if not state.connection_name:
+        return ""
+    resolved = wifi_net.resolve_connection_uuid_for_name(state.connection_name)
+    if not resolved:
+        logger.warning(
+            "Cannot resolve UUID for committed profile '%s'; "
+            "cross-adapter restriction clearing will be skipped",
+            state.connection_name,
+        )
+        return ""
+    try:
+        wifi_net.save_network_state(
+            wifi_net.NetworkState(
+                connection_name=state.connection_name,
+                connection_uuid=resolved,
+            ),
+            state_path=NETWORK_STATE_PATH,
+            legacy_path=CONFIGURED_SSID,
+        )
+        logger.info(
+            "Lazily resolved and persisted UUID %s for committed profile '%s'",
+            resolved, state.connection_name,
+        )
+    except Exception as e:
+        logger.warning(
+            "Could not persist resolved UUID for '%s': %s; will still clear restrictions",
+            state.connection_name, e,
+        )
+    return resolved
+
+
 def startup_connect_usb_first() -> bool:
     """USB-first startup connection (Section 4.3).
 
@@ -2283,15 +2325,13 @@ def startup_connect_usb_first() -> bool:
     builtin = wifi_net.resolve_builtin(adapters)
     usb = wifi_net.usb_candidates(adapters)
 
-    # Clear cross-adapter restrictions before any USB activation attempt so
-    # a legacy profile bound to built-in by interface-name/MAC/BSSID/band/
-    # channel can be activated on a USB interface.  Must happen here, before
-    # the first nmcli up, not after a successful connection.
-    uuid = state.connection_uuid
+    # Resolve UUID (lazily persisting if missing) then clear cross-adapter
+    # restrictions before any USB activation attempt so a legacy profile bound
+    # to built-in by interface-name/MAC/BSSID/band/channel can be activated on
+    # a USB interface.  Must happen here, before the first nmcli up.
+    uuid = _resolve_committed_uuid(state)
     if uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
-    else:
-        logger.warning("startup_connect_usb_first: committed profile UUID is empty; skipping restriction clear")
 
     for candidate in usb:
         logger.info(
@@ -2381,11 +2421,9 @@ def _activate_committed_on(ifname: str) -> bool:
     state = get_configured_network_state()
     if not state.is_configured:
         return False
-    uuid = state.connection_uuid
+    uuid = _resolve_committed_uuid(state)
     if uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
-    else:
-        logger.warning("_activate_committed_on: committed profile has no UUID; skipping restriction clear")
     run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
     return (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
                                 interval=WAIT_FOR_CONNECTION_INTERVAL)
