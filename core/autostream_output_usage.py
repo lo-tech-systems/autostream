@@ -91,18 +91,22 @@ def _parse_playing_target(parts: list, txt: dict) -> tuple | None:
 
 _browser_lock = threading.Lock()
 _browser = None
+_browser_shutdown: "threading.Event | None" = None
 
 
 def _get_browser():
     global _browser
     with _browser_lock:
+        # Do not create a new browser if shutdown has been requested.
+        if _browser_shutdown is not None and _browser_shutdown.is_set():
+            return _browser  # may be None; callers tolerate that
         if _browser is None:
             from autostream_mdns import MdnsBrowser
             _browser = MdnsBrowser(
                 service_type="_autostream-playing._tcp",
                 parse_fn=_parse_playing_target,
             )
-            _browser.start()
+            _browser.start(shutdown_event=_browser_shutdown)
         return _browser
 
 
@@ -183,7 +187,10 @@ def _get_playing_targets() -> list:
     if _target_provider is not None:
         targets: list = _target_provider()
     else:
-        targets = list(_get_browser().get_snapshot().values())
+        br = _get_browser()
+        if br is None:
+            return []
+        targets = list(br.get_snapshot().values())
 
     local_hostname = _get_local_hostname()
     local_ips = _get_local_ips()
@@ -240,6 +247,7 @@ _cache: dict[str, OutputUsage] = {}  # lower(output_name) -> OutputUsage
 _poll_interval: int = OUTPUT_USAGE_POLL_INTERVAL_DEFAULT
 _started = False
 _poll_thread: threading.Thread | None = None
+_poll_stop_event = threading.Event()  # signals the poll loop to exit
 
 # Injected HTTP fetcher for unit tests.
 # Signature: (url: str, timeout: float) -> dict   (raises on error)
@@ -470,31 +478,80 @@ def _poll_once(interval: int) -> None:
         logger.info("%s: %s no longer in use by %s", _LOG_PREFIX, out_name, owner)
 
 
-def _poll_loop() -> None:
+def _is_poll_shutdown() -> bool:
+    if _poll_stop_event.is_set():
+        return True
+    shutdown = _browser_shutdown
+    return shutdown is not None and shutdown.is_set()
+
+
+def _interruptible_poll_sleep(interval: float) -> None:
+    """Sleep for *interval* seconds, returning early if shutdown is requested.
+
+    Responsiveness is at most 100 ms.
+    """
+    deadline = time.monotonic() + interval
     while True:
+        if _is_poll_shutdown():
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        _poll_stop_event.wait(timeout=min(0.1, remaining))
+
+
+def _poll_loop() -> None:
+    while not _is_poll_shutdown():
         interval = _get_poll_interval()
         try:
             _poll_once(interval)
         except Exception:
             logger.warning("%s: unexpected exception in poll loop", _LOG_PREFIX, exc_info=True)
-        time.sleep(interval)
+        _interruptible_poll_sleep(interval)
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def start() -> None:
-    """Start background polling.  Idempotent."""
-    global _started, _poll_thread
+def start(shutdown_event: "threading.Event | None" = None) -> None:
+    """Start background polling.  Idempotent.
+
+    ``shutdown_event`` is forwarded to the lazily-created MdnsBrowser so it
+    exits cleanly when the application is shutting down.
+    """
+    global _started, _poll_thread, _browser_shutdown
     with _lock:
         if _started:
             return
         _started = True
+    _browser_shutdown = shutdown_event
     t = threading.Thread(target=_poll_loop, name="output-usage-poller", daemon=True)
     t.start()
     with _lock:
         _poll_thread = t
+
+
+def stop(timeout: float = 2.0) -> None:
+    """Stop background polling and the underlying mDNS browser.  Idempotent.
+
+    Does not instantiate a browser merely to stop it.
+    """
+    global _browser
+
+    _poll_stop_event.set()
+
+    with _lock:
+        thread = _poll_thread
+
+    if thread is not None:
+        thread.join(timeout=timeout)
+
+    with _browser_lock:
+        br = _browser
+
+    if br is not None:
+        br.stop(timeout=max(0.0, timeout))
 
 
 def refresh_now(reason: str = "", timeout: float = 1.5) -> None:

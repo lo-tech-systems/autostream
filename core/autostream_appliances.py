@@ -240,7 +240,9 @@ def grace_remaining_ms() -> int:
     return _browser.grace_remaining_ms()
 
 
-def start_appliance_scanner() -> None:
+def start_appliance_scanner(
+    shutdown_event: "Optional[threading.Event]" = None,
+) -> None:
     """Start the _autostream._tcp discovery browser if local identity is available.
 
     Idempotent. Safe to call multiple times. No-op when get_appliance_id() is None
@@ -249,7 +251,12 @@ def start_appliance_scanner() -> None:
     if get_appliance_id() is None:
         logging.warning("appliance-scanner: local identity unavailable; not starting")
         return
-    _browser.start()
+    _browser.start(shutdown_event=shutdown_event)
+
+
+def stop_appliance_scanner() -> None:
+    """Stop the _autostream._tcp discovery browser.  Idempotent."""
+    _browser.stop()
 
 
 # ---------------------------------------------------------------------------

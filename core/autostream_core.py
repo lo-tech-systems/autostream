@@ -568,6 +568,30 @@ def handle_signal(signum, frame):
     stop_flag.set()
 
 
+def _cleanup_discovery() -> None:
+    """Best-effort shutdown of all process-lifetime mDNS discovery services.
+
+    Called once after the coordinator outer loop exits (including on SIGINT,
+    SIGTERM, and unexpected exceptions).  Never called during a configuration
+    reload.  All operations are idempotent.
+    """
+    try:
+        import autostream_output_usage as _ou
+        _ou.stop()
+    except Exception:
+        logging.debug("_cleanup_discovery: output_usage.stop() raised", exc_info=True)
+    try:
+        import autostream_dials as _dials
+        _dials.stop_dial_scanner()
+    except Exception:
+        logging.debug("_cleanup_discovery: stop_dial_scanner() raised", exc_info=True)
+    try:
+        import autostream_appliances as _appliances
+        _appliances.stop_appliance_scanner()
+    except Exception:
+        logging.debug("_cleanup_discovery: stop_appliance_scanner() raised", exc_info=True)
+
+
 def _install_signal_handlers() -> None:
     """Register SIGINT/SIGTERM handlers. Call once from the process entry point."""
     signal.signal(signal.SIGINT,  handle_signal)
@@ -2484,7 +2508,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         try:
             import autostream_output_usage as _ou
             _ou.configure(cfg.webui.output_usage_poll_interval_seconds)
-            _ou.start()
+            _ou.start(shutdown_event=stop_flag)
         except Exception:
             logging.warning("output-usage: failed to start poller", exc_info=True)
 
@@ -2684,12 +2708,16 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             client.close()
             if not _reloading:
                 logging.info("Stopped cleanly.")
+                _cleanup_discovery()
 
         if not _reloading:
             break
         # _reloading: continue outer loop → startup phase runs again with fresh config
 
     # Final flush: persist any pending in-memory changes before process exit.
+    # Also covers the case where the coordinator loop was never entered (stop_flag
+    # set during the startup phase before _cleanup_discovery ran in the finally).
+    _cleanup_discovery()
     try:
         settings.save_now()
     except Exception:

@@ -51,6 +51,11 @@ def _reset_module():
     with ou._local_ips_cache_lock:
         ou._local_ips_cache = None
         ou._local_ips_cache_time = 0.0
+    # Reset WP2 shutdown state.
+    ou._poll_stop_event.clear()
+    ou._browser_shutdown = None
+    with ou._browser_lock:
+        ou._browser = None
 
 
 @pytest.fixture(autouse=True)
@@ -928,3 +933,92 @@ class TestNullOutputsPreservesCache:
 
         # Entry should still be there (not expired yet)
         assert ou.is_output_in_use_elsewhere("Kitchen")
+
+
+# ---------------------------------------------------------------------------
+# WP2: Shutdown awareness (plan section 5)
+# ---------------------------------------------------------------------------
+
+class TestShutdownAwareness:
+    def test_poll_sleep_interrupted_by_poll_stop_event(self):
+        """_interruptible_poll_sleep exits immediately when _poll_stop_event is set."""
+        import time as _t
+        ou._poll_stop_event.set()
+        start = _t.monotonic()
+        ou._interruptible_poll_sleep(10.0)
+        assert _t.monotonic() - start < 0.5
+
+    def test_poll_sleep_interrupted_by_browser_shutdown(self):
+        """_interruptible_poll_sleep exits immediately when _browser_shutdown event is set."""
+        import time as _t
+        ev = threading.Event()
+        ou._browser_shutdown = ev
+        ev.set()
+        start = _t.monotonic()
+        ou._interruptible_poll_sleep(10.0)
+        assert _t.monotonic() - start < 0.5
+
+    def test_poll_sleep_runs_full_duration_without_shutdown(self):
+        """_interruptible_poll_sleep respects the full deadline when not shut down."""
+        import time as _t
+        start = _t.monotonic()
+        ou._interruptible_poll_sleep(0.15)
+        assert _t.monotonic() - start >= 0.13
+
+    def test_get_browser_returns_none_when_shutdown_already_set(self):
+        """_get_browser() creates no browser and returns None when shutdown event is set."""
+        ev = threading.Event()
+        ev.set()
+        ou._browser_shutdown = ev
+        result = ou._get_browser()
+        assert result is None
+        with ou._browser_lock:
+            assert ou._browser is None
+
+    def test_get_browser_creates_no_browser_after_shutdown_set(self):
+        """_get_browser() must not install a new browser after shutdown begins."""
+        ev = threading.Event()
+        ou._browser_shutdown = ev
+        ev.set()
+        # Call twice to ensure it stays None.
+        ou._get_browser()
+        ou._get_browser()
+        with ou._browser_lock:
+            assert ou._browser is None
+
+    def test_stop_does_not_create_browser_when_none_exists(self):
+        """stop() completes without instantiating a browser."""
+        with ou._browser_lock:
+            assert ou._browser is None
+        ou.stop()
+        with ou._browser_lock:
+            assert ou._browser is None
+
+    def test_stop_delegates_to_existing_browser(self):
+        """stop() calls stop() on the underlying browser when one was already created."""
+        from unittest.mock import MagicMock
+        mock_br = MagicMock()
+        with ou._browser_lock:
+            ou._browser = mock_br
+        ou.stop(timeout=0.5)
+        mock_br.stop.assert_called_once()
+
+    def test_stop_joins_poll_thread(self):
+        """stop() waits for the poll thread to exit."""
+        import time as _t
+        thread_started = threading.Event()
+        thread_done = threading.Event()
+
+        def slow_poll_loop():
+            thread_started.set()
+            ou._poll_stop_event.wait(timeout=2.0)
+            thread_done.set()
+
+        t = threading.Thread(target=slow_poll_loop, daemon=True)
+        t.start()
+        thread_started.wait(timeout=1.0)
+        with ou._lock:
+            ou._poll_thread = t
+
+        ou.stop(timeout=1.0)
+        assert thread_done.is_set(), "poll thread must have exited after stop()"

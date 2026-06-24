@@ -971,8 +971,9 @@ def start_webui_background(
             )
             from autostream_webui_common import _config_snapshot, get_app_version
 
-            start_dial_scanner()
-            start_appliance_scanner()
+            from autostream_core import stop_flag as _stop_flag
+            start_dial_scanner(shutdown_event=_stop_flag)
+            start_appliance_scanner(shutdown_event=_stop_flag)
 
             scanner_thread = threading.Thread(
                 target=_scan_monitor_devices_loop, daemon=True,

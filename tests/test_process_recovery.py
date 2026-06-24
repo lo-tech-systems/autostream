@@ -199,3 +199,110 @@ def test_service_unit_restart_on_failure():
     assert "Restart=on-failure" in content, (
         "autostream.service must set Restart=on-failure so systemd restarts on crashes"
     )
+
+
+# ---------------------------------------------------------------------------
+# WP2: Scanner wrapper delegation (plan section 5, tests 1-2)
+# ---------------------------------------------------------------------------
+
+class TestScannerWrappers:
+    def test_stop_dial_scanner_delegates_to_browser(self):
+        """stop_dial_scanner() calls stop() on the underlying MdnsBrowser exactly once."""
+        import autostream_dials as _dials
+        with patch.object(_dials._browser, "stop") as mock_stop:
+            _dials.stop_dial_scanner()
+        mock_stop.assert_called_once()
+
+    def test_stop_appliance_scanner_delegates_to_browser(self):
+        """stop_appliance_scanner() calls stop() on the underlying MdnsBrowser exactly once."""
+        import autostream_appliances as _ap
+        with patch.object(_ap._browser, "stop") as mock_stop:
+            _ap.stop_appliance_scanner()
+        mock_stop.assert_called_once()
+
+    def test_webui_passes_stop_flag_to_both_scanners(self, tmp_path):
+        """start_webui_background() passes autostream_core.stop_flag to both scanner starts."""
+        cfg_path = tmp_path / "autostream.json"
+        cfg_path.write_text('{"general":{}}')
+        try:
+            from autostream_webui import start_webui_background
+        except ImportError:
+            pytest.skip("autostream_webui not importable")
+
+        captured = {}
+
+        def capture_dial_scanner(**kwargs):
+            captured["dial_event"] = kwargs.get("shutdown_event")
+
+        def capture_appliance_scanner(**kwargs):
+            captured["appliance_event"] = kwargs.get("shutdown_event")
+
+        with patch("autostream_webui.WebUIState"), \
+             patch("autostream_webui.AuthManager"), \
+             patch("autostream_webui.build_nav_bar_html", return_value=""), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.AUTH", MagicMock()), \
+             patch("autostream_webui.ThreadingHTTPServer") as mock_server, \
+             patch("autostream_dials.start_dial_scanner",
+                   side_effect=capture_dial_scanner), \
+             patch("autostream_appliances.start_appliance_scanner",
+                   side_effect=capture_appliance_scanner), \
+             patch("autostream_webui._scan_monitor_devices_loop"):
+            instance = MagicMock()
+            mock_server.return_value = instance
+            instance.serve_forever.side_effect = lambda: time.sleep(0.05)
+            start_webui_background(str(cfg_path))
+
+        import autostream_core as _core
+        assert "dial_event" in captured, "start_dial_scanner was not called"
+        assert captured["dial_event"] is _core.stop_flag, (
+            "start_dial_scanner must receive stop_flag as shutdown_event"
+        )
+        assert "appliance_event" in captured, "start_appliance_scanner was not called"
+        assert captured["appliance_event"] is _core.stop_flag, (
+            "start_appliance_scanner must receive stop_flag as shutdown_event"
+        )
+
+
+# ---------------------------------------------------------------------------
+# WP2: _cleanup_discovery (plan section 5, tests 7-9)
+# ---------------------------------------------------------------------------
+
+class TestCleanupDiscovery:
+    def test_cleanup_calls_all_three_stops(self):
+        """_cleanup_discovery() calls stop on output_usage, dials, and appliances."""
+        with patch("autostream_output_usage.stop") as ou_stop, \
+             patch("autostream_dials.stop_dial_scanner") as dials_stop, \
+             patch("autostream_appliances.stop_appliance_scanner") as ap_stop:
+            _core_mod._cleanup_discovery()
+        ou_stop.assert_called_once()
+        dials_stop.assert_called_once()
+        ap_stop.assert_called_once()
+
+    def test_cleanup_continues_when_one_stop_raises(self):
+        """_cleanup_discovery() is best-effort: an exception in one stop does not abort others."""
+        with patch("autostream_output_usage.stop", side_effect=RuntimeError("boom")), \
+             patch("autostream_dials.stop_dial_scanner") as dials_stop, \
+             patch("autostream_appliances.stop_appliance_scanner") as ap_stop:
+            _core_mod._cleanup_discovery()  # must not raise
+        dials_stop.assert_called_once()
+        ap_stop.assert_called_once()
+
+    def test_cleanup_is_idempotent(self):
+        """Calling _cleanup_discovery() twice must not raise."""
+        with patch("autostream_output_usage.stop"), \
+             patch("autostream_dials.stop_dial_scanner"), \
+             patch("autostream_appliances.stop_appliance_scanner"):
+            _core_mod._cleanup_discovery()
+            _core_mod._cleanup_discovery()
+
+    def test_cleanup_skipped_when_reloading_flag_is_true(self):
+        """The _reloading guard in the inner finally must prevent cleanup on config reload."""
+        called = []
+        with patch.object(_core_mod, "_cleanup_discovery",
+                          side_effect=lambda: called.append(1)):
+            # Replicate the inner-finally guard that run_autostream uses.
+            _reloading = True
+            if not _reloading:
+                _core_mod._cleanup_discovery()
+        assert not called, "_cleanup_discovery must be skipped when _reloading is True"

@@ -194,6 +194,13 @@ def get_all_sightings() -> list[DialSighting]:
     return list(_browser.get_snapshot().values())
 
 
-def start_dial_scanner() -> None:
+def start_dial_scanner(
+    shutdown_event: "threading.Event | None" = None,
+) -> None:
     """Start the background mDNS browser for _autostream-dial._tcp.  Idempotent."""
-    _browser.start()
+    _browser.start(shutdown_event=shutdown_event)
+
+
+def stop_dial_scanner() -> None:
+    """Stop the background mDNS browser for _autostream-dial._tcp.  Idempotent."""
+    _browser.stop()
