@@ -961,8 +961,11 @@ def run_log_level_policy(
     saved_changed_at = log_policy.get("saved_changed_at")
     applied_level = log_policy.get("applied_level")
 
-    # Check log-level expiry (runs regardless of disk state or ceiling).
-    expiry_target = compute_expiry_target(api_state, now)
+    # Check log-level expiry only for system-set levels; user changes are never
+    # auto-reverted.
+    expiry_target = None
+    if api_state.get("changed_by") == "system":
+        expiry_target = compute_expiry_target(api_state, now)
     if expiry_target is not None:
         if _level_quieter_than(expiry_target, current_level):
             reason_map = {

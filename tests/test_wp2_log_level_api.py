@@ -281,12 +281,14 @@ class TestSendPlayingStatusJson:
 
 
 # ---------------------------------------------------------------------------
-# ALLOWLIST includes /api/log-level
+# /api/log-level and /api/playing-status both require auth for browser callers;
+# only direct-local callers bypass the auth gate via _is_direct_local().
 # ---------------------------------------------------------------------------
 
 class TestAuthAllowlist:
-    def test_log_level_in_allowlist(self):
-        assert "/api/log-level" in auth_mod.ALLOWLIST_PATHS
+    def test_log_level_not_in_allowlist(self):
+        # Browser callers must authenticate; only direct-local bypasses auth.
+        assert "/api/log-level" not in auth_mod.ALLOWLIST_PATHS
 
     def test_playing_status_not_in_allowlist(self):
         # /api/playing-status intentionally requires auth for browser callers.

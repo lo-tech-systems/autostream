@@ -327,6 +327,63 @@ class TestApplyExpiryToSaved:
 
 
 # ---------------------------------------------------------------------------
+# run_log_level_policy — user-set level expiry guard
+# ---------------------------------------------------------------------------
+
+class TestRunLogLevelPolicyUserExpiry:
+    """User-set log levels must never be automatically expired."""
+
+    def _make_guard_state(self):
+        return {"log_level_policy": {}}
+
+    def _make_sd_health(self):
+        return {"percent": 95.0, "stale": False}
+
+    def test_user_debug_not_expired(self):
+        # A user-set debug level that is 200h old must not be expired.
+        from unittest.mock import patch, MagicMock
+        ts = (_NOW - timedelta(hours=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        api_state = {
+            "ok": True, "level": "debug",
+            "changed_by": "user", "changed_at": ts,
+        }
+        actions = []
+        with patch.object(sg, "get_log_level_state", return_value=api_state), \
+             patch.object(sg, "_api_put_log_level") as mock_put, \
+             patch.object(sg, "get_playing_status", return_value=False):
+            sg.run_log_level_policy(
+                disk_state="normal",
+                sd_health=self._make_sd_health(),
+                guard_state=self._make_guard_state(),
+                actions=actions,
+                now=_NOW,
+            )
+        mock_put.assert_not_called()
+
+    def test_system_debug_is_expired(self):
+        # A system-set debug level that is 200h old must be expired to info.
+        from unittest.mock import patch, MagicMock
+        ts = (_NOW - timedelta(hours=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        api_state = {
+            "ok": True, "level": "debug",
+            "changed_by": "system", "changed_at": ts,
+        }
+        actions = []
+        ok_result = {"ok": True, "level": "info"}
+        with patch.object(sg, "get_log_level_state", return_value=api_state), \
+             patch.object(sg, "_api_put_log_level", return_value=ok_result) as mock_put, \
+             patch.object(sg, "get_playing_status", return_value=False):
+            sg.run_log_level_policy(
+                disk_state="normal",
+                sd_health=self._make_sd_health(),
+                guard_state=self._make_guard_state(),
+                actions=actions,
+                now=_NOW,
+            )
+        mock_put.assert_called_with("info")
+
+
+# ---------------------------------------------------------------------------
 # _level_quieter_than
 # ---------------------------------------------------------------------------
 

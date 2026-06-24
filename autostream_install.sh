@@ -956,7 +956,7 @@ services_phase() {
   systemctl enable vibra-mini.service
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
-  systemctl enable autostream_storage_guard.timer
+  systemctl enable --now autostream_storage_guard.timer
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
     info "Restarting affected services"

@@ -454,11 +454,15 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             return
 
         # Direct-local callers (loopback, no proxy headers) bypass browser auth
-        # for the playing-status endpoint.  Browser-proxied callers reach the
-        # normal auth gate below.
-        if path == "/api/playing-status" and self._is_direct_local():
-            send_playing_status_json(self)
-            return
+        # for playing-status and log-level reads.  Browser-proxied callers
+        # reach the normal auth gate below.
+        if self._is_direct_local():
+            if path == "/api/playing-status":
+                send_playing_status_json(self)
+                return
+            if path == "/api/log-level":
+                send_log_level_get_json(self, STATE)
+                return
 
         # Gate protected pages
         if AUTH.requires_auth(path) and not AUTH.is_authenticated(self.headers):

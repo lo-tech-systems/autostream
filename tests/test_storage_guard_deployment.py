@@ -227,7 +227,7 @@ def test_installer_installs_storage_guard_timer():
 
 def test_installer_enables_storage_guard_timer():
     text = _installer()
-    assert "systemctl enable autostream_storage_guard.timer" in text
+    assert "systemctl enable --now autostream_storage_guard.timer" in text
 
 
 def test_installer_installs_journald_dropin():
