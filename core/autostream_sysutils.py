@@ -113,10 +113,14 @@ def run_cmd(
     cmd: list[str],
     timeout: float | None = None,
     log_cmd: list[str] | None = None,
+    warn_on_failure: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command, logging stderr on failure, but never raising.
 
     Returns a CompletedProcess for further inspection.
+    Pass warn_on_failure=False for best-effort probes whose failure is expected
+    and should not appear in the log (e.g. optional nmcli fields absent from
+    older NetworkManager builds).
     """
     safe_cmd = log_cmd if log_cmd is not None else cmd
     try:
@@ -131,7 +135,7 @@ def run_cmd(
             cmd,
             **kwargs,
         )
-        if result.returncode != 0:
+        if result.returncode != 0 and warn_on_failure:
             logger.warning(
                 "Command failed: %s (rc=%s, stderr=%s)",
                 " ".join(safe_cmd),

@@ -662,11 +662,15 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
         logger.warning("Candidate activation failed on %s (rc=%d)", ifname, r_up.returncode)
 
     # 6) validate local IPv4 + interface-specific gateway.
-    ok = wait_for_connection(
+    ip_ok = wait_for_connection(
         ifname,
         timeout=WAIT_FOR_CONNECTION_TIMEOUT,
         interval=WAIT_FOR_CONNECTION_INTERVAL,
-    ) and is_wifi_client_healthy(ifname)
+    )
+    logger.info("Candidate %s: ip_ready=%s", ifname, ip_ok)
+    gw_ok = ip_ok and is_wifi_client_healthy(ifname)
+    logger.info("Candidate %s: gw_healthy=%s", ifname, gw_ok)
+    ok = gw_ok
 
     if not ok:
         # 9) on failure delete only the candidate; keep the previous committed profile.

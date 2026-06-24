@@ -451,10 +451,13 @@ def _nmcli_device_detail(ifname: str) -> dict:
             if len(parts) == 2:
                 out[parts[0]] = parts[1]
 
-    # WIFI-PROPERTIES.PERM-HW-ADDRESS is absent from older NM builds; query
-    # separately so its absence does not discard the base fields above.
-    r2 = run_cmd(["nmcli", "-t", "-f", "WIFI-PROPERTIES.PERM-HW-ADDRESS",
-                  "device", "show", ifname])
+    # WIFI-PROPERTIES.PERM-HW-ADDRESS is absent from older NM builds; probe
+    # silently so a missing field does not produce repeated log noise.
+    r2 = run_cmd(
+        ["nmcli", "-t", "-f", "WIFI-PROPERTIES.PERM-HW-ADDRESS",
+         "device", "show", ifname],
+        warn_on_failure=False,
+    )
     if r2.returncode == 0:
         for line in r2.stdout.splitlines():
             if not line:
