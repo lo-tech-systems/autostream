@@ -95,6 +95,7 @@ ALLOWLIST_PATHS = {
     "/api/service/config",
     "/api/audio/status",
     "/api/appliances",
+    "/api/log-level",
 }
 
 # Path prefixes exempt from authentication (dynamic segments).

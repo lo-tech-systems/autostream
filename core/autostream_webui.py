@@ -49,6 +49,7 @@ from autostream_webui_state import WebUIState
 from autostream_webui_api import (
     run_updater,
     send_audio_status_json,
+    send_browser_api_error,
     send_dial_mute_post_json,
     send_dial_status_post_json,
     send_dial_volume_post_json,
@@ -82,6 +83,9 @@ from autostream_webui_api import (
     send_owntone_uncompressed_json,
     send_owntone_start_buffer_json,
     send_owntone_grace_period_json,
+    send_log_level_get_json,
+    send_log_level_put_json,
+    send_playing_status_json,
 )
 import autostream_federation
 from autostream_webui_dials import (
@@ -192,6 +196,29 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             return xri.strip()
 
         return self.client_address[0]
+
+    def _is_direct_local(self) -> bool:
+        """Return True iff this request arrived directly on the loopback socket.
+
+        All four conditions must hold:
+        1. Socket peer is a loopback address (127.x.x.x or ::1).
+        2. No X-Forwarded-For header (NGINX always sets this for proxied requests).
+        3. No X-Real-IP header.
+        4. Content-Type is application/json.
+
+        Do NOT use _get_client_ip() here — it trusts proxy headers intentionally
+        for logging, which would defeat this security check.
+        """
+        peer = self.client_address[0]
+        is_loopback = peer.startswith("127.") or peer == "::1"
+        if not is_loopback:
+            return False
+        if self.headers.get("X-Forwarded-For"):
+            return False
+        if self.headers.get("X-Real-IP"):
+            return False
+        ct = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        return ct == "application/json"
 
     def _read_post_body_bytes(self) -> Optional[bytes]:
         try:
@@ -426,6 +453,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             AUTH.handle_auth_get(self, query)
             return
 
+        # Direct-local callers (loopback, no proxy headers) bypass browser auth
+        # for the playing-status endpoint.  Browser-proxied callers reach the
+        # normal auth gate below.
+        if path == "/api/playing-status" and self._is_direct_local():
+            send_playing_status_json(self)
+            return
+
         # Gate protected pages
         if AUTH.requires_auth(path) and not AUTH.is_authenticated(self.headers):
             AUTH.redirect_to_auth(self, next_path=self.path)
@@ -520,6 +554,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_rebooting_page(self, STATE, AUTH)
         elif path == "/api/audio/status":
             send_audio_status_json(self, STATE)
+        elif path == "/api/log-level":
+            send_log_level_get_json(self, STATE)
+        elif path == "/api/playing-status":
+            send_playing_status_json(self)
         elif path == "/api/settings":
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
@@ -892,6 +930,62 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         else:
             self.send_error(404, "Not found")
+
+    def do_PUT(self):  # noqa: N802
+        path = self._normalized_path()
+
+        if path != "/api/log-level":
+            self.send_error(404, "Not found")
+            return
+
+        # Read and parse the body
+        body_bytes = self._read_post_body_bytes()
+        if body_bytes is None:
+            return  # error already sent
+        try:
+            body_str = body_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            self.send_error(400, "Request body is not valid UTF-8")
+            return
+
+        ct = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ct != "application/json":
+            self.send_error(415, "Content-Type must be application/json")
+            return
+
+        if not body_str:
+            self.send_error(400, "Missing request body")
+            return
+
+        try:
+            json_obj = json.loads(body_str)
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+            return
+
+        if not isinstance(json_obj, dict):
+            self.send_error(400, "JSON object required")
+            return
+
+        # Classify the request origin.
+        if self._is_direct_local():
+            # System caller (loopback, no proxy headers, JSON content-type).
+            send_log_level_put_json(self, STATE, json_obj, "system")
+            return
+
+        # Browser-proxied path: require CSRF and PIN authentication.
+        token_from_header = self.headers.get("X-CSRF-Token", "") or ""
+        token_from_body = str(json_obj.get("csrf_token") or "")
+        csrf_token = token_from_header or token_from_body
+
+        if not AUTH.validate_csrf(self, csrf_token):
+            send_browser_api_error(self, 403, "CSRF validation failed")
+            return
+
+        if not AUTH.require_authenticated_if_pin_enabled(self):
+            return
+
+        send_log_level_put_json(self, STATE, json_obj, "user")
 
 
 def _scan_monitor_devices_loop() -> None:

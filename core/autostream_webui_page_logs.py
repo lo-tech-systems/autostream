@@ -3,17 +3,19 @@
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
-Page renderer and POST handler for the /logs route.
+Page renderer and non-JS fallback POST handler for the /logs route.
 
 Responsibilities:
-  - Render the Logs page (log file tail, log-level selector card)
-  - Handle log-level form submission (save config, apply live, restart
-    OwnTone if required)
+  - Render the Logs page (log file tail, log-level selector card with API
+    integration)
+  - Non-JS fallback: handle log-level form POST using the shared setter
+  - Log bundle download
 """
 
 from __future__ import annotations
 
 import html
+import json
 import logging
 import os
 import shutil
@@ -24,18 +26,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs
 
-from autostream_config import (
-    CONFIG_IO_LOCK,
-    get_log_level_options,
-    load_config,
-    normalize_log_level,
-    parse_config,
-    save_config,
-)
-
-from autostream_core import update_live_platform_log_level
-
-from autostream_player_service import save_log_level
+from autostream_config import get_log_level_options, normalize_log_level
 
 from autostream_sysutils import tail_lines
 
@@ -44,7 +35,6 @@ from autostream_webui_common import (
     _set_flash_cookie,
     build_page_html,
     build_top_banner_html,
-    locked_load_config,
 )
 
 from autostream_webui_state import WebUIState
@@ -53,6 +43,11 @@ from autostream_webui_state import WebUIState
 # -----------------------------------------------------------------------------
 # Small view helpers
 # -----------------------------------------------------------------------------
+
+def _js_str(value: str) -> str:
+    """Encode a Python string as a safe JS string literal (double-quoted)."""
+    return json.dumps(value)
+
 
 def _logs_detail_header(title: str) -> str:
     return (
@@ -98,11 +93,9 @@ def send_logs_page(
     flash_type: str = "success",
 ) -> None:
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
-    current_log_level = "info"
     dark_mode = False
     try:
         parsed = _config_snapshot(state)
-        current_log_level = parsed.general.log_level
         dark_mode = parsed.webui.dark_mode
         log_path = _resolve_allowed_log_path(parsed.general.log_file)
         lines = tail_lines(str(log_path), 100)
@@ -113,11 +106,7 @@ def send_logs_page(
 
     csrf_token = getattr(handler, "_csrf_token", "") or ""
     log_level_options_html = "".join(
-        (
-            f"<option value=\"{html.escape(level)}\""
-            f"{' selected' if level == current_log_level else ''}>"
-            f"{html.escape(level)}</option>"
-        )
+        f"<option value=\"{html.escape(level)}\">{html.escape(level)}</option>"
         for level in get_log_level_options()
     )
 
@@ -128,7 +117,9 @@ def send_logs_page(
         ".logs-level-row label { display:flex; align-items:center; gap:0.75rem; width:100%; }\n"
         ".logs-level-row label span { color:var(--color-text); }\n"
         ".logs-level-row select { width:min(100%, 11rem); margin-left:auto; }\n"
-        ".logs-level-actions { margin:0.75rem 0 0; }\n"
+        ".logs-level-actions { margin:0.75rem 0 0; display:flex; align-items:center; gap:0.75rem; }\n"
+        ".logs-level-meta { font-size:0.78rem; color:var(--color-text-muted,#888); margin-top:0.4rem; }\n"
+        ".logs-apply-msg { font-size:0.82rem; margin-left:0.5rem; }\n"
         ".log-wrapper { background:#111; color:#f5f5f5; padding:0.65rem; border-radius:6px;"
         " font-family:monospace; font-size:0.65rem; max-height:48vh; overflow:auto; white-space:pre-wrap; }\n"
         "#applyingOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45);"
@@ -148,8 +139,6 @@ def send_logs_page(
         f"<a href='/logs' class='pill-btn small' style='margin-left:auto;'>\u21bb Refresh</a>"
         f"</div>"
         f"{_logs_detail_header('Logs')}"
-        f"<form method='post' action='/logs' id='logLevelForm' onsubmit='showApplying()'>"
-        f"<input type='hidden' name='csrf_token' value='{html.escape(csrf_token)}'>"
         f"<div class='logs-level-card'>"
         f"<div class='logs-level-row'>"
         f"<label for='log_level'>"
@@ -157,41 +146,100 @@ def send_logs_page(
         f"<select id='log_level' name='log_level'>{log_level_options_html}</select>"
         f"</label>"
         f"</div>"
-        f"<p class='logs-level-actions'><button type='submit' class='pill-btn'>Save</button></p>"
+        f"<p id='logLevelMeta' class='logs-level-meta'></p>"
+        f"<div class='logs-level-actions'>"
+        f"<button type='button' id='logLevelSaveBtn' class='pill-btn'>Save</button>"
+        f"<span id='logLevelMsg' class='logs-apply-msg' aria-live='polite'></span>"
         f"</div>"
-        f"</form>"
+        f"</div>"
         f"<div class='log-wrapper' id='logWrapper'><pre>{html.escape(log_content)}</pre></div>"
         f"<p class='actions'><a href='/logs/download' class='pill-btn' id='logDlBtn'"
         f" style='display:block;width:100%;text-align:center;box-sizing:border-box;'>"
         f"Download Log Bundle</a></p>"
+        f"<noscript>"
+        f"<form method='post' action='/logs'>"
+        f"<input type='hidden' name='csrf_token' value='{html.escape(csrf_token)}'>"
+        f"<input type='hidden' name='log_level' id='logLevelFallback' value=''>"
+        f"<p><button type='submit' class='pill-btn'>Save (no-JS fallback)</button></p>"
+        f"</form>"
+        f"</noscript>"
     )
-    _body_suffix = """\
-<script>
-  function showApplying() {
-    var overlay = document.getElementById('applyingOverlay');
-    if (overlay) overlay.classList.add('visible');
-  }
-  window.addEventListener('load', function() {
-    var w = document.getElementById('logWrapper');
-    var b = document.getElementById('logDlBtn');
-
-    // Hide "Download Log Bundle" on iPhone when running as a PWA (standalone)
-    var ua = navigator.userAgent || "";
-    var isIPhone = /iPhone/.test(ua);
-    var isStandalone =
-      (window.navigator && window.navigator.standalone === true) ||
-      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
-
-    if (b && isIPhone && isStandalone) {
-      b.style.display = "none";
-    }
-
-    // Keep existing width-matching behaviour if still visible
-    if (w && b && b.style.display !== "none") {
-      b.style.width = w.offsetWidth + 'px';
-    }
-  });
-</script>"""
+    _body_suffix = (
+        "<script>\n"
+        f"  var _csrfToken = {_js_str(csrf_token)};\n"
+        "  function _fmtChangedAt(ts) {\n"
+        "    if (!ts) return 'Time unknown';\n"
+        "    try { return new Date(ts).toLocaleString(); } catch(e) { return ts; }\n"
+        "  }\n"
+        "  function _loadLevel() {\n"
+        "    fetch('/api/log-level', {credentials:'same-origin'})\n"
+        "      .then(function(r){return r.json();})\n"
+        "      .then(function(d){\n"
+        "        if (!d.ok) return;\n"
+        "        var sel = document.getElementById('log_level');\n"
+        "        if (sel) sel.value = d.level;\n"
+        "        var meta = document.getElementById('logLevelMeta');\n"
+        "        if (meta) {\n"
+        "          var who = d.changed_by === 'system' ? 'System' : 'User';\n"
+        "          meta.textContent = 'Last changed by ' + who + ' \u00b7 ' + _fmtChangedAt(d.changed_at);\n"
+        "        }\n"
+        "      })\n"
+        "      .catch(function(){});\n"
+        "  }\n"
+        "  document.getElementById('logLevelSaveBtn').addEventListener('click', function() {\n"
+        "    var sel = document.getElementById('log_level');\n"
+        "    if (!sel) return;\n"
+        "    var lvl = sel.value;\n"
+        "    var overlay = document.getElementById('applyingOverlay');\n"
+        "    var msg = document.getElementById('logLevelMsg');\n"
+        "    if (overlay) overlay.classList.add('visible');\n"
+        "    if (msg) msg.textContent = '';\n"
+        "    fetch('/api/log-level', {\n"
+        "      method: 'PUT',\n"
+        "      credentials: 'same-origin',\n"
+        "      headers: {'Content-Type':'application/json','X-CSRF-Token':_csrfToken},\n"
+        "      body: JSON.stringify({level: lvl})\n"
+        "    })\n"
+        "    .then(function(r){return r.json();})\n"
+        "    .then(function(d){\n"
+        "      if (overlay) overlay.classList.remove('visible');\n"
+        "      if (msg) {\n"
+        "        if (d.ok) {\n"
+        "          var ap = d.applied || {};\n"
+        "          var parts = [];\n"
+        "          if (ap.monitor === false) parts.push('monitor not updated');\n"
+        "          if (ap.owntone === false) parts.push('OwnTone not updated');\n"
+        "          if (ap.nginx === false) parts.push('NGINX not updated');\n"
+        "          msg.textContent = parts.length ? 'Saved (partial: ' + parts.join(', ') + ')' : 'Saved';\n"
+        "        } else {\n"
+        "          msg.textContent = 'Error: ' + (d.error || 'save failed');\n"
+        "        }\n"
+        "      }\n"
+        "      if (d.ok) _loadLevel();\n"
+        "    })\n"
+        "    .catch(function(e){\n"
+        "      if (overlay) overlay.classList.remove('visible');\n"
+        "      if (msg) msg.textContent = 'Save failed';\n"
+        "    });\n"
+        "  });\n"
+        "  window.addEventListener('load', function() {\n"
+        "    _loadLevel();\n"
+        "    var w = document.getElementById('logWrapper');\n"
+        "    var b = document.getElementById('logDlBtn');\n"
+        "    var ua = navigator.userAgent || '';\n"
+        "    var isIPhone = /iPhone/.test(ua);\n"
+        "    var isStandalone =\n"
+        "      (window.navigator && window.navigator.standalone === true) ||\n"
+        "      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);\n"
+        "    if (b && isIPhone && isStandalone) {\n"
+        "      b.style.display = 'none';\n"
+        "    }\n"
+        "    if (w && b && b.style.display !== 'none') {\n"
+        "      b.style.width = w.offsetWidth + 'px';\n"
+        "    }\n"
+        "  });\n"
+        "</script>"
+    )
     html_body = build_page_html(
         "Logs",
         _body_html,
@@ -216,46 +264,28 @@ def send_logs_page(
 # -----------------------------------------------------------------------------
 
 def handle_logs_post(handler, state: WebUIState, body: str) -> None:
+    """Non-JS fallback: parse form and call the shared log-level setter."""
     try:
         form = parse_qs(body, keep_blank_values=True)
         new_log_level = normalize_log_level((form.get("log_level") or [""])[0])
 
-        from autostream_settings import SettingsStore as _SettingsStore
-        _store = getattr(state, "settings", None)
-        if isinstance(_store, _SettingsStore):
-            parsed = _store.snapshot()
-            _store.update(lambda raw: raw.setdefault("general", {}).update({"log_level": new_log_level}))
-        else:
-            with CONFIG_IO_LOCK:
-                cfg = load_config(state.config_path)
-                parsed = parse_config(cfg)
-                cfg.setdefault("general", {})["log_level"] = new_log_level
-                save_config(state.config_path, cfg)
+        from autostream_log_policy import set_log_level
+        result = set_log_level(state.config_path, new_log_level, changed_by="user")
 
-        applied_log_level, monitor_updated = update_live_platform_log_level(new_log_level)
-        player_setting_res = None
-        if parsed.owntone.base_url:
-            player_setting_res = save_log_level(
-                parsed.owntone.base_url,
-                applied_log_level,
-            )
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "set_log_level failed"))
 
-        flash_text = (
-            "Log level saved"
-            if monitor_updated
-            else "Log level saved, but monitor runtime log level was not updated"
-        )
-        player_needs_attention = (
-            player_setting_res is not None
-            and not player_setting_res.ok
-            and not player_setting_res.unsupported
-        )
-        if player_needs_attention:
+        applied = result.get("applied", {})
+        monitor_updated = applied.get("monitor", False)
+        owntone_result = applied.get("owntone")
+
+        flash_text = "Log level saved"
+        if not monitor_updated:
+            flash_text = "Log level saved, but monitor runtime log level was not updated"
+        if owntone_result is False:
             flash_text = "Log level saved, but OwnTone was not updated"
             if not monitor_updated:
                 flash_text += " and monitor runtime update failed"
-        elif player_setting_res is not None and player_setting_res.unsupported and not monitor_updated:
-            flash_text = "Log level saved, but monitor runtime log level was not updated"
 
         _set_flash_cookie(handler, flash_text, max_age=30)
         handler.send_response(302)

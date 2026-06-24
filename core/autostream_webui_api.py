@@ -1909,3 +1909,73 @@ def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> Non
     _send_owntone_native_setting_json(
         handler, state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, minutes * 60
     )
+
+
+# ---------------------------------------------------------------------------
+# Log-level and playing-status APIs (WP2)
+# ---------------------------------------------------------------------------
+
+# Fields the PUT /api/log-level body is allowed to contain.
+_LOG_LEVEL_PUT_ALLOWED_FIELDS: frozenset[str] = frozenset({"level"})
+
+
+def send_log_level_get_json(handler, state: WebUIState) -> None:
+    """GET /api/log-level — return current log-level policy state."""
+    from autostream_log_policy import get_log_level_state
+    result = get_log_level_state(state.config_path)
+    send_json(handler, 200, result)
+
+
+def send_log_level_put_json(
+    handler,
+    state: WebUIState,
+    json_obj: dict,
+    changed_by: str,
+) -> None:
+    """PUT /api/log-level — validate, persist, and apply log level.
+
+    `changed_by` must be "user" or "system"; the caller determines which
+    based on the request classification (direct-local vs. browser-proxied).
+    Unknown fields in the body produce HTTP 400.
+    """
+    # Reject any unknown or prohibited fields.
+    unknown = set(json_obj.keys()) - _LOG_LEVEL_PUT_ALLOWED_FIELDS
+    if unknown:
+        send_browser_api_error(
+            handler, 400, f"Unknown field(s): {', '.join(sorted(unknown))}"
+        )
+        return
+
+    requested_level = json_obj.get("level")
+    if requested_level is None:
+        send_browser_api_error(handler, 400, "Missing required field: level")
+        return
+
+    from autostream_log_policy import set_log_level
+    result = set_log_level(
+        state.config_path,
+        requested_level,
+        changed_by=changed_by,
+    )
+    if not result.get("ok"):
+        error = result.get("error", "Unknown error")
+        if "Unsupported" in error or "Invalid" in error:
+            send_browser_api_error(handler, 400, error)
+        else:
+            send_browser_api_error(handler, 500, "Configuration could not be saved")
+        return
+
+    send_json(handler, 200, result)
+
+
+def send_playing_status_json(handler) -> None:
+    """GET /api/playing-status — return whether the appliance is streaming.
+
+    Returns `playing: true` when any monitor is actively capturing.
+    Safe to call before OwnTone or monitor are connected.
+    """
+    try:
+        playing = any_monitor_capturing()
+    except Exception:
+        playing = False
+    send_json(handler, 200, {"ok": True, "playing": bool(playing)})
