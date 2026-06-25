@@ -65,8 +65,8 @@ for src in /var/log/autostream/dial-*.log; do
 done
 shopt -u nullglob
 
-if [ -f /var/log/autostream/wifi_setup.log ] && [ -r /var/log/autostream/wifi_setup.log ]; then
-  cp -f /var/log/autostream/wifi_setup.log "${STAGE_DIR}/autostream-dial/wifi_setup.log"
+if [ -f /var/log/autostream/autostream_wifi_watcher.log ] && [ -r /var/log/autostream/autostream_wifi_watcher.log ]; then
+  cp -f /var/log/autostream/autostream_wifi_watcher.log "${STAGE_DIR}/autostream-dial/autostream_wifi_watcher.log"
   added_any=1
 fi
 
@@ -76,7 +76,7 @@ No readable log files were found for bundling.
 
 Checked:
 - /var/log/autostream/dial-*.log
-- /var/log/autostream/wifi_setup.log
+- /var/log/autostream/autostream_wifi_watcher.log
 
 Some files may exist but be unreadable to the nginx/fcgiwrap user.
 EOF

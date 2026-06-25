@@ -676,7 +676,7 @@ def is_gateway_reachable(ifname: str, prime_fn=None) -> bool:
 
         if prime_fn is not None:
             try:
-                prime_fn(gw)
+                prime_fn(gw, ifname)
             except Exception:
                 pass
 
@@ -801,7 +801,10 @@ def delete_connection_cmd(connection_uuid: str) -> list[str]:
 
 
 def get_connection_uuid_by_name_cmd(name: str) -> list[str]:
-    return ["nmcli", "-t", "-f", "NAME,UUID", "connection", "show", name]
+    return [
+        "nmcli", "-g", "connection.uuid",
+        "connection", "show", "id", name,
+    ]
 
 
 # ===========================================================================

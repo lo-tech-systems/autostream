@@ -161,22 +161,25 @@ def run_cmd(
         # Provide a consistent return type.
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
 
-_last_prime: dict[str, float] = {}
+_last_prime: dict[tuple[str, str], float] = {}
 
-def prime_gateway(gw: str, min_interval: float = 5.0) -> None:
+def prime_gateway(gw: str, ifname: str, min_interval: float = 5.0) -> None:
+    """Send a single ping through *ifname* to populate the kernel neighbour table.
+
+    Keyed by (gw, ifname) so priming one interface does not suppress priming
+    another that shares the same gateway address.  We do not treat ping
+    success/failure as connectivity evidence; it only nudges the neighbour cache.
     """
-    Generate minimal traffic to the gateway to populate/update the kernel neighbor table.
-    We do not treat ping success/failure as connectivity by itself; it only primes state.
-    """
-    if not gw:
+    if not gw or not ifname:
         return
     try:
         now = time.monotonic()
-        last = _last_prime.get(gw, 0.0)
+        key = (gw, ifname)
+        last = _last_prime.get(key, 0.0)
         if now - last < min_interval:
             return
-        run_cmd(["ping", "-c", "1", "-W", "1", gw], timeout=2)
-        _last_prime[gw] = now
+        run_cmd(["ping", "-I", ifname, "-c", "1", "-W", "1", gw], timeout=2)
+        _last_prime[key] = now
     except Exception:
         # Never fail hard due to priming; it's a best-effort nudge.
         pass
@@ -208,17 +211,12 @@ def run_admin_cmd(
 # Reboot request helper
 # ---------------------------------------------------------------------------
 
-def reboot_system(reason: str = "UserRequestNormal", delay_s: int | None = None) -> None:
-    """
-    Request a reboot via the privileged autostream_admin helper.
-    Possible values for `reason`:
-        AutostreamUpdate
-        UserRequestNormal
-        UserRequestSystemError
-        NetworkDown
+def reboot_system(reason: str = "UserRequestNormal", delay_s: int | None = None) -> bool:
+    """Request a reboot via the privileged autostream_admin helper.
 
-    If delay_s is a positive integer, request a delayed reboot using the helper's
-    `reboot --delay SECONDS [reason]` option.
+    Returns True if the reboot was accepted, False if rate-limited or failed.
+    Possible values for `reason`: AutostreamUpdate, UserRequestNormal,
+    UserRequestSystemError, NetworkDown.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -241,13 +239,21 @@ def reboot_system(reason: str = "UserRequestNormal", delay_s: int | None = None)
             logger.info("Delayed reboot requested via autostream_admin: delay=%ss reason=%s", delay_s, reason)
         else:
             logger.info("Reboot requested via autostream_admin: %s", reason)
-        return
+        return True
+
+    if p.returncode == 2:
+        logger.info(
+            "Reboot request rate-limited by autostream_admin: %s (will retry later)",
+            reason,
+        )
+        return False
 
     logger.error(
         "Reboot request via autostream_admin failed (rc=%s, stderr=%s)",
         p.returncode,
         (p.stderr or "").strip(),
     )
+    return False
 
 
 # ---------------------------------------------------------------------------

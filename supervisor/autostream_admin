@@ -672,7 +672,12 @@ def touch_networkdown_stamp() -> None:
     NETWORKDOWN_STAMP.touch()
 
 
-def reboot_host(reason: Optional[str]) -> bool:
+def reboot_host(reason: Optional[str]) -> Optional[bool]:
+    """Initiate a reboot.
+
+    Returns True if the reboot was accepted and initiated, False on error, or
+    None if the request was rate-limited (not an error; caller may retry later).
+    """
     r = (reason or "").strip()
     if not r:
         r = "(no reason provided)"
@@ -687,7 +692,7 @@ def reboot_host(reason: Optional[str]) -> bool:
         limited, remaining = should_rate_limit_networkdown()
         if limited:
             log("WARN", f"reboot: rate-limited NetworkDown (try again in ~{remaining}s)")
-            return True  # handled without reboot
+            return None  # rate-limited: not an error, but no reboot initiated
         try:
             touch_networkdown_stamp()
         except Exception as e:
@@ -707,7 +712,7 @@ def reboot_host(reason: Optional[str]) -> bool:
     return False
 
 
-def schedule_delayed_reboot(delay_s: int, reason: Optional[str]) -> bool:
+def schedule_delayed_reboot(delay_s: int, reason: Optional[str]) -> Optional[bool]:
     """Schedule a reboot after delay_s seconds and return immediately.
 
     Uses a transient systemd timer via systemd-run. This avoids keeping a sleeping
@@ -1495,6 +1500,8 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "reboot":
             ok = schedule_delayed_reboot(args.delay, args.reason)
+            if ok is None:
+                return 2  # rate-limited: not an error, reboot suppressed by policy
             return 0 if ok else 1
 
         if args.command == "restart-owntone":

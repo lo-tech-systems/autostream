@@ -170,7 +170,7 @@ class TestRebootHost:
             result = m.reboot_host("UserRequestNormal")
         assert result is False
 
-    def test_networkdown_rate_limited_returns_true_without_reboot(self, tmp_path):
+    def test_networkdown_rate_limited_returns_none_without_reboot(self, tmp_path):
         import time
         stamp = tmp_path / "reboot_networkdown.stamp"
         stamp.touch()
@@ -180,7 +180,7 @@ class TestRebootHost:
              patch.object(m, "run_cmd",
                           side_effect=lambda cmd: run_calls.append(cmd) or (0, "", "")):
             result = m.reboot_host("NetworkDown")
-        assert result is True
+        assert result is None, "rate-limited reboot_host must return None, not True"
         assert not any(
             "reboot" in str(c).lower() for c in run_calls
         ), "reboot should not be called when rate limited"

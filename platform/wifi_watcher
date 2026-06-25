@@ -105,7 +105,7 @@ input:focus, select:focus { outline: 2px solid #0070f3; border-color: transparen
 """
 
 # File locations
-LOG_FILE = "/var/log/autostream/wifi_setup.log"
+LOG_FILE = "/var/log/autostream/autostream_wifi_watcher.log"
 # Legacy compatibility mirror (connection NAME, not an SSID). The authoritative
 # network state now lives in /etc/autostream-network.json, parsed by the helper.
 CONFIGURED_SSID = wifi_net.LEGACY_SSID_PATH
@@ -137,6 +137,7 @@ AP_POST_CLOSE_REBOOT_AFTER = 24 * 60 * 60  # if still offline 24h after closing 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
 GW_DOWN_REBOOT_AFTER = 30 * 60          # gateway unreachable for this long -> reboot
 RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts
+REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
 # Multi-adapter failure/adoption tuning (WP5).
 USB_UNHEALTHY_DEBOUNCE = 2              # consecutive unhealthy passes before adapter fallback
@@ -261,6 +262,10 @@ class NetworkMonitorState:
     # Degradation tracking for "healthy connectivity"
     conn_down_start: Optional[float] = None
     last_reconnect_attempt: Optional[float] = None
+    # Reboot-request throttle: monotonic time before which another reboot request is
+    # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
+    # issued); any other value = retry permitted after that time.
+    conn_reboot_retry_after: float = 0.0
 
     # ---- WiFi apply workflow / wait-page status ----
     apply_in_progress: bool = False
@@ -2196,11 +2201,26 @@ def network_monitor_loop():
                 startup_connect_usb_first()
 
             if offline_for >= AP_POST_CLOSE_REBOOT_AFTER:
-                logger.warning(
-                    "Still offline %.0fs after AP mode closed (threshold %ss); rebooting",
-                    offline_for, AP_POST_CLOSE_REBOOT_AFTER,
-                )
-                reboot_system("NetworkDown")
+                with state_lock:
+                    retry_after = STATE.conn_reboot_retry_after
+                if now >= retry_after:
+                    logger.warning(
+                        "Still offline %.0fs after AP mode closed (threshold %ss); requesting reboot",
+                        offline_for, AP_POST_CLOSE_REBOOT_AFTER,
+                    )
+                    accepted = reboot_system("NetworkDown")
+                    with state_lock:
+                        STATE.conn_reboot_retry_after = (
+                            float('inf') if accepted
+                            else now + REBOOT_RATE_LIMIT_RETRY
+                        )
+                elif retry_after == float('inf'):
+                    logger.debug("NetworkDown reboot accepted; waiting for system to reboot")
+                else:
+                    logger.debug(
+                        "NetworkDown reboot suppressed; will retry in %.0fs",
+                        retry_after - now,
+                    )
 
             time.sleep(NETWORK_MONITOR_INTERVAL)
             continue
@@ -2221,11 +2241,26 @@ def network_monitor_loop():
                 down_for = now - down_start
 
                 if down_for >= GW_DOWN_REBOOT_AFTER:
-                    logger.warning(
-                        "Connectivity unhealthy for %.0fs (threshold %ss); rebooting",
-                        down_for, GW_DOWN_REBOOT_AFTER,
-                    )
-                    reboot_system("NetworkDown")
+                    with state_lock:
+                        retry_after = STATE.conn_reboot_retry_after
+                    if now >= retry_after:
+                        logger.warning(
+                            "Connectivity unhealthy for %.0fs (threshold %ss); requesting reboot",
+                            down_for, GW_DOWN_REBOOT_AFTER,
+                        )
+                        accepted = reboot_system("NetworkDown")
+                        with state_lock:
+                            STATE.conn_reboot_retry_after = (
+                                float('inf') if accepted
+                                else now + REBOOT_RATE_LIMIT_RETRY
+                            )
+                    elif retry_after == float('inf'):
+                        logger.debug("NetworkDown reboot accepted; waiting for system to reboot")
+                    else:
+                        logger.debug(
+                            "NetworkDown reboot suppressed; will retry in %.0fs",
+                            retry_after - now,
+                        )
 
                 if down_for >= GW_DOWN_RECONNECT_AFTER:
                     if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
@@ -2237,6 +2272,7 @@ def network_monitor_loop():
                 with state_lock:
                     STATE.conn_down_start = None
                     STATE.last_reconnect_attempt = None
+                    STATE.conn_reboot_retry_after = 0.0
                     # Reset the post-AP reboot timer so that any future disconnection
                     # starts a fresh 24-hour window.  Without this, offline_for in the
                     # post-AP-close block would be measured from the original boot-era
@@ -2330,6 +2366,10 @@ def startup_connect_usb_first() -> bool:
     """
     state = get_configured_network_state()
     if not state.is_configured:
+        return False
+
+    if is_wired_connected():
+        logger.info("Startup USB-first: wired Ethernet connected; skipping USB activation")
         return False
 
     adapters = wifi_net.discover_adapters()

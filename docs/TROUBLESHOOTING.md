@@ -638,7 +638,7 @@ There are two ways to access the autostream logs:
 
    **autostream-dial** has the same offline recovery page at the same URL paths
    (`/offline/`, `/offline/download-logs`, etc.). The dial’s Download Logs ZIP
-   contains only dial and Wi-Fi setup logs (`dial-*.log`, `wifi_setup.log`) —
+   contains only dial and Wi-Fi setup logs (`dial-*.log`, `autostream_wifi_watcher.log`) —
    OwnTone does not run on a dial device. The factory-reset page on the dial
    references the `autostream-dial_XXXX` hotspot name (not `autostream_XXXX`).
 
@@ -658,7 +658,7 @@ Browser note (important):
 Where logs live on disk:
 
 * `/var/log/autostream/autostream.log` (common main log file path in this repo)
-* `/var/log/autostream/wifi_setup.log` (Wi-Fi/AP mode state machine)
+* `/var/log/autostream/autostream_wifi_watcher.log` (Wi-Fi/AP mode state machine)
 * `/var/log/autostream/update.log` (updater)
 
 ---

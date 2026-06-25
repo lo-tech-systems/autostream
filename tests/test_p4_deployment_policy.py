@@ -715,9 +715,9 @@ class TestLogrotateConfig:
         text = self._conf("autostream-dial")
         assert "dial-update.log" in text or "dial-install.log" in text
 
-    def test_dial_logrotate_covers_wifi_setup_log(self):
+    def test_dial_logrotate_covers_wifi_watcher_log(self):
         text = self._conf("autostream-dial")
-        assert "wifi_setup.log" in text
+        assert "autostream_wifi_watcher.log" in text
 
 
 # ---------------------------------------------------------------------------

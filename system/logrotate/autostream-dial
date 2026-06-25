@@ -19,7 +19,7 @@
     create 0640 root adm
 }
 
-/var/log/autostream/wifi_setup.log {
+/var/log/autostream/autostream_wifi_watcher.log {
     daily
     rotate 14
     compress

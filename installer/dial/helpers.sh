@@ -62,7 +62,7 @@ init_service_dirs() {
     # Create initial log files with correct owner/mode before logrotate's first rotation.
     install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-install.log
     install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-update.log
-    install -m 0640 -o root -g adm /dev/null /var/log/autostream/wifi_setup.log
+    install -m 0640 -o root -g adm /dev/null /var/log/autostream/autostream_wifi_watcher.log
 }
 
 add_gpio_group() {

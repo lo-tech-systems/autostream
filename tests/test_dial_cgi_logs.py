@@ -81,11 +81,11 @@ class TestDialCGIStructure:
             "download-logs.cgi must glob dial-*.log to collect dial-specific logs"
         )
 
-    def test_collects_wifi_setup_log(self):
-        """Must collect wifi_setup.log."""
+    def test_collects_wifi_watcher_log(self):
+        """Must collect autostream_wifi_watcher.log."""
         src = self._src()
-        assert "wifi_setup.log" in src, (
-            "download-logs.cgi must collect wifi_setup.log"
+        assert "autostream_wifi_watcher.log" in src, (
+            "download-logs.cgi must collect autostream_wifi_watcher.log"
         )
 
     def test_does_not_glob_all_autostream_logs(self):
@@ -93,7 +93,7 @@ class TestDialCGIStructure:
         src = self._src()
         assert "/var/log/autostream/*" not in src, (
             "dial CGI must not glob all /var/log/autostream/* — "
-            "use dial-*.log glob and explicit wifi_setup.log instead"
+            "use dial-*.log glob and explicit autostream_wifi_watcher.log instead"
         )
 
     def test_post_method_guard_present(self):

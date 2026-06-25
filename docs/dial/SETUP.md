@@ -97,7 +97,7 @@ The recovery page offers four actions:
 | Button | Effect |
 |--------|--------|
 | **Retry** | Refreshes the page to check whether the service has restarted. |
-| **Download Logs** | Downloads a ZIP of the dial and Wi-Fi setup logs (`dial-*.log`, `wifi_setup.log`) to help diagnose the problem. |
+| **Download Logs** | Downloads a ZIP of the dial and Wi-Fi setup logs (`dial-*.log`, `autostream_wifi_watcher.log`) to help diagnose the problem. |
 | **Reboot** | Triggers a graceful reboot. The page transitions to a *rebooting* holding page and polls until the dial service returns. |
 | **Factory Reset** | Shows a confirmation step, then performs a factory reset — erasing Wi-Fi credentials and dial settings — before rebooting. After reboot, reconnect to the `autostream-dial_XXXX` hotspot to reconfigure. |
 

@@ -446,6 +446,12 @@ class TestCommandConstruction:
         assert wifi_net.delete_connection_cmd("uuid-1") == [
             "nmcli", "connection", "delete", "uuid", "uuid-1"]
 
+    def test_get_connection_uuid_by_name(self):
+        assert wifi_net.get_connection_uuid_by_name_cmd("Home") == [
+            "nmcli", "-g", "connection.uuid",
+            "connection", "show", "id", "Home",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # WP3 — scan parsing and exact-SSID merging
