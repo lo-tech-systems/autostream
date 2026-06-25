@@ -1644,6 +1644,16 @@ def _network_status_payload() -> dict:
     active = wifi_net.find_adapter_by_ifname(adapters, active_ifname) if active_ifname else None
     usb_detected = any(a.is_usb for a in adapters)
 
+    active_ssid = ""
+    if active_ifname:
+        try:
+            active_ssid = _get_active_wifi_ssid(active_ifname)
+        except Exception:
+            pass
+
+    recovery_ifname = builtin.ifname if builtin else ""
+    ap_ssid = get_ap_ssid(recovery_ifname) if recovery_ifname else "autostream-setup"
+
     def _ad(a):
         if a is None:
             return None
@@ -1660,6 +1670,8 @@ def _network_status_payload() -> dict:
         "active_adapter_ifname": active_ifname,
         "active_adapter_kind": (active.kind if active else ""),
         "active_adapter_description": (active.description if active else ""),
+        "active_ssid": active_ssid,
+        "ap_ssid": ap_ssid,
         "usb_adapter_detected": usb_detected,
         "using_builtin_fallback": using_fallback,
         "builtin_adapter": _ad(builtin),

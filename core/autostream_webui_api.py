@@ -2030,10 +2030,9 @@ def _watcher_request(method: str, path: str, body: Optional[dict] = None):
 
 
 def format_active_adapter(status: dict) -> str:
-    """Return the exact two-line active-adapter display text (Section 9.2).
+    """Return the active-adapter display text (Section 9.2).
 
-    Returns only the second line (the first line is the static "Wi-Fi adapter"
-    label rendered in the page).  Honours the exact required wordings.
+    Returns the adapter info line rendered below the card title.
     """
     usb_detected = bool(status.get("usb_adapter_detected"))
     active_kind = status.get("active_adapter_kind") or ""
@@ -2049,16 +2048,27 @@ def format_active_adapter(status: dict) -> str:
     if active_kind == "usb":
         desc = (status.get("active_adapter_description")
                 or status.get("active_adapter_ifname") or "").strip()
-        line = f"USB Wi-Fi · {desc}" if desc else "USB Wi-Fi"
+        line = f"Using USB Wi-Fi · {desc}" if desc else "Using USB Wi-Fi"
     elif not usb_detected:
-        line = "Built-in Wi-Fi · No USB adapter detected"
+        line = "Using Built-in Wi-Fi · No USB adapter detected"
     else:
         # USB detected but built-in is the active (or next) Wi-Fi adapter.
-        line = "Built-in Wi-Fi · USB adapter detected"
+        line = "Using Built-in Wi-Fi · USB adapter detected"
 
     if using_fallback:
         line += " · USB connection unavailable"
     return line
+
+
+def format_network_title(status: dict) -> str:
+    """Return the Wi-Fi card title: connected-to-SSID or disconnected."""
+    active_ssid = (status.get("active_ssid") or "").strip()
+    active_ifname = (status.get("active_adapter_ifname") or "").strip()
+    if active_ssid:
+        return f"Wi-Fi (connected to {active_ssid})"
+    elif active_ifname:
+        return "Wi-Fi (connected)"
+    return "Wi-Fi (disconnected)"
 
 
 def send_network_status_json(handler) -> None:
@@ -2072,6 +2082,7 @@ def send_network_status_json(handler) -> None:
         send_browser_api_error(handler, 503, "Network service unavailable")
         return
     data["display"] = format_active_adapter(data)
+    data["title"] = format_network_title(data)
     send_json(handler, 200, data)
 
 

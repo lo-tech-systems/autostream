@@ -654,18 +654,22 @@ def send_setup_page(
     # is fetched from the authenticated network-status API on panel open.
     network_card_html = """
           <div id="networkCard" style="margin-top:0.5rem;padding-top:0.75rem;border-top:1px solid var(--color-border,#ddd);">
-            <p style="margin:0 0 0.25rem;font-weight:600;">Wi-Fi adapter</p>
-            <p id="networkAdapterInfo" style="margin:0 0 0.5rem;font-size:0.9rem;color:var(--color-text);">Built-in Wi-Fi</p>
+            <p id="networkCardTitle" style="margin:0 0 0.25rem;font-weight:600;">Wi-Fi</p>
+            <p id="networkAdapterInfo" style="margin:0 0 0.5rem;font-size:0.9rem;color:var(--color-text);">Using Built-in Wi-Fi</p>
             <p style="margin:0 0 0.75rem;font-size:0.8rem;color:var(--color-text-muted,#888);">
-              USB Wi-Fi adapters are adopted automatically when playback is idle.
+              USB Wi-Fi adapters will be used automatically when connected. The connection will be changed when playback is idle.
             </p>
-            <p style="margin:0 0 0.5rem;font-size:0.85rem;color:var(--color-text);">
-              Starts the setup hotspot for 30 minutes. If setup is not completed,
-              autostream reconnects to the previous network. Other settings are
-              not affected.
-            </p>
-            <button type="button" class="pill-btn small" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
+            <button type="button" class="pill-btn" style="width:100%" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
             <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
+          </div>
+          <div id="wifiHotspotModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;">
+            <div style="background:var(--color-bg,#fff);border-radius:0.75rem;padding:1.5rem;max-width:20rem;margin:1rem;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
+              <p style="margin:0 0 0.75rem;font-size:0.95rem;">This will start the Wi-Fi hotspot. Please connect to <strong id="wifiHotspotSsid">autostream-setup</strong> to continue Wi-Fi setup.</p>
+              <div style="display:flex;gap:0.5rem;">
+                <button type="button" class="pill-btn" style="flex:1;" onclick="confirmChangeWifiNetwork()">Continue</button>
+                <button type="button" class="pill-btn" style="flex:1;background:var(--color-bg-secondary,#eee);color:var(--color-text);" onclick="cancelChangeWifiNetwork()">Cancel</button>
+              </div>
+            </div>
           </div>
         """
     system_inner_html = f"""
@@ -1989,6 +1993,8 @@ def send_setup_page(
           document.addEventListener('keydown', function(ev) {{
             var m = document.getElementById('dialPinModal');
             if (ev.key === 'Escape' && m && m.classList.contains('show')) _closeDialPinModal();
+            var wm = document.getElementById('wifiHotspotModal');
+            if (ev.key === 'Escape' && wm && wm.style.display === 'flex') cancelChangeWifiNetwork();
           }});
           // Load current config for each online authorized dial
           {_dial_onload_js}
@@ -1998,6 +2004,7 @@ def send_setup_page(
         // ── Network adapter status and Change Wi-Fi (WP7) ─────────────────
         async function refreshNetworkAdapterInfo() {{
           var el = document.getElementById('networkAdapterInfo');
+          var titleEl = document.getElementById('networkCardTitle');
           if (!el) return;
           try {{
             var r = await fetch('/api/network/status', {{
@@ -2008,10 +2015,27 @@ def send_setup_page(
             if (!r.ok) return;
             var j = await r.json();
             if (j && j.display) el.textContent = j.display;
+            if (j && j.title && titleEl) titleEl.textContent = j.title;
+            if (j && j.ap_ssid) {{
+              var ssidEl = document.getElementById('wifiHotspotSsid');
+              if (ssidEl) ssidEl.textContent = j.ap_ssid;
+            }}
           }} catch (e) {{ /* ignore — static default text remains */ }}
         }}
 
-        async function changeWifiNetwork() {{
+        function changeWifiNetwork() {{
+          var modal = document.getElementById('wifiHotspotModal');
+          if (modal) modal.style.display = 'flex';
+        }}
+
+        function cancelChangeWifiNetwork() {{
+          var modal = document.getElementById('wifiHotspotModal');
+          if (modal) modal.style.display = 'none';
+        }}
+
+        async function confirmChangeWifiNetwork() {{
+          var modal = document.getElementById('wifiHotspotModal');
+          if (modal) modal.style.display = 'none';
           var btn = document.querySelector('#networkCard .pill-btn');
           var msg = document.getElementById('networkSetupMsg');
           if (btn) btn.disabled = true;
