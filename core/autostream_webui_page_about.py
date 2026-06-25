@@ -107,21 +107,12 @@ def send_about_page(handler, state: WebUIState) -> None:
     _system_panel_html = (
         "<div aria-live='polite'>"
         "<div class='about-info-card'>"
-        "<div class='bar-label'><strong>Autostream Build</strong>"
+        "<div class='bar-label'><strong>autostream Build</strong>"
         "<span id='aboutBuildAutostream'>Loading...</span></div>"
-        "<div class='bar-label' style='margin-top:0.65rem;'>"
-        "<strong>Autostream Monitor Build</strong>"
-        "<span id='aboutBuildMonitor'>Loading...</span></div>"
-        "<div class='bar-label' style='margin-top:0.65rem;'>"
-        "<strong>OwnTone Build</strong>"
-        "<span id='aboutBuildOwntone'>Loading...</span></div>"
-        "<div class='bar-label' style='margin-top:0.65rem;'>"
-        "<strong>Vibra Mini Build</strong>"
-        "<span id='aboutBuildVibra'>Loading...</span></div>"
         "<div class='bar-label' style='margin-top:0.65rem;'>"
         "<strong>Total Playback Time</strong>"
         "<span id='aboutPlaybackHours'>Loading...</span></div>"
-        "<div class='bar-label' style='margin-top:1.3rem;'>"
+        "<div class='bar-label' style='margin-top:0.65rem;'>"
         "<strong>CPU Temperature</strong>"
         "<span id='aboutCpuTemperature'>Loading...</span></div>"
         "<div id='aboutDiskSection' style='display:none;margin-top:1.3rem;'>"
@@ -187,8 +178,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         "var _VS={healthy:1,warning:1,critical:1};"
         "function _ss(s){return _VS[s]?String(s):'healthy';}"
         "function _fail(){"
-        "['aboutBuildAutostream','aboutBuildMonitor','aboutBuildOwntone','aboutBuildVibra',"
-        "'aboutPlaybackHours','aboutCpuTemperature'].forEach(function(id){"
+        "['aboutBuildAutostream','aboutPlaybackHours','aboutCpuTemperature'].forEach(function(id){"
         "var e=document.getElementById(id);"
         "if(e&&e.textContent==='Loading...')e.textContent='Unavailable';});"
         "document.querySelectorAll('#aboutServices [data-service-unit] .about-svc-state')"
@@ -203,9 +193,6 @@ def send_about_page(handler, state: WebUIState) -> None:
         "if(d.ok!==true)throw new Error('ok!=true');"
         "var b=d.builds||{};"
         "_s('aboutBuildAutostream',String(b.autostream||'unknown'));"
-        "_s('aboutBuildMonitor',String(b.monitor||'unknown'));"
-        "_s('aboutBuildOwntone',String(b.owntone||'unknown'));"
-        "_s('aboutBuildVibra',String(b.vibra_mini||'unknown'));"
         "_s('aboutPlaybackHours',typeof d.playback_hours==='number'"
         "?d.playback_hours.toFixed(1)+' hours':'Unavailable');"
         "_s('aboutCpuTemperature',typeof d.cpu_temperature_c==='number'"
@@ -238,7 +225,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         "if(lbl&&svc.label)lbl.textContent=String(svc.label);"
         "var st=row.querySelector('.about-svc-state');"
         "if(st){var ok=svc.state==='ok';"
-        "st.textContent=ok?'OK':'Failed';"
+        "st.textContent=ok?(svc.version?String(svc.version)+' - OK':'OK'):'Failed';"
         "st.setAttribute('data-state',ok?'ok':'failed');"
         "st.classList.remove('about-svc-loading');}});})"
         ".catch(function(){_fail();});"
@@ -501,7 +488,13 @@ def _collect_system_info() -> dict:
         pass
 
     # 9. systemd service states (on-demand query)
-    services = _collect_service_states(owntone_backend_id)
+    _service_versions = {
+        "autostream.service": autostream_version,
+        "autostream_monitor.service": monitor_build,
+        "owntone.service": owntone_build,
+        "vibra-mini.service": vibra_build,
+    }
+    services = _collect_service_states(owntone_backend_id, _service_versions)
 
     return {
         "ok": True,
@@ -519,7 +512,7 @@ def _collect_system_info() -> dict:
     }
 
 
-def _collect_service_states(owntone_backend_id: str) -> list:
+def _collect_service_states(owntone_backend_id: str, service_versions: dict) -> list:
     """Query systemd for the six fixed service units and return state list."""
     unit_names = [unit for unit, _ in _SERVICES]
     parsed: dict = {}
@@ -546,7 +539,11 @@ def _collect_service_states(owntone_backend_id: str) -> list:
         block = parsed.get(unit, {})
         active_state = block.get("ActiveState", "")
         state = "ok" if active_state == "active" else "failed"
-        services.append({"unit": unit, "label": label, "state": state})
+        entry: dict = {"unit": unit, "label": label, "state": state}
+        version = service_versions.get(unit)
+        if version and version not in ("unknown", ""):
+            entry["version"] = version
+        services.append(entry)
     return services
 
 
