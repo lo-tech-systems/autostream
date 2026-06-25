@@ -795,6 +795,12 @@ configure_phase() {
     /etc/systemd/journald.conf.d/99-autostream-storage.conf
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
 
+  # logind drop-in: suppress power-key events so USB enumeration cannot shut down the appliance
+  mkdir -p /etc/systemd/logind.conf.d
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/logind/90-autostream-ignore-power-key.conf" \
+    /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
+  systemctl restart systemd-logind || warn "systemctl restart systemd-logind failed"
+
   # logrotate
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/logrotate/autostream" /etc/logrotate.d/autostream
 

@@ -178,6 +178,8 @@ main() {
   remove_path /etc/NetworkManager/conf.d/wifi-powersave.conf
   remove_path /etc/systemd/journald.conf.d/99-autostream-storage.conf
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
+  remove_path /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
+  systemctl restart systemd-logind || warn "systemctl restart systemd-logind failed"
 
   info "Reloading systemd manager configuration"
   systemctl daemon-reload || warn "systemctl daemon-reload failed"
