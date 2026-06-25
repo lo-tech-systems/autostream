@@ -597,3 +597,55 @@ class TestDnsmasqRuntime:
         assert not runtime.exists()
         # No error when already absent.
         wifi_net.remove_dnsmasq_runtime_config(str(runtime))
+
+
+# ---------------------------------------------------------------------------
+# Gateway reachability
+# ---------------------------------------------------------------------------
+
+class TestGatewayReachable:
+    """Tests for is_gateway_reachable().
+
+    ``ip -j neigh show to <gw> dev <ifname>`` filters by device, so ip
+    typically omits the "dev" field.  Three cases:
+    - "dev" absent: accept (trust the command filter).
+    - "dev" matches ifname: accept.
+    - "dev" is a different interface: reject (defensive; should not occur in
+      normal output but protects against unexpected kernel behaviour).
+    """
+
+    _ROUTES = [{"dev": "wlan0", "gateway": "10.240.1.1", "dst": "default"}]
+
+    def _call(self, neigh_rows, ifname="wlan0"):
+        with patch.object(wifi_net, "_run_ip_json", side_effect=[
+            self._ROUTES,
+            neigh_rows,
+        ]):
+            return wifi_net.is_gateway_reachable(ifname)
+
+    def test_reachable_without_dev_field(self):
+        """ip omits 'dev' when the command already filters by device; must still return True."""
+        neigh = [{"dst": "10.240.1.1", "lladdr": "14:49:bc:34:0e:c8", "state": ["REACHABLE"]}]
+        assert self._call(neigh) is True
+
+    def test_reachable_with_dev_field(self):
+        """Entries that do include 'dev' (some kernel versions) continue to work."""
+        neigh = [{"dst": "10.240.1.1", "dev": "wlan0", "lladdr": "14:49:bc:34:0e:c8", "state": ["REACHABLE"]}]
+        assert self._call(neigh) is True
+
+    def test_failed_neighbour_rejected(self):
+        neigh = [{"dst": "10.240.1.1", "lladdr": "14:49:bc:34:0e:c8", "state": ["FAILED"]}]
+        assert self._call(neigh) is False
+
+    def test_neighbour_on_other_dev_rejected(self):
+        """An entry that explicitly names a different interface must be rejected."""
+        neigh = [{"dst": "10.240.1.1", "dev": "eth0", "state": ["REACHABLE"]}]
+        assert self._call(neigh) is False
+
+    def test_empty_neigh_returns_false(self):
+        assert self._call([]) is False
+
+    def test_no_matching_route_returns_false(self):
+        routes = [{"dev": "eth0", "gateway": "10.240.1.1", "dst": "default"}]
+        with patch.object(wifi_net, "_run_ip_json", side_effect=[routes, []]):
+            assert wifi_net.is_gateway_reachable("wlan0") is False

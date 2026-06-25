@@ -869,9 +869,25 @@ class TestRecoveryAdapter:
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
             assert watcher.resolve_recovery_ifname() == "wlan0"
 
-    def test_recovery_none_when_no_builtin(self, watcher):
+    def test_recovery_usb_fallback_when_no_builtin(self, watcher):
+        """On hardware with no built-in radio (e.g. Pi 2), a single USB adapter
+        is used as the hotspot interface."""
         adapters = [self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True)]
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            assert watcher.resolve_recovery_ifname() == "wlan1"
+
+    def test_recovery_none_when_multiple_usb_no_builtin(self, watcher):
+        """With multiple USB adapters and no built-in, the selection is
+        ambiguous — None is returned so AP startup is aborted."""
+        adapters = [
+            self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+            self._adapter("wlan2", "aa:bb:cc:00:00:03", is_usb=True),
+        ]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            assert watcher.resolve_recovery_ifname() is None
+
+    def test_recovery_none_when_no_adapters(self, watcher):
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]):
             assert watcher.resolve_recovery_ifname() is None
 
     def test_write_dnsmasq_runtime_uses_validated_builtin(self, watcher, tmp_path):
@@ -885,7 +901,20 @@ class TestRecoveryAdapter:
             watcher._write_dnsmasq_runtime("wlan0")
         assert "interface=wlan0" in runtime.read_text(encoding="utf-8")
 
-    def test_write_dnsmasq_runtime_refuses_non_builtin(self, watcher, tmp_path):
+    def test_write_dnsmasq_runtime_accepts_usb_when_no_builtin(self, watcher, tmp_path):
+        """On Pi 2 (no built-in), the sole USB adapter is the hotspot adapter
+        and its ifname must be accepted by _write_dnsmasq_runtime."""
+        tpl = tmp_path / "tpl.conf"
+        tpl.write_text("interface=__AUTOSTREAM_WIFI_IFACE__\nbind-interfaces\n", encoding="utf-8")
+        runtime = tmp_path / "run" / "out.conf"
+        watcher.DNSMASQ_TEMPLATE_PATH = str(tpl)
+        watcher.DNSMASQ_RUNTIME_PATH = str(runtime)
+        adapters = [self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True)]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            watcher._write_dnsmasq_runtime("wlan1")
+        assert "interface=wlan1" in runtime.read_text(encoding="utf-8")
+
+    def test_write_dnsmasq_runtime_refuses_non_hotspot_adapter(self, watcher, tmp_path):
         tpl = tmp_path / "tpl.conf"
         tpl.write_text("interface=__AUTOSTREAM_WIFI_IFACE__\n", encoding="utf-8")
         runtime = tmp_path / "run" / "out.conf"
@@ -893,7 +922,7 @@ class TestRecoveryAdapter:
         watcher.DNSMASQ_RUNTIME_PATH = str(runtime)
         adapters = [self._adapter("wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
-            # Asking to write for a USB interface (wlan1) must be refused.
+            # Built-in is wlan0; passing wlan1 must be refused.
             watcher._write_dnsmasq_runtime("wlan1")
         assert not runtime.exists()
 
@@ -1200,6 +1229,62 @@ class TestReconnectSavedNetwork:
             ok = watcher.reconnect_saved_network()
         assert ok is False
         leave.assert_not_called()
+
+    def test_usb_only_client_fails_restores_hotspot(self, watcher):
+        """Pi 2 (no built-in radio): the sole USB adapter hosts the hotspot.
+        When a client attempt on that adapter fails, the hotspot must be
+        recreated so the setup portal remains reachable.
+
+        Transition: USB hotspot active → client attempt → hotspot stops →
+        connection fails → hotspot recreated → returns False.
+        """
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+        watcher.STATE.setup_mode = True
+        watcher.STATE.setup_purpose = "automatic_recovery"
+
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "update_apmode_flag") as apflag, \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            ok = watcher.reconnect_saved_network()
+
+        assert ok is False
+        stop_ap.assert_called_once()     # hotspot torn down before the client attempt
+        start_ap.assert_called_once()    # hotspot recreated after the failed attempt
+        apflag.assert_called_with(True)  # flag reflects hotspot-active state
+        leave.assert_not_called()        # setup mode never exited
+        assert watcher.STATE.setup_mode is True
+
+    def test_usb_only_client_succeeds_leaves_setup(self, watcher):
+        """Pi 2 (no built-in radio): when the client attempt on the sole USB
+        adapter succeeds, setup mode is exited and the hotspot is not recreated.
+        """
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+        watcher.STATE.setup_mode = True
+        watcher.STATE.setup_purpose = "automatic_recovery"
+
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            ok = watcher.reconnect_saved_network()
+
+        assert ok is True
+        stop_ap.assert_called_once()  # hotspot torn down before the client attempt
+        start_ap.assert_not_called()  # hotspot not recreated on success
+        leave.assert_called_once()
 
     def test_clears_restrictions_before_activation_with_empty_uuid(self, watcher):
         """reconnect_saved_network must resolve and clear cross-adapter restrictions

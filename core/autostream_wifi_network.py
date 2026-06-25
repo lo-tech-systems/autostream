@@ -680,9 +680,14 @@ def is_gateway_reachable(ifname: str, prime_fn=None) -> bool:
             except Exception:
                 pass
 
+        # "dev <ifname>" filters the output; ip typically omits the "dev" field
+        # from each entry because the filter makes it redundant.  Accept entries
+        # where "dev" is absent (trust the command filter) or matches ifname;
+        # reject entries that explicitly name a different interface.
         neigh = _run_ip_json(["neigh", "show", "to", gw, "dev", ifname])
         for n in neigh:
-            if n.get("dev") == ifname and (_stateset(n.get("state")) & _OK_NEIGH_STATES):
+            dev = n.get("dev")
+            if (dev is None or dev == ifname) and (_stateset(n.get("state")) & _OK_NEIGH_STATES):
                 return True
         return False
     except Exception as e:
@@ -705,9 +710,17 @@ def get_active_wifi_connection_name(ifname: str) -> str:
     return ""
 
 
-def get_active_wifi_ssid(ifname: str) -> str:
-    """SSID currently in use on *ifname*, or "" if unknown."""
-    r = run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID", "device", "wifi", "list", "ifname", ifname])
+def get_active_wifi_ssid(ifname: str = "") -> str:
+    """SSID of the active Wi-Fi connection, or "" if unknown.
+
+    When *ifname* is given the search is scoped to that interface; omitting it
+    (or passing "") scans all interfaces, which is more reliable when the active
+    adapter may differ from the one tracked internally.
+    """
+    cmd = ["nmcli", "-t", "-f", "IN-USE,SSID", "device", "wifi", "list"]
+    if ifname:
+        cmd += ["ifname", ifname]
+    r = run_cmd(cmd)
     if r.returncode != 0:
         return ""
     for line in r.stdout.splitlines():

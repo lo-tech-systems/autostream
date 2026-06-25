@@ -9,7 +9,8 @@ Key invariants from the implementation plan:
   2. /opt/autostream/ssid is a name-only legacy mirror (never JSON).
   3. The watcher's control interface is localhost-only and token-authenticated.
   4. NetworkManager remains the credential store; network.json has no secrets.
-  5. The built-in adapter is always the recovery path (USB is never the only path).
+  5. The built-in adapter is preferred for the recovery hotspot; a sole USB
+     adapter is used as fallback on hardware without a built-in (e.g. Pi 2).
 
 Full regression: 4354 tests passed, 97 skipped on 2026-06-24 after WP1–WP9.
 """
@@ -157,10 +158,10 @@ class TestNetworkJsonNoSecrets:
 
 class TestBuiltinAdapterRecovery:
     def test_watcher_references_recovery_hotspot_via_builtin(self):
-        """The watcher must have logic referencing the built-in adapter for
-        the recovery hotspot (USB is never used as the AP interface)."""
-        # The watcher must reference 'builtin' or 'recovery' in context of AP
+        """The watcher must prefer the built-in adapter for the recovery
+        hotspot and expose resolve_hotspot_adapter() for USB fallback."""
         assert "builtin" in WIFI_WATCHER_SRC or "built_in" in WIFI_WATCHER_SRC or "built-in" in WIFI_WATCHER_SRC
+        assert "resolve_hotspot_adapter" in WIFI_WATCHER_SRC
 
     def test_wifi_network_distinguishes_usb_from_builtin(self):
         """autostream_wifi_network.py must distinguish USB from built-in adapters."""
