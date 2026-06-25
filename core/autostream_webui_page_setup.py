@@ -662,15 +662,6 @@ def send_setup_page(
             <button type="button" class="pill-btn" style="width:100%" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
             <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
           </div>
-          <div id="wifiHotspotModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;">
-            <div style="background:var(--color-bg,#fff);border-radius:0.75rem;padding:1.5rem;max-width:20rem;margin:1rem;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
-              <p style="margin:0 0 0.75rem;font-size:0.95rem;">This will start the Wi-Fi hotspot. Please connect to <strong id="wifiHotspotSsid">autostream-setup</strong> to continue Wi-Fi setup.</p>
-              <div style="display:flex;gap:0.5rem;">
-                <button type="button" class="pill-btn" style="flex:1;" onclick="confirmChangeWifiNetwork()">Continue</button>
-                <button type="button" class="pill-btn" style="flex:1;background:var(--color-bg-secondary,#eee);color:var(--color-text);" onclick="cancelChangeWifiNetwork()">Cancel</button>
-              </div>
-            </div>
-          </div>
         """
     system_inner_html = f"""
           <label style="display:flex;align-items:center;gap:.75rem;">
@@ -1086,9 +1077,24 @@ def send_setup_page(
     </div>
   </div>
 </div>""")
+    _wifi_hotspot_modal_div = """\
+<div id="wifiHotspotModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="wifiHotspotModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="wifiHotspotModalTitle">Change Wi-Fi Network</div>
+    <div class="bd modal-bd">
+      <p>This will start the Wi-Fi hotspot. Please connect to
+        <strong id="wifiHotspotSsid">autostream_XXXX</strong>
+        to continue Wi-Fi setup.</p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" onclick="cancelChangeWifiNetwork()">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" onclick="confirmChangeWifiNetwork()">Continue</button>
+    </div>
+  </div>
+</div>"""
     _body_prefix = (
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n"
-        f"{_dial_pin_modal_div}"
+        f"{_dial_pin_modal_div}\n{_wifi_hotspot_modal_div}"
     )
     _body_html = (
         (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
@@ -1994,7 +2000,7 @@ def send_setup_page(
             var m = document.getElementById('dialPinModal');
             if (ev.key === 'Escape' && m && m.classList.contains('show')) _closeDialPinModal();
             var wm = document.getElementById('wifiHotspotModal');
-            if (ev.key === 'Escape' && wm && wm.style.display === 'flex') cancelChangeWifiNetwork();
+            if (ev.key === 'Escape' && wm && wm.classList.contains('show')) cancelChangeWifiNetwork();
           }});
           // Load current config for each online authorized dial
           {_dial_onload_js}
@@ -2025,17 +2031,17 @@ def send_setup_page(
 
         function changeWifiNetwork() {{
           var modal = document.getElementById('wifiHotspotModal');
-          if (modal) modal.style.display = 'flex';
+          if (modal) modal.classList.add('show');
         }}
 
         function cancelChangeWifiNetwork() {{
           var modal = document.getElementById('wifiHotspotModal');
-          if (modal) modal.style.display = 'none';
+          if (modal) modal.classList.remove('show');
         }}
 
         async function confirmChangeWifiNetwork() {{
           var modal = document.getElementById('wifiHotspotModal');
-          if (modal) modal.style.display = 'none';
+          if (modal) modal.classList.remove('show');
           var btn = document.querySelector('#networkCard .pill-btn');
           var msg = document.getElementById('networkSetupMsg');
           if (btn) btn.disabled = true;
