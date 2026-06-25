@@ -2030,45 +2030,39 @@ def _watcher_request(method: str, path: str, body: Optional[dict] = None):
 
 
 def format_active_adapter(status: dict) -> str:
-    """Return the active-adapter display text (Section 9.2).
+    """Return the active-adapter display text for the network card.
 
-    Returns the adapter info line rendered below the card title.
+    Returns an empty string when ethernet is active (adapter line is hidden).
     """
-    usb_detected = bool(status.get("usb_adapter_detected"))
+    if (status.get("wiredstate") or "") == "connected":
+        return ""
     active_kind = status.get("active_adapter_kind") or ""
     using_fallback = bool(status.get("using_builtin_fallback"))
-    adapters = status.get("adapters") or []
-
-    def _first_usb_desc() -> str:
-        for a in adapters:
-            if a and a.get("is_usb"):
-                return (a.get("description") or a.get("ifname") or "").strip()
-        return ""
 
     if active_kind == "usb":
         desc = (status.get("active_adapter_description")
                 or status.get("active_adapter_ifname") or "").strip()
-        line = f"Using USB Wi-Fi · {desc}" if desc else "Using USB Wi-Fi"
-    elif not usb_detected:
-        line = "Using Built-in Wi-Fi · No USB adapter detected"
+        line = f"Using USB WiFi adapter {desc}" if desc else "Using USB WiFi adapter"
     else:
-        # USB detected but built-in is the active (or next) Wi-Fi adapter.
-        line = "Using Built-in Wi-Fi · USB adapter detected"
+        line = "Using on-board WiFi adapter"
 
     if using_fallback:
-        line += " · USB connection unavailable"
+        line += " (USB connection unavailable)"
     return line
 
 
 def format_network_title(status: dict) -> str:
-    """Return the Wi-Fi card title: connected-to-SSID or disconnected."""
+    """Return the network card title reflecting connection type and SSID."""
+    wiredstate = (status.get("wiredstate") or "").strip()
     active_ssid = (status.get("active_ssid") or "").strip()
     active_ifname = (status.get("active_adapter_ifname") or "").strip()
+    if wiredstate == "connected":
+        return "Network (Ethernet)"
     if active_ssid:
-        return f"Wi-Fi (connected to {active_ssid})"
-    elif active_ifname:
-        return "Wi-Fi (connected)"
-    return "Wi-Fi (disconnected)"
+        return f"Network (Wi-Fi on {active_ssid})"
+    if active_ifname:
+        return "Network (Wi-Fi)"
+    return "Network (disconnected)"
 
 
 def send_network_status_json(handler) -> None:

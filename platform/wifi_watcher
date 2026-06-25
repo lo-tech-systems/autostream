@@ -337,28 +337,55 @@ _control_token: str = ""
 
 # AP / host configuration.
 # AP_IFNAME remains the compatibility default for interface-aware helper calls;
-# hotspot operations resolve the *built-in* recovery interface dynamically via
-# resolve_recovery_ifname() so USB removal can never remove the recovery path.
+# hotspot operations resolve the adapter dynamically via resolve_hotspot_adapter():
+# built-in radio when present, sole USB adapter on hardware without a built-in
+# (e.g. Pi 2).
 AP_IFNAME = "wlan0"
 AP_CONNECTION_NAME = "Hotspot"  # default/fixed name for our AP connection
 
 
-def resolve_recovery_ifname() -> Optional[str]:
-    """Return the resolved built-in (recovery) interface name, or None.
+def resolve_hotspot_adapter(adapters: list) -> Optional[object]:
+    """Return the adapter that should host the setup hotspot, or None.
 
-    The recovery hotspot must always use the built-in radio; a USB adapter must
-    never become the only recovery path.  Returns None when no built-in adapter
-    can be identified (the caller logs an error and does not host an AP on USB).
+    Prefers the built-in radio so USB removal never eliminates the recovery
+    path on hardware that has one.  On hardware without a built-in radio
+    (e.g. Pi 2), falls back to the sole managed USB adapter when exactly one
+    is present.  Returns None when no suitable adapter can be identified;
+    callers must abort AP startup rather than selecting an arbitrary interface.
+    With multiple USB adapters and no built-in, returns None — there is no
+    principled basis for choosing one silently.
+    """
+    builtin = wifi_net.resolve_builtin(adapters)
+    if builtin is not None:
+        return builtin
+    usb = wifi_net.usb_candidates(adapters)
+    if len(usb) == 1:
+        return usb[0]
+    return None
+
+
+def resolve_recovery_ifname() -> Optional[str]:
+    """Return the interface name for the setup hotspot, or None.
+
+    Uses resolve_hotspot_adapter() to select the interface: built-in radio
+    when available, sole managed USB adapter on hardware without a built-in
+    radio (e.g. Pi 2).  Returns None when no suitable adapter can be
+    identified; the caller logs an error and does not start AP mode.
     """
     try:
         adapters = wifi_net.discover_adapters()
     except Exception as e:
         logger.warning("Adapter discovery failed while resolving recovery interface: %s", e)
         adapters = []
-    builtin = wifi_net.resolve_builtin(adapters)
-    if builtin is not None:
-        return builtin.ifname
-    logger.warning("No built-in Wi-Fi adapter identified for recovery hotspot")
+    adapter = resolve_hotspot_adapter(adapters)
+    if adapter is not None:
+        if adapter.is_usb:
+            logger.info(
+                "No built-in Wi-Fi adapter; using sole USB adapter %s as hotspot interface",
+                adapter.ifname,
+            )
+        return adapter.ifname
+    logger.warning("No suitable Wi-Fi adapter identified for recovery hotspot")
     return None
 
 # Resolved once at startup; None disables avahi mDNS hostname monitoring.
@@ -739,11 +766,11 @@ def _write_dnsmasq_runtime(recovery_ifname: str) -> bool:
     the caller can abort dnsmasq startup rather than starting it with a stale
     or wrong config.
     """
-    # Validate against discovered adapters: must be the resolved built-in.
+    # Validate against discovered adapters: must match the resolved hotspot adapter.
     resolved = resolve_recovery_ifname()
     if resolved is not None and recovery_ifname != resolved:
         logger.warning(
-            "Refusing dnsmasq runtime config: %s is not the resolved built-in (%s)",
+            "Refusing dnsmasq runtime config: %s is not the resolved hotspot adapter (%s)",
             recovery_ifname, resolved,
         )
         return False
@@ -778,15 +805,15 @@ def start_ap_mode() -> None:
 
         logger.info("Enabling AP mode for SetupMode")
 
-        # The recovery hotspot must always use the built-in radio.  If no
-        # built-in adapter can be identified, abort rather than hosting the
-        # hotspot on an arbitrary (possibly USB) adapter — a USB adapter must
-        # never become the only recovery path.
+        # Use the built-in radio when available; fall back to the sole managed
+        # USB adapter on hardware without a built-in radio (e.g. Pi 2).  If
+        # neither can be identified unambiguously, abort rather than selecting
+        # an arbitrary interface.
         recovery_ifname = resolve_recovery_ifname()
         if recovery_ifname is None:
             logger.error(
-                "Cannot start recovery hotspot: no built-in Wi-Fi adapter identified; "
-                "aborting AP mode to preserve recovery safety"
+                "Cannot start hotspot: no suitable Wi-Fi adapter identified "
+                "(no built-in radio, no unambiguous USB adapter); aborting AP mode"
             )
             with state_lock:
                 STATE.setup_mode = False
@@ -798,7 +825,7 @@ def start_ap_mode() -> None:
         # Delete any existing connection with the same name (also takes it down).
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
 
-        # Create the connection on the built-in recovery interface.
+        # Create the connection on the hotspot interface.
         logger.info(
             "Creating AP connection '%s' with SSID '%s' on %s",
             AP_CONNECTION_NAME, ssid, recovery_ifname,
@@ -1637,6 +1664,7 @@ def _network_status_payload() -> dict:
         active_ifname = STATE.active_client_ifname
         active_mac = STATE.active_client_mac
         using_fallback = STATE.using_builtin_fallback
+        wiredstate = STATE.wiredstate
         cip = STATE.control_in_progress
         lca = STATE.last_control_action
         lcr = STATE.last_control_result
@@ -1645,14 +1673,21 @@ def _network_status_payload() -> dict:
     usb_detected = any(a.is_usb for a in adapters)
 
     active_ssid = ""
-    if active_ifname:
-        try:
-            active_ssid = _get_active_wifi_ssid(active_ifname)
-        except Exception:
-            pass
+    try:
+        active_ssid = wifi_net.get_active_wifi_ssid()
+    except Exception:
+        pass
 
-    recovery_ifname = builtin.ifname if builtin else ""
-    ap_ssid = get_ap_ssid(recovery_ifname) if recovery_ifname else "autostream-setup"
+    hotspot_adapter = resolve_hotspot_adapter(adapters)
+    ap_ssid = get_ap_ssid(hotspot_adapter.ifname) if hotspot_adapter else "autostream-setup"
+
+    # True when a USB adapter is present but not yet active and ethernet isn't
+    # carrying connectivity — indicates adoption is deferred (likely by playback).
+    usb_adoption_pending = (
+        usb_detected
+        and (active is None or not active.is_usb)
+        and wiredstate != "connected"
+    )
 
     def _ad(a):
         if a is None:
@@ -1672,7 +1707,9 @@ def _network_status_payload() -> dict:
         "active_adapter_description": (active.description if active else ""),
         "active_ssid": active_ssid,
         "ap_ssid": ap_ssid,
+        "wiredstate": wiredstate,
         "usb_adapter_detected": usb_detected,
+        "usb_adoption_pending": usb_adoption_pending,
         "using_builtin_fallback": using_fallback,
         "builtin_adapter": _ad(builtin),
         "adapters": [_ad(a) for a in adapters],
@@ -1859,18 +1896,19 @@ def reconnect_saved_network() -> bool:
     if committed_uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(committed_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
 
-    builtin = wifi_net.resolve_builtin(wifi_net.discover_adapters())
+    hotspot_adapter = resolve_hotspot_adapter(wifi_net.discover_adapters())
     for target in targets:
-        # When the built-in adapter currently hosts the AP, activating a client
-        # connection on it displaces the hotspot (one radio cannot do both).
-        # Stop the AP first; recreate it if this attempt fails.
+        # When the target adapter is currently hosting the hotspot, one radio
+        # cannot do both; stop the AP first and recreate it if this attempt
+        # fails.  This applies to the built-in on normal hardware and to the
+        # sole USB adapter on hardware without a built-in (e.g. Pi 2).
         with state_lock:
             in_setup_now = STATE.setup_mode
-        is_builtin_target = builtin is not None and target.ifname == builtin.ifname
-        ap_stopped_for_builtin = False
-        if in_setup_now and is_builtin_target:
+        is_hotspot_target = hotspot_adapter is not None and target.ifname == hotspot_adapter.ifname
+        ap_stopped_for_hotspot = False
+        if in_setup_now and is_hotspot_target:
             stop_ap_mode()
-            ap_stopped_for_builtin = True
+            ap_stopped_for_hotspot = True
 
         run_cmd(wifi_net.activate_connection_cmd(
             committed_uuid, committed.connection_name, target.ifname))
@@ -1884,17 +1922,19 @@ def reconnect_saved_network() -> bool:
             logger.info("Reconnected to saved network on %s", target.ifname)
             return True
 
-        if ap_stopped_for_builtin:
-            # Built-in client attempt failed after the AP was torn down; the
-            # hotspot must be restored so the appliance is not left unreachable.
-            logger.warning("Reconnect on built-in failed after AP teardown; recreating hotspot")
+        if ap_stopped_for_hotspot:
+            # Client attempt failed after the hotspot was torn down; restore
+            # it so the appliance is not left unreachable.
+            logger.warning(
+                "Reconnect on hotspot adapter (%s) failed after AP teardown; recreating hotspot",
+                target.ifname,
+            )
             with state_lock:
                 STATE.setup_mode = True
                 STATE.ap_enter_time = time.monotonic()
             start_ap_mode()
             update_apmode_flag(True)
-            # Continue to try any remaining USB targets — they use a separate
-            # radio and do not require the AP to be stopped first.
+            # Continue to try remaining targets that don't share the hotspot radio.
 
     logger.warning("Reconnect to saved network failed; retaining hotspot")
     return False

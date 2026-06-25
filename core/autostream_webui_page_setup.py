@@ -654,13 +654,23 @@ def send_setup_page(
     # is fetched from the authenticated network-status API on panel open.
     network_card_html = """
           <div id="networkCard" style="margin-top:0.5rem;padding-top:0.75rem;border-top:1px solid var(--color-border,#ddd);">
-            <p id="networkCardTitle" style="margin:0 0 0.25rem;font-weight:600;">Wi-Fi</p>
-            <p id="networkAdapterInfo" style="margin:0 0 0.5rem;font-size:0.9rem;color:var(--color-text);">Using Built-in Wi-Fi</p>
-            <p style="margin:0 0 0.75rem;font-size:0.8rem;color:var(--color-text-muted,#888);">
-              USB Wi-Fi adapters will be used automatically when connected. The connection will be changed when playback is idle.
-            </p>
-            <button type="button" class="pill-btn" style="width:100%" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
+            <p id="networkCardTitle" style="margin:0 0 0.25rem;font-weight:600;">Network</p>
+            <p id="networkAdapterInfo" style="margin:0 0 0.25rem;font-size:0.9rem;color:var(--color-text);">Using on-board WiFi adapter</p>
+            <p id="networkUsbPending" style="display:none;margin:0.25rem 0 0.5rem;font-size:0.8rem;color:var(--color-text-muted,#888);">autostream will switch to the USB adapter when playback stops. You will need to close and re-open the autostream app to reconnect.</p>
+            <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
             <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
+          </div>
+          <div id="wifiHotspotModal" class="modal-overlay">
+            <div class="modal-panel" style="--modal-width:22rem;">
+              <div class="modal-hdr">Change Wi-Fi Network</div>
+              <div class="modal-bd">
+                <p>This will start the Wi-Fi hotspot. Please connect to <strong id="wifiHotspotSsid">autostream-setup</strong> to continue Wi-Fi setup.</p>
+              </div>
+              <div class="modal-ft">
+                <button type="button" class="pill-btn small" style="flex:1;" onclick="confirmChangeWifiNetwork()">Continue</button>
+                <button type="button" class="pill-btn small" style="flex:1;background:var(--modal-secondary-bg);color:var(--modal-secondary-text);" onclick="cancelChangeWifiNetwork()">Cancel</button>
+              </div>
+            </div>
           </div>
         """
     system_inner_html = f"""
@@ -2009,9 +2019,9 @@ def send_setup_page(
       <script>
         // ── Network adapter status and Change Wi-Fi (WP7) ─────────────────
         async function refreshNetworkAdapterInfo() {{
-          var el = document.getElementById('networkAdapterInfo');
+          var adapterEl = document.getElementById('networkAdapterInfo');
           var titleEl = document.getElementById('networkCardTitle');
-          if (!el) return;
+          var pendingEl = document.getElementById('networkUsbPending');
           try {{
             var r = await fetch('/api/network/status', {{
               credentials: 'same-origin',
@@ -2020,14 +2030,24 @@ def send_setup_page(
             }});
             if (!r.ok) return;
             var j = await r.json();
-            if (j && j.display) el.textContent = j.display;
-            if (j && j.title && titleEl) titleEl.textContent = j.title;
-            if (j && j.ap_ssid) {{
+            if (j.title && titleEl) titleEl.textContent = j.title;
+            if (adapterEl) {{
+              if (j.display) {{
+                adapterEl.textContent = j.display;
+                adapterEl.style.display = '';
+              }} else {{
+                adapterEl.style.display = 'none';
+              }}
+            }}
+            if (pendingEl) pendingEl.style.display = j.usb_adoption_pending ? '' : 'none';
+            if (j.ap_ssid) {{
               var ssidEl = document.getElementById('wifiHotspotSsid');
               if (ssidEl) ssidEl.textContent = j.ap_ssid;
             }}
           }} catch (e) {{ /* ignore — static default text remains */ }}
         }}
+        refreshNetworkAdapterInfo();
+        setInterval(refreshNetworkAdapterInfo, 5000);
 
         function changeWifiNetwork() {{
           var modal = document.getElementById('wifiHotspotModal');

@@ -67,7 +67,7 @@ def _ok_status(extra: dict | None = None) -> dict:
 class TestFormatActiveAdapter:
     def test_builtin_no_usb(self):
         s = _ok_status({"usb_adapter_detected": False, "active_adapter_kind": "builtin"})
-        assert format_active_adapter(s) == "Using Built-in Wi-Fi · No USB adapter detected"
+        assert format_active_adapter(s) == "Using on-board WiFi adapter"
 
     def test_builtin_usb_detected(self):
         s = _ok_status({
@@ -75,7 +75,7 @@ class TestFormatActiveAdapter:
             "active_adapter_kind": "builtin",
             "adapters": [{"is_usb": True, "ifname": "wlan1", "description": "RT8811AU"}],
         })
-        assert format_active_adapter(s) == "Using Built-in Wi-Fi · USB adapter detected"
+        assert format_active_adapter(s) == "Using on-board WiFi adapter"
 
     def test_usb_active_with_description(self):
         s = _ok_status({
@@ -84,7 +84,7 @@ class TestFormatActiveAdapter:
             "active_adapter_description": "RT8811AU",
             "active_adapter_ifname": "wlan1",
         })
-        assert format_active_adapter(s) == "Using USB Wi-Fi · RT8811AU"
+        assert format_active_adapter(s) == "Using USB WiFi adapter RT8811AU"
 
     def test_usb_active_no_description_falls_back_to_ifname(self):
         s = _ok_status({
@@ -93,7 +93,7 @@ class TestFormatActiveAdapter:
             "active_adapter_description": "",
             "active_adapter_ifname": "wlan1",
         })
-        assert format_active_adapter(s) == "Using USB Wi-Fi · wlan1"
+        assert format_active_adapter(s) == "Using USB WiFi adapter wlan1"
 
     def test_usb_active_no_description_no_ifname(self):
         s = _ok_status({
@@ -102,7 +102,11 @@ class TestFormatActiveAdapter:
             "active_adapter_description": "",
             "active_adapter_ifname": "",
         })
-        assert format_active_adapter(s) == "Using USB Wi-Fi"
+        assert format_active_adapter(s) == "Using USB WiFi adapter"
+
+    def test_ethernet_returns_empty(self):
+        s = _ok_status({"wiredstate": "connected"})
+        assert format_active_adapter(s) == ""
 
     def test_using_fallback_appended(self):
         s = _ok_status({
@@ -122,7 +126,7 @@ class TestFormatActiveAdapter:
             "using_builtin_fallback": True,
         })
         result = format_active_adapter(s)
-        assert result.startswith("Using USB Wi-Fi · RT8811AU")
+        assert result.startswith("Using USB WiFi adapter RT8811AU")
         assert "USB connection unavailable" in result
 
     def test_missing_keys_safe(self):
@@ -160,19 +164,34 @@ class TestSendNetworkStatusJson:
         result = self._call(200, data)
         assert result["code"] == 200
         assert "display" in result["data"]
-        assert result["data"]["display"] == "Using Built-in Wi-Fi · No USB adapter detected"
+        assert result["data"]["display"] == "Using on-board WiFi adapter"
+
+    def test_success_ethernet_display_empty(self):
+        data = _ok_status({"wiredstate": "connected"})
+        result = self._call(200, data)
+        assert result["data"]["display"] == ""
 
     def test_success_adds_title_field(self):
         data = _ok_status({"usb_adapter_detected": False, "active_ssid": "MyNetwork", "active_adapter_ifname": "wlan0"})
         result = self._call(200, data)
         assert result["code"] == 200
         assert "title" in result["data"]
-        assert result["data"]["title"] == "Wi-Fi (connected to MyNetwork)"
+        assert result["data"]["title"] == "Network (Wi-Fi on MyNetwork)"
+
+    def test_success_title_ethernet(self):
+        data = _ok_status({"wiredstate": "connected", "active_ssid": "", "active_adapter_ifname": ""})
+        result = self._call(200, data)
+        assert result["data"]["title"] == "Network (Ethernet)"
+
+    def test_success_title_ethernet_wins_over_wifi(self):
+        data = _ok_status({"wiredstate": "connected", "active_ssid": "MyNetwork", "active_adapter_ifname": "wlan0"})
+        result = self._call(200, data)
+        assert result["data"]["title"] == "Network (Ethernet)"
 
     def test_success_title_disconnected(self):
         data = _ok_status({"usb_adapter_detected": False, "active_ssid": "", "active_adapter_ifname": ""})
         result = self._call(200, data)
-        assert result["data"]["title"] == "Wi-Fi (disconnected)"
+        assert result["data"]["title"] == "Network (disconnected)"
 
     def test_watcher_503_returns_error(self):
         result = self._call(503, {})
@@ -401,8 +420,16 @@ class TestSetupPageNetworkCard:
 
     def test_wifi_hotspot_modal_present(self):
         assert 'id="wifiHotspotModal"' in self.PAGE_SRC
+        assert 'modal-overlay' in self.PAGE_SRC
         assert "confirmChangeWifiNetwork" in self.PAGE_SRC
         assert "cancelChangeWifiNetwork" in self.PAGE_SRC
+
+    def test_usb_pending_element_present(self):
+        assert 'id="networkUsbPending"' in self.PAGE_SRC
+        assert "usb_adoption_pending" in self.PAGE_SRC
+
+    def test_network_auto_refresh_present(self):
+        assert "setInterval(refreshNetworkAdapterInfo" in self.PAGE_SRC
 
     def test_change_wifi_button_present(self):
         assert "changeWifiNetwork" in self.PAGE_SRC
