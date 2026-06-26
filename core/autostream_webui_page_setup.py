@@ -38,7 +38,7 @@ from autostream_player_service import list_outputs
 from autostream_playback_stats import (
     suggested_silence_threshold_dbfs,
 )
-from autostream_sysutils import get_ap_ssid, get_system_hostname, set_system_hostname
+from autostream_sysutils import get_ap_ssid, get_system_hostname
 from autostream_webui_assets import (
     A2HS_SCRIPT,
     AUTOSAVE_JS,
@@ -673,12 +673,15 @@ def send_setup_page(
             </div>
           </div>
         """
+    current_hostname = get_system_hostname()
     system_inner_html = f"""
-          <label style="display:flex;align-items:center;gap:.75rem;">
-            <span>Hostname:</span><input style="flex:1" type="text" name="system_hostname" value="{html.escape(get_system_hostname())}"
-              onblur="refreshSystemCardSub(); if(liveEnabled && this.value.trim()) settingsTransact('/api/settings/hostname', {{value: this.value.trim()}});"
-              onkeydown="if(event.key==='Enter'){{ this.blur(); event.preventDefault(); }}">
-          </label>
+          <div>
+            <div style="display:flex;align-items:center;gap:.75rem;">
+            <span>Hostname:</span>
+            <strong id="systemHostnameValue" style="flex:1;min-width:8rem;word-break:break-word;">{html.escape(current_hostname)}</strong>
+            </div>
+            <button type="button" id="btnChangeHostname" class="pill-btn small" style="width:100%;margin-top:0.5rem;">Change Hostname</button>
+          </div>
           {update_html}
           {network_card_html}
         """
@@ -712,7 +715,7 @@ def send_setup_page(
     _au_state = "Auto-update: On" if parsed.updates.auto_update else "Auto-update: Off"
     if parsed.updates.update_channel == "dev":
         _au_state += " - Pre-release channel"
-    system_summary = html.escape(f"{get_system_hostname()} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
+    system_summary = html.escape(f"{current_hostname} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
     _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
     customise_summary = html.escape(
         ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
@@ -1069,6 +1072,22 @@ def send_setup_page(
     </div>
   </div>
 </div>"""
+    _hostname_modal_div = f"""\
+<div id="hostnameModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="hostnameModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="hostnameModalTitle">Change Hostname</div>
+    <div class="bd modal-bd">
+      <p>Enter the new hostname for this appliance.</p>
+      <input type="text" id="hostnameModalInput" value="{html.escape(current_hostname)}"
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <p id="hostnameModalError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="hostnameModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="hostnameModalOk">Change</button>
+    </div>
+  </div>
+</div>"""
     _dial_pin_modal_div = ("""\
 <div id="dialPinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialPinModalTitle">
   <div class="panel modal-panel">
@@ -1103,7 +1122,7 @@ def send_setup_page(
   </div>
 </div>"""
     _body_prefix = (
-        f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n"
+        f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_hostname_modal_div}\n"
         f"{_dial_pin_modal_div}\n{_wifi_hotspot_modal_div}"
     )
     _body_html = (
@@ -1323,6 +1342,93 @@ def send_setup_page(
         function handlePinModalCancel() {{
           closePinModal();
         }}
+        const hostnameChangeState = {{
+          busy: false,
+        }};
+        function hostnameModalElements() {{
+          return {{
+            modal: document.getElementById('hostnameModal'),
+            input: document.getElementById('hostnameModalInput'),
+            error: document.getElementById('hostnameModalError'),
+            cancel: document.getElementById('hostnameModalCancel'),
+            ok: document.getElementById('hostnameModalOk'),
+          }};
+        }}
+        function currentDisplayedHostname() {{
+          const el = document.getElementById('systemHostnameValue');
+          return ((el && el.textContent) || 'autostream').trim() || 'autostream';
+        }}
+        function setHostnameModalBusy(busy) {{
+          hostnameChangeState.busy = !!busy;
+          const els = hostnameModalElements();
+          if (els.cancel) els.cancel.disabled = !!busy;
+          if (els.ok) els.ok.disabled = !!busy;
+          if (els.input) els.input.disabled = !!busy;
+        }}
+        function showHostnameModalError(message) {{
+          const els = hostnameModalElements();
+          if (!els.error) return;
+          if (message) {{
+            els.error.style.display = '';
+            els.error.textContent = message;
+          }} else {{
+            els.error.style.display = 'none';
+            els.error.textContent = '';
+          }}
+        }}
+        function openChangeHostnameModal() {{
+          const els = hostnameModalElements();
+          if (!els.modal) return;
+          showHostnameModalError(null);
+          if (els.input) {{
+            els.input.value = currentDisplayedHostname();
+            els.input.disabled = false;
+          }}
+          setHostnameModalBusy(false);
+          els.modal.classList.add('show');
+          setTimeout(function() {{
+            if (els.input) {{
+              els.input.focus();
+              els.input.select();
+            }}
+          }}, 50);
+        }}
+        function closeHostnameModal() {{
+          const els = hostnameModalElements();
+          if (els.modal) els.modal.classList.remove('show');
+          showHostnameModalError(null);
+          setHostnameModalBusy(false);
+        }}
+        function friendlyHostnameChangeError(message) {{
+          const text = String(message || '').trim();
+          if (!text) return 'Unable to change hostname.';
+          if (text === 'Invalid hostname') return 'Enter a valid hostname using letters, numbers, and hyphens.';
+          return text;
+        }}
+        function handleHostnameModalOk() {{
+          if (hostnameChangeState.busy) return;
+          const els = hostnameModalElements();
+          const value = ((els.input && els.input.value) || '').trim();
+          if (!value) {{
+            showHostnameModalError('Enter a hostname.');
+            if (els.input) els.input.focus();
+            return;
+          }}
+          setHostnameModalBusy(true);
+          settingsTransact('/api/settings/hostname', {{value: value}}, {{
+            onSuccess: function(data) {{
+              const display = document.getElementById('systemHostnameValue');
+              if (display) display.textContent = value;
+              refreshSystemCardSub();
+              closeHostnameModal();
+            }},
+            onError: function(data) {{
+              showHostnameModalError(friendlyHostnameChangeError(data && data.error));
+              setHostnameModalBusy(false);
+              if (els.input) els.input.focus();
+            }}
+          }});
+        }}
         const liveEnabled = true;
         function onAudio2Toggle(checked){{
           syncInputUi(2);
@@ -1399,9 +1505,19 @@ def send_setup_page(
           const changePinBtn = document.getElementById('btnChangePin');
           const pinModalCancel = document.getElementById('pinModalCancel');
           const pinModalOk = document.getElementById('pinModalOk');
+          const changeHostnameBtn = document.getElementById('btnChangeHostname');
+          const hostnameModalCancel = document.getElementById('hostnameModalCancel');
+          const hostnameModalOk = document.getElementById('hostnameModalOk');
+          const hostnameModalInput = document.getElementById('hostnameModalInput');
           if (changePinBtn) changePinBtn.addEventListener('click', openChangePinModal);
           if (pinModalCancel) pinModalCancel.addEventListener('click', handlePinModalCancel);
           if (pinModalOk) pinModalOk.addEventListener('click', handlePinModalOk);
+          if (changeHostnameBtn) changeHostnameBtn.addEventListener('click', openChangeHostnameModal);
+          if (hostnameModalCancel) hostnameModalCancel.addEventListener('click', closeHostnameModal);
+          if (hostnameModalOk) hostnameModalOk.addEventListener('click', handleHostnameModalOk);
+          if (hostnameModalInput) hostnameModalInput.addEventListener('keydown', function(ev) {{
+            if (ev.key === 'Enter') {{ ev.preventDefault(); handleHostnameModalOk(); }}
+          }});
           syncInputUi(1);
           syncInputUi(2);
           // Enforce hostname-dependent state on load
@@ -1642,8 +1758,8 @@ def send_setup_page(
         function refreshSystemCardSub() {{
           var sub = document.getElementById('system-card-sub');
           if (!sub) return;
-          var hn = document.querySelector('input[name="system_hostname"]');
-          var hostname = hn ? (hn.value.trim() || 'autostream') : 'autostream';
+          var hn = document.getElementById('systemHostnameValue');
+          var hostname = hn ? (hn.textContent.trim() || 'autostream') : 'autostream';
           var cbAu = document.getElementById('updates_auto_update');
           var cbPre = document.getElementById('updates_prerelease_channel');
           var auState = (cbAu && cbAu.checked) ? 'Auto-update: On' : 'Auto-update: Off';
@@ -2009,6 +2125,8 @@ def send_setup_page(
           document.addEventListener('keydown', function(ev) {{
             var m = document.getElementById('dialPinModal');
             if (ev.key === 'Escape' && m && m.classList.contains('show')) _closeDialPinModal();
+            var hm = document.getElementById('hostnameModal');
+            if (ev.key === 'Escape' && hm && hm.classList.contains('show')) closeHostnameModal();
             var wm = document.getElementById('wifiHotspotModal');
             if (ev.key === 'Escape' && wm && wm.classList.contains('show')) cancelChangeWifiNetwork();
           }});

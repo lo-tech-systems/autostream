@@ -328,6 +328,34 @@ class TestFirstBootFinishPost:
         loc_calls = [c for c in handler.send_header.call_args_list if c[0][0] == "Location"]
         assert any("/" == str(c[0][1]) for c in loc_calls)
 
+    def test_hostname_change_shows_wait_page_to_new_local_name(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        handler.headers = {"Host": "autostream.local:8080"}
+        from urllib.parse import urlencode
+        body = urlencode({
+            "audio1_capture_device": VALID_ALSA,
+            "volume_percent": "20",
+            "hostname": "living-room",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.set_system_hostname") as m_set_hn, \
+             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
+             patch("autostream_webui_page_first_boot.mark_configured"):
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        m_set_hn.assert_called_once_with("living-room")
+        handler.send_response.assert_called_with(200)
+        loc_calls = [c for c in handler.send_header.call_args_list if c[0][0] == "Location"]
+        assert loc_calls == []
+        html = _render(handler, written)
+        assert "The hostname change is being applied" in html
+        assert "http://living-room.local:8080/" in html
+        assert 'content="5;url=http://living-room.local:8080/"' in html
+
     def test_no_output_name_shows_error(self, tmp_path):
         from autostream_webui_page_first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path), output_name="")

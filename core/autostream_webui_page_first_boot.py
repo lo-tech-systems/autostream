@@ -30,10 +30,15 @@ from autostream_commissioning import (
     mark_commissioning_complete,
 )
 from autostream_player_service import list_outputs, output_supported_config_modes
-from autostream_sysutils import get_system_hostname
+from autostream_sysutils import get_system_hostname, set_system_hostname
 from autostream_webui_api import send_json
 from autostream_webui_assets import AUTOSAVE_JS, BANNER_HTML
-from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html
+from autostream_webui_common import (
+    _config_snapshot,
+    build_page_html,
+    build_top_banner_html,
+    send_hostname_changed_page,
+)
 from autostream_webui_state import WebUIState
 
 _DEFAULT_FIFO_PATH = "/tmp/autostream-pipes/autostream.fifo"
@@ -276,7 +281,6 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     """Validate Appliance settings, save, mark configured, redirect to /."""
     from urllib.parse import parse_qs
     from autostream_config import is_valid_monitor_device_id, mark_configured as _mark_configured
-    from autostream_sysutils import run_admin_cmd, set_system_hostname
 
     form = parse_qs(body or "", keep_blank_values=True)
 
@@ -342,6 +346,10 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             set_system_hostname(hostname_raw)
         except Exception as exc:
             logging.warning("handle_first_boot_finish_post: hostname change failed: %s", exc)
+            send_first_boot_appliance_page(
+                handler, state, auth, error=f"Could not change hostname: {exc}"
+            )
+            return
 
     # Synchronous save — must succeed before marking configured
     if not _store.save_now():
@@ -371,6 +379,10 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
 
     # Update the in-process unconfigured cache
     _mark_configured(state.config_path)
+
+    if hostname_changed:
+        send_hostname_changed_page(handler, hostname_raw, path="/", show_nav=False)
+        return
 
     # Redirect to home
     handler.send_response(303)

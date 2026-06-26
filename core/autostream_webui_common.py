@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from typing import Optional
 
 from autostream_auth import FLASH_COOKIE_NAME
@@ -74,6 +74,63 @@ def _set_flash_cookie(handler, message: str, *, max_age: int = 30, flash_type: s
         handler._pending_set_cookies = [cookie]
     else:
         pending.append(cookie)
+
+
+def build_hostname_redirect_url(handler, hostname: str, path: str = "/") -> str:
+    """Build an absolute .local URL for a hostname change redirect."""
+    host_header = handler.headers.get("Host", "")
+    port_num = urlparse(f"http://{host_header}").port
+    host_p = f"{hostname}.local:{port_num}" if port_num else f"{hostname}.local"
+    return f"http://{host_p}{path}"
+
+
+def send_hostname_changed_page(
+    handler,
+    hostname: str,
+    *,
+    path: str = "/",
+    show_nav: bool = False,
+    active_tab: str = "setup",
+    flash_msg: Optional[str] = None,
+    flash_type: str = "success",
+) -> None:
+    """Render a short wait page and redirect the browser to the new .local host."""
+    redirect_url = build_hostname_redirect_url(handler, hostname, path)
+    safe_host = html.escape(hostname)
+    safe_url = html.escape(redirect_url)
+    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    body_html = f"""
+{BANNER_HTML}
+<h1>Hostname changed</h1>
+<div class="card">
+  <p>The hostname change is being applied.</p>
+  <p>Your appliance will be available at <strong>{safe_host}.local</strong>.</p>
+  <p>Redirecting you in 5 seconds.</p>
+  <p style="word-break:break-word;">
+    <a class="pill-btn" href="{safe_url}">Tap here to continue</a>
+  </p>
+</div>
+"""
+    page = build_page_html(
+        "Hostname changed",
+        body_html,
+        head_extra=f'<meta http-equiv="refresh" content="5;url={safe_url}">',
+        body_suffix=f'<script>setTimeout(function(){{window.location.href="{safe_url}";}},5000);</script>',
+        lic_html=lic_html,
+        lic_spacer=lic_spacer,
+        active_tab=active_tab,
+        show_nav=show_nav,
+    )
+    body = page.encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+    try:
+        handler.wfile.flush()
+    except Exception:
+        pass
 
 
 # -----------------------------------------------------------------------------

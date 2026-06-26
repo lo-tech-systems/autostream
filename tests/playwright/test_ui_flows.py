@@ -134,7 +134,6 @@ def _render_production_setup_page() -> bytes:
                    return_value="autostream-setup"), \
              patch("autostream_webui_page_setup.get_system_hostname",
                    return_value="autostream"), \
-             patch("autostream_webui_page_setup.set_system_hostname"), \
              patch("autostream_webui_page_setup.suggested_silence_threshold_dbfs",
                    return_value=-50.0), \
              patch("autostream_webui_page_setup.get_app_version",

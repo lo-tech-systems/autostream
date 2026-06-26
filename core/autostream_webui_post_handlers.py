@@ -15,14 +15,12 @@ Contents:
 
 from __future__ import annotations
 
-import html
 import json
 import logging
-import textwrap
 import threading
 
 from typing import Optional
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote
 
 from autostream_config import (
     CONFIG_IO_LOCK,
@@ -45,11 +43,11 @@ from autostream_player_service import config_airplay_mode_to_backend
 from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 
-from autostream_webui_assets import BANNER_HTML, STYLE_CSS, VIEWPORT_META
 from autostream_webui_common import (
     _set_flash_cookie,
     build_top_banner_html,
     locked_load_config,
+    send_hostname_changed_page,
 )
 from autostream_webui_state import WebUIState
 from autostream_webui_api import _ADVERTISE_LOCK, send_json, send_settings_post_json
@@ -339,46 +337,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         next_path = "/"
 
         if hostname_changed:
-            host_header = handler.headers.get("Host", "")
-            port_num = urlparse(f"http://{host_header}").port
-            port = str(port_num) if port_num else None
-            host_p = f"{nh}.local:{port}" if port else f"{nh}.local"
-            redirect_url = f"http://{host_p}{next_path}"
-
-            # Render a redirect page
-            lic_html, lic_spacer = build_top_banner_html(flash_msg=None)
-            safe_url = html.escape(redirect_url)
-
-            body_html = textwrap.dedent(f"""\
-              <!DOCTYPE html><html><head><meta charset="utf-8">{VIEWPORT_META}
-              <title>Hostname changed</title>
-              <meta http-equiv="refresh" content="5;url={safe_url}">
-              <style>{STYLE_CSS}</style></head>
-              <body>{lic_html}{lic_spacer}<div class="container">{BANNER_HTML}
-                <h1>Hostname changed</h1>
-                <div class="card">
-                  <p>Your device hostname is now <strong>{html.escape(nh)}.local</strong>.</p>
-                  <p>Redirecting you to {safe_url}</p>
-                  <p style="word-break:break-word;">
-                    <a class="pill-btn" href="{safe_url}">Tap here to continue</a>
-                  </p>
-                </div>
-              </div></body></html>
-            """)
-            body_bytes = body_html.encode("utf-8")
-
-            try:
-                handler.send_response(200)
-                handler.send_header("Content-Type", "text/html; charset=utf-8")
-                handler.send_header("Content-Length", str(len(body_bytes)))
-                handler.end_headers()
-                handler.wfile.write(body_bytes)
-                try:
-                    handler.wfile.flush()
-                except Exception:
-                    pass
-            except Exception:
-                pass
+            send_hostname_changed_page(handler, nh, path=next_path, show_nav=False)
         else:
             handler.send_response(302)
             handler.send_header("Location", next_path)
@@ -542,4 +501,3 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
     except Exception as e:
         logging.error("handle_factory_reset_post: scheduling failed: %s", e)
         send_json(handler, 500, {"ok": False, "error": "Factory reset could not be scheduled", "detail": str(e)})
-

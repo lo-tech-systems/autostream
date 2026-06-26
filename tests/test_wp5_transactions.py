@@ -12,7 +12,7 @@ Tests cover:
   - POST /api/settings/save: flushes store; missing store returns error
   - handle_factory_reset_post: discards dirty store before resetting
   - settingsTransact exported from AUTOSAVE_JS
-  - Setup page wires hostname/advertise/auto-update controls to transaction endpoints
+  - Setup page wires hostname modal/advertise/auto-update controls to transaction endpoints
 """
 from __future__ import annotations
 
@@ -479,7 +479,7 @@ class TestAutosaveJsTransact:
 
 
 # ---------------------------------------------------------------------------
-# Setup page wires hostname / advertise / auto-update controls
+# Setup page wires hostname modal / advertise / auto-update controls
 # ---------------------------------------------------------------------------
 
 class TestSetupPageTransactionWiring:
@@ -520,15 +520,19 @@ class TestSetupPageTransactionWiring:
         store.close(save=False)
         return handler.wfile.getvalue().decode("utf-8", errors="replace")
 
-    def test_hostname_input_has_transaction_call(self, html):
+    def test_hostname_modal_has_transaction_call(self, html):
         assert "settingsTransact('/api/settings/hostname'" in html
 
-    def test_hostname_wired_on_blur(self, html):
-        assert "onblur" in html
-        assert "/api/settings/hostname" in html
+    def test_hostname_change_button_and_modal_present(self, html):
+        assert 'id="btnChangeHostname"' in html
+        assert 'id="hostnameModal"' in html
+        assert 'id="hostnameModalInput"' in html
+        assert 'value="autostream"' in html
 
-    def test_hostname_wired_on_enter(self, html):
-        assert "onkeydown" in html
+    def test_hostname_not_wired_to_blur_autosave(self, html):
+        assert 'name="system_hostname"' not in html
+        assert "settingsTransact('/api/settings/hostname'" in html
+        assert "onblur=\"refreshSystemCardSub(); if(liveEnabled" not in html
 
     def test_advertise_checkbox_has_transaction_call(self, html):
         assert "settingsTransact('/api/settings/advertisement'" in html
