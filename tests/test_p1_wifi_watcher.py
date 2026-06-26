@@ -2204,3 +2204,142 @@ class TestDeadPhyRebootThreshold:
     def test_threshold_is_30_min(self, watcher):
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == watcher.GW_DOWN_REBOOT_AFTER
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == 30 * 60
+
+
+# ---------------------------------------------------------------------------
+# WP5 (dead-PHY) — end-to-end scripted state-machine sequences
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    """Monotonic clock stub driven explicitly by the test."""
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += dt
+
+
+class TestDeadPhyEndToEnd:
+    MAC = "dc:62:79:91:4d:d6"
+
+    def _usb(self, watcher):
+        return _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+
+    def _mark_dead(self, watcher, first_failure=1.0):
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_since = first_failure
+        watcher.STATE.dead_adapter_first_failure = first_failure
+        watcher.STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
+        watcher.STATE.dead_adapter_stable_id = self.MAC
+
+    def test_sequence_wedge_debounce_reset_then_quarantine(self, watcher):
+        """healthy->wedged->debounce->A->B->budget exhausted->quarantine (path up)."""
+        usb = self._usb(watcher)
+        clock = _Clock(1000.0)
+        order = []
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind",
+                          side_effect=lambda i: order.append("A") or True), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate",
+                          side_effect=lambda i: order.append("B") or True), \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "reboot_system") as reboot, \
+             patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
+            # Debounce: first wedged pass does not reset.
+            assert watcher.escalate_dead_adapter_recovery([usb], True) is False
+            # Second pass declares dead and runs Method A.
+            assert watcher.escalate_dead_adapter_recovery([usb], True) is True
+            clock.advance(watcher.RESET_ATTEMPT_INTERVAL + 1)
+            # Method B.
+            assert watcher.escalate_dead_adapter_recovery([usb], True) is True
+            clock.advance(watcher.RESET_ATTEMPT_INTERVAL + 1)
+            # Budget exhausted + ethernet path -> quarantine (does not own pass).
+            assert watcher.escalate_dead_adapter_recovery([usb], True) is False
+        assert order == ["A", "B"]
+        assert watcher.STATE.dead_adapter_quarantined_until is not None
+        reboot.assert_not_called()
+
+    def test_sequence_ethernet_up_resets_recover_no_reboot(self, watcher):
+        """Ethernet up throughout: Method A recovers Wi-Fi; reboot never fires."""
+        usb = self._usb(watcher)
+        clock = _Clock(1000.0)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "_set_active_client"), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "reboot_system") as reboot, \
+             patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
+            watcher.escalate_dead_adapter_recovery([usb], True)   # debounce
+            watcher.escalate_dead_adapter_recovery([usb], True)   # Method A -> recover
+        ra.assert_called_once()
+        assert watcher.STATE.dead_adapter_ifname == ""
+        reboot.assert_not_called()
+
+    def test_sequence_usb_only_emergency_backoff(self, watcher):
+        """No alternate path: budget exceeded but USB-only keeps slow attempts."""
+        usb = self._usb(watcher)
+        clock = _Clock(1000.0)
+        self._mark_dead(watcher, first_failure=clock.t)
+        watcher.STATE.dead_adapter_recent_resets = [clock.t, clock.t]
+        watcher.STATE.last_reset_attempt = clock.t
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "reboot_system") as reboot, \
+             patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
+            # Before the emergency backoff elapses: no reset.
+            clock.advance(watcher.RESET_ATTEMPT_INTERVAL + 1)
+            watcher.escalate_dead_adapter_recovery([usb], False)
+            assert ra.call_count == 0
+            # After the emergency backoff: a slow emergency reset is attempted.
+            clock.advance(watcher.USB_EMERGENCY_BACKOFF + 1)
+            watcher.escalate_dead_adapter_recovery([usb], False)
+            assert ra.call_count == 1
+            reboot.assert_not_called()  # dead_for still < 30 min in this window
+
+    def test_sequence_reboot_then_inprocess_and_guard_suppression(self, watcher):
+        """Offline + dead>=30min + resets failing: one reboot, then suppressed."""
+        usb = self._usb(watcher)
+        clock = _Clock(1000.0)
+        self._mark_dead(watcher, first_failure=1.0)
+        clock.t = watcher.DEAD_ADAPTER_REBOOT_AFTER + 1000.0
+        guard = tmp_guard()
+        with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)), \
+             _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=[],  # non-resettable -> reboot rung
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0), \
+             patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            # First: reboot accepted.
+            assert watcher.escalate_dead_adapter_recovery([usb], False) is True
+            assert watcher.STATE.conn_reboot_retry_after == float("inf")
+            # Second: in-process rate limit (retry_after == inf) suppresses.
+            assert watcher.escalate_dead_adapter_recovery([usb], False) is False
+            assert reboot.call_count == 1
+            # Simulate a fresh process whose in-process limit is reset, but the
+            # persistent guard is now full -> still suppressed.
+            watcher.STATE.conn_reboot_retry_after = 0.0
+            for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
+                watcher._record_dead_phy_reboot_request(1_000_000.0, None)
+            assert watcher.escalate_dead_adapter_recovery([usb], False) is False
+            assert reboot.call_count == 1
