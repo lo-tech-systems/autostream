@@ -176,6 +176,12 @@ DEAD_ADAPTER_REBOOT_STAMP  = "/var/lib/autostream/dead-phy-reboot.stamp"
 DEAD_ADAPTER_REBOOT_WINDOW = 24 * 60 * 60  # persistent reboot-guard window
 DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW = 3   # cross-boot dead-PHY reboot cap
 
+# Runtime log-level control (WP7).  Only these levels may be set at runtime via
+# the loopback/token-protected control surface; debug must carry a TTL.
+RUNTIME_LOG_LEVELS = {"warning": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG}
+LOG_LEVEL_TTL_MIN = 60
+LOG_LEVEL_TTL_MAX = 3600
+
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +233,11 @@ def _setup_logging() -> None:
     }
     env_level = os.environ.get("AUTOSTREAM_WIFI_LOG_LEVEL", "info").strip().lower()
     level = _LEVEL_MAP.get(env_level, logging.INFO)
+
+    # Record the startup/default runtime level name for the status snapshot and
+    # for reverting temporary levels (WP7).  Only the runtime-settable names are
+    # carried verbatim; anything else (fatal/log/spam) reports as "info".
+    STATE.default_log_level_name = env_level if env_level in RUNTIME_LOG_LEVELS else "info"
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -1759,7 +1770,7 @@ def _network_status_payload() -> dict:
     }
 
 
-_VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved"}
+_VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved", "set_log_level"}
 
 
 @app.route("/network_status", methods=["GET"])
@@ -1799,20 +1810,39 @@ def network_control():
     action while one is pending or in progress.
     """
     if not _control_authorised():
+        logger.warning("Rejected /network_control (unauthenticated/non-loopback)")
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"ok": False, "error": "invalid_body"}), 400
     action = payload.get("action")
-    extra = set(payload.keys()) - {"action"}
-    if action not in _VALID_CONTROL_ACTIONS or extra:
+    keys = set(payload.keys())
+
+    # Per-action field validation (WP7).  start_setup/reconnect_saved accept
+    # only {"action"}; set_log_level accepts {"action","level","ttl_seconds?"}.
+    params: dict = {}
+    if action in ("start_setup", "reconnect_saved"):
+        if keys != {"action"}:
+            return jsonify({"ok": False, "error": "invalid_action"}), 400
+    elif action == "set_log_level":
+        if not keys <= {"action", "level", "ttl_seconds"}:
+            return jsonify({"ok": False, "error": "invalid_action"}), 400
+        level = payload.get("level")
+        ttl = payload.get("ttl_seconds", None)
+        error, clamped = validate_log_level_request(level, ttl)
+        if error:
+            logger.warning("Rejected set_log_level request: %s", error)
+            return jsonify({"ok": False, "error": error}), 400
+        params = {"level": level, "ttl_seconds": clamped}
+    else:
         return jsonify({"ok": False, "error": "invalid_action"}), 400
 
     with state_lock:
         if STATE.pending_control_action or STATE.control_in_progress:
             return jsonify({"ok": False, "error": "busy"}), 409
         STATE.pending_control_action = action
+        STATE.pending_control_params = params
         control_action_event.set()
 
     logger.info("Queued network control action: %s", action)
@@ -1868,8 +1898,67 @@ def _snapshot_rollback() -> None:
         STATE.rollback_adapter_mac = active_mac
 
 
-def process_control_action(action: str) -> None:
+def validate_log_level_request(level, ttl) -> tuple[str, Optional[int]]:
+    """Validate a set_log_level request (WP7).
+
+    Returns ``(error, clamped_ttl)``; *error* is "" when valid.  ``debug``
+    requires a TTL; provided TTLs must be numeric and are clamped to
+    [LOG_LEVEL_TTL_MIN, LOG_LEVEL_TTL_MAX].
+    """
+    if level not in RUNTIME_LOG_LEVELS:
+        return "invalid_level", None
+    if ttl is None:
+        if level == "debug":
+            return "ttl_required_for_debug", None
+        return "", None
+    if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or ttl <= 0:
+        return "invalid_ttl", None
+    clamped = int(max(LOG_LEVEL_TTL_MIN, min(LOG_LEVEL_TTL_MAX, ttl)))
+    return "", clamped
+
+
+def apply_log_level(level: str, ttl_seconds: Optional[int]) -> None:
+    """Apply a runtime log level, optionally temporary for *ttl_seconds*.
+
+    Without a TTL the level becomes the runtime level until the service
+    restarts or another valid request changes it; the startup default
+    (AUTOSTREAM_WIFI_LOG_LEVEL) is preserved for revert.
+    """
+    levelno = RUNTIME_LOG_LEVELS[level]
+    logging.getLogger().setLevel(levelno)
+    now = time.monotonic()
+    with state_lock:
+        if ttl_seconds:
+            STATE.temporary_log_level = level
+            STATE.temporary_log_level_until = now + ttl_seconds
+        else:
+            STATE.temporary_log_level = ""
+            STATE.temporary_log_level_until = None
+            STATE.default_log_level_name = level
+    if ttl_seconds:
+        logger.info("Runtime log level changed to %s for %ds", level, ttl_seconds)
+    else:
+        logger.info("Runtime log level changed to %s", level)
+
+
+def revert_expired_log_level(now: Optional[float] = None) -> None:
+    """Revert a temporary runtime log level once its TTL expires (WP7)."""
+    if now is None:
+        now = time.monotonic()
+    with state_lock:
+        until = STATE.temporary_log_level_until
+        if until is None or now < until:
+            return
+        default = STATE.default_log_level_name or "info"
+        STATE.temporary_log_level = ""
+        STATE.temporary_log_level_until = None
+    logging.getLogger().setLevel(RUNTIME_LOG_LEVELS.get(default, logging.INFO))
+    logger.info("Runtime log level reverted to %s", default)
+
+
+def process_control_action(action: str, params: Optional[dict] = None) -> None:
     """Consume one queued control action in the monitor loop (Section 10.1)."""
+    params = params or {}
     with state_lock:
         STATE.control_in_progress = True
         STATE.last_control_action = action
@@ -1880,6 +1969,9 @@ def process_control_action(action: str) -> None:
             result = "ok"
         elif action == "reconnect_saved":
             result = "ok" if reconnect_saved_network() else "failed"
+        elif action == "set_log_level":
+            apply_log_level(params.get("level"), params.get("ttl_seconds"))
+            result = "ok"
         else:
             result = "failed"
     except Exception as e:
@@ -2103,16 +2195,24 @@ def network_monitor_loop():
                 with state_lock:
                     STATE.manual_ap_active = True
 
-        # Handle queued local-control actions (start_setup / reconnect_saved).
+        # Revert a temporary runtime log level once its TTL expires (WP7).
+        revert_expired_log_level(now)
+
+        # Handle queued local-control actions (start_setup / reconnect_saved /
+        # set_log_level).  Disruptive actions own the pass; the non-disruptive
+        # set_log_level is applied and the pass continues normally.
         if control_action_event.is_set():
             with state_lock:
                 action = STATE.pending_control_action
+                params = dict(STATE.pending_control_params)
                 STATE.pending_control_action = ""
+                STATE.pending_control_params = {}
                 control_action_event.clear()
             if action:
-                process_control_action(action)
-                time.sleep(NETWORK_MONITOR_INTERVAL)
-                continue
+                process_control_action(action, params)
+                if action != "set_log_level":
+                    time.sleep(NETWORK_MONITOR_INTERVAL)
+                    continue
 
         # Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4).
         with state_lock:

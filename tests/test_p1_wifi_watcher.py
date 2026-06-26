@@ -119,6 +119,15 @@ def _get_watcher() -> ModuleType:
         return mod
 
 
+@pytest.fixture(autouse=True)
+def _restore_root_log_level():
+    """Save/restore the root logger level so log-level tests don't leak (WP7)."""
+    import logging as _logging
+    saved = _logging.getLogger().level
+    yield
+    _logging.getLogger().setLevel(saved)
+
+
 @pytest.fixture()
 def watcher():
     """Return the loaded wifi_watcher module and reset STATE before each test."""
@@ -2454,3 +2463,153 @@ class TestNetworkStatusV2Route:
             resp = client.get("/network_status")
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# WP7 (dead-PHY) — runtime log-level control
+# ---------------------------------------------------------------------------
+
+class TestLogLevelValidation:
+    def test_valid_info_no_ttl(self, watcher):
+        assert watcher.validate_log_level_request("info", None) == ("", None)
+
+    def test_debug_requires_ttl(self, watcher):
+        err, ttl = watcher.validate_log_level_request("debug", None)
+        assert err == "ttl_required_for_debug"
+
+    def test_debug_with_ttl_ok(self, watcher):
+        assert watcher.validate_log_level_request("debug", 900) == ("", 900)
+
+    def test_invalid_level_rejected(self, watcher):
+        err, _ = watcher.validate_log_level_request("trace", None)
+        assert err == "invalid_level"
+
+    def test_numeric_level_rejected(self, watcher):
+        err, _ = watcher.validate_log_level_request(10, 900)
+        assert err == "invalid_level"
+
+    def test_ttl_clamped(self, watcher):
+        assert watcher.validate_log_level_request("debug", 5)[1] == watcher.LOG_LEVEL_TTL_MIN
+        assert watcher.validate_log_level_request("debug", 99999)[1] == watcher.LOG_LEVEL_TTL_MAX
+
+    def test_non_numeric_ttl_rejected(self, watcher):
+        err, _ = watcher.validate_log_level_request("debug", "soon")
+        assert err == "invalid_ttl"
+        err2, _ = watcher.validate_log_level_request("debug", True)
+        assert err2 == "invalid_ttl"
+
+
+class TestApplyAndRevertLogLevel:
+    def test_apply_temporary_sets_state(self, watcher):
+        with patch("time.monotonic", return_value=1000.0):
+            watcher.apply_log_level("debug", 900)
+        assert watcher.STATE.temporary_log_level == "debug"
+        assert watcher.STATE.temporary_log_level_until == 1900.0
+        import logging
+        assert logging.getLogger().level == logging.DEBUG
+
+    def test_apply_permanent_updates_default(self, watcher):
+        watcher.apply_log_level("warning", None)
+        assert watcher.STATE.temporary_log_level == ""
+        assert watcher.STATE.default_log_level_name == "warning"
+
+    def test_revert_after_ttl(self, watcher):
+        watcher.STATE.default_log_level_name = "info"
+        with patch("time.monotonic", return_value=1000.0):
+            watcher.apply_log_level("debug", 900)
+        # Before expiry: no revert.
+        watcher.revert_expired_log_level(now=1500.0)
+        assert watcher.STATE.temporary_log_level == "debug"
+        # After expiry: reverts to default.
+        watcher.revert_expired_log_level(now=2000.0)
+        assert watcher.STATE.temporary_log_level == ""
+        import logging
+        assert logging.getLogger().level == logging.INFO
+
+
+class TestSetLogLevelControlRoute:
+    def test_accepts_debug_with_ttl(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        mod.STATE.pending_control_action = ""
+        mod.STATE.control_in_progress = False
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_log_level", "level": "debug", "ttl_seconds": 900},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        assert mod.STATE.pending_control_action == "set_log_level"
+        assert mod.STATE.pending_control_params == {"level": "debug", "ttl_seconds": 900}
+        mod.STATE.pending_control_action = ""
+        mod.STATE.pending_control_params = {}
+        mod.control_action_event.clear()
+
+    def test_rejects_invalid_level(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        mod.STATE.pending_control_action = ""
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_log_level", "level": "trace"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_rejects_debug_without_ttl(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        mod.STATE.pending_control_action = ""
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_log_level", "level": "debug"},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_rejects_unknown_field(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        mod.STATE.pending_control_action = ""
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_log_level", "level": "info", "evil": 1},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_rejects_non_loopback(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_log_level", "level": "debug", "ttl_seconds": 900},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        )
+        assert rv.status_code == 403
+
+    def test_start_setup_still_only_action(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        mod.STATE.pending_control_action = ""
+        rv = client.post(
+            "/network_control",
+            json={"action": "start_setup", "ttl_seconds": 900},
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+
+class TestProcessSetLogLevel:
+    def test_process_applies_level(self, watcher):
+        with patch("time.monotonic", return_value=1000.0):
+            watcher.process_control_action("set_log_level",
+                                           {"level": "debug", "ttl_seconds": 900})
+        assert watcher.STATE.temporary_log_level == "debug"
+        assert watcher.STATE.last_control_result == "ok"
