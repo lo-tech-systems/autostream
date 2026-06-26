@@ -316,15 +316,15 @@ def send_setup_page(
     update_html = f"""
           <input type="hidden" name="updates_auto_update_present" value="1">
           <input type="hidden" name="updates_channel_present" value="1">
-          <label>Updates:
-            <div style="display:flex;align-items:center;margin-top:.5rem">
+          <div>
+            <div style="display:flex;align-items:center;">
               <button type="button" id="btnCheck" class="pill-btn small" style="margin-right:auto">Check</button>
               <button type="button" id="btnInst" class="pill-btn small" style="margin:auto" disabled>Install</button>
               <button type="button" class="pill-btn small" style="margin-left:auto" onclick="requestReboot()">Reboot</button>
             </div>
             <div id="updMsg" style="font-size:0.8rem;margin-top:0.3rem;"></div>
             <div id="updNotes" style="font-size:0.75rem;color:#888;margin-top:0.2rem;font-style:italic;"></div>
-          </label>
+          </div>
           <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem;">
             <label class="output-toggle" style="margin:0;">
               <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked} onchange="refreshSystemCardSub(); if(liveEnabled) settingsTransact('/api/settings/auto-update', {{value: this.checked}});">
@@ -340,9 +340,6 @@ def send_setup_page(
             <span>Enable pre-release updates</span>
           </div>
           <div style="font-size:0.75rem;color:#888;margin-top:0.25rem;">Pre-release versions may be less stable.</div>
-          <div style="margin-top:0.75rem;">
-            <button type="button" id="btnChangePin" class="pill-btn small" style="width:100%;">Change PIN</button>
-          </div>
         """
 
     monitor_devices = state.get_monitor_devices()
@@ -652,40 +649,38 @@ def send_setup_page(
     # Network card (Section 9.x): active-adapter information + Change Wi-Fi
     # Network action.  This is informational, not a selector; the active adapter
     # is fetched from the authenticated network-status API on panel open.
-    network_card_html = """
-          <div id="networkCard" style="margin-top:0.5rem;padding-top:0.75rem;border-top:1px solid var(--color-border,#ddd);">
-            <p id="networkCardTitle" style="margin:0 0 0.25rem;font-weight:600;">Network</p>
+    network_card_inner_html = """
+          <div id="networkCard">
+            <p id="networkCardTitle" style="margin:0 0 0.5rem;font-weight:700;">Network</p>
             <p id="networkAdapterInfo" style="margin:0 0 0.25rem;font-size:0.9rem;color:var(--color-text);">Using on-board WiFi adapter</p>
             <p id="networkUsbPending" style="display:none;margin:0.25rem 0 0.5rem;font-size:0.8rem;color:var(--color-text-muted,#888);">autostream will switch to the USB adapter when playback stops. You will need to close and re-open the autostream app to reconnect.</p>
             <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
             <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
           </div>
-          <div id="wifiHotspotModal" class="modal-overlay">
-            <div class="modal-panel" style="--modal-width:22rem;">
-              <div class="modal-hdr">Change Wi-Fi Network</div>
-              <div class="modal-bd">
-                <p>This will start the Wi-Fi hotspot. Please connect to <strong id="wifiHotspotSsid">autostream-setup</strong> to continue Wi-Fi setup.</p>
-              </div>
-              <div class="modal-ft">
-                <button type="button" class="pill-btn small" style="flex:1;" onclick="confirmChangeWifiNetwork()">Continue</button>
-                <button type="button" class="pill-btn small" style="flex:1;background:var(--modal-secondary-bg);color:var(--modal-secondary-text);" onclick="cancelChangeWifiNetwork()">Cancel</button>
-              </div>
-            </div>
-          </div>
         """
     current_hostname = get_system_hostname()
-    system_inner_html = f"""
+    system_card_inner_html = f"""
           <div>
             <div style="display:flex;align-items:center;gap:.75rem;">
             <span>Hostname:</span>
             <strong id="systemHostnameValue" style="flex:1;min-width:8rem;word-break:break-word;">{html.escape(current_hostname)}</strong>
             </div>
             <button type="button" id="btnChangeHostname" class="pill-btn small" style="width:100%;margin-top:0.5rem;">Change Hostname</button>
+            <button type="button" id="btnChangePin" class="pill-btn small" style="width:100%;margin-top:0.5rem;">Change PIN</button>
           </div>
-          {update_html}
-          {network_card_html}
         """
-    system_fieldset_html = settings_card_html(system_inner_html, margin_top="0")
+    system_card_html = settings_card_html(
+        "<p style=\"margin:0 0 0.5rem;font-weight:700;\">System</p>"
+        + system_card_inner_html,
+        margin_top="0",
+    )
+    network_card_html = settings_card_html(network_card_inner_html, margin_top="0.75rem")
+    updates_card_html = settings_card_html(
+        "<p style=\"margin:0 0 0.5rem;font-weight:700;\">Updates</p>"
+        + update_html,
+        margin_top="0.75rem",
+    )
+    system_fieldset_html = system_card_html + network_card_html + updates_card_html
 
     _dial_onload_js = ""
 

@@ -534,6 +534,12 @@ class TestSetupPageTransactionWiring:
         assert "settingsTransact('/api/settings/hostname'" in html
         assert "onblur=\"refreshSystemCardSub(); if(liveEnabled" not in html
 
+    def test_system_panel_card_order(self, html):
+        system = html.index('>System</p>')
+        network = html.index('id="networkCardTitle"')
+        updates = html.index('>Updates</p>')
+        assert system < network < updates
+
     def test_advertise_checkbox_has_transaction_call(self, html):
         assert "settingsTransact('/api/settings/advertisement'" in html
 
