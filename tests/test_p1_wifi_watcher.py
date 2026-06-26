@@ -1928,3 +1928,233 @@ class TestDeadPhyRebootGuard:
         stamp.write_text("{ not json", encoding="utf-8")
         with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(stamp)):
             assert watcher._dead_phy_reboot_guard_permits(1_000_000.0) is True
+
+
+# ---------------------------------------------------------------------------
+# WP3 (dead-PHY) — escalation ladder
+# ---------------------------------------------------------------------------
+
+class TestEscalateDeadAdapterRecovery:
+    USB_MAC = "dc:62:79:91:4d:d6"
+
+    def _usb(self, watcher, ifname="wlan0"):
+        return _adapter(watcher, ifname, self.USB_MAC, is_usb=True)
+
+    def _mark_dead(self, watcher):
+        """Pre-mark the target as dead so the ladder acts immediately."""
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_since = 0.0
+        watcher.STATE.dead_adapter_first_failure = 0.0
+        watcher.STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
+        watcher.STATE.dead_adapter_stable_id = self.USB_MAC
+
+    def test_healthy_target_no_action(self, watcher):
+        usb = self._usb(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=False, healthy=True):
+            assert watcher.escalate_dead_adapter_recovery([usb], False) is False
+
+    def test_dead_no_builtin_tries_method_a(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            handled = watcher.escalate_dead_adapter_recovery([usb], False)
+        assert handled is True
+        ra.assert_called_once_with("wlan0")
+        rb.assert_not_called()
+        assert watcher.STATE.last_reset_method == "A"
+
+    def test_method_b_after_a(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        watcher.STATE.last_reset_method = "A"
+        watcher.STATE.last_reset_attempt = 0.0
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch("time.monotonic", return_value=10_000.0):
+            watcher.escalate_dead_adapter_recovery([usb], False)
+        rb.assert_called_once_with("wlan0")
+        ra.assert_not_called()
+        assert watcher.STATE.last_reset_method == "B"
+
+    def test_reset_success_clears_dead_state(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            watcher.escalate_dead_adapter_recovery([usb], False)
+        assert watcher.STATE.dead_adapter_ifname == ""
+
+    def test_builtin_fallback_preferred_over_reset(self, watcher):
+        usb = self._usb(watcher)
+        builtin = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._mark_dead(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher, "_set_active_client"), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            handled = watcher.escalate_dead_adapter_recovery([usb, builtin], False)
+        assert handled is True
+        act.assert_called_once_with("wlan1")
+        ra.assert_not_called()
+        assert watcher.STATE.using_builtin_fallback is True
+
+    def test_resets_happen_even_when_wired(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "reboot_system") as reboot:
+            # wired_connected=True -> reset still attempted, reboot never.
+            watcher.escalate_dead_adapter_recovery([usb], True)
+        ra.assert_called_once()
+        reboot.assert_not_called()
+
+    def test_reboot_when_offline_and_dead_long_enough(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        # Non-resettable target so the ladder falls through to reboot.
+        watcher.STATE.last_reset_attempt = 0.0
+        now = watcher.DEAD_ADAPTER_REBOOT_AFTER + 100.0
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=[],  # not resettable
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch("time.monotonic", return_value=now), \
+             patch("time.time", return_value=1_000_000.0), \
+             patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP",
+                              str(tmp_guard())):
+                handled = watcher.escalate_dead_adapter_recovery([usb], False)
+        assert handled is True
+        reboot.assert_called_once_with("NetworkDown")
+        assert watcher.STATE.conn_reboot_retry_after == float("inf")
+
+    def test_reboot_suppressed_by_persistent_guard(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        now = watcher.DEAD_ADAPTER_REBOOT_AFTER + 100.0
+        guard = tmp_guard()
+        with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)):
+            # Fill the guard to the cap.
+            for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
+                watcher._record_dead_phy_reboot_request(1_000_000.0, None)
+            with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                       usb_paths_ifaces=[],
+                                       link_down=True, healthy=False), \
+                 patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+                 patch("time.monotonic", return_value=now), \
+                 patch("time.time", return_value=1_000_000.0), \
+                 patch.object(watcher, "reboot_system") as reboot:
+                handled = watcher.escalate_dead_adapter_recovery([usb], False)
+        assert handled is False
+        reboot.assert_not_called()
+
+    def test_quarantine_when_budget_spent_and_other_path(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        # Spend the per-window budget.
+        watcher.STATE.dead_adapter_recent_resets = [0.0, 0.0]
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch("time.monotonic", return_value=1.0):
+            # wired_connected=True provides the alternate path.
+            handled = watcher.escalate_dead_adapter_recovery([usb], True)
+        assert handled is False
+        ra.assert_not_called()
+        assert watcher.STATE.dead_adapter_quarantined_until is not None
+
+    def test_usb_only_emergency_attempt_when_no_path(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        watcher.STATE.dead_adapter_recent_resets = [0.0, 0.0]
+        watcher.STATE.last_reset_attempt = 0.0
+        emergency_now = watcher.USB_EMERGENCY_BACKOFF + 10.0
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch("time.monotonic", return_value=emergency_now):
+            # No other path (wired False, no healthy adapter) -> emergency reset.
+            handled = watcher.escalate_dead_adapter_recovery([usb], False)
+        assert handled is True
+        ra.assert_called_once()
+
+    def test_single_radio_setup_mode_resets_not_deadlocks(self, watcher):
+        usb = self._usb(watcher)
+        self._mark_dead(watcher)
+        watcher.STATE.setup_mode = True
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=usb), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            handled = watcher.escalate_dead_adapter_recovery([usb], False)
+        # Sole dead radio is reset rather than left as a dead hotspot.
+        assert handled is True
+        ra.assert_called_once()
+
+    def test_setup_mode_defers_to_ap_on_other_adapter(self, watcher):
+        usb = self._usb(watcher)
+        builtin = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._mark_dead(watcher)
+        watcher.STATE.setup_mode = True
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=builtin), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra:
+            handled = watcher.escalate_dead_adapter_recovery([usb, builtin], False)
+        assert handled is False
+        ra.assert_not_called()
+
+
+def tmp_guard():
+    """Return a unique temp path for a dead-PHY reboot guard file."""
+    import tempfile
+    return Path(tempfile.mkdtemp()) / "dead-phy-reboot.stamp"

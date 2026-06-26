@@ -2150,6 +2150,16 @@ def network_monitor_loop():
                 time.sleep(NETWORK_MONITOR_INTERVAL)
                 continue
 
+        # --- Dead-PHY recovery: detect a wedged-but-present client adapter and
+        # run the reset ladder.  This MUST run before the ethernet-wins
+        # short-circuit so a dead Wi-Fi PHY is reset (and self-heals) even while
+        # ethernet is attached.  USB resets are not gated on ethernet; the reboot
+        # rung inside the orchestrator is still gated on being offline. ---
+        if wifi_cfg:
+            if escalate_dead_adapter_recovery(adapters, wired_connected):
+                time.sleep(NETWORK_MONITOR_INTERVAL)
+                continue
+
         with state_lock:
             STATE.wifistate = "configured" if wifi_cfg else "unconfigured"
             STATE.wiredstate = "connected" if wired_connected else "disconnected"
@@ -2389,12 +2399,9 @@ def connect_to_configured_wifi() -> bool:
         logger.debug("Configured WiFi '%s' already healthy; no action needed", connection_name)
         return True
 
-    logger.info("Attempting WiFi device bounce on %s before bringing up '%s'", AP_IFNAME, connection_name)
-    r_disc = run_cmd(["nmcli", "device", "disconnect", AP_IFNAME])
-    r_conn = run_cmd(["nmcli", "device", "connect", AP_IFNAME])
-    if r_disc.returncode != 0 or r_conn.returncode != 0:
-        logger.debug("WiFi device bounce: disconnect rc=%d, connect rc=%d", r_disc.returncode, r_conn.returncode)
-
+    # NOTE: the former `nmcli device disconnect/connect` bounce was removed —
+    # it is ineffective for a wedged USB PHY (NO-CARRIER) and the dead-PHY USB
+    # reset ladder supersedes it.  Just (re)activate the configured profile.
     logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
     r_up = run_cmd(["nmcli", "connection", "up", connection_name])
     if r_up.returncode != 0:
@@ -3138,6 +3145,231 @@ def _record_dead_phy_reboot_request(now_wall: float, target: Optional[TargetAdap
         )
     except OSError as e:
         logger.warning("Could not persist dead-PHY reboot guard: %s", e)
+
+
+# ---- Dead-PHY recovery ladder (WP3) ----
+
+INTERFACE_REAPPEAR_TIMEOUT = 15  # seconds to wait for a netdev after a USB reset
+
+
+def wait_for_interface_reappears(target: TargetAdapter,
+                                 timeout: float = INTERFACE_REAPPEAR_TIMEOUT) -> str:
+    """Poll sysfs + NM discovery for the target to reappear after a reset.
+
+    Rediscovers by stable identity/MAC (NetworkManager), then by ifname in NM,
+    then by sysfs MAC, then by sysfs ifname — in that order.  Returns the
+    resolved ifname (which may differ from the original) or "".  Does NOT wait
+    for ``operstate up``; after a reset the interface can remain down/dormant
+    until activation starts (~4-6s to firmware reload/association on the field
+    unit).
+    """
+    deadline = time.monotonic() + timeout
+    stable = target.stable_id
+    while True:
+        adapters = wifi_net.discover_adapters()
+        by_mac = wifi_net.find_adapter_by_mac(adapters, stable)
+        if by_mac is not None:
+            return by_mac.ifname
+        by_if = wifi_net.find_adapter_by_ifname(adapters, target.ifname)
+        if by_if is not None:
+            return by_if.ifname
+        sysfs_if = wifi_net.find_sysfs_netdev_by_mac(stable)
+        if sysfs_if:
+            return sysfs_if
+        if target.ifname in wifi_net.list_sysfs_netdevs():
+            return target.ifname
+        if time.monotonic() >= deadline:
+            return ""
+        time.sleep(1.0)
+
+
+def _other_network_path_available(adapters: list, target: TargetAdapter,
+                                  wired_connected: bool) -> bool:
+    """True when a usable network path other than *target* exists."""
+    if wired_connected:
+        return True
+    for a in adapters:
+        if a.ifname == target.ifname:
+            continue
+        if a.managed and is_wifi_client_healthy(a.ifname):
+            return True
+    return False
+
+
+def _perform_reset_step(target: TargetAdapter, now: float) -> bool:
+    """Run one USB reset step (cycling A->B->A), then rediscover and reconnect.
+
+    Always returns True: the reset attempt owns the monitor pass regardless of
+    outcome.
+    """
+    with state_lock:
+        method = "B" if STATE.last_reset_method == "A" else "A"
+
+    logger.info("USB reset (method %s) attempted on %s", method, target.ifname)
+    if method == "A":
+        ok = wifi_net.reset_usb_adapter_rebind(target.ifname)
+    else:
+        # Method B is the defensive fallback re-enumeration.
+        ok = wifi_net.reset_usb_adapter_reenumerate(target.ifname)
+
+    _record_adapter_reset(target, now)
+    with state_lock:
+        STATE.last_reset_attempt = now
+        STATE.last_reset_method = method
+
+    if not ok:
+        logger.warning("USB reset (method %s) failed on %s; escalating", method, target.ifname)
+        return True
+
+    new_ifname = wait_for_interface_reappears(target)
+    if not new_ifname:
+        logger.warning("USB reset (method %s): %s did not reappear", method, target.ifname)
+        return True
+
+    if _activate_committed_on(new_ifname):
+        logger.info("USB reset (method %s) recovered %s", method, new_ifname)
+        adapters = wifi_net.discover_adapters()
+        recovered = wifi_net.find_adapter_by_ifname(adapters, new_ifname)
+        if recovered is not None:
+            _set_active_client(recovered)
+        with state_lock:
+            STATE.using_builtin_fallback = False
+            in_setup = STATE.setup_mode
+        _clear_dead_adapter_state()
+        if in_setup:
+            leave_setup_mode("dead-PHY recovered via USB reset")
+        verify_avahi_after_handover()
+    return True
+
+
+def _maybe_request_dead_phy_reboot(target: TargetAdapter, now: float) -> bool:
+    """Request a guarded NetworkDown reboot when offline and dead >= threshold.
+
+    Returns True only when a reboot was accepted (owns the pass).  When the
+    persistent guard or in-process rate limit suppresses the reboot, returns
+    False so the existing post-AP 24h backstop remains in effect.
+    """
+    with state_lock:
+        first_failure = STATE.dead_adapter_first_failure
+        retry_after = STATE.conn_reboot_retry_after
+    base = first_failure if first_failure is not None else now
+    dead_for = now - base
+    if dead_for < DEAD_ADAPTER_REBOOT_AFTER:
+        return False
+
+    now_wall = time.time()
+    if not _dead_phy_reboot_guard_permits(now_wall):
+        logger.warning(
+            "Persistent dead-PHY reboot guard suppresses reboot for %s; "
+            "leaving 24h backstop in effect", target.ifname,
+        )
+        return False
+
+    if now < retry_after:
+        if retry_after == float('inf'):
+            logger.debug("Dead-PHY NetworkDown reboot accepted; awaiting reboot")
+        else:
+            logger.debug("Dead-PHY reboot suppressed (in-process); retry in %.0fs",
+                         retry_after - now)
+        return False
+
+    logger.warning(
+        "Dead Wi-Fi adapter %s offline > %ds; requesting reboot",
+        target.ifname, DEAD_ADAPTER_REBOOT_AFTER,
+    )
+    accepted = reboot_system("NetworkDown")
+    with state_lock:
+        STATE.conn_reboot_retry_after = (
+            float('inf') if accepted else now + REBOOT_RATE_LIMIT_RETRY
+        )
+    if accepted:
+        _record_dead_phy_reboot_request(now_wall, target)
+        return True
+    return False
+
+
+def escalate_dead_adapter_recovery(adapters: list, wired_connected: bool) -> bool:
+    """Run one step of the dead-PHY recovery ladder (Section 3).
+
+    Resolves the target client, advances dead detection, and — when the adapter
+    is dead — steps the ladder: built-in fallback -> USB reset (Method A/B) ->
+    quarantine/backoff -> guarded reboot (offline only).  Returns True when an
+    action owned this pass (the caller should sleep and ``continue``).
+    """
+    now = time.monotonic()
+    target = _resolve_target_client(adapters)
+    dead = _update_dead_adapter_detection(adapters, target)
+    if not dead or target is None:
+        return False
+
+    # (1) Setup-mode: defer only to a working AP on a *different* adapter.  On
+    # single-radio hardware whose sole radio is the dead target, do NOT suppress
+    # recovery forever — reset it instead of leaving a dead hotspot.
+    with state_lock:
+        in_setup = STATE.setup_mode
+    if in_setup:
+        hotspot = resolve_hotspot_adapter(adapters)
+        if hotspot is not None and hotspot.ifname != target.ifname:
+            logger.debug(
+                "Dead-PHY: AP active on %s; deferring recovery of %s",
+                hotspot.ifname, target.ifname,
+            )
+            return False
+        logger.warning(
+            "Single-radio hotspot cannot start because the only radio %s appears "
+            "dead; using USB reset ladder instead", target.ifname,
+        )
+
+    # (2) Built-in client fallback when a *separate* built-in radio is present.
+    builtin = wifi_net.resolve_builtin(adapters)
+    if builtin is not None and builtin.ifname != target.ifname:
+        if _activate_committed_on(builtin.ifname):
+            logger.info("Dead-PHY: built-in fallback selected and connected on %s",
+                        builtin.ifname)
+            with state_lock:
+                STATE.using_builtin_fallback = True
+            _set_active_client(builtin)
+            _clear_dead_adapter_state()
+            verify_avahi_after_handover()
+            return True
+
+    other_path = _other_network_path_available(adapters, target, wired_connected)
+
+    # (3)/(4)/(5) USB reset rungs — only a resettable USB target can be reset.
+    if target.resettable_usb:
+        budget_spent = _adapter_reset_budget_exhausted(target, now)
+        if budget_spent and other_path:
+            # (3) Quarantine for preferred client use; keep publishing degraded
+            # status and let the normal loop logic run.
+            with state_lock:
+                newly = STATE.dead_adapter_quarantined_until is None
+                STATE.dead_adapter_quarantined_until = now + USB_RESET_WINDOW
+            if newly:
+                logger.info(
+                    "USB adapter %s quarantined for preferred client use "
+                    "(reset budget exhausted; alternate path available)", target.ifname,
+                )
+            return False
+
+        # (4) Emergency-only slow backoff when this USB is the only path;
+        # (5) otherwise the normal reset cadence.
+        interval = USB_EMERGENCY_BACKOFF if budget_spent else RESET_ATTEMPT_INTERVAL
+        with state_lock:
+            last = STATE.last_reset_attempt
+        due = last is None or (now - last) >= interval
+        if due:
+            if budget_spent:
+                logger.info(
+                    "USB adapter %s reset budget exhausted but no other path; "
+                    "slow emergency reset attempt", target.ifname,
+                )
+            return _perform_reset_step(target, now)
+
+    # (6) Reboot escalation — only when genuinely offline.
+    if not wired_connected and _maybe_request_dead_phy_reboot(target, now):
+        return True
+
+    return False
 
 
 # ** AVAHI mDNS HOSTNAME MONITORING **

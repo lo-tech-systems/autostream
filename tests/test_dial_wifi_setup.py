@@ -172,20 +172,22 @@ class TestConnectToConfiguredWifiHealthCheck:
             "to avoid bouncing a healthy connection"
         )
 
-    def test_bounce_inside_else_or_conditional(self):
-        """Device disconnect/connect must be conditional, not unconditional."""
+    def test_no_device_bounce_remains(self):
+        """Regression: the broken nmcli device disconnect/connect bounce is gone.
+
+        The bounce is ineffective for a wedged USB PHY (NO-CARRIER) and was
+        replaced by the dead-PHY USB reset ladder.  connect_to_configured_wifi
+        must no longer issue `nmcli device connect`/`disconnect` on the
+        unhealthy reconnect path (dead-phy recovery plan, WP3).
+        """
         src = _watcher_src()
-        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
-        # The bounce (device disconnect) must follow a health check conditional
-        health_pos = fn_body.index("is_wifi_client_healthy")
-        disconnect_pos = fn_body.find('"disconnect"', health_pos)
-        assert disconnect_pos != -1, (
-            "Device disconnect must appear after the is_wifi_client_healthy check"
+        # Scope to connect_to_configured_wifi itself (ends at _resolve_committed_uuid).
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "_resolve_committed_uuid")
+        assert '"disconnect"' not in fn_body, (
+            "connect_to_configured_wifi must not issue an nmcli device disconnect bounce"
         )
-        # There must be an else branch between health check and disconnect
-        between = fn_body[health_pos:disconnect_pos]
-        assert "else" in between or "if" in between, (
-            "Device disconnect must be inside a conditional branch, not run unconditionally"
+        assert 'device", "connect"' not in fn_body and '"connect"]' not in fn_body, (
+            "connect_to_configured_wifi must not issue an nmcli device connect bounce"
         )
 
     def test_connection_up_called_only_on_unhealthy_path(self):
@@ -229,18 +231,6 @@ class TestConnectToConfiguredWifiHealthCheck:
             "The healthy branch must not call 'nmcli connection up' — "
             "it must return True before reaching the reconnect code"
         )
-
-    def test_no_unconditional_disconnect_before_health_check(self):
-        """Device disconnect must not appear before the health check."""
-        src = _watcher_src()
-        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
-        health_pos = fn_body.find("is_wifi_client_healthy")
-        assert health_pos != -1
-        before_health = fn_body[:health_pos]
-        assert '"disconnect"' not in before_health, (
-            "Device disconnect must not appear unconditionally before the health check"
-        )
-
 
 # ---------------------------------------------------------------------------
 # AP_CONNECTION_NAME deletion — only managed AP profile is deleted
