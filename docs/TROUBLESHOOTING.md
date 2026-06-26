@@ -374,6 +374,119 @@ If you miss the AP window:
 
 ---
 
+### USB Wi-Fi dongle wedged / NO-CARRIER recovery
+
+Some USB Wi-Fi dongles (e.g. an RTL8192EU on the `rtl8xxxu` driver) can wedge in
+an `authentication timed out` loop and go `NO-CARRIER` / `state DOWN` while still
+present in `/sys/class/net` and NetworkManager's device list. In this state the
+radio cannot scan, so `nmcli connection up` fails with *"The Wi-Fi network could
+not be found"* and a `nmcli device disconnect`/`connect` "bounce" does nothing.
+
+**autostream** detects this automatically and recovers it with a USB-level reset:
+
+1. Reconnect attempts first (handles genuine transients).
+2. **Method A** — driver unbind/bind (write the USB interface id to
+   `/sys/bus/usb/drivers/<driver>/unbind` then `/bind`).
+3. **Method B** — port re-authorization (write `0` then `1` to
+   `/sys/bus/usb/devices/<usb-device>/authorized`) if Method A does not revive it.
+4. If resets keep failing **and the device is offline**, a guarded reboot.
+
+Resets are **not** gated on Ethernet: a dead Wi-Fi adapter is reset and self-heals
+even while Ethernet is attached (the reboot, however, stays gated on being
+offline). On single-radio hardware (e.g. a Pi 2 whose only client is a USB
+dongle) the reset ladder runs even in setup/hotspot mode so a dead sole radio
+does not deadlock.
+
+**Reset budgets and reboot loop prevention.** A USB adapter is reset at most
+**2 times per 24h** and **5 times total** before it is *quarantined* for preferred
+client use (while another network path exists); USB-only hardware keeps making
+slow emergency attempts every 10 minutes rather than abandoning its only radio.
+The total reset count decays after 24h of sustained healthy operation. Cross-boot
+reboot looping is prevented by a persistent guard at
+`/var/lib/autostream/dead-phy-reboot.stamp` (max **3** dead-PHY reboots per 24h),
+separate from the admin `NetworkDown` rate limit.
+
+Log lines operators are expected to see (watcher log
+`/var/log/autostream/autostream_wifi_watcher.log`):
+
+| Level | Message | Meaning |
+|---|---|---|
+| INFO | `Wi-Fi adapter <if> wedged (link-down xN); attempting USB reset` | Dead-PHY declared after debounce |
+| INFO | `USB reset (method A/B) attempted on <if>` | A reset step was issued |
+| INFO | `USB reset (method A/B) recovered <if>` | The adapter came back and reconnected |
+| INFO | `Dead-PHY: built-in fallback selected and connected on <if>` | A separate built-in radio took over |
+| INFO | `USB adapter <if> quarantined for preferred client use ...` | Reset budget exhausted; another path is up |
+| INFO | `USB adapter <if> reset budget exhausted but no other path; slow emergency reset attempt` | USB-only emergency retry |
+| WARNING | `USB reset (method A/B) failed on <if>; escalating` | A reset step failed |
+| WARNING | `USB rebind reset: cannot resolve sysfs paths for <if>` | sysfs paths could not be resolved (ladder falls through to reboot) |
+| WARNING | `Single-radio hotspot cannot start because the only radio <if> appears dead; using USB reset ladder instead` | Single-radio setup-mode recovery |
+| WARNING | `Dead Wi-Fi adapter <if> offline > Ns; requesting reboot` | Offline beyond the 30-minute dead-PHY threshold |
+| WARNING | `Persistent dead-PHY reboot guard suppresses reboot for <if>; leaving 24h backstop in effect` | Cross-boot reboot cap reached |
+
+**Manual field workaround** (if you are on the device console and need to revive a
+wedged dongle immediately):
+
+```bash
+# Find the USB interface id and driver:
+ls -l /sys/class/net/wlan0/device           # -> .../1-1.5:1.0
+basename "$(readlink -f /sys/class/net/wlan0/device/driver)"   # -> rtl8xxxu
+
+# Method A — driver unbind/bind:
+echo 1-1.5:1.0 | sudo tee /sys/bus/usb/drivers/rtl8xxxu/unbind
+echo 1-1.5:1.0 | sudo tee /sys/bus/usb/drivers/rtl8xxxu/bind
+
+# Method B — port re-authorization (full re-enumeration):
+echo 0 | sudo tee /sys/bus/usb/devices/1-1.5/authorized
+echo 1 | sudo tee /sys/bus/usb/devices/1-1.5/authorized
+```
+
+The watcher performs exactly these actions automatically; the manual steps are
+only needed if you want to force recovery without waiting for the next monitor
+pass.
+
+#### Runtime network status snapshot
+
+The watcher publishes its derived network state to
+`/run/autostream/network-status.json` (`schema_version: 1`). This file is the
+**source of truth** the autostream application reads — it does not re-run live
+`nmcli`/sysfs probes. It carries `device.state`, per-adapter `facts`/`health`/
+`policy`, the active hotspot, and the effective logging level, plus `updated_at`
+(wall-clock). A **missing, stale, or unknown-schema** snapshot is interpreted as
+`device.state: unknown`.
+
+Common adapter `health.state` values: `healthy`, `degraded`, `link_down`,
+`dead_phy` (wedged beyond debounce), `resetting`, `quarantined`, `hotspot_active`,
+`idle`, `absent`, `unmanaged`.
+
+For loopback/token-protected diagnostics the watcher also exposes
+`GET /network_status_v2`, a read-only view over the same snapshot. The legacy
+`GET /network_status` flat payload is preserved for existing consumers.
+
+#### Runtime Wi-Fi watcher log level
+
+The Wi-Fi watcher's log level can be changed at runtime (without a restart) via
+its existing loopback/token-protected control surface:
+
+```http
+POST /network_control
+X-Autostream-Wifi-Control: <per-boot-token>
+Content-Type: application/json
+
+{"action": "set_log_level", "level": "debug", "ttl_seconds": 900}
+```
+
+* Allowed levels: `warning`, `info`, `debug`.
+* `debug` **requires** `ttl_seconds`; `ttl_seconds` is validated and clamped to
+  **60–3600** seconds. `warning`/`info` may use a TTL, or omit it to set the
+  runtime level until the service restarts.
+* Temporary levels revert automatically when their TTL expires.
+* Requests are rejected (and logged at `WARNING`) for a non-loopback source, a bad
+  token, an invalid level, or an invalid TTL. There are no unauthenticated control
+  routes, arbitrary logger names, raw numeric levels, or shell/systemd mutation.
+* The startup default level remains controlled by `AUTOSTREAM_WIFI_LOG_LEVEL`.
+
+---
+
 ### Storage guard and log-level management
 
 autostream runs a **storage guard** service once a day (04:00, ± 30 min jitter) to keep disk use within safe bounds and to prevent verbose log levels from accumulating indefinitely on an SD-card appliance.
