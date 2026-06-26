@@ -641,6 +641,15 @@ def read_link_down(ifname: str, sys_root: str = "/sys/class/net") -> Optional[bo
     return False
 
 
+def read_operstate(ifname: str, sys_root: str = "/sys/class/net") -> str:
+    """Return the sysfs operstate string (lowercase), or "" if unreadable."""
+    try:
+        with open(os.path.join(sys_root, ifname, "operstate"), "r", encoding="utf-8") as f:
+            return f.read().strip().lower()
+    except OSError:
+        return ""
+
+
 def usb_sysfs_paths(ifname: str, sys_root: str = "/sys/class/net") -> Optional[dict]:
     """Resolve {interface_id, driver, usb_device_path} for a USB-backed netdev.
 
@@ -1235,3 +1244,108 @@ def remove_dnsmasq_runtime_config(runtime_path: str) -> None:
         os.unlink(runtime_path)
     except OSError:
         pass
+
+
+# ===========================================================================
+# Runtime network-status snapshot (dead-PHY recovery — WP6)
+# ===========================================================================
+#
+# The watcher publishes its derived network state here so the autostream
+# application can read a stable view without importing the watcher or
+# re-running live nmcli/sysfs probes.  This module ONLY serialises/reads the
+# already-built snapshot and provides the bounded address fact below.  All
+# derived meaning (device.state, health.state, policy.action, primary-adapter
+# selection, stale/unknown interpretation) is platform policy and lives in
+# platform/wifi_status.py — never here.
+
+NETWORK_STATUS_PATH = "/run/autostream/network-status.json"
+NETWORK_STATUS_SCHEMA_VERSION = 1
+
+
+def write_network_status_snapshot(snapshot: dict, path: str = NETWORK_STATUS_PATH) -> None:
+    """Atomically write the already-built status *snapshot* to *path*.
+
+    The runtime directory is created if needed.  Raises only on a genuine
+    serialization/IO failure the caller chooses to handle.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    _atomic_write(path, json.dumps(snapshot, indent=2) + "\n", mode=0o644)
+
+
+def read_network_status_snapshot(path: str = NETWORK_STATUS_PATH) -> dict:
+    """Read and parse the status snapshot, or {} when missing/unreadable/invalid.
+
+    Returns the parsed dict only when it is a dict carrying the expected
+    ``schema_version``; otherwise returns {} so the consumer treats it as
+    ``unknown``.  Never raises.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        logger.warning("Could not read network status snapshot %s: %s", path, e)
+        return {}
+    if not isinstance(obj, dict) or obj.get("schema_version") != NETWORK_STATUS_SCHEMA_VERSION:
+        return {}
+    return obj
+
+
+def list_interface_addresses(ifname: Optional[str] = None) -> dict:
+    """Return per-interface IP addresses via ``ip -j addr show``.
+
+    Maps ``{ifname: [{family, address, prefixlen, scope}, ...]}`` where family
+    is "ipv4"/"ipv6".  Returns {} on failure.  Facts only — no policy about
+    which address is "primary" or whether the interface is "online".
+    """
+    args = ["addr", "show"]
+    if ifname:
+        args += ["dev", ifname]
+    try:
+        data = _run_ip_json(args)
+    except Exception as e:
+        logger.debug("`ip -j addr show` failed: %s", e)
+        return {}
+    out: dict = {}
+    for entry in data:
+        name = entry.get("ifname")
+        if not name:
+            continue
+        addrs = []
+        for a in entry.get("addr_info", []):
+            local = a.get("local")
+            fam = a.get("family")
+            if not local or fam not in ("inet", "inet6"):
+                continue
+            addrs.append({
+                "family": "ipv4" if fam == "inet" else "ipv6",
+                "address": local,
+                "prefixlen": a.get("prefixlen"),
+                "scope": a.get("scope", ""),
+            })
+        out[name] = addrs
+    return out
+
+
+def default_gateway_ipv4(ifname: str) -> str:
+    """Return the IPv4 default-route gateway for *ifname*, or "".
+
+    Fact helper for the status snapshot; reachability classification stays in
+    the watcher's existing route/neighbour logic (is_gateway_reachable).
+    """
+    try:
+        routes = _run_ip_json(["route", "show", "default"])
+    except Exception:
+        return ""
+    for r in routes:
+        if r.get("dev") == ifname and r.get("gateway"):
+            gw = r.get("gateway")
+            try:
+                ip = ipaddress.ip_address(gw)
+            except ValueError:
+                continue
+            if isinstance(ip, ipaddress.IPv4Address):
+                return gw
+    return ""

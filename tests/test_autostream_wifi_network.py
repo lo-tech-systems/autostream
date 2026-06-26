@@ -812,3 +812,67 @@ class TestGatewayReachable:
         routes = [{"dev": "eth0", "gateway": "10.240.1.1", "dst": "default"}]
         with patch.object(wifi_net, "_run_ip_json", side_effect=[routes, []]):
             assert wifi_net.is_gateway_reachable("wlan0") is False
+
+
+# ---------------------------------------------------------------------------
+# WP6 (dead-PHY) — runtime status snapshot read/write + address facts
+# ---------------------------------------------------------------------------
+
+class TestNetworkStatusSnapshotIO:
+    def test_write_then_read_roundtrip(self, tmp_path):
+        path = str(tmp_path / "network-status.json")
+        snap = {"schema_version": 1, "updated_at": 1.0, "device": {"state": "online"}}
+        wifi_net.write_network_status_snapshot(snap, path=path)
+        assert wifi_net.read_network_status_snapshot(path=path) == snap
+
+    def test_read_missing_returns_empty(self, tmp_path):
+        assert wifi_net.read_network_status_snapshot(path=str(tmp_path / "nope.json")) == {}
+
+    def test_read_corrupt_returns_empty(self, tmp_path):
+        p = tmp_path / "s.json"
+        p.write_text("{ not json", encoding="utf-8")
+        assert wifi_net.read_network_status_snapshot(path=str(p)) == {}
+
+    def test_read_unknown_schema_returns_empty(self, tmp_path):
+        p = tmp_path / "s.json"
+        p.write_text(json.dumps({"schema_version": 99}), encoding="utf-8")
+        assert wifi_net.read_network_status_snapshot(path=str(p)) == {}
+
+    def test_write_creates_runtime_dir(self, tmp_path):
+        path = str(tmp_path / "run" / "autostream" / "network-status.json")
+        wifi_net.write_network_status_snapshot({"schema_version": 1}, path=path)
+        assert Path(path).exists()
+
+
+class TestListInterfaceAddresses:
+    def test_parses_ip_json(self):
+        sample = [
+            {"ifname": "wlan0", "addr_info": [
+                {"family": "inet", "local": "192.168.1.42", "prefixlen": 24, "scope": "global"},
+                {"family": "inet6", "local": "fe80::1", "prefixlen": 64, "scope": "link"},
+            ]},
+            {"ifname": "lo", "addr_info": [
+                {"family": "inet", "local": "127.0.0.1", "prefixlen": 8, "scope": "host"},
+            ]},
+        ]
+        with patch.object(wifi_net, "_run_ip_json", return_value=sample):
+            out = wifi_net.list_interface_addresses()
+        assert out["wlan0"][0] == {
+            "family": "ipv4", "address": "192.168.1.42", "prefixlen": 24, "scope": "global"}
+        assert out["wlan0"][1]["family"] == "ipv6"
+        assert out["lo"][0]["family"] == "ipv4"
+
+    def test_failure_returns_empty(self):
+        with patch.object(wifi_net, "_run_ip_json", side_effect=RuntimeError("x")):
+            assert wifi_net.list_interface_addresses() == {}
+
+
+class TestDefaultGatewayIpv4:
+    def test_returns_ipv4_for_iface(self):
+        routes = [
+            {"dev": "wlan0", "gateway": "192.168.1.1", "dst": "default"},
+            {"dev": "eth0", "gateway": "10.0.0.1", "dst": "default"},
+        ]
+        with patch.object(wifi_net, "_run_ip_json", return_value=routes):
+            assert wifi_net.default_gateway_ipv4("wlan0") == "192.168.1.1"
+            assert wifi_net.default_gateway_ipv4("wlan1") == ""

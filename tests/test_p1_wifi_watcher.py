@@ -2343,3 +2343,114 @@ class TestDeadPhyEndToEnd:
                 watcher._record_dead_phy_reboot_request(1_000_000.0, None)
             assert watcher.escalate_dead_adapter_recovery([usb], False) is False
             assert reboot.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# WP6 (dead-PHY) — status snapshot builder + /network_status_v2 route
+# ---------------------------------------------------------------------------
+
+class TestBuildNetworkStatusSnapshot:
+    MAC = "dc:62:79:91:4d:d6"
+
+    def test_healthy_usb_client_online(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        addrs = {"wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                            "prefixlen": 24, "scope": "global"}]}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=False)
+        assert snap["schema_version"] == 1
+        assert snap["device"]["state"] == "online"
+        assert snap["device"]["primary_ifname"] == "wlan0"
+        assert snap["device"]["primary_ipv4"] == "192.168.1.42"
+        rec = snap["adapters"][0]
+        assert rec["ifname"] == "wlan0"
+        assert rec["kind"] == "usb_wifi"
+        assert rec["health"]["state"] == "healthy"
+        assert rec["role"] == "client"
+
+    def test_dead_usb_adapter_reported(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_since = 5.0
+        watcher.STATE.dead_adapter_checks = 4
+        watcher.STATE.last_reset_method = "B"
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=False)
+        rec = snap["adapters"][0]
+        assert rec["health"]["state"] == "dead_phy"
+        assert rec["health"]["checks"] == 4
+        assert rec["policy"]["last_action"] == "usb_reset_method_b"
+        assert snap["device"]["state"] == "recovering"
+
+    def test_ethernet_degraded_when_wifi_dead(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        addrs = {"eth0": [{"family": "ipv4", "address": "10.0.0.5",
+                           "prefixlen": 24, "scope": "global"}]}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=True)
+        assert snap["device"]["state"] == "degraded"
+        assert snap["device"]["primary_kind"] == "ethernet"
+        assert snap["device"]["primary_ipv4"] == "10.0.0.5"
+
+    def test_logging_block_present(self, watcher):
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([], wired_connected=False)
+        assert snap["logging"]["effective_level"] == "info"
+        assert snap["logging"]["default_level"] == "info"
+        assert snap["logging"]["temporary_level_expires_at"] is None
+        assert snap["device"]["state"] == "offline"
+
+
+class TestNetworkStatusV2Route:
+    def test_forbidden_without_auth(self, flask_client):
+        client, mod = flask_client
+        with patch.object(mod, "_control_authorised", return_value=False):
+            resp = client.get("/network_status_v2")
+        assert resp.status_code == 403
+
+    def test_returns_snapshot_when_present(self, flask_client):
+        client, mod = flask_client
+        snap = {"schema_version": 1, "device": {"state": "online"}}
+        with patch.object(mod, "_control_authorised", return_value=True), \
+             patch.object(mod.wifi_net, "read_network_status_snapshot", return_value=snap):
+            resp = client.get("/network_status_v2")
+        assert resp.status_code == 200
+        assert resp.get_json()["device"]["state"] == "online"
+
+    def test_unknown_when_missing(self, flask_client):
+        client, mod = flask_client
+        with patch.object(mod, "_control_authorised", return_value=True), \
+             patch.object(mod.wifi_net, "read_network_status_snapshot", return_value={}):
+            resp = client.get("/network_status_v2")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["device"]["state"] == "unknown"
+        assert body["stale"] is True
+
+    def test_legacy_network_status_still_flat(self, flask_client):
+        client, mod = flask_client
+        with patch.object(mod, "_control_authorised", return_value=True), \
+             patch.object(mod, "_network_status_payload", return_value={"ok": True, "adapters": []}):
+            resp = client.get("/network_status")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
