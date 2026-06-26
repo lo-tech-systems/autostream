@@ -65,7 +65,7 @@ import json
 import urllib.request
 from typing import Optional
 from flask import Flask, request, jsonify, redirect, url_for, make_response
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
 import autostream_wifi_network as wifi_net
@@ -160,6 +160,21 @@ AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname ch
 AVAHI_MISMATCH_GRACE       = 5 * 60     # grace period before acting on a hostname mismatch
 AVAHI_RESTART_MIN_INTERVAL = 15 * 60    # minimum gap between avahi-daemon restarts
 AVAHI_MAX_RESTART_ATTEMPTS = -1         # max avahi restarts per boot (-1 = unlimited)
+
+# Dead-PHY recovery (WP-dead-phy).  A wedged-but-present USB Wi-Fi adapter
+# (NO-CARRIER / state DOWN) is detected, reset via sysfs, and — only when
+# genuinely offline — escalated to a guarded reboot.
+DEAD_ADAPTER_DEBOUNCE      = 2            # consecutive link-down+unhealthy passes before "dead"
+RESET_ATTEMPT_INTERVAL     = 60          # seconds between reset escalation steps
+DEAD_ADAPTER_REBOOT_AFTER  = GW_DOWN_REBOOT_AFTER   # 30 min; reuse existing constant
+USB_RESET_WINDOW           = 24 * 60 * 60  # rolling reset-budget window
+USB_MAX_RESETS_PER_WINDOW  = 2           # preferred-client reset budget per window
+USB_MAX_RESETS_TOTAL       = 5           # quarantine threshold until stable/reset
+USB_EMERGENCY_BACKOFF      = 10 * 60     # slow retry when USB is the only path
+DEAD_ADAPTER_HEALTHY_DECAY = 24 * 60 * 60  # decay reset history after sustained health
+DEAD_ADAPTER_REBOOT_STAMP  = "/var/lib/autostream/dead-phy-reboot.stamp"
+DEAD_ADAPTER_REBOOT_WINDOW = 24 * 60 * 60  # persistent reboot-guard window
+DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW = 3   # cross-boot dead-PHY reboot cap
 
 
 logger = logging.getLogger(__name__)
@@ -309,6 +324,30 @@ class NetworkMonitorState:
     last_control_action: str = ""
     last_control_result: str = ""
     last_control_error: str = ""
+
+    # ---- Dead-PHY recovery (WP-dead-phy) ----
+    dead_adapter_ifname: str = ""               # interface currently classed dead ("" = none)
+    dead_adapter_checks: int = 0                # debounce counter
+    dead_adapter_since: Optional[float] = None  # monotonic; when first declared dead
+    last_reset_attempt: Optional[float] = None  # monotonic; last Method A/B step
+    last_reset_method: str = ""                 # "" | "A" | "B"
+    # Survives brief healthy flaps in-process so flapping cannot starve the
+    # 30-minute reboot threshold; kept until the adapter is healthy for 24h.
+    dead_adapter_first_failure: Optional[float] = None
+    dead_adapter_recent_resets: list = field(default_factory=list)  # monotonic reset times
+    dead_adapter_total_resets: int = 0
+    dead_adapter_quarantined_until: Optional[float] = None
+    # Recovery-ledger identity of the adapter being tracked (MAC/sysfs/ifname);
+    # used to reset the debounce when a *different* adapter is inserted.  Not a
+    # duplicate of active_client_mac — it is the dead-target identity.
+    dead_adapter_stable_id: str = ""
+    dead_adapter_healthy_since: Optional[float] = None  # monotonic; sustained-health start
+
+    # ---- Runtime log-level control (WP7) ----
+    pending_control_params: dict = field(default_factory=dict)
+    temporary_log_level: str = ""
+    temporary_log_level_until: Optional[float] = None
+    default_log_level_name: str = "info"
 
 
 STATE = NetworkMonitorState()
@@ -2798,6 +2837,307 @@ def update_known_adapters(adapters: list) -> None:
         STATE.last_detected_adapter_macs = macs
     if prev is not None and prev != macs:
         logger.info("Detected Wi-Fi adapter set changed: %s", sorted(macs))
+
+
+# ** DEAD-PHY RECOVERY: DETECTION, BUDGETS, AND PERSISTENT REBOOT GUARD **
+#
+# Policy/state for recovering a wedged-but-present USB Wi-Fi adapter.  The
+# bounded sysfs primitives live in autostream_wifi_network (WP1); this section
+# owns *when* to act.  These helpers are pure logic + state (WP2); the loop
+# wiring and reset ladder are added in WP3.  Earmarked for extraction into
+# platform/wifi_recovery.py (WP8).
+
+
+@dataclass(frozen=True)
+class TargetAdapter:
+    """The client adapter the dead-PHY ladder operates on this pass (Section 5.1)."""
+    ifname: str
+    stable_id: str             # active_client_mac/MAC when known, else sysfs/ifname fallback
+    kind: str                  # "usb_wifi" | "builtin_wifi"
+    is_usb: bool
+    is_builtin: bool
+    present_in_nm: bool
+    present_in_sysfs: bool
+    resettable_usb: bool
+
+
+def _build_target_adapter(ifname: str, adapters: list) -> TargetAdapter:
+    """Resolve the per-pass facts for *ifname* into a TargetAdapter record."""
+    nm = wifi_net.find_adapter_by_ifname(adapters, ifname)
+    present_in_nm = nm is not None
+    present_in_sysfs = ifname in wifi_net.list_sysfs_netdevs()
+    usb_paths = wifi_net.usb_sysfs_paths(ifname) if present_in_sysfs else None
+    resettable_usb = usb_paths is not None
+
+    if nm is not None:
+        is_usb = bool(nm.is_usb) or resettable_usb
+        is_builtin = bool(nm.is_builtin) and not resettable_usb
+        stable_id = nm.permanent_mac or wifi_net._sys_read_mac(ifname) or ifname
+    else:
+        is_usb = resettable_usb
+        is_builtin = False
+        stable_id = wifi_net._sys_read_mac(ifname) or ifname
+
+    kind = "usb_wifi" if is_usb else "builtin_wifi"
+    return TargetAdapter(
+        ifname=ifname,
+        stable_id=stable_id,
+        kind=kind,
+        is_usb=is_usb,
+        is_builtin=is_builtin,
+        present_in_nm=present_in_nm,
+        present_in_sysfs=present_in_sysfs,
+        resettable_usb=resettable_usb,
+    )
+
+
+def _resolve_target_client(adapters: list) -> Optional[TargetAdapter]:
+    """Resolve the dead-PHY target client adapter for this pass (Section 5.1).
+
+    Resolution order, most-specific first:
+      1. STATE.active_client_mac mapped to a current NM device or sysfs netdev.
+      2. STATE.active_client_ifname when present in discovery.
+      3. the deterministic startup target: sole USB candidate, else built-in.
+      4. AP_IFNAME ("wlan0") as a last-resort literal.
+    """
+    with state_lock:
+        rec_mac = STATE.active_client_mac
+        rec_ifname = STATE.active_client_ifname
+
+    # 1. recorded MAC -> current interface (NM first, then sysfs-only).
+    if rec_mac:
+        adapter = wifi_net.find_adapter_by_mac(adapters, rec_mac)
+        if adapter is not None:
+            return _build_target_adapter(adapter.ifname, adapters)
+        sysfs_if = wifi_net.find_sysfs_netdev_by_mac(rec_mac)
+        if sysfs_if:
+            return _build_target_adapter(sysfs_if, adapters)
+
+    # 2. recorded ifname present in discovery.
+    if rec_ifname and wifi_net.find_adapter_by_ifname(adapters, rec_ifname) is not None:
+        return _build_target_adapter(rec_ifname, adapters)
+
+    # 3. deterministic startup target.
+    usb = wifi_net.usb_candidates(adapters)
+    if len(usb) == 1:
+        return _build_target_adapter(usb[0].ifname, adapters)
+    builtin = wifi_net.resolve_builtin(adapters)
+    if builtin is not None:
+        return _build_target_adapter(builtin.ifname, adapters)
+
+    # 4. last-resort literal.
+    return _build_target_adapter(AP_IFNAME, adapters)
+
+
+def _clear_dead_adapter_state_locked() -> None:
+    """Clear the *active* dead/debounce/reset fields (assumes state_lock held)."""
+    STATE.dead_adapter_ifname = ""
+    STATE.dead_adapter_checks = 0
+    STATE.dead_adapter_since = None
+    STATE.last_reset_attempt = None
+    STATE.last_reset_method = ""
+
+
+def _clear_dead_adapter_state() -> None:
+    """Clear the active dead/debounce/reset fields (does not erase the ledger)."""
+    with state_lock:
+        _clear_dead_adapter_state_locked()
+
+
+def _reset_dead_ledger_locked() -> None:
+    """Drop all dead-PHY state including reset history (assumes state_lock held)."""
+    _clear_dead_adapter_state_locked()
+    STATE.dead_adapter_first_failure = None
+    STATE.dead_adapter_recent_resets = []
+    STATE.dead_adapter_total_resets = 0
+    STATE.dead_adapter_quarantined_until = None
+    STATE.dead_adapter_healthy_since = None
+
+
+def _update_dead_adapter_detection(adapters: list, target: Optional[TargetAdapter]) -> bool:
+    """Advance/clear the debounce; return True when the adapter is classed dead.
+
+    A target that is present (in sysfs or NM), link-down, and not a healthy
+    client increments the debounce; reaching DEAD_ADAPTER_DEBOUNCE declares the
+    adapter dead.  A sustained-healthy pass clears the active fields, and the
+    reset ledger decays after DEAD_ADAPTER_HEALTHY_DECAY seconds of health.  A
+    change of stable identity resets the debounce and ledger.
+    """
+    now = time.monotonic()
+    if target is None:
+        _clear_dead_adapter_state()
+        return False
+
+    link_down = wifi_net.read_link_down(target.ifname)
+    present = target.present_in_sysfs or target.present_in_nm
+    healthy = (
+        is_wifi_client_healthy(target.ifname) if target.present_in_nm else False
+    )
+    down_unhealthy = bool(present and link_down is True and not healthy)
+
+    declared_now = False
+    checks = 0
+    with state_lock:
+        prev_id = STATE.dead_adapter_stable_id
+        if prev_id and prev_id != target.stable_id:
+            logger.debug(
+                "Dead-PHY target identity changed (%s -> %s); resetting ledger",
+                prev_id, target.stable_id,
+            )
+            _reset_dead_ledger_locked()
+        STATE.dead_adapter_stable_id = target.stable_id
+
+        if not down_unhealthy:
+            _clear_dead_adapter_state_locked()
+            if healthy:
+                if STATE.dead_adapter_healthy_since is None:
+                    STATE.dead_adapter_healthy_since = now
+                elif (now - STATE.dead_adapter_healthy_since) >= DEAD_ADAPTER_HEALTHY_DECAY:
+                    _reset_dead_ledger_locked()
+            else:
+                STATE.dead_adapter_healthy_since = None
+            return False
+
+        STATE.dead_adapter_healthy_since = None
+        if STATE.dead_adapter_first_failure is None:
+            STATE.dead_adapter_first_failure = now
+        STATE.dead_adapter_checks += 1
+        checks = STATE.dead_adapter_checks
+        if checks >= DEAD_ADAPTER_DEBOUNCE:
+            if not STATE.dead_adapter_ifname:
+                declared_now = True
+            STATE.dead_adapter_ifname = target.ifname
+            if STATE.dead_adapter_since is None:
+                STATE.dead_adapter_since = now
+            result = True
+        else:
+            result = False
+
+    if declared_now:
+        logger.info(
+            "Wi-Fi adapter %s wedged (link-down x%d); attempting USB reset",
+            target.ifname, checks,
+        )
+    else:
+        logger.debug(
+            "Dead-PHY debounce on %s: %d/%d", target.ifname, checks, DEAD_ADAPTER_DEBOUNCE,
+        )
+    return result
+
+
+def _prune_recent_resets_locked(now: float) -> None:
+    cutoff = now - USB_RESET_WINDOW
+    STATE.dead_adapter_recent_resets = [
+        t for t in STATE.dead_adapter_recent_resets if t >= cutoff
+    ]
+
+
+def _adapter_reset_budget_exhausted(target: Optional[TargetAdapter], now: float) -> bool:
+    """True when the adapter has hit either the per-window or total reset budget.
+
+    The *policy* decision (quarantine vs. emergency-only retry) lives in the
+    ladder (WP3); this reports only whether the budget is spent.
+    """
+    with state_lock:
+        _prune_recent_resets_locked(now)
+        recent = len(STATE.dead_adapter_recent_resets)
+        total = STATE.dead_adapter_total_resets
+    exhausted = recent >= USB_MAX_RESETS_PER_WINDOW or total >= USB_MAX_RESETS_TOTAL
+    if exhausted:
+        logger.debug(
+            "Reset budget exhausted for %s: recent=%d/%d total=%d/%d",
+            target.ifname if target else "?", recent, USB_MAX_RESETS_PER_WINDOW,
+            total, USB_MAX_RESETS_TOTAL,
+        )
+    return exhausted
+
+
+def _record_adapter_reset(target: Optional[TargetAdapter], now: float) -> None:
+    """Record one reset attempt against the rolling/total budgets."""
+    with state_lock:
+        _prune_recent_resets_locked(now)
+        STATE.dead_adapter_recent_resets.append(now)
+        STATE.dead_adapter_total_resets += 1
+        recent = len(STATE.dead_adapter_recent_resets)
+        total = STATE.dead_adapter_total_resets
+    logger.debug(
+        "Recorded USB reset for %s: recent=%d total=%d",
+        target.ifname if target else "?", recent, total,
+    )
+
+
+# ---- Persistent dead-PHY reboot guard (cross-boot loop prevention, Section 4) ----
+
+def _empty_reboot_guard(now_wall: float) -> dict:
+    return {"schema_version": 1, "window_started_at": now_wall, "requests": []}
+
+
+def _read_dead_phy_reboot_guard(now_wall: float) -> dict:
+    """Read and prune the persistent reboot-guard file (wall-clock).
+
+    Requests older than DEAD_ADAPTER_REBOOT_WINDOW are discarded; if none
+    remain a fresh window is started.  Corrupt/unreadable files are treated as
+    empty but logged at WARNING.
+    """
+    try:
+        with open(DEAD_ADAPTER_REBOOT_STAMP, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except FileNotFoundError:
+        return _empty_reboot_guard(now_wall)
+    except (OSError, ValueError) as e:
+        logger.warning("Dead-PHY reboot guard unreadable (%s); treating as empty", e)
+        return _empty_reboot_guard(now_wall)
+
+    if not isinstance(obj, dict) or obj.get("schema_version") != 1:
+        logger.warning("Dead-PHY reboot guard has unexpected schema; treating as empty")
+        return _empty_reboot_guard(now_wall)
+
+    reqs = obj.get("requests")
+    if not isinstance(reqs, list):
+        reqs = []
+    cutoff = now_wall - DEAD_ADAPTER_REBOOT_WINDOW
+    retained = [
+        r for r in reqs
+        if isinstance(r, dict)
+        and isinstance(r.get("requested_at"), (int, float))
+        and not isinstance(r.get("requested_at"), bool)
+        and r["requested_at"] >= cutoff
+    ]
+    started = obj.get("window_started_at")
+    if not retained or not isinstance(started, (int, float)) or isinstance(started, bool):
+        started = now_wall
+    return {"schema_version": 1, "window_started_at": started, "requests": retained}
+
+
+def _dead_phy_reboot_guard_permits(now_wall: float) -> bool:
+    """True when fewer than the cross-boot cap of retained requests exist."""
+    guard = _read_dead_phy_reboot_guard(now_wall)
+    count = len(guard["requests"])
+    permitted = count < DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW
+    if not permitted:
+        logger.debug(
+            "Dead-PHY reboot guard: %d requests in window (cap %d); suppressing",
+            count, DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW,
+        )
+    return permitted
+
+
+def _record_dead_phy_reboot_request(now_wall: float, target: Optional[TargetAdapter]) -> None:
+    """Append a reboot request and atomically persist the guard file."""
+    guard = _read_dead_phy_reboot_guard(now_wall)
+    guard["requests"].append({
+        "requested_at": now_wall,
+        "ifname": target.ifname if target else "",
+        "stable_id": target.stable_id if target else "",
+    })
+    try:
+        directory = os.path.dirname(DEAD_ADAPTER_REBOOT_STAMP) or "."
+        os.makedirs(directory, exist_ok=True)
+        wifi_net._atomic_write(
+            DEAD_ADAPTER_REBOOT_STAMP, json.dumps(guard, indent=2) + "\n", mode=0o644,
+        )
+    except OSError as e:
+        logger.warning("Could not persist dead-PHY reboot guard: %s", e)
 
 
 # ** AVAHI mDNS HOSTNAME MONITORING **

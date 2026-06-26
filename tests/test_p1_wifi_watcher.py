@@ -1750,3 +1750,181 @@ class TestAutoRecoveryUsbReconnect:
         assert modify_idx < up_idx, (
             "cross-adapter restrictions must be cleared BEFORE the USB probe activation"
         )
+
+
+# ---------------------------------------------------------------------------
+# WP2 (dead-PHY) — target resolution, dead detection, budgets, reboot guard
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def _patch_dead_phy_facts(watcher, *, sysfs_names=(), usb_paths_ifaces=(),
+                          link_down=True, healthy=False, sysfs_mac=""):
+    """Patch the sysfs/NM facts the dead-PHY helpers consult."""
+    def _usb_paths(ifname, sys_root="/sys/class/net"):
+        if ifname in usb_paths_ifaces:
+            return {"interface_id": "1-1.5:1.0", "driver": "rtl8xxxu",
+                    "usb_device_path": "/sys/devices/usb1/1-1.5"}
+        return None
+
+    def _find_by_mac(mac, sys_root="/sys/class/net"):
+        # Resolve the recorded MAC to its sysfs ifname (first faked netdev).
+        if mac and sysfs_mac and mac == sysfs_mac and sysfs_names:
+            return list(sysfs_names)[0]
+        return ""
+
+    with patch.object(watcher.wifi_net, "list_sysfs_netdevs",
+                      return_value=list(sysfs_names)), \
+         patch.object(watcher.wifi_net, "usb_sysfs_paths", side_effect=_usb_paths), \
+         patch.object(watcher.wifi_net, "read_link_down", return_value=link_down), \
+         patch.object(watcher.wifi_net, "find_sysfs_netdev_by_mac", side_effect=_find_by_mac), \
+         patch.object(watcher.wifi_net, "_sys_read_mac", return_value=sysfs_mac), \
+         patch.object(watcher, "is_wifi_client_healthy", return_value=healthy):
+        yield
+
+
+class TestDeadAdapterTargetResolution:
+    def test_resolves_sole_usb_as_startup_target(self, watcher):
+        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"]):
+            target = watcher._resolve_target_client([usb])
+        assert target is not None
+        assert target.ifname == "wlan0"
+        assert target.is_usb and target.resettable_usb
+
+    def test_resolves_from_active_mac_via_sysfs_when_nm_missing(self, watcher):
+        # NM reports no adapters, but the recorded MAC maps to a sysfs netdev.
+        watcher.STATE.active_client_mac = "dc:62:79:91:4d:d6"
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   sysfs_mac="dc:62:79:91:4d:d6"):
+            target = watcher._resolve_target_client([])
+        assert target is not None
+        assert target.ifname == "wlan0"
+        assert target.present_in_nm is False
+        assert target.present_in_sysfs is True
+        assert target.resettable_usb is True
+
+    def test_falls_back_to_ap_ifname_literal(self, watcher):
+        with _patch_dead_phy_facts(watcher, sysfs_names=[]):
+            target = watcher._resolve_target_client([])
+        assert target is not None
+        assert target.ifname == watcher.AP_IFNAME
+
+
+class TestDeadAdapterDetection:
+    def _usb(self, watcher):
+        return _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+
+    def test_debounce_declares_dead_and_sets_since(self, watcher):
+        usb = self._usb(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False):
+            target = watcher._resolve_target_client([usb])
+            assert watcher._update_dead_adapter_detection([usb], target) is False
+            assert watcher.STATE.dead_adapter_checks == 1
+            assert watcher.STATE.dead_adapter_ifname == ""
+            assert watcher._update_dead_adapter_detection([usb], target) is True
+        assert watcher.STATE.dead_adapter_ifname == "wlan0"
+        assert watcher.STATE.dead_adapter_since is not None
+        assert watcher.STATE.dead_adapter_first_failure is not None
+
+    def test_healthy_pass_clears_active_fields(self, watcher):
+        usb = self._usb(watcher)
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_checks = 3
+        watcher.STATE.dead_adapter_since = 100.0
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=False, healthy=True):
+            target = watcher._resolve_target_client([usb])
+            assert watcher._update_dead_adapter_detection([usb], target) is False
+        assert watcher.STATE.dead_adapter_ifname == ""
+        assert watcher.STATE.dead_adapter_checks == 0
+        assert watcher.STATE.dead_adapter_since is None
+
+    def test_identity_change_resets_debounce(self, watcher):
+        usb = self._usb(watcher)
+        watcher.STATE.dead_adapter_checks = 1
+        watcher.STATE.dead_adapter_stable_id = "old:identity:value:00:00:00"
+        watcher.STATE.dead_adapter_total_resets = 4
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False):
+            target = watcher._resolve_target_client([usb])
+            watcher._update_dead_adapter_detection([usb], target)
+        # Ledger reset on identity change; this pass counts as the first failure.
+        assert watcher.STATE.dead_adapter_checks == 1
+        assert watcher.STATE.dead_adapter_total_resets == 0
+
+    def test_none_target_clears_state(self, watcher):
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_checks = 2
+        assert watcher._update_dead_adapter_detection([], None) is False
+        assert watcher.STATE.dead_adapter_ifname == ""
+        assert watcher.STATE.dead_adapter_checks == 0
+
+
+class TestResetBudget:
+    def _target(self, watcher):
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"]):
+            return watcher._resolve_target_client(
+                [_adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)])
+
+    def test_exhausted_after_per_window_budget(self, watcher):
+        t = self._target(watcher)
+        now = 1000.0
+        assert watcher._adapter_reset_budget_exhausted(t, now) is False
+        watcher._record_adapter_reset(t, now)
+        watcher._record_adapter_reset(t, now)
+        assert watcher._adapter_reset_budget_exhausted(t, now) is True
+
+    def test_window_prunes_old_resets_but_total_persists(self, watcher):
+        t = self._target(watcher)
+        watcher._record_adapter_reset(t, 0.0)
+        watcher._record_adapter_reset(t, 0.0)
+        later = watcher.USB_RESET_WINDOW + 1.0
+        # Per-window budget recovered, total still 2 (< total cap) -> not exhausted.
+        assert watcher._adapter_reset_budget_exhausted(t, later) is False
+        assert watcher.STATE.dead_adapter_total_resets == 2
+
+    def test_total_cap_exhausts(self, watcher):
+        t = self._target(watcher)
+        # Spread resets across windows so per-window never trips, but total does.
+        for i in range(watcher.USB_MAX_RESETS_TOTAL):
+            watcher._record_adapter_reset(t, i * (watcher.USB_RESET_WINDOW + 1.0))
+        last = (watcher.USB_MAX_RESETS_TOTAL) * (watcher.USB_RESET_WINDOW + 1.0)
+        assert watcher._adapter_reset_budget_exhausted(t, last) is True
+
+
+class TestDeadPhyRebootGuard:
+    def test_permits_until_cap_then_suppresses(self, watcher, tmp_path):
+        stamp = str(tmp_path / "guard.json")
+        with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", stamp):
+            now = 1_000_000.0
+            assert watcher._dead_phy_reboot_guard_permits(now) is True
+            for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
+                assert watcher._dead_phy_reboot_guard_permits(now) is True
+                watcher._record_dead_phy_reboot_request(now, None)
+            assert watcher._dead_phy_reboot_guard_permits(now) is False
+
+    def test_old_requests_pruned(self, watcher, tmp_path):
+        stamp = str(tmp_path / "guard.json")
+        with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", stamp):
+            t0 = 1_000_000.0
+            for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
+                watcher._record_dead_phy_reboot_request(t0, None)
+            assert watcher._dead_phy_reboot_guard_permits(t0) is False
+            later = t0 + watcher.DEAD_ADAPTER_REBOOT_WINDOW + 1.0
+            assert watcher._dead_phy_reboot_guard_permits(later) is True
+
+    def test_corrupt_guard_treated_as_empty(self, watcher, tmp_path):
+        stamp = tmp_path / "guard.json"
+        stamp.write_text("{ not json", encoding="utf-8")
+        with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(stamp)):
+            assert watcher._dead_phy_reboot_guard_permits(1_000_000.0) is True
