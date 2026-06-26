@@ -698,6 +698,9 @@ deploy_phase() {
   rm -f "${INSTALL_DIR}/requirements.lock"
   cp -a "${AUTOSTREAM_DIR}/core/."     "${INSTALL_DIR}/"
   cp    "${AUTOSTREAM_DIR}/platform/wifi_watcher" "${INSTALL_DIR}/"
+  # wifi_watcher's split sibling modules (imported beside it from /opt/autostream).
+  cp    "${AUTOSTREAM_DIR}/platform/wifi_status.py"   "${INSTALL_DIR}/"
+  cp    "${AUTOSTREAM_DIR}/platform/wifi_recovery.py" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
   # wifi_watcher must be renamed — systemd unit and nginx reference autostream_wifi_watcher
   mv "${INSTALL_DIR}/wifi_watcher" "${INSTALL_DIR}/autostream_wifi_watcher"

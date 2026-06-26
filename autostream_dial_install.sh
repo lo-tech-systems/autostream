@@ -88,6 +88,11 @@ install -m 0644 "$DEPLOY/core/autostream_mdns.py"     /opt/autostream/autostream
 # 0644) so the recovery executable's import resolves on every install/update.
 install -m 0644 -o root -g root "$DEPLOY/core/autostream_wifi_network.py" \
     /opt/autostream/autostream_wifi_network.py
+# wifi_watcher's split sibling modules (imported beside it from /opt/autostream).
+install -m 0644 -o root -g root "$DEPLOY/platform/wifi_status.py" \
+    /opt/autostream/wifi_status.py
+install -m 0644 -o root -g root "$DEPLOY/platform/wifi_recovery.py" \
+    /opt/autostream/wifi_recovery.py
 cp -a "$DEPLOY/dial/."     /opt/autostream/
 install -m 0644 "$DEPLOY/dial/autostream_dial_control.py" \
     /opt/autostream/autostream_dial_control.py

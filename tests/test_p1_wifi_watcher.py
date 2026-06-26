@@ -59,6 +59,9 @@ def _get_watcher() -> ModuleType:
         loader = SourceFileLoader(alias, str(WIFI_WATCHER_PATH))
         spec = importlib.util.spec_from_loader(alias, loader)
         mod = importlib.util.module_from_spec(spec)
+        # Register before exec so the module can reference itself for the
+        # split-module seam (wifi_status/wifi_recovery take the watcher module).
+        sys.modules[alias] = mod
 
         # Stub dependencies before exec so module-level code doesn't fail.
         from unittest.mock import MagicMock as MM
@@ -162,6 +165,7 @@ def flask_client(watcher):
     loader = SourceFileLoader(alias, str(WIFI_WATCHER_PATH))
     spec = importlib.util.spec_from_loader(alias, loader)
     flask_mod = importlib.util.module_from_spec(spec)
+    sys.modules[alias] = flask_mod
 
     # Stub only the non-Flask external deps.
     from unittest.mock import MagicMock as MM
@@ -2613,3 +2617,35 @@ class TestProcessSetLogLevel:
                                            {"level": "debug", "ttl_seconds": 900})
         assert watcher.STATE.temporary_log_level == "debug"
         assert watcher.STATE.last_control_result == "ok"
+
+
+# ---------------------------------------------------------------------------
+# WP8 (dead-PHY) — module split: import + delegation
+# ---------------------------------------------------------------------------
+
+class TestModuleSplit:
+    def test_recovery_and_status_modules_import(self, watcher):
+        # The watcher fixture loads the watcher, which puts platform/ on sys.path.
+        import wifi_recovery
+        import wifi_status
+        assert hasattr(wifi_recovery, "escalate_dead_adapter_recovery")
+        assert hasattr(wifi_recovery, "TargetAdapter")
+        assert hasattr(wifi_status, "build_network_status_snapshot")
+
+    def test_watcher_reexports_target_adapter(self, watcher):
+        import wifi_recovery
+        assert watcher.TargetAdapter is wifi_recovery.TargetAdapter
+
+    def test_escalate_delegates(self, watcher):
+        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=False, healthy=True):
+            # Healthy target -> ladder returns False via the delegated impl.
+            assert watcher.escalate_dead_adapter_recovery([usb], False) is False
+
+    def test_snapshot_delegates(self, watcher):
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([], wired_connected=False)
+        assert snap["schema_version"] == 1

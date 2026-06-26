@@ -70,6 +70,13 @@ from dataclasses import dataclass, field
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
 import autostream_wifi_network as wifi_net
 
+# The watcher is deployed beside its split sibling modules (wifi_status.py,
+# wifi_recovery.py) in /opt/autostream.  Ensure that directory is importable
+# both in production (script run directly) and under the test loader.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 APP_BANNER_IMAGE = os.environ.get('APP_BANNER_IMAGE', '').strip()
 _DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
@@ -2992,813 +2999,82 @@ def update_known_adapters(adapters: list) -> None:
         logger.info("Detected Wi-Fi adapter set changed: %s", sorted(macs))
 
 
-# ** DEAD-PHY RECOVERY: DETECTION, BUDGETS, AND PERSISTENT REBOOT GUARD **
+# ** DEAD-PHY RECOVERY (WP2/WP3; extracted to wifi_recovery.py in WP8) **
 #
-# Policy/state for recovering a wedged-but-present USB Wi-Fi adapter.  The
-# bounded sysfs primitives live in autostream_wifi_network (WP1); this section
-# owns *when* to act.  These helpers are pure logic + state (WP2); the loop
-# wiring and reset ladder are added in WP3.  Earmarked for extraction into
-# platform/wifi_recovery.py (WP8).
+# Detection, reset budgets, the persistent reboot guard, and the recovery
+# ladder live in platform/wifi_recovery.py.  These thin wrappers pass this
+# module so the policy code can read STATE, constants, and fact helpers without
+# a circular import.  TargetAdapter is re-exported for callers/tests.
 
+import wifi_recovery
 
-@dataclass(frozen=True)
-class TargetAdapter:
-    """The client adapter the dead-PHY ladder operates on this pass (Section 5.1)."""
-    ifname: str
-    stable_id: str             # active_client_mac/MAC when known, else sysfs/ifname fallback
-    kind: str                  # "usb_wifi" | "builtin_wifi"
-    is_usb: bool
-    is_builtin: bool
-    present_in_nm: bool
-    present_in_sysfs: bool
-    resettable_usb: bool
+TargetAdapter = wifi_recovery.TargetAdapter
+INTERFACE_REAPPEAR_TIMEOUT = wifi_recovery.INTERFACE_REAPPEAR_TIMEOUT
 
 
-def _build_target_adapter(ifname: str, adapters: list) -> TargetAdapter:
-    """Resolve the per-pass facts for *ifname* into a TargetAdapter record."""
-    nm = wifi_net.find_adapter_by_ifname(adapters, ifname)
-    present_in_nm = nm is not None
-    present_in_sysfs = ifname in wifi_net.list_sysfs_netdevs()
-    usb_paths = wifi_net.usb_sysfs_paths(ifname) if present_in_sysfs else None
-    resettable_usb = usb_paths is not None
+def _resolve_target_client(adapters):
+    return wifi_recovery.resolve_target_client(_self_module(), adapters)
 
-    if nm is not None:
-        is_usb = bool(nm.is_usb) or resettable_usb
-        is_builtin = bool(nm.is_builtin) and not resettable_usb
-        stable_id = nm.permanent_mac or wifi_net._sys_read_mac(ifname) or ifname
-    else:
-        is_usb = resettable_usb
-        is_builtin = False
-        stable_id = wifi_net._sys_read_mac(ifname) or ifname
 
-    kind = "usb_wifi" if is_usb else "builtin_wifi"
-    return TargetAdapter(
-        ifname=ifname,
-        stable_id=stable_id,
-        kind=kind,
-        is_usb=is_usb,
-        is_builtin=is_builtin,
-        present_in_nm=present_in_nm,
-        present_in_sysfs=present_in_sysfs,
-        resettable_usb=resettable_usb,
-    )
+def _update_dead_adapter_detection(adapters, target):
+    return wifi_recovery.update_dead_adapter_detection(_self_module(), adapters, target)
 
 
-def _resolve_target_client(adapters: list) -> Optional[TargetAdapter]:
-    """Resolve the dead-PHY target client adapter for this pass (Section 5.1).
+def _clear_dead_adapter_state():
+    wifi_recovery.clear_dead_adapter_state(_self_module())
 
-    Resolution order, most-specific first:
-      1. STATE.active_client_mac mapped to a current NM device or sysfs netdev.
-      2. STATE.active_client_ifname when present in discovery.
-      3. the deterministic startup target: sole USB candidate, else built-in.
-      4. AP_IFNAME ("wlan0") as a last-resort literal.
-    """
-    with state_lock:
-        rec_mac = STATE.active_client_mac
-        rec_ifname = STATE.active_client_ifname
 
-    # 1. recorded MAC -> current interface (NM first, then sysfs-only).
-    if rec_mac:
-        adapter = wifi_net.find_adapter_by_mac(adapters, rec_mac)
-        if adapter is not None:
-            return _build_target_adapter(adapter.ifname, adapters)
-        sysfs_if = wifi_net.find_sysfs_netdev_by_mac(rec_mac)
-        if sysfs_if:
-            return _build_target_adapter(sysfs_if, adapters)
+def _adapter_reset_budget_exhausted(target, now):
+    return wifi_recovery.adapter_reset_budget_exhausted(_self_module(), target, now)
 
-    # 2. recorded ifname present in discovery.
-    if rec_ifname and wifi_net.find_adapter_by_ifname(adapters, rec_ifname) is not None:
-        return _build_target_adapter(rec_ifname, adapters)
 
-    # 3. deterministic startup target.
-    usb = wifi_net.usb_candidates(adapters)
-    if len(usb) == 1:
-        return _build_target_adapter(usb[0].ifname, adapters)
-    builtin = wifi_net.resolve_builtin(adapters)
-    if builtin is not None:
-        return _build_target_adapter(builtin.ifname, adapters)
+def _record_adapter_reset(target, now):
+    wifi_recovery.record_adapter_reset(_self_module(), target, now)
 
-    # 4. last-resort literal.
-    return _build_target_adapter(AP_IFNAME, adapters)
 
+def _dead_phy_reboot_guard_permits(now_wall):
+    return wifi_recovery.dead_phy_reboot_guard_permits(_self_module(), now_wall)
 
-def _clear_dead_adapter_state_locked() -> None:
-    """Clear the *active* dead/debounce/reset fields (assumes state_lock held)."""
-    STATE.dead_adapter_ifname = ""
-    STATE.dead_adapter_checks = 0
-    STATE.dead_adapter_since = None
-    STATE.last_reset_attempt = None
-    STATE.last_reset_method = ""
 
+def _record_dead_phy_reboot_request(now_wall, target):
+    wifi_recovery.record_dead_phy_reboot_request(_self_module(), now_wall, target)
 
-def _clear_dead_adapter_state() -> None:
-    """Clear the active dead/debounce/reset fields (does not erase the ledger)."""
-    with state_lock:
-        _clear_dead_adapter_state_locked()
 
+def wait_for_interface_reappears(target, timeout=INTERFACE_REAPPEAR_TIMEOUT):
+    return wifi_recovery.wait_for_interface_reappears(_self_module(), target, timeout)
 
-def _reset_dead_ledger_locked() -> None:
-    """Drop all dead-PHY state including reset history (assumes state_lock held)."""
-    _clear_dead_adapter_state_locked()
-    STATE.dead_adapter_first_failure = None
-    STATE.dead_adapter_recent_resets = []
-    STATE.dead_adapter_total_resets = 0
-    STATE.dead_adapter_quarantined_until = None
-    STATE.dead_adapter_healthy_since = None
 
+def escalate_dead_adapter_recovery(adapters, wired_connected):
+    return wifi_recovery.escalate_dead_adapter_recovery(_self_module(), adapters, wired_connected)
 
-def _update_dead_adapter_detection(adapters: list, target: Optional[TargetAdapter]) -> bool:
-    """Advance/clear the debounce; return True when the adapter is classed dead.
 
-    A target that is present (in sysfs or NM), link-down, and not a healthy
-    client increments the debounce; reaching DEAD_ADAPTER_DEBOUNCE declares the
-    adapter dead.  A sustained-healthy pass clears the active fields, and the
-    reset ledger decays after DEAD_ADAPTER_HEALTHY_DECAY seconds of health.  A
-    change of stable identity resets the debounce and ledger.
-    """
-    now = time.monotonic()
-    if target is None:
-        _clear_dead_adapter_state()
-        return False
-
-    link_down = wifi_net.read_link_down(target.ifname)
-    present = target.present_in_sysfs or target.present_in_nm
-    healthy = (
-        is_wifi_client_healthy(target.ifname) if target.present_in_nm else False
-    )
-    down_unhealthy = bool(present and link_down is True and not healthy)
-
-    declared_now = False
-    checks = 0
-    with state_lock:
-        prev_id = STATE.dead_adapter_stable_id
-        if prev_id and prev_id != target.stable_id:
-            logger.debug(
-                "Dead-PHY target identity changed (%s -> %s); resetting ledger",
-                prev_id, target.stable_id,
-            )
-            _reset_dead_ledger_locked()
-        STATE.dead_adapter_stable_id = target.stable_id
-
-        if not down_unhealthy:
-            _clear_dead_adapter_state_locked()
-            if healthy:
-                if STATE.dead_adapter_healthy_since is None:
-                    STATE.dead_adapter_healthy_since = now
-                elif (now - STATE.dead_adapter_healthy_since) >= DEAD_ADAPTER_HEALTHY_DECAY:
-                    _reset_dead_ledger_locked()
-            else:
-                STATE.dead_adapter_healthy_since = None
-            return False
-
-        STATE.dead_adapter_healthy_since = None
-        if STATE.dead_adapter_first_failure is None:
-            STATE.dead_adapter_first_failure = now
-        STATE.dead_adapter_checks += 1
-        checks = STATE.dead_adapter_checks
-        if checks >= DEAD_ADAPTER_DEBOUNCE:
-            if not STATE.dead_adapter_ifname:
-                declared_now = True
-            STATE.dead_adapter_ifname = target.ifname
-            if STATE.dead_adapter_since is None:
-                STATE.dead_adapter_since = now
-            result = True
-        else:
-            result = False
-
-    if declared_now:
-        logger.info(
-            "Wi-Fi adapter %s wedged (link-down x%d); attempting USB reset",
-            target.ifname, checks,
-        )
-    else:
-        logger.debug(
-            "Dead-PHY debounce on %s: %d/%d", target.ifname, checks, DEAD_ADAPTER_DEBOUNCE,
-        )
-    return result
-
-
-def _prune_recent_resets_locked(now: float) -> None:
-    cutoff = now - USB_RESET_WINDOW
-    STATE.dead_adapter_recent_resets = [
-        t for t in STATE.dead_adapter_recent_resets if t >= cutoff
-    ]
-
-
-def _adapter_reset_budget_exhausted(target: Optional[TargetAdapter], now: float) -> bool:
-    """True when the adapter has hit either the per-window or total reset budget.
-
-    The *policy* decision (quarantine vs. emergency-only retry) lives in the
-    ladder (WP3); this reports only whether the budget is spent.
-    """
-    with state_lock:
-        _prune_recent_resets_locked(now)
-        recent = len(STATE.dead_adapter_recent_resets)
-        total = STATE.dead_adapter_total_resets
-    exhausted = recent >= USB_MAX_RESETS_PER_WINDOW or total >= USB_MAX_RESETS_TOTAL
-    if exhausted:
-        logger.debug(
-            "Reset budget exhausted for %s: recent=%d/%d total=%d/%d",
-            target.ifname if target else "?", recent, USB_MAX_RESETS_PER_WINDOW,
-            total, USB_MAX_RESETS_TOTAL,
-        )
-    return exhausted
-
-
-def _record_adapter_reset(target: Optional[TargetAdapter], now: float) -> None:
-    """Record one reset attempt against the rolling/total budgets."""
-    with state_lock:
-        _prune_recent_resets_locked(now)
-        STATE.dead_adapter_recent_resets.append(now)
-        STATE.dead_adapter_total_resets += 1
-        recent = len(STATE.dead_adapter_recent_resets)
-        total = STATE.dead_adapter_total_resets
-    logger.debug(
-        "Recorded USB reset for %s: recent=%d total=%d",
-        target.ifname if target else "?", recent, total,
-    )
-
-
-# ---- Persistent dead-PHY reboot guard (cross-boot loop prevention, Section 4) ----
-
-def _empty_reboot_guard(now_wall: float) -> dict:
-    return {"schema_version": 1, "window_started_at": now_wall, "requests": []}
-
-
-def _read_dead_phy_reboot_guard(now_wall: float) -> dict:
-    """Read and prune the persistent reboot-guard file (wall-clock).
-
-    Requests older than DEAD_ADAPTER_REBOOT_WINDOW are discarded; if none
-    remain a fresh window is started.  Corrupt/unreadable files are treated as
-    empty but logged at WARNING.
-    """
-    try:
-        with open(DEAD_ADAPTER_REBOOT_STAMP, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-    except FileNotFoundError:
-        return _empty_reboot_guard(now_wall)
-    except (OSError, ValueError) as e:
-        logger.warning("Dead-PHY reboot guard unreadable (%s); treating as empty", e)
-        return _empty_reboot_guard(now_wall)
-
-    if not isinstance(obj, dict) or obj.get("schema_version") != 1:
-        logger.warning("Dead-PHY reboot guard has unexpected schema; treating as empty")
-        return _empty_reboot_guard(now_wall)
-
-    reqs = obj.get("requests")
-    if not isinstance(reqs, list):
-        reqs = []
-    cutoff = now_wall - DEAD_ADAPTER_REBOOT_WINDOW
-    retained = [
-        r for r in reqs
-        if isinstance(r, dict)
-        and isinstance(r.get("requested_at"), (int, float))
-        and not isinstance(r.get("requested_at"), bool)
-        and r["requested_at"] >= cutoff
-    ]
-    started = obj.get("window_started_at")
-    if not retained or not isinstance(started, (int, float)) or isinstance(started, bool):
-        started = now_wall
-    return {"schema_version": 1, "window_started_at": started, "requests": retained}
-
-
-def _dead_phy_reboot_guard_permits(now_wall: float) -> bool:
-    """True when fewer than the cross-boot cap of retained requests exist."""
-    guard = _read_dead_phy_reboot_guard(now_wall)
-    count = len(guard["requests"])
-    permitted = count < DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW
-    if not permitted:
-        logger.debug(
-            "Dead-PHY reboot guard: %d requests in window (cap %d); suppressing",
-            count, DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW,
-        )
-    return permitted
-
-
-def _record_dead_phy_reboot_request(now_wall: float, target: Optional[TargetAdapter]) -> None:
-    """Append a reboot request and atomically persist the guard file."""
-    guard = _read_dead_phy_reboot_guard(now_wall)
-    guard["requests"].append({
-        "requested_at": now_wall,
-        "ifname": target.ifname if target else "",
-        "stable_id": target.stable_id if target else "",
-    })
-    try:
-        directory = os.path.dirname(DEAD_ADAPTER_REBOOT_STAMP) or "."
-        os.makedirs(directory, exist_ok=True)
-        wifi_net._atomic_write(
-            DEAD_ADAPTER_REBOOT_STAMP, json.dumps(guard, indent=2) + "\n", mode=0o644,
-        )
-    except OSError as e:
-        logger.warning("Could not persist dead-PHY reboot guard: %s", e)
-
-
-# ---- Dead-PHY recovery ladder (WP3) ----
-
-INTERFACE_REAPPEAR_TIMEOUT = 15  # seconds to wait for a netdev after a USB reset
-
-
-def wait_for_interface_reappears(target: TargetAdapter,
-                                 timeout: float = INTERFACE_REAPPEAR_TIMEOUT) -> str:
-    """Poll sysfs + NM discovery for the target to reappear after a reset.
-
-    Rediscovers by stable identity/MAC (NetworkManager), then by ifname in NM,
-    then by sysfs MAC, then by sysfs ifname — in that order.  Returns the
-    resolved ifname (which may differ from the original) or "".  Does NOT wait
-    for ``operstate up``; after a reset the interface can remain down/dormant
-    until activation starts (~4-6s to firmware reload/association on the field
-    unit).
-    """
-    deadline = time.monotonic() + timeout
-    stable = target.stable_id
-    while True:
-        adapters = wifi_net.discover_adapters()
-        by_mac = wifi_net.find_adapter_by_mac(adapters, stable)
-        if by_mac is not None:
-            return by_mac.ifname
-        by_if = wifi_net.find_adapter_by_ifname(adapters, target.ifname)
-        if by_if is not None:
-            return by_if.ifname
-        sysfs_if = wifi_net.find_sysfs_netdev_by_mac(stable)
-        if sysfs_if:
-            return sysfs_if
-        if target.ifname in wifi_net.list_sysfs_netdevs():
-            return target.ifname
-        if time.monotonic() >= deadline:
-            return ""
-        time.sleep(1.0)
-
-
-def _other_network_path_available(adapters: list, target: TargetAdapter,
-                                  wired_connected: bool) -> bool:
-    """True when a usable network path other than *target* exists."""
-    if wired_connected:
-        return True
-    for a in adapters:
-        if a.ifname == target.ifname:
-            continue
-        if a.managed and is_wifi_client_healthy(a.ifname):
-            return True
-    return False
-
-
-def _perform_reset_step(target: TargetAdapter, now: float) -> bool:
-    """Run one USB reset step (cycling A->B->A), then rediscover and reconnect.
-
-    Always returns True: the reset attempt owns the monitor pass regardless of
-    outcome.
-    """
-    with state_lock:
-        method = "B" if STATE.last_reset_method == "A" else "A"
-
-    logger.info("USB reset (method %s) attempted on %s", method, target.ifname)
-    if method == "A":
-        ok = wifi_net.reset_usb_adapter_rebind(target.ifname)
-    else:
-        # Method B is the defensive fallback re-enumeration.
-        ok = wifi_net.reset_usb_adapter_reenumerate(target.ifname)
-
-    _record_adapter_reset(target, now)
-    with state_lock:
-        STATE.last_reset_attempt = now
-        STATE.last_reset_method = method
-
-    if not ok:
-        logger.warning("USB reset (method %s) failed on %s; escalating", method, target.ifname)
-        return True
-
-    new_ifname = wait_for_interface_reappears(target)
-    if not new_ifname:
-        logger.warning("USB reset (method %s): %s did not reappear", method, target.ifname)
-        return True
-
-    if _activate_committed_on(new_ifname):
-        logger.info("USB reset (method %s) recovered %s", method, new_ifname)
-        adapters = wifi_net.discover_adapters()
-        recovered = wifi_net.find_adapter_by_ifname(adapters, new_ifname)
-        if recovered is not None:
-            _set_active_client(recovered)
-        with state_lock:
-            STATE.using_builtin_fallback = False
-            in_setup = STATE.setup_mode
-        _clear_dead_adapter_state()
-        if in_setup:
-            leave_setup_mode("dead-PHY recovered via USB reset")
-        verify_avahi_after_handover()
-    return True
-
-
-def _maybe_request_dead_phy_reboot(target: TargetAdapter, now: float) -> bool:
-    """Request a guarded NetworkDown reboot when offline and dead >= threshold.
-
-    Returns True only when a reboot was accepted (owns the pass).  When the
-    persistent guard or in-process rate limit suppresses the reboot, returns
-    False so the existing post-AP 24h backstop remains in effect.
-    """
-    with state_lock:
-        first_failure = STATE.dead_adapter_first_failure
-        retry_after = STATE.conn_reboot_retry_after
-    base = first_failure if first_failure is not None else now
-    dead_for = now - base
-    if dead_for < DEAD_ADAPTER_REBOOT_AFTER:
-        return False
-
-    now_wall = time.time()
-    if not _dead_phy_reboot_guard_permits(now_wall):
-        logger.warning(
-            "Persistent dead-PHY reboot guard suppresses reboot for %s; "
-            "leaving 24h backstop in effect", target.ifname,
-        )
-        return False
-
-    if now < retry_after:
-        if retry_after == float('inf'):
-            logger.debug("Dead-PHY NetworkDown reboot accepted; awaiting reboot")
-        else:
-            logger.debug("Dead-PHY reboot suppressed (in-process); retry in %.0fs",
-                         retry_after - now)
-        return False
-
-    logger.warning(
-        "Dead Wi-Fi adapter %s offline > %ds; requesting reboot",
-        target.ifname, DEAD_ADAPTER_REBOOT_AFTER,
-    )
-    accepted = reboot_system("NetworkDown")
-    with state_lock:
-        STATE.conn_reboot_retry_after = (
-            float('inf') if accepted else now + REBOOT_RATE_LIMIT_RETRY
-        )
-    if accepted:
-        _record_dead_phy_reboot_request(now_wall, target)
-        return True
-    return False
-
-
-def escalate_dead_adapter_recovery(adapters: list, wired_connected: bool) -> bool:
-    """Run one step of the dead-PHY recovery ladder (Section 3).
-
-    Resolves the target client, advances dead detection, and — when the adapter
-    is dead — steps the ladder: built-in fallback -> USB reset (Method A/B) ->
-    quarantine/backoff -> guarded reboot (offline only).  Returns True when an
-    action owned this pass (the caller should sleep and ``continue``).
-    """
-    now = time.monotonic()
-    target = _resolve_target_client(adapters)
-    dead = _update_dead_adapter_detection(adapters, target)
-    if not dead or target is None:
-        return False
-
-    # (1) Setup-mode: defer only to a working AP on a *different* adapter.  On
-    # single-radio hardware whose sole radio is the dead target, do NOT suppress
-    # recovery forever — reset it instead of leaving a dead hotspot.
-    with state_lock:
-        in_setup = STATE.setup_mode
-    if in_setup:
-        hotspot = resolve_hotspot_adapter(adapters)
-        if hotspot is not None and hotspot.ifname != target.ifname:
-            logger.debug(
-                "Dead-PHY: AP active on %s; deferring recovery of %s",
-                hotspot.ifname, target.ifname,
-            )
-            return False
-        logger.warning(
-            "Single-radio hotspot cannot start because the only radio %s appears "
-            "dead; using USB reset ladder instead", target.ifname,
-        )
-
-    # (2) Built-in client fallback when a *separate* built-in radio is present.
-    builtin = wifi_net.resolve_builtin(adapters)
-    if builtin is not None and builtin.ifname != target.ifname:
-        if _activate_committed_on(builtin.ifname):
-            logger.info("Dead-PHY: built-in fallback selected and connected on %s",
-                        builtin.ifname)
-            with state_lock:
-                STATE.using_builtin_fallback = True
-            _set_active_client(builtin)
-            _clear_dead_adapter_state()
-            verify_avahi_after_handover()
-            return True
-
-    other_path = _other_network_path_available(adapters, target, wired_connected)
-
-    # (3)/(4)/(5) USB reset rungs — only a resettable USB target can be reset.
-    if target.resettable_usb:
-        budget_spent = _adapter_reset_budget_exhausted(target, now)
-        if budget_spent and other_path:
-            # (3) Quarantine for preferred client use; keep publishing degraded
-            # status and let the normal loop logic run.
-            with state_lock:
-                newly = STATE.dead_adapter_quarantined_until is None
-                STATE.dead_adapter_quarantined_until = now + USB_RESET_WINDOW
-            if newly:
-                logger.info(
-                    "USB adapter %s quarantined for preferred client use "
-                    "(reset budget exhausted; alternate path available)", target.ifname,
-                )
-            return False
-
-        # (4) Emergency-only slow backoff when this USB is the only path;
-        # (5) otherwise the normal reset cadence.
-        interval = USB_EMERGENCY_BACKOFF if budget_spent else RESET_ATTEMPT_INTERVAL
-        with state_lock:
-            last = STATE.last_reset_attempt
-        due = last is None or (now - last) >= interval
-        if due:
-            if budget_spent:
-                logger.info(
-                    "USB adapter %s reset budget exhausted but no other path; "
-                    "slow emergency reset attempt", target.ifname,
-                )
-            return _perform_reset_step(target, now)
-
-    # (6) Reboot escalation — only when genuinely offline.
-    if not wired_connected and _maybe_request_dead_phy_reboot(target, now):
-        return True
-
-    return False
-
-
-# ** RUNTIME NETWORK-STATUS SNAPSHOT (WP6) **
+# ** RUNTIME NETWORK-STATUS SNAPSHOT (WP6; extracted to wifi_status.py in WP8) **
 #
-# Build the nested schema_version:1 snapshot from facts + recovery state and
-# publish it atomically to /run/autostream/network-status.json.  This is the
-# source of truth the autostream application reads.  Earmarked for extraction
-# into platform/wifi_status.py (WP8); core only serialises/reads it.
+# Snapshot construction/publishing lives in platform/wifi_status.py.  These
+# thin wrappers pass this module so the status builder can read STATE, fact
+# helpers, and constants without a circular import.
 
-_LOG_LEVEL_NAME_BY_NO = {
-    logging.WARNING: "warning",
-    logging.INFO: "info",
-    logging.DEBUG: "debug",
-}
+import wifi_status
 
 
-def _effective_log_level_name() -> str:
-    """Return the effective runtime log level name (warning/info/debug)."""
-    with state_lock:
-        temp = STATE.temporary_log_level
-        default = STATE.default_log_level_name
-    if temp:
-        return temp
-    return default or "info"
+def _self_module():
+    """Return this watcher module object for the split-module seam.
 
-
-def _primary_addresses(addresses: dict, ifname: str) -> tuple[str, str]:
-    """Return (primary_ipv4, primary_ipv6) preferring global over link-local."""
-    ipv4 = ""
-    ipv6 = ""
-    for a in addresses.get(ifname, []):
-        if a["family"] == "ipv4":
-            if a.get("scope") == "global" and not ipv4:
-                ipv4 = a["address"]
-        elif a["family"] == "ipv6":
-            if a.get("scope") == "global" and not ipv6:
-                ipv6 = a["address"]
-    return ipv4, ipv6
-
-
-def _adapter_ip_lists(addresses: dict, ifname: str) -> tuple[list, list]:
-    v4 = [a for a in addresses.get(ifname, []) if a["family"] == "ipv4"]
-    v6 = [a for a in addresses.get(ifname, []) if a["family"] == "ipv6"]
-    return v4, v6
-
-
-def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
-                             is_dead, is_link_down, quarantined, is_hotspot):
-    """Map facts + recovery flags to a defined adapter health state/severity."""
-    if not present:
-        state = "absent"
-    elif is_hotspot:
-        state = "hotspot_active"
-    elif not managed:
-        state = "unmanaged"
-    elif quarantined:
-        state = "quarantined"
-    elif is_dead:
-        state = "dead_phy"
-    elif healthy:
-        state = "healthy"
-    elif is_link_down:
-        state = "link_down"
-    elif nm_state in ("connecting", "config", "ip-config", "prepare", "need-auth"):
-        state = "connecting"
-    elif nm_state in ("connected", "activated"):
-        # NM-connected but not a usable client (no gateway yet).
-        state = "degraded"
-    else:
-        state = "idle"
-
-    ok_states = {"healthy", "idle", "connecting", "hotspot_active"}
-    severity = "ok" if state in ok_states else "degraded"
-    return state, severity
+    Works whether the watcher is run as a script (__main__) or loaded under an
+    alias by the test harness.
+    """
+    return sys.modules.get(__name__) or sys.modules.get("__main__") or globals().get("__SELF__")
 
 
 def build_network_status_snapshot(adapters: Optional[list] = None,
                                   wired_connected: Optional[bool] = None) -> dict:
-    """Build the schema_version:1 runtime network-status snapshot.
-
-    Uses the watcher's facts and the dead-PHY recovery ledger.  All derived
-    meaning is computed here (platform policy); core only serialises it.
-    """
-    if adapters is None:
-        try:
-            adapters = wifi_net.discover_adapters()
-        except Exception:
-            adapters = []
-    if wired_connected is None:
-        wired_connected = is_wired_connected()
-
-    addresses = wifi_net.list_interface_addresses()
-    now_wall = time.time()
-
-    with state_lock:
-        active_ifname = STATE.active_client_ifname
-        active_mac = STATE.active_client_mac
-        using_fallback = STATE.using_builtin_fallback
-        in_setup = STATE.setup_mode
-        dead_ifname = STATE.dead_adapter_ifname
-        dead_since = STATE.dead_adapter_since
-        dead_checks = STATE.dead_adapter_checks
-        dead_first_failure = STATE.dead_adapter_first_failure
-        quarantined_until = STATE.dead_adapter_quarantined_until
-        last_reset_method = STATE.last_reset_method
-        last_reset_attempt = STATE.last_reset_attempt
-        recent_resets = list(STATE.dead_adapter_recent_resets)
-        reboot_retry_after = STATE.conn_reboot_retry_after
-        temp_expires = STATE.temporary_log_level_until
-        default_level = STATE.default_log_level_name
-
-    hotspot_adapter = resolve_hotspot_adapter(adapters)
-    hotspot_ifname = hotspot_adapter.ifname if (in_setup and hotspot_adapter) else ""
-
-    adapter_records = []
-    any_healthy = False
-    any_unhealthy = False
-    for a in adapters:
-        healthy = a.managed and is_wifi_client_healthy(a.ifname)
-        link_down = wifi_net.read_link_down(a.ifname)
-        operstate = wifi_net.read_operstate(a.ifname)
-        carrier = (link_down is False)
-        is_dead = (a.ifname == dead_ifname)
-        is_hotspot = (a.ifname == hotspot_ifname)
-        quarantined = bool(quarantined_until) and is_dead
-        v4, v6 = _adapter_ip_lists(addresses, a.ifname)
-
-        if healthy:
-            any_healthy = True
-        elif a.managed and not is_hotspot:
-            any_unhealthy = True
-
-        gw_ipv4 = wifi_net.default_gateway_ipv4(a.ifname)
-        gw_reachable = is_gateway_reachable(a.ifname) if gw_ipv4 else False
-
-        state, severity = _classify_adapter_health(
-            present=True, managed=a.managed, carrier=carrier, healthy=healthy,
-            nm_state=a.state, is_dead=is_dead, is_link_down=(link_down is True),
-            quarantined=quarantined, is_hotspot=is_hotspot,
-        )
-
-        if is_hotspot:
-            role = "hotspot"
-        elif a.ifname == active_ifname or (active_mac and a.permanent_mac == active_mac):
-            role = "client"
-        else:
-            role = "idle"
-
-        # Policy action for this adapter.
-        if quarantined:
-            action = "quarantined"
-            next_after = quarantined_until
-        elif is_dead:
-            action = "reset_backoff"
-            base = last_reset_attempt if last_reset_attempt is not None else None
-            next_after = (base + RESET_ATTEMPT_INTERVAL) if base is not None else None
-        else:
-            action = "none"
-            next_after = None
-        last_action = (
-            f"usb_reset_method_{last_reset_method.lower()}"
-            if (is_dead and last_reset_method) else ""
-        )
-
-        adapter_records.append({
-            "ifname": a.ifname,
-            "stable_id": a.stable_id,
-            "kind": a.kind + ("_wifi" if a.kind in ("usb", "builtin") else ""),
-            "role": role,
-            "facts": {
-                "present": True,
-                "managed": a.managed,
-                "carrier": carrier,
-                "operstate": operstate,
-                "nm_state": a.state,
-                "ipv4": v4,
-                "ipv6": v6,
-                "gateway": {
-                    "ipv4": gw_ipv4,
-                    "ipv4_reachable": gw_reachable,
-                    "ipv6": "",
-                    "ipv6_reachable": None,
-                    "last_checked_at": now_wall,
-                },
-            },
-            "health": {
-                "state": state,
-                "severity": severity,
-                "since": dead_since if is_dead else None,
-                "checks": dead_checks if is_dead else 0,
-                "reason": "link_down_unhealthy" if is_dead else "",
-            },
-            "policy": {
-                "eligible": a.managed,
-                "preferred": (role == "client" and not quarantined),
-                "quarantined": quarantined,
-                "action": action,
-                "last_action": last_action,
-                "next_action_after": next_after,
-                "resets_24h": len(recent_resets) if is_dead else 0,
-                "reset_budget_24h": USB_MAX_RESETS_PER_WINDOW,
-            },
-        })
-
-    online_path = wired_connected or any_healthy
-
-    # Primary interface selection: prefer a healthy active client, then wired.
-    primary_ifname = ""
-    primary_kind = ""
-    if active_ifname and any(
-        r["ifname"] == active_ifname and r["health"]["state"] == "healthy"
-        for r in adapter_records
-    ):
-        primary_ifname = active_ifname
-        primary_kind = next(r["kind"] for r in adapter_records if r["ifname"] == active_ifname)
-    elif wired_connected:
-        # Pick the first wired interface with a global address.
-        for name in addresses:
-            if name.startswith(("eth", "en")):
-                primary_ifname = name
-                primary_kind = "ethernet"
-                break
-
-    primary_ipv4, primary_ipv6 = _primary_addresses(addresses, primary_ifname) if primary_ifname else ("", "")
-
-    if in_setup:
-        device_state = "setup_mode"
-    elif reboot_retry_after == float("inf"):
-        device_state = "reboot_pending"
-    elif online_path:
-        device_state = "degraded" if (using_fallback or any_unhealthy) else "online"
-    elif dead_ifname:
-        device_state = "recovering"
-    else:
-        device_state = "offline"
-
-    hotspot_reason = ""
-    if in_setup:
-        with state_lock:
-            hotspot_reason = STATE.setup_purpose
-
-    return {
-        "schema_version": wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
-        "updated_at": now_wall,
-        "device": {
-            "state": device_state,
-            "primary_ifname": primary_ifname,
-            "primary_kind": primary_kind,
-            "primary_ipv4": primary_ipv4,
-            "primary_ipv6": primary_ipv6,
-        },
-        "hotspot": {
-            "active": bool(hotspot_ifname),
-            "ifname": hotspot_ifname,
-            "reason": hotspot_reason,
-        },
-        "logging": {
-            "effective_level": _effective_log_level_name(),
-            "default_level": default_level or "info",
-            "temporary_level_expires_at": temp_expires,
-        },
-        "adapters": adapter_records,
-    }
-
-
-_status_schema_logged = False
+    return wifi_status.build_network_status_snapshot(
+        _self_module(), adapters, wired_connected)
 
 
 def publish_network_status(adapters: Optional[list] = None,
                            wired_connected: Optional[bool] = None) -> None:
-    """Build and atomically publish the runtime status snapshot (best-effort)."""
-    global _status_schema_logged
-    try:
-        snapshot = build_network_status_snapshot(adapters, wired_connected)
-        wifi_net.write_network_status_snapshot(snapshot)
-        if not _status_schema_logged:
-            _status_schema_logged = True
-            logger.info("Network status snapshot schema v%d initialised at %s",
-                        wifi_net.NETWORK_STATUS_SCHEMA_VERSION, wifi_net.NETWORK_STATUS_PATH)
-        else:
-            logger.debug("Published network status snapshot")
-    except Exception as e:
-        logger.warning("Network status snapshot write failed: %s", e)
+    wifi_status.publish_network_status(_self_module(), adapters, wired_connected)
 
 
 # ** AVAHI mDNS HOSTNAME MONITORING **
