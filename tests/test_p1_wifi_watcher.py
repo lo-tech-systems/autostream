@@ -2158,3 +2158,49 @@ def tmp_guard():
     """Return a unique temp path for a dead-PHY reboot guard file."""
     import tempfile
     return Path(tempfile.mkdtemp()) / "dead-phy-reboot.stamp"
+
+
+# ---------------------------------------------------------------------------
+# WP4 (dead-PHY) — reboot-threshold domain: 30 min, not the 24h post-AP backstop
+# ---------------------------------------------------------------------------
+
+class TestDeadPhyRebootThreshold:
+    USB_MAC = "dc:62:79:91:4d:d6"
+
+    def _wedged_offline(self, watcher, now):
+        usb = _adapter(watcher, "wlan0", self.USB_MAC, is_usb=True)
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_since = 1.0
+        watcher.STATE.dead_adapter_first_failure = 1.0
+        watcher.STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
+        watcher.STATE.dead_adapter_stable_id = self.USB_MAC
+        watcher.STATE.last_reset_attempt = 1.0
+        return usb
+
+    def _run(self, watcher, now):
+        usb = self._wedged_offline(watcher, now)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=[],  # non-resettable -> reboot rung
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch("time.monotonic", return_value=now), \
+             patch("time.time", return_value=1_000_000.0), \
+             patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(tmp_guard())), \
+             patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            watcher.escalate_dead_adapter_recovery([usb], False)
+        return reboot
+
+    def test_no_reboot_before_30_min(self, watcher):
+        reboot = self._run(watcher, watcher.DEAD_ADAPTER_REBOOT_AFTER - 60.0)
+        reboot.assert_not_called()
+
+    def test_reboot_at_30_min_not_24h(self, watcher):
+        # Far below the 24h post-AP backstop, but past the 30-min dead-PHY path.
+        now = watcher.DEAD_ADAPTER_REBOOT_AFTER + 60.0
+        assert now < watcher.AP_POST_CLOSE_REBOOT_AFTER
+        reboot = self._run(watcher, now)
+        reboot.assert_called_once_with("NetworkDown")
+
+    def test_threshold_is_30_min(self, watcher):
+        assert watcher.DEAD_ADAPTER_REBOOT_AFTER == watcher.GW_DOWN_REBOOT_AFTER
+        assert watcher.DEAD_ADAPTER_REBOOT_AFTER == 30 * 60

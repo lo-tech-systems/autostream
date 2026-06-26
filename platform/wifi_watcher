@@ -2022,6 +2022,20 @@ def network_monitor_loop():
             use the kernel's view of the default gateway as a health check.
             If unreachable for > GW_DOWN_RECONNECT_AFTER: periodically attempt reconnect.
             If unreachable for > GW_DOWN_REBOOT_AFTER: reboot.
+
+    Reboot-timer domains (WP4 — keep these distinct; do not swap the post-AP
+    threshold globally, or ordinary post-AP config failures would reboot too
+    aggressively):
+      - Dead-PHY, present/sysfs-resettable, offline: the dead-PHY ladder
+            (escalate_dead_adapter_recovery) owns the 30-minute
+            DEAD_ADAPTER_REBOOT_AFTER reboot.  It runs every pass before the
+            ethernet-wins short-circuit, so a wedged, offline adapter never
+            waits 24h for its first reboot.
+      - Generic gateway-down while NOT in ap_exhausted: the existing 30-minute
+            GW_DOWN_REBOOT_AFTER path below.
+      - Non-dead-PHY post-AP exhausted: the existing 24-hour
+            AP_POST_CLOSE_REBOOT_AFTER backstop (and the dead-PHY backstop when
+            the persistent reboot guard suppresses the 30-minute path).
     """
     logger.info("Starting network monitor loop")
 
@@ -2278,7 +2292,12 @@ def network_monitor_loop():
                 continue
 
         # If AP mode has closed and we're still offline, periodically try to connect,
-        # and reboot after AP_POST_CLOSE_REBOOT_AFTER.
+        # and reboot after AP_POST_CLOSE_REBOOT_AFTER.  This 24h threshold is the
+        # NON-dead-PHY backstop only (WP4): a wedged, present, offline adapter is
+        # already handled by the 30-minute dead-PHY ladder above, which runs every
+        # pass regardless of ap_exhausted.  This block also serves as the dead-PHY
+        # backstop when the persistent dead-PHY reboot guard suppresses the
+        # 30-minute path.
         with state_lock:
             ap_exhausted = STATE.ap_exhausted
             ap_closed_time = STATE.ap_closed_time
@@ -2341,6 +2360,10 @@ def network_monitor_loop():
 
                 down_for = now - down_start
 
+                # Generic gateway-down 30-minute reboot (WP4): this governs a
+                # configured client that is connected but has no usable gateway
+                # (e.g. DHCP/router change), NOT a wedged/NO-CARRIER adapter —
+                # that case is owned by the dead-PHY ladder above.
                 if down_for >= GW_DOWN_REBOOT_AFTER:
                     with state_lock:
                         retry_after = STATE.conn_reboot_retry_after
