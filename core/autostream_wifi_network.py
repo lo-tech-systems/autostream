@@ -31,6 +31,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from autostream_sysutils import run_cmd
@@ -565,6 +566,169 @@ def find_adapter_by_mac(
         if a.permanent_mac == norm:
             return a
     return None
+
+
+# ===========================================================================
+# USB sysfs reset primitives (dead-PHY recovery — WP1)
+# ===========================================================================
+#
+# These are pure, side-effect-isolated facts/primitives.  They resolve sysfs
+# paths and perform the bounded sysfs writes that revive a wedged USB Wi-Fi
+# adapter; they contain NO recovery policy, timing, or nmcli orchestration.
+# The caller (the watcher) decides *when* to reset, waits for the interface to
+# reappear, and re-issues nmcli.  All write functions swallow OSError and
+# return False rather than raising.  ``sys_root`` and ``bus_root`` are
+# parameterised so tests can point at a fake tree.
+
+
+def list_sysfs_netdevs(sys_root: str = "/sys/class/net") -> list[str]:
+    """Return interface names present in sysfs, independent of NetworkManager.
+
+    Entries in ``/sys/class/net`` are per-interface symlinks to device dirs;
+    return the names whose joined path resolves to a directory.
+    """
+    try:
+        names = os.listdir(sys_root)
+    except OSError:
+        return []
+    return sorted(
+        n for n in names if os.path.isdir(os.path.join(sys_root, n))
+    )
+
+
+def find_sysfs_netdev_by_mac(mac: str, sys_root: str = "/sys/class/net") -> str:
+    """Return the sysfs ifname whose address matches *mac*, or "".
+
+    Consults sysfs only, so a NetworkManager-disappeared but sysfs-present
+    adapter can still be located by its stable MAC.
+    """
+    norm = normalise_mac(mac)
+    if not norm:
+        return ""
+    for name in list_sysfs_netdevs(sys_root):
+        if _sys_read_mac(name, sys_root) == norm:
+            return name
+    return ""
+
+
+def read_link_down(ifname: str, sys_root: str = "/sys/class/net") -> Optional[bool]:
+    """True if carrier==0 or operstate in {down,dormant}; None if unreadable.
+
+    The kernel returns ``EINVAL`` when ``carrier`` is read while the interface
+    is administratively down, so a missing carrier is tolerated as long as
+    ``operstate`` is readable.
+    """
+    base = os.path.join(sys_root, ifname)
+    carrier: Optional[str] = None
+    try:
+        with open(os.path.join(base, "carrier"), "r", encoding="utf-8") as f:
+            carrier = f.read().strip()
+    except OSError:
+        carrier = None
+    operstate: Optional[str] = None
+    try:
+        with open(os.path.join(base, "operstate"), "r", encoding="utf-8") as f:
+            operstate = f.read().strip().lower()
+    except OSError:
+        operstate = None
+
+    if carrier is None and operstate is None:
+        return None
+    if carrier == "0":
+        return True
+    if operstate in ("down", "dormant"):
+        return True
+    return False
+
+
+def usb_sysfs_paths(ifname: str, sys_root: str = "/sys/class/net") -> Optional[dict]:
+    """Resolve {interface_id, driver, usb_device_path} for a USB-backed netdev.
+
+    interface_id    -> basename(realpath(.../<ifname>/device))         e.g. "1-1.5:1.0"
+    driver          -> basename(realpath(.../<ifname>/device/driver))  e.g. "rtl8xxxu"
+    usb_device_path -> dirname(realpath(.../<ifname>/device))          e.g. ".../1-1.5"
+
+    Returns None when the device is not USB-backed or paths cannot be resolved.
+    """
+    device = os.path.join(sys_root, ifname, "device")
+    if not os.path.exists(device):
+        return None
+    dev_real = os.path.realpath(device)
+    if "/usb" not in dev_real.replace("\\", "/"):
+        return None
+    interface_id = os.path.basename(dev_real)
+    usb_device_path = os.path.dirname(dev_real)
+
+    driver_link = os.path.join(device, "driver")
+    if not os.path.exists(driver_link):
+        return None
+    driver = os.path.basename(os.path.realpath(driver_link))
+
+    if not interface_id or not driver or not usb_device_path:
+        return None
+    return {
+        "interface_id": interface_id,
+        "driver": driver,
+        "usb_device_path": usb_device_path,
+    }
+
+
+def reset_usb_adapter_rebind(
+    ifname: str,
+    *,
+    sys_root: str = "/sys/class/net",
+    bus_root: str = "/sys/bus/usb",
+) -> bool:
+    """Method A: write interface_id to drivers/<drv>/unbind then /bind.
+
+    Resolves the interface id *before* unbinding (the netdev vanishes during
+    the rebind).  Returns False without raising on any failure.
+    """
+    paths = usb_sysfs_paths(ifname, sys_root=sys_root)
+    if not paths:
+        logger.warning(
+            "USB rebind reset: cannot resolve sysfs paths for %s", ifname
+        )
+        return False
+    interface_id = paths["interface_id"]
+    driver_dir = os.path.join(bus_root, "drivers", paths["driver"])
+    try:
+        Path(os.path.join(driver_dir, "unbind")).write_text(interface_id)
+        Path(os.path.join(driver_dir, "bind")).write_text(interface_id)
+    except OSError as e:
+        logger.warning(
+            "USB rebind reset failed for %s (%s): %s", ifname, interface_id, e
+        )
+        return False
+    return True
+
+
+def reset_usb_adapter_reenumerate(
+    ifname: str,
+    *,
+    sys_root: str = "/sys/class/net",
+    bus_root: str = "/sys/bus/usb",
+) -> bool:
+    """Method B: write '0' then '1' to <usb_device_path>/authorized.
+
+    Triggers a full USB re-enumeration of the device.  Returns False without
+    raising on any failure.  ``bus_root`` is accepted for signature parity with
+    Method A; the ``authorized`` node lives under the resolved device path.
+    """
+    paths = usb_sysfs_paths(ifname, sys_root=sys_root)
+    if not paths:
+        logger.warning(
+            "USB re-enumerate reset: cannot resolve sysfs paths for %s", ifname
+        )
+        return False
+    authorized = os.path.join(paths["usb_device_path"], "authorized")
+    try:
+        Path(authorized).write_text("0")
+        Path(authorized).write_text("1")
+    except OSError as e:
+        logger.warning("USB re-enumerate reset failed for %s: %s", ifname, e)
+        return False
+    return True
 
 
 # ===========================================================================

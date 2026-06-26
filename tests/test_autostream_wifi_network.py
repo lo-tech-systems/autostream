@@ -7,6 +7,7 @@ threading / systemd-management code.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -597,6 +598,168 @@ class TestDnsmasqRuntime:
         assert not runtime.exists()
         # No error when already absent.
         wifi_net.remove_dnsmasq_runtime_config(str(runtime))
+
+
+# ---------------------------------------------------------------------------
+# WP1 (dead-PHY) — USB sysfs reset primitives
+# ---------------------------------------------------------------------------
+
+def _can_symlink(tmp_path) -> bool:
+    """Return True if this environment can create directory symlinks."""
+    a = tmp_path / "_sl_a"
+    a.mkdir()
+    try:
+        os.symlink(str(a), str(tmp_path / "_sl_b"))
+    except OSError:
+        return False
+    return True
+
+
+def _build_fake_usb_tree(tmp_path, ifname="wlan0", driver="rtl8xxxu",
+                         interface_id="1-1.5:1.0", mac="dc:62:79:91:4d:d6"):
+    """Build a symlink-based fake sysfs tree resembling a USB Wi-Fi dongle.
+
+    Returns (sys_root, bus_root) as strings.  The realpath layout mirrors the
+    field unit: /sys/class/net/<if> -> .../<usb_dev>/<iface_id>/net/<if> and
+    .../<iface_id>/driver -> /sys/bus/usb/drivers/<driver>.
+    """
+    usb_dev = interface_id.split(":", 1)[0]  # e.g. "1-1.5"
+
+    sys_root = tmp_path / "sys" / "class" / "net"
+    sys_root.mkdir(parents=True)
+
+    devices = tmp_path / "sys" / "devices" / "usb1" / usb_dev
+    iface_dir = devices / interface_id
+    net_dir = iface_dir / "net" / ifname
+    net_dir.mkdir(parents=True)
+    (net_dir / "address").write_text(mac + "\n", encoding="utf-8")
+    (net_dir / "carrier").write_text("0\n", encoding="utf-8")
+    (net_dir / "operstate").write_text("down\n", encoding="utf-8")
+
+    bus_root = tmp_path / "sys" / "bus" / "usb"
+    driver_dir = bus_root / "drivers" / driver
+    driver_dir.mkdir(parents=True)
+    (driver_dir / "unbind").write_text("", encoding="utf-8")
+    (driver_dir / "bind").write_text("", encoding="utf-8")
+    (devices / "authorized").write_text("1\n", encoding="utf-8")
+
+    # /sys/class/net/<if> -> the per-interface net dir
+    os.symlink(str(net_dir), str(sys_root / ifname))
+    # <if>/device -> the USB interface dir
+    os.symlink(str(iface_dir), str(net_dir / "device"))
+    # <if>/device/driver -> the driver dir
+    os.symlink(str(driver_dir), str(iface_dir / "driver"))
+    return str(sys_root), str(bus_root)
+
+
+class TestUsbResetPrimitives:
+    def test_usb_sysfs_paths_resolves(self, tmp_path):
+        if not _can_symlink(tmp_path):
+            pytest.skip("symlinks unavailable in this environment")
+        sys_root, _ = _build_fake_usb_tree(tmp_path)
+        paths = wifi_net.usb_sysfs_paths("wlan0", sys_root=sys_root)
+        assert paths is not None
+        assert paths["interface_id"] == "1-1.5:1.0"
+        assert paths["driver"] == "rtl8xxxu"
+        assert paths["usb_device_path"].replace("\\", "/").endswith("/1-1.5")
+
+    def test_usb_sysfs_paths_none_for_non_usb(self, tmp_path):
+        if not _can_symlink(tmp_path):
+            pytest.skip("symlinks unavailable in this environment")
+        # Build a platform (non-USB) tree.
+        sys_root = tmp_path / "net"
+        sys_root.mkdir()
+        plat = tmp_path / "platform" / "soc" / "mmc" / "net" / "wlan0"
+        plat.mkdir(parents=True)
+        os.symlink(str(plat), str(sys_root / "wlan0"))
+        os.symlink(str(plat.parent.parent), str(plat / "device"))
+        assert wifi_net.usb_sysfs_paths("wlan0", sys_root=str(sys_root)) is None
+
+    def test_usb_sysfs_paths_none_for_missing(self, tmp_path):
+        sys_root = tmp_path / "net"
+        sys_root.mkdir()
+        assert wifi_net.usb_sysfs_paths("wlan9", sys_root=str(sys_root)) is None
+
+    def test_method_a_writes_unbind_then_bind(self, tmp_path):
+        if not _can_symlink(tmp_path):
+            pytest.skip("symlinks unavailable in this environment")
+        sys_root, bus_root = _build_fake_usb_tree(tmp_path)
+        assert wifi_net.reset_usb_adapter_rebind(
+            "wlan0", sys_root=sys_root, bus_root=bus_root) is True
+        driver_dir = Path(bus_root) / "drivers" / "rtl8xxxu"
+        assert (driver_dir / "unbind").read_text() == "1-1.5:1.0"
+        assert (driver_dir / "bind").read_text() == "1-1.5:1.0"
+
+    def test_method_b_writes_authorized_toggle(self, tmp_path):
+        if not _can_symlink(tmp_path):
+            pytest.skip("symlinks unavailable in this environment")
+        sys_root, bus_root = _build_fake_usb_tree(tmp_path)
+        assert wifi_net.reset_usb_adapter_reenumerate(
+            "wlan0", sys_root=sys_root, bus_root=bus_root) is True
+        authorized = Path(tmp_path) / "sys" / "devices" / "usb1" / "1-1.5" / "authorized"
+        # Last write wins on a plain file; assert it ends at "1".
+        assert authorized.read_text() == "1"
+
+    def test_method_a_false_for_missing(self, tmp_path):
+        sys_root = tmp_path / "net"
+        sys_root.mkdir()
+        assert wifi_net.reset_usb_adapter_rebind(
+            "wlan9", sys_root=str(sys_root)) is False
+
+    def test_method_b_false_for_missing(self, tmp_path):
+        sys_root = tmp_path / "net"
+        sys_root.mkdir()
+        assert wifi_net.reset_usb_adapter_reenumerate(
+            "wlan9", sys_root=str(sys_root)) is False
+
+
+class TestSysfsNetdevEnumeration:
+    def test_list_sysfs_netdevs(self, tmp_path):
+        if not _can_symlink(tmp_path):
+            pytest.skip("symlinks unavailable in this environment")
+        sys_root, _ = _build_fake_usb_tree(tmp_path)
+        names = wifi_net.list_sysfs_netdevs(sys_root=sys_root)
+        assert "wlan0" in names
+
+    def test_find_sysfs_netdev_by_mac(self, tmp_path):
+        if not _can_symlink(tmp_path):
+            pytest.skip("symlinks unavailable in this environment")
+        sys_root, _ = _build_fake_usb_tree(tmp_path, mac="dc:62:79:91:4d:d6")
+        assert wifi_net.find_sysfs_netdev_by_mac(
+            "DC:62:79:91:4D:D6", sys_root=sys_root) == "wlan0"
+        assert wifi_net.find_sysfs_netdev_by_mac(
+            "aa:bb:cc:dd:ee:ff", sys_root=sys_root) == ""
+
+    def test_find_sysfs_netdev_by_mac_empty_for_bad_mac(self, tmp_path):
+        sys_root = tmp_path / "net"
+        sys_root.mkdir()
+        assert wifi_net.find_sysfs_netdev_by_mac("", sys_root=str(sys_root)) == ""
+
+    def test_read_link_down_true(self, tmp_path):
+        base = tmp_path / "net" / "wlan0"
+        base.mkdir(parents=True)
+        (base / "carrier").write_text("0\n")
+        (base / "operstate").write_text("down\n")
+        assert wifi_net.read_link_down("wlan0", sys_root=str(tmp_path / "net")) is True
+
+    def test_read_link_down_false_when_up(self, tmp_path):
+        base = tmp_path / "net" / "wlan0"
+        base.mkdir(parents=True)
+        (base / "carrier").write_text("1\n")
+        (base / "operstate").write_text("up\n")
+        assert wifi_net.read_link_down("wlan0", sys_root=str(tmp_path / "net")) is False
+
+    def test_read_link_down_operstate_only(self, tmp_path):
+        # carrier unreadable (interface down) but operstate present -> down.
+        base = tmp_path / "net" / "wlan0"
+        base.mkdir(parents=True)
+        (base / "operstate").write_text("down\n")
+        assert wifi_net.read_link_down("wlan0", sys_root=str(tmp_path / "net")) is True
+
+    def test_read_link_down_none_when_unreadable(self, tmp_path):
+        sys_root = tmp_path / "net"
+        sys_root.mkdir()
+        assert wifi_net.read_link_down("wlan9", sys_root=str(sys_root)) is None
 
 
 # ---------------------------------------------------------------------------
