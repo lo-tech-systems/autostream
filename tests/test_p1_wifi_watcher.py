@@ -2681,6 +2681,19 @@ class TestDeadPhyEndToEnd:
 class TestBuildNetworkStatusSnapshot:
     MAC = "dc:62:79:91:4d:d6"
 
+    def _snapshot_for_usb(self, watcher, usb, *, now=1000.0, healthy=True):
+        addrs = {"wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                            "prefixlen": 24, "scope": "global"}]}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=healthy), \
+             patch.object(watcher, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
+             patch("time.monotonic", return_value=now):
+            return watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+
     def test_healthy_usb_client_online(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
         watcher.STATE.active_client_ifname = "wlan0"
@@ -2721,6 +2734,11 @@ class TestBuildNetworkStatusSnapshot:
         watcher.STATE.dead_adapter_since = 5.0
         watcher.STATE.dead_adapter_checks = 4
         watcher.STATE.last_reset_method = "B"
+        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+            "recent_resets": [10.0],
+            "total_resets": 1,
+            "quarantined_until": None,
+        }
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
@@ -2732,7 +2750,86 @@ class TestBuildNetworkStatusSnapshot:
         assert rec["health"]["state"] == "dead_phy"
         assert rec["health"]["checks"] == 4
         assert rec["policy"]["last_action"] == "usb_reset_method_b"
+        assert rec["policy"]["resets_24h"] == 1
+        assert rec["policy"]["warning"] == "resetting"
         assert snap["device"]["state"] == "recovering"
+
+    def test_present_adapter_with_recent_resets_reports_policy_warning(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+            "recent_resets": [900.0, 950.0],
+            "total_resets": 2,
+            "quarantined_until": None,
+        }
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["resets_24h"] == 2
+        assert rec["policy"]["warning"] == "reset_budget_exhausted"
+        assert "device_disruption" not in snap
+        assert "recently_seen_adapters" not in snap
+
+    def test_present_adapter_without_resets_has_empty_warning(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["resets_24h"] == 0
+        assert rec["policy"]["warning"] == ""
+
+    def test_quarantine_policy_uses_expiry_not_presence(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+            "recent_resets": [],
+            "total_resets": watcher.USB_MAX_RESETS_TOTAL,
+            "quarantined_until": 900.0,
+        }
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["quarantined"] is False
+        assert rec["policy"]["warning"] == "reset_budget_exhausted"
+        assert _ledger(watcher, self.MAC)["quarantined_until"] is None
+
+    def test_reconnected_quarantined_stable_id_stays_quarantined_until_deadline(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+            "recent_resets": [900.0, 950.0],
+            "total_resets": 2,
+            "quarantined_until": 1100.0,
+        }
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0)
+        rec = snap["adapters"][0]
+        assert rec["health"]["state"] == "quarantined"
+        assert rec["policy"]["quarantined"] is True
+        assert rec["policy"]["warning"] == "quarantined"
+        assert rec["policy"]["next_action_after"] == 1100.0
+
+    def test_reconnected_stable_id_clears_quarantine_after_deadline(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+            "recent_resets": [900.0],
+            "total_resets": 1,
+            "quarantined_until": 999.0,
+        }
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["quarantined"] is False
+        assert rec["policy"]["warning"] == "recent_resets"
+        assert _ledger(watcher, self.MAC)["quarantined_until"] is None
+
+    def test_old_reset_history_pruned_from_policy(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+            "recent_resets": [100.0],
+            "total_resets": 1,
+            "quarantined_until": None,
+        }
+        snap = self._snapshot_for_usb(watcher, usb, now=100.0 + watcher.USB_RESET_WINDOW + 1.0)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["resets_24h"] == 0
+        assert rec["policy"]["warning"] == ""
 
     def test_ethernet_degraded_when_wifi_dead(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)

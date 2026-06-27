@@ -192,7 +192,13 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         )
         ledger = w._adapter_reset_ledger_snapshot(target, now_monotonic)
         quarantined_until = w._adapter_quarantined_until(target, now_monotonic)
-        quarantined = quarantined_until is not None and is_dead
+        quarantined = quarantined_until is not None
+        recent_reset_count = len(ledger.get("recent_resets", []))
+        total_reset_count = int(ledger.get("total_resets", 0) or 0)
+        budget_exhausted = (
+            recent_reset_count >= w.USB_MAX_RESETS_PER_WINDOW
+            or total_reset_count >= w.USB_MAX_RESETS_TOTAL
+        )
         v4, v6 = _adapter_ip_lists(addresses, a.ifname)
 
         if healthy:
@@ -230,6 +236,16 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             f"usb_reset_method_{last_reset_method.lower()}"
             if (is_dead and last_reset_method) else ""
         )
+        if quarantined:
+            warning = "quarantined"
+        elif is_dead:
+            warning = "resetting"
+        elif budget_exhausted:
+            warning = "reset_budget_exhausted"
+        elif recent_reset_count:
+            warning = "recent_resets"
+        else:
+            warning = ""
 
         adapter_records.append({
             "ifname": a.ifname,
@@ -266,8 +282,9 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 "action": action,
                 "last_action": last_action,
                 "next_action_after": next_after,
-                "resets_24h": len(ledger.get("recent_resets", [])) if is_dead else 0,
+                "resets_24h": recent_reset_count,
                 "reset_budget_24h": w.USB_MAX_RESETS_PER_WINDOW,
+                "warning": warning,
             },
         })
 
