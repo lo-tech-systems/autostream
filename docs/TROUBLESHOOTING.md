@@ -423,10 +423,20 @@ does not deadlock.
 **2 times per 24h** and **5 times total** before it is *quarantined* for preferred
 client use (while another network path exists); USB-only hardware keeps making
 slow emergency attempts every 10 minutes rather than abandoning its only radio.
-The total reset count decays after 24h of sustained healthy operation. Cross-boot
-reboot looping is prevented by a persistent guard at
+Reset accounting is held in watcher memory per adapter identity and resets when
+the watcher/service restarts. The user-facing `resets_24h` count decays by the
+rolling 24-hour reset window; sustained healthy operation clears active recovery
+timing only and does not erase the accounting ledger early. Cross-boot reboot
+looping is prevented by a persistent guard at
 `/var/lib/autostream/dead-phy-reboot.stamp` (max **3** dead-PHY reboots per 24h),
 separate from the admin `NetworkDown` rate limit.
+
+Quarantine clears by elapsed monotonic time only. Unplugging and reconnecting the
+same adapter does not clear quarantine or grant a fresh budget; time spent
+unplugged still counts toward expiry. This is deliberate because the watcher
+cannot distinguish a manual reseat from a fault-induced USB bus drop. If the
+`USB_MAX_RESETS_TOTAL` cap is what exhausted the budget, quarantine can outlast
+the rolling `resets_24h` window.
 
 Log lines operators are expected to see (watcher log
 `/var/log/autostream/autostream_wifi_watcher.log`):
@@ -475,6 +485,18 @@ It carries top-level `ok: true`, `device.state`, `connectivity`, per-adapter
 plus `updated_at` (wall-clock). Before the first monitor snapshot is published,
 the endpoint returns an explicit stale payload with `device.state: unknown`.
 
+The `device` object reports the active network path:
+
+* `primary_ifname`: active interface name, or empty when disconnected.
+* `primary_kind`: `ethernet`, `usb_wifi`, `builtin_wifi`, or empty.
+* `primary_ipv4`: the legacy flattened active IPv4 address, kept for
+  compatibility.
+* `primary_ipv4_info`: active-path IPv4 details for Ethernet and Wi-Fi:
+  `address`, `prefixlen`, dotted `netmask`, and `gateway`. When there is no
+  valid primary path, `address`, `netmask`, and `gateway` are empty strings and
+  `prefixlen` is `null`.
+* `primary_ipv6`: the active global IPv6 address when known.
+
 The `connectivity` object distinguishes physical Ethernet carrier from a usable
 wired path:
 
@@ -489,6 +511,26 @@ wired path:
 Common adapter `health.state` values: `healthy`, `degraded`, `link_down`,
 `dead_phy` (wedged beyond debounce), `resetting`, `quarantined`, `hotspot_active`,
 `idle`, `absent`, `unmanaged`.
+
+Each present Wi-Fi adapter has a `policy` object that includes reset/disruption
+status:
+
+* `resets_24h`: reset attempts for that adapter identity in the rolling
+  24-hour window.
+* `reset_budget_24h`: the per-window reset budget.
+* `quarantined`: true only while the adapter's quarantine deadline has not
+  expired.
+* `next_action_after`: the monotonic quarantine or reset-backoff deadline when
+  applicable.
+* `warning`: empty when clear, or one of `recent_resets`,
+  `reset_budget_exhausted`, `quarantined`, or `resetting`.
+
+Adapter identity is stable when NetworkManager or sysfs exposes a MAC address.
+If only an interface-name fallback is available, a replacement adapter that
+receives the same name can inherit the previous in-memory ledger; this is a
+known limitation of interface-name-only identity. Ledgers for unplugged adapters
+are retained in memory for pruning and future reconnects, but unplugged adapters
+are not published in `/network_status`.
 
 `GET /network_status` is the sole watcher runtime status contract; there is no
 `/network_status_v2` endpoint and no `/run/autostream/network-status.json`
