@@ -2536,11 +2536,15 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "is_gateway_reachable", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False)
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
         assert snap["schema_version"] == 1
         assert snap["device"]["state"] == "online"
         assert snap["device"]["primary_ifname"] == "wlan0"
         assert snap["device"]["primary_ipv4"] == "192.168.1.42"
+        assert snap["connectivity"]["client_ok"] is True
+        assert snap["connectivity"]["active_path_ok"] is True
+        assert snap["connectivity"]["wired_carrier"] is False
+        assert snap["connectivity"]["wired_ok"] is False
         rec = snap["adapters"][0]
         assert rec["ifname"] == "wlan0"
         assert rec["kind"] == "usb_wifi"
@@ -2559,7 +2563,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False)
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "dead_phy"
         assert rec["health"]["checks"] == 4
@@ -2577,15 +2581,54 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=True)
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["state"] == "degraded"
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ipv4"] == "10.0.0.5"
+        assert snap["connectivity"]["wired_carrier"] is True
+        assert snap["connectivity"]["wired_ok"] is True
+        assert snap["connectivity"]["active_path_ok"] is True
+
+    def test_carrier_only_ethernet_is_not_online_or_primary(self, watcher):
+        addrs = {"eth0": []}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([], wired_connected=True, wired_ok=False)
+        assert snap["device"]["state"] == "offline"
+        assert snap["device"]["primary_kind"] == ""
+        assert snap["device"]["primary_ifname"] == ""
+        assert snap["connectivity"]["wired_carrier"] is True
+        assert snap["connectivity"]["wired_ok"] is False
+        assert snap["connectivity"]["active_path_ok"] is False
+
+    def test_setup_suspends_connectivity_timer_fields(self, watcher):
+        watcher.STATE.setup_mode = True
+        watcher.STATE.last_active_path_seen = 10.0
+        addrs = {"eth0": [{"family": "ipv4", "address": "10.0.0.5",
+                           "prefixlen": 24, "scope": "global"}]}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([], wired_connected=True, wired_ok=True)
+        assert snap["device"]["state"] == "setup_mode"
+        assert snap["connectivity"]["active_path_ok"] is False
+        assert snap["connectivity"]["no_active_path_age_seconds"] is None
+        assert snap["connectivity"]["no_active_path_reboot_remaining_seconds"] is None
+
+    def test_connectivity_timer_age_and_remaining(self, watcher):
+        watcher.STATE.last_active_path_seen = 1000.0
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
+             patch("time.monotonic", return_value=1030.0):
+            snap = watcher.build_network_status_snapshot([], wired_connected=False, wired_ok=False)
+        assert snap["connectivity"]["last_active_path_seen_monotonic"] == 1000.0
+        assert snap["connectivity"]["no_active_path_age_seconds"] == 30.0
+        assert snap["connectivity"]["no_active_path_reboot_after_seconds"] == watcher.NO_ACTIVE_PATH_REBOOT_AFTER
+        assert snap["connectivity"]["no_active_path_reboot_remaining_seconds"] == watcher.NO_ACTIVE_PATH_REBOOT_AFTER - 30.0
 
     def test_logging_block_present(self, watcher):
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([], wired_connected=False)
+            snap = watcher.build_network_status_snapshot([], wired_connected=False, wired_ok=False)
         assert snap["logging"]["effective_level"] == "info"
         assert snap["logging"]["default_level"] == "info"
         assert snap["logging"]["temporary_level_expires_at"] is None
@@ -2594,7 +2637,7 @@ class TestBuildNetworkStatusSnapshot:
     def test_publish_stores_latest_snapshot_in_memory(self, watcher):
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            watcher.publish_network_status([], wired_connected=False)
+            watcher.publish_network_status([], wired_connected=False, wired_ok=False)
         assert watcher.STATE.network_status_snapshot["ok"] is True
         assert watcher.STATE.network_status_snapshot["device"]["state"] == "offline"
         assert watcher.STATE.network_status_updated_at == watcher.STATE.network_status_snapshot["updated_at"]
@@ -2613,12 +2656,14 @@ class TestNetworkStatusRoute:
             "ok": True,
             "schema_version": 1,
             "device": {"state": "online"},
+            "connectivity": {"active_path_ok": True, "wired_ok": True},
         }
         with patch.object(mod, "_control_authorised", return_value=True):
             resp = client.get("/network_status")
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
         assert resp.get_json()["device"]["state"] == "online"
+        assert resp.get_json()["connectivity"]["active_path_ok"] is True
 
     def test_unknown_stale_before_first_snapshot(self, flask_client):
         client, mod = flask_client
@@ -2815,5 +2860,5 @@ class TestModuleSplit:
     def test_snapshot_delegates(self, watcher):
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([], wired_connected=False)
+            snap = watcher.build_network_status_snapshot([], wired_connected=False, wired_ok=False)
         assert snap["schema_version"] == 1

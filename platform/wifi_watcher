@@ -2356,7 +2356,7 @@ def network_monitor_loop(run_once: bool = False):
             log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
 
         # Publish the runtime status snapshot (source of truth for the app).
-        publish_network_status(adapters, wired_connected)
+        publish_network_status(adapters, wired_connected, wired_ok)
 
         # Ethernet suppresses AP mode entirely (unless the user explicitly requested AP).
         # State is read under the lock; leave_setup_mode is called outside to avoid
@@ -3071,14 +3071,16 @@ def _self_module():
 
 
 def build_network_status_snapshot(adapters: Optional[list] = None,
-                                  wired_connected: Optional[bool] = None) -> dict:
+                                  wired_connected: Optional[bool] = None,
+                                  wired_ok: Optional[bool] = None) -> dict:
     return wifi_status.build_network_status_snapshot(
-        _self_module(), adapters, wired_connected)
+        _self_module(), adapters, wired_connected, wired_ok)
 
 
 def publish_network_status(adapters: Optional[list] = None,
-                           wired_connected: Optional[bool] = None) -> None:
-    wifi_status.publish_network_status(_self_module(), adapters, wired_connected)
+                           wired_connected: Optional[bool] = None,
+                           wired_ok: Optional[bool] = None) -> None:
+    wifi_status.publish_network_status(_self_module(), adapters, wired_connected, wired_ok)
 
 
 # ** AVAHI mDNS HOSTNAME MONITORING **

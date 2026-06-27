@@ -61,6 +61,20 @@ def _adapter_ip_lists(addresses: dict, ifname: str) -> tuple[list, list]:
     return v4, v6
 
 
+def _has_usable_ipv4(addresses: dict, ifname: str) -> bool:
+    for a in addresses.get(ifname, []):
+        if a.get("family") == "ipv4" and wifi_net.is_usable_unicast_ipv4(a.get("address", "")):
+            return True
+    return False
+
+
+def _primary_wired_ifname(addresses: dict) -> str:
+    for name in addresses:
+        if name.startswith(("eth", "en")) and _has_usable_ipv4(addresses, name):
+            return name
+    return ""
+
+
 def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
                              is_dead, is_link_down, quarantined, is_hotspot):
     """Map facts + recovery flags to a defined adapter health state/severity."""
@@ -92,7 +106,8 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
 
 
 def build_network_status_snapshot(w, adapters: Optional[list] = None,
-                                  wired_connected: Optional[bool] = None) -> dict:
+                                  wired_connected: Optional[bool] = None,
+                                  wired_ok: Optional[bool] = None) -> dict:
     """Build the schema_version:1 runtime network-status snapshot.
 
     Uses the watcher's facts and the dead-PHY recovery ledger.  All derived
@@ -105,9 +120,12 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             adapters = []
     if wired_connected is None:
         wired_connected = w.is_wired_connected()
+    if wired_ok is None:
+        wired_ok = w.any_wired_path_healthy()
 
     addresses = wifi_net.list_interface_addresses()
     now_wall = time.time()
+    now_monotonic = time.monotonic()
 
     with w.state_lock:
         active_ifname = w.STATE.active_client_ifname
@@ -124,6 +142,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         reboot_retry_after = w.STATE.conn_reboot_retry_after
         temp_expires = w.STATE.temporary_log_level_until
         default_level = w.STATE.default_log_level_name
+        last_active_path_seen = w.STATE.last_active_path_seen
 
     hotspot_adapter = w.resolve_hotspot_adapter(adapters)
     hotspot_ifname = hotspot_adapter.ifname if (in_setup and hotspot_adapter) else ""
@@ -217,7 +236,9 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             },
         })
 
-    online_path = wired_connected or any_healthy
+    client_ok = any_healthy
+    active_path_ok = bool((wired_ok or client_ok) and not in_setup)
+    online_path = active_path_ok
 
     primary_ifname = ""
     primary_kind = ""
@@ -227,12 +248,10 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     ):
         primary_ifname = active_ifname
         primary_kind = next(r["kind"] for r in adapter_records if r["ifname"] == active_ifname)
-    elif wired_connected:
-        for name in addresses:
-            if name.startswith(("eth", "en")):
-                primary_ifname = name
-                primary_kind = "ethernet"
-                break
+    elif wired_ok:
+        primary_ifname = _primary_wired_ifname(addresses)
+        if primary_ifname:
+            primary_kind = "ethernet"
 
     primary_ipv4, primary_ipv6 = (
         _primary_addresses(addresses, primary_ifname) if primary_ifname else ("", "")
@@ -254,6 +273,13 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         with w.state_lock:
             hotspot_reason = w.STATE.setup_purpose
 
+    if in_setup or last_active_path_seen is None:
+        no_active_age = None
+        no_active_remaining = None
+    else:
+        no_active_age = max(0.0, now_monotonic - last_active_path_seen)
+        no_active_remaining = max(0.0, w.NO_ACTIVE_PATH_REBOOT_AFTER - no_active_age)
+
     return {
         "schema_version": wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
         "updated_at": now_wall,
@@ -269,6 +295,16 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             "ifname": hotspot_ifname,
             "reason": hotspot_reason,
         },
+        "connectivity": {
+            "active_path_ok": active_path_ok,
+            "client_ok": client_ok,
+            "wired_carrier": bool(wired_connected),
+            "wired_ok": bool(wired_ok),
+            "last_active_path_seen_monotonic": last_active_path_seen,
+            "no_active_path_age_seconds": no_active_age,
+            "no_active_path_reboot_after_seconds": w.NO_ACTIVE_PATH_REBOOT_AFTER,
+            "no_active_path_reboot_remaining_seconds": no_active_remaining,
+        },
         "logging": {
             "effective_level": _effective_log_level_name(w),
             "default_level": default_level or "info",
@@ -279,11 +315,12 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
 
 def publish_network_status(w, adapters: Optional[list] = None,
-                           wired_connected: Optional[bool] = None) -> None:
+                           wired_connected: Optional[bool] = None,
+                           wired_ok: Optional[bool] = None) -> None:
     """Build and publish the latest runtime status snapshot in memory."""
     global _status_schema_logged
     try:
-        snapshot = build_network_status_snapshot(w, adapters, wired_connected)
+        snapshot = build_network_status_snapshot(w, adapters, wired_connected, wired_ok)
         snapshot["ok"] = True
         with w.state_lock:
             w.STATE.network_status_snapshot = snapshot
