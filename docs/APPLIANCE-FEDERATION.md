@@ -57,6 +57,26 @@ A missing or malformed `id` TXT record causes the sighting to be ignored. A miss
 `federation` key is treated as incompatible (the peer is listed in the selector but
 the gateway will reject federation attempts with `remote_bad_response`).
 
+### Registry refresh and expiry
+
+Peer appliances keep an in-process mDNS registry on top of Avahi. Each resolved
+address record is tracked with a `last_seen` timestamp. Autostream keeps the
+long-lived Avahi event stream for low-latency adds and explicit removals, and also
+runs a periodic one-shot `avahi-browse --no-fail -r -t -p _autostream._tcp` dump
+to re-confirm records when an event was missed.
+
+A record is considered stale when it was not seen in the most recent refresh
+cycle. Stale records remain in the registry until the configured mDNS grace period
+expires, but selection prefers a non-stale address for the same appliance identity.
+This means an appliance that moves from one interface or IP address to another is
+usually dialed at the live address after one refresh cycle; the grace period only
+controls when the old address is finally removed.
+
+The **mDNS Grace Period** setting is owned by autostream's general configuration.
+Core startup injects the configured value into the appliance discovery browser and
+also forwards the same value to OwnTone/owntone-mini for its native device-removal
+setting.
+
 ---
 
 ## Appliance Identity
@@ -84,8 +104,10 @@ creates or repairs it.
 * Always exactly 20 lowercase hex characters.
 * The raw CPU serial is never stored, logged, or transmitted.
 * The identity is process-lifetime cached after the first read.
-* Two appliances with the same identity (unexpected) are mutually suppressed with a
-  `appliance_conflicted` error and a log warning.
+* The same identity and same hostname may appear on multiple IP addresses during
+  normal multi-homing or adapter failover.
+* The same identity with multiple hostnames is treated as a genuine conflict; the
+  peer is suppressed with `appliance_conflicted` and a log warning.
 
 ---
 
@@ -192,6 +214,11 @@ Gateway                          Target
 * The gateway evicts its cached token and re-acquires on any 401 response.
 * The target enforces strict IP binding: a token issued to `192.168.1.10` cannot be
   used from `192.168.1.11`.
+* Gateway token cache entries are keyed by target appliance identity, not by the
+  target's IP address. If the target appliance changes IP but the gateway's source
+  IP is unchanged, the existing token remains valid and the gateway only needs the
+  refreshed discovery address. If the target restarts or the gateway source IP
+  changes, the next 401 response triggers the existing retry-once re-auth path.
 
 ---
 
@@ -325,10 +352,17 @@ occupied state is shown; a longer interval reduces LAN traffic.
 
 When an autostream appliance switches its active Wi-Fi interface (for example, adopting a USB adapter or falling back to built-in after USB loss), Avahi publishes over the new interface. The mDNS service types, TXT record schema, and appliance identity are unchanged; only the source address of the announcement changes.
 
-Discovery registries on peer appliances track sightings by service identity, not by IP address. When an adapter change produces a remove event followed by an add event with a new IP:
+Discovery registries on peer appliances track each address record and select a
+non-stale address for the appliance identity. When an adapter change produces a
+remove event followed by an add event with a new IP:
 
-- The old sighting is replaced by the new one.
+- The old sighting is removed or allowed to expire after the mDNS grace period.
 - HTTP requests to a peer automatically use the updated address after the next discovery poll.
 - A brief gap (typically one to a few seconds) may occur between the remove and add events. The peer appliance's UI shows the remote as offline during this window.
+- If a graceful remove event is missed, the periodic dump marks the old address
+  stale after one refresh cycle and selection moves to the live address.
+- Gateway backoff recorded against the old IP is cleared when the resolved
+  sighting changes to a new IP, so stale-address failures do not keep returning
+  429 once discovery has refreshed.
 
 `dnsmasq` is used only during the setup hotspot (captive portal DHCP/DNS). It is not involved in normal mDNS service announcements.

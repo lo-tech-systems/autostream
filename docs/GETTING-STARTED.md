@@ -255,6 +255,15 @@ Discovery uses the local network's mDNS multicast. All autostream appliances and
 
 Each appliance must have a **unique hostname**. If two appliances share the same hostname, mDNS discovery can behave unpredictably. Set each appliance's hostname in its own Setup page.
 
+During adapter failover or multi-homing, one appliance may briefly be visible at
+more than one IP address. Autostream treats matching identity + hostname records
+as the same appliance and prefers a recently confirmed address.
+
+The **mDNS Grace Period** setting is stored in autostream's own configuration. It
+controls how long stale appliance-discovery records are retained before removal
+and is also forwarded to OwnTone/owntone-mini for its native device-removal grace
+setting.
+
 ### Opting out of multi-appliance discovery
 
 If you do not want a specific autostream to appear in other appliances' selectors, open that appliance's **Setup page** and disable **Show this autostream to other appliances**. The appliance remains directly accessible at its own `http://<hostname>.local/` address; it is only hidden from peer selectors.

@@ -263,6 +263,28 @@ To inspect which `_autostream._tcp` services are visible from an appliance's con
 avahi-browse _autostream._tcp -t -r
 ```
 
+#### Appliance switcher times out or returns 429 after a network change
+
+If a remote appliance changed network adapters or IP addresses, the Home page
+switcher may briefly show stale data or a `remote_backoff` / HTTP 429 response
+while discovery and gateway backoff catch up. Current autostream releases
+re-confirm `_autostream._tcp` records periodically, prefer a non-stale address for
+multi-homed peers, and clear gateway backoff when the selected peer IP changes.
+Recovery should normally happen after the next discovery refresh cycle.
+
+From the controlling appliance, compare Avahi's current view with the gateway log:
+
+```bash
+avahi-browse --no-fail -r -t -p _autostream._tcp
+journalctl -u autostream.service --since "-5 min" --no-pager | grep -E "gateway:|remote_backoff|429"
+```
+
+The live Avahi dump should show the remote appliance's current IPv4 address. If
+the log shows the gateway dialing an older address, wait one refresh cycle and
+try the selector again. If the old address is still being used after the mDNS
+grace period, restart only `autostream.service` on the controlling appliance and
+check for Avahi or multicast problems on the LAN.
+
 #### mDNS browser log messages
 
 Autostream uses `avahi-browse` subprocesses to discover services on the local network. Two classes of message appear in the log:
@@ -286,7 +308,7 @@ Note: the D-Bus unit name may differ on some distributions (e.g. `dbus` rather t
 
 #### Duplicate appliance identity
 
-Each autostream derives a stable identity from its Raspberry Pi CPU serial (with a persistent random fallback when the serial is unavailable). If two appliances produce the same identity — not expected under normal operation — both are suppressed from each other's selectors and a warning is logged. Check the autostream log:
+Each autostream derives a stable identity from its Raspberry Pi CPU serial (with a persistent random fallback when the serial is unavailable). The same identity on the same hostname may legitimately appear on multiple IP addresses during adapter failover or multi-homing. If the same identity appears with different hostnames — not expected under normal operation — the peer is suppressed from selectors and a warning is logged. Check the autostream log:
 
 ```bash
 journalctl -u autostream.service --no-pager | grep "conflict"
