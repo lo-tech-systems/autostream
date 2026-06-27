@@ -1,7 +1,7 @@
 """WP7 — Network status/setup API and UI wiring tests.
 
 Covers:
-  - format_active_adapter() display string for all combinations
+  - build_network_card_presentation() display/detail/warning fields
   - send_network_status_json(): proxy to watcher, adds display field, handles errors
   - send_network_setup_json(): action whitelist, CSRF stripping, 409 surfacing
   - Route wiring in autostream_webui: GET /api/network/status, POST /api/network/setup
@@ -25,7 +25,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_webui_api import (
-    format_active_adapter,
+    build_network_card_presentation,
     send_network_setup_json,
     send_network_status_json,
 )
@@ -47,92 +47,150 @@ def _ok_status(extra: dict | None = None) -> dict:
     """A minimal watcher /network_status payload."""
     base = {
         "ok": True,
-        "usb_adapter_detected": False,
-        "active_adapter_kind": "builtin",
-        "active_adapter_ifname": "wlan0",
-        "active_adapter_description": "Built-in BCM2835",
-        "using_builtin_fallback": False,
+        "schema_version": 1,
+        "device": {
+            "state": "online",
+            "primary_ifname": "wlan0",
+            "primary_kind": "builtin_wifi",
+            "primary_ssid": "MyNetwork",
+            "primary_ipv4": "192.168.1.42",
+            "primary_ipv4_info": {
+                "address": "192.168.1.42",
+                "prefixlen": 24,
+                "netmask": "255.255.255.0",
+                "gateway": "192.168.1.1",
+            },
+            "primary_ipv6": "",
+        },
         "adapters": [],
-        "connected_ssid": "MyNetwork",
+        "ap_ssid": "autostream_ABCD",
     }
     if extra:
         base.update(extra)
     return base
 
 
+def _with_device(status: dict, **fields) -> dict:
+    status = dict(status)
+    device = dict(status.get("device") or {})
+    device.update(fields)
+    status["device"] = device
+    return status
+
+
+def _usb_adapter(*, warning: str = "", quarantined: bool = False,
+                 resets: int = 0, budget: int = 2, role: str = "client",
+                 ifname: str = "wlan1") -> dict:
+    return {
+        "kind": "usb_wifi",
+        "ifname": ifname,
+        "role": role,
+        "health": {"state": "healthy"},
+        "policy": {
+            "warning": warning,
+            "quarantined": quarantined,
+            "resets_24h": resets,
+            "reset_budget_24h": budget,
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
-# format_active_adapter()
+# build_network_card_presentation()
 # ---------------------------------------------------------------------------
 
-class TestFormatActiveAdapter:
-    def test_builtin_no_usb(self):
-        s = _ok_status({"usb_adapter_detected": False, "active_adapter_kind": "builtin"})
-        assert format_active_adapter(s) == "Using on-board WiFi adapter"
+class TestBuildNetworkCardPresentation:
+    def test_ethernet(self):
+        s = _with_device(_ok_status(), primary_kind="ethernet", primary_ifname="eth0", primary_ssid="")
+        result = build_network_card_presentation(s)
+        assert result["title"] == "Network"
+        assert result["display"] == "Connected via Ethernet"
+        assert result["detail"] == "IP: 192.168.1.42/24 | Gateway: 192.168.1.1"
 
-    def test_builtin_usb_detected(self):
-        s = _ok_status({
-            "usb_adapter_detected": True,
-            "active_adapter_kind": "builtin",
-            "adapters": [{"is_usb": True, "ifname": "wlan1", "description": "RT8811AU"}],
-        })
-        assert format_active_adapter(s) == "Using on-board WiFi adapter"
+    def test_usb_wifi_with_ssid(self):
+        s = _with_device(_ok_status(), primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
+        result = build_network_card_presentation(s)
+        assert result["display"] == "Connected via USB WiFi adapter to MyHomeWiFi"
 
-    def test_usb_active_with_description(self):
-        s = _ok_status({
-            "usb_adapter_detected": True,
-            "active_adapter_kind": "usb",
-            "active_adapter_description": "RT8811AU",
-            "active_adapter_ifname": "wlan1",
-        })
-        assert format_active_adapter(s) == "Using USB WiFi adapter RT8811AU"
+    def test_usb_wifi_without_ssid(self):
+        s = _with_device(_ok_status(), primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="")
+        result = build_network_card_presentation(s)
+        assert result["display"] == "Connected via USB WiFi adapter"
 
-    def test_usb_active_no_description_falls_back_to_ifname(self):
-        s = _ok_status({
-            "usb_adapter_detected": True,
-            "active_adapter_kind": "usb",
-            "active_adapter_description": "",
-            "active_adapter_ifname": "wlan1",
-        })
-        assert format_active_adapter(s) == "Using USB WiFi adapter wlan1"
+    def test_builtin_wifi_with_ssid(self):
+        result = build_network_card_presentation(_ok_status())
+        assert result["display"] == "Connected via on-board WiFi to MyNetwork"
 
-    def test_usb_active_no_description_no_ifname(self):
-        s = _ok_status({
-            "usb_adapter_detected": True,
-            "active_adapter_kind": "usb",
-            "active_adapter_description": "",
-            "active_adapter_ifname": "",
-        })
-        assert format_active_adapter(s) == "Using USB WiFi adapter"
+    def test_disconnected(self):
+        s = _with_device(_ok_status(), primary_kind="", primary_ifname="", primary_ssid="")
+        result = build_network_card_presentation(s)
+        assert result["display"] == "No active network connection"
+        assert result["detail"] == ""
 
-    def test_ethernet_returns_empty(self):
-        s = _ok_status({"wiredstate": "connected"})
-        assert format_active_adapter(s) == ""
+    def test_missing_ip_and_gateway(self):
+        s = _with_device(
+            _ok_status(),
+            primary_ipv4_info={"address": "", "prefixlen": None, "netmask": "", "gateway": ""},
+        )
+        result = build_network_card_presentation(s)
+        assert result["detail"] == "IP: Not assigned | Gateway: Not available"
 
-    def test_using_fallback_appended(self):
-        s = _ok_status({
-            "usb_adapter_detected": False,
-            "active_adapter_kind": "builtin",
-            "using_builtin_fallback": True,
-        })
-        result = format_active_adapter(s)
-        assert "USB connection unavailable" in result
+    def test_netmask_fallback(self):
+        s = _with_device(
+            _ok_status(),
+            primary_ipv4_info={
+                "address": "192.168.1.42",
+                "prefixlen": None,
+                "netmask": "255.255.255.0",
+                "gateway": "192.168.1.1",
+            },
+        )
+        result = build_network_card_presentation(s)
+        assert result["detail"] == "IP: 192.168.1.42/255.255.255.0 | Gateway: 192.168.1.1"
 
-    def test_usb_active_with_fallback(self):
-        # This combination is unusual but should not crash.
-        s = _ok_status({
-            "usb_adapter_detected": True,
-            "active_adapter_kind": "usb",
-            "active_adapter_description": "RT8811AU",
-            "using_builtin_fallback": True,
-        })
-        result = format_active_adapter(s)
-        assert result.startswith("Using USB WiFi adapter RT8811AU")
-        assert "USB connection unavailable" in result
+    def test_recent_resets_warning(self):
+        s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="recent_resets", resets=1)]}),
+                         primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
+        result = build_network_card_presentation(s)
+        assert result["warning"] == "Warning: the USB WiFi adapter has needed 1 reset in the last 24 hours."
+        assert result["warning_severity"] == "warning"
+        assert result["support_detail"] == "Adapter: wlan1 | Resets: 1/2 in 24h"
 
-    def test_missing_keys_safe(self):
-        # Should not raise even with a nearly-empty dict.
-        result = format_active_adapter({})
-        assert isinstance(result, str)
+    def test_budget_exhausted_warning(self):
+        s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="reset_budget_exhausted", resets=2)]}),
+                         primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
+        result = build_network_card_presentation(s)
+        assert result["warning"] == "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+        assert result["warning_severity"] == "danger"
+        assert result["support_detail"] == "Adapter: wlan1 | Resets: 2/2 in 24h"
+
+    def test_quarantined_warning(self):
+        s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="quarantined", quarantined=True, resets=2)]}),
+                         primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
+        result = build_network_card_presentation(s)
+        assert result["warning"] == "USB WiFi disabled after repeated failures. Replace the USB adapter or contact support."
+        assert result["warning_severity"] == "danger"
+
+    def test_resetting_warning(self):
+        s = _ok_status({"adapters": [_usb_adapter(warning="resetting", resets=1, role="spare")]})
+        result = build_network_card_presentation(s)
+        assert result["warning"] == "USB WiFi adapter is being reset. Network connection may be unstable for a minute."
+        assert result["warning_severity"] == "warning"
+
+    def test_active_usb_warning_preferred_over_spare_higher_priority(self):
+        s = _with_device(
+            _ok_status({
+                "adapters": [
+                    _usb_adapter(warning="recent_resets", resets=1, role="client", ifname="wlan1"),
+                    _usb_adapter(warning="quarantined", quarantined=True, resets=2, role="spare", ifname="wlan2"),
+                ],
+            }),
+            primary_kind="usb_wifi",
+            primary_ifname="wlan1",
+            primary_ssid="MyHomeWiFi",
+        )
+        result = build_network_card_presentation(s)
+        assert result["support_detail"] == "Adapter: wlan1 | Resets: 1/2 in 24h"
 
 
 # ---------------------------------------------------------------------------
@@ -160,38 +218,33 @@ class TestSendNetworkStatusJson:
         return captured
 
     def test_success_adds_display_field(self):
-        data = _ok_status({"usb_adapter_detected": False})
+        data = _ok_status()
         result = self._call(200, data)
         assert result["code"] == 200
-        assert "display" in result["data"]
-        assert result["data"]["display"] == "Using on-board WiFi adapter"
-
-    def test_success_ethernet_display_empty(self):
-        data = _ok_status({"wiredstate": "connected"})
-        result = self._call(200, data)
-        assert result["data"]["display"] == ""
+        assert result["data"]["display"] == "Connected via on-board WiFi to MyNetwork"
 
     def test_success_adds_title_field(self):
-        data = _ok_status({"usb_adapter_detected": False, "active_ssid": "MyNetwork", "active_adapter_ifname": "wlan0"})
+        data = _ok_status()
         result = self._call(200, data)
         assert result["code"] == 200
-        assert "title" in result["data"]
-        assert result["data"]["title"] == "Network (Wi-Fi on MyNetwork)"
+        assert result["data"]["title"] == "Network"
 
-    def test_success_title_ethernet(self):
-        data = _ok_status({"wiredstate": "connected", "active_ssid": "", "active_adapter_ifname": ""})
+    def test_success_adds_detail_field(self):
+        data = _ok_status()
         result = self._call(200, data)
-        assert result["data"]["title"] == "Network (Ethernet)"
+        assert result["data"]["detail"] == "IP: 192.168.1.42/24 | Gateway: 192.168.1.1"
 
-    def test_success_title_ethernet_wins_over_wifi(self):
-        data = _ok_status({"wiredstate": "connected", "active_ssid": "MyNetwork", "active_adapter_ifname": "wlan0"})
+    def test_success_preserves_ap_ssid(self):
+        data = _ok_status({"ap_ssid": "autostream_SETUP"})
         result = self._call(200, data)
-        assert result["data"]["title"] == "Network (Ethernet)"
+        assert result["data"]["ap_ssid"] == "autostream_SETUP"
 
-    def test_success_title_disconnected(self):
-        data = _ok_status({"usb_adapter_detected": False, "active_ssid": "", "active_adapter_ifname": ""})
+    def test_success_includes_warning_fields_even_when_empty(self):
+        data = _ok_status()
         result = self._call(200, data)
-        assert result["data"]["title"] == "Network (disconnected)"
+        assert result["data"]["warning"] == ""
+        assert result["data"]["warning_severity"] == ""
+        assert result["data"]["support_detail"] == ""
 
     def test_watcher_503_returns_error(self):
         result = self._call(503, {})
@@ -391,9 +444,9 @@ class TestRouteWiring:
         from autostream_webui_api import send_network_setup_json
         assert callable(send_network_setup_json)
 
-    def test_format_active_adapter_importable(self):
-        from autostream_webui_api import format_active_adapter
-        assert callable(format_active_adapter)
+    def test_build_network_card_presentation_importable(self):
+        from autostream_webui_api import build_network_card_presentation
+        assert callable(build_network_card_presentation)
 
 
 # ---------------------------------------------------------------------------

@@ -2115,40 +2115,122 @@ def _watcher_request(method: str, path: str, body: Optional[dict] = None):
     return status, parsed
 
 
-def format_active_adapter(status: dict) -> str:
-    """Return the active-adapter display text for the network card.
+def _network_ip_detail(device: dict) -> str:
+    info = device.get("primary_ipv4_info") if isinstance(device.get("primary_ipv4_info"), dict) else {}
+    address = str(info.get("address") or "").strip()
+    prefixlen = info.get("prefixlen")
+    netmask = str(info.get("netmask") or "").strip()
+    gateway = str(info.get("gateway") or "").strip()
 
-    Returns an empty string when ethernet is active (adapter line is hidden).
-    """
-    if (status.get("wiredstate") or "") == "connected":
-        return ""
-    active_kind = status.get("active_adapter_kind") or ""
-    using_fallback = bool(status.get("using_builtin_fallback"))
-
-    if active_kind == "usb":
-        desc = (status.get("active_adapter_description")
-                or status.get("active_adapter_ifname") or "").strip()
-        line = f"Using USB WiFi adapter {desc}" if desc else "Using USB WiFi adapter"
+    if address:
+        if prefixlen is not None:
+            ip_text = f"{address}/{prefixlen}"
+        elif netmask:
+            ip_text = f"{address}/{netmask}"
+        else:
+            ip_text = address
     else:
-        line = "Using on-board WiFi adapter"
+        ip_text = "Not assigned"
 
-    if using_fallback:
-        line += " (USB connection unavailable)"
-    return line
+    return f"IP: {ip_text} | Gateway: {gateway or 'Not available'}"
 
 
-def format_network_title(status: dict) -> str:
-    """Return the network card title reflecting connection type and SSID."""
-    wiredstate = (status.get("wiredstate") or "").strip()
-    active_ssid = (status.get("active_ssid") or "").strip()
-    active_ifname = (status.get("active_adapter_ifname") or "").strip()
-    if wiredstate == "connected":
-        return "Network (Ethernet)"
-    if active_ssid:
-        return f"Network (Wi-Fi on {active_ssid})"
-    if active_ifname:
-        return "Network (Wi-Fi)"
-    return "Network (disconnected)"
+def _network_warning_rank(adapter: dict) -> int | None:
+    policy = adapter.get("policy") if isinstance(adapter.get("policy"), dict) else {}
+    warning = str(policy.get("warning") or "").strip()
+    if policy.get("quarantined") is True or warning == "quarantined":
+        return 0
+    if warning == "reset_budget_exhausted":
+        return 1
+    if warning == "resetting":
+        return 2
+    if warning == "recent_resets":
+        return 3
+    return None
+
+
+def _network_warning_fields(adapter: dict) -> dict:
+    policy = adapter.get("policy") if isinstance(adapter.get("policy"), dict) else {}
+    rank = _network_warning_rank(adapter)
+    resets = int(policy.get("resets_24h") or 0)
+    budget = int(policy.get("reset_budget_24h") or 0)
+    ifname = str(adapter.get("ifname") or "").strip() or "Unknown"
+
+    if rank == 0:
+        warning = "USB WiFi disabled after repeated failures. Replace the USB adapter or contact support."
+        severity = "danger"
+    elif rank == 1:
+        warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+        severity = "danger"
+    elif rank == 2:
+        warning = "USB WiFi adapter is being reset. Network connection may be unstable for a minute."
+        severity = "warning"
+    elif rank == 3:
+        reset_text = "1 reset" if resets == 1 else f"{resets} resets"
+        warning = f"Warning: the USB WiFi adapter has needed {reset_text} in the last 24 hours."
+        severity = "warning"
+    else:
+        return {}
+
+    return {
+        "warning": warning,
+        "warning_severity": severity,
+        "support_detail": f"Adapter: {ifname} | Resets: {resets}/{budget} in 24h",
+    }
+
+
+def build_network_card_presentation(status: dict) -> dict:
+    """Return Network-card presentation fields derived from watcher schema v1."""
+    device = status.get("device") if isinstance(status.get("device"), dict) else {}
+    primary_kind = str(device.get("primary_kind") or "").strip()
+    primary_ifname = str(device.get("primary_ifname") or "").strip()
+    primary_ssid = str(device.get("primary_ssid") or "").strip()
+
+    if primary_kind == "ethernet":
+        display = "Connected via Ethernet"
+    elif primary_kind == "usb_wifi":
+        display = "Connected via USB WiFi adapter"
+        if primary_ssid:
+            display += f" to {primary_ssid}"
+    elif primary_kind == "builtin_wifi":
+        display = "Connected via on-board WiFi"
+        if primary_ssid:
+            display += f" to {primary_ssid}"
+    else:
+        display = "No active network connection"
+
+    result = {
+        "title": "Network",
+        "display": display,
+        "detail": _network_ip_detail(device) if primary_kind else "",
+        "warning": "",
+        "warning_severity": "",
+        "support_detail": "",
+    }
+
+    adapters = status.get("adapters") if isinstance(status.get("adapters"), list) else []
+    usb_adapters = [
+        a for a in adapters
+        if isinstance(a, dict) and str(a.get("kind") or "").strip() == "usb_wifi"
+    ]
+    active_usb = [
+        a for a in usb_adapters
+        if str(a.get("ifname") or "").strip() == primary_ifname or str(a.get("role") or "").strip() == "client"
+    ]
+    for adapter in active_usb:
+        if _network_warning_rank(adapter) is not None:
+            result.update(_network_warning_fields(adapter))
+            return result
+
+    ranked = [
+        (rank, adapter) for adapter in usb_adapters
+        for rank in [_network_warning_rank(adapter)]
+        if rank is not None
+    ]
+    if ranked:
+        ranked.sort(key=lambda item: item[0])
+        result.update(_network_warning_fields(ranked[0][1]))
+    return result
 
 
 def send_network_status_json(handler) -> None:
@@ -2161,8 +2243,7 @@ def send_network_status_json(handler) -> None:
     if status != 200 or not isinstance(data, dict) or not data.get("ok"):
         send_browser_api_error(handler, 503, "Network service unavailable")
         return
-    data["display"] = format_active_adapter(data)
-    data["title"] = format_network_title(data)
+    data.update(build_network_card_presentation(data))
     send_json(handler, 200, data)
 
 
