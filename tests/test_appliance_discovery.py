@@ -72,7 +72,7 @@ def _load_module():
 
     # Clear conflict-detection state between test runs
     m._svc_info.clear()
-    m._id_net_identities.clear()
+    m._id_hostnames.clear()
     m._conflict_ids.clear()
     m._conflict_logged.clear()
 
@@ -169,7 +169,7 @@ class TestConflictDetection:
     def test_same_id_different_hosts_causes_conflict(self):
         m, parse_fn, *_ = _load_module()
 
-        # First service: one (hostname, ip)
+        # First service: one hostname
         r1 = parse_fn(
             _parts(service_name="SvcA._autostream._tcp.local",
                    hostname="host-a.local", ip="192.168.1.10"),
@@ -177,7 +177,7 @@ class TestConflictDetection:
         )
         assert r1 is not None  # not yet conflicted
 
-        # Second service: same ID, different (hostname, ip) — conflict detected
+        # Second service: same ID, different hostname — conflict detected
         r2 = parse_fn(
             _parts(service_name="SvcB._autostream._tcp.local",
                    hostname="host-b.local", ip="192.168.1.11"),
@@ -189,7 +189,7 @@ class TestConflictDetection:
         assert _PEER_ID in m.get_conflict_ids()
         assert m.get_appliance_sighting(_PEER_ID) is None
 
-    def test_same_id_same_host_no_conflict(self):
+    def test_same_id_same_host_multiple_ips_no_conflict(self):
         m, parse_fn, *_ = _load_module()
 
         r1 = parse_fn(
@@ -198,12 +198,14 @@ class TestConflictDetection:
             _txt(appliance_id=_PEER_ID),
         )
         r2 = parse_fn(
-            _parts(service_name="SvcA._autostream._tcp.local",
-                   hostname="host-a.local", ip="192.168.1.10"),
+            _parts(service_name="SvcB._autostream._tcp.local",
+                   hostname="host-a.local", ip="192.168.1.11"),
             _txt(appliance_id=_PEER_ID),
         )
         assert r1 is not None
         assert r2 is not None
+        assert _PEER_ID not in m.get_conflict_ids()
+        assert m._id_hostnames[_PEER_ID] == {"host-a.local"}
 
     def test_conflict_ids_reported(self):
         m, parse_fn, *_ = _load_module()
@@ -258,7 +260,7 @@ class TestConflictDetection:
         on_remove(_PEER_ID, sighting1)
 
         assert _PEER_ID not in m.get_conflict_ids()
-        assert _PEER_ID not in m._id_net_identities
+        assert _PEER_ID not in m._id_hostnames
         # Both service names must be evicted from _svc_info
         assert "SvcA._autostream._tcp.local" not in m._svc_info
         assert "SvcB._autostream._tcp.local" not in m._svc_info
@@ -292,8 +294,34 @@ class TestConflictDetection:
         assert "SvcB._autostream._tcp.local" not in m._svc_info
         # SvcA's svc_info entry must still be present
         assert "SvcA._autostream._tcp.local" in m._svc_info
-        # id_net_identities must have only one entry now
-        assert len(m._id_net_identities.get(_PEER_ID, set())) == 1
+        # Hostname conflict tracking must have only one entry now
+        assert m._id_hostnames.get(_PEER_ID) == {"ha.local"}
+
+    def test_on_change_keeps_same_hostname_multi_homed_non_conflicted(self):
+        m, parse_fn, _, on_remove, on_change = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        r2 = parse_fn(
+            _parts(service_name="SvcB._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.11"),
+            _txt(appliance_id=_PEER_ID),
+        )
+        assert r1 is not None
+        assert r2 is not None
+        assert _PEER_ID not in m.get_conflict_ids()
+
+        _, sighting1 = r1
+        _, sighting2 = r2
+        on_change(_PEER_ID, sighting2, sighting1)
+
+        assert _PEER_ID not in m.get_conflict_ids()
+        assert "SvcA._autostream._tcp.local" in m._svc_info
+        assert "SvcB._autostream._tcp.local" not in m._svc_info
+        assert m._id_hostnames.get(_PEER_ID) == {"ha.local"}
 
     def test_on_remove_clears_svc_info_entry(self):
         """on_appliance_remove removes _svc_info entries for the appliance."""

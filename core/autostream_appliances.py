@@ -50,9 +50,9 @@ class ApplianceSighting:
 _reg_lock = threading.Lock()
 # service_name → (appliance_id, hostname, ip)
 _svc_info: dict[str, tuple[str, str, str]] = {}
-# appliance_id → {(hostname, ip), ...}  — distinct network identities per ID
-_id_net_identities: dict[str, set] = {}
-# IDs excluded from the registry due to hostname/IP conflict
+# appliance_id → {hostname, ...}  — distinct claimed hostnames per ID
+_id_hostnames: dict[str, set[str]] = {}
+# IDs excluded from the registry due to hostname conflict
 _conflict_ids: set[str] = set()
 # Rate-limit conflict logging to one warning per ID
 _conflict_logged: set[str] = set()
@@ -60,6 +60,17 @@ _conflict_logged: set[str] = set()
 
 def _cap_tokens(raw: str) -> set[str]:
     return {t.strip() for t in raw.split(',') if t.strip()}
+
+
+def _rebuild_hostnames_locked(appliance_id: str) -> set[str]:
+    hostnames = {hostname for app_id, hostname, _ip in _svc_info.values() if app_id == appliance_id}
+    if hostnames:
+        _id_hostnames[appliance_id] = hostnames
+    else:
+        _id_hostnames.pop(appliance_id, None)
+    if len(hostnames) <= 1:
+        _conflict_ids.discard(appliance_id)
+    return hostnames
 
 
 def _parse_appliance_event(parts: list, txt: dict) -> tuple | None:
@@ -90,33 +101,22 @@ def _parse_appliance_event(parts: list, txt: dict) -> tuple | None:
     hostname = parts[6]
     ip = parts[7]
     version = txt.get('version', '')
-    net_key = (hostname, ip)
 
     with _reg_lock:
         prev = _svc_info.get(service_name)
-        if prev is not None and prev[0] != appliance_id:
-            # Service changed its claimed ID — clean up old entry
-            old_id, old_h, old_ip = prev
-            old_set = _id_net_identities.get(old_id)
-            if old_set is not None:
-                old_set.discard((old_h, old_ip))
-                if not old_set:
-                    _id_net_identities.pop(old_id, None)
-                    _conflict_ids.discard(old_id)
-
         _svc_info[service_name] = (appliance_id, hostname, ip)
-        id_nets = _id_net_identities.setdefault(appliance_id, set())
-        id_nets.add(net_key)
+        if prev is not None and prev[0] != appliance_id:
+            _rebuild_hostnames_locked(prev[0])
+        hostnames = _rebuild_hostnames_locked(appliance_id)
 
-        if len(id_nets) > 1:
+        if len(hostnames) > 1:
             if appliance_id not in _conflict_ids:
                 _conflict_ids.add(appliance_id)
                 if appliance_id not in _conflict_logged:
                     _conflict_logged.add(appliance_id)
-                    hostnames = sorted({h for h, _ in id_nets})
                     logging.warning(
                         "appliance ID conflict: id=%s hostnames=[%s]",
-                        appliance_id, ', '.join(hostnames),
+                        appliance_id, ', '.join(sorted(hostnames)),
                     )
             # Still return the sighting so MdnsBrowser tracks the five-tuple.
             # This ensures on_remove / on_change fire when a conflicting appliance
@@ -147,11 +147,7 @@ def _on_appliance_change(appliance_id: str, removed_sighting: Optional[Appliance
     with _reg_lock:
         if removed_sighting is not None:
             _svc_info.pop(removed_sighting.service_name, None)
-            id_nets = _id_net_identities.get(appliance_id)
-            if id_nets is not None:
-                id_nets.discard((removed_sighting.hostname, removed_sighting.ip))
-                if len(id_nets) <= 1:
-                    _conflict_ids.discard(appliance_id)
+            _rebuild_hostnames_locked(appliance_id)
     if removed_sighting is not None and removed_sighting.ip:
         evict_session_for_ip(removed_sighting.ip)
 
@@ -177,7 +173,7 @@ def _on_appliance_remove(appliance_id: str, sighting: Optional[ApplianceSighting
         stale = [k for k, v in _svc_info.items() if v[0] == appliance_id]
         for k in stale:
             _svc_info.pop(k, None)
-        _id_net_identities.pop(appliance_id, None)
+        _id_hostnames.pop(appliance_id, None)
         _conflict_ids.discard(appliance_id)
     if sighting is not None and sighting.ip:
         evict_session_for_ip(sighting.ip)
