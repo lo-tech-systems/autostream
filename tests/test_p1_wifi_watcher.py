@@ -2704,6 +2704,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid", return_value="MyHomeWiFi"), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "is_gateway_reachable", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
@@ -2711,6 +2712,7 @@ class TestBuildNetworkStatusSnapshot:
         assert snap["schema_version"] == 1
         assert snap["device"]["state"] == "online"
         assert snap["device"]["primary_ifname"] == "wlan0"
+        assert snap["device"]["primary_ssid"] == "MyHomeWiFi"
         assert snap["device"]["primary_ipv4"] == "192.168.1.42"
         assert snap["device"]["primary_ipv4_info"] == {
             "address": "192.168.1.42",
@@ -2840,11 +2842,14 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="10.0.0.1"), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
             snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["state"] == "degraded"
         assert snap["device"]["primary_kind"] == "ethernet"
+        assert snap["device"]["primary_ssid"] == ""
+        get_ssid.assert_not_called()
         assert snap["device"]["primary_ipv4"] == "10.0.0.5"
         assert snap["device"]["primary_ipv4_info"] == {
             "address": "10.0.0.5",

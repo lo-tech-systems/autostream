@@ -313,6 +313,9 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         _primary_ipv4_info(addresses, primary_ifname, primary_gateway)
         if primary_ifname else {"address": "", "prefixlen": None, "netmask": "", "gateway": ""}
     )
+    primary_ssid = ""
+    if primary_kind in ("builtin_wifi", "usb_wifi"):
+        primary_ssid = wifi_net.get_active_wifi_ssid(primary_ifname) or ""
 
     if in_setup:
         device_state = "setup_mode"
@@ -344,6 +347,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             "state": device_state,
             "primary_ifname": primary_ifname,
             "primary_kind": primary_kind,
+            "primary_ssid": primary_ssid,
             "primary_ipv4": primary_ipv4,
             "primary_ipv4_info": primary_ipv4_info,
             "primary_ipv6": primary_ipv6,
