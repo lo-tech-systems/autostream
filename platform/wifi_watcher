@@ -18,7 +18,7 @@ If the WiFi is unconfigured or remains disconnected for 1 minute after boot, it 
 AP mode with a captive portal that enables the user to easily connect the Pi to the WiFi.
 
 For an unconfigured device (no WiFi profile saved), the AP mode stays active indefinitely
-until the user successfully configures a network or a wired ethernet connection appears.
+until the user successfully configures a network or usable wired ethernet appears.
 
 For a previously-configured device that cannot reconnect, AP mode stays active for up to
 30 minutes. After that time, to re-enter AP mode, the user would need to power-cycle the
@@ -26,18 +26,14 @@ device. As an exception to this, note that if the user provided WiFi connection 
 didn't work (e.g., wrong password), the AP mode will be re-activated and the timer reset
 for up to another 30 minutes.
 
-If a wired ethernet connection is up, the AP mode is suppressed (unless the user explicitly
-requested AP mode via the /request_ap_mode endpoint, in which case ethernet does not
-suppress it).
-
-If there is a WiFi connection configured, but the wired connection is down, when the script
-closes AP mode after the allowed 30 minutes it will try to connect to that connection
-periodically. If there is no connection still after 24 hours, the device will be rebooted
-and the process will repeat.
+If a wired ethernet path is usable (carrier plus a valid non-link-local IPv4 address), automatic
+AP mode is suppressed. A carrier-only cable is reported as a fact but does not count as a usable
+path. If the user explicitly requested AP mode via the /request_ap_mode endpoint, ethernet does
+not close that manual AP session.
 
 == Connection Reliability ==
 
-If the WiFi is configured and the wired connection is down, the script monitors the network
+If the WiFi is configured and usable wired ethernet is down, the script monitors the network
 health by monitoring the kernel's view of the default gateway. If this goes offline for more
 than 5 minutes, the script trys to reconnect to the network periodically.
 
@@ -45,6 +41,10 @@ If the gateway remains unreachable for more than 30 minutes, the script will reb
 Whilst this seems aggressive, the WiFi chipset in the Pi-Zero range is not great in terms
 of long periods of uptime so this is a defensive strategy. Music can't play if the device
 isn't on the network anyway.
+
+As a final safety net, if normal monitoring has not seen any usable non-hotspot WiFi or
+ethernet path for 12 hours, the watcher requests a guarded NetworkDown reboot. Setup/AP mode
+suspends this catch-all timer, and leaving setup/AP mode resets it.
 
 Note that this script always serves the setup page. The associated NGINX configuration
 controls which web server (this or autostream_webui.py) services requests via the presence
@@ -2355,7 +2355,7 @@ def network_monitor_loop(run_once: bool = False):
             log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
             log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
 
-        # Publish the runtime status snapshot (source of truth for the app).
+        # Publish the runtime status snapshot served by /network_status.
         publish_network_status(adapters, wired_connected, wired_ok)
 
         # Ethernet suppresses AP mode entirely (unless the user explicitly requested AP).

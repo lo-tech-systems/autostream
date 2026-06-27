@@ -341,7 +341,7 @@ If your Wi-Fi name or password changes, the device may no longer be able to conn
 
 * Starts if Wi-Fi is **unconfigured** or still **offline after ~60 seconds** after boot
 * Stays active **indefinitely** for unconfigured devices; runs for **up to 30 minutes** for previously-configured devices
-* Is **suppressed if wired Ethernet is connected**
+* Is **suppressed if wired Ethernet is usable** (carrier plus a valid non-link-local IPv4 address). Carrier-only Ethernet is reported as a fact but does not suppress setup mode.
 * Uses an SSID derived from the Wi-Fi MAC address:
   * `autostream_XXXX` (last 4 hex digits), or fallback `autostream_SETUP`
 * Uses a local AP IP of:
@@ -421,7 +421,7 @@ Log lines operators are expected to see (watcher log
 | WARNING | `USB rebind reset: cannot resolve sysfs paths for <if>` | sysfs paths could not be resolved (ladder falls through to reboot) |
 | WARNING | `Single-radio hotspot cannot start because the only radio <if> appears dead; using USB reset ladder instead` | Single-radio setup-mode recovery |
 | WARNING | `Dead Wi-Fi adapter <if> offline > Ns; requesting reboot` | Offline beyond the 30-minute dead-PHY threshold |
-| WARNING | `Persistent dead-PHY reboot guard suppresses reboot for <if>; leaving 24h backstop in effect` | Cross-boot reboot cap reached |
+| WARNING | `Persistent dead-PHY reboot guard suppresses reboot for <if>; leaving no-active-path catch-all in effect` | Cross-boot reboot cap reached; the 12-hour no-active-path catch-all still applies |
 
 **Manual field workaround** (if you are on the device console and need to revive a
 wedged dongle immediately):
@@ -444,23 +444,33 @@ The watcher performs exactly these actions automatically; the manual steps are
 only needed if you want to force recovery without waiting for the next monitor
 pass.
 
-#### Runtime network status snapshot
+#### Runtime network status
 
-The watcher publishes its derived network state to
-`/run/autostream/network-status.json` (`schema_version: 1`). This file is the
-**source of truth** the autostream application reads — it does not re-run live
-`nmcli`/sysfs probes. It carries `device.state`, per-adapter `facts`/`health`/
-`policy`, the active hotspot, and the effective logging level, plus `updated_at`
-(wall-clock). A **missing, stale, or unknown-schema** snapshot is interpreted as
-`device.state: unknown`.
+The watcher keeps its derived network state in memory and exposes it via its
+loopback/token-protected `GET /network_status` endpoint (`schema_version: 1`).
+It carries top-level `ok: true`, `device.state`, `connectivity`, per-adapter
+`facts`/`health`/`policy`, the active hotspot, and the effective logging level,
+plus `updated_at` (wall-clock). Before the first monitor snapshot is published,
+the endpoint returns an explicit stale payload with `device.state: unknown`.
+
+The `connectivity` object distinguishes physical Ethernet carrier from a usable
+wired path:
+
+* `wired_carrier`: physical Ethernet link/carrier only.
+* `wired_ok`: carrier plus a valid non-link-local IPv4 address.
+* `client_ok`: healthy Wi-Fi client path.
+* `active_path_ok`: usable non-hotspot Wi-Fi or Ethernet path outside setup/AP mode.
+* `no_active_path_*`: age, threshold, and remaining time for the guarded
+  12-hour no-active-path `NetworkDown` reboot. These fields are `null` while
+  setup/AP mode suspends the catch-all timer.
 
 Common adapter `health.state` values: `healthy`, `degraded`, `link_down`,
 `dead_phy` (wedged beyond debounce), `resetting`, `quarantined`, `hotspot_active`,
 `idle`, `absent`, `unmanaged`.
 
-For loopback/token-protected diagnostics the watcher also exposes
-`GET /network_status_v2`, a read-only view over the same snapshot. The legacy
-`GET /network_status` flat payload is preserved for existing consumers.
+`GET /network_status` is the sole watcher runtime status contract; there is no
+`/network_status_v2` endpoint and no `/run/autostream/network-status.json`
+snapshot file.
 
 #### Runtime Wi-Fi watcher log level
 
