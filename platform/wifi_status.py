@@ -160,10 +160,8 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         dead_ifname = w.STATE.dead_adapter_ifname
         dead_since = w.STATE.dead_adapter_since
         dead_checks = w.STATE.dead_adapter_checks
-        quarantined_until = w.STATE.dead_adapter_quarantined_until
         last_reset_method = w.STATE.last_reset_method
         last_reset_attempt = w.STATE.last_reset_attempt
-        recent_resets = list(w.STATE.dead_adapter_recent_resets)
         reboot_retry_after = w.STATE.conn_reboot_retry_after
         temp_expires = w.STATE.temporary_log_level_until
         default_level = w.STATE.default_log_level_name
@@ -182,7 +180,19 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         carrier = (link_down is False)
         is_dead = (a.ifname == dead_ifname)
         is_hotspot = (a.ifname == hotspot_ifname)
-        quarantined = bool(quarantined_until) and is_dead
+        target = w.TargetAdapter(
+            ifname=a.ifname,
+            stable_id=a.stable_id,
+            kind=a.kind + ("_wifi" if a.kind in ("usb", "builtin") else ""),
+            is_usb=bool(a.is_usb),
+            is_builtin=bool(a.is_builtin),
+            present_in_nm=True,
+            present_in_sysfs=True,
+            resettable_usb=bool(a.is_usb),
+        )
+        ledger = w._adapter_reset_ledger_snapshot(target, now_monotonic)
+        quarantined_until = w._adapter_quarantined_until(target, now_monotonic)
+        quarantined = quarantined_until is not None and is_dead
         v4, v6 = _adapter_ip_lists(addresses, a.ifname)
 
         if healthy:
@@ -256,7 +266,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 "action": action,
                 "last_action": last_action,
                 "next_action_after": next_after,
-                "resets_24h": len(recent_resets) if is_dead else 0,
+                "resets_24h": len(ledger.get("recent_resets", [])) if is_dead else 0,
                 "reset_budget_24h": w.USB_MAX_RESETS_PER_WINDOW,
             },
         })

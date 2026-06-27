@@ -353,9 +353,7 @@ class NetworkMonitorState:
     # Survives brief healthy flaps in-process so flapping cannot starve the
     # 30-minute reboot threshold; kept until the adapter is healthy for 24h.
     dead_adapter_first_failure: Optional[float] = None
-    dead_adapter_recent_resets: list = field(default_factory=list)  # monotonic reset times
-    dead_adapter_total_resets: int = 0
-    dead_adapter_quarantined_until: Optional[float] = None
+    adapter_reset_ledgers: dict = field(default_factory=dict)  # stable_id -> reset accounting
     # Recovery-ledger identity of the adapter being tracked (MAC/sysfs/ifname);
     # used to reset the debounce when a *different* adapter is inserted.  Not a
     # duplicate of active_client_mac — it is the dead-target identity.
@@ -2967,6 +2965,14 @@ def _adapter_reset_budget_exhausted(target, now):
 
 def _record_adapter_reset(target, now):
     wifi_recovery.record_adapter_reset(_self_module(), target, now)
+
+
+def _adapter_reset_ledger_snapshot(target, now):
+    return wifi_recovery.adapter_reset_ledger_snapshot(_self_module(), target, now)
+
+
+def _adapter_quarantined_until(target, now):
+    return wifi_recovery.adapter_quarantined_until(_self_module(), target, now)
 
 
 def _dead_phy_reboot_guard_permits(now_wall):

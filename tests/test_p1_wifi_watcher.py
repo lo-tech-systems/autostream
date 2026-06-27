@@ -1868,6 +1868,18 @@ def _patch_dead_phy_facts(watcher, *, sysfs_names=(), usb_paths_ifaces=(),
         yield
 
 
+def _ledger(watcher, stable_id):
+    return watcher.STATE.adapter_reset_ledgers[stable_id]
+
+
+def _spend_window_budget(watcher, stable_id, now=0.0):
+    watcher.STATE.adapter_reset_ledgers[stable_id] = {
+        "recent_resets": [now, now],
+        "total_resets": 2,
+        "quarantined_until": None,
+    }
+
+
 class TestDeadAdapterTargetResolution:
     def test_resolves_sole_usb_as_startup_target(self, watcher):
         usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
@@ -1930,19 +1942,43 @@ class TestDeadAdapterDetection:
         assert watcher.STATE.dead_adapter_checks == 0
         assert watcher.STATE.dead_adapter_since is None
 
+    def test_healthy_decay_does_not_erase_accounting_ledger(self, watcher):
+        usb = self._usb(watcher)
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_checks = 3
+        watcher.STATE.dead_adapter_healthy_since = 100.0
+        watcher.STATE.adapter_reset_ledgers[usb.stable_id] = {
+            "recent_resets": [100.0],
+            "total_resets": 1,
+            "quarantined_until": None,
+        }
+        now = 100.0 + watcher.DEAD_ADAPTER_HEALTHY_DECAY + 1.0
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=False, healthy=True), \
+             patch("time.monotonic", return_value=now):
+            target = watcher._resolve_target_client([usb])
+            assert watcher._update_dead_adapter_detection([usb], target) is False
+        assert watcher.STATE.dead_adapter_ifname == ""
+        assert _ledger(watcher, usb.stable_id)["recent_resets"] == [100.0]
+
     def test_identity_change_resets_debounce(self, watcher):
         usb = self._usb(watcher)
         watcher.STATE.dead_adapter_checks = 1
         watcher.STATE.dead_adapter_stable_id = "old:identity:value:00:00:00"
-        watcher.STATE.dead_adapter_total_resets = 4
+        watcher.STATE.adapter_reset_ledgers["old:identity:value:00:00:00"] = {
+            "recent_resets": [10.0],
+            "total_resets": 4,
+            "quarantined_until": None,
+        }
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=True, healthy=False):
             target = watcher._resolve_target_client([usb])
             watcher._update_dead_adapter_detection([usb], target)
-        # Ledger reset on identity change; this pass counts as the first failure.
+        # Active tracking resets on identity change, but the old ledger is isolated.
         assert watcher.STATE.dead_adapter_checks == 1
-        assert watcher.STATE.dead_adapter_total_resets == 0
+        assert _ledger(watcher, "old:identity:value:00:00:00")["total_resets"] == 4
 
     def test_none_target_clears_state(self, watcher):
         watcher.STATE.dead_adapter_ifname = "wlan0"
@@ -1974,7 +2010,7 @@ class TestResetBudget:
         later = watcher.USB_RESET_WINDOW + 1.0
         # Per-window budget recovered, total still 2 (< total cap) -> not exhausted.
         assert watcher._adapter_reset_budget_exhausted(t, later) is False
-        assert watcher.STATE.dead_adapter_total_resets == 2
+        assert _ledger(watcher, t.stable_id)["total_resets"] == 2
 
     def test_total_cap_exhausts(self, watcher):
         t = self._target(watcher)
@@ -1983,6 +2019,43 @@ class TestResetBudget:
             watcher._record_adapter_reset(t, i * (watcher.USB_RESET_WINDOW + 1.0))
         last = (watcher.USB_MAX_RESETS_TOTAL) * (watcher.USB_RESET_WINDOW + 1.0)
         assert watcher._adapter_reset_budget_exhausted(t, last) is True
+
+    def test_resets_are_per_adapter_identity(self, watcher):
+        a = self._target(watcher)
+        b = watcher.TargetAdapter(
+            ifname="wlan1",
+            stable_id="aa:bb:cc:dd:ee:ff",
+            kind="usb_wifi",
+            is_usb=True,
+            is_builtin=False,
+            present_in_nm=True,
+            present_in_sysfs=True,
+            resettable_usb=True,
+        )
+        watcher._record_adapter_reset(a, 100.0)
+        watcher._record_adapter_reset(a, 101.0)
+        assert watcher._adapter_reset_budget_exhausted(a, 101.0) is True
+        assert watcher._adapter_reset_budget_exhausted(b, 101.0) is False
+        assert _ledger(watcher, a.stable_id)["recent_resets"] == [100.0, 101.0]
+        assert _ledger(watcher, b.stable_id)["recent_resets"] == []
+
+    def test_replacement_with_different_stable_mac_gets_separate_ledger(self, watcher):
+        a = self._target(watcher)
+        replacement = watcher.TargetAdapter(
+            ifname=a.ifname,
+            stable_id="aa:bb:cc:00:00:99",
+            kind=a.kind,
+            is_usb=a.is_usb,
+            is_builtin=a.is_builtin,
+            present_in_nm=a.present_in_nm,
+            present_in_sysfs=a.present_in_sysfs,
+            resettable_usb=a.resettable_usb,
+        )
+        watcher._record_adapter_reset(a, 100.0)
+        watcher._record_adapter_reset(replacement, 200.0)
+        assert set(watcher.STATE.adapter_reset_ledgers) == {a.stable_id, replacement.stable_id}
+        assert _ledger(watcher, a.stable_id)["recent_resets"] == [100.0]
+        assert _ledger(watcher, replacement.stable_id)["recent_resets"] == [200.0]
 
 
 class TestDeadPhyRebootGuard:
@@ -2170,7 +2243,7 @@ class TestEscalateDeadAdapterRecovery:
         usb = self._usb(watcher)
         self._mark_dead(watcher)
         # Spend the per-window budget.
-        watcher.STATE.dead_adapter_recent_resets = [0.0, 0.0]
+        _spend_window_budget(watcher, self.USB_MAC, now=0.0)
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=True, healthy=False), \
@@ -2181,12 +2254,12 @@ class TestEscalateDeadAdapterRecovery:
             handled = watcher.escalate_dead_adapter_recovery([usb], True)
         assert handled is False
         ra.assert_not_called()
-        assert watcher.STATE.dead_adapter_quarantined_until is not None
+        assert _ledger(watcher, self.USB_MAC)["quarantined_until"] is not None
 
     def test_usb_only_emergency_attempt_when_no_path(self, watcher):
         usb = self._usb(watcher)
         self._mark_dead(watcher)
-        watcher.STATE.dead_adapter_recent_resets = [0.0, 0.0]
+        _spend_window_budget(watcher, self.USB_MAC, now=0.0)
         watcher.STATE.last_reset_attempt = 0.0
         emergency_now = watcher.USB_EMERGENCY_BACKOFF + 10.0
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
@@ -2202,6 +2275,20 @@ class TestEscalateDeadAdapterRecovery:
             handled = watcher.escalate_dead_adapter_recovery([usb], False)
         assert handled is True
         ra.assert_called_once()
+
+    def test_quarantine_is_per_adapter(self, watcher):
+        usb = self._usb(watcher)
+        other = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+        self._mark_dead(watcher)
+        _spend_window_budget(watcher, self.USB_MAC, now=0.0)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
+                                   usb_paths_ifaces=["wlan0", "wlan1"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch("time.monotonic", return_value=1.0):
+            watcher.escalate_dead_adapter_recovery([usb, other], True)
+        assert _ledger(watcher, self.USB_MAC)["quarantined_until"] is not None
+        assert other.stable_id not in watcher.STATE.adapter_reset_ledgers
 
     def test_single_radio_setup_mode_resets_not_deadlocks(self, watcher):
         usb = self._usb(watcher)
@@ -2469,7 +2556,7 @@ class TestDeadPhyEndToEnd:
             # Budget exhausted + ethernet path -> quarantine (does not own pass).
             assert watcher.escalate_dead_adapter_recovery([usb], True) is False
         assert order == ["A", "B"]
-        assert watcher.STATE.dead_adapter_quarantined_until is not None
+        assert _ledger(watcher, self.MAC)["quarantined_until"] is not None
         reboot.assert_not_called()
 
     def test_sequence_ethernet_up_resets_recover_no_reboot(self, watcher):
@@ -2499,7 +2586,7 @@ class TestDeadPhyEndToEnd:
         usb = self._usb(watcher)
         clock = _Clock(1000.0)
         self._mark_dead(watcher, first_failure=clock.t)
-        watcher.STATE.dead_adapter_recent_resets = [clock.t, clock.t]
+        _spend_window_budget(watcher, self.MAC, now=clock.t)
         watcher.STATE.last_reset_attempt = clock.t
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
@@ -2520,6 +2607,43 @@ class TestDeadPhyEndToEnd:
             watcher.escalate_dead_adapter_recovery([usb], False)
             assert ra.call_count == 1
             reboot.assert_not_called()  # dead_for still < 30 min in this window
+
+    def test_recovered_fresh_episode_is_due_and_starts_with_method_a(self, watcher):
+        usb = self._usb(watcher)
+        clock = _Clock(1000.0)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch("time.monotonic", clock):
+            watcher.escalate_dead_adapter_recovery([usb], True)
+            watcher.escalate_dead_adapter_recovery([usb], True)
+        assert watcher.STATE.last_reset_attempt is None
+        assert watcher.STATE.last_reset_method == ""
+
+        clock.advance(1.0)
+        self._mark_dead(watcher, first_failure=clock.t)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra2, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb2, \
+             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch("time.monotonic", clock):
+            assert watcher.escalate_dead_adapter_recovery([usb], True) is True
+        assert ra.call_count == 1
+        ra2.assert_called_once_with("wlan0")
+        rb.assert_not_called()
+        rb2.assert_not_called()
+        assert watcher.STATE.last_reset_method == "A"
 
     def test_sequence_reboot_then_inprocess_and_guard_suppression(self, watcher):
         """Offline + dead>=30min + resets failing: one reboot, then suppressed."""

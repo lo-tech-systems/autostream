@@ -126,14 +126,82 @@ def clear_dead_adapter_state(w) -> None:
         _clear_dead_adapter_state_locked(w)
 
 
-def _reset_dead_ledger_locked(w) -> None:
-    """Drop all dead-PHY state including reset history (assumes state_lock held)."""
+def _clear_active_dead_tracking_locked(w) -> None:
+    """Clear active dead-PHY tracking state without touching accounting ledgers."""
     _clear_dead_adapter_state_locked(w)
     w.STATE.dead_adapter_first_failure = None
-    w.STATE.dead_adapter_recent_resets = []
-    w.STATE.dead_adapter_total_resets = 0
-    w.STATE.dead_adapter_quarantined_until = None
     w.STATE.dead_adapter_healthy_since = None
+
+
+def _new_adapter_ledger() -> dict:
+    return {"recent_resets": [], "total_resets": 0, "quarantined_until": None}
+
+
+def _adapter_ledger_locked(w, target: Optional[TargetAdapter], create: bool = True) -> Optional[dict]:
+    """Return the reset-accounting ledger for *target* (assumes state_lock held)."""
+    if target is None or not target.stable_id:
+        return None
+    ledgers = w.STATE.adapter_reset_ledgers
+    ledger = ledgers.get(target.stable_id)
+    if ledger is None and create:
+        ledger = _new_adapter_ledger()
+        ledgers[target.stable_id] = ledger
+    return ledger
+
+
+def _prune_adapter_ledgers_locked(w, now: float) -> None:
+    """Prune rolling reset windows and expired quarantine deadlines."""
+    cutoff = now - w.USB_RESET_WINDOW
+    expired = []
+    for stable_id, ledger in list(w.STATE.adapter_reset_ledgers.items()):
+        recent = ledger.get("recent_resets")
+        if not isinstance(recent, list):
+            recent = []
+        ledger["recent_resets"] = [
+            t for t in recent
+            if isinstance(t, (int, float)) and not isinstance(t, bool) and t >= cutoff
+        ]
+        quarantined_until = ledger.get("quarantined_until")
+        if (
+            isinstance(quarantined_until, (int, float))
+            and not isinstance(quarantined_until, bool)
+            and now >= quarantined_until
+        ):
+            ledger["quarantined_until"] = None
+        elif not isinstance(quarantined_until, (int, float)) or isinstance(quarantined_until, bool):
+            ledger["quarantined_until"] = None
+        total = int(ledger.get("total_resets", 0) or 0)
+        if not ledger["recent_resets"] and ledger.get("quarantined_until") is None and total == 0:
+            expired.append(stable_id)
+    for stable_id in expired:
+        w.STATE.adapter_reset_ledgers.pop(stable_id, None)
+
+
+def adapter_reset_ledger_snapshot(w, target: Optional[TargetAdapter], now: float) -> dict:
+    """Return a copy of the target ledger after pruning expired state."""
+    with w.state_lock:
+        _prune_adapter_ledgers_locked(w, now)
+        ledger = _adapter_ledger_locked(w, target, create=False)
+        if ledger is None:
+            return _new_adapter_ledger()
+        return {
+            "recent_resets": list(ledger.get("recent_resets", [])),
+            "total_resets": int(ledger.get("total_resets", 0) or 0),
+            "quarantined_until": ledger.get("quarantined_until"),
+        }
+
+
+def adapter_quarantined_until(w, target: Optional[TargetAdapter], now: float) -> Optional[float]:
+    """Return the active quarantine deadline for target, or None if expired/absent."""
+    with w.state_lock:
+        _prune_adapter_ledgers_locked(w, now)
+        ledger = _adapter_ledger_locked(w, target, create=False)
+        if ledger is None:
+            return None
+        quarantined_until = ledger.get("quarantined_until")
+        if isinstance(quarantined_until, (int, float)) and not isinstance(quarantined_until, bool):
+            return quarantined_until if now < quarantined_until else None
+        return None
 
 
 def update_dead_adapter_detection(w, adapters: list, target: Optional[TargetAdapter]) -> bool:
@@ -141,9 +209,9 @@ def update_dead_adapter_detection(w, adapters: list, target: Optional[TargetAdap
 
     A target that is present (in sysfs or NM), link-down, and not a healthy
     client increments the debounce; reaching DEAD_ADAPTER_DEBOUNCE declares the
-    adapter dead.  A sustained-healthy pass clears the active fields, and the
-    reset ledger decays after DEAD_ADAPTER_HEALTHY_DECAY seconds of health.  A
-    change of stable identity resets the debounce and ledger.
+    adapter dead.  A sustained-healthy pass clears the active fields.  A change
+    of stable identity resets active debounce/timing state but leaves adapter
+    accounting ledgers isolated by stable_id.
     """
     now = time.monotonic()
     if target is None:
@@ -163,10 +231,10 @@ def update_dead_adapter_detection(w, adapters: list, target: Optional[TargetAdap
         prev_id = w.STATE.dead_adapter_stable_id
         if prev_id and prev_id != target.stable_id:
             w.logger.debug(
-                "Dead-PHY target identity changed (%s -> %s); resetting ledger",
+                "Dead-PHY target identity changed (%s -> %s); resetting active state",
                 prev_id, target.stable_id,
             )
-            _reset_dead_ledger_locked(w)
+            _clear_active_dead_tracking_locked(w)
         w.STATE.dead_adapter_stable_id = target.stable_id
 
         if not down_unhealthy:
@@ -175,7 +243,7 @@ def update_dead_adapter_detection(w, adapters: list, target: Optional[TargetAdap
                 if w.STATE.dead_adapter_healthy_since is None:
                     w.STATE.dead_adapter_healthy_since = now
                 elif (now - w.STATE.dead_adapter_healthy_since) >= w.DEAD_ADAPTER_HEALTHY_DECAY:
-                    _reset_dead_ledger_locked(w)
+                    _clear_active_dead_tracking_locked(w)
             else:
                 w.STATE.dead_adapter_healthy_since = None
             return False
@@ -207,13 +275,6 @@ def update_dead_adapter_detection(w, adapters: list, target: Optional[TargetAdap
     return result
 
 
-def _prune_recent_resets_locked(w, now: float) -> None:
-    cutoff = now - w.USB_RESET_WINDOW
-    w.STATE.dead_adapter_recent_resets = [
-        t for t in w.STATE.dead_adapter_recent_resets if t >= cutoff
-    ]
-
-
 def adapter_reset_budget_exhausted(w, target: Optional[TargetAdapter], now: float) -> bool:
     """True when the adapter has hit either the per-window or total reset budget.
 
@@ -221,9 +282,10 @@ def adapter_reset_budget_exhausted(w, target: Optional[TargetAdapter], now: floa
     ladder; this reports only whether the budget is spent.
     """
     with w.state_lock:
-        _prune_recent_resets_locked(w, now)
-        recent = len(w.STATE.dead_adapter_recent_resets)
-        total = w.STATE.dead_adapter_total_resets
+        _prune_adapter_ledgers_locked(w, now)
+        ledger = _adapter_ledger_locked(w, target)
+        recent = len(ledger["recent_resets"]) if ledger else 0
+        total = int(ledger.get("total_resets", 0) or 0) if ledger else 0
     exhausted = recent >= w.USB_MAX_RESETS_PER_WINDOW or total >= w.USB_MAX_RESETS_TOTAL
     if exhausted:
         w.logger.debug(
@@ -237,11 +299,14 @@ def adapter_reset_budget_exhausted(w, target: Optional[TargetAdapter], now: floa
 def record_adapter_reset(w, target: Optional[TargetAdapter], now: float) -> None:
     """Record one reset attempt against the rolling/total budgets."""
     with w.state_lock:
-        _prune_recent_resets_locked(w, now)
-        w.STATE.dead_adapter_recent_resets.append(now)
-        w.STATE.dead_adapter_total_resets += 1
-        recent = len(w.STATE.dead_adapter_recent_resets)
-        total = w.STATE.dead_adapter_total_resets
+        _prune_adapter_ledgers_locked(w, now)
+        ledger = _adapter_ledger_locked(w, target)
+        if ledger is None:
+            return
+        ledger["recent_resets"].append(now)
+        ledger["total_resets"] = int(ledger.get("total_resets", 0) or 0) + 1
+        recent = len(ledger["recent_resets"])
+        total = ledger["total_resets"]
     w.logger.debug(
         "Recorded USB reset for %s: recent=%d total=%d",
         target.ifname if target else "?", recent, total,
@@ -514,8 +579,16 @@ def escalate_dead_adapter_recovery(w, adapters: list, wired_connected: bool) -> 
             # (3) Quarantine for preferred client use; keep publishing degraded
             # status and let the normal loop logic run.
             with w.state_lock:
-                newly = w.STATE.dead_adapter_quarantined_until is None
-                w.STATE.dead_adapter_quarantined_until = now + w.USB_RESET_WINDOW
+                _prune_adapter_ledgers_locked(w, now)
+                ledger = _adapter_ledger_locked(w, target)
+                current = ledger.get("quarantined_until") if ledger else None
+                newly = not (
+                    isinstance(current, (int, float))
+                    and not isinstance(current, bool)
+                    and now < current
+                )
+                if ledger is not None:
+                    ledger["quarantined_until"] = now + w.USB_RESET_WINDOW
             if newly:
                 w.logger.info(
                     "USB adapter %s quarantined for preferred client use "
