@@ -1284,47 +1284,11 @@ def remove_dnsmasq_runtime_config(runtime_path: str) -> None:
 # Runtime network-status snapshot (dead-PHY recovery — WP6)
 # ===========================================================================
 #
-# The watcher publishes its derived network state here so the autostream
-# application can read a stable view without importing the watcher or
-# re-running live nmcli/sysfs probes.  This module ONLY serialises/reads the
-# already-built snapshot and provides the bounded address fact below.  All
-# derived meaning (device.state, health.state, policy.action, primary-adapter
-# selection, stale/unknown interpretation) is platform policy and lives in
-# platform/wifi_status.py — never here.
+# The watcher stores its derived network state in memory and serves it over
+# HTTP.  Core keeps the shared schema-version constant and bounded facts only;
+# derived meaning remains platform policy in platform/wifi_status.py.
 
-NETWORK_STATUS_PATH = "/run/autostream/network-status.json"
 NETWORK_STATUS_SCHEMA_VERSION = 1
-
-
-def write_network_status_snapshot(snapshot: dict, path: str = NETWORK_STATUS_PATH) -> None:
-    """Atomically write the already-built status *snapshot* to *path*.
-
-    The runtime directory is created if needed.  Raises only on a genuine
-    serialization/IO failure the caller chooses to handle.
-    """
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    _atomic_write(path, json.dumps(snapshot, indent=2) + "\n", mode=0o644)
-
-
-def read_network_status_snapshot(path: str = NETWORK_STATUS_PATH) -> dict:
-    """Read and parse the status snapshot, or {} when missing/unreadable/invalid.
-
-    Returns the parsed dict only when it is a dict carrying the expected
-    ``schema_version``; otherwise returns {} so the consumer treats it as
-    ``unknown``.  Never raises.
-    """
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError) as e:
-        logger.warning("Could not read network status snapshot %s: %s", path, e)
-        return {}
-    if not isinstance(obj, dict) or obj.get("schema_version") != NETWORK_STATUS_SCHEMA_VERSION:
-        return {}
-    return obj
 
 
 def list_interface_addresses(ifname: Optional[str] = None) -> dict:

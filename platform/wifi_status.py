@@ -10,7 +10,7 @@ This module builds the nested ``schema_version: 1`` snapshot from facts plus the
 watcher's recovery state and publishes it atomically.  All derived meaning
 (device.state, health.state, policy.action, primary-adapter selection,
 stale/unknown interpretation) is platform policy and lives here — never in
-``core/autostream_wifi_network.py``, which only serialises/reads the snapshot.
+``core/autostream_wifi_network.py``.
 
 To keep the extraction mechanical and behaviour-preserving, the public builders
 take the watcher module ``w`` as their first argument and read its STATE,
@@ -96,7 +96,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     """Build the schema_version:1 runtime network-status snapshot.
 
     Uses the watcher's facts and the dead-PHY recovery ledger.  All derived
-    meaning is computed here (platform policy); core only serialises it.
+    meaning is computed here (platform policy); core only supplies facts.
     """
     if adapters is None:
         try:
@@ -280,16 +280,19 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
 def publish_network_status(w, adapters: Optional[list] = None,
                            wired_connected: Optional[bool] = None) -> None:
-    """Build and atomically publish the runtime status snapshot (best-effort)."""
+    """Build and publish the latest runtime status snapshot in memory."""
     global _status_schema_logged
     try:
         snapshot = build_network_status_snapshot(w, adapters, wired_connected)
-        wifi_net.write_network_status_snapshot(snapshot)
+        snapshot["ok"] = True
+        with w.state_lock:
+            w.STATE.network_status_snapshot = snapshot
+            w.STATE.network_status_updated_at = snapshot.get("updated_at")
         if not _status_schema_logged:
             _status_schema_logged = True
-            logger.info("Network status snapshot schema v%d initialised at %s",
-                        wifi_net.NETWORK_STATUS_SCHEMA_VERSION, wifi_net.NETWORK_STATUS_PATH)
+            logger.info("Network status snapshot schema v%d initialised in memory",
+                        wifi_net.NETWORK_STATUS_SCHEMA_VERSION)
         else:
             logger.debug("Published network status snapshot")
     except Exception as e:
-        logger.warning("Network status snapshot write failed: %s", e)
+        logger.warning("Network status snapshot publish failed: %s", e)

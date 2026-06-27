@@ -368,6 +368,10 @@ class NetworkMonitorState:
     temporary_log_level_until: Optional[float] = None
     default_log_level_name: str = "info"
 
+    # ---- Runtime network-status snapshot ----
+    network_status_snapshot: Optional[dict] = None
+    network_status_updated_at: Optional[float] = None
+
 
 STATE = NetworkMonitorState()
 
@@ -1800,22 +1804,11 @@ _VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved", "set_log_level"}
 def network_status():
     if not _control_authorised():
         return jsonify({"ok": False, "error": "forbidden"}), 403
-    return jsonify(_network_status_payload())
-
-
-@app.route("/network_status_v2", methods=["GET"])
-def network_status_v2():
-    """Loopback/token-protected view over the /run snapshot (WP6).
-
-    This mirrors /run/autostream/network-status.json for local diagnostics; the
-    file remains the source of truth.  A missing/stale/unknown-schema snapshot
-    is reported as device.state == "unknown".
-    """
-    if not _control_authorised():
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    snapshot = wifi_net.read_network_status_snapshot()
+    with state_lock:
+        snapshot = STATE.network_status_snapshot
     if not snapshot:
         return jsonify({
+            "ok": True,
             "schema_version": wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
             "device": {"state": "unknown"},
             "stale": True,

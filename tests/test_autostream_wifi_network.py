@@ -853,32 +853,6 @@ class TestUsableUnicastIpv4:
             assert wifi_net.interface_has_usable_ipv4("eth0") is False
 
 
-class TestNetworkStatusSnapshotIO:
-    def test_write_then_read_roundtrip(self, tmp_path):
-        path = str(tmp_path / "network-status.json")
-        snap = {"schema_version": 1, "updated_at": 1.0, "device": {"state": "online"}}
-        wifi_net.write_network_status_snapshot(snap, path=path)
-        assert wifi_net.read_network_status_snapshot(path=path) == snap
-
-    def test_read_missing_returns_empty(self, tmp_path):
-        assert wifi_net.read_network_status_snapshot(path=str(tmp_path / "nope.json")) == {}
-
-    def test_read_corrupt_returns_empty(self, tmp_path):
-        p = tmp_path / "s.json"
-        p.write_text("{ not json", encoding="utf-8")
-        assert wifi_net.read_network_status_snapshot(path=str(p)) == {}
-
-    def test_read_unknown_schema_returns_empty(self, tmp_path):
-        p = tmp_path / "s.json"
-        p.write_text(json.dumps({"schema_version": 99}), encoding="utf-8")
-        assert wifi_net.read_network_status_snapshot(path=str(p)) == {}
-
-    def test_write_creates_runtime_dir(self, tmp_path):
-        path = str(tmp_path / "run" / "autostream" / "network-status.json")
-        wifi_net.write_network_status_snapshot({"schema_version": 1}, path=path)
-        assert Path(path).exists()
-
-
 class TestListInterfaceAddresses:
     def test_parses_ip_json(self):
         sample = [

@@ -827,7 +827,8 @@ class TestNetworkControlRoutes:
         assert rv.status_code == 200
         data = json.loads(rv.data)
         assert data["ok"] is True
-        assert "active_adapter_ifname" in data
+        assert data["device"]["state"] == "unknown"
+        assert data["stale"] is True
 
     def test_network_control_rejects_non_loopback(self, flask_client):
         client, mod = flask_client
@@ -2516,7 +2517,7 @@ class TestDeadPhyEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# WP6 (dead-PHY) — status snapshot builder + /network_status_v2 route
+# WP6 (dead-PHY) — status snapshot builder + /network_status route
 # ---------------------------------------------------------------------------
 
 class TestBuildNetworkStatusSnapshot:
@@ -2590,40 +2591,50 @@ class TestBuildNetworkStatusSnapshot:
         assert snap["logging"]["temporary_level_expires_at"] is None
         assert snap["device"]["state"] == "offline"
 
+    def test_publish_stores_latest_snapshot_in_memory(self, watcher):
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            watcher.publish_network_status([], wired_connected=False)
+        assert watcher.STATE.network_status_snapshot["ok"] is True
+        assert watcher.STATE.network_status_snapshot["device"]["state"] == "offline"
+        assert watcher.STATE.network_status_updated_at == watcher.STATE.network_status_snapshot["updated_at"]
 
-class TestNetworkStatusV2Route:
+
+class TestNetworkStatusRoute:
     def test_forbidden_without_auth(self, flask_client):
         client, mod = flask_client
         with patch.object(mod, "_control_authorised", return_value=False):
-            resp = client.get("/network_status_v2")
+            resp = client.get("/network_status")
         assert resp.status_code == 403
 
-    def test_returns_snapshot_when_present(self, flask_client):
+    def test_returns_in_memory_snapshot_when_present(self, flask_client):
         client, mod = flask_client
-        snap = {"schema_version": 1, "device": {"state": "online"}}
-        with patch.object(mod, "_control_authorised", return_value=True), \
-             patch.object(mod.wifi_net, "read_network_status_snapshot", return_value=snap):
-            resp = client.get("/network_status_v2")
-        assert resp.status_code == 200
-        assert resp.get_json()["device"]["state"] == "online"
-
-    def test_unknown_when_missing(self, flask_client):
-        client, mod = flask_client
-        with patch.object(mod, "_control_authorised", return_value=True), \
-             patch.object(mod.wifi_net, "read_network_status_snapshot", return_value={}):
-            resp = client.get("/network_status_v2")
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["device"]["state"] == "unknown"
-        assert body["stale"] is True
-
-    def test_legacy_network_status_still_flat(self, flask_client):
-        client, mod = flask_client
-        with patch.object(mod, "_control_authorised", return_value=True), \
-             patch.object(mod, "_network_status_payload", return_value={"ok": True, "adapters": []}):
+        mod.STATE.network_status_snapshot = {
+            "ok": True,
+            "schema_version": 1,
+            "device": {"state": "online"},
+        }
+        with patch.object(mod, "_control_authorised", return_value=True):
             resp = client.get("/network_status")
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
+        assert resp.get_json()["device"]["state"] == "online"
+
+    def test_unknown_stale_before_first_snapshot(self, flask_client):
+        client, mod = flask_client
+        mod.STATE.network_status_snapshot = None
+        with patch.object(mod, "_control_authorised", return_value=True):
+            resp = client.get("/network_status")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["device"]["state"] == "unknown"
+        assert body["stale"] is True
+
+    def test_network_status_v2_removed(self, flask_client):
+        client, mod = flask_client
+        rules = {rule.rule for rule in mod.app.url_map.iter_rules()}
+        assert "/network_status_v2" not in rules
 
 
 # ---------------------------------------------------------------------------
