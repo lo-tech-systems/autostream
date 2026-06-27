@@ -363,6 +363,28 @@ class TestIsLocalIpv4Ready:
 # is_gateway_reachable — parses ip -j route/neigh output
 # ---------------------------------------------------------------------------
 
+class TestWiredPathHealth:
+    def test_wired_carrier_ifnames_reports_carrier(self, watcher, tmp_path):
+        base = tmp_path / "net" / "eth0"
+        base.mkdir(parents=True)
+        (base / "carrier").write_text("1\n", encoding="utf-8")
+
+        assert watcher.wired_carrier_ifnames(str(tmp_path / "net")) == ["eth0"]
+
+    def test_carrier_without_ipv4_is_not_healthy(self, watcher):
+        with patch.object(watcher, "wired_carrier_ifnames", return_value=["eth0"]), \
+             patch.object(watcher.wifi_net, "interface_has_usable_ipv4", return_value=False):
+            assert watcher.is_wired_connected() is True
+            assert watcher.is_wired_path_healthy("eth0") is False
+            assert watcher.any_wired_path_healthy() is False
+
+    def test_carrier_with_usable_ipv4_is_healthy(self, watcher):
+        with patch.object(watcher, "wired_carrier_ifnames", return_value=["eth0"]), \
+             patch.object(watcher.wifi_net, "interface_has_usable_ipv4", return_value=True):
+            assert watcher.is_wired_path_healthy("eth0") is True
+            assert watcher.any_wired_path_healthy() is True
+
+
 class TestIsGatewayReachable:
     """Interface-specific gateway reachability (WP2).
 

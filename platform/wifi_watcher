@@ -608,25 +608,38 @@ def is_wifi_client_healthy(
     return gw_ok
 
 
-def is_wired_connected() -> bool:
-    """Return True if any wired (ethernet) interface has carrier."""
+def wired_carrier_ifnames(sys_root: str = "/sys/class/net") -> list[str]:
+    """Return wired ethernet interface names that currently report carrier."""
     # Traditional + predictable ethernet names
-    patterns = (
-        "/sys/class/net/eth*/carrier",
-        "/sys/class/net/en*/carrier",
-    )
+    patterns = ("eth*", "en*")
+    found: list[str] = []
 
     for pat in patterns:
-        for path in glob.glob(pat):
+        for path in glob.glob(os.path.join(sys_root, pat, "carrier")):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     if f.read().strip() == "1":
-                        return True
+                        found.append(os.path.basename(os.path.dirname(path)))
             except OSError:
                 # Interface disappeared or permissions issue; ignore
                 continue
 
-    return False
+    return found
+
+
+def is_wired_connected() -> bool:
+    """Return True if any wired (ethernet) interface has carrier."""
+    return bool(wired_carrier_ifnames())
+
+
+def is_wired_path_healthy(ifname: str) -> bool:
+    """True when a wired interface has carrier plus a usable non-link-local IPv4."""
+    return ifname in wired_carrier_ifnames() and wifi_net.interface_has_usable_ipv4(ifname)
+
+
+def any_wired_path_healthy() -> bool:
+    """True when any wired ethernet interface is a usable local network path."""
+    return any(wifi_net.interface_has_usable_ipv4(ifname) for ifname in wired_carrier_ifnames())
 
 
 # Interface-aware health/routing primitives live in the helper.  These names
@@ -2145,11 +2158,10 @@ def network_monitor_loop():
     Reboot-timer domains (WP4 — keep these distinct; do not swap the post-AP
     threshold globally, or ordinary post-AP config failures would reboot too
     aggressively):
-      - Dead-PHY, present/sysfs-resettable, offline: the dead-PHY ladder
-            (escalate_dead_adapter_recovery) owns the 30-minute
-            DEAD_ADAPTER_REBOOT_AFTER reboot.  It runs every pass before the
-            ethernet-wins short-circuit, so a wedged, offline adapter never
-            waits 24h for its first reboot.
+      - The dead-PHY ladder runs before ethernet suppresses the rest of the monitor loop,
+            so it can reset/quarantine a wedged WiFi adapter even while ethernet is
+            connected. But the 30-minute reboot only happens when ethernet is not
+            connected.
       - Generic gateway-down while NOT in ap_exhausted: the existing 30-minute
             GW_DOWN_REBOOT_AFTER path below.
       - Non-dead-PHY post-AP exhausted: the existing 24-hour

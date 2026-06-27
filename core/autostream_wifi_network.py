@@ -748,6 +748,30 @@ def _is_rfc1918_ipv4(ip: ipaddress.IPv4Address) -> bool:
     return any(ip in n for n in _RFC1918_NETS)
 
 
+def is_usable_unicast_ipv4(value) -> bool:
+    """True for usable non-link-local unicast IPv4 addresses.
+
+    This is intentionally broader than the WiFi local-health policy: ethernet
+    may be directly connected or publicly routed, so RFC1918 is not required.
+    """
+    try:
+        ip = ipaddress.ip_interface(value).ip
+    except (TypeError, ValueError):
+        try:
+            ip = ipaddress.ip_address(value)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(ip, ipaddress.IPv4Address):
+        return False
+    return not (
+        ip.is_unspecified
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+    )
+
+
 def _nmcli_dev_show_fields(ifname: str, fields: list[str]) -> dict[str, list[str]]:
     """Return selected ``nmcli -t ... dev show <ifname>`` fields.
 
@@ -802,6 +826,16 @@ def is_local_ipv4_ready(ifname: str) -> bool:
     except Exception as e:
         logger.warning("Local IPv4 readiness check failed on %s: %s", ifname, e)
         return False
+
+
+def interface_has_usable_ipv4(ifname: str) -> bool:
+    """True when *ifname* has any usable non-link-local IPv4 address."""
+    for addr in list_interface_addresses(ifname).get(ifname, []):
+        if addr.get("family") != "ipv4":
+            continue
+        if is_usable_unicast_ipv4(addr.get("address", "")):
+            return True
+    return False
 
 
 def _run_ip_json(args: list[str]) -> list[dict]:

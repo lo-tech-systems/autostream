@@ -818,6 +818,41 @@ class TestGatewayReachable:
 # WP6 (dead-PHY) — runtime status snapshot read/write + address facts
 # ---------------------------------------------------------------------------
 
+class TestUsableUnicastIpv4:
+    @pytest.mark.parametrize("addr", [
+        "192.168.1.42",
+        "10.0.0.5/24",
+        "172.16.0.9",
+        "8.8.8.8",
+    ])
+    def test_accepts_usable_ipv4(self, addr):
+        assert wifi_net.is_usable_unicast_ipv4(addr) is True
+
+    @pytest.mark.parametrize("addr", [
+        "0.0.0.0",
+        "127.0.0.1",
+        "169.254.1.2",
+        "224.0.0.1",
+        "240.0.0.1",
+        "255.255.255.255",
+        "::1",
+        "not-an-ip",
+        "",
+    ])
+    def test_rejects_unusable_ipv4(self, addr):
+        assert wifi_net.is_usable_unicast_ipv4(addr) is False
+
+    def test_interface_has_usable_ipv4_accepts_public_ipv4(self):
+        addrs = {"eth0": [{"family": "ipv4", "address": "8.8.8.8", "scope": "global"}]}
+        with patch.object(wifi_net, "list_interface_addresses", return_value=addrs):
+            assert wifi_net.interface_has_usable_ipv4("eth0") is True
+
+    def test_interface_has_usable_ipv4_rejects_link_local_only(self):
+        addrs = {"eth0": [{"family": "ipv4", "address": "169.254.1.2", "scope": "global"}]}
+        with patch.object(wifi_net, "list_interface_addresses", return_value=addrs):
+            assert wifi_net.interface_has_usable_ipv4("eth0") is False
+
+
 class TestNetworkStatusSnapshotIO:
     def test_write_then_read_roundtrip(self, tmp_path):
         path = str(tmp_path / "network-status.json")
