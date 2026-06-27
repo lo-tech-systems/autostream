@@ -28,6 +28,9 @@ STATE_PATH = "/var/lib/autostream/autostream-state.json"
 
 DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
+DEFAULT_MDNS_GRACE_PERIOD_SECONDS = 120
+MIN_MDNS_GRACE_PERIOD_SECONDS = 60
+MAX_MDNS_GRACE_PERIOD_SECONDS = 900
 
 DEFAULT_LOG_LEVEL_CHANGED_BY = "user"
 VALID_LOG_LEVEL_CHANGED_BY = ("user", "system")
@@ -160,6 +163,15 @@ def normalize_log_level(value: object, default: str = DEFAULT_LOG_LEVEL) -> str:
         return text
     fallback = str(default or "").strip().lower()
     return fallback if fallback in VALID_LOG_LEVELS else DEFAULT_LOG_LEVEL
+
+
+def normalize_mdns_grace_period_seconds(value: object) -> int:
+    """Return mDNS final-removal grace in seconds, clamped to the UI range."""
+    try:
+        seconds = int(value)  # type: ignore[arg-type]
+    except Exception:
+        return DEFAULT_MDNS_GRACE_PERIOD_SECONDS
+    return max(MIN_MDNS_GRACE_PERIOD_SECONDS, min(MAX_MDNS_GRACE_PERIOD_SECONDS, seconds))
 
 
 def normalize_log_level_changed_by(value: object) -> str:
@@ -297,6 +309,7 @@ class GeneralConfig:
     log_level: str
     silence_seconds: int
     fifo_path: str
+    mdns_grace_period_seconds: int
     log_level_changed_by: str
     log_level_changed_at: Optional[str]
 
@@ -507,6 +520,9 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         log_level=normalize_log_level(general_d.get("log_level", DEFAULT_LOG_LEVEL)),
         silence_seconds=int(general_d.get("silence_seconds", 30) or 30),
         fifo_path=str(general_d.get("fifo_path", "/tmp/autostream-pipes/autostream.fifo") or ""),
+        mdns_grace_period_seconds=normalize_mdns_grace_period_seconds(
+            general_d.get("mdns_grace_period_seconds", DEFAULT_MDNS_GRACE_PERIOD_SECONDS)
+        ),
         log_level_changed_by=normalize_log_level_changed_by(general_d.get("log_level_changed_by")),
         log_level_changed_at=normalize_log_level_changed_at(general_d.get("log_level_changed_at")),
     )

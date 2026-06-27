@@ -188,6 +188,39 @@ class TestStartWebuiBackground:
             assert isinstance(_wm.STATE.settings, SettingsStore)
             _wm.STATE.settings.close(save=False)
 
+    def test_startup_pushes_mdns_grace_period(self, tmp_path):
+        from autostream_settings import SettingsStore
+        from autostream_webui import start_webui_background
+        import autostream_webui as _wm
+
+        cfg = _minimal_cfg(tmp_path)
+        raw = json.loads(cfg.read_text(encoding="utf-8"))
+        raw.setdefault("general", {})["mdns_grace_period_seconds"] = 240
+        cfg.write_text(json.dumps(raw), encoding="utf-8")
+        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
+
+        httpd_mock = MagicMock()
+        httpd_mock.serve_forever = MagicMock(side_effect=KeyboardInterrupt)
+
+        with (
+            patch("autostream_webui.AuthManager"),
+            patch("autostream_webui.stop_flag") as sf,
+            patch("autostream_dials.start_dial_scanner"),
+            patch("autostream_appliances.reconcile_appliance_announcement"),
+            patch("autostream_appliances.start_appliance_scanner"),
+            patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
+            patch("autostream_webui._scan_monitor_devices_loop"),
+            patch("autostream_webui_api.apply_mdns_grace_period") as m_apply,
+        ):
+            sf.is_set.return_value = True
+            _wm.STATE = None
+            t = start_webui_background(str(cfg), settings=store)
+            t.join(timeout=2.0)
+
+        m_apply.assert_called_once()
+        assert m_apply.call_args[0][1] == 240
+        store.close(save=False)
+
 
 # ---------------------------------------------------------------------------
 # run_autostream: final save_now() on exit

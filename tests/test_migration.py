@@ -101,6 +101,8 @@ class TestAutoStreamMigration:
 
         assert cfg_path.exists(), "config JSON not created on fresh install"
         assert state_path.exists(), "state JSON not created on fresh install"
+        cfg = json.loads(cfg_path.read_text())
+        assert cfg["general"]["mdns_grace_period_seconds"] == 120
         state = json.loads(state_path.read_text())
         assert "auth" in state
         assert "owntone" in state
@@ -122,6 +124,7 @@ class TestAutoStreamMigration:
         assert state_path.exists()
         cfg = json.loads(cfg_path.read_text())
         assert "general" in cfg
+        assert cfg["general"]["mdns_grace_period_seconds"] == 120
         assert "audio1" in cfg
         assert "owntone" in cfg
         # INI renamed to backup, not deleted
@@ -166,11 +169,12 @@ class TestAutoStreamMigration:
 
         cfg = json.loads(cfg_path.read_text())
         assert cfg.get("sentinel") is True, "existing config JSON was overwritten"
+        assert cfg["general"]["mdns_grace_period_seconds"] == 120
 
     def test_already_migrated_is_noop(self, tmp_path, stub_system):
         """New JSON exists, old INI absent — function returns without changing anything."""
         cfg_path = tmp_path / "autostream.json"
-        cfg_path.write_text('{"general": {"silence_seconds": 42}}')
+        cfg_path.write_text('{"general": {"silence_seconds": 42, "mdns_grace_period_seconds": 180}}')
         state_path = tmp_path / "autostream-state.json"
         state_path.write_text('{"auth": {}}')
         cfg_before = cfg_path.read_text()
@@ -183,6 +187,23 @@ class TestAutoStreamMigration:
             m._migrate_autostream(dry_run=False)
 
         assert cfg_path.read_text() == cfg_before
+
+    def test_already_migrated_seeds_missing_grace_from_backend(self, tmp_path, stub_system):
+        cfg_path = tmp_path / "autostream.json"
+        cfg_path.write_text('{"general": {"silence_seconds": 42}}')
+        state_path = tmp_path / "autostream-state.json"
+        state_path.write_text('{"auth": {}}')
+
+        with patch.multiple(m,
+                _OLD_INI=tmp_path / "autostream.ini",
+                _NEW_CFG=cfg_path,
+                _NEW_STATE=state_path,
+                _DATA_FILES=[]), \
+             patch.object(m, "_read_backend_grace_period_seconds", return_value=300):
+            m._migrate_autostream(dry_run=False)
+
+        cfg = json.loads(cfg_path.read_text())
+        assert cfg["general"]["mdns_grace_period_seconds"] == 300
 
     def test_pin_preserved_in_state_file(self, tmp_path, stub_system):
         """PIN from INI [auth] section is written into the state file, not the config."""

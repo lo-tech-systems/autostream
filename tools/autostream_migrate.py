@@ -25,6 +25,8 @@ import os
 import pwd
 import shutil
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -47,6 +49,10 @@ _DATA_FILES = [
 
 # Device sentinel
 _AUTOSTREAM_SENTINEL = Path("/opt/autostream/autostream_webui.py")
+
+_DEFAULT_MDNS_GRACE_PERIOD_SECONDS = 120
+_MIN_MDNS_GRACE_PERIOD_SECONDS = 60
+_MAX_MDNS_GRACE_PERIOD_SECONDS = 900
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -103,6 +109,59 @@ def _atomic_write_json(path: Path, data: dict, dry_run: bool) -> None:
         except OSError:
             pass
         raise
+
+
+def _replace_json(path: Path, data: dict, dry_run: bool) -> None:
+    """Atomically replace an existing JSON file."""
+    LOG.info("Updating %s", path)
+    if dry_run:
+        return
+    tmp = path.parent / f".{path.name}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _normalize_grace_seconds(value: object) -> int:
+    try:
+        seconds = int(value)  # type: ignore[arg-type]
+    except Exception:
+        return _DEFAULT_MDNS_GRACE_PERIOD_SECONDS
+    return max(_MIN_MDNS_GRACE_PERIOD_SECONDS, min(_MAX_MDNS_GRACE_PERIOD_SECONDS, seconds))
+
+
+def _read_backend_grace_period_seconds(config_data: dict) -> int:
+    base_url = str((config_data.get("owntone") or {}).get("base_url") or "http://localhost:3689").rstrip("/")
+    url = f"{base_url}/api/settings/player/device_removal_grace_period"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError, TimeoutError):
+        return _DEFAULT_MDNS_GRACE_PERIOD_SECONDS
+    if not isinstance(payload, dict):
+        return _DEFAULT_MDNS_GRACE_PERIOD_SECONDS
+    return _normalize_grace_seconds(payload.get("value"))
+
+
+def _ensure_mdns_grace_period(config_data: dict) -> bool:
+    general = config_data.setdefault("general", {})
+    if "mdns_grace_period_seconds" in general:
+        before = general.get("mdns_grace_period_seconds")
+        general["mdns_grace_period_seconds"] = _normalize_grace_seconds(
+            before
+        )
+        return general["mdns_grace_period_seconds"] != before
+    general["mdns_grace_period_seconds"] = _read_backend_grace_period_seconds(config_data)
+    return True
 
 
 def _set_ownership_mode(path: Path, uid: int, gid: int, mode: int, dry_run: bool) -> None:
@@ -329,7 +388,8 @@ def _migrate_autostream(dry_run: bool) -> None:
         LOG.info("Fresh install (no INI, no JSON config) — creating empty skeleton files.")
         _ensure_dir(Path("/etc/autostream"), uid, gid, 0o755, dry_run)
         _ensure_dir(Path("/var/lib/autostream"), uid, gid, 0o750, dry_run)
-        _atomic_write_json(_NEW_CFG, {}, dry_run)
+        fresh_config = {"general": {"mdns_grace_period_seconds": _DEFAULT_MDNS_GRACE_PERIOD_SECONDS}}
+        _atomic_write_json(_NEW_CFG, fresh_config, dry_run)
         if not dry_run and _NEW_CFG.exists():
             _set_ownership_mode(_NEW_CFG, uid, gid, 0o600, dry_run=False)
         _atomic_write_json(_NEW_STATE, {"auth": {"pin_override": ""}, "owntone": {"known_outputs": {}}}, dry_run)
@@ -338,6 +398,15 @@ def _migrate_autostream(dry_run: bool) -> None:
         return
 
     if new_exists and not old_exists:
+        try:
+            with open(_NEW_CFG, encoding="utf-8") as f:
+                config_data = json.load(f)
+            if not isinstance(config_data, dict):
+                config_data = {}
+            if _ensure_mdns_grace_period(config_data):
+                _replace_json(_NEW_CFG, config_data, dry_run)
+        except Exception as exc:
+            LOG.warning("Could not seed mDNS grace period in %s: %s", _NEW_CFG, exc)
         LOG.info("Already migrated (new JSON config exists, old INI absent) — nothing to do.")
         return
 
@@ -368,6 +437,14 @@ def _migrate_autostream(dry_run: bool) -> None:
             if not dry_run and _NEW_STATE.exists():
                 _set_ownership_mode(_NEW_STATE, uid, gid, 0o600, dry_run=False)
 
+        try:
+            with open(_NEW_CFG, encoding="utf-8") as f:
+                config_data = json.load(f)
+            if isinstance(config_data, dict) and _ensure_mdns_grace_period(config_data):
+                _replace_json(_NEW_CFG, config_data, dry_run)
+        except Exception as exc:
+            LOG.warning("Could not seed mDNS grace period in %s: %s", _NEW_CFG, exc)
+
         # Data-file moves are individually idempotent (skip if dst already exists).
         for _label, src, dst in _DATA_FILES:
             _move_file(src, dst, uid, gid, 0o600, dry_run)
@@ -393,6 +470,7 @@ def _migrate_autostream(dry_run: bool) -> None:
         sys.exit(1)
 
     config_data = _ini_to_config_json(cfg)
+    _ensure_mdns_grace_period(config_data)
     state_data  = _ini_to_state_json(cfg)
 
     # Create directories

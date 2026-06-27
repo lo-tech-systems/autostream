@@ -240,6 +240,11 @@ def grace_remaining_ms() -> int:
     return _browser.grace_remaining_ms()
 
 
+def set_grace_period(seconds: int) -> None:
+    """Set appliance-discovery final-removal grace in seconds."""
+    _browser.set_grace_period(seconds)
+
+
 def start_appliance_scanner(
     shutdown_event: "Optional[threading.Event]" = None,
 ) -> None:

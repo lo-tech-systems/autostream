@@ -1814,24 +1814,50 @@ def _send_owntone_native_setting_json(
     Posts to OwnTone API and optionally triggers an async restart.
     Returns {"ok": true, "restart_required": true|false}.
     """
+    ok, restart_needed, error = _push_owntone_native_setting(
+        state, setting_key, value, restart_threshold_s=restart_threshold_s
+    )
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": error or "OwnTone API error"})
+        return
+
+    send_json(handler, 200, {"ok": True, "restart_required": restart_needed})
+
+
+def _push_owntone_native_setting(
+    state: WebUIState,
+    setting_key: str,
+    value: object,
+    restart_threshold_s: float = 0.75,
+) -> tuple[bool, bool, str]:
+    """Push a native setting to the configured OwnTone-compatible backend."""
     try:
         parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url
     except Exception as exc:
-        send_json(handler, 200, {"ok": False, "error": f"Config unavailable: {exc}"})
-        return
+        return False, False, f"Config unavailable: {exc}"
 
     result = save_setting(base_url, setting_key, value, timeout=5.0)
     if not result.ok and not result.unsupported:
-        send_json(handler, 200, {"ok": False, "error": result.message or "OwnTone API error"})
-        return
+        return False, False, result.message or "OwnTone API error"
 
     restart_needed = bool(result.restart_required)
     if restart_needed:
         from autostream_webui_page_owntone import start_owntone_restart_async
         start_owntone_restart_async(state, delay_s=restart_threshold_s)
 
-    send_json(handler, 200, {"ok": True, "restart_required": restart_needed})
+    return True, restart_needed, ""
+
+
+def apply_mdns_grace_period(state: WebUIState, seconds: int) -> tuple[bool, bool, str]:
+    """Push configured mDNS grace to appliance discovery and OwnTone Mini."""
+    from autostream_appliances import set_grace_period
+    from autostream_players import SETTING_DEVICE_REMOVAL_GRACE_PERIOD
+
+    set_grace_period(seconds)
+    return _push_owntone_native_setting(
+        state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, seconds
+    )
 
 
 def send_owntone_uncompressed_json(handler, state: WebUIState, body: str) -> None:
@@ -1907,9 +1933,29 @@ def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> Non
         SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
         min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, int(raw)),
     )
-    _send_owntone_native_setting_json(
-        handler, state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, minutes * 60
-    )
+    seconds = minutes * 60
+
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = getattr(state, "settings", None)
+    if not isinstance(_store, _SettingsStore):
+        send_json(handler, 200, {"ok": False, "error": "Settings store unavailable"})
+        return
+
+    def _mutator(raw_config: dict) -> None:
+        raw_config.setdefault("general", {})["mdns_grace_period_seconds"] = seconds
+
+    try:
+        _store.update(_mutator)
+    except Exception:
+        logging.exception("send_owntone_grace_period_json: store update failed")
+        send_json(handler, 200, {"ok": False, "error": "Internal error"})
+        return
+
+    ok, restart_needed, error = apply_mdns_grace_period(state, seconds)
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": error or "OwnTone API error"})
+        return
+    send_json(handler, 200, {"ok": True, "restart_required": restart_needed})
 
 
 # ---------------------------------------------------------------------------

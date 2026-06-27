@@ -78,6 +78,31 @@ def _make_state(tmp_path: Path, *, with_store: bool = True):
 
 
 # ---------------------------------------------------------------------------
+# mDNS grace fan-out
+# ---------------------------------------------------------------------------
+
+class TestMdnsGraceFanout:
+    def test_apply_mdns_grace_period_pushes_browser_and_owntone(self, tmp_path):
+        from autostream_webui_api import apply_mdns_grace_period
+        state, store = _make_state(tmp_path)
+        try:
+            with patch("autostream_appliances.set_grace_period") as m_browser, \
+                 patch("autostream_webui_api.save_setting") as m_save, \
+                 patch("autostream_webui_api._config_snapshot") as m_snap:
+                m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+                m_save.return_value = MagicMock(ok=True, unsupported=False, restart_required=False)
+                ok, restart, err = apply_mdns_grace_period(state, 180)
+        finally:
+            store.close(save=False)
+
+        assert ok is True
+        assert restart is False
+        assert err == ""
+        m_browser.assert_called_once_with(180)
+        assert m_save.call_args[0][2] == 180
+
+
+# ---------------------------------------------------------------------------
 # GET /api/settings — response schema
 # ---------------------------------------------------------------------------
 

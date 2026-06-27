@@ -347,12 +347,15 @@ class TestNativeOwntoneSettings:
         handler, sent = _make_handler()
         body = json.dumps({"value": 5})
         with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_appliances.set_grace_period") as m_browser, \
              patch("autostream_webui_api._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_grace_period_json(handler, state, body)
         call_value = m_save.call_args[0][2]
         assert call_value == 300  # 5 minutes * 60
+        m_browser.assert_called_once_with(300)
+        assert store.raw_snapshot()["general"]["mdns_grace_period_seconds"] == 300
 
     def test_unsupported_setting_succeeds_without_restart(self, tmp_path):
         from autostream_webui_api import send_owntone_uncompressed_json
@@ -435,6 +438,11 @@ class TestOwntoneSetupPage:
         html = self._render_page(str(tmp_path))
         assert "Refresh" in html
         assert "/owntone-setup" in html
+
+    def test_grace_period_reads_autostream_config(self, tmp_path):
+        html = self._render_page(str(tmp_path))
+        assert 'name="device_removal_grace_period_minutes"' in html
+        assert 'value="2"' in html
 
 
 # ---------------------------------------------------------------------------

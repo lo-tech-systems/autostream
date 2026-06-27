@@ -71,6 +71,7 @@ class TestInitialLoad:
         assert isinstance(cfg, AutostreamConfig)
         # Defaults should be applied
         assert cfg.general.silence_seconds == 30
+        assert cfg.general.mdns_grace_period_seconds == 120
         store.close(save=False)
 
     def test_existing_config_loaded(self, tmp_path):
@@ -78,6 +79,13 @@ class TestInitialLoad:
         store = _make_store(tmp_path, raw=raw)
         cfg = store.snapshot()
         assert cfg.general.silence_seconds == 45
+        store.close(save=False)
+
+    def test_mdns_grace_period_loaded_and_clamped(self, tmp_path):
+        raw = {"general": {"mdns_grace_period_seconds": 9999}}
+        store = _make_store(tmp_path, raw=raw)
+        cfg = store.snapshot()
+        assert cfg.general.mdns_grace_period_seconds == 900
         store.close(save=False)
 
     def test_store_starts_clean(self, tmp_path):

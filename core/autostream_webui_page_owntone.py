@@ -346,24 +346,15 @@ def send_owntone_setup_page(
         start_buffer_ms = SETTING_START_BUFFER_MS_DEFAULT
     start_buffer_available = bool(start_buffer_result.ok)
 
-    grace_period_result = get_setting(
-        parsed.owntone.base_url,
-        SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
-        timeout=3,
-    )
-    if grace_period_result.ok:
-        try:
-            _gp_raw = int(grace_period_result.value)
-            grace_period_minutes = max(
-                SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
-                min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, round(_gp_raw / 60)),
-            )
-        except Exception:
-            grace_period_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
-        grace_period_available = True
-    else:
+    try:
+        _gp_raw = int(parsed.general.mdns_grace_period_seconds)
+        grace_period_minutes = max(
+            SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
+            min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, round(_gp_raw / 60)),
+        )
+    except Exception:
         grace_period_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
-        grace_period_available = False
+    grace_period_available = True
 
     speakers_html = ""
     for i, row in enumerate(row_specs):
