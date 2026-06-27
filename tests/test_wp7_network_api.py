@@ -468,6 +468,15 @@ class TestSetupPageNetworkCard:
     def test_adapter_info_element_present(self):
         assert 'id="networkAdapterInfo"' in self.PAGE_SRC
 
+    def test_first_open_text_checks_status(self):
+        assert "Checking status..." in self.PAGE_SRC
+        assert "Using on-board WiFi adapter</p>" not in self.PAGE_SRC
+
+    def test_network_detail_warning_support_elements_present(self):
+        assert 'id="networkAddressInfo"' in self.PAGE_SRC
+        assert 'id="networkWarning"' in self.PAGE_SRC
+        assert 'id="networkSupportDetail"' in self.PAGE_SRC
+
     def test_network_card_title_element_present(self):
         assert 'id="networkCardTitle"' in self.PAGE_SRC
 
@@ -493,6 +502,21 @@ class TestSetupPageNetworkCard:
 
     def test_refresh_network_adapter_info_js_present(self):
         assert "refreshNetworkAdapterInfo" in self.PAGE_SRC
+        assert "networkStatusFailed" in self.PAGE_SRC
+        assert "Could not check network status" in self.PAGE_SRC
+        assert "j.ok === false" in self.PAGE_SRC
+        assert "j.error_status" in self.PAGE_SRC
+        assert "if (!r.ok || !j ||" in self.PAGE_SRC
+
+    def test_refresh_network_adapter_info_updates_new_fields(self):
+        assert "addressEl.textContent = j.detail" in self.PAGE_SRC
+        assert "warningEl.textContent = j.warning" in self.PAGE_SRC
+        assert "j.warning_severity === 'danger'" in self.PAGE_SRC
+        assert "supportEl.textContent = j.support_detail" in self.PAGE_SRC
+
+    def test_refresh_preserves_ap_ssid_handling(self):
+        assert "j.ap_ssid" in self.PAGE_SRC
+        assert "wifiHotspotSsid" in self.PAGE_SRC
 
     def test_api_network_status_fetch_js_present(self):
         assert "/api/network/status" in self.PAGE_SRC

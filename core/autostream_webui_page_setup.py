@@ -652,7 +652,10 @@ def send_setup_page(
     network_card_inner_html = """
           <div id="networkCard">
             <p id="networkCardTitle" style="margin:0 0 0.5rem;font-weight:700;">Network</p>
-            <p id="networkAdapterInfo" style="margin:0 0 0.25rem;font-size:0.9rem;color:var(--color-text);">Using on-board WiFi adapter</p>
+            <p id="networkAdapterInfo" style="margin:0 0 0.25rem;font-size:0.9rem;color:var(--color-text);">Checking status...</p>
+            <p id="networkAddressInfo" style="display:none;margin:0 0 0.25rem;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
+            <p id="networkWarning" style="display:none;margin:0.25rem 0 0;font-size:0.8rem;font-weight:600;"></p>
+            <p id="networkSupportDetail" style="display:none;margin:0.15rem 0 0.5rem;font-size:0.75rem;color:var(--color-text-muted,#888);"></p>
             <p id="networkUsbPending" style="display:none;margin:0.25rem 0 0.5rem;font-size:0.8rem;color:var(--color-text-muted,#888);">autostream will switch to the USB adapter when playback stops. You will need to close and re-open the autostream app to reconnect.</p>
             <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
             <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
@@ -2133,17 +2136,33 @@ def send_setup_page(
         // ── Network adapter status and Change Wi-Fi (WP7) ─────────────────
         async function refreshNetworkAdapterInfo() {{
           var adapterEl = document.getElementById('networkAdapterInfo');
+          var addressEl = document.getElementById('networkAddressInfo');
+          var warningEl = document.getElementById('networkWarning');
+          var supportEl = document.getElementById('networkSupportDetail');
           var titleEl = document.getElementById('networkCardTitle');
           var pendingEl = document.getElementById('networkUsbPending');
+          function networkStatusFailed() {{
+            if (titleEl) titleEl.textContent = 'Network';
+            if (adapterEl) {{
+              adapterEl.textContent = 'Could not check network status';
+              adapterEl.style.display = '';
+            }}
+            if (addressEl) addressEl.style.display = 'none';
+            if (warningEl) warningEl.style.display = 'none';
+            if (supportEl) supportEl.style.display = 'none';
+          }}
           try {{
             var r = await fetch('/api/network/status', {{
               credentials: 'same-origin',
               cache: 'no-store',
               headers: {{ 'X-CSRF-Token': (window.__CSRF || '') }}
             }});
-            if (!r.ok) return;
-            var j = await r.json();
-            if (j.title && titleEl) titleEl.textContent = j.title;
+            var j = await r.json().catch(function() {{ return null; }});
+            if (!r.ok || !j || j.ok === false || j.error || j.error_status) {{
+              networkStatusFailed();
+              return;
+            }}
+            if (titleEl) titleEl.textContent = j.title || 'Network';
             if (adapterEl) {{
               if (j.display) {{
                 adapterEl.textContent = j.display;
@@ -2152,12 +2171,39 @@ def send_setup_page(
                 adapterEl.style.display = 'none';
               }}
             }}
+            if (addressEl) {{
+              if (j.detail) {{
+                addressEl.textContent = j.detail;
+                addressEl.style.display = '';
+              }} else {{
+                addressEl.style.display = 'none';
+              }}
+            }}
+            if (warningEl) {{
+              if (j.warning) {{
+                warningEl.textContent = j.warning;
+                warningEl.style.color = (j.warning_severity === 'danger')
+                  ? 'var(--color-status-danger,#c00)'
+                  : 'var(--color-warning,#b26b00)';
+                warningEl.style.display = '';
+              }} else {{
+                warningEl.style.display = 'none';
+              }}
+            }}
+            if (supportEl) {{
+              if (j.support_detail) {{
+                supportEl.textContent = j.support_detail;
+                supportEl.style.display = '';
+              }} else {{
+                supportEl.style.display = 'none';
+              }}
+            }}
             if (pendingEl) pendingEl.style.display = j.usb_adoption_pending ? '' : 'none';
             if (j.ap_ssid) {{
               var ssidEl = document.getElementById('wifiHotspotSsid');
               if (ssidEl) ssidEl.textContent = j.ap_ssid;
             }}
-          }} catch (e) {{ /* ignore — static default text remains */ }}
+          }} catch (e) {{ networkStatusFailed(); }}
         }}
         refreshNetworkAdapterInfo();
         setInterval(refreshNetworkAdapterInfo, 5000);
