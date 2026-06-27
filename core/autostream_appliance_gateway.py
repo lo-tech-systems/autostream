@@ -101,6 +101,9 @@ _token_cache: dict[str, tuple[str, float]] = {}
 # scope = fed_path for GETs; "*write*" for all POSTs
 _backoff_state: dict[tuple[str, str], tuple[float, int]] = {}
 
+# IP address that was current when the backoff entry was armed.
+_backoff_ip: dict[tuple[str, str], str] = {}
+
 # successful-read cache: (appliance_id, fed_path) → cache entry dict
 # shape: {"data": dict, "cached_at": float, "fresh_until": float, "stale_until": float}
 _read_cache: dict[tuple[str, str], dict] = {}
@@ -153,7 +156,20 @@ def _check_backoff_locked(key: tuple[str, str]) -> tuple[bool, int]:
     return True, max(1, int(until - now) + 1)
 
 
-def _record_failure_locked(key: tuple[str, str]) -> None:
+def _check_backoff_for_ip_locked(key: tuple[str, str], current_ip: str) -> tuple[bool, int]:
+    """Return backoff state, clearing it first if the peer moved IP."""
+    recorded_ip = _backoff_ip.get(key)
+    if recorded_ip and recorded_ip != current_ip:
+        logging.debug(
+            "gateway: backoff cleared for %s/%s after address change %s -> %s",
+            key[0], key[1], recorded_ip, current_ip,
+        )
+        _record_success_locked(key)
+        return False, 0
+    return _check_backoff_locked(key)
+
+
+def _record_failure_locked(key: tuple[str, str], current_ip: str = "") -> None:
     """Advance per-endpoint backoff. Lock must be held."""
     bs = _backoff_state.get(key)
     if bs is None:
@@ -163,6 +179,8 @@ def _record_failure_locked(key: tuple[str, str]) -> None:
         step_idx = min(step_idx + 1, len(_BACKOFF_STEPS) - 1)
     delay = _BACKOFF_STEPS[step_idx]
     _backoff_state[key] = (time.monotonic() + delay, step_idx)
+    if current_ip:
+        _backoff_ip[key] = current_ip
     logging.debug("gateway: backoff set for %s/%s: %ds (step %d)", key[0], key[1], delay, step_idx)
 
 
@@ -171,6 +189,7 @@ def _record_success_locked(key: tuple[str, str]) -> None:
     if key in _backoff_state:
         logging.debug("gateway: backoff cleared for %s/%s", key[0], key[1])
     _backoff_state.pop(key, None)
+    _backoff_ip.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +428,7 @@ def _remote_request(
     return status, data
 
 
-def _update_backoff(key: tuple[str, str], status: int, data: dict) -> None:
+def _update_backoff(key: tuple[str, str], status: int, data: dict, current_ip: str = "") -> None:
     """Record backoff outcome after a completed _remote_request() call.
 
     Only transport failures (status 0 or error codes remote_timeout /
@@ -421,7 +440,7 @@ def _update_backoff(key: tuple[str, str], status: int, data: dict) -> None:
     is_transport = status == 0 or err in ("remote_timeout", "remote_bad_response")
     with _state_lock:
         if is_transport:
-            _record_failure_locked(key)
+            _record_failure_locked(key, current_ip)
         else:
             _record_success_locked(key)
 
@@ -473,7 +492,7 @@ def _coalesced_remote_get(
             return 200, entry["data"]
 
         # Backoff guard — keyed by (appliance_id, fed_path) so each endpoint is independent
-        in_backoff, retry_after = _check_backoff_locked(cache_key)
+        in_backoff, retry_after = _check_backoff_for_ip_locked(cache_key, sighting.ip)
         if in_backoff:
             if entry is not None and time.monotonic() < entry["stale_until"]:
                 return 200, _stale_response(entry, "remote_backoff", retry_after)
@@ -535,7 +554,7 @@ def _coalesced_remote_get(
         else:
             err_str = data.get("error", "") if isinstance(data, dict) else ""
             if status == 0 or err_str in ("remote_timeout", "remote_bad_response"):
-                _record_failure_locked(cache_key)
+                _record_failure_locked(cache_key, sighting.ip)
             else:
                 _record_success_locked(cache_key)
         del _in_flight[cache_key]
@@ -569,10 +588,19 @@ def _gateway_error_to_browser(handler, resolution: str) -> None:
         send_browser_api_error(handler, 503, "appliance_offline", retryable=True)
 
 
-def _check_and_emit_backoff(handler, appliance_id: str, scope: str) -> bool:
+def _check_and_emit_backoff(
+    handler,
+    appliance_id: str,
+    scope: str,
+    sighting: Optional[ApplianceSighting] = None,
+) -> bool:
     """Return True (and emit response) if the (appliance_id, scope) key is in backoff."""
     with _state_lock:
-        in_backoff, retry_after = _check_backoff_locked((appliance_id, scope))
+        key = (appliance_id, scope)
+        if sighting is not None:
+            in_backoff, retry_after = _check_backoff_for_ip_locked(key, sighting.ip)
+        else:
+            in_backoff, retry_after = _check_backoff_locked(key)
     if in_backoff:
         logging.debug(
             "gateway: serving backoff for %s (retry_after=%ds)", appliance_id, retry_after,
@@ -776,12 +804,12 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
         send_json(handler, 200, result)
         return
 
-    if _check_and_emit_backoff(handler, appliance_id, "*write*"):
+    if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
         return
     status, data = _remote_request(
         appliance_id, sighting, "POST", "/api/federation/v1/output", body=sanitized,
     )
-    _update_backoff((appliance_id, "*write*"), status, data)
+    _update_backoff((appliance_id, "*write*"), status, data, sighting.ip)
     _handle_remote_response(handler, appliance_id, status, data)
 
 
@@ -824,12 +852,12 @@ def send_gateway_eq_status_json(handler, state, appliance_id: str) -> None:
         return
 
     _eq_status_path = "/api/federation/v1/equaliser/status"
-    if _check_and_emit_backoff(handler, appliance_id, _eq_status_path):
+    if _check_and_emit_backoff(handler, appliance_id, _eq_status_path, sighting):
         return
     status, data = _remote_request(
         appliance_id, sighting, "GET", _eq_status_path,
     )
-    _update_backoff((appliance_id, _eq_status_path), status, data)
+    _update_backoff((appliance_id, _eq_status_path), status, data, sighting.ip)
     _handle_remote_response(handler, appliance_id, status, data)
 
 
@@ -867,13 +895,13 @@ def send_gateway_eq_config_json(handler, state, appliance_id: str, body_str: str
         send_json(handler, 200, {"ok": True, "field": field, "value": norm})
         return
 
-    if _check_and_emit_backoff(handler, appliance_id, "*write*"):
+    if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
         return
     sanitized = {"field": field, "value": value_raw}
     status, data = _remote_request(
         appliance_id, sighting, "POST", "/api/federation/v1/equaliser/config", body=sanitized,
     )
-    _update_backoff((appliance_id, "*write*"), status, data)
+    _update_backoff((appliance_id, "*write*"), status, data, sighting.ip)
     _handle_remote_response(handler, appliance_id, status, data)
 
 
@@ -892,10 +920,10 @@ def send_gateway_eq_reset_json(handler, state, appliance_id: str) -> None:
         send_json(handler, 200, {"ok": True})
         return
 
-    if _check_and_emit_backoff(handler, appliance_id, "*write*"):
+    if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
         return
     status, data = _remote_request(
         appliance_id, sighting, "POST", "/api/federation/v1/equaliser/reset", body={},
     )
-    _update_backoff((appliance_id, "*write*"), status, data)
+    _update_backoff((appliance_id, "*write*"), status, data, sighting.ip)
     _handle_remote_response(handler, appliance_id, status, data)

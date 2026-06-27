@@ -39,6 +39,7 @@ def _reset_state():
     with gw._state_lock:
         gw._token_cache.clear()
         gw._backoff_state.clear()
+        gw._backoff_ip.clear()
         gw._read_cache.clear()
         gw._in_flight.clear()
 
@@ -183,9 +184,10 @@ class TestBackoff:
     def test_success_clears_backoff(self):
         key = self._KEY
         with gw._state_lock:
-            gw._record_failure_locked(key)
+            gw._record_failure_locked(key, "10.0.0.1")
             gw._record_success_locked(key)
         assert key not in gw._backoff_state
+        assert key not in gw._backoff_ip
 
     def test_update_backoff_success(self):
         key = self._KEY
@@ -196,8 +198,9 @@ class TestBackoff:
 
     def test_update_backoff_failure(self):
         key = self._KEY
-        gw._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"})
+        gw._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"}, "10.0.0.1")
         assert key in gw._backoff_state
+        assert gw._backoff_ip[key] == "10.0.0.1"
 
     def test_update_backoff_application_error_does_not_advance(self):
         """409 appliance_unconfigured is an application error, not a transport failure."""
@@ -227,6 +230,38 @@ class TestBackoff:
             gw._backoff_state[key] = (time.monotonic() - 1, 0)
             in_b, _ = gw._check_backoff_locked(key)
         assert in_b is False
+
+    def test_address_change_clears_backoff(self):
+        key = self._KEY
+        with gw._state_lock:
+            gw._record_failure_locked(key, "10.0.0.10")
+            in_b, retry = gw._check_backoff_for_ip_locked(key, "10.0.0.20")
+        assert in_b is False
+        assert retry == 0
+        assert key not in gw._backoff_state
+        assert key not in gw._backoff_ip
+
+    def test_same_address_keeps_backoff(self):
+        key = self._KEY
+        with gw._state_lock:
+            gw._record_failure_locked(key, "10.0.0.10")
+            in_b, retry = gw._check_backoff_for_ip_locked(key, "10.0.0.10")
+        assert in_b is True
+        assert retry >= 1
+        assert key in gw._backoff_state
+
+    def test_write_guard_address_change_allows_request(self):
+        aid = "a" * 20
+        key = (aid, "*write*")
+        sighting = _make_sighting(ip="10.0.0.20", appliance_id=aid)
+        handler = _make_handler()
+        with gw._state_lock:
+            gw._record_failure_locked(key, "10.0.0.10")
+        with patch("autostream_appliance_gateway.send_browser_api_error") as mock_err:
+            in_backoff = gw._check_and_emit_backoff(handler, aid, "*write*", sighting)
+        assert in_backoff is False
+        mock_err.assert_not_called()
+        assert key not in gw._backoff_state
 
 
 # ---------------------------------------------------------------------------
@@ -546,10 +581,26 @@ class TestCoalescedRemoteGet:
         fed_path = "/api/federation/v1/home"
         with gw._state_lock:
             gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
+            gw._backoff_ip[(aid, fed_path)] = sighting.ip
         with patch.object(gw, "_remote_request") as mock_req:
             status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
         mock_req.assert_not_called()
         assert data["error"] == "remote_backoff"
+
+    def test_address_change_backoff_makes_live_request(self):
+        aid = "a" * 20
+        sighting = _make_sighting(ip="10.0.0.20", appliance_id=aid)
+        fed_path = "/api/federation/v1/home"
+        with gw._state_lock:
+            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
+            gw._backoff_ip[(aid, fed_path)] = "10.0.0.10"
+        live_data = {"ok": True, "live": True}
+        with patch.object(gw, "_remote_request", return_value=(200, live_data)) as mock_req:
+            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        mock_req.assert_called_once()
+        assert status == 200
+        assert data["live"] is True
+        assert (aid, fed_path) not in gw._backoff_state
 
     def test_expired_fresh_cache_makes_new_request(self):
         """Past fresh_until but within stale_until: must attempt remote before returning stale."""
