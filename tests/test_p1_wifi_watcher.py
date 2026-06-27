@@ -1561,7 +1561,8 @@ class TestStartupWindowUsbReprobe:
         usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
 
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
+        with patch.object(watcher, "any_wired_path_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
              patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
              patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False), \
