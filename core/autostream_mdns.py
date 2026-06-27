@@ -30,6 +30,7 @@ import shlex
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar
 
 _T = TypeVar("_T")
@@ -40,6 +41,8 @@ logger = logging.getLogger(__name__)
 _RETRY_DELAYS = [5, 10, 20, 30]
 # Delay resets to the first value after this many seconds of uptime
 _UPTIME_RESET_SECS = 60
+_DEFAULT_GRACE_PERIOD_SECS = 120
+_REFRESH_INTERVAL_SECS = 15
 
 
 def parse_avahi_txt(raw: str) -> dict[str, str]:
@@ -53,6 +56,13 @@ def parse_avahi_txt(raw: str) -> dict[str, str]:
     except ValueError as e:
         logger.debug("TXT parse error (malformed quoted string): %s", e)
     return result
+
+
+@dataclass
+class _MdnsRecord(Generic[_T]):
+    identity_key: Any
+    model: _T
+    last_seen: float
 
 
 class MdnsBrowser(Generic[_T]):
@@ -94,9 +104,11 @@ class MdnsBrowser(Generic[_T]):
         # _started, and _start_monotonic.
         self._lock = threading.Lock()
         # Five-tuple key → (identity_key, model)
-        self._by_key: dict[tuple, tuple[Any, _T]] = {}
+        self._by_key: dict[tuple, _MdnsRecord[_T]] = {}
         # identity_key → model (most-recently-seen sighting wins)
         self._by_identity: dict[Any, _T] = {}
+        self._current_cycle_start: float = 0.0
+        self._grace_period_secs: int = _DEFAULT_GRACE_PERIOD_SECS
 
         self._started = False
         self._start_monotonic: float = 0.0
@@ -109,7 +121,9 @@ class MdnsBrowser(Generic[_T]):
         # Never held while calling terminate(), wait(), kill(), or join().
         self._proc_lock = threading.Lock()
         self._current_proc: Optional[subprocess.Popen] = None
+        self._dump_proc: Optional[subprocess.Popen] = None
         self._browse_thread: Optional[threading.Thread] = None
+        self._dump_thread: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -139,8 +153,15 @@ class MdnsBrowser(Generic[_T]):
             name=f"mdns-{self._service_type}",
         )
         t.start()
+        dt = threading.Thread(
+            target=self._dump_loop,
+            daemon=True,
+            name=f"mdns-refresh-{self._service_type}",
+        )
+        dt.start()
         with self._proc_lock:
             self._browse_thread = t
+            self._dump_thread = dt
 
     def stop(self, timeout: float = 2.0) -> None:
         """Stop the browse loop and terminate any running avahi-browse child.
@@ -153,11 +174,15 @@ class MdnsBrowser(Generic[_T]):
 
         with self._proc_lock:
             proc = self._current_proc
+            dump_proc = self._dump_proc
             thread = self._browse_thread
+            dump_thread = self._dump_thread
 
         deadline = time.monotonic() + timeout
 
-        if proc is not None:
+        for proc in (proc, dump_proc):
+            if proc is None:
+                continue
             try:
                 proc.terminate()
             except OSError:
@@ -177,7 +202,9 @@ class MdnsBrowser(Generic[_T]):
             except Exception:
                 pass
 
-        if thread is not None:
+        for thread in (thread, dump_thread):
+            if thread is None:
+                continue
             remaining = max(0.0, deadline - time.monotonic())
             thread.join(timeout=remaining)
 
@@ -221,6 +248,15 @@ class MdnsBrowser(Generic[_T]):
             elapsed_ms = int((time.monotonic() - self._start_monotonic) * 1000)
             return max(0, 8000 - elapsed_ms)
 
+    def set_grace_period(self, seconds: int) -> None:
+        """Set the final-removal grace period used by TTL expiry."""
+        try:
+            value = int(seconds)
+        except (TypeError, ValueError):
+            value = _DEFAULT_GRACE_PERIOD_SECS
+        with self._lock:
+            self._grace_period_secs = max(1, value)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -253,6 +289,170 @@ class MdnsBrowser(Generic[_T]):
             if remaining <= 0:
                 return
             self._stop_event.wait(timeout=min(0.1, remaining))
+
+    def _model_ip(self, model: _T) -> str:
+        if isinstance(model, dict):
+            return str(model.get("ip", ""))
+        return str(getattr(model, "ip", ""))
+
+    def _ip_sort_key(self, model: _T) -> tuple:
+        parts = self._model_ip(model).split(".")
+        if len(parts) == 4 and all(part.isdigit() for part in parts):
+            return tuple(-int(part) for part in parts)
+        return tuple(-ord(ch) for ch in self._model_ip(model))
+
+    def _is_stale_locked(self, record: _MdnsRecord[_T]) -> bool:
+        return self._current_cycle_start > 0 and record.last_seen < self._current_cycle_start
+
+    def _select_identity_locked(self, identity_key: Any) -> Optional[_MdnsRecord[_T]]:
+        candidates = [
+            record for record in self._by_key.values()
+            if record.identity_key == identity_key
+        ]
+        if not candidates:
+            return None
+        fresh = [record for record in candidates if not self._is_stale_locked(record)]
+        pool = fresh or candidates
+        return max(pool, key=lambda record: (record.last_seen, self._ip_sort_key(record.model)))
+
+    def _refresh_identity_selection_locked(
+        self,
+        identity_key: Any,
+    ) -> tuple[Optional[_T], Optional[_T]]:
+        old = self._by_identity.get(identity_key)
+        selected = self._select_identity_locked(identity_key)
+        if selected is None:
+            removed = self._by_identity.pop(identity_key, None)
+            return removed, None
+        self._by_identity[identity_key] = selected.model
+        if old is not None and old != selected.model:
+            return old, selected.model
+        return None, selected.model
+
+    def _fire_add(self, identity_key: Any, model: _T) -> None:
+        if self._on_add:
+            try:
+                self._on_add(identity_key, model)
+            except Exception:
+                logger.debug(
+                    "mdns(%s): on_add callback raised", self._service_type, exc_info=True
+                )
+
+    def _fire_remove(self, identity_key: Any, model: Optional[_T]) -> None:
+        if self._on_remove:
+            try:
+                self._on_remove(identity_key, model)
+            except Exception:
+                logger.debug(
+                    "mdns(%s): on_remove callback raised", self._service_type, exc_info=True
+                )
+
+    def _fire_change(self, identity_key: Any, old: Optional[_T], new: _T) -> None:
+        if self._on_change:
+            try:
+                self._on_change(identity_key, old, new)
+            except Exception:
+                logger.debug(
+                    "mdns(%s): on_change callback raised", self._service_type, exc_info=True
+                )
+
+    def _process_resolve_line(self, parts: list[str], now: float) -> None:
+        five_tuple = tuple(parts[1:6])
+        txt = parse_avahi_txt(parts[9])
+        parsed = self._parse_fn(parts, txt)
+        if parsed is None:
+            return
+        identity_key, model = parsed
+
+        with self._lock:
+            old = self._by_identity.get(identity_key)
+            added = old is None
+            self._by_key[five_tuple] = _MdnsRecord(identity_key, model, now)
+            changed_old, selected = self._refresh_identity_selection_locked(identity_key)
+
+        if selected is None:
+            return
+        if added:
+            self._fire_add(identity_key, selected)
+        elif changed_old is not None:
+            self._fire_change(identity_key, changed_old, selected)
+
+    def _begin_refresh_cycle(self) -> None:
+        with self._lock:
+            self._current_cycle_start = time.monotonic()
+
+    def _sweep_expired(self) -> None:
+        callbacks: list[tuple[str, Any, Optional[_T], Optional[_T]]] = []
+        now = time.monotonic()
+        with self._lock:
+            expired = [
+                key for key, record in self._by_key.items()
+                if now - record.last_seen > self._grace_period_secs
+            ]
+            affected = {self._by_key[key].identity_key for key in expired}
+            for key in expired:
+                self._by_key.pop(key, None)
+            for identity_key in affected:
+                old = self._by_identity.get(identity_key)
+                selected = self._select_identity_locked(identity_key)
+                if selected is None:
+                    removed = self._by_identity.pop(identity_key, None)
+                    callbacks.append(("remove", identity_key, removed, None))
+                elif old != selected.model:
+                    self._by_identity[identity_key] = selected.model
+                    callbacks.append(("change", identity_key, old, selected.model))
+
+        for kind, identity_key, old, new in callbacks:
+            if kind == "remove":
+                self._fire_remove(identity_key, old)
+            elif new is not None:
+                self._fire_change(identity_key, old, new)
+
+    def _dump_loop(self) -> None:
+        while not self._shutdown_requested():
+            self._interruptible_wait(_REFRESH_INTERVAL_SECS)
+            if self._shutdown_requested():
+                return
+            self._run_dump_once()
+
+    def _run_dump_once(self) -> None:
+        proc = None
+        self._begin_refresh_cycle()
+        try:
+            proc = subprocess.Popen(
+                ["avahi-browse", "--no-fail", "-r", "-t", "-p", self._service_type],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            with self._proc_lock:
+                self._dump_proc = proc
+
+            if self._shutdown_requested():
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+                return
+
+            for line in proc.stdout:
+                with self._lock:
+                    self._has_browse_event = True
+                self._handle_line(line.strip())
+                if self._shutdown_requested():
+                    break
+            try:
+                proc.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                pass
+        except Exception as exc:
+            if not self._shutdown_requested():
+                logger.debug("mdns(%s): refresh dump failed: %s", self._service_type, exc)
+        finally:
+            with self._proc_lock:
+                if proc is not None and self._dump_proc is proc:
+                    self._dump_proc = None
+        self._sweep_expired()
 
     # ------------------------------------------------------------------
     # Browse loop
@@ -351,28 +551,9 @@ class MdnsBrowser(Generic[_T]):
         event = parts[0]
 
         if event == "=" and len(parts) >= 10 and parts[2] == "IPv4":
-            five_tuple = tuple(parts[1:6])
-            txt = parse_avahi_txt(parts[9])
-            parsed = self._parse_fn(parts, txt)
-            if parsed is None:
-                return
-            identity_key, model = parsed
-
-            added = False
             with self._lock:
-                old = self._by_identity.get(identity_key)
-                self._by_key[five_tuple] = (identity_key, model)
-                self._by_identity[identity_key] = model
-                if old is None:
-                    added = True
-
-            if added and self._on_add:
-                try:
-                    self._on_add(identity_key, model)
-                except Exception:
-                    logger.debug(
-                        "mdns(%s): on_add callback raised", self._service_type, exc_info=True
-                    )
+                self._has_browse_event = True
+            self._process_resolve_line(parts, time.monotonic())
 
         elif event == "-" and len(parts) >= 6 and parts[2] == "IPv4":
             five_tuple = tuple(parts[1:6])
@@ -385,33 +566,20 @@ class MdnsBrowser(Generic[_T]):
             with self._lock:
                 entry = self._by_key.pop(five_tuple, None)
                 if entry is not None:
-                    identity_key, popped_model = entry
-                    # Check if another five-tuple still holds this identity
-                    remaining = next(
-                        (m for k, (ik, m) in self._by_key.items() if ik == identity_key),
-                        None,
-                    )
+                    identity_key = entry.identity_key
+                    popped_model = entry.model
+                    remaining = self._select_identity_locked(identity_key)
                     if remaining is not None:
-                        self._by_identity[identity_key] = remaining
+                        self._by_identity[identity_key] = remaining.model
                         changed_key = identity_key
                         changed_removed = popped_model
-                        changed_remaining = remaining
+                        changed_remaining = remaining.model
                     else:
                         removed_model = self._by_identity.pop(identity_key, None)
                         removed_key = identity_key
 
-            if removed_key is not None and self._on_remove:
-                try:
-                    self._on_remove(removed_key, removed_model)
-                except Exception:
-                    logger.debug(
-                        "mdns(%s): on_remove callback raised", self._service_type, exc_info=True
-                    )
+            if removed_key is not None:
+                self._fire_remove(removed_key, removed_model)
 
-            if changed_key is not None and self._on_change:
-                try:
-                    self._on_change(changed_key, changed_removed, changed_remaining)
-                except Exception:
-                    logger.debug(
-                        "mdns(%s): on_change callback raised", self._service_type, exc_info=True
-                    )
+            if changed_key is not None:
+                self._fire_change(changed_key, changed_removed, changed_remaining)

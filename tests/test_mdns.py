@@ -203,6 +203,98 @@ class TestFiveTupleDeduplication:
 
 
 # ---------------------------------------------------------------------------
+# TTL refresh and stale selection
+# ---------------------------------------------------------------------------
+
+class TestTtlRefresh:
+    def _stale_flags(self, browser):
+        with browser._lock:
+            return {
+                browser._model_ip(record.model): browser._is_stale_locked(record)
+                for record in browser._by_key.values()
+            }
+
+    def test_missed_removal_prefers_dump_confirmed_address_then_expires_old(self):
+        removed = []
+        browser = _make_browser()
+        browser._on_remove = lambda key, model: removed.append((key, model))
+
+        browser._handle_line(_avahi_resolve_line(
+            iface="wlan0", name="svc", ip="10.0.0.131", txt='id=aaa name=test'))
+        browser._handle_line(_avahi_resolve_line(
+            iface="eth0", name="svc", ip="10.0.0.82", txt='id=aaa name=test'))
+        assert browser.get_snapshot()["aaa"]["ip"] == "10.0.0.82"
+
+        browser._begin_refresh_cycle()
+        browser._handle_line(_avahi_resolve_line(
+            iface="wlan0", name="svc", ip="10.0.0.131", txt='id=aaa name=test'))
+
+        flags = self._stale_flags(browser)
+        assert flags["10.0.0.82"] is True
+        assert flags["10.0.0.131"] is False
+        assert browser.get_snapshot()["aaa"]["ip"] == "10.0.0.131"
+
+        browser.set_grace_period(1)
+        with browser._lock:
+            for record in browser._by_key.values():
+                if record.model["ip"] == "10.0.0.82":
+                    record.last_seen = time.monotonic() - 2
+        browser._sweep_expired()
+
+        flags = self._stale_flags(browser)
+        assert "10.0.0.82" not in flags
+        assert browser.get_snapshot()["aaa"]["ip"] == "10.0.0.131"
+        assert removed == []
+
+    def test_single_missed_dump_keeps_only_stale_record_until_next_confirmation(self):
+        browser = _make_browser()
+        browser._handle_line(_avahi_resolve_line(
+            iface="wlan0", name="svc", ip="10.0.0.131", txt='id=aaa name=test'))
+
+        browser._begin_refresh_cycle()
+        assert browser.get_snapshot()["aaa"]["ip"] == "10.0.0.131"
+        assert self._stale_flags(browser)["10.0.0.131"] is True
+
+        browser._handle_line(_avahi_resolve_line(
+            iface="wlan0", name="svc", ip="10.0.0.131", txt='id=aaa name=test'))
+        assert self._stale_flags(browser)["10.0.0.131"] is False
+        assert browser.get_snapshot()["aaa"]["ip"] == "10.0.0.131"
+
+    def test_selection_prefers_non_stale_address_over_newer_stale_address(self):
+        browser = _make_browser()
+        browser._handle_line(_avahi_resolve_line(
+            iface="wlan0", name="svc", ip="10.0.0.131", txt='id=aaa name=test'))
+        browser._handle_line(_avahi_resolve_line(
+            iface="eth0", name="svc", ip="10.0.0.82", txt='id=aaa name=test'))
+        assert browser.get_snapshot()["aaa"]["ip"] == "10.0.0.82"
+
+        browser._begin_refresh_cycle()
+        browser._handle_line(_avahi_resolve_line(
+            iface="wlan0", name="svc", ip="10.0.0.131", txt='id=aaa name=test'))
+        assert browser.get_snapshot()["aaa"]["ip"] == "10.0.0.131"
+
+    def test_set_grace_period_changes_expiry_behavior(self):
+        removed = []
+        browser = _make_browser()
+        browser._on_remove = lambda key, model: removed.append(key)
+        browser._handle_line(_avahi_resolve_line(txt='id=aaa name=test'))
+
+        with browser._lock:
+            for record in browser._by_key.values():
+                record.last_seen = time.monotonic() - 2
+
+        browser.set_grace_period(3)
+        browser._sweep_expired()
+        assert "aaa" in browser.get_snapshot()
+        assert removed == []
+
+        browser.set_grace_period(1)
+        browser._sweep_expired()
+        assert "aaa" not in browser.get_snapshot()
+        assert removed == ["aaa"]
+
+
+# ---------------------------------------------------------------------------
 # Thread-safe snapshot
 # ---------------------------------------------------------------------------
 
@@ -467,10 +559,11 @@ class TestShutdownLifecycle:
         original = threading.Thread.start
         with patch.object(threading.Thread, "start",
                           lambda self: (thread_starts.append(1), original(self)) and None):
-            with patch.object(browser, "_browse_loop", return_value=None):
+            with patch.object(browser, "_browse_loop", return_value=None), \
+                 patch.object(browser, "_dump_loop", return_value=None):
                 browser.start()
                 browser.start()
-        assert len(thread_starts) == 1
+        assert len(thread_starts) == 2
 
     # 2. start() with an already-set application event launches no thread.
     def test_start_with_set_shutdown_event_does_not_start_thread(self):
