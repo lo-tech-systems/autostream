@@ -697,14 +697,13 @@ deploy_phase() {
   # can survive repo upgrades and reinstall packages no longer in the project.
   rm -f "${INSTALL_DIR}/requirements.lock"
   cp -a "${AUTOSTREAM_DIR}/core/."     "${INSTALL_DIR}/"
-  cp    "${AUTOSTREAM_DIR}/platform/wifi_watcher" "${INSTALL_DIR}/"
+  install -m 0755 -o root -g root \
+      "${AUTOSTREAM_DIR}/platform/wifi_watcher" "${INSTALL_DIR}/autostream_wifi_watcher"
+  sed -i 's/\r$//' "${INSTALL_DIR}/autostream_wifi_watcher"
   # wifi_watcher's split sibling modules (imported beside it from /opt/autostream).
   cp    "${AUTOSTREAM_DIR}/platform/wifi_status.py"   "${INSTALL_DIR}/"
   cp    "${AUTOSTREAM_DIR}/platform/wifi_recovery.py" "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/LICENSE" "${INSTALL_DIR}/"
-  # wifi_watcher must be renamed — systemd unit and nginx reference autostream_wifi_watcher
-  mv "${INSTALL_DIR}/wifi_watcher" "${INSTALL_DIR}/autostream_wifi_watcher"
-  chmod +x "${INSTALL_DIR}/autostream_wifi_watcher"
   # Only deploy the bundled hints file when neither the new location nor the old
   # (to-be-migrated) location exists.  This prevents the repo defaults from
   # overwriting a user-customized file that migration will later copy into place.
@@ -998,6 +997,7 @@ services_phase() {
     systemctl restart autostream_monitor.service || true
     systemctl restart vibra-mini.service         || true
     systemctl restart autostream.service         || true
+    systemctl restart autostream_wifi_watcher.service || true
     systemctl reload  nginx                      || true
   fi
 }

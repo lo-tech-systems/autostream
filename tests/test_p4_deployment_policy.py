@@ -39,6 +39,7 @@ DNSMASQ_DIR = REPO_ROOT / "system" / "dnsmasq"
 LOGROTATE_DIR = REPO_ROOT / "system" / "logrotate"
 WATCHDOG_DIR = REPO_ROOT / "system" / "watchdog"
 NM_DIR = REPO_ROOT / "system" / "NetworkManager"
+INSTALL_SH = REPO_ROOT / "autostream_install.sh"
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +242,26 @@ class TestSystemdDependencyOrdering:
         unit = SYSTEMD_DIR / "autostream_dial_wifi_watcher.service"
         after = _unit_field(unit, "Unit", "After")
         assert "NetworkManager.service" in after
+
+    def test_installer_deploys_wifi_watcher_to_unit_execstart_path(self):
+        unit = SYSTEMD_DIR / "autostream_wifi_watcher.service"
+        exec_start = _unit_field(unit, "Service", "ExecStart")
+        installer = INSTALL_SH.read_text(encoding="utf-8")
+        assert exec_start == "/opt/autostream/autostream_wifi_watcher"
+        assert '"${INSTALL_DIR}/autostream_wifi_watcher"' in installer
+        assert '"${AUTOSTREAM_DIR}/platform/wifi_watcher"' in installer
+
+    def test_update_restarts_wifi_watcher_after_deploy(self):
+        installer = INSTALL_SH.read_text(encoding="utf-8")
+        assert "systemctl restart autostream_wifi_watcher.service" in installer
+
+    def test_installers_normalize_wifi_watcher_line_endings(self):
+        appliance_installer = INSTALL_SH.read_text(encoding="utf-8")
+        dial_installer = (REPO_ROOT / "autostream_dial_install.sh").read_text(
+            encoding="utf-8"
+        )
+        assert r"sed -i 's/\r$//' " in appliance_installer
+        assert r"sed -i 's/\r$//' " in dial_installer
 
     def test_dial_after_avahi_daemon(self):
         """autostream_dial must start after avahi-daemon to publish mDNS."""
