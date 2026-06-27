@@ -2575,6 +2575,12 @@ class TestBuildNetworkStatusSnapshot:
         assert snap["device"]["state"] == "online"
         assert snap["device"]["primary_ifname"] == "wlan0"
         assert snap["device"]["primary_ipv4"] == "192.168.1.42"
+        assert snap["device"]["primary_ipv4_info"] == {
+            "address": "192.168.1.42",
+            "prefixlen": 24,
+            "netmask": "255.255.255.0",
+            "gateway": "192.168.1.1",
+        }
         assert snap["connectivity"]["client_ok"] is True
         assert snap["connectivity"]["active_path_ok"] is True
         assert snap["connectivity"]["wired_carrier"] is False
@@ -2612,13 +2618,19 @@ class TestBuildNetworkStatusSnapshot:
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
-             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="10.0.0.1"), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
             snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["state"] == "degraded"
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ipv4"] == "10.0.0.5"
+        assert snap["device"]["primary_ipv4_info"] == {
+            "address": "10.0.0.5",
+            "prefixlen": 24,
+            "netmask": "255.255.255.0",
+            "gateway": "10.0.0.1",
+        }
         assert snap["connectivity"]["wired_carrier"] is True
         assert snap["connectivity"]["wired_ok"] is True
         assert snap["connectivity"]["active_path_ok"] is True
@@ -2631,6 +2643,13 @@ class TestBuildNetworkStatusSnapshot:
         assert snap["device"]["state"] == "offline"
         assert snap["device"]["primary_kind"] == ""
         assert snap["device"]["primary_ifname"] == ""
+        assert snap["device"]["primary_ipv4"] == ""
+        assert snap["device"]["primary_ipv4_info"] == {
+            "address": "",
+            "prefixlen": None,
+            "netmask": "",
+            "gateway": "",
+        }
         assert snap["connectivity"]["wired_carrier"] is True
         assert snap["connectivity"]["wired_ok"] is False
         assert snap["connectivity"]["active_path_ok"] is False

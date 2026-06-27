@@ -20,6 +20,7 @@ directly because it is a shared module object (patching it affects both modules)
 from __future__ import annotations
 
 import logging
+import ipaddress
 import time
 from typing import Optional
 
@@ -53,6 +54,30 @@ def _primary_addresses(addresses: dict, ifname: str) -> tuple[str, str]:
             if a.get("scope") == "global" and not ipv6:
                 ipv6 = a["address"]
     return ipv4, ipv6
+
+
+def _primary_ipv4_info(addresses: dict, ifname: str, gateway: str) -> dict:
+    """Return active-path IPv4 details for the selected primary interface."""
+    for a in addresses.get(ifname, []):
+        if a.get("family") != "ipv4":
+            continue
+        address = a.get("address", "")
+        if a.get("scope") != "global" or not address:
+            continue
+        prefixlen = a.get("prefixlen")
+        netmask = ""
+        if isinstance(prefixlen, int) and not isinstance(prefixlen, bool):
+            try:
+                netmask = str(ipaddress.IPv4Network(f"0.0.0.0/{prefixlen}").netmask)
+            except ValueError:
+                pass
+        return {
+            "address": address,
+            "prefixlen": prefixlen if isinstance(prefixlen, int) else None,
+            "netmask": netmask,
+            "gateway": gateway,
+        }
+    return {"address": "", "prefixlen": None, "netmask": "", "gateway": ""}
 
 
 def _adapter_ip_lists(addresses: dict, ifname: str) -> tuple[list, list]:
@@ -256,6 +281,11 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     primary_ipv4, primary_ipv6 = (
         _primary_addresses(addresses, primary_ifname) if primary_ifname else ("", "")
     )
+    primary_gateway = wifi_net.default_gateway_ipv4(primary_ifname) if primary_ifname else ""
+    primary_ipv4_info = (
+        _primary_ipv4_info(addresses, primary_ifname, primary_gateway)
+        if primary_ifname else {"address": "", "prefixlen": None, "netmask": "", "gateway": ""}
+    )
 
     if in_setup:
         device_state = "setup_mode"
@@ -288,6 +318,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             "primary_ifname": primary_ifname,
             "primary_kind": primary_kind,
             "primary_ipv4": primary_ipv4,
+            "primary_ipv4_info": primary_ipv4_info,
             "primary_ipv6": primary_ipv6,
         },
         "hotspot": {
