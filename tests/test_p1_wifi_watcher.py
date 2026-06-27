@@ -2861,6 +2861,104 @@ class TestBuildNetworkStatusSnapshot:
         assert snap["connectivity"]["wired_ok"] is True
         assert snap["connectivity"]["active_path_ok"] is True
 
+    def test_primary_uses_wifi_when_only_wifi_has_default_route(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        addrs = {
+            "wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                       "prefixlen": 24, "scope": "global"}],
+            "eth0": [{"family": "ipv4", "address": "10.0.0.5",
+                      "prefixlen": 24, "scope": "global"}],
+        }
+        gateways = {"wlan0": "192.168.1.1", "eth0": ""}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4",
+                          side_effect=lambda ifname: gateways.get(ifname, "")), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid", return_value="MyHomeWiFi"), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+        assert snap["device"]["primary_kind"] == "usb_wifi"
+        assert snap["device"]["primary_ifname"] == "wlan0"
+        assert snap["device"]["primary_ssid"] == "MyHomeWiFi"
+
+    def test_primary_uses_ethernet_when_only_ethernet_has_default_route(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        addrs = {
+            "wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                       "prefixlen": 24, "scope": "global"}],
+            "eth0": [{"family": "ipv4", "address": "10.0.0.5",
+                      "prefixlen": 24, "scope": "global"}],
+        }
+        gateways = {"wlan0": "", "eth0": "10.0.0.1"}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4",
+                          side_effect=lambda ifname: gateways.get(ifname, "")), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+        assert snap["device"]["primary_kind"] == "ethernet"
+        assert snap["device"]["primary_ifname"] == "eth0"
+        assert snap["device"]["primary_ssid"] == ""
+        get_ssid.assert_not_called()
+
+    def test_primary_prefers_ethernet_when_both_have_default_routes(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        addrs = {
+            "wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                       "prefixlen": 24, "scope": "global"}],
+            "eth0": [{"family": "ipv4", "address": "10.0.0.5",
+                      "prefixlen": 24, "scope": "global"}],
+        }
+        gateways = {"wlan0": "192.168.1.1", "eth0": "10.0.0.1"}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4",
+                          side_effect=lambda ifname: gateways.get(ifname, "")), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+        assert snap["device"]["primary_kind"] == "ethernet"
+        assert snap["device"]["primary_ifname"] == "eth0"
+        get_ssid.assert_not_called()
+
+    def test_primary_prefers_ethernet_when_neither_has_default_route(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        addrs = {
+            "wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                       "prefixlen": 24, "scope": "global"}],
+            "eth0": [{"family": "ipv4", "address": "10.0.0.5",
+                      "prefixlen": 24, "scope": "global"}],
+        }
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+        assert snap["device"]["primary_kind"] == "ethernet"
+        assert snap["device"]["primary_ifname"] == "eth0"
+        assert snap["device"]["primary_ipv4_info"]["gateway"] == ""
+        get_ssid.assert_not_called()
+
     def test_carrier_only_ethernet_is_not_online_or_primary(self, watcher):
         addrs = {"eth0": []}
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \

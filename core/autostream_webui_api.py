@@ -2175,7 +2175,10 @@ def _network_warning_fields(adapter: dict) -> dict:
     return {
         "warning": warning,
         "warning_severity": severity,
-        "support_detail": f"Adapter: {ifname} | Resets: {resets}/{budget} in 24h",
+        "support_detail": (
+            f"Adapter: {ifname} | Reset attempts: {resets} in 24h "
+            f"(normal budget: {budget})"
+        ),
     }
 
 

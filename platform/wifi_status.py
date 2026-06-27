@@ -171,6 +171,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     hotspot_ifname = hotspot_adapter.ifname if (in_setup and hotspot_adapter) else ""
 
     adapter_records = []
+    adapter_default_gateways = {}
     any_healthy = False
     any_unhealthy = False
     for a in adapters:
@@ -207,6 +208,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             any_unhealthy = True
 
         gw_ipv4 = wifi_net.default_gateway_ipv4(a.ifname)
+        adapter_default_gateways[a.ifname] = gw_ipv4
         gw_reachable = w.is_gateway_reachable(a.ifname) if gw_ipv4 else False
 
         state, severity = _classify_adapter_health(
@@ -294,16 +296,32 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
     primary_ifname = ""
     primary_kind = ""
+    wifi_primary_ifname = ""
+    wifi_primary_kind = ""
     if active_ifname and any(
         r["ifname"] == active_ifname and r["health"]["state"] == "healthy"
         for r in adapter_records
     ):
-        primary_ifname = active_ifname
-        primary_kind = next(r["kind"] for r in adapter_records if r["ifname"] == active_ifname)
-    elif wired_ok:
-        primary_ifname = _primary_wired_ifname(addresses)
-        if primary_ifname:
+        wifi_primary_ifname = active_ifname
+        wifi_primary_kind = next(r["kind"] for r in adapter_records if r["ifname"] == active_ifname)
+
+    wired_primary_ifname = _primary_wired_ifname(addresses) if wired_ok else ""
+
+    if wifi_primary_ifname and wired_primary_ifname:
+        wifi_has_default = bool(adapter_default_gateways.get(wifi_primary_ifname))
+        wired_has_default = bool(wifi_net.default_gateway_ipv4(wired_primary_ifname))
+        if wifi_has_default and not wired_has_default:
+            primary_ifname = wifi_primary_ifname
+            primary_kind = wifi_primary_kind
+        else:
+            primary_ifname = wired_primary_ifname
             primary_kind = "ethernet"
+    elif wifi_primary_ifname:
+        primary_ifname = wifi_primary_ifname
+        primary_kind = wifi_primary_kind
+    elif wired_primary_ifname:
+        primary_ifname = wired_primary_ifname
+        primary_kind = "ethernet"
 
     primary_ipv4, primary_ipv6 = (
         _primary_addresses(addresses, primary_ifname) if primary_ifname else ("", "")

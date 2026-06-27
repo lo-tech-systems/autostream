@@ -154,7 +154,7 @@ class TestBuildNetworkCardPresentation:
         result = build_network_card_presentation(s)
         assert result["warning"] == "Warning: the USB WiFi adapter has needed 1 reset in the last 24 hours."
         assert result["warning_severity"] == "warning"
-        assert result["support_detail"] == "Adapter: wlan1 | Resets: 1/2 in 24h"
+        assert result["support_detail"] == "Adapter: wlan1 | Reset attempts: 1 in 24h (normal budget: 2)"
 
     def test_budget_exhausted_warning(self):
         s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="reset_budget_exhausted", resets=2)]}),
@@ -162,7 +162,7 @@ class TestBuildNetworkCardPresentation:
         result = build_network_card_presentation(s)
         assert result["warning"] == "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
         assert result["warning_severity"] == "danger"
-        assert result["support_detail"] == "Adapter: wlan1 | Resets: 2/2 in 24h"
+        assert result["support_detail"] == "Adapter: wlan1 | Reset attempts: 2 in 24h (normal budget: 2)"
 
     def test_quarantined_warning(self):
         s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="quarantined", quarantined=True, resets=2)]}),
@@ -190,7 +190,13 @@ class TestBuildNetworkCardPresentation:
             primary_ssid="MyHomeWiFi",
         )
         result = build_network_card_presentation(s)
-        assert result["support_detail"] == "Adapter: wlan1 | Resets: 1/2 in 24h"
+        assert result["support_detail"] == "Adapter: wlan1 | Reset attempts: 1 in 24h (normal budget: 2)"
+
+    def test_support_detail_handles_emergency_resets_above_budget(self):
+        s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="reset_budget_exhausted", resets=26)]}),
+                         primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
+        result = build_network_card_presentation(s)
+        assert result["support_detail"] == "Adapter: wlan1 | Reset attempts: 26 in 24h (normal budget: 2)"
 
 
 # ---------------------------------------------------------------------------
