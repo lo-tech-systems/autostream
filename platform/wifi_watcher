@@ -1730,73 +1730,6 @@ def _control_authorised() -> bool:
     return hmac.compare_digest(supplied, _control_token)
 
 
-def _network_status_payload() -> dict:
-    """Build the non-secret /network_status payload (Section 10.1)."""
-    try:
-        adapters = wifi_net.discover_adapters()
-    except Exception:
-        adapters = []
-    builtin = wifi_net.resolve_builtin(adapters)
-    with state_lock:
-        active_ifname = STATE.active_client_ifname
-        active_mac = STATE.active_client_mac
-        using_fallback = STATE.using_builtin_fallback
-        wiredstate = STATE.wiredstate
-        cip = STATE.control_in_progress
-        lca = STATE.last_control_action
-        lcr = STATE.last_control_result
-        lce = STATE.last_control_error
-    active = wifi_net.find_adapter_by_ifname(adapters, active_ifname) if active_ifname else None
-    usb_detected = any(a.is_usb for a in adapters)
-
-    active_ssid = ""
-    try:
-        active_ssid = wifi_net.get_active_wifi_ssid()
-    except Exception:
-        pass
-
-    hotspot_adapter = resolve_hotspot_adapter(adapters)
-    ap_ssid = get_ap_ssid(hotspot_adapter.ifname) if hotspot_adapter else "autostream-setup"
-
-    # True when a USB adapter is present but not yet active and ethernet isn't
-    # carrying connectivity — indicates adoption is deferred (likely by playback).
-    usb_adoption_pending = (
-        usb_detected
-        and (active is None or not active.is_usb)
-        and wiredstate != "connected"
-    )
-
-    def _ad(a):
-        if a is None:
-            return None
-        return {
-            "ifname": a.ifname, "permanent_mac": a.permanent_mac,
-            "kind": a.kind, "description": a.description,
-            "is_builtin": a.is_builtin, "is_usb": a.is_usb,
-        }
-
-    return {
-        "ok": True,
-        "configured_connection": get_configured_network_state().connection_name,
-        "active_adapter_mac": active_mac,
-        "active_adapter_ifname": active_ifname,
-        "active_adapter_kind": (active.kind if active else ""),
-        "active_adapter_description": (active.description if active else ""),
-        "active_ssid": active_ssid,
-        "ap_ssid": ap_ssid,
-        "wiredstate": wiredstate,
-        "usb_adapter_detected": usb_detected,
-        "usb_adoption_pending": usb_adoption_pending,
-        "using_builtin_fallback": using_fallback,
-        "builtin_adapter": _ad(builtin),
-        "adapters": [_ad(a) for a in adapters],
-        "control_in_progress": cip,
-        "last_control_action": lca,
-        "last_control_result": lcr,
-        "last_control_error": lce,
-    }
-
-
 _VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved", "set_log_level"}
 
 
@@ -2623,8 +2556,8 @@ def startup_connect_usb_first() -> bool:
     if not state.is_configured:
         return False
 
-    if is_wired_connected():
-        logger.info("Startup USB-first: wired Ethernet connected; skipping USB activation")
+    if any_wired_path_healthy():
+        logger.info("Startup USB-first: usable wired Ethernet present; skipping USB activation")
         return False
 
     adapters = wifi_net.discover_adapters()

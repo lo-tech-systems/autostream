@@ -49,6 +49,7 @@ _RFC1918_NETS = (
     ipaddress.ip_network("192.168.0.0/16"),
 )
 _LINK_LOCAL_NET = ipaddress.ip_network("169.254.0.0/16")
+_THIS_HOST_NET = ipaddress.ip_network("0.0.0.0/8")  # "this host on this network" (RFC 1122)
 
 
 # ---------------------------------------------------------------------------
@@ -764,7 +765,8 @@ def is_usable_unicast_ipv4(value) -> bool:
     if not isinstance(ip, ipaddress.IPv4Address):
         return False
     return not (
-        ip.is_unspecified
+        ip in _THIS_HOST_NET
+        or ip.is_unspecified
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_multicast

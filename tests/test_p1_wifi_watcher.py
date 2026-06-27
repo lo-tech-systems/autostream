@@ -1582,6 +1582,39 @@ class TestStartupWindowUsbReprobe:
         new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
         assert not new_usb, "MAC must be gated out after being recorded as tried"
 
+    def test_startup_connect_usb_first_ignores_carrier_only_ethernet(self, watcher):
+        """Carrier-only Ethernet must not block USB-first Wi-Fi recovery."""
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:04", is_usb=True)
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        calls = []
+
+        def capture_run_cmd(cmd, **_):
+            calls.append(cmd)
+            return MagicMock(returncode=0)
+
+        with patch.object(watcher, "is_wired_connected", return_value=True), \
+             patch.object(watcher, "any_wired_path_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+             patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
+             patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False), \
+             patch.object(watcher, "get_configured_network_state") as gcns, \
+             patch.object(watcher, "run_cmd", side_effect=capture_run_cmd), \
+             patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+            gcns.return_value = MagicMock(
+                is_configured=True,
+                connection_uuid="uuid-abc",
+                connection_name="HomeNetwork",
+            )
+            result = watcher.startup_connect_usb_first()
+
+        assert result is True
+        assert any(
+            c == watcher.wifi_net.activate_connection_cmd("uuid-abc", "HomeNetwork", "wlan1")
+            for c in calls
+        )
+
     def test_no_usb_adapters_does_not_clear_restrictions(self, watcher):
         """When no USB adapters are present, startup_connect_usb_first must NOT
         call clear_restrictions_cmd.  Modifying an active connection profile
