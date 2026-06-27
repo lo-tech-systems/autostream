@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import threading
+from contextlib import ExitStack
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
@@ -594,6 +595,18 @@ class TestEnterLeaveSetupMode:
              patch.object(watcher, "stop_ap_mode"):
             watcher.leave_setup_mode("done")
         assert watcher.STATE.setup_mode is False
+
+    def test_leave_rebases_active_path_timer(self, watcher, tmp_path):
+        flag = tmp_path / "apmode"
+        flag.write_text("1\n")
+        watcher.AP_MODE_FLAG_PATH = str(flag)
+        watcher.STATE.setup_mode = True
+        watcher.STATE.last_active_path_seen = 1.0
+        with patch.object(watcher, "start_ap_mode"), \
+             patch.object(watcher, "stop_ap_mode"), \
+             patch("time.monotonic", return_value=123.0):
+            watcher.leave_setup_mode("done")
+        assert watcher.STATE.last_active_path_seen == 123.0
 
     def test_leave_removes_ap_flag_file(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
@@ -2196,7 +2209,7 @@ def tmp_guard():
 
 
 # ---------------------------------------------------------------------------
-# WP4 (dead-PHY) — reboot-threshold domain: 30 min, not the 24h post-AP backstop
+# WP4 (dead-PHY) — reboot-threshold domain: 30 min, not the 12h catch-all
 # ---------------------------------------------------------------------------
 
 class TestDeadPhyRebootThreshold:
@@ -2229,16 +2242,138 @@ class TestDeadPhyRebootThreshold:
         reboot = self._run(watcher, watcher.DEAD_ADAPTER_REBOOT_AFTER - 60.0)
         reboot.assert_not_called()
 
-    def test_reboot_at_30_min_not_24h(self, watcher):
-        # Far below the 24h post-AP backstop, but past the 30-min dead-PHY path.
+    def test_reboot_at_30_min_not_catchall(self, watcher):
+        # Far below the 12h no-active-path catch-all, but past the 30-min dead-PHY path.
         now = watcher.DEAD_ADAPTER_REBOOT_AFTER + 60.0
-        assert now < watcher.AP_POST_CLOSE_REBOOT_AFTER
+        assert now < watcher.NO_ACTIVE_PATH_REBOOT_AFTER
         reboot = self._run(watcher, now)
         reboot.assert_called_once_with("NetworkDown")
 
     def test_threshold_is_30_min(self, watcher):
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == watcher.GW_DOWN_REBOOT_AFTER
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == 30 * 60
+
+
+def _run_monitor_once(
+    watcher,
+    *,
+    now: float,
+    wifi_cfg: bool = False,
+    wired_connected: bool = False,
+    wired_ok: bool = False,
+    wifi_connected: bool = False,
+    client_ok: bool = False,
+):
+    """Run one monitor pass with external facts patched to deterministic values."""
+    with ExitStack() as stack:
+        stack.enter_context(patch("time.monotonic", return_value=now))
+        stack.enter_context(patch.object(watcher, "check_and_repair_avahi_hostname"))
+        stack.enter_context(patch.object(watcher, "revert_expired_log_level"))
+        stack.enter_context(patch.object(watcher, "is_wifi_configured", return_value=wifi_cfg))
+        stack.enter_context(patch.object(watcher, "is_wired_connected", return_value=wired_connected))
+        stack.enter_context(patch.object(watcher, "any_wired_path_healthy", return_value=wired_ok))
+        stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", return_value=[]))
+        stack.enter_context(patch.object(watcher, "update_known_adapters"))
+        stack.enter_context(patch.object(watcher, "resolve_active_client", return_value=None))
+        stack.enter_context(patch.object(watcher, "handle_usb_failure_fallback", return_value=False))
+        stack.enter_context(patch.object(watcher.wifi_net, "is_wifi_connected", return_value=wifi_connected))
+        stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=client_ok))
+        stack.enter_context(patch.object(watcher, "handle_runtime_usb_adoption", return_value=False))
+        stack.enter_context(patch.object(watcher, "escalate_dead_adapter_recovery", return_value=False))
+        stack.enter_context(patch.object(watcher, "publish_network_status"))
+        stack.enter_context(patch.object(watcher, "log_on_change"))
+        stack.enter_context(patch.object(watcher, "startup_connect_usb_first", return_value=False))
+        stack.enter_context(patch.object(watcher, "connect_to_configured_wifi"))
+        watcher.network_monitor_loop(run_once=True)
+
+
+class TestNetworkMonitorCatchAll:
+    def test_broken_ethernet_does_not_suppress_catchall_reboot(self, watcher):
+        now = watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0
+        watcher.STATE.boot_time = 0.0
+        watcher.STATE.last_active_path_seen = 0.0
+        with patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            _run_monitor_once(
+                watcher,
+                now=now,
+                wifi_cfg=False,
+                wired_connected=True,
+                wired_ok=False,
+            )
+        reboot.assert_called_once_with("NetworkDown")
+
+    def test_reboot_throttle_suppresses_repeated_catchall_request(self, watcher):
+        now = watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0
+        watcher.STATE.boot_time = 0.0
+        watcher.STATE.last_active_path_seen = 0.0
+        watcher.STATE.conn_reboot_retry_after = now + 60.0
+        with patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            _run_monitor_once(watcher, now=now, wifi_cfg=False)
+        reboot.assert_not_called()
+
+    def test_healthy_ethernet_suppresses_automatic_ap(self, watcher):
+        now = watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0
+        watcher.STATE.boot_time = 0.0
+        watcher.STATE.last_active_path_seen = 0.0
+        watcher.STATE.setup_mode = True
+        watcher.STATE.ap_enter_time = now - 10.0
+        with patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            _run_monitor_once(
+                watcher,
+                now=now,
+                wifi_cfg=False,
+                wired_connected=True,
+                wired_ok=True,
+            )
+        leave.assert_called_once()
+        reboot.assert_not_called()
+
+    def test_manual_ap_override_not_closed_by_healthy_ethernet(self, watcher):
+        now = watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0
+        watcher.STATE.boot_time = 0.0
+        watcher.STATE.last_active_path_seen = 0.0
+        watcher.STATE.setup_mode = True
+        watcher.STATE.manual_ap_active = True
+        watcher.STATE.ap_enter_time = now - 10.0
+        with patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            _run_monitor_once(
+                watcher,
+                now=now,
+                wifi_cfg=False,
+                wired_connected=True,
+                wired_ok=True,
+            )
+        leave.assert_not_called()
+        reboot.assert_not_called()
+
+    def test_setup_mode_suspends_catchall(self, watcher):
+        now = watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0
+        watcher.STATE.boot_time = 0.0
+        watcher.STATE.last_active_path_seen = 0.0
+        watcher.STATE.setup_mode = True
+        watcher.STATE.ap_enter_time = now - 10.0
+        with patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            _run_monitor_once(watcher, now=now, wifi_cfg=False)
+        reboot.assert_not_called()
+
+    def test_active_wifi_rebases_catchall_timer_and_clears_retry(self, watcher):
+        now = watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0
+        watcher.STATE.boot_time = 0.0
+        watcher.STATE.last_active_path_seen = 0.0
+        watcher.STATE.conn_reboot_retry_after = now + 60.0
+        with patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            _run_monitor_once(
+                watcher,
+                now=now,
+                wifi_cfg=True,
+                wifi_connected=True,
+                client_ok=True,
+            )
+        reboot.assert_not_called()
+        assert watcher.STATE.last_active_path_seen == now
+        assert watcher.STATE.conn_reboot_retry_after == 0.0
 
 
 # ---------------------------------------------------------------------------

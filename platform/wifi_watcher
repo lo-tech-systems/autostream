@@ -139,7 +139,7 @@ NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
 BOOT_AP_GRACE = 60                      # if still offline after boot grace -> enter AP mode
 BOOT_AP_CUTOFF = 15 * 60                # ONLY allow *automatic* entry into AP mode within this many seconds of boot
 AP_MAX_DURATION = 30 * 60               # AP mode lifetime for configured devices (fixed, not extended by web activity)
-AP_POST_CLOSE_REBOOT_AFTER = 24 * 60 * 60  # if still offline 24h after closing AP -> reboot
+NO_ACTIVE_PATH_REBOOT_AFTER = 12 * 60 * 60  # if no usable non-hotspot path for 12h -> reboot
 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
 GW_DOWN_REBOOT_AFTER = 30 * 60          # gateway unreachable for this long -> reboot
@@ -291,6 +291,7 @@ class NetworkMonitorState:
     ap_enter_time: Optional[float] = None
     ap_closed_time: Optional[float] = None
     ap_exhausted: bool = False
+    last_active_path_seen: Optional[float] = None
 
     # Degradation tracking for "healthy connectivity"
     conn_down_start: Optional[float] = None
@@ -532,9 +533,11 @@ def leave_setup_mode(reason: str = "") -> None:
     with state_lock:
         if not STATE.setup_mode:
             return
+        now = time.monotonic()
         STATE.setup_mode = False
         STATE.ap_enter_time = None
-        STATE.ap_closed_time = time.monotonic()
+        STATE.ap_closed_time = now
+        STATE.last_active_path_seen = now
         STATE.force_setup_mode = False
         STATE.manual_ap_active = False
 
@@ -2138,35 +2141,59 @@ def _clear_reconfigure_state() -> None:
 # ** MAIN NETWORK STATUS MONITORING LOOP **
 
 
-def network_monitor_loop():
+def _sleep_or_finish_monitor_pass(run_once: bool) -> bool:
+    """Sleep between monitor passes, or signal one-pass tests to return."""
+    if run_once:
+        return True
+    time.sleep(NETWORK_MONITOR_INTERVAL)
+    return False
+
+
+def _request_network_down_reboot(now: float, reason: str) -> None:
+    """Request a guarded NetworkDown reboot using the shared in-process throttle."""
+    with state_lock:
+        retry_after = STATE.conn_reboot_retry_after
+    if now >= retry_after:
+        logger.warning("%s; requesting reboot", reason)
+        accepted = reboot_system("NetworkDown")
+        with state_lock:
+            STATE.conn_reboot_retry_after = (
+                float('inf') if accepted
+                else now + REBOOT_RATE_LIMIT_RETRY
+            )
+    elif retry_after == float('inf'):
+        logger.debug("NetworkDown reboot accepted; waiting for system to reboot")
+    else:
+        logger.debug(
+            "NetworkDown reboot suppressed; will retry in %.0fs",
+            retry_after - now,
+        )
+
+
+def network_monitor_loop(run_once: bool = False):
     """Background loop to check network state and enforce the narrative rules.
 
-    Summary of behaviour (ethernet always wins):
-      - If wired ethernet is up: never enter AP mode; if currently in AP mode, exit it
-            (unless the user explicitly requested AP via /request_ap_mode).
+    Summary of behaviour:
+      - If wired ethernet is usable (carrier plus valid IPv4): never enter
+            automatic AP mode; if currently in AP mode, exit it unless the user
+            explicitly requested AP via /request_ap_mode.
       - If WiFi is unconfigured OR still disconnected after BOOT_AP_GRACE seconds:
             enter AP mode within the boot window (BOOT_AP_GRACE..BOOT_AP_CUTOFF).
             Unconfigured devices: AP runs indefinitely (no timeout).
             Configured devices that failed to reconnect: AP runs for AP_MAX_DURATION.
-      - When AP mode closes (configured-device path):
-            periodically attempt reconnect; reboot after AP_POST_CLOSE_REBOOT_AFTER.
-      - If WiFi is configured and ethernet is down:
+      - If WiFi is configured and usable ethernet is down:
             use the kernel's view of the default gateway as a health check.
             If unreachable for > GW_DOWN_RECONNECT_AFTER: periodically attempt reconnect.
             If unreachable for > GW_DOWN_REBOOT_AFTER: reboot.
 
-    Reboot-timer domains (WP4 — keep these distinct; do not swap the post-AP
-    threshold globally, or ordinary post-AP config failures would reboot too
-    aggressively):
-      - The dead-PHY ladder runs before ethernet suppresses the rest of the monitor loop,
-            so it can reset/quarantine a wedged WiFi adapter even while ethernet is
-            connected. But the 30-minute reboot only happens when ethernet is not
-            connected.
-      - Generic gateway-down while NOT in ap_exhausted: the existing 30-minute
-            GW_DOWN_REBOOT_AFTER path below.
-      - Non-dead-PHY post-AP exhausted: the existing 24-hour
-            AP_POST_CLOSE_REBOOT_AFTER backstop (and the dead-PHY backstop when
-            the persistent reboot guard suppresses the 30-minute path).
+    Reboot-timer domains:
+      - Dead-PHY: 30-minute guarded reboot when genuinely offline; resets can
+            still run while ethernet is attached.
+      - Generic WiFi gateway-down: 30-minute guarded reboot for configured WiFi
+            clients, skipped whenever usable ethernet is present.
+      - Global no-active-path catch-all: 12-hour guarded reboot when no usable
+            non-hotspot WiFi or ethernet path has been seen during normal
+            monitoring. Setup/AP mode suspends this timer; leaving AP rebases it.
     """
     logger.info("Starting network monitor loop")
 
@@ -2174,6 +2201,8 @@ def network_monitor_loop():
     with state_lock:
         if STATE.boot_time is None:
             STATE.boot_time = time.monotonic()
+        if STATE.last_active_path_seen is None:
+            STATE.last_active_path_seen = STATE.boot_time
 
     last_avahi_check: float = 0.0
 
@@ -2208,7 +2237,8 @@ def network_monitor_loop():
                 with state_lock:
                     STATE.manual_ap_active = True
                 enter_setup_mode(reason=f"manual_request: {reason or 'UserRequest'}")
-                time.sleep(NETWORK_MONITOR_INTERVAL)
+                if _sleep_or_finish_monitor_pass(run_once):
+                    return
                 continue
             else:
                 with state_lock:
@@ -2230,7 +2260,8 @@ def network_monitor_loop():
             if action:
                 process_control_action(action, params)
                 if action != "set_log_level":
-                    time.sleep(NETWORK_MONITOR_INTERVAL)
+                    if _sleep_or_finish_monitor_pass(run_once):
+                        return
                     continue
 
         # Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4).
@@ -2240,11 +2271,13 @@ def network_monitor_loop():
         if reconfigure_active and reconfigure_started is not None:
             if (now - reconfigure_started) >= AP_MAX_DURATION:
                 handle_reconfigure_timeout()
-                time.sleep(NETWORK_MONITOR_INTERVAL)
+                if _sleep_or_finish_monitor_pass(run_once):
+                    return
                 continue
 
         wifi_cfg = is_wifi_configured()
         wired_connected = is_wired_connected()
+        wired_ok = any_wired_path_healthy()
 
         # --- Multi-adapter discovery and active-client resolution (WP5) ---
         adapters = wifi_net.discover_adapters()
@@ -2259,7 +2292,7 @@ def network_monitor_loop():
         boot_age_now = now - boot_time
         if (boot_age_now < BOOT_AP_GRACE
                 and wifi_cfg
-                and not wired_connected
+                and not wired_ok
                 and not STATE.setup_mode):
             usb_macs_now = {a.permanent_mac for a in wifi_net.usb_candidates(adapters)}
             new_usb = usb_macs_now - _startup_window_usb_tried_macs
@@ -2272,16 +2305,18 @@ def network_monitor_loop():
                         " retrying USB-first connection", sorted(new_usb),
                     )
                     if startup_connect_usb_first():
-                        time.sleep(NETWORK_MONITOR_INTERVAL)
+                        if _sleep_or_finish_monitor_pass(run_once):
+                            return
                         continue
 
         # --- Active-USB failure fallback (immediate/debounced; never gated by
         # playback). Must run BEFORE _set_active_client() so that
         # STATE.active_client_mac still holds the previously recorded USB MAC
         # when the adapter physically disappears from discovery. ---
-        if wifi_cfg and not wired_connected and not STATE.setup_mode:
+        if wifi_cfg and not wired_ok and not STATE.setup_mode:
             if handle_usb_failure_fallback(adapters, active_client):
-                time.sleep(NETWORK_MONITOR_INTERVAL)
+                if _sleep_or_finish_monitor_pass(run_once):
+                    return
                 continue
 
         _set_active_client(active_client)
@@ -2295,12 +2330,14 @@ def network_monitor_loop():
             if wifi_cfg
             else False
         )
-        conn_ok = bool(wired_connected or client_ok)
+        active_path_ok = bool(wired_ok or client_ok)
+        conn_ok = active_path_ok
 
         # --- Optional idle-time USB adoption from a healthy built-in client. ---
         if wifi_cfg and conn_ok and not STATE.setup_mode:
-            if handle_runtime_usb_adoption(adapters, wired_connected):
-                time.sleep(NETWORK_MONITOR_INTERVAL)
+            if handle_runtime_usb_adoption(adapters, wired_ok):
+                if _sleep_or_finish_monitor_pass(run_once):
+                    return
                 continue
 
         # --- Dead-PHY recovery: detect a wedged-but-present client adapter and
@@ -2309,14 +2346,18 @@ def network_monitor_loop():
         # ethernet is attached.  USB resets are not gated on ethernet; the reboot
         # rung inside the orchestrator is still gated on being offline. ---
         if wifi_cfg:
-            if escalate_dead_adapter_recovery(adapters, wired_connected):
-                time.sleep(NETWORK_MONITOR_INTERVAL)
+            if escalate_dead_adapter_recovery(adapters, wired_ok):
+                if _sleep_or_finish_monitor_pass(run_once):
+                    return
                 continue
 
         with state_lock:
             STATE.wifistate = "configured" if wifi_cfg else "unconfigured"
             STATE.wiredstate = "connected" if wired_connected else "disconnected"
             STATE.connectivity_ok = conn_ok
+            if active_path_ok and not STATE.setup_mode:
+                STATE.last_active_path_seen = now
+                STATE.conn_reboot_retry_after = 0.0
             log_on_change("wifistate", STATE.wifistate, f"WiFi state changed -> {STATE.wifistate}")
             log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
             log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
@@ -2328,7 +2369,7 @@ def network_monitor_loop():
         # State is read under the lock; leave_setup_mode is called outside to avoid
         # a deadlock (leave_setup_mode also acquires state_lock, which is not re-entrant).
         with state_lock:
-            ethernet_wins = wired_connected and not STATE.manual_ap_active
+            ethernet_wins = wired_ok and not STATE.manual_ap_active
             in_ap_for_eth = STATE.setup_mode
             if ethernet_wins:
                 STATE.conn_down_start = None
@@ -2337,13 +2378,14 @@ def network_monitor_loop():
         if ethernet_wins:
             if in_ap_for_eth:
                 leave_setup_mode("Wired ethernet is up; suppressing AP mode")
-            time.sleep(NETWORK_MONITOR_INTERVAL)
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
             continue
 
         with state_lock:
-            if wired_connected and STATE.manual_ap_active:
+            if wired_ok and STATE.manual_ap_active:
                 # User explicitly requested AP mode; do not auto-suppress it just because
-                # ethernet happens to be connected.
+                # ethernet happens to be usable.
                 STATE.conn_down_start = None
                 STATE.last_reconnect_attempt = None
 
@@ -2386,7 +2428,8 @@ def network_monitor_loop():
                     STATE.ap_closed_time = now
                     STATE.manual_ap_active = False
                 leave_setup_mode(f"AP mode lifetime expired after {ap_age:.0f}s (configured device)")
-            time.sleep(NETWORK_MONITOR_INTERVAL)
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
             continue
 
         # Decide whether we should enter AP mode during the boot window.
@@ -2430,66 +2473,13 @@ def network_monitor_loop():
                 enter_setup_mode(
                     reason=f"boot_age={boot_age:.0f}s, wifi_cfg={wifi_cfg}, wifi_connected={wifi_connected}, client_ok={client_ok}"
                 )
-                time.sleep(NETWORK_MONITOR_INTERVAL)
+                if _sleep_or_finish_monitor_pass(run_once):
+                    return
                 continue
 
-        # If AP mode has closed and we're still offline, periodically try to connect,
-        # and reboot after AP_POST_CLOSE_REBOOT_AFTER.  This 24h threshold is the
-        # NON-dead-PHY backstop only (WP4): a wedged, present, offline adapter is
-        # already handled by the 30-minute dead-PHY ladder above, which runs every
-        # pass regardless of ap_exhausted.  This block also serves as the dead-PHY
-        # backstop when the persistent dead-PHY reboot guard suppresses the
-        # 30-minute path.
-        with state_lock:
-            ap_exhausted = STATE.ap_exhausted
-            ap_closed_time = STATE.ap_closed_time
-            last_attempt = STATE.last_reconnect_attempt
-
-        if ap_exhausted and wifi_cfg and (not wifi_connected):
-            # Ensure we have a close time
-            if ap_closed_time is None:
-                with state_lock:
-                    if STATE.ap_closed_time is None:
-                        STATE.ap_closed_time = now
-                    ap_closed_time = STATE.ap_closed_time
-
-            offline_for = now - (ap_closed_time or now)
-
-            # Periodic reconnect attempts.
-            if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
-                with state_lock:
-                    STATE.last_reconnect_attempt = now
-                logger.info("Post-AP reconnect attempt (offline_for=%.0fs)", offline_for)
-                startup_connect_usb_first()
-
-            if offline_for >= AP_POST_CLOSE_REBOOT_AFTER:
-                with state_lock:
-                    retry_after = STATE.conn_reboot_retry_after
-                if now >= retry_after:
-                    logger.warning(
-                        "Still offline %.0fs after AP mode closed (threshold %ss); requesting reboot",
-                        offline_for, AP_POST_CLOSE_REBOOT_AFTER,
-                    )
-                    accepted = reboot_system("NetworkDown")
-                    with state_lock:
-                        STATE.conn_reboot_retry_after = (
-                            float('inf') if accepted
-                            else now + REBOOT_RATE_LIMIT_RETRY
-                        )
-                elif retry_after == float('inf'):
-                    logger.debug("NetworkDown reboot accepted; waiting for system to reboot")
-                else:
-                    logger.debug(
-                        "NetworkDown reboot suppressed; will retry in %.0fs",
-                        retry_after - now,
-                    )
-
-            time.sleep(NETWORK_MONITOR_INTERVAL)
-            continue
-
-        # Connection reliability monitoring: WiFi configured, ethernet down.
+        # Connection reliability monitoring: WiFi configured, usable ethernet down.
         # Use the same "local IPv4 readiness" health indicator (conn_ok) as used elsewhere.
-        if wifi_cfg:
+        if wifi_cfg and not wired_ok:
             with state_lock:
                 down_start = STATE.conn_down_start
                 last_attempt = STATE.last_reconnect_attempt
@@ -2539,14 +2529,23 @@ def network_monitor_loop():
                     STATE.conn_down_start = None
                     STATE.last_reconnect_attempt = None
                     STATE.conn_reboot_retry_after = 0.0
-                    # Reset the post-AP reboot timer so that any future disconnection
-                    # starts a fresh 24-hour window.  Without this, offline_for in the
-                    # post-AP-close block would be measured from the original boot-era
-                    # AP close time and could trigger an immediate reboot on a device
-                    # that has been running healthily for more than 24 hours.
                     STATE.ap_closed_time = None
 
-        time.sleep(NETWORK_MONITOR_INTERVAL)
+        with state_lock:
+            in_setup = STATE.setup_mode
+            last_active_path_seen = STATE.last_active_path_seen
+
+        if not in_setup and last_active_path_seen is not None:
+            no_active_for = now - last_active_path_seen
+            if no_active_for >= NO_ACTIVE_PATH_REBOOT_AFTER:
+                _request_network_down_reboot(
+                    now,
+                    "No usable network path for %.0fs (threshold %ss)"
+                    % (no_active_for, NO_ACTIVE_PATH_REBOOT_AFTER),
+                )
+
+        if _sleep_or_finish_monitor_pass(run_once):
+            return
 
 def connect_to_configured_wifi() -> bool:
     """Attempt to bring up the configured WiFi client connection on the built-in.

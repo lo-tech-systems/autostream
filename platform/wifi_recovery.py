@@ -419,7 +419,7 @@ def _maybe_request_dead_phy_reboot(w, target: TargetAdapter, now: float) -> bool
 
     Returns True only when a reboot was accepted (owns the pass).  When the
     persistent guard or in-process rate limit suppresses the reboot, returns
-    False so the existing post-AP 24h backstop remains in effect.
+    False so the monitor loop's no-active-path catch-all can still apply.
     """
     with w.state_lock:
         first_failure = w.STATE.dead_adapter_first_failure
@@ -433,7 +433,7 @@ def _maybe_request_dead_phy_reboot(w, target: TargetAdapter, now: float) -> bool
     if not dead_phy_reboot_guard_permits(w, now_wall):
         w.logger.warning(
             "Persistent dead-PHY reboot guard suppresses reboot for %s; "
-            "leaving 24h backstop in effect", target.ifname,
+            "leaving no-active-path catch-all in effect", target.ifname,
         )
         return False
 
