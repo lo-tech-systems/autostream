@@ -1086,20 +1086,12 @@ def start_webui_background(
                 start_appliance_scanner,
             )
             from autostream_webui_common import _config_snapshot, get_app_version
-            from autostream_webui_api import apply_mdns_grace_period
+            from autostream_webui_api import apply_mdns_grace_period_startup
 
             from autostream_core import stop_flag as _stop_flag
             start_dial_scanner(shutdown_event=_stop_flag)
             start_appliance_scanner(shutdown_event=_stop_flag)
-            try:
-                cfg = _config_snapshot(STATE)
-                ok, _, err = apply_mdns_grace_period(
-                    STATE, cfg.general.mdns_grace_period_seconds
-                )
-                if not ok:
-                    logging.debug("startup mdns grace push: %s", err)
-            except Exception:
-                logging.debug("startup mdns grace push: error", exc_info=True)
+            apply_mdns_grace_period_startup(STATE)
 
             scanner_thread = threading.Thread(
                 target=_scan_monitor_devices_loop, daemon=True,

@@ -210,15 +210,20 @@ class TestStartWebuiBackground:
             patch("autostream_appliances.start_appliance_scanner"),
             patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
             patch("autostream_webui._scan_monitor_devices_loop"),
-            patch("autostream_webui_api.apply_mdns_grace_period") as m_apply,
+            # The OwnTone push happens on a background daemon thread; stub it so
+            # the test asserts only the synchronous browser configuration.
+            patch("autostream_webui_api._push_owntone_native_setting",
+                  return_value=(True, False, "")),
+            patch("autostream_appliances.set_grace_period") as m_set,
         ):
             sf.is_set.return_value = True
             _wm.STATE = None
             t = start_webui_background(str(cfg), settings=store)
             t.join(timeout=2.0)
 
-        m_apply.assert_called_once()
-        assert m_apply.call_args[0][1] == 240
+        # Startup configures the in-process browser synchronously with the
+        # persisted value (240s), independent of the OwnTone backend.
+        m_set.assert_called_once_with(240)
         store.close(save=False)
 
 

@@ -1850,7 +1850,12 @@ def _push_owntone_native_setting(
 
 
 def apply_mdns_grace_period(state: WebUIState, seconds: int) -> tuple[bool, bool, str]:
-    """Push configured mDNS grace to appliance discovery and OwnTone Mini."""
+    """Push configured mDNS grace to appliance discovery and OwnTone Mini.
+
+    Synchronous: configures the in-process appliance browser and then contacts
+    the OwnTone backend, returning its result. Used by the interactive settings
+    handler, which reports success/restart back to the caller.
+    """
     from autostream_appliances import set_grace_period
     from autostream_players import SETTING_DEVICE_REMOVAL_GRACE_PERIOD
 
@@ -1858,6 +1863,41 @@ def apply_mdns_grace_period(state: WebUIState, seconds: int) -> tuple[bool, bool
     return _push_owntone_native_setting(
         state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, seconds
     )
+
+
+def apply_mdns_grace_period_startup(state: WebUIState) -> None:
+    """Apply the configured mDNS grace at startup without blocking boot.
+
+    Configures the in-process appliance browser synchronously (cheap, always
+    safe, and all a dial needs), then pushes the value to the OwnTone backend on
+    a background daemon thread. Backgrounding keeps a slow or absent backend
+    (e.g. dial mode with no OwnTone) from delaying startup, and isolates the
+    network call from the startup thread.
+    """
+    try:
+        cfg = _config_snapshot(state)
+        seconds = int(cfg.general.mdns_grace_period_seconds)
+    except Exception:
+        logging.debug("startup mdns grace: config unavailable", exc_info=True)
+        return
+
+    from autostream_appliances import set_grace_period
+    set_grace_period(seconds)
+
+    def _push_to_owntone() -> None:
+        try:
+            from autostream_players import SETTING_DEVICE_REMOVAL_GRACE_PERIOD
+            ok, _restart, err = _push_owntone_native_setting(
+                state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, seconds
+            )
+            if not ok:
+                logging.debug("startup mdns grace owntone push failed: %s", err)
+        except Exception:
+            logging.debug("startup mdns grace owntone push error", exc_info=True)
+
+    threading.Thread(
+        target=_push_to_owntone, daemon=True, name="mdns-grace-startup",
+    ).start()
 
 
 def send_owntone_uncompressed_json(handler, state: WebUIState, body: str) -> None:

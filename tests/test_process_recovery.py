@@ -153,6 +153,7 @@ class TestWebuiBackgroundReturnsThread:
              patch("autostream_webui.AUTH", MagicMock()), \
              patch("autostream_webui.ThreadingHTTPServer") as mock_server, \
              patch("autostream_dials.start_dial_scanner"), \
+             patch("autostream_webui_api.apply_mdns_grace_period_startup"), \
              patch("autostream_webui._scan_monitor_devices_loop"):
             # make the HTTP server block briefly then return
             instance = MagicMock()
@@ -247,6 +248,7 @@ class TestScannerWrappers:
                    side_effect=capture_dial_scanner), \
              patch("autostream_appliances.start_appliance_scanner",
                    side_effect=capture_appliance_scanner), \
+             patch("autostream_webui_api.apply_mdns_grace_period_startup"), \
              patch("autostream_webui._scan_monitor_devices_loop"):
             instance = MagicMock()
             mock_server.return_value = instance
