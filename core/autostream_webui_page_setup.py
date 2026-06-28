@@ -2357,20 +2357,27 @@ def send_setup_page(
           try {{
             var pinResult;
             if (mode === 'unlock') {{
-              // Verify PIN via no-op configure call — dial accepts current_pin without change fields
-              pinResult = await _dialPost('/api/dial/configure', {{uuid: uuid, current_pin: currentPin}});
+              // Verify PIN by saving the current config values — same payload as dialSaveConfig.
+              // The dial validates the PIN against a real request; values are unchanged.
+              var verifyBody = {{uuid: uuid, current_pin: currentPin}};
+              var nameEl2 = card.querySelector('.dial-name');
+              var stepEl2 = card.querySelector('.dial-step');
+              var autoEl2 = card.querySelector('.dial-autoupdate');
+              var chanEl2 = card.querySelector('.dial-channel');
+              if (nameEl2) verifyBody.name = nameEl2.value.trim();
+              if (stepEl2) {{
+                var step2 = parseInt(stepEl2.value, 10);
+                if (Number.isInteger(step2)) verifyBody.step_percent = step2;
+              }}
+              if (autoEl2) verifyBody.auto_update = autoEl2.checked;
+              if (chanEl2) verifyBody.update_channel = chanEl2.checked ? 'dev' : 'stable';
+              pinResult = await _dialPost('/api/dial/configure', verifyBody);
               if (pinResult.ok) {{
                 _dialUnlockSection(card, currentPin);
                 _closeDialPinModal();
-              }} else if (pinResult.error === 'wrong_pin' || pinResult.error === 'too_many_attempts'
-                          || pinResult.error === 'dial_offline' || pinResult.error === 'dial_unreachable'
-                          || pinResult.error === 'dial_timeout') {{
+              }} else {{
                 errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
                 okBtn.disabled = false;
-              }} else {{
-                // Unexpected error (e.g. dial doesn't accept no-op) — unlock optimistically
-                _dialUnlockSection(card, currentPin);
-                _closeDialPinModal();
               }}
             }} else {{
               var confirmInputEl = document.getElementById('dialPinModalConfirmInput');
