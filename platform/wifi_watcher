@@ -419,28 +419,34 @@ _control_token: str = ""
 # AP / host configuration.
 # AP_IFNAME remains the compatibility default for interface-aware helper calls;
 # hotspot operations resolve the adapter dynamically via resolve_hotspot_adapter():
-# built-in radio when present, sole USB adapter on hardware without a built-in
-# (e.g. Pi 2).
+# built-in radio when present, otherwise a USB adapter that is not the active
+# client when possible (e.g. Pi 2 / multi-USB recovery hardware).
 AP_IFNAME = "wlan0"
 AP_CONNECTION_NAME = "Hotspot"  # default/fixed name for our AP connection
 
 
-def resolve_hotspot_adapter(adapters: list) -> Optional[object]:
+def resolve_hotspot_adapter(adapters: list, active_ifname: Optional[str] = None) -> Optional[object]:
     """Return the adapter that should host the setup hotspot, or None.
 
     Prefers the built-in radio so USB removal never eliminates the recovery
-    path on hardware that has one.  On hardware without a built-in radio
-    (e.g. Pi 2), falls back to the sole managed USB adapter when exactly one
-    is present.  Returns None when no suitable adapter can be identified;
-    callers must abort AP startup rather than selecting an arbitrary interface.
-    With multiple USB adapters and no built-in, returns None — there is no
-    principled basis for choosing one silently.
+    path on hardware that has one. On hardware without a built-in radio
+    (e.g. Pi 2), falls back to USB: the sole managed USB adapter, or with
+    multiple USB adapters the first deterministic candidate that is not the
+    active client. Returns None when no adapter is present.
     """
+    if active_ifname is None:
+        with state_lock:
+            active_ifname = STATE.active_client_ifname
     builtin = wifi_net.resolve_builtin(adapters)
     if builtin is not None:
         return builtin
     usb = wifi_net.usb_candidates(adapters)
     if len(usb) == 1:
+        return usb[0]
+    if usb:
+        for adapter in usb:
+            if adapter.ifname != active_ifname:
+                return adapter
         return usb[0]
     return None
 
@@ -815,6 +821,39 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     return True
 
 
+def attempt_on_targets(targets: list, attempt_fn) -> bool:
+    """Try client activation on target adapters with per-target AP handling."""
+    hotspot_adapter = resolve_hotspot_adapter(wifi_net.discover_adapters())
+    for target in targets:
+        with state_lock:
+            in_setup_now = STATE.setup_mode
+        is_hotspot_target = hotspot_adapter is not None and target.ifname == hotspot_adapter.ifname
+        ap_stopped_for_hotspot = False
+        if in_setup_now and is_hotspot_target:
+            stop_ap_mode()
+            ap_stopped_for_hotspot = True
+
+        if attempt_fn(target):
+            _set_active_client(target)
+            _clear_reconfigure_state()
+            leave_setup_mode("WiFi client connection succeeded")
+            verify_avahi_after_handover()
+            return True
+
+        if ap_stopped_for_hotspot:
+            logger.warning(
+                "Client attempt on hotspot adapter (%s) failed after AP teardown; recreating hotspot",
+                target.ifname,
+            )
+            with state_lock:
+                STATE.setup_mode = True
+                STATE.ap_enter_time = time.monotonic()
+            start_ap_mode()
+            update_apmode_flag(True)
+
+    return False
+
+
 def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
     """Apply submitted credentials using the rollback-safe candidate sequence.
 
@@ -833,10 +872,10 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
         logger.warning("No usable Wi-Fi adapter to apply credentials for '%s'", ssid)
         return False
 
-    for target in order:
-        if _try_candidate_on_adapter(ssid, password, target):
-            return True
-    return False
+    return attempt_on_targets(
+        order,
+        lambda target: _try_candidate_on_adapter(ssid, password, target),
+    )
 
 
 def wait_for_connection(ifname: str = AP_IFNAME, timeout: int = 20, interval: int = 2) -> bool:
@@ -1025,7 +1064,6 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
         logger.info("Async apply starting for SSID '%s'", ssid)
 
         time.sleep(0.5)
-        leave_setup_mode("Applying WiFi configuration")
 
         # The candidate transaction already validates local IPv4 and the
         # interface-specific gateway on the chosen adapter before committing,
@@ -2015,45 +2053,18 @@ def reconnect_saved_network() -> bool:
     if committed_uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(committed_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
 
-    hotspot_adapter = resolve_hotspot_adapter(wifi_net.discover_adapters())
-    for target in targets:
-        # When the target adapter is currently hosting the hotspot, one radio
-        # cannot do both; stop the AP first and recreate it if this attempt
-        # fails.  This applies to the built-in on normal hardware and to the
-        # sole USB adapter on hardware without a built-in (e.g. Pi 2).
-        with state_lock:
-            in_setup_now = STATE.setup_mode
-        is_hotspot_target = hotspot_adapter is not None and target.ifname == hotspot_adapter.ifname
-        ap_stopped_for_hotspot = False
-        if in_setup_now and is_hotspot_target:
-            stop_ap_mode()
-            ap_stopped_for_hotspot = True
-
+    def _attempt(target) -> bool:
         run_cmd(wifi_net.activate_connection_cmd(
             committed_uuid, committed.connection_name, target.ifname))
         if wait_for_connection(target.ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
                                interval=WAIT_FOR_CONNECTION_INTERVAL) \
                 and is_wifi_client_healthy(target.ifname):
-            _set_active_client(target)
-            _clear_reconfigure_state()
-            leave_setup_mode("reconnect_saved succeeded")
-            verify_avahi_after_handover()
             logger.info("Reconnected to saved network on %s", target.ifname)
             return True
+        return False
 
-        if ap_stopped_for_hotspot:
-            # Client attempt failed after the hotspot was torn down; restore
-            # it so the appliance is not left unreachable.
-            logger.warning(
-                "Reconnect on hotspot adapter (%s) failed after AP teardown; recreating hotspot",
-                target.ifname,
-            )
-            with state_lock:
-                STATE.setup_mode = True
-                STATE.ap_enter_time = time.monotonic()
-            start_ap_mode()
-            update_apmode_flag(True)
-            # Continue to try remaining targets that don't share the hotspot radio.
+    if attempt_on_targets(targets, _attempt):
+        return True
 
     logger.warning("Reconnect to saved network failed; retaining hotspot")
     return False

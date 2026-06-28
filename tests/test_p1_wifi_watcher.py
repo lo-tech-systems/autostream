@@ -925,15 +925,23 @@ class TestRecoveryAdapter:
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
             assert watcher.resolve_recovery_ifname() == "wlan1"
 
-    def test_recovery_none_when_multiple_usb_no_builtin(self, watcher):
-        """With multiple USB adapters and no built-in, the selection is
-        ambiguous — None is returned so AP startup is aborted."""
+    def test_recovery_uses_non_active_usb_when_multiple_usb_no_builtin(self, watcher):
+        """With multiple USB adapters and no built-in, avoid the active client."""
         adapters = [
             self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
             self._adapter("wlan2", "aa:bb:cc:00:00:03", is_usb=True),
         ]
+        watcher.STATE.active_client_ifname = "wlan1"
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
-            assert watcher.resolve_recovery_ifname() is None
+            assert watcher.resolve_recovery_ifname() == "wlan2"
+
+    def test_recovery_uses_first_usb_when_multiple_usb_none_active(self, watcher):
+        adapters = [
+            self._adapter("wlan2", "aa:bb:cc:00:00:03", is_usb=True),
+            self._adapter("wlan1", "aa:bb:cc:00:00:02", is_usb=True),
+        ]
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters):
+            assert watcher.resolve_recovery_ifname() == "wlan1"
 
     def test_recovery_none_when_no_adapters(self, watcher):
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]):
@@ -1369,6 +1377,80 @@ class TestReconnectSavedNetwork:
         assert modify_before_up < up_call, (
             "cross-adapter restrictions must be cleared BEFORE activation"
         )
+
+
+class TestAttemptOnTargets:
+    def test_non_hotspot_target_keeps_ap_up_and_success_leaves_setup(self, watcher):
+        hotspot = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        target = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+        watcher.STATE.setup_mode = True
+
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[hotspot, target]), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=hotspot), \
+             patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            ok = watcher.attempt_on_targets([target], lambda adapter: adapter.ifname == "wlan1")
+
+        assert ok is True
+        stop_ap.assert_not_called()
+        start_ap.assert_not_called()
+        leave.assert_called_once()
+        assert watcher.STATE.active_client_ifname == "wlan1"
+
+    def test_hotspot_target_failure_rebuilds_ap(self, watcher):
+        hotspot = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.setup_mode = True
+
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[hotspot]), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=hotspot), \
+             patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "update_apmode_flag") as apflag, \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            ok = watcher.attempt_on_targets([hotspot], lambda adapter: False)
+
+        assert ok is False
+        stop_ap.assert_called_once()
+        start_ap.assert_called_once()
+        apflag.assert_called_once_with(True)
+        leave.assert_not_called()
+        assert watcher.STATE.setup_mode is True
+        assert watcher.STATE.ap_enter_time is not None
+
+    def test_single_radio_failure_stops_tests_and_rebuilds_ap(self, watcher):
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+        watcher.STATE.setup_mode = True
+
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=usb), \
+             patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "update_apmode_flag") as apflag:
+            ok = watcher.attempt_on_targets([usb], lambda adapter: False)
+
+        assert ok is False
+        stop_ap.assert_called_once()
+        start_ap.assert_called_once()
+        apflag.assert_called_once_with(True)
+
+
+class TestApplyWifiAsync:
+    def test_total_failure_retains_setup_mode_and_does_not_leave_first(self, watcher):
+        watcher.STATE.setup_mode = True
+        watcher.STATE.apply_in_progress = True
+        with patch("time.sleep"), \
+             patch.object(watcher, "configure_wifi_with_nmcli", return_value=False), \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            watcher.apply_wifi_async("Home", "bad-password")
+
+        leave.assert_not_called()
+        enter.assert_called_once()
+        assert watcher.STATE.last_apply_result == "failed"
+        assert watcher.STATE.force_setup_mode is True
+        assert watcher.STATE.apply_in_progress is False
 
 
 class TestReconfigureTimeout:
