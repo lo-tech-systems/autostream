@@ -385,6 +385,23 @@ class TestWiredPathHealth:
             assert watcher.is_wired_path_healthy("eth0") is True
             assert watcher.any_wired_path_healthy() is True
 
+    def test_first_healthy_wired_ifname_returns_carrier_with_ipv4(self, watcher):
+        def has_ipv4(ifname):
+            return ifname == "enp1s0"
+
+        with patch.object(watcher, "wired_carrier_ifnames", return_value=["eth0", "enp1s0"]), \
+             patch.object(watcher.wifi_net, "interface_has_usable_ipv4", side_effect=has_ipv4):
+            assert watcher.first_healthy_wired_ifname() == "enp1s0"
+
+    def test_first_healthy_wired_ifname_none_without_usable_ipv4(self, watcher):
+        with patch.object(watcher, "wired_carrier_ifnames", return_value=["eth0"]), \
+             patch.object(watcher.wifi_net, "interface_has_usable_ipv4", return_value=False):
+            assert watcher.first_healthy_wired_ifname() is None
+
+    def test_first_healthy_wired_ifname_none_without_carrier(self, watcher):
+        with patch.object(watcher, "wired_carrier_ifnames", return_value=[]):
+            assert watcher.first_healthy_wired_ifname() is None
+
 
 class TestIsGatewayReachable:
     """Interface-specific gateway reachability (WP2).
@@ -2467,8 +2484,11 @@ def _run_monitor_once(
     wired_ok: bool = False,
     wifi_connected: bool = False,
     client_ok: bool = False,
+    adapters: list | None = None,
+    active_client=None,
 ):
     """Run one monitor pass with external facts patched to deterministic values."""
+    adapters = adapters if adapters is not None else []
     with ExitStack() as stack:
         stack.enter_context(patch("time.monotonic", return_value=now))
         stack.enter_context(patch.object(watcher, "check_and_repair_avahi_hostname"))
@@ -2477,9 +2497,9 @@ def _run_monitor_once(
         stack.enter_context(patch.object(watcher, "is_wifi_configured", return_value=wifi_cfg))
         stack.enter_context(patch.object(watcher, "is_wired_connected", return_value=wired_connected))
         stack.enter_context(patch.object(watcher, "any_wired_path_healthy", return_value=wired_ok))
-        stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", return_value=[]))
+        stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters))
         stack.enter_context(patch.object(watcher, "update_known_adapters"))
-        stack.enter_context(patch.object(watcher, "resolve_active_client", return_value=None))
+        stack.enter_context(patch.object(watcher, "resolve_active_client", return_value=active_client))
         stack.enter_context(patch.object(watcher, "handle_usb_failure_fallback", return_value=False))
         stack.enter_context(patch.object(watcher.wifi_net, "is_wifi_connected", return_value=wifi_connected))
         stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=client_ok))
@@ -2488,8 +2508,9 @@ def _run_monitor_once(
         stack.enter_context(patch.object(watcher, "publish_network_status"))
         stack.enter_context(patch.object(watcher, "log_on_change"))
         stack.enter_context(patch.object(watcher, "startup_connect_usb_first", return_value=False))
-        stack.enter_context(patch.object(watcher, "connect_to_configured_wifi"))
+        connect = stack.enter_context(patch.object(watcher, "connect_to_configured_wifi"))
         watcher.network_monitor_loop(run_once=True)
+        return connect
 
 
 class TestAvahiHandoverReannounce:
@@ -2687,6 +2708,87 @@ class TestNetworkMonitorCatchAll:
         reboot.assert_not_called()
         assert watcher.STATE.last_active_path_seen == now
         assert watcher.STATE.conn_reboot_retry_after == 0.0
+
+
+class TestEthernetWinsWifiDisconnectPolicy:
+    def _run_with_active_wifi(self, watcher, *, same_l3=True, playing=False, setup=False):
+        now = 1000.0
+        wifi = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+        watcher.STATE.setup_mode = setup
+        with patch.object(watcher, "first_healthy_wired_ifname", return_value="eth0"), \
+             patch.object(watcher.wifi_net, "same_l3_segment", return_value=same_l3), \
+             patch.object(watcher, "query_playing_status", return_value=playing), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as run:
+            _run_monitor_once(
+                watcher,
+                now=now,
+                wifi_cfg=True,
+                wired_connected=True,
+                wired_ok=True,
+                wifi_connected=True,
+                client_ok=True,
+                adapters=[wifi],
+                active_client=wifi,
+            )
+        return run
+
+    def test_same_subnet_idle_disconnects_wifi_once_and_sets_flag(self, watcher):
+        run = self._run_with_active_wifi(watcher, same_l3=True, playing=False)
+
+        run.assert_called_once_with(["nmcli", "device", "disconnect", "wlan1"])
+        assert watcher.STATE.active_client_ifname == ""
+        assert watcher.STATE.active_client_mac == ""
+        assert watcher.STATE.policy_disconnected_wifi is True
+
+    def test_playback_active_does_not_disconnect(self, watcher):
+        run = self._run_with_active_wifi(watcher, same_l3=True, playing=True)
+
+        run.assert_not_called()
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        assert watcher.STATE.policy_disconnected_wifi is False
+
+    def test_playback_uncertain_does_not_disconnect(self, watcher):
+        run = self._run_with_active_wifi(watcher, same_l3=True, playing=None)
+
+        run.assert_not_called()
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        assert watcher.STATE.policy_disconnected_wifi is False
+
+    def test_different_l3_segment_does_not_disconnect(self, watcher):
+        run = self._run_with_active_wifi(watcher, same_l3=False, playing=False)
+
+        run.assert_not_called()
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        assert watcher.STATE.policy_disconnected_wifi is False
+
+    def test_apply_in_progress_skips_disconnect(self, watcher):
+        watcher.STATE.apply_in_progress = True
+        run = self._run_with_active_wifi(watcher, same_l3=True, playing=False)
+
+        run.assert_not_called()
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        assert watcher.STATE.policy_disconnected_wifi is False
+
+    def test_setup_mode_skips_disconnect(self, watcher):
+        with patch.object(watcher, "leave_setup_mode"):
+            run = self._run_with_active_wifi(watcher, same_l3=True, playing=False, setup=True)
+
+        run.assert_not_called()
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        assert watcher.STATE.policy_disconnected_wifi is False
+
+    def test_ethernet_loss_reconnects_policy_disconnected_wifi_once(self, watcher):
+        watcher.STATE.policy_disconnected_wifi = True
+        connect = _run_monitor_once(
+            watcher,
+            now=1000.0,
+            wifi_cfg=True,
+            wired_connected=False,
+            wired_ok=False,
+        )
+
+        connect.assert_called_once()
+        assert watcher.STATE.policy_disconnected_wifi is False
 
 
 # ---------------------------------------------------------------------------

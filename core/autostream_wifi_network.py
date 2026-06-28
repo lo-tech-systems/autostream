@@ -1329,16 +1329,13 @@ def list_interface_addresses(ifname: Optional[str] = None) -> dict:
     return out
 
 
-def default_gateway_ipv4(ifname: str) -> str:
-    """Return the IPv4 default-route gateway for *ifname*, or "".
-
-    Fact helper for the status snapshot; reachability classification stays in
-    the watcher's existing route/neighbour logic (is_gateway_reachable).
-    """
+def _default_gateways_ipv4(ifname: str) -> list[str]:
+    """Return valid IPv4 default-route gateways for *ifname*."""
     try:
         routes = _run_ip_json(["route", "show", "default"])
     except Exception:
-        return ""
+        return []
+    gateways: list[str] = []
     for r in routes:
         if r.get("dev") == ifname and r.get("gateway"):
             gw = r.get("gateway")
@@ -1347,5 +1344,51 @@ def default_gateway_ipv4(ifname: str) -> str:
             except ValueError:
                 continue
             if isinstance(ip, ipaddress.IPv4Address):
-                return gw
-    return ""
+                gateways.append(gw)
+    return gateways
+
+
+def default_gateway_ipv4(ifname: str) -> str:
+    """Return the IPv4 default-route gateway for *ifname*, or "".
+
+    Fact helper for the status snapshot; reachability classification stays in
+    the watcher's existing route/neighbour logic (is_gateway_reachable).
+    """
+    gateways = _default_gateways_ipv4(ifname)
+    return gateways[0] if gateways else ""
+
+
+def _single_usable_ipv4_interface(ifname: str) -> Optional[ipaddress.IPv4Interface]:
+    usable: list[ipaddress.IPv4Interface] = []
+    for addr in list_interface_addresses(ifname).get(ifname, []):
+        if addr.get("family") != "ipv4":
+            continue
+        address = addr.get("address", "")
+        prefixlen = addr.get("prefixlen")
+        if not is_usable_unicast_ipv4(address):
+            continue
+        try:
+            iface = ipaddress.ip_interface(f"{address}/{prefixlen}")
+        except ValueError:
+            return None
+        if not isinstance(iface, ipaddress.IPv4Interface):
+            continue
+        usable.append(iface)
+    return usable[0] if len(usable) == 1 else None
+
+
+def same_l3_segment(if_a: str, if_b: str) -> bool:
+    """True only when two interfaces unambiguously share one IPv4 L3 segment."""
+    addr_a = _single_usable_ipv4_interface(if_a)
+    addr_b = _single_usable_ipv4_interface(if_b)
+    if addr_a is None or addr_b is None:
+        return False
+
+    gateways_a = _default_gateways_ipv4(if_a)
+    gateways_b = _default_gateways_ipv4(if_b)
+    if len(gateways_a) != 1 or len(gateways_b) != 1:
+        return False
+    if gateways_a[0] != gateways_b[0]:
+        return False
+
+    return addr_a.network == addr_b.network

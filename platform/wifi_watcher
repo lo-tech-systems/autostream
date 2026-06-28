@@ -343,6 +343,7 @@ class NetworkMonitorState:
     using_builtin_fallback: bool = False
     active_client_ifname: str = ""
     active_client_mac: str = ""
+    policy_disconnected_wifi: bool = False
     pending_usb_adoption_mac: Optional[str] = None
     pending_usb_adoption_checks: int = 0
     usb_adoption_retry_after: float = 0.0
@@ -656,7 +657,7 @@ def wired_carrier_ifnames(sys_root: str = "/sys/class/net") -> list[str]:
                 # Interface disappeared or permissions issue; ignore
                 continue
 
-    return found
+    return sorted(found)
 
 
 def is_wired_connected() -> bool:
@@ -672,6 +673,14 @@ def is_wired_path_healthy(ifname: str) -> bool:
 def any_wired_path_healthy() -> bool:
     """True when any wired ethernet interface is a usable local network path."""
     return any(wifi_net.interface_has_usable_ipv4(ifname) for ifname in wired_carrier_ifnames())
+
+
+def first_healthy_wired_ifname() -> Optional[str]:
+    """Return the first wired carrier interface with usable IPv4, or None."""
+    for ifname in wired_carrier_ifnames():
+        if wifi_net.interface_has_usable_ipv4(ifname):
+            return ifname
+    return None
 
 
 # Interface-aware health/routing primitives live in the helper.  These names
@@ -2341,6 +2350,34 @@ def network_monitor_loop(run_once: bool = False):
         if ethernet_wins:
             if in_ap_for_eth:
                 leave_setup_mode("Wired ethernet is up; suppressing AP mode")
+            with state_lock:
+                active_wifi_ifname = STATE.active_client_ifname
+                skip_policy_disconnect = (
+                    STATE.apply_in_progress or STATE.setup_mode or in_ap_for_eth
+                )
+            if active_wifi_ifname and not skip_policy_disconnect:
+                winning_eth = first_healthy_wired_ifname()
+                if winning_eth and wifi_net.same_l3_segment(active_wifi_ifname, winning_eth):
+                    playing = query_playing_status()
+                    if playing is False:
+                        logger.info(
+                            "Ethernet %s is on the same L3 segment as WiFi %s; disconnecting idle WiFi",
+                            winning_eth, active_wifi_ifname,
+                        )
+                        run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname])
+                        _set_active_client(None)
+                        with state_lock:
+                            STATE.policy_disconnected_wifi = True
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+
+        with state_lock:
+            reconnect_policy_wifi = STATE.policy_disconnected_wifi and not wired_ok
+            if reconnect_policy_wifi:
+                STATE.policy_disconnected_wifi = False
+        if reconnect_policy_wifi:
+            connect_to_configured_wifi()
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
