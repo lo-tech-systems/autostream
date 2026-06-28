@@ -364,10 +364,16 @@ If your Wi-Fi name or password changes, the device may no longer be able to conn
 * Starts if Wi-Fi is **unconfigured** or still **offline after ~60 seconds** after boot
 * Stays active **indefinitely** for unconfigured devices; runs for **up to 30 minutes** for previously-configured devices
 * Is **suppressed if wired Ethernet is usable** (carrier plus a valid non-link-local IPv4 address). Carrier-only Ethernet is reported as a fact but does not suppress setup mode.
+* If an entered Wi-Fi key is wrong during reconfiguration, the hotspot stays reachable so you can retry without reconnecting to a newly restarted hotspot.
 * Uses an SSID derived from the Wi-Fi MAC address:
   * `autostream_XXXX` (last 4 hex digits), or fallback `autostream_SETUP`
 * Uses a local AP IP of:
   * `192.168.4.1/24`
+
+When wired Ethernet is plugged into the same subnet as the active Wi-Fi connection,
+**autostream** disconnects Wi-Fi once playback is idle. This leaves one primary IP
+address and one mDNS address. If Ethernet is unplugged later, the saved Wi-Fi
+profile is reconnected promptly.
 
 #### Recovery steps (re-provision Wi-Fi)
 

@@ -31,11 +31,20 @@ AP mode is suppressed. A carrier-only cable is reported as a fact but does not c
 path. If the user explicitly requested AP mode via the /request_ap_mode endpoint, ethernet does
 not close that manual AP session.
 
+On hardware without a built-in radio, the setup hotspot uses a managed USB adapter. With multiple
+USB adapters, it prefers a USB adapter that is not the active WiFi client so a second radio can keep
+the setup hotspot reachable during credential retries.
+
 == Connection Reliability ==
 
 If the WiFi is configured and usable wired ethernet is down, the script monitors the network
 health by monitoring the kernel's view of the default gateway. If this goes offline for more
 than 5 minutes, the script trys to reconnect to the network periodically.
+
+When usable ethernet wins and is on the same IPv4 L3 segment as the active WiFi client, the watcher
+disconnects idle WiFi to leave a single deterministic network path and mDNS address. Playback,
+active WiFi apply/setup work, ambiguous addressing, and different subnets defer or skip that policy;
+if ethernet later drops after a policy disconnect, the watcher promptly reconnects the saved WiFi.
 
 If the gateway remains unreachable for more than 30 minutes, the script will reboot the device.
 Whilst this seems aggressive, the WiFi chipset in the Pi-Zero range is not great in terms
