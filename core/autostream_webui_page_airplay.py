@@ -852,7 +852,11 @@ def send_airplay_page(
                   var artImg = new Image();
                   artImg.onload = function() {{
                     if (iconEl.getAttribute('data-np-icon-key') === artKey) {{
-                      iconEl.innerHTML = '<img src="' + tiArtUrl + '" alt="">';
+                      iconEl.textContent = '';
+                      var img = document.createElement('img');
+                      img.src = tiArtUrl;
+                      img.alt = '';
+                      iconEl.appendChild(img);
                       iconEl.classList.add('np-icon-art');
                     }}
                   }};

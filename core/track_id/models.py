@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 # Public state strings.
 STATE_DISABLED = "disabled"
@@ -32,12 +33,55 @@ def state_status_text(state: str) -> str:
     return _STATE_TEXT.get(state, "")
 
 
+def _validate_artwork_url(url: str) -> str:
+    """Validate and sanitize artwork URL; return empty string if invalid.
+
+    Accepts only http:// and https:// schemes, rejects control characters
+    and whitespace, and validates basic URL structure. Returns the URL if
+    valid, or empty string otherwise.
+    """
+    if not url:
+        return ""
+
+    # Strip leading/trailing whitespace
+    url = url.strip()
+    if not url:
+        return ""
+
+    # Reject if contains control characters or newlines
+    if any(ord(c) < 32 or ord(c) == 127 for c in url):
+        return ""
+
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+
+        # Only allow http and https
+        if scheme not in ("http", "https"):
+            return ""
+
+        # Must have a netloc (hostname/domain)
+        if not parsed.netloc:
+            return ""
+
+        return url
+    except Exception:
+        return ""
+
+
 @dataclass(frozen=True)
 class TrackArtwork:
     url: str = ""
     source: str = ""
     width: Optional[int] = None
     height: Optional[int] = None
+
+    def __post_init__(self):
+        # Validate URL at construction time for defense-in-depth.
+        # This ensures artwork_url in public API responses and logs is safe.
+        validated = _validate_artwork_url(self.url)
+        if validated != self.url:
+            object.__setattr__(self, "url", validated)
 
 
 @dataclass(frozen=True)
