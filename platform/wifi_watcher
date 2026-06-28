@@ -166,7 +166,19 @@ WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for local IPv4 checks
 AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname checks
 AVAHI_MISMATCH_GRACE       = 5 * 60     # grace period before acting on a hostname mismatch
 AVAHI_RESTART_MIN_INTERVAL = 15 * 60    # minimum gap between avahi-daemon restarts
+AVAHI_HANDOVER_RESTART_MIN_INTERVAL = 60  # minimum gap between path-change re-announcements
 AVAHI_MAX_RESTART_ATTEMPTS = -1         # max avahi restarts per boot (-1 = unlimited)
+
+# mDNS host-record re-announce on network-path changes (e.g. a USB Wi-Fi dongle
+# removed while ethernet stays up).  avahi-daemon owns the `<hostname>.local`
+# address records (the "system level" re-announce), and on a passive interface
+# loss it cannot send goodbyes out the vanished interface nor re-announce the
+# surviving record (which did not change) — so clients keep a stale answer until
+# its TTL lapses.  The watcher detects when the published address set changes,
+# waits for it to settle, then restarts avahi-daemon so it re-probes and
+# re-announces host records (with the mDNS cache-flush bit) for the surviving
+# interfaces only.
+AVAHI_REANNOUNCE_DEBOUNCE  = 5          # seconds the address set must be stable before re-announcing
 
 # Dead-PHY recovery (WP-dead-phy).  A wedged-but-present USB Wi-Fi adapter
 # (NO-CARRIER / state DOWN) is detected, reset via sysfs, and — only when
@@ -315,7 +327,16 @@ class NetworkMonitorState:
     avahi_hostname: Optional[str] = None
     avahi_mismatch_start: Optional[float] = None
     last_avahi_restart: Optional[float] = None
+    last_avahi_handover_restart: Optional[float] = None
     avahi_restart_count: int = 0
+
+    # ---- mDNS host-record re-announce on address-set changes ----
+    # Set of (ifname, ipv4) the host currently publishes; None until first observed.
+    mdns_address_set: Optional[frozenset] = None
+    # Monotonic time the published address set last changed (debounce anchor).
+    mdns_address_changed_at: Optional[float] = None
+    # Explicit re-announce nudge from an orchestrated handover.
+    mdns_reannounce_pending: bool = False
 
     # ---- Multi-adapter failure / adoption (WP5, Section 8.1) ----
     active_usb_unhealthy_checks: int = 0
@@ -2147,6 +2168,13 @@ def network_monitor_loop(run_once: bool = False):
             last_avahi_check = now
             check_and_repair_avahi_hostname()
 
+        # mDNS host-record re-announce: catch passive network-path changes (e.g. a
+        # USB Wi-Fi adapter removed while ethernet stays up) as well as orchestrated
+        # handovers, debounced until the published address set settles.  Runs every
+        # pass; skipped during setup and WiFi apply (folded into _avahi_ok).
+        if _avahi_ok:
+            maybe_reannounce_mdns(now)
+
         # Handle manual request to enter AP mode (from the normal WebUI via localhost).
         # This overrides the boot-time auto-AP cutoff.
         if ap_request_event.is_set():
@@ -2670,13 +2698,19 @@ def _activate_committed_on(ifname: str) -> bool:
 
 
 def verify_avahi_after_handover() -> None:
-    """Promptly verify the Avahi hostname after a successful adapter handover.
+    """Verify the Avahi hostname and flag an mDNS host-record re-announce.
 
-    Reuses the existing hostname verification path rather than introducing a new
-    mDNS manager; does not restart Avahi on every healthy pass.
+    Reuses the existing hostname verification path, then marks a re-announce as
+    pending rather than restarting avahi-daemon directly.  The monitor loop owns
+    the actual re-announce (see maybe_reannounce_mdns): it waits for the published
+    address set to settle before restarting, so it re-announces only the surviving
+    interface's address (never re-poisoning clients with the address that is being
+    torn down mid-handover), and de-duplicates with the passive address-change
+    detector so a single restart covers both triggers.
     """
     try:
         check_and_repair_avahi_hostname()
+        mark_mdns_reannounce_pending("network handover")
     except Exception as e:
         logger.warning("Avahi handover verification failed: %s", e)
 
@@ -3059,6 +3093,136 @@ def get_avahi_registered_hostname() -> Optional[str]:
     return None
 
 
+def restart_avahi_daemon(reason: str) -> bool:
+    """Restart avahi-daemon to force mDNS host/service re-announcement."""
+    result = run_cmd(["systemctl", "restart", "avahi-daemon.service"])
+    if result.returncode != 0:
+        logger.error(
+            "avahi-daemon restart failed (%s, rc=%d): %s",
+            reason,
+            result.returncode,
+            result.stderr.strip(),
+        )
+        return False
+    logger.info(
+        "avahi-daemon restarted (%s); hostname will be verified on next check",
+        reason,
+    )
+    return True
+
+
+def mark_mdns_reannounce_pending(reason: str) -> None:
+    """Request a debounced mDNS host-record re-announce from the monitor loop.
+
+    Orchestrated handovers call this instead of restarting avahi directly so the
+    re-announce is debounced behind the address set settling (avoiding a restart
+    that re-announces the address being torn down) and de-duplicated with the
+    passive address-change detector (maybe_reannounce_mdns).
+    """
+    now = time.monotonic()
+    with state_lock:
+        STATE.mdns_reannounce_pending = True
+        # Anchor the debounce so the loop waits for the path to settle before
+        # restarting, even when our observed address set looks unchanged.
+        STATE.mdns_address_changed_at = now
+    logger.info(
+        "mDNS re-announce requested (%s); will fire once the address set settles",
+        reason,
+    )
+
+
+def _current_mdns_address_set() -> frozenset:
+    """Return the set of (ifname, ipv4) the host currently publishes via mDNS.
+
+    Proxy for avahi-daemon's published host address records: every usable
+    non-link-local unicast IPv4 on a non-loopback interface.  Used to detect
+    network-path changes (e.g. a removed USB adapter) that require a host-record
+    re-announce so clients drop stale ``<hostname>.local`` answers.
+    """
+    pairs: set = set()
+    try:
+        for ifname, addrs in wifi_net.list_interface_addresses().items():
+            if ifname == "lo":
+                continue
+            for addr in addrs:
+                if addr.get("family") != "ipv4":
+                    continue
+                ip = addr.get("address", "")
+                if wifi_net.is_usable_unicast_ipv4(ip):
+                    pairs.add((ifname, ip))
+    except Exception as e:
+        logger.debug("mDNS address-set probe failed: %s", e)
+    return frozenset(pairs)
+
+
+def maybe_reannounce_mdns(now: float) -> None:
+    """Re-announce avahi host records when the published address set changes.
+
+    Detects passive network-path changes (e.g. a USB Wi-Fi dongle removed while
+    ethernet stays up) as well as explicit handover requests (via
+    mark_mdns_reannounce_pending).  Once the address set has been stable for
+    AVAHI_REANNOUNCE_DEBOUNCE seconds — and no re-announce has run within
+    AVAHI_HANDOVER_RESTART_MIN_INTERVAL — it restarts avahi-daemon so it re-probes
+    and re-announces its host address records (with the mDNS cache-flush bit) for
+    the surviving interfaces only.  The first observation each boot only
+    establishes a baseline; it never re-announces.
+    """
+    current = _current_mdns_address_set()
+    fire = False
+    with state_lock:
+        previous = STATE.mdns_address_set
+
+        if previous != current:
+            STATE.mdns_address_set = current
+
+        if previous is None:
+            # First observation: establish a baseline without re-announcing.  Any
+            # handover that already marked a pending nudge is honoured on the next
+            # pass once the set is seen as stable.
+            return
+
+        if current != previous:
+            # Address set changed this pass; (re)start the debounce timer and wait
+            # for it to settle before acting so flapping cannot re-poison clients.
+            STATE.mdns_address_changed_at = now
+            logger.info(
+                "mDNS published address set changed -> %s; scheduling re-announce",
+                sorted(current),
+            )
+            return
+
+        # Set unchanged this pass.  A re-announce is due only when something armed
+        # the debounce (a prior change or an explicit handover nudge).
+        changed_at = STATE.mdns_address_changed_at
+        if changed_at is None and not STATE.mdns_reannounce_pending:
+            return
+        if changed_at is not None and (now - changed_at) < AVAHI_REANNOUNCE_DEBOUNCE:
+            return
+
+        last_restart = STATE.last_avahi_handover_restart
+        if (
+            last_restart is not None
+            and (now - last_restart) < AVAHI_HANDOVER_RESTART_MIN_INTERVAL
+        ):
+            # A recent re-announce is still within the rate-limit window; leave the
+            # trigger armed and retry on a later pass rather than dropping it.
+            logger.debug(
+                "mDNS re-announce suppressed by rate limit (%.0fs remaining)",
+                AVAHI_HANDOVER_RESTART_MIN_INTERVAL - (now - last_restart),
+            )
+            return
+
+        # Commit: consume the trigger and record the restart time under the lock.
+        STATE.mdns_address_changed_at = None
+        STATE.mdns_reannounce_pending = False
+        STATE.last_avahi_handover_restart = now
+        fire = True
+
+    if fire:
+        logger.info("re-announcing mDNS host records after network-path change")
+        restart_avahi_daemon("network-path re-announce")
+
+
 def check_and_repair_avahi_hostname() -> None:
     """Check avahi's registered mDNS hostname and restart avahi if it has drifted.
 
@@ -3152,14 +3316,7 @@ def check_and_repair_avahi_hostname() -> None:
         mismatch_duration, attempt_str, avahi_host, expected,
     )
 
-    result = run_cmd(["systemctl", "restart", "avahi-daemon.service"])
-    if result.returncode != 0:
-        logger.error(
-            "avahi-daemon restart failed (rc=%d): %s",
-            result.returncode, result.stderr.strip(),
-        )
-    else:
-        logger.info("avahi-daemon restarted; hostname will be verified on next check")
+    restart_avahi_daemon("hostname mismatch repair")
 
 
 if __name__ == "__main__":
