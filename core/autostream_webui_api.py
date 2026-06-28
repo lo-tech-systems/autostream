@@ -2108,14 +2108,14 @@ def _read_watcher_control_token() -> str:
 def _watcher_request(method: str, path: str, body: Optional[dict] = None):
     """Perform a bounded request to a *fixed* watcher control path.
 
-    Only the two known paths are permitted; arbitrary paths/commands are never
+    Only the known fixed paths are permitted; arbitrary paths/commands are never
     forwarded.  Uses the Python standard library only.  Returns (status, data)
     or raises on transport failure.
     """
     import urllib.request as _ur
     import urllib.error as _ue
 
-    if path not in ("/network_status", "/network_control"):
+    if path not in ("/network_status", "/network_control", "/version"):
         raise ValueError("disallowed watcher path")
     token = _read_watcher_control_token()
     url = WATCHER_CONTROL_BASE + path
@@ -2137,6 +2137,20 @@ def _watcher_request(method: str, path: str, body: Optional[dict] = None):
     except ValueError:
         parsed = {}
     return status, parsed
+
+
+def get_wifi_watcher_version() -> str:
+    """Return the root watcher's code-defined component version, if available."""
+    if not _read_watcher_control_token():
+        return "unknown"
+    try:
+        status, data = _watcher_request("GET", "/version")
+    except Exception:
+        return "unknown"
+    if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+        return "unknown"
+    version = str(data.get("version") or "").strip()
+    return version or "unknown"
 
 
 def _network_ip_detail(device: dict) -> str:

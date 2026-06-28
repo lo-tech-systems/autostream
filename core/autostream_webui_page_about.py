@@ -408,6 +408,14 @@ def _build_text(version: str, connected: bool) -> str:
     return v
 
 
+def _get_wifi_watcher_version() -> str:
+    try:
+        from autostream_webui_api import get_wifi_watcher_version
+        return get_wifi_watcher_version()
+    except Exception:
+        return "unknown"
+
+
 def _collect_system_info() -> dict:
     """Collect all System Info fields.  Partial failures degrade individual fields."""
     # 1. Autostream version (cached, immutable for process lifetime)
@@ -439,6 +447,12 @@ def _collect_system_info() -> dict:
         vibra_build = _build_text(vibra_info.version, vibra_info.connected)
     except Exception:
         vibra_build = "unknown"
+
+    # Wi-Fi watcher build - fixed loopback request to its token-protected API
+    try:
+        wifi_watcher_build = _get_wifi_watcher_version()
+    except Exception:
+        wifi_watcher_build = "unknown"
 
     # 5. Playback totals across inputs 1 and 2
     playback_hours = 0.0
@@ -502,6 +516,7 @@ def _collect_system_info() -> dict:
     _service_versions = {
         "autostream.service": autostream_version,
         "autostream_monitor.service": monitor_build,
+        "autostream_wifi_watcher.service": wifi_watcher_build,
         "owntone.service": owntone_build,
         "vibra-mini.service": vibra_build,
     }
@@ -512,6 +527,7 @@ def _collect_system_info() -> dict:
         "builds": {
             "autostream": autostream_version,
             "monitor": monitor_build,
+            "wifi_watcher": wifi_watcher_build,
             "owntone": owntone_build,
             "vibra_mini": vibra_build,
         },

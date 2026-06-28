@@ -847,6 +847,28 @@ class TestNetworkControlRoutes:
         assert data["device"]["state"] == "unknown"
         assert data["stale"] is True
 
+    def test_version_requires_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.get("/version", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert rv.status_code == 403
+
+    def test_version_ok_with_token(self, flask_client):
+        client, mod = flask_client
+        mod._control_token = "tok"
+        rv = client.get(
+            "/version",
+            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        data = json.loads(rv.data)
+        assert data == {
+            "ok": True,
+            "component": "wifi_watcher",
+            "version": mod.WIFI_WATCHER_VERSION,
+        }
+
     def test_network_control_rejects_non_loopback(self, flask_client):
         client, mod = flask_client
         mod._control_token = "tok"

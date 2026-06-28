@@ -26,6 +26,7 @@ if _CORE not in sys.path:
 
 from autostream_webui_api import (
     build_network_card_presentation,
+    get_wifi_watcher_version,
     send_network_setup_json,
     send_network_status_json,
 )
@@ -371,6 +372,30 @@ class TestSendNetworkSetupJson:
             send_network_setup_json(handler, {"action": "start_setup"})
 
         assert captured["code"] == 503
+
+
+# ---------------------------------------------------------------------------
+# get_wifi_watcher_version()
+# ---------------------------------------------------------------------------
+
+class TestWifiWatcherVersion:
+    def test_success_returns_version(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request", return_value=(
+                 200, {"ok": True, "version": "1.0.0"}
+             )):
+            assert get_wifi_watcher_version() == "1.0.0"
+
+    def test_failure_returns_unknown(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request", return_value=(503, {})):
+            assert get_wifi_watcher_version() == "unknown"
+
+    def test_missing_token_returns_unknown_without_request(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value=""), \
+             patch("autostream_webui_api._watcher_request") as request:
+            assert get_wifi_watcher_version() == "unknown"
+        request.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

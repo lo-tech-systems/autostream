@@ -71,6 +71,7 @@ def _playback_snap(seconds_1=3600, seconds_2=7200):
 def _collect_with_mocks(
     *,
     autostream_version="1.2.3",
+    wifi_watcher_version="1.0.0",
     monitor_info=None,
     owntone_info=None,
     vibra_info=None,
@@ -101,6 +102,7 @@ def _collect_with_mocks(
         return r
 
     with patch("autostream_webui_page_about.get_app_version", return_value=autostream_version), \
+         patch("autostream_webui_page_about._get_wifi_watcher_version", return_value=wifi_watcher_version), \
          patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=monitor_info), \
          patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=owntone_info), \
          patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=vibra_info), \
@@ -146,7 +148,9 @@ class TestCollectSystemInfoShape:
 
     def test_builds_keys_present(self):
         result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
-        assert set(result["builds"].keys()) == {"autostream", "monitor", "owntone", "vibra_mini"}
+        assert set(result["builds"].keys()) == {
+            "autostream", "monitor", "wifi_watcher", "owntone", "vibra_mini",
+        }
 
     def test_builds_are_strings(self):
         result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
@@ -1028,6 +1032,8 @@ class TestSnapshotExceptionIsolation:
         patches = {
             "autostream_webui_page_about.get_app_version":
                 (boom if raise_at == "app_version" else "1.0"),
+            "autostream_webui_page_about._get_wifi_watcher_version":
+                (boom if raise_at == "wifi_watcher" else "1.0.0"),
             "autostream_webui_page_about.get_monitor_runtime_info":
                 (boom if raise_at == "monitor" else _monitor_info()),
             "autostream_webui_page_about.get_owntone_runtime_info":
@@ -1051,6 +1057,7 @@ class TestSnapshotExceptionIsolation:
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             with ctx["autostream_webui_page_about.get_app_version"], \
+                 ctx["autostream_webui_page_about._get_wifi_watcher_version"], \
                  ctx["autostream_webui_page_about.get_monitor_runtime_info"], \
                  ctx["autostream_webui_page_about.get_owntone_runtime_info"], \
                  ctx["autostream_webui_page_about.get_vibra_runtime_info"], \
@@ -1058,7 +1065,7 @@ class TestSnapshotExceptionIsolation:
                 return _about._collect_system_info()
 
     @pytest.mark.parametrize("field", [
-        "app_version", "monitor", "owntone", "vibra", "playback",
+        "app_version", "wifi_watcher", "monitor", "owntone", "vibra", "playback",
     ])
     def test_exception_does_not_propagate(self, field):
         """Accessor exception must not escape _collect_system_info()."""
@@ -1072,6 +1079,10 @@ class TestSnapshotExceptionIsolation:
     def test_monitor_exception_yields_unknown(self):
         result = self._make_result(raise_at="monitor")
         assert result["builds"]["monitor"] == "unknown"
+
+    def test_wifi_watcher_exception_yields_unknown(self):
+        result = self._make_result(raise_at="wifi_watcher")
+        assert result["builds"]["wifi_watcher"] == "unknown"
 
     def test_owntone_exception_yields_unknown(self):
         result = self._make_result(raise_at="owntone")

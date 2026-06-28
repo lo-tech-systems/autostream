@@ -89,6 +89,7 @@ if _HERE not in sys.path:
 APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 APP_BANNER_IMAGE = os.environ.get('APP_BANNER_IMAGE', '').strip()
 _DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
+WIFI_WATCHER_VERSION = "1.0.0"
 
 if APP_BANNER_IMAGE:
     BANNER_HTML = (
@@ -1806,6 +1807,17 @@ def _control_authorised() -> bool:
 
 
 _VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved", "set_log_level"}
+
+
+@app.route("/version", methods=["GET"])
+def version():
+    if not _control_authorised():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    return jsonify({
+        "ok": True,
+        "component": "wifi_watcher",
+        "version": WIFI_WATCHER_VERSION,
+    })
 
 
 @app.route("/network_status", methods=["GET"])
