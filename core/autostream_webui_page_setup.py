@@ -48,6 +48,9 @@ from autostream_webui_assets import (
     A2HS_SCRIPT,
     AUTOSAVE_JS,
     COMMON_MODAL_CSS,
+    DIAL_LOCKED_SECTION_CSS,
+    ICON_PADLOCK_LOCKED,
+    ICON_PADLOCK_UNLOCKED,
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
@@ -248,27 +251,36 @@ def _dial_card_html(
             <div class="dial-config"{config_display}>
               <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
                       data-dial-action="change-name">Change Dial Name</button>
-              <div style="margin-top:0.75rem;">
-                <div class="slider-header">
-                  <span>Step:</span>
-                  <span class="dial-step-val">2% per click</span>
+              <div class="dial-locked-section dial-section-locked">
+                <div class="dial-locked-header">
+                  <span class="dial-locked-label">Settings</span>
+                  <button type="button" class="dial-lock-btn" data-dial-action="toggle-lock"
+                          aria-label="Unlock settings">{ICON_PADLOCK_LOCKED}</button>
                 </div>
-                <input type="range" class="dial-step" min="1" max="10" step="1" value="2"
-                       oninput="syncDialStep(this)" data-dial-action="save-config">
-              </div>
-              <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" class="dial-autoupdate" data-dial-action="save-config">
-                  <span class="switch"></span>
-                </label>
-                <span>Auto-update</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
-                <label class="output-toggle" style="margin:0;">
-                  <input type="checkbox" class="dial-channel" data-dial-action="save-config">
-                  <span class="switch"></span>
-                </label>
-                <span>Pre-release updates</span>
+                <div class="dial-locked-controls">
+                  <div style="margin-top:0.5rem;">
+                    <div class="slider-header">
+                      <span>Step:</span>
+                      <span class="dial-step-val">2% per click</span>
+                    </div>
+                    <input type="range" class="dial-step" min="1" max="10" step="1" value="2"
+                           oninput="syncDialStep(this)" data-dial-action="save-config" disabled>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-autoupdate" data-dial-action="save-config" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Auto-update</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-channel" data-dial-action="save-config" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Pre-release updates</span>
+                  </div>
+                </div>
               </div>
               {fw_update_btn}
               <button type="button" class="pill-btn small" style="width:100%;margin-top:{pin_btn_margin_top};"
@@ -1078,7 +1090,7 @@ def send_setup_page(
 """
     _extra_css = (
         f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}"
-        f"\n{factory_reset_modal_css}\n{_dial_badge_css}"
+        f"\n{factory_reset_modal_css}\n{_dial_badge_css}\n{DIAL_LOCKED_SECTION_CSS}"
     )
     _pin_modal_div = """\
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
@@ -1856,9 +1868,12 @@ def send_setup_page(
         // ── Dial management ────────────────────────────────────────────────
         var _dialPinRecoveryTimer = null;
         var _dialPinModalCard = null;
-        var _dialPinModalMode = null; // 'change'
+        var _dialPinModalMode = null; // 'change' | 'unlock'
         var _dialPinRecoveryModalCard = null;
         var _dialNameModalCard = null;
+        var _dialUnlockedPins = new WeakMap(); // card → '' (no PIN) | 'XXXX' (PIN stored) | absent (locked)
+        var _ICON_PADLOCK_LOCKED = `{ICON_PADLOCK_LOCKED}`;
+        var _ICON_PADLOCK_UNLOCKED = `{ICON_PADLOCK_UNLOCKED}`;
 
         function setDialAuthorized(card, authorized) {{
           card.dataset.authorized = authorized ? 'true' : 'false';
@@ -1891,6 +1906,43 @@ def send_setup_page(
           var valEl = card.querySelector('.dial-step-val');
           if (valEl) valEl.textContent = input.value + '% per click';
         }}
+
+        function _dialLockSection(card) {{
+          _dialUnlockedPins.delete(card);
+          var section = card.querySelector('.dial-locked-section');
+          if (!section) return;
+          section.classList.add('dial-section-locked');
+          var btn = section.querySelector('.dial-lock-btn');
+          if (btn) {{ btn.innerHTML = _ICON_PADLOCK_LOCKED; btn.setAttribute('aria-label', 'Unlock settings'); }}
+          section.querySelectorAll('input').forEach(function(el) {{ el.disabled = true; }});
+        }}
+
+        function _dialUnlockSection(card, pin) {{
+          _dialUnlockedPins.set(card, pin);
+          var section = card.querySelector('.dial-locked-section');
+          if (!section) return;
+          section.classList.remove('dial-section-locked');
+          var btn = section.querySelector('.dial-lock-btn');
+          if (btn) {{
+            if (card.dataset.pinSet === 'true') {{
+              btn.innerHTML = _ICON_PADLOCK_UNLOCKED;
+              btn.setAttribute('aria-label', 'Lock settings');
+              btn.style.display = '';
+            }} else {{
+              btn.style.display = 'none';
+            }}
+          }}
+          section.querySelectorAll('input').forEach(function(el) {{ el.disabled = false; }});
+        }}
+
+        function _updateDialLockVisibility(card) {{
+          if (card.dataset.pinSet !== 'true') {{
+            _dialUnlockSection(card, '');
+          }} else if (!_dialUnlockedPins.has(card)) {{
+            _dialLockSection(card);
+          }}
+        }}
+
         function refreshDialsCardSub() {{
           var sub = document.getElementById('dials-card-sub');
           if (!sub) return;
@@ -2006,7 +2058,7 @@ def send_setup_page(
           }}
         }}
 
-        async function dialSaveConfig(card, revertEl, revertChecked) {{
+        async function dialSaveConfig(card) {{
           var uuid = dialUUID(card);
           if (!uuid) return;
           var nameEl = card.querySelector('.dial-name');
@@ -2019,7 +2071,6 @@ def send_setup_page(
             var step = parseInt(stepEl.value, 10);
             if (!Number.isInteger(step) || step < 1 || step > 10) {{
               dialMsg(card, 'Step must be between 1 and 10', false);
-              if (revertEl !== undefined) revertEl.checked = revertChecked;
               return;
             }}
             body.step_percent = step;
@@ -2027,23 +2078,16 @@ def send_setup_page(
           if (autoEl) body.auto_update = autoEl.checked;
           if (chanEl) body.update_channel = chanEl.checked ? 'dev' : 'stable';
           if (card.dataset.pinSet === 'true') {{
-            var currentPin = window.prompt('Enter the current dial PIN to save this change:');
-            if (currentPin === null) {{
-              if (revertEl !== undefined) revertEl.checked = revertChecked;
-              return;
-            }}
-            body.current_pin = currentPin.trim();
+            var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+            if (!unlockedPin) {{ dialMsg(card, 'Unlock settings first', false); return; }}
+            body.current_pin = unlockedPin;
           }}
           try {{
             var result = await _dialPost('/api/dial/configure', body);
             if (result.ok) {{ dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000); }}
-            else {{
-              dialMsg(card, _dialErrorMessage(result.error), false);
-              if (revertEl !== undefined) revertEl.checked = revertChecked;
-            }}
+            else {{ dialMsg(card, _dialErrorMessage(result.error), false); }}
           }} catch(e) {{
             dialMsg(card, 'Network error', false);
-            if (revertEl !== undefined) revertEl.checked = revertChecked;
           }}
         }}
 
@@ -2068,6 +2112,7 @@ def send_setup_page(
             if (autoEl && j.auto_update != null) autoEl.checked = !!j.auto_update;
             if (chanEl && j.update_channel != null) chanEl.checked = (j.update_channel === 'dev');
             card.dataset.pinSet = j.pin_set ? 'true' : 'false';
+            _updateDialLockVisibility(card);
           }} catch(e) {{}}
         }}
 
@@ -2096,10 +2141,15 @@ def send_setup_page(
           errEl.style.display = 'none'; errEl.textContent = '';
           var currentInputEl = document.getElementById('dialPinModalCurrentInput');
           currentInputEl.value = '';
-          currentInputEl.style.display = card.dataset.pinSet === 'true' ? '' : 'none';
+          // unlock mode: current PIN is the only field; change mode: show if PIN already set
+          currentInputEl.style.display = (mode === 'unlock' || card.dataset.pinSet === 'true') ? '' : 'none';
           var inputEl = document.getElementById('dialPinModalInput');
           inputEl.value = '';
-          document.getElementById('dialPinModalOk').disabled = false;
+          // unlock mode only needs the current PIN; hide new PIN field
+          inputEl.style.display = mode === 'unlock' ? 'none' : '';
+          var okBtn = document.getElementById('dialPinModalOk');
+          okBtn.textContent = mode === 'unlock' ? 'Unlock' : 'Apply';
+          okBtn.disabled = false;
           document.getElementById('dialPinModalCancel').disabled = false;
           modal.classList.add('show');
           setTimeout(function(){{
@@ -2305,6 +2355,7 @@ def send_setup_page(
         async function _handleDialPinModalOk() {{
           var card = _dialPinModalCard;
           var uuid = dialUUID(card);
+          var mode = _dialPinModalMode;
           if (!uuid) return;
           var currentInputEl = document.getElementById('dialPinModalCurrentInput');
           var inputEl = document.getElementById('dialPinModalInput');
@@ -2314,16 +2365,36 @@ def send_setup_page(
           var pin = (inputEl ? inputEl.value : '').trim();
           okBtn.disabled = true; errEl.style.display = 'none';
           try {{
-            var body = {{uuid: uuid, new_pin: pin}};
-            if (card.dataset.pinSet === 'true') body.current_pin = currentPin;
-            var pinResult = await _dialPost('/api/dial/configure', body);
-            if (pinResult.ok) {{
-              card.dataset.pinSet = pin ? 'true' : 'false';
-              dialMsg(card, pin ? 'PIN changed' : 'PIN removed', true);
-              _closeDialPinModal();
+            var pinResult;
+            if (mode === 'unlock') {{
+              // Verify PIN via no-op configure call — dial accepts current_pin without change fields
+              pinResult = await _dialPost('/api/dial/configure', {{uuid: uuid, current_pin: currentPin}});
+              if (pinResult.ok) {{
+                _dialUnlockSection(card, currentPin);
+                _closeDialPinModal();
+              }} else if (pinResult.error === 'wrong_pin' || pinResult.error === 'too_many_attempts'
+                          || pinResult.error === 'dial_offline' || pinResult.error === 'dial_unreachable'
+                          || pinResult.error === 'dial_timeout') {{
+                errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
+                okBtn.disabled = false;
+              }} else {{
+                // Unexpected error (e.g. dial doesn't accept no-op) — unlock optimistically
+                _dialUnlockSection(card, currentPin);
+                _closeDialPinModal();
+              }}
             }} else {{
-              errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
-              okBtn.disabled = false;
+              var body = {{uuid: uuid, new_pin: pin}};
+              if (card.dataset.pinSet === 'true') body.current_pin = currentPin;
+              pinResult = await _dialPost('/api/dial/configure', body);
+              if (pinResult.ok) {{
+                card.dataset.pinSet = pin ? 'true' : 'false';
+                dialMsg(card, pin ? 'PIN changed' : 'PIN removed', true);
+                _closeDialPinModal();
+                _updateDialLockVisibility(card);
+              }} else {{
+                errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
+                okBtn.disabled = false;
+              }}
             }}
           }} catch(e) {{
             errEl.textContent = 'Network error'; errEl.style.display = '';
@@ -2356,26 +2427,18 @@ def send_setup_page(
             card.addEventListener('change', function(ev) {{
               var action = ev.target.dataset.dialAction;
               if (action === 'toggle-allow') dialToggleAllow(card, ev.target.checked);
-              if (action === 'save-config') {{
-                if (ev.target.classList.contains('dial-autoupdate') || ev.target.classList.contains('dial-channel')) {{
-                  var origChecked = !ev.target.checked;
-                  dialSaveConfig(card, ev.target, origChecked);
-                }} else if (ev.target.type === 'range') {{
-                  dialSaveConfig(card);
-                }}
-              }}
+              if (action === 'save-config') dialSaveConfig(card);
             }});
-            card.addEventListener('focusout', function(ev) {{
-              if (
-                ev.target.dataset.dialAction === 'save-config'
-                && !ev.target.classList.contains('dial-autoupdate')
-                && !ev.target.classList.contains('dial-channel')
-                && ev.target.type !== 'range'
-                && card.dataset.authorized === 'true'
-              ) {{
-                dialSaveConfig(card);
-              }}
-            }});
+            var lockedSection = card.querySelector('.dial-locked-section');
+            if (lockedSection) {{
+              lockedSection.addEventListener('focusout', function(ev) {{
+                setTimeout(function() {{
+                  if (!lockedSection.contains(document.activeElement)) {{
+                    if (card.dataset.pinSet === 'true') _dialLockSection(card);
+                  }}
+                }}, 0);
+              }});
+            }}
             card.addEventListener('click', function(ev) {{
               var target = ev.target.closest('[data-dial-action]');
               if (!target || target.tagName === 'INPUT') return;
@@ -2385,6 +2448,13 @@ def send_setup_page(
               if (action === 'change-pin') dialChangePIN(card);
               if (action === 'recover-pin') openDialPinRecoveryModal(card);
               if (action === 'change-name') openDialNameModal(card);
+              if (action === 'toggle-lock') {{
+                if (_dialUnlockedPins.has(card) && card.dataset.pinSet === 'true') {{
+                  _dialLockSection(card);
+                }} else if (!_dialUnlockedPins.has(card)) {{
+                  _openDialPinModal(card, 'unlock', 'Unlock Settings', 'Enter your Dial PIN:');
+                }}
+              }}
             }});
           }});
           document.addEventListener('keydown', function(ev) {{

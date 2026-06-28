@@ -759,20 +759,26 @@ class TestDialCardHtmlStructure:
 
     # ── focusout guard prevents save on unauthorized cards ───────────────────
 
-    def test_focusout_guards_authorized_before_save_config(self):
-        """focusout on .dial-name must check authorized before calling dialSaveConfig."""
+    def test_save_config_guards_unlocked_pin_before_posting(self):
+        """dialSaveConfig must check _dialUnlockedPins before posting when a PIN is set."""
         src = _setup_page_src()
-        # Find focusout handler block
-        idx = src.find("focusout")
-        assert idx >= 0, "focusout handler not found"
-        # Find the block that references dialSaveConfig
-        save_idx = src.find("dialSaveConfig", idx)
-        assert save_idx >= 0
-        # The authorized check must appear between focusout and dialSaveConfig
-        authorized_idx = src.find("authorized", idx)
-        assert authorized_idx >= 0 and authorized_idx < save_idx, (
-            "authorized check must appear before dialSaveConfig in focusout handler"
+        # Locate the dialSaveConfig function body
+        fn_idx = src.find("async function dialSaveConfig(card)")
+        assert fn_idx >= 0, "dialSaveConfig not found"
+        next_fn = src.find("\n        async function ", fn_idx + 1)
+        body = src[fn_idx:next_fn] if next_fn > 0 else src[fn_idx:fn_idx + 1500]
+        # Must check _dialUnlockedPins before attempting to POST
+        assert "_dialUnlockedPins" in body, (
+            "_dialUnlockedPins guard must be present in dialSaveConfig"
         )
+        # The unlock check must precede the _dialPost call
+        unlock_idx = body.find("_dialUnlockedPins")
+        post_idx = body.find("_dialPost")
+        assert unlock_idx < post_idx, (
+            "_dialUnlockedPins check must appear before _dialPost in dialSaveConfig"
+        )
+        # The focusout handler for auto-lock must still exist
+        assert "focusout" in src, "focusout handler not found"
 
     # ── No Revoke button in .dial-config ────────────────────────────────────
 

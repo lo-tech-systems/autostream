@@ -1500,6 +1500,63 @@ ICON_LINE_LEVEL = (
     '</svg>'
 )
 
+# ── Dial locked-section padlock icons ─────────────────────────────────────────
+# Feather-style 24×24, stroke="var(--color-accent)" so they adapt to dark mode.
+
+ICON_PADLOCK_LOCKED = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<rect x="3" y="11" width="18" height="11" rx="2"/>'
+    '<path d="M7 11V7a5 5 0 0 1 10 0v4"/>'
+    '</svg>'
+)
+
+ICON_PADLOCK_UNLOCKED = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<rect x="3" y="11" width="18" height="11" rx="2"/>'
+    '<path d="M7 11V7a5 5 0 0 1 9.9-1"/>'
+    '</svg>'
+)
+
+DIAL_LOCKED_SECTION_CSS = """
+.dial-locked-section {
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-border-card);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem 0.6rem;
+}
+.dial-locked-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dial-locked-label {
+  font-size: 0.75rem;
+  color: var(--color-text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.dial-lock-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+}
+.dial-lock-btn svg { width: 18px; height: 18px; }
+.dial-lock-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.dial-locked-controls { transition: opacity 120ms ease; }
+.dial-section-locked .dial-locked-controls {
+  opacity: 0.45;
+  pointer-events: none;
+  user-select: none;
+}
+"""
 
 # -----------------------------------------------------------------------------
 # Service page CSS and JavaScript
