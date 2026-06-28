@@ -2508,6 +2508,7 @@ def _run_monitor_once(
     client_ok: bool = False,
     adapters: list | None = None,
     active_client=None,
+    dead_recovery=None,
 ):
     """Run one monitor pass with external facts patched to deterministic values."""
     adapters = adapters if adapters is not None else []
@@ -2526,7 +2527,9 @@ def _run_monitor_once(
         stack.enter_context(patch.object(watcher.wifi_net, "is_wifi_connected", return_value=wifi_connected))
         stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=client_ok))
         stack.enter_context(patch.object(watcher, "handle_runtime_usb_adoption", return_value=False))
-        stack.enter_context(patch.object(watcher, "escalate_dead_adapter_recovery", return_value=False))
+        if dead_recovery is None:
+            dead_recovery = MagicMock(return_value=False)
+        stack.enter_context(patch.object(watcher, "escalate_dead_adapter_recovery", dead_recovery))
         stack.enter_context(patch.object(watcher, "publish_network_status"))
         stack.enter_context(patch.object(watcher, "log_on_change"))
         stack.enter_context(patch.object(watcher, "startup_connect_usb_first", return_value=False))
@@ -2801,16 +2804,36 @@ class TestEthernetWinsWifiDisconnectPolicy:
 
     def test_ethernet_loss_reconnects_policy_disconnected_wifi_once(self, watcher):
         watcher.STATE.policy_disconnected_wifi = True
+        dead_recovery = MagicMock(return_value=True)
         connect = _run_monitor_once(
             watcher,
             now=1000.0,
             wifi_cfg=True,
             wired_connected=False,
             wired_ok=False,
+            dead_recovery=dead_recovery,
         )
 
         connect.assert_called_once()
+        dead_recovery.assert_not_called()
         assert watcher.STATE.policy_disconnected_wifi is False
+
+    def test_policy_disconnect_does_not_trigger_dead_phy_recovery_while_ethernet_is_healthy(self, watcher):
+        watcher.STATE.policy_disconnected_wifi = True
+        dead_recovery = MagicMock(return_value=True)
+
+        connect = _run_monitor_once(
+            watcher,
+            now=1000.0,
+            wifi_cfg=True,
+            wired_connected=True,
+            wired_ok=True,
+            dead_recovery=dead_recovery,
+        )
+
+        connect.assert_not_called()
+        dead_recovery.assert_not_called()
+        assert watcher.STATE.policy_disconnected_wifi is True
 
 
 # ---------------------------------------------------------------------------

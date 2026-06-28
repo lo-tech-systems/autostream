@@ -2333,12 +2333,23 @@ def network_monitor_loop(run_once: bool = False):
                     return
                 continue
 
+        with state_lock:
+            reconnect_policy_wifi = STATE.policy_disconnected_wifi and not wired_ok
+            policy_disconnected_wifi = STATE.policy_disconnected_wifi
+            if reconnect_policy_wifi:
+                STATE.policy_disconnected_wifi = False
+        if reconnect_policy_wifi:
+            connect_to_configured_wifi()
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+
         # --- Dead-PHY recovery: detect a wedged-but-present client adapter and
-        # run the reset ladder.  This MUST run before the ethernet-wins
-        # short-circuit so a dead Wi-Fi PHY is reset (and self-heals) even while
-        # ethernet is attached.  USB resets are not gated on ethernet; the reboot
-        # rung inside the orchestrator is still gated on being offline. ---
-        if wifi_cfg:
+        # run the reset ladder.  This runs before the ethernet-wins short-circuit
+        # so a genuinely dead Wi-Fi PHY is reset even while ethernet is attached.
+        # A watcher-owned idle Wi-Fi disconnect is different: while ethernet is
+        # still healthy, leave the radio down instead of spending reset budget.
+        if wifi_cfg and not (policy_disconnected_wifi and wired_ok):
             if escalate_dead_adapter_recovery(adapters, wired_ok):
                 if _sleep_or_finish_monitor_pass(run_once):
                     return
@@ -2389,16 +2400,6 @@ def network_monitor_loop(run_once: bool = False):
                         _set_active_client(None)
                         with state_lock:
                             STATE.policy_disconnected_wifi = True
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-
-        with state_lock:
-            reconnect_policy_wifi = STATE.policy_disconnected_wifi and not wired_ok
-            if reconnect_policy_wifi:
-                STATE.policy_disconnected_wifi = False
-        if reconnect_policy_wifi:
-            connect_to_configured_wifi()
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue

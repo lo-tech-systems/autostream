@@ -2194,8 +2194,13 @@ def _network_warning_fields(adapter: dict) -> dict:
     budget = int(policy.get("reset_budget_24h") or 0)
     ifname = str(adapter.get("ifname") or "").strip() or "Unknown"
 
+    role = str(adapter.get("role") or "").strip()
+
     if rank == 0:
-        warning = "USB WiFi disabled after repeated failures. Replace the USB adapter or contact support."
+        if role == "client":
+            warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+        else:
+            warning = "USB WiFi adapter held back after repeated failures. Replace the adapter if this keeps happening."
         severity = "danger"
     elif rank == 1:
         warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."

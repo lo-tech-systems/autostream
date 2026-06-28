@@ -169,7 +169,13 @@ class TestBuildNetworkCardPresentation:
         s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="quarantined", quarantined=True, resets=2)]}),
                          primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
         result = build_network_card_presentation(s)
-        assert result["warning"] == "USB WiFi disabled after repeated failures. Replace the USB adapter or contact support."
+        assert result["warning"] == "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+        assert result["warning_severity"] == "danger"
+
+    def test_spare_quarantined_warning(self):
+        s = _ok_status({"adapters": [_usb_adapter(warning="quarantined", quarantined=True, resets=2, role="spare")]})
+        result = build_network_card_presentation(s)
+        assert result["warning"] == "USB WiFi adapter held back after repeated failures. Replace the adapter if this keeps happening."
         assert result["warning_severity"] == "danger"
 
     def test_resetting_warning(self):
