@@ -249,8 +249,6 @@ def _dial_card_html(
             <input type="hidden" class="dial-name" value="{nv}">
             <div style="margin-top:0.5rem;font-size:0.9rem;">Current name: <strong class="dial-current-name">{current_name_display}</strong></div>
             <div class="dial-config"{config_display}>
-              <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
-                      data-dial-action="change-name">Change Dial Name</button>
               <div class="dial-locked-section dial-section-locked">
                 <div class="dial-locked-header">
                   <span class="dial-locked-label">Settings</span>
@@ -258,7 +256,9 @@ def _dial_card_html(
                           aria-label="Unlock settings">{ICON_PADLOCK_LOCKED}</button>
                 </div>
                 <div class="dial-locked-controls">
-                  <div style="margin-top:0.5rem;">
+                  <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
+                          data-dial-action="change-name">Change Dial Name</button>
+                  <div style="margin-top:0.75rem;">
                     <div class="slider-header">
                       <span>Step:</span>
                       <span class="dial-step-val">2% per click</span>
@@ -280,12 +280,12 @@ def _dial_card_html(
                     </label>
                     <span>Pre-release updates</span>
                   </div>
+                  <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
+                          data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
               </div>
               {fw_update_btn}
               <button type="button" class="pill-btn small" style="width:100%;margin-top:{pin_btn_margin_top};"
-                      data-dial-action="change-pin">Change Dial PIN</button>
-              <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
                       data-dial-action="recover-pin">Reset Lost PIN</button>
             </div>
             <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
@@ -1132,6 +1132,8 @@ def send_setup_page(
              autocomplete="current-password" style="margin-top:0.5rem;">
       <input type="password" id="dialPinModalInput" placeholder="New PIN"
              autocomplete="new-password" style="margin-top:0.5rem;">
+      <input type="password" id="dialPinModalConfirmInput" placeholder="Confirm PIN"
+             autocomplete="new-password" style="margin-top:0.5rem;">
       <p id="dialPinModalError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
     </div>
     <div class="ft modal-ft">
@@ -1148,9 +1150,6 @@ def send_setup_page(
       <p>Enter the new name for this dial.</p>
       <input type="text" id="dialNameModalInput" placeholder="e.g. Hallway Dial"
              autocomplete="off" autocapitalize="words" autocorrect="off" spellcheck="false">
-      <p id="dialNameModalPinLabel" style="margin-top:0.5rem;margin-bottom:0;">Current PIN:</p>
-      <input type="password" id="dialNameModalPinInput" placeholder="Current PIN"
-             autocomplete="current-password" style="margin-top:0.25rem;">
       <p id="dialNameModalError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
     </div>
     <div class="ft modal-ft">
@@ -2141,19 +2140,21 @@ def send_setup_page(
           errEl.style.display = 'none'; errEl.textContent = '';
           var currentInputEl = document.getElementById('dialPinModalCurrentInput');
           currentInputEl.value = '';
-          // unlock mode: current PIN is the only field; change mode: show if PIN already set
-          currentInputEl.style.display = (mode === 'unlock' || card.dataset.pinSet === 'true') ? '' : 'none';
+          // unlock: current PIN is the only field; change: current PIN not shown (stored from unlock)
+          currentInputEl.style.display = mode === 'unlock' ? '' : 'none';
           var inputEl = document.getElementById('dialPinModalInput');
           inputEl.value = '';
-          // unlock mode only needs the current PIN; hide new PIN field
           inputEl.style.display = mode === 'unlock' ? 'none' : '';
+          var confirmInputEl = document.getElementById('dialPinModalConfirmInput');
+          confirmInputEl.value = '';
+          confirmInputEl.style.display = mode === 'unlock' ? 'none' : '';
           var okBtn = document.getElementById('dialPinModalOk');
-          okBtn.textContent = mode === 'unlock' ? 'Unlock' : 'Apply';
+          okBtn.textContent = mode === 'unlock' ? 'Unlock' : 'Change PIN';
           okBtn.disabled = false;
           document.getElementById('dialPinModalCancel').disabled = false;
           modal.classList.add('show');
           setTimeout(function(){{
-            (currentInputEl.style.display === 'none' ? inputEl : currentInputEl).focus();
+            (mode === 'unlock' ? currentInputEl : inputEl).focus();
           }}, 50);
         }}
 
@@ -2174,13 +2175,8 @@ def send_setup_page(
           var nameInput = card.querySelector('.dial-name');
           var currentName = (nameInput ? nameInput.value : '') || '';
           var inp = document.getElementById('dialNameModalInput');
-          var pinInp = document.getElementById('dialNameModalPinInput');
-          var pinLabel = document.getElementById('dialNameModalPinLabel');
           var errEl = document.getElementById('dialNameModalError');
           if (inp) {{ inp.value = currentName; inp.disabled = false; }}
-          var needsPin = card.dataset.pinSet === 'true';
-          if (pinInp) {{ pinInp.value = ''; pinInp.style.display = needsPin ? '' : 'none'; pinInp.disabled = false; }}
-          if (pinLabel) pinLabel.style.display = needsPin ? '' : 'none';
           if (errEl) {{ errEl.style.display = 'none'; errEl.textContent = ''; }}
           var ok = document.getElementById('dialNameModalOk');
           var cancel = document.getElementById('dialNameModalCancel');
@@ -2202,7 +2198,6 @@ def send_setup_page(
           var uuid = dialUUID(card);
           if (!uuid) return;
           var inp = document.getElementById('dialNameModalInput');
-          var pinInp = document.getElementById('dialNameModalPinInput');
           var errEl = document.getElementById('dialNameModalError');
           var ok = document.getElementById('dialNameModalOk');
           var cancel = document.getElementById('dialNameModalCancel');
@@ -2214,13 +2209,8 @@ def send_setup_page(
           }}
           var body = {{uuid: uuid, name: newName}};
           if (card.dataset.pinSet === 'true') {{
-            var pin = (pinInp ? pinInp.value : '').trim();
-            if (!pin) {{
-              if (errEl) {{ errEl.textContent = 'Enter the dial PIN.'; errEl.style.display = ''; }}
-              if (pinInp) pinInp.focus();
-              return;
-            }}
-            body.current_pin = pin;
+            var storedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+            if (storedPin) body.current_pin = storedPin;
           }}
           if (ok) ok.disabled = true;
           if (cancel) cancel.disabled = true;
@@ -2383,8 +2373,19 @@ def send_setup_page(
                 _closeDialPinModal();
               }}
             }} else {{
+              var confirmInputEl = document.getElementById('dialPinModalConfirmInput');
+              var confirmPin = (confirmInputEl ? confirmInputEl.value : '').trim();
+              if (pin !== confirmPin) {{
+                errEl.textContent = 'The two PIN entries did not match.'; errEl.style.display = '';
+                okBtn.disabled = false;
+                if (confirmInputEl) confirmInputEl.focus();
+                return;
+              }}
               var body = {{uuid: uuid, new_pin: pin}};
-              if (card.dataset.pinSet === 'true') body.current_pin = currentPin;
+              if (card.dataset.pinSet === 'true') {{
+                var storedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+                if (storedPin) body.current_pin = storedPin;
+              }}
               pinResult = await _dialPost('/api/dial/configure', body);
               if (pinResult.ok) {{
                 card.dataset.pinSet = pin ? 'true' : 'false';
@@ -2405,8 +2406,12 @@ def send_setup_page(
         document.addEventListener('DOMContentLoaded', function() {{
           var ok = document.getElementById('dialPinModalOk');
           var cancel = document.getElementById('dialPinModalCancel');
+          var pinConfirmInp = document.getElementById('dialPinModalConfirmInput');
           if (ok) ok.addEventListener('click', _handleDialPinModalOk);
           if (cancel) cancel.addEventListener('click', _closeDialPinModal);
+          if (pinConfirmInp) pinConfirmInp.addEventListener('keydown', function(ev) {{
+            if (ev.key === 'Enter') {{ ev.preventDefault(); _handleDialPinModalOk(); }}
+          }});
           var recoveryOk = document.getElementById('dialPinRecoveryOk');
           var recoveryCancel = document.getElementById('dialPinRecoveryCancel');
           var recoveryConfirmInp = document.getElementById('dialPinRecoveryConfirmInput');
