@@ -761,9 +761,11 @@ class TestSetupPageAutosaveWiring:
         html = self._render_setup(tmp_path)
         assert "settingsSaveField('webui.control_other_appliances'" in html
 
-    def test_poll_interval_wired_debounced(self, tmp_path):
+    def test_poll_interval_not_exposed_on_setup_page(self, tmp_path):
         html = self._render_setup(tmp_path)
-        assert "settingsSaveFieldDebounced('webui.output_usage_poll_interval_seconds'" in html
+        assert "Output sharing refresh" not in html
+        assert "webui_output_usage_poll_interval_seconds" not in html
+        assert "settingsSaveFieldDebounced('webui.output_usage_poll_interval_seconds'" not in html
 
     def test_update_channel_wired(self, tmp_path):
         html = self._render_setup(tmp_path)

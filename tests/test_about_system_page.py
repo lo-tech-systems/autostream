@@ -828,9 +828,6 @@ class TestTopLevelExceptionHandling:
 
 _REQUIRED_IDS = [
     "aboutBuildAutostream",
-    "aboutBuildMonitor",
-    "aboutBuildOwntone",
-    "aboutBuildVibra",
     "aboutPlaybackHours",
     "aboutCpuTemperature",
     "aboutDiskSection",
@@ -875,8 +872,13 @@ class TestAboutPageDomIds:
                 f"Required DOM ID '{dom_id}' not found in About page HTML"
             )
 
-    def test_vibra_mini_build_row_present(self):
-        assert "aboutBuildVibra" in self._html
+    def test_component_build_rows_not_in_system_info_card(self):
+        assert "Audio Monitor Build" not in self._html
+        assert "OwnTone Build" not in self._html
+        assert "Vibra Mini Build" not in self._html
+        assert "aboutBuildMonitor" not in self._html
+        assert "aboutBuildOwntone" not in self._html
+        assert "aboutBuildVibra" not in self._html
 
     def test_services_heading_present(self):
         assert "Services" in self._html

@@ -334,9 +334,8 @@ There is no push or subscription mechanism; the poller is purely pull-based.
 
 ### Poll interval
 
-The poll interval is configurable in Setup → Preferences → Output sharing refresh
-(default 3 seconds, range 1–30). A shorter interval reduces the time a stale
-occupied state is shown; a longer interval reduces LAN traffic.
+The poll interval defaults to 3 seconds. A shorter interval reduces the time a
+stale occupied state is shown; a longer interval reduces LAN traffic.
 
 ### Constraints
 

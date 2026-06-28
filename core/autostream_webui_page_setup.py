@@ -771,17 +771,6 @@ def send_setup_page(
             </label>
             <span>Dark Mode</span>
           </div>
-          <input type="hidden" name="webui_output_usage_poll_interval_present" value="1">
-          <div class="setup-customise-row" style="margin-top:0.75rem;align-items:center;">
-            <label style="margin:0;white-space:nowrap;">Output sharing refresh:</label>
-            <input type="number" name="webui_output_usage_poll_interval_seconds"
-              id="webui_output_usage_poll_interval_seconds"
-              value="{parsed.webui.output_usage_poll_interval_seconds}"
-              min="1" max="30" step="1"
-              style="width:4rem;margin-left:0.5rem;text-align:right;"
-              oninput="settingsSaveFieldDebounced('webui.output_usage_poll_interval_seconds', parseInt(this.value,10), 500)">
-            <span style="margin-left:0.4rem;">seconds</span>
-          </div>
         """, margin_top="0")
 
     # Track identification card

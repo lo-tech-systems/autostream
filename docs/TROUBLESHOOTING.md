@@ -1088,8 +1088,7 @@ without sending a goodbye packet, the occupied state can persist briefly (at mos
 few seconds beyond twice the poll interval). It will clear on its own once the TTL
 elapses.
 
-**Adjusting the refresh interval:** Go to **Setup → Preferences → Output sharing
-refresh** to increase the poll interval (range 1–30 seconds, default 3). A lower
+**Refresh interval:** Output sharing polls every 3 seconds by default. A lower
 value means faster detection and faster clearing; a higher value reduces LAN
 traffic.
 
