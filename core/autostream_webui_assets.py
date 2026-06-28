@@ -385,12 +385,20 @@ button[type=submit] {
   background: var(--color-chip-off-bg);
   color: var(--color-chip-off-text);
   font-style: italic;
+  border: 2px solid var(--color-status-success);
 }
 
 .output-card-in-use {
   border-color: var(--color-border-card);
   background: var(--color-surface-raised);
   opacity: 0.7;
+  cursor: pointer;
+  transition: opacity 140ms ease;
+  pointer-events: auto;
+}
+
+.output-card-in-use:hover {
+  opacity: 0.85;
 }
 
 .output-toggle {

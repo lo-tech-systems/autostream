@@ -129,6 +129,8 @@ def _render_remote_home() -> str:
     parsed = MagicMock()
     parsed.owntone.volume_percent = 20
     parsed.webui.dark_mode = False
+    parsed.webui.show_hostname_on_home = False
+    parsed.webui.control_other_appliances = False
 
     patches = [
         patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),

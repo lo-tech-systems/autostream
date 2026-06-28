@@ -618,6 +618,8 @@ class TestRemoteHomeMasterVolumeLabel:
         parsed = MagicMock()
         parsed.owntone.volume_percent = 20
         parsed.webui.dark_mode = False
+        parsed.webui.show_hostname_on_home = False
+        parsed.webui.control_other_appliances = False
         with patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay._build_appliances_for_selector",
@@ -640,3 +642,116 @@ class TestRemoteHomeMasterVolumeLabel:
     def test_hostname_escaped_in_now_playing_header(self):
         html = self._render("<script>")
         assert "&lt;script&gt;" in html
+
+
+# ---------------------------------------------------------------------------
+# 8. Local Home: in-use output card HTML and navigation script
+# ---------------------------------------------------------------------------
+
+try:
+    from autostream_webui_page_airplay import send_airplay_page as _send_airplay_page
+    _HAS_AIRPLAY = True
+except ImportError:
+    _HAS_AIRPLAY = False
+
+_skip_airplay = pytest.mark.skipif(
+    not (_HAS_WEBUI and _HAS_AIRPLAY),
+    reason="autostream_webui_page_airplay import chain unavailable",
+)
+
+
+@_skip_airplay
+class TestLocalHomeInUseCardHTML:
+    """Local Home page HTML when an output is occupied by a remote appliance."""
+
+    _IN_USE_OUTPUT = {
+        "id": "output-abc",
+        "name": "Dining Room",
+        "selected": False,
+        "volume": 50,
+        "is_default": False,
+        "remote_in_use": True,
+        "remote_owner": "Pi5",
+    }
+
+    def _render(self, effective_control: bool = True) -> str:
+        handler = MagicMock()
+        chunks: list[bytes] = []
+        handler.wfile.write = lambda d: chunks.append(d)
+        handler._csrf_token = "testcsrf"
+        handler._pending_set_cookies = []
+
+        auth = MagicMock()
+        auth.get_csrf_token.return_value = "testcsrf"
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+
+        parsed = MagicMock()
+        parsed.owntone.base_url = "http://localhost:3689"
+        parsed.owntone.output_name = "autostream"
+        parsed.owntone.volume_percent = 20
+        parsed.webui.show_master_volume = False
+        parsed.webui.show_input_detail = False
+        parsed.webui.show_hostname_on_home = effective_control
+        parsed.webui.control_other_appliances = effective_control
+        parsed.webui.hidden_outputs = []
+        parsed.webui.dark_mode = False
+        parsed.track_identification = MagicMock(enabled=False)
+
+        playback = MagicMock()
+        playback.inputs = {}
+        playback.stylus_banner_text = ""
+        playback.belt_banner_text = ""
+        playback.bearing_banner_text = ""
+        playback.has_warning = False
+        playback.to_public_dict.return_value = {}
+
+        list_result = MagicMock(ok=True, outputs=[{}])
+        buf_result = MagicMock(ok=True, value="2250")
+
+        with patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
+             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]), \
+             patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback), \
+             patch("autostream_webui_page_airplay.list_outputs", return_value=list_result), \
+             patch("autostream_webui_page_airplay.build_output_list",
+                   return_value=[self._IN_USE_OUTPUT]), \
+             patch("autostream_output_usage.annotate_outputs", side_effect=lambda x: x), \
+             patch("autostream_webui_page_airplay.get_setting", return_value=buf_result), \
+             patch("autostream_webui_page_airplay.build_top_banner_html",
+                   return_value=("", "")):
+            _send_airplay_page(handler, state, auth)
+
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+    def test_in_use_card_has_data_remote_in_use_attribute(self):
+        html = self._render()
+        assert 'data-remote-in-use="1"' in html
+
+    def test_in_use_card_has_data_remote_owner_attribute(self):
+        html = self._render()
+        assert 'data-remote-owner="Pi5"' in html
+
+    def test_in_use_chip_has_in_use_class(self):
+        html = self._render()
+        assert "output-state-chip in-use" in html
+
+    def test_in_use_chip_shows_owner_hostname(self):
+        html = self._render()
+        assert "In Use by Pi5" in html
+
+    def test_page_contains_navigate_script(self):
+        """navigateToRemoteAppliance must be present (via _NAVIGATE_SCRIPT)."""
+        html = self._render()
+        assert "navigateToRemoteAppliance" in html
+
+    def test_control_flag_true_when_enabled(self):
+        html = self._render(effective_control=True)
+        assert "__CONTROL_OTHER_APPLIANCES=true" in html
+
+    def test_control_flag_false_when_disabled(self):
+        html = self._render(effective_control=False)
+        assert "__CONTROL_OTHER_APPLIANCES=false" in html

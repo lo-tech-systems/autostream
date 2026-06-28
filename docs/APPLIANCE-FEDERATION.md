@@ -337,6 +337,15 @@ There is no push or subscription mechanism; the poller is purely pull-based.
 The poll interval defaults to 3 seconds. A shorter interval reduces the time a
 stale occupied state is shown; a longer interval reduces LAN traffic.
 
+### Navigation shortcut
+
+When *Allow Control of Other Appliances* is enabled (Setup → Personalisation), an
+output card that shows "In Use by &lt;hostname&gt;" becomes tappable. Tapping anywhere
+on the card (except the toggle switch or volume slider) navigates directly to that
+appliance's Home page in proxy mode — equivalent to selecting it from the appliance
+selector dropdown. The card remains visually greyed-out; only the status pill gains
+a green outline to indicate the remote ownership.
+
 ### Constraints
 
 - Only appliances announcing `dial_api=v1` **and** `audio_status=v1` are polled.

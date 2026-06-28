@@ -119,6 +119,34 @@ window.addEventListener('DOMContentLoaded',function(){
 });
 </script>"""
 
+_NAVIGATE_SCRIPT = (
+    "<script>"
+    "function navigateToRemoteAppliance(hostname){"
+    "fetch('/api/appliances',{cache:'no-store'})"
+    ".then(function(r){return r.json();})"
+    ".then(function(data){"
+    "if(!data||!data.ok||!Array.isArray(data.appliances))return;"
+    "var appliance=data.appliances.find(function(a){"
+    "return String(a.hostname||'').toLowerCase()===String(hostname||'').toLowerCase();"
+    "});"
+    "if(appliance){window.location.href='/a/'+String(appliance.id)+'/';}"
+    "}).catch(function(){});"
+    "}"
+    "document.addEventListener('DOMContentLoaded',function(){"
+    "var list=document.getElementById('outputs-list');"
+    "if(!list)return;"
+    "list.addEventListener('click',function(e){"
+    "if(!window.__CONTROL_OTHER_APPLIANCES)return;"
+    "var card=e.target.closest('.output-card[data-remote-in-use=\"1\"]');"
+    "if(!card)return;"
+    "if(e.target.closest('.output-toggle')||e.target.closest('.output-slider-wrap'))return;"
+    "var owner=card.getAttribute('data-remote-owner');"
+    "if(owner)navigateToRemoteAppliance(owner);"
+    "});"
+    "});"
+    "</script>"
+)
+
 
 def _build_appliances_for_selector() -> list:
     """Return the bound-first appliance list suitable for the selector widget.
@@ -408,6 +436,7 @@ def send_airplay_page(
         f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
         f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
+        f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>"
     )
 
@@ -1200,7 +1229,7 @@ def send_airplay_page(
           refreshStatus();
           refreshOutputsState();
         }});
-      </script>"""
+      </script>""" + _NAVIGATE_SCRIPT
     _body_prefix = """
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
   <div class="panel modal-panel">
@@ -1360,6 +1389,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     csrf_token = getattr(handler, "_csrf_token", None) or ""
     preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
     dark_mode = parsed.webui.dark_mode
+    effective_control = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
 
     appliances = _build_appliances_for_selector()
     _local_id = str(get_appliance_id() or "")
@@ -1407,8 +1437,10 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__REMOTE_HOSTNAME='{html.escape(_remote_hostname)}';"
         f"window.__POLL_URL='{html.escape(poll_url)}';"
         f"window.__OUTPUT_URL='{html.escape(output_url)}';"
+        f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
         + _REMOTE_HOME_SCRIPT
+        + _NAVIGATE_SCRIPT
     )
 
     _body_prefix = """

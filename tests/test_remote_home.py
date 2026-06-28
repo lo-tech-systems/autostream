@@ -222,6 +222,8 @@ class TestRemoteHomePageContent:
         parsed = MagicMock()
         parsed.owntone.volume_percent = 20
         parsed.webui.dark_mode = False
+        parsed.webui.show_hostname_on_home = False
+        parsed.webui.control_other_appliances = False
         with patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
@@ -262,3 +264,13 @@ class TestRemoteHomePageContent:
     def test_page_has_outputs_list_placeholder(self):
         html = self._render()
         assert "outputs-list" in html
+
+    def test_page_contains_navigate_to_remote_script(self):
+        """navigateToRemoteAppliance must be present (via _NAVIGATE_SCRIPT)."""
+        html = self._render()
+        assert "navigateToRemoteAppliance" in html
+
+    def test_page_contains_control_other_appliances_flag(self):
+        """__CONTROL_OTHER_APPLIANCES JS global must be emitted in the page head."""
+        html = self._render()
+        assert "__CONTROL_OTHER_APPLIANCES" in html
