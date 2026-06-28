@@ -35,6 +35,11 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_player_service import list_outputs
+from autostream_players import (
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
+)
 from autostream_playback_stats import (
     suggested_silence_threshold_dbfs,
 )
@@ -662,6 +667,20 @@ def send_setup_page(
           </div>
         """
     current_hostname = get_system_hostname()
+    try:
+        mdns_grace_period_minutes = max(
+            SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
+            min(
+                SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
+                round(int(parsed.general.mdns_grace_period_seconds) / 60),
+            ),
+        )
+    except Exception:
+        mdns_grace_period_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
+    _mdns_grace_oninput = (
+        "document.getElementById('mdns_grace_period_val').textContent=this.value+' min';"
+        "if(liveEnabled) syncMdnsGracePeriod(this.value);"
+    )
     system_card_inner_html = f"""
           <div>
             <div style="display:flex;align-items:center;gap:.75rem;">
@@ -670,6 +689,19 @@ def send_setup_page(
             </div>
             <button type="button" id="btnChangeHostname" class="pill-btn small" style="width:100%;margin-top:0.5rem;">Change Hostname</button>
             <button type="button" id="btnChangePin" class="pill-btn small" style="width:100%;margin-top:0.5rem;">Change PIN</button>
+            <label style="display:block;margin-top:0.75rem;">
+              <div class="slider-header">
+                <span>mDNS Grace Period:</span>
+                <span id="mdns_grace_period_val">{mdns_grace_period_minutes} min</span>
+              </div>
+              <input type="range" name="mdns_grace_period_minutes"
+                min="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES}"
+                max="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES}"
+                step="1"
+                value="{mdns_grace_period_minutes}"
+                oninput="{html.escape(_mdns_grace_oninput)}">
+              <div class="storage-meta">Minutes to keep stale appliance discovery records before removal.</div>
+            </label>
           </div>
         """
     system_card_html = settings_card_html(
@@ -1464,6 +1496,13 @@ def send_setup_page(
         function syncSil(v){{
           document.getElementById('sil_val').textContent=v+'s';
           if (liveEnabled) settingsSaveFieldDebounced('general.silence_seconds', parseInt(v, 10), 500);
+        }}
+        let mdnsGraceTimer = null;
+        function syncMdnsGracePeriod(v){{
+          clearTimeout(mdnsGraceTimer);
+          mdnsGraceTimer = setTimeout(function(){{
+            settingsTransact('/api/settings/mdns-grace-period', {{value: parseInt(v, 10)}});
+          }}, 500);
         }}
         function syncTiLeadIn(v){{
           document.getElementById('ti_lead_in_val').textContent=v+' s';

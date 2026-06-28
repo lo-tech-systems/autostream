@@ -770,3 +770,9 @@ class TestSetupPageAutosaveWiring:
     def test_update_channel_wired(self, tmp_path):
         html = self._render_setup(tmp_path)
         assert "settingsSaveField('updates.update_channel'" in html
+
+    def test_mdns_grace_period_wired_on_system_page(self, tmp_path):
+        html = self._render_setup(tmp_path)
+        assert 'name="mdns_grace_period_minutes"' in html
+        assert "mDNS Grace Period" in html
+        assert "settingsTransact('/api/settings/mdns-grace-period'" in html

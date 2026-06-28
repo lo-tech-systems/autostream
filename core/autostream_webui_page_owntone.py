@@ -31,10 +31,6 @@ from autostream_config import (
     parse_config,
 )
 from autostream_players import (
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
-    SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
     SETTING_START_BUFFER_MS,
     SETTING_START_BUFFER_MS_DEFAULT,
     SETTING_START_BUFFER_MS_MAX,
@@ -346,16 +342,6 @@ def send_owntone_setup_page(
         start_buffer_ms = SETTING_START_BUFFER_MS_DEFAULT
     start_buffer_available = bool(start_buffer_result.ok)
 
-    try:
-        _gp_raw = int(parsed.general.mdns_grace_period_seconds)
-        grace_period_minutes = max(
-            SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
-            min(SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES, round(_gp_raw / 60)),
-        )
-    except Exception:
-        grace_period_minutes = SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES
-    grace_period_available = True
-
     speakers_html = ""
     for i, row in enumerate(row_specs):
         spk = str(row["name"])
@@ -470,20 +456,6 @@ def send_owntone_setup_page(
           </fieldset>
         """
 
-    _grace_period_html = (
-        '<label style="display:block;margin-top:0.75rem;">'
-        '<div class="slider-header">'
-        '<span>mDNS Grace Period (minutes):</span>'
-        f'<span id="grace_period_val">{grace_period_minutes}</span>'
-        '</div>'
-        f'<input type="range" name="device_removal_grace_period_minutes"'
-        f' min="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES}"'
-        f' max="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES}"'
-        f' step="1" value="{grace_period_minutes}"'
-        " oninput=\"document.getElementById('grace_period_val').textContent=this.value;\">"
-        '</label>'
-    ) if grace_period_available else ""
-
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
 
     page_heading_html = "<h1>Owntone Setup</h1>"
@@ -517,25 +489,6 @@ def send_owntone_setup_page(
         'This backend does not currently expose start-buffer control.</div>'
     )
 
-    # Grace period: autosave (debounced) in configured mode
-    _gp_oninput = (
-        "document.getElementById('grace_period_val').textContent=this.value;"
-        "if(liveEnabled) _owntoneNativeDebounced('grace_period', this.value, '/api/owntone/grace-period');"
-    )
-    _grace_period_html = (
-        '<label style="display:block;margin-top:0.75rem;">'
-        '<div class="slider-header">'
-        '<span>mDNS Grace Period (minutes):</span>'
-        f'<span id="grace_period_val">{grace_period_minutes}</span>'
-        '</div>'
-        f'<input type="range" name="device_removal_grace_period_minutes"'
-        f' min="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES}"'
-        f' max="{SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES}"'
-        f' step="1" value="{grace_period_minutes}"'
-        f' oninput="{html.escape(_gp_oninput)}">'
-        '</label>'
-    ) if grace_period_available else ""
-
     _body_html = (
         page_heading_html
         + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
@@ -555,7 +508,6 @@ def send_owntone_setup_page(
         + f"</div>"
         + ('<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else '')
         + _buf_html
-        + _grace_period_html
         + f"</fieldset>"
         + f"</div>"
     )

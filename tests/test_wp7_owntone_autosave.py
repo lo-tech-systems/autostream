@@ -8,10 +8,10 @@ Tests cover:
   - send_owntone_output_offset_json: offset clamped, validation, live runtime update
   - send_owntone_uncompressed_json: delegates to save_setting, restart on result
   - send_owntone_start_buffer_json: value clamped, delegates to save_setting
-  - send_owntone_grace_period_json: minutes→seconds conversion, delegates
+  - send_owntone_grace_period_json: compatibility wrapper for grace period
   - No store → 200 with error (no 500), except native settings
   - Setup page: no Save button in configured mode; liveEnabled=false in initial setup
-  - Setup page: autosave JS wired on visibility/mode/offset/uncompressed/buffer/grace
+  - Setup page: autosave JS wired on visibility/mode/offset/uncompressed/buffer
 """
 from __future__ import annotations
 
@@ -338,7 +338,7 @@ class TestNativeOwntoneSettings:
         call_value = m_save.call_args[0][2]
         assert call_value <= SETTING_START_BUFFER_MS_MAX
 
-    def test_grace_period_converts_minutes_to_seconds(self, tmp_path):
+    def test_grace_period_compat_endpoint_converts_minutes_to_seconds(self, tmp_path):
         from autostream_webui_api import send_owntone_grace_period_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
@@ -439,10 +439,11 @@ class TestOwntoneSetupPage:
         assert "Refresh" in html
         assert "/owntone-setup" in html
 
-    def test_grace_period_reads_autostream_config(self, tmp_path):
+    def test_grace_period_not_rendered_on_owntone_page(self, tmp_path):
         html = self._render_page(str(tmp_path))
-        assert 'name="device_removal_grace_period_minutes"' in html
-        assert 'value="2"' in html
+        assert 'name="device_removal_grace_period_minutes"' not in html
+        assert "mDNS Grace Period" not in html
+        assert "/api/owntone/grace-period" not in html
 
 
 # ---------------------------------------------------------------------------

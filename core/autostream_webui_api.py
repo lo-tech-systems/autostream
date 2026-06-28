@@ -1865,6 +1865,18 @@ def apply_mdns_grace_period(state: WebUIState, seconds: int) -> tuple[bool, bool
     )
 
 
+def _forward_mdns_grace_period_to_owntone(
+    state: WebUIState,
+    seconds: int,
+) -> tuple[bool, bool, str]:
+    """Best-effort consumer sync for the autostream-owned mDNS grace setting."""
+    from autostream_players import SETTING_DEVICE_REMOVAL_GRACE_PERIOD
+
+    return _push_owntone_native_setting(
+        state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, seconds
+    )
+
+
 def apply_mdns_grace_period_startup(state: WebUIState) -> None:
     """Apply the configured mDNS grace at startup without blocking boot.
 
@@ -1949,14 +1961,12 @@ def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> Non
     _send_owntone_native_setting_json(handler, state, SETTING_START_BUFFER_MS, value)
 
 
-def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/owntone/grace-period — set mDNS grace period in minutes.
+def send_settings_mdns_grace_period_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/settings/mdns-grace-period: set mDNS grace period in minutes.
 
-    Body: {"value": <int>}  (minutes; converted to seconds for OwnTone API)
+    Body: {"value": <int>}  (minutes; stored/applied in seconds)
     """
     from autostream_players import (
-        SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
-        SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
         SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
         SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
     )
@@ -1987,15 +1997,29 @@ def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> Non
     try:
         _store.update(_mutator)
     except Exception:
-        logging.exception("send_owntone_grace_period_json: store update failed")
+        logging.exception("send_settings_mdns_grace_period_json: store update failed")
         send_json(handler, 200, {"ok": False, "error": "Internal error"})
         return
 
-    ok, restart_needed, error = apply_mdns_grace_period(state, seconds)
+    from autostream_appliances import set_grace_period
+    set_grace_period(seconds)
+
+    ok, restart_needed, error = _forward_mdns_grace_period_to_owntone(state, seconds)
+    response = {
+        "ok": True,
+        "value": minutes,
+        "seconds": seconds,
+        "restart_required": restart_needed,
+    }
     if not ok:
-        send_json(handler, 200, {"ok": False, "error": error or "OwnTone API error"})
-        return
-    send_json(handler, 200, {"ok": True, "restart_required": restart_needed})
+        logging.debug("mDNS grace period OwnTone forward failed: %s", error)
+        response["warning"] = error or "OwnTone sync failed"
+    send_json(handler, 200, response)
+
+
+def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> None:
+    """Compatibility wrapper for the former OwnTone-branded endpoint."""
+    send_settings_mdns_grace_period_json(handler, state, body)
 
 
 # ---------------------------------------------------------------------------

@@ -72,10 +72,10 @@ This means an appliance that moves from one interface or IP address to another i
 usually dialed at the live address after one refresh cycle; the grace period only
 controls when the old address is finally removed.
 
-The **mDNS Grace Period** setting is owned by autostream's general configuration.
-Core startup injects the configured value into the appliance discovery browser and
-also forwards the same value to OwnTone/owntone-mini for its native device-removal
-setting.
+The **mDNS Grace Period** setting lives in Setup -> System and is owned by
+autostream's general configuration. Core startup injects the configured value
+into the appliance discovery browser and also forwards the same value to
+OwnTone/owntone-mini for its native device-removal setting.
 
 ---
 

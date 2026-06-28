@@ -71,6 +71,7 @@ from autostream_webui_api import (
     send_advertisement_post_json,
     send_auto_update_post_json,
     send_hostname_post_json,
+    send_settings_mdns_grace_period_json,
     send_save_now_json,
     send_settings_get_json,
     send_settings_post_json,
@@ -852,6 +853,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             send_auto_update_post_json(self, STATE, body_str)
+
+        elif path == "/api/settings/mdns-grace-period":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_settings_mdns_grace_period_json(self, STATE, body_str)
 
         elif path == "/api/settings/save":
             if not AUTH.require_authenticated_if_pin_enabled(self):

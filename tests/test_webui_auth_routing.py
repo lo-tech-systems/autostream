@@ -111,6 +111,7 @@ _PROTECTED = [
     ("/api/update/apply",   "autostream_webui.run_updater"),
     ("/api/reboot",         "autostream_webui.reboot_system"),
     ("/api/factory-reset",  "autostream_webui.handle_factory_reset_post"),
+    ("/api/settings/mdns-grace-period", "autostream_webui.send_settings_mdns_grace_period_json"),
     ("/api/dial/authorize", "autostream_webui.dispatch_dial_management_post"),
 ]
 

@@ -259,10 +259,10 @@ During adapter failover or multi-homing, one appliance may briefly be visible at
 more than one IP address. Autostream treats matching identity + hostname records
 as the same appliance and prefers a recently confirmed address.
 
-The **mDNS Grace Period** setting is stored in autostream's own configuration. It
-controls how long stale appliance-discovery records are retained before removal
-and is also forwarded to OwnTone/owntone-mini for its native device-removal grace
-setting.
+The **mDNS Grace Period** setting lives in **Setup -> System** and is stored in
+autostream's own configuration. It controls how long stale appliance-discovery
+records are retained before removal and is also forwarded to OwnTone/owntone-mini
+for its native device-removal grace setting.
 
 ### Opting out of multi-appliance discovery
 

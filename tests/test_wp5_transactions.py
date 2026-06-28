@@ -373,6 +373,67 @@ class TestAutoUpdateEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# /api/settings/mdns-grace-period
+# ---------------------------------------------------------------------------
+
+class TestMdnsGracePeriodEndpoint:
+    def test_success_persists_and_applies_browser_grace(self, tmp_path):
+        from autostream_webui_api import send_settings_mdns_grace_period_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_appliances.set_grace_period") as m_browser, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = MagicMock(ok=True, unsupported=False, restart_required=False, message="")
+            send_settings_mdns_grace_period_json(handler, state, json.dumps({"value": 5}))
+
+        code, data = _response(handler)
+        assert code == 200
+        assert data["ok"] is True
+        assert data["seconds"] == 300
+        m_browser.assert_called_once_with(300)
+        assert store.raw_snapshot()["general"]["mdns_grace_period_seconds"] == 300
+        m_save.assert_called_once()
+        store.close(save=False)
+
+    def test_owntone_forward_failure_returns_warning_without_reverting(self, tmp_path):
+        from autostream_webui_api import send_settings_mdns_grace_period_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_appliances.set_grace_period") as m_browser, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = MagicMock(
+                ok=False,
+                unsupported=False,
+                restart_required=False,
+                message="backend offline",
+            )
+            send_settings_mdns_grace_period_json(handler, state, json.dumps({"value": 4}))
+
+        code, data = _response(handler)
+        assert code == 200
+        assert data["ok"] is True
+        assert "warning" in data
+        assert "backend offline" in data["warning"]
+        m_browser.assert_called_once_with(240)
+        assert store.raw_snapshot()["general"]["mdns_grace_period_seconds"] == 240
+        store.close(save=False)
+
+    def test_invalid_json_returns_400(self, tmp_path):
+        from autostream_webui_api import send_settings_mdns_grace_period_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        send_settings_mdns_grace_period_json(handler, state, "bad json")
+        code, data = _response(handler)
+        assert code == 400
+        assert data["ok"] is False
+        store.close(save=False)
+
+
+# ---------------------------------------------------------------------------
 # /api/settings/save
 # ---------------------------------------------------------------------------
 
