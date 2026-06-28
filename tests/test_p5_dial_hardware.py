@@ -385,36 +385,49 @@ class TestDialLEDWithMockGpio:
 # ---------------------------------------------------------------------------
 
 class TestConfigureLogging:
-    def test_default_level_is_info(self):
+    def _call_configure(self, env):
         import dial_main
+        file_handler = MagicMock(name="file_handler")
+        stream_handler = MagicMock(name="stream_handler")
         with patch("logging.basicConfig") as mock_cfg, \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("APP_LOG_LEVEL", None)
+             patch("logging.FileHandler", return_value=file_handler) as mock_file, \
+             patch("logging.StreamHandler", return_value=stream_handler) as mock_stream, \
+             patch("os.makedirs") as mock_makedirs, \
+             patch.dict(os.environ, env, clear=False):
+            if "APP_LOG_LEVEL" not in env:
+                os.environ.pop("APP_LOG_LEVEL", None)
             dial_main._configure_logging()
+        return mock_cfg, mock_file, mock_stream, mock_makedirs, file_handler, stream_handler
+
+    def test_default_level_is_info(self):
+        mock_cfg, *_ = self._call_configure({})
         _, kwargs = mock_cfg.call_args
-        # _configure_logging passes the string "INFO" directly (Python logging accepts it)
-        assert kwargs["level"] == "INFO"
+        assert kwargs["level"] == logging.INFO
 
     def test_debug_level_from_env(self):
-        import dial_main
-        with patch("logging.basicConfig") as mock_cfg, \
-             patch.dict(os.environ, {"APP_LOG_LEVEL": "DEBUG"}):
-            dial_main._configure_logging()
+        mock_cfg, *_ = self._call_configure({"APP_LOG_LEVEL": "DEBUG"})
         _, kwargs = mock_cfg.call_args
-        assert kwargs["level"] == "DEBUG"
+        assert kwargs["level"] == logging.DEBUG
 
     def test_invalid_level_from_env_does_not_crash(self):
-        import dial_main
-        with patch("logging.basicConfig"), \
-             patch.dict(os.environ, {"APP_LOG_LEVEL": "NOTLEVEL"}):
-            dial_main._configure_logging()   # must not raise
+        mock_cfg, *_ = self._call_configure({"APP_LOG_LEVEL": "NOTLEVEL"})
+        _, kwargs = mock_cfg.call_args
+        assert kwargs["level"] == logging.INFO
+
+    def test_matches_main_autostream_format_and_handlers(self):
+        mock_cfg, mock_file, mock_stream, mock_makedirs, file_handler, stream_handler = \
+            self._call_configure({"APP_LOG_LEVEL": "INFO"})
+        _, kwargs = mock_cfg.call_args
+        mock_makedirs.assert_called_once_with("/var/log/autostream", exist_ok=True)
+        mock_file.assert_called_once_with("/var/log/autostream/autostream-dial.log")
+        mock_stream.assert_called_once_with(sys.stdout)
+        assert kwargs["format"] == "%(asctime)s: %(message)s"
+        assert kwargs["datefmt"] == "%d-%b-%y %H:%M:%S"
+        assert kwargs["handlers"] == [file_handler, stream_handler]
 
     def test_gpiozero_logger_suppressed_at_info(self):
         """gpiozero noise must be suppressed at WARNING when main is at INFO."""
-        import dial_main
-        with patch("logging.basicConfig"), \
-             patch.dict(os.environ, {"APP_LOG_LEVEL": "INFO"}):
-            dial_main._configure_logging()
+        self._call_configure({"APP_LOG_LEVEL": "INFO"})
         gpz_logger = logging.getLogger("gpiozero")
         assert gpz_logger.level == logging.WARNING, (
             f"Expected gpiozero logger at WARNING, got {gpz_logger.level}"

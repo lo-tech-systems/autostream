@@ -60,6 +60,7 @@ init_service_dirs() {
     chown autostream:autostream /var/lib/autostream
     chmod 0750 /var/lib/autostream
     # Create initial log files with correct owner/mode before logrotate's first rotation.
+    install -m 0640 -o autostream -g adm /dev/null /var/log/autostream/autostream-dial.log
     install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-install.log
     install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-update.log
     install -m 0640 -o root -g adm /dev/null /var/log/autostream/autostream_wifi_watcher.log

@@ -4,8 +4,9 @@ Covers:
 - Request guard enforcement: GET rejected (405), cross-origin POST rejected
   (403), missing XRW rejected (400), well-formed POST passes all guards.
 - Structural checks: ZIP filename uses autostream-dial-logs- prefix; only
-  dial-*.log and wifi_setup.log are collected; owntone.log and main-product
-  logs are excluded; no-log README is produced when no files are readable.
+  dial-specific logs and wifi watcher logs are collected; owntone.log and
+  main-product logs are excluded; no-log README is produced when no files are
+  readable.
 - Deployment: installer deploys download-logs.cgi to /opt/autostream/nginx/cgi/.
 
 Bash execution tests are skipped when bash cannot run scripts at Windows
@@ -81,6 +82,13 @@ class TestDialCGIStructure:
             "download-logs.cgi must glob dial-*.log to collect dial-specific logs"
         )
 
+    def test_collects_autostream_dial_service_log(self):
+        """Must collect the main autostream dial service log."""
+        src = self._src()
+        assert "autostream-dial.log" in src, (
+            "download-logs.cgi must collect autostream-dial.log"
+        )
+
     def test_collects_wifi_watcher_log(self):
         """Must collect autostream_wifi_watcher.log."""
         src = self._src()
@@ -120,7 +128,7 @@ class TestDialCGIStructure:
     def test_no_log_readme_references_dial_paths(self):
         """README produced when no logs found must reference dial log paths."""
         src = self._src()
-        assert "dial-*.log" in src or "dial" in src, (
+        assert "dial-*.log" in src and "autostream-dial.log" in src, (
             "No-log README must reference dial-specific log paths"
         )
 

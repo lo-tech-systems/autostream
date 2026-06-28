@@ -214,6 +214,19 @@ class TestRecoveryHelpers:
         )
 
 
+class TestDialLogSetup:
+    def test_init_service_dirs_creates_service_log_for_autostream_user(self):
+        """The running dial service must be able to write autostream-dial.log."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("init_service_dirs() {")
+        assert start != -1, "init_service_dirs() definition not found"
+        body = content[start: start + 900]
+        assert "autostream-dial.log" in body
+        assert "install -m 0640 -o autostream -g adm" in body, (
+            "autostream-dial.log must be created as autostream:adm 0640"
+        )
+
+
 class TestInstallerExitTrap:
     def _trap_body(self) -> str:
         content = DIAL_INSTALLER.read_text(encoding="utf-8")

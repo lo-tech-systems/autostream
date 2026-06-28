@@ -23,11 +23,20 @@ from dial_volume import enqueue_delta, enqueue_mute_toggle, start_volume_worker
 
 
 def _configure_logging() -> None:
-    level = os.environ.get('APP_LOG_LEVEL', 'INFO').upper()
+    level_name = os.environ.get('APP_LOG_LEVEL', 'INFO').strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+    log_file = "/var/log/autostream/autostream-dial.log"
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     logging.basicConfig(
         level=level,
-        format='%(levelname)s %(name)s %(message)s',
-        stream=sys.stderr,
+        format="%(asctime)s: %(message)s",
+        datefmt="%d-%b-%y %H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout),
+        ],
     )
     # Suppress library noise at INFO; still visible at DEBUG.
     logging.getLogger('gpiozero').setLevel(logging.WARNING)

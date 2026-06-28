@@ -726,11 +726,20 @@ class TestLogrotateConfig:
         assert re.search(r"^\s*rotate\s+\d+", text, re.MULTILINE)
 
     def test_dial_logrotate_has_create_with_permissions(self):
-        """Dial log files are root:adm 0640; create directive must set this."""
+        """Dial admin logs are root:adm 0640; create directive must set this."""
         text = self._conf("autostream-dial")
         assert re.search(r"^\s*create\s+0640\s+root\s+adm", text, re.MULTILINE), (
             "autostream-dial logrotate must have create 0640 root adm"
         )
+
+    def test_dial_service_logrotate_has_service_create_permissions(self):
+        """The running dial service writes its own log as autostream:adm 0640."""
+        text = self._conf("autostream-dial")
+        assert "autostream-dial.log" in text
+        assert re.search(r"^\s*create\s+0640\s+autostream\s+adm", text, re.MULTILINE), (
+            "autostream-dial service logrotate must have create 0640 autostream adm"
+        )
+        assert "copytruncate" in text
 
     def test_dial_logrotate_covers_update_log(self):
         text = self._conf("autostream-dial")
