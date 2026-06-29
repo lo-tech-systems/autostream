@@ -1940,6 +1940,11 @@ def send_setup_page(
           }} else if (!_dialUnlockedPins.has(card)) {{
             _dialLockSection(card);
           }}
+          var hasPin = card.dataset.pinSet === 'true';
+          var pinBtn = card.querySelector('[data-dial-action="change-pin"]');
+          if (pinBtn) pinBtn.textContent = hasPin ? 'Change Dial PIN' : 'Set Dial PIN';
+          var recoverBtn = card.querySelector('[data-dial-action="recover-pin"]');
+          if (recoverBtn) recoverBtn.disabled = !hasPin;
         }}
 
         function refreshDialsCardSub() {{
@@ -2149,7 +2154,7 @@ def send_setup_page(
           confirmInputEl.value = '';
           confirmInputEl.style.display = mode === 'unlock' ? 'none' : '';
           var okBtn = document.getElementById('dialPinModalOk');
-          okBtn.textContent = mode === 'unlock' ? 'Unlock' : 'Change PIN';
+          okBtn.textContent = mode === 'unlock' ? 'Unlock' : (card.dataset.pinSet !== 'true' ? 'Set PIN' : 'Change PIN');
           okBtn.disabled = false;
           document.getElementById('dialPinModalCancel').disabled = false;
           modal.classList.add('show');
@@ -2165,7 +2170,10 @@ def send_setup_page(
         }}
 
         function dialChangePIN(card) {{
-          _openDialPinModal(card, 'change', 'Change Dial PIN', 'Enter a new PIN (leave blank to remove):');
+          var hasPin = card.dataset.pinSet === 'true';
+          _openDialPinModal(card, 'change',
+            hasPin ? 'Change Dial PIN' : 'Set Dial PIN',
+            hasPin ? 'Enter a new PIN (leave blank to remove):' : 'Enter a new PIN:');
         }}
 
         function openDialNameModal(card) {{
@@ -2328,6 +2336,7 @@ def send_setup_page(
             var result = await _dialPost('/api/dial/pin_recovery/complete', {{uuid: uuid, new_pin: newPin, pin_recovery: true}});
             if (result.ok) {{
               card.dataset.pinSet = 'true';
+              _updateDialLockVisibility(card);
               dialMsg(card, 'PIN reset', true);
               closeDialPinRecoveryModal();
             }} else {{
