@@ -73,4 +73,4 @@ echo "=== WSL test suite: $REPO_ROOT ==="
 echo "=== Targets: $TARGETS ==="
 echo ""
 
-exec python3 -m pytest $TARGETS -q --ignore=tests/playwright
+exec python3 -m pytest $TARGETS -q --ignore=tests/playwright --timeout=60
