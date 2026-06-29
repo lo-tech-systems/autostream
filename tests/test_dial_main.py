@@ -86,7 +86,8 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None):
         def wait(self, timeout=None):
             return super().wait(timeout=min(timeout, 0.1) if timeout else 0.1)
 
-    with patch("dial_main.load_config", return_value=cfg), \
+    with patch("dial_main._configure_logging"), \
+         patch("dial_main.load_config", return_value=cfg), \
          patch("dial_main._reconcile_update_timer"), \
          patch("dial_main._announce_self"), \
          patch("dial_main.DialLED", return_value=mock_led), \
@@ -112,6 +113,7 @@ class TestSignalHandlers:
 
         cfg = _make_cfg()
         captured = {}
+        installed = {}
 
         class _CapEvent(threading.Event):
             def __init__(self):
@@ -119,10 +121,13 @@ class TestSignalHandlers:
                 captured["ev"] = self
 
             def wait(self, timeout=None):
-                # Exit immediately on first wait after SIGTERM.
                 return super().wait(timeout=0.01)
 
-        with patch("dial_main.load_config", return_value=cfg), \
+        def _capture_signal(sig, handler):
+            installed[sig] = handler
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED"), \
@@ -131,13 +136,17 @@ class TestSignalHandlers:
              patch("dial_main.stop_playing_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
+             patch("dial_main.signal.signal", side_effect=_capture_signal), \
              patch("threading.Event", _CapEvent):
             mock_http_cls.return_value._server = MagicMock()
             mock_ctrl_cls.return_value = MagicMock()
-            # Fire SIGTERM to our own process in a background thread after setup.
+
             def _fire_signal():
                 time.sleep(0.05)
-                signal.raise_signal(signal.SIGTERM)
+                handler = installed.get(signal.SIGTERM)
+                if handler:
+                    handler(signal.SIGTERM, None)
+
             threading.Thread(target=_fire_signal, daemon=True).start()
             dm.main()
 
@@ -150,6 +159,7 @@ class TestSignalHandlers:
 
         cfg = _make_cfg()
         captured = {}
+        installed = {}
 
         class _CapEvent(threading.Event):
             def __init__(self):
@@ -159,7 +169,11 @@ class TestSignalHandlers:
             def wait(self, timeout=None):
                 return super().wait(timeout=0.01)
 
-        with patch("dial_main.load_config", return_value=cfg), \
+        def _capture_signal(sig, handler):
+            installed[sig] = handler
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED"), \
@@ -168,13 +182,17 @@ class TestSignalHandlers:
              patch("dial_main.stop_playing_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
+             patch("dial_main.signal.signal", side_effect=_capture_signal), \
              patch("threading.Event", _CapEvent):
             mock_http_cls.return_value._server = MagicMock()
             mock_ctrl_cls.return_value = MagicMock()
 
             def _fire_signal():
                 time.sleep(0.05)
-                signal.raise_signal(signal.SIGINT)
+                handler = installed.get(signal.SIGINT)
+                if handler:
+                    handler(signal.SIGINT, None)
+
             threading.Thread(target=_fire_signal, daemon=True).start()
             dm.main()
 
@@ -207,7 +225,8 @@ class TestDialFinalCleanup:
         def _mock_stop_browser():
             order.append("browser")
 
-        with patch("dial_main.load_config", return_value=cfg), \
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED"), \
@@ -246,7 +265,8 @@ class TestDialFinalCleanup:
                     raise RuntimeError("fatal test error")
                 return True
 
-        with patch("dial_main.load_config", return_value=cfg), \
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED"), \
@@ -281,7 +301,8 @@ class TestDialFinalCleanup:
             def wait(self, timeout=None):
                 return True  # shutdown signaled immediately
 
-        with patch("dial_main.load_config", return_value=cfg), \
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED", return_value=mock_led), \
@@ -311,7 +332,8 @@ class TestDialFinalCleanup:
             def wait(self, timeout=None):
                 return True
 
-        with patch("dial_main.load_config", return_value=cfg), \
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED"), \
