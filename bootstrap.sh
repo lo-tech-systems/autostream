@@ -45,6 +45,28 @@ if ! command -v git >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git
 fi
 
+# ---- --fetch-autostream shortcut --------------------------------------------
+# When --fetch-autostream is requested the installer will clone main anyway.
+# Bypass the release download so the installer and app code are always the same
+# version — mixing the release installer with main app files breaks when files
+# have moved between the two (e.g. platform/wifi_watcher vs old core/ layout).
+for _arg in "$@"; do
+  if [[ "${_arg}" == "--fetch-autostream" ]]; then
+    repo_root="${STAGING_DIR}/src/main"
+    if [[ -d "${STAGING_DIR}" ]]; then
+      rm -rf "${STAGING_DIR}"
+    fi
+    mkdir -p "${STAGING_DIR}/src"
+    chmod 0700 "${STAGING_DIR}"
+    info "Cloning autostream main branch..."
+    git clone "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" "${repo_root}"
+    installer="${repo_root}/autostream_install.sh"
+    chmod 0755 "${installer}"
+    info "Starting main-branch installer..."
+    exec bash "${installer}" "$@"
+  fi
+done
+
 # ---- Resolve latest release -------------------------------------------------
 info "Querying GitHub for the latest autostream release..."
 release_json=$(curl -fsSL \
