@@ -2448,7 +2448,17 @@ def send_setup_page(
             card.addEventListener('change', function(ev) {{
               var action = ev.target.dataset.dialAction;
               if (action === 'toggle-allow') dialToggleAllow(card, ev.target.checked);
-              if (action === 'save-config') dialSaveConfig(card);
+              if (action === 'save-config' && (
+                ev.target.classList.contains('dial-autoupdate') ||
+                ev.target.classList.contains('dial-channel')
+              )) dialSaveConfig(card);
+            }});
+            card.addEventListener('focusout', function(ev) {{
+              if (ev.target.dataset.dialAction === 'save-config'
+                  && !ev.target.classList.contains('dial-autoupdate')
+                  && !ev.target.classList.contains('dial-channel')) {{
+                dialSaveConfig(card);
+              }}
             }});
             var lockedSection = card.querySelector('.dial-locked-section');
             if (lockedSection) {{

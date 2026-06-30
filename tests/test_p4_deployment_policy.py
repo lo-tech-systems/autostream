@@ -831,6 +831,12 @@ systemd_available = pytest.mark.skipif(
     reason="systemd-analyze not available",
 )
 
+_autostream_installed = Path("/opt/autostream").exists()
+autostream_installed = pytest.mark.skipif(
+    not _autostream_installed,
+    reason="autostream not installed at /opt/autostream — run on a deployed appliance",
+)
+
 nginx_available = pytest.mark.skipif(
     not _tool_ok("nginx"),
     reason="nginx not available",
@@ -880,6 +886,7 @@ class TestNginxSyntax:
 class TestLinuxServiceValidation:
     @linux_only
     @systemd_available
+    @autostream_installed
     @pytest.mark.parametrize("unit", MAIN_UNITS, ids=[u.name for u in MAIN_UNITS])
     def test_systemd_analyze_verify_main_unit(self, unit, tmp_path):
         r = subprocess.run(
@@ -892,6 +899,7 @@ class TestLinuxServiceValidation:
 
     @linux_only
     @systemd_available
+    @autostream_installed
     @pytest.mark.parametrize("unit", DIAL_UNITS, ids=[u.name for u in DIAL_UNITS])
     def test_systemd_analyze_verify_dial_unit(self, unit):
         r = subprocess.run(
