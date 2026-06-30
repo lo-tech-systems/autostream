@@ -354,7 +354,8 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     hotspot_reason = ""
     if in_setup:
         with w.state_lock:
-            hotspot_reason = w.STATE.setup_purpose
+            session = w.STATE.hotspot
+        hotspot_reason = session.purpose.value if session else ""
 
     if in_setup or last_active_path_seen is None:
         no_active_age = None

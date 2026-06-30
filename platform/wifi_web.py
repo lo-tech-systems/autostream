@@ -575,7 +575,9 @@ def _has_saved_network(w) -> bool:
     if w.get_configured_network_state().is_configured:
         return True
     with w.state_lock:
-        return bool(w.STATE.rollback_connection_name)
+        session = w.STATE.hotspot
+    return bool(session is not None and session.rollback is not None
+                and session.rollback.connection_name)
 
 
 # ---------------------------------------------------------------------------
@@ -935,17 +937,10 @@ def build_app(w) -> Flask:
         if not reason:
             reason = (request.form.get("reason") or "").strip()
 
+        # There is no once-per-boot AP budget any more (defect 2): a MANUAL
+        # hotspot is enterable whenever requested; the 30-minute session lifetime
+        # is the only rate limit.  Always queue the request.
         with w.state_lock:
-            # Reject early if AP mode is exhausted for this boot cycle and cannot be
-            # force-entered (i.e. no recent failed config attempt).  Without this the
-            # caller would receive a success response but AP mode would never start.
-            if w.STATE.ap_exhausted and not w.STATE.force_setup_mode:
-                w.logger.warning("AP mode request rejected: ap_exhausted latch set (reason='%s')", reason or "UserRequest")
-                return jsonify({
-                    "ok": False,
-                    "error": "ap_exhausted",
-                    "message": "AP mode is not available until the device is power-cycled.",
-                }), 409
             w.STATE.ap_request_reason = reason
             w.ap_request_event.set()
 

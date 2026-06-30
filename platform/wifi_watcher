@@ -17,19 +17,27 @@ Flask must be installed at the system level by the installer.
 If the WiFi is unconfigured or remains disconnected for 1 minute after boot, it is put into
 AP mode with a captive portal that enables the user to easily connect the Pi to the WiFi.
 
-For an unconfigured device (no WiFi profile saved), the AP mode stays active indefinitely
-until the user successfully configures a network or usable wired ethernet appears.
+The hotspot is a single parameterised state, HOTSPOT(purpose), whose entry/exit policy is
+read from one five-row purpose table (PURPOSE_TABLE) rather than a soup of booleans:
 
-For a previously-configured device that cannot reconnect, AP mode stays active for up to
-30 minutes. After that time, to re-enter AP mode, the user would need to power-cycle the
-device. As an exception to this, note that if the user provided WiFi connection details
-didn't work (e.g., wrong password), the AP mode will be re-activated and the timer reset
-for up to another 30 minutes.
+  - FIRST_RUN (unconfigured): runs indefinitely until the user configures a network or
+        usable wired ethernet appears.  Nothing saved to probe for.
+  - BOOT_RECOVERY (configured, offline at boot): runs for up to 30 minutes but probes for
+        the saved network's return every pass and leaves as soon as it reconnects — so a
+        device whose router booted slower than the Pi recovers promptly (defect 1 fix).
+  - USB_LOSS_RECOVERY (configured, lost its client path at runtime): same 30-minute,
+        probe-for-return policy.
+  - EXPLICIT_RECONFIGURE / MANUAL (user-initiated): 30 minutes, not suppressed by ethernet.
 
-If a wired ethernet path is usable (carrier plus a valid non-link-local IPv4 address), automatic
-AP mode is suppressed. A carrier-only cable is reported as a fact but does not count as a usable
-path. If the user explicitly requested AP mode via the /request_ap_mode endpoint, ethernet does
-not close that manual AP session.
+There is no once-per-boot AP budget: the 30-minute session lifetime is the only rate limit,
+so a recovery hotspot is available whenever the device is offline (defect 2 fix).  A failed
+WiFi configuration attempt simply re-enters the hotspot.
+
+If a wired ethernet path is usable (carrier plus a valid non-link-local IPv4 address),
+automatic-purpose hotspots (FIRST_RUN / BOOT_RECOVERY / USB_LOSS_RECOVERY) are suppressed.
+A carrier-only cable is reported as a fact but does not count as a usable path.  A
+user-initiated hotspot (EXPLICIT_RECONFIGURE / MANUAL) is left up — it exists to connect a
+new network, so ethernet appearing does not close it.
 
 On hardware without a built-in radio, the setup hotspot uses a managed USB adapter. With multiple
 USB adapters, it prefers a USB adapter that is not the active WiFi client so a second radio can keep
@@ -370,16 +378,18 @@ class NetworkMonitorState:
     wiredstate: str = "unknown"       # "connected" / "disconnected" / "unknown"
     connectivity_ok: bool = False     # "healthy" using the same validation logic as initial wifi checks
 
-    # Setup / AP state
+    # Setup / AP state.  ``setup_mode`` stays the "a hotspot session is active"
+    # boolean read across the modules and tests; ``hotspot`` is the authoritative
+    # HotspotSession that subsumes the old setup_purpose / reconfigure_* /
+    # rollback_* / manual_ap_active / ap_enter_time flags (state-machine refactor,
+    # WP3).  There is no once-per-boot AP budget: the 30-minute session lifetime
+    # is the rate limit (defect 2 fix), so ap_exhausted / force_setup_mode /
+    # ap_closed_time are gone.
     setup_mode: bool = False
-    force_setup_mode: bool = False
-    manual_ap_active: bool = False
+    hotspot: "Optional[HotspotSession]" = None
 
     # Timers (monotonic seconds)
     boot_time: Optional[float] = None
-    ap_enter_time: Optional[float] = None
-    ap_closed_time: Optional[float] = None
-    ap_exhausted: bool = False
     last_active_path_seen: Optional[float] = None
 
     # Degradation tracking for "healthy connectivity"
@@ -433,14 +443,8 @@ class NetworkMonitorState:
     last_detected_adapter_macs: Optional[frozenset] = None
     last_playing_status_warn: float = 0.0
 
-    # ---- Explicit reconfiguration session (WP6, Section 3.3) ----
-    reconfigure_active: bool = False
-    reconfigure_started_at: Optional[float] = None
-    rollback_connection_name: str = ""
-    rollback_connection_uuid: str = ""
-    rollback_adapter_mac: str = ""
-    # first_run | automatic_recovery | explicit_reconfigure | manual
-    setup_purpose: str = "first_run"
+    # Explicit reconfiguration, rollback snapshot, and AP-session timing now live
+    # on the HotspotSession (STATE.hotspot); see the purpose table (Section 2.3).
 
     # ---- Local control API (WP6, Section 10.1) ----
     pending_control_action: str = ""
@@ -602,35 +606,39 @@ def update_apmode_flag(in_setup: bool) -> None:
         logger.warning("Error updating AP mode flag file %s: %s", AP_MODE_FLAG_PATH, e)
 
 
-def enter_setup_mode(reason: str = "") -> None:
-    """Transition into SetupMode and start AP mode, if permitted.
+def hotspot_purpose() -> "Optional[HotspotPurpose]":
+    """Return the purpose of the active hotspot session, or None when not hosting."""
+    with state_lock:
+        return STATE.hotspot.purpose if STATE.hotspot else None
 
-    For configured devices: AP mode runs for up to AP_MAX_DURATION (30 min).  Once
-    that window closes, AP will not be re-entered automatically until the device is
-    power-cycled (ap_exhausted latch).  force_setup_mode bypasses this to allow
-    re-entry after a failed WiFi configuration attempt.
 
-    For unconfigured devices: AP mode runs indefinitely (no timeout applied by the
-    monitor loop) until the user successfully configures a network or wired ethernet
-    appears.
+def _hotspot_blocks_eth(session) -> bool:
+    """True when a user-initiated (non eth-suppressible) hotspot is active.
+
+    EXPLICIT_RECONFIGURE / MANUAL hotspots are AP-to-connect-a-new-network and
+    must not be torn down just because usable Ethernet appears (Section 2.3).
+    """
+    return session is not None and not PURPOSE_TABLE[session.purpose].eth_suppressible
+
+
+def enter_setup_mode(purpose: "HotspotPurpose", reason: str = "",
+                     rollback: "Optional[RollbackSnapshot]" = None) -> None:
+    """Transition into SetupMode and start the hotspot for *purpose*.
+
+    The session lifetime/exit policy is driven entirely by PURPOSE_TABLE[purpose]
+    (Section 2.3): FIRST_RUN runs indefinitely; every other purpose runs for
+    AP_MAX_DURATION (30 min).  There is no once-per-boot budget — the recovery
+    hotspot is enterable whenever the device is offline (defect 2 fix).
     """
     with state_lock:
         if STATE.setup_mode:
             return
-        if STATE.ap_exhausted and not STATE.force_setup_mode:
-            # AP mode has been used up for this boot cycle (configured-device path).
-            # force_setup_mode is set by apply_wifi_async on a failed config attempt
-            # to allow re-entry despite the latch.
-            log_on_change(
-                "enter_setup_blocked", True,
-                "AP mode requested but ap_exhausted latch is set; ignoring until reboot",
-                logging.WARNING,
-            )
-            return
         STATE.setup_mode = True
-        STATE.ap_enter_time = time.monotonic()
+        STATE.hotspot = HotspotSession(
+            purpose=purpose, entered_at=time.monotonic(), rollback=rollback,
+        )
 
-    logger.info("Entering SetupMode. Reason: %s", reason)
+    logger.info("Entering SetupMode (%s). Reason: %s", purpose.value, reason)
     start_ap_mode()
     # start_ap_mode() may abort and clear setup_mode (e.g. no built-in adapter).
     # Only set the nginx AP-mode flag when setup is still genuinely active.
@@ -646,11 +654,8 @@ def leave_setup_mode(reason: str = "") -> None:
             return
         now = time.monotonic()
         STATE.setup_mode = False
-        STATE.ap_enter_time = None
-        STATE.ap_closed_time = now
+        STATE.hotspot = None
         STATE.last_active_path_seen = now
-        STATE.force_setup_mode = False
-        STATE.manual_ap_active = False
 
     logger.info("Leaving SetupMode. Reason: %s", reason)
     # Tear down the AP before removing the flag so nginx does not route traffic
@@ -925,7 +930,6 @@ def attempt_on_targets(targets: list, attempt_fn) -> bool:
 
         if attempt_fn(target):
             _set_active_client(target)
-            _clear_reconfigure_state()
             leave_setup_mode("WiFi client connection succeeded")
             verify_avahi_after_handover()
             return True
@@ -935,9 +939,10 @@ def attempt_on_targets(targets: list, attempt_fn) -> bool:
                 "Client attempt on hotspot adapter (%s) failed after AP teardown; recreating hotspot",
                 target.ifname,
             )
+            # The hotspot session is intact (stop_ap_mode tore down only the
+            # nmcli AP, not STATE.hotspot); just restart the radio side.
             with state_lock:
                 STATE.setup_mode = True
-                STATE.ap_enter_time = time.monotonic()
             start_ap_mode()
             update_apmode_flag(True)
 
@@ -1042,7 +1047,7 @@ def start_ap_mode() -> None:
             )
             with state_lock:
                 STATE.setup_mode = False
-                STATE.ap_enter_time = None
+                STATE.hotspot = None
             return
 
         ssid = get_ap_ssid(recovery_ifname)
@@ -1099,8 +1104,6 @@ def stop_ap_mode() -> None:
         run_cmd(["systemctl", "stop", DNSMASQ_SERVICE])
         wifi_net.remove_dnsmasq_runtime_config(DNSMASQ_RUNTIME_PATH)
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
-        with state_lock:
-            STATE.ap_exhausted = True
 
 
 def scan_wifi_networks(ifname: str = AP_IFNAME):
@@ -1163,32 +1166,35 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
             with state_lock:
                 STATE.last_apply_result = "ok"
                 STATE.last_apply_error = ""
-                STATE.force_setup_mode = False
-            # A successful new connection ends any explicit-reconfiguration
-            # session and clears the rollback snapshot (Section 11.2).
-            _clear_reconfigure_state()
+            # A successful new connection ends the hotspot session entirely
+            # (leave_setup_mode in attempt_on_targets clears STATE.hotspot).
             logger.info("WiFi configuration and connectivity verified")
         else:
             with state_lock:
                 STATE.last_apply_result = "failed"
                 STATE.last_apply_error = "nmcli-failed"
-                STATE.force_setup_mode = True
+                # Re-enter with whatever purpose the interrupted session held
+                # (configure_wifi_with_nmcli keeps setup_mode set on failure, so
+                # this re-entry is normally a no-op); fall back to FIRST_RUN.
+                purpose = STATE.hotspot.purpose if STATE.hotspot else HotspotPurpose.FIRST_RUN
             logger.warning("WiFi configuration failed; returning to SetupMode")
-            enter_setup_mode("nmcli failed to configure WiFi")
+            enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
     finally:
         with state_lock:
             STATE.apply_in_progress = False
 
 # ** TRANSACTIONAL CHANGE-WI-FI FLOW (WP6) **
 
-def _snapshot_rollback() -> None:
-    """Record the current committed profile and active adapter for rollback."""
+def _snapshot_rollback() -> "RollbackSnapshot":
+    """Return the current committed profile + active adapter as a rollback target."""
     state = get_configured_network_state()
     with state_lock:
         active_mac = STATE.active_client_mac
-        STATE.rollback_connection_name = state.connection_name
-        STATE.rollback_connection_uuid = state.connection_uuid
-        STATE.rollback_adapter_mac = active_mac
+    return RollbackSnapshot(
+        connection_name=state.connection_name,
+        connection_uuid=state.connection_uuid,
+        adapter_mac=active_mac,
+    )
 
 
 def apply_log_level(level: str, ttl_seconds: Optional[int]) -> None:
@@ -1262,24 +1268,19 @@ def start_explicit_setup() -> None:
     """Begin an explicit Change-Wi-Fi reconfiguration session (Section 11.1).
 
     Snapshots the current profile/adapter, disconnects the current client
-    session (without deleting its profile), enters the built-in hotspot, and
-    starts the 30-minute deadline.  Bypasses the once-per-boot ap_exhausted
-    latch via force_setup_mode.
+    session (without deleting its profile), and enters an EXPLICIT_RECONFIGURE
+    hotspot.  The 30-minute deadline, no-eth-suppression, and rollback policy all
+    come from PURPOSE_TABLE[EXPLICIT_RECONFIGURE] (Section 2.3).
     """
-    _snapshot_rollback()
+    rollback = _snapshot_rollback()
     # Disconnect the current client session without deleting its profile.
     with state_lock:
         active_ifname = STATE.active_client_ifname
     if active_ifname:
         run_cmd(["nmcli", "device", "disconnect", active_ifname])
-    with state_lock:
-        STATE.reconfigure_active = True
-        STATE.reconfigure_started_at = time.monotonic()
-        STATE.setup_purpose = "explicit_reconfigure"
-        STATE.force_setup_mode = True  # bypass ap_exhausted for explicit setup
-        STATE.manual_ap_active = True
     logger.info("Explicit network setup starting (explicit_reconfigure)")
-    enter_setup_mode(reason="explicit_reconfigure")
+    enter_setup_mode(HotspotPurpose.EXPLICIT_RECONFIGURE,
+                     reason="explicit_reconfigure", rollback=rollback)
 
 
 def reconnect_saved_network() -> bool:
@@ -1291,14 +1292,16 @@ def reconnect_saved_network() -> bool:
     cleared; on failure the hotspot is retained.
     """
     with state_lock:
-        purpose = STATE.setup_purpose
-        rb_name = STATE.rollback_connection_name
-        rb_uuid = STATE.rollback_connection_uuid
-        rb_mac = STATE.rollback_adapter_mac
+        session = STATE.hotspot
+    purpose = session.purpose if session else None
+    rollback = session.rollback if session else None
+    rb_name = rollback.connection_name if rollback else ""
+    rb_uuid = rollback.connection_uuid if rollback else ""
+    rb_mac = rollback.adapter_mac if rollback else ""
     adapters = wifi_net.discover_adapters()
 
     targets: list = []
-    if purpose == "explicit_reconfigure" and rb_name:
+    if purpose == HotspotPurpose.EXPLICIT_RECONFIGURE and rb_name:
         prev = wifi_net.find_adapter_by_mac(adapters, rb_mac)
         if prev is not None:
             targets.append(prev)
@@ -1343,22 +1346,13 @@ def handle_reconfigure_timeout() -> None:
     logger.info("Explicit network setup timed out after %ds; restoring previous", AP_MAX_DURATION)
     if reconnect_saved_network():
         return
-    # Restoration failed: retain hotspot, convert to automatic recovery.
+    # Restoration failed: retain the hotspot but convert it to an automatic
+    # USB-loss recovery session (probes for return, eth-suppressible, no rollback).
     with state_lock:
-        STATE.reconfigure_active = False
-        STATE.reconfigure_started_at = None
-        STATE.setup_purpose = "automatic_recovery"
+        if STATE.hotspot is not None:
+            STATE.hotspot.purpose = HotspotPurpose.USB_LOSS_RECOVERY
+            STATE.hotspot.rollback = None
     logger.warning("Timeout restore failed; remaining in recovery hotspot")
-
-
-def _clear_reconfigure_state() -> None:
-    with state_lock:
-        STATE.reconfigure_active = False
-        STATE.reconfigure_started_at = None
-        STATE.rollback_connection_name = ""
-        STATE.rollback_connection_uuid = ""
-        STATE.rollback_adapter_mac = ""
-        STATE.setup_purpose = "manual"
 
 
 
@@ -1515,12 +1509,6 @@ def network_monitor_loop(run_once: bool = False):
     while True:
         now = time.monotonic()
         with state_lock:
-            # Only clear manual_ap_active when AP is not running.  While AP is active
-            # the flag must persist so the ethernet-suppression check below respects
-            # the user's explicit request for the full session, not just one iteration.
-            # leave_setup_mode and the AP-lifetime expiry block clear the flag on close.
-            if not STATE.setup_mode:
-                STATE.manual_ap_active = False
             boot_time = STATE.boot_time or now
             _avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
 
@@ -1545,17 +1533,14 @@ def network_monitor_loop(run_once: bool = False):
                 STATE.ap_request_reason = ""
                 ap_request_event.clear()
                 already_in_ap = STATE.setup_mode
-            # If we're not already in AP mode, enter it now.
+            # If we're not already in AP mode, enter a MANUAL hotspot now.  A
+            # MANUAL session is not torn down by Ethernet (Section 2.3).
             if not already_in_ap:
-                with state_lock:
-                    STATE.manual_ap_active = True
-                enter_setup_mode(reason=f"manual_request: {reason or 'UserRequest'}")
+                enter_setup_mode(HotspotPurpose.MANUAL,
+                                 reason=f"manual_request: {reason or 'UserRequest'}")
                 if _sleep_or_finish_monitor_pass(run_once):
                     return
                 continue
-            else:
-                with state_lock:
-                    STATE.manual_ap_active = True
 
         # Revert a temporary runtime log level once its TTL expires (WP7).
         revert_expired_log_level(now)
@@ -1579,14 +1564,14 @@ def network_monitor_loop(run_once: bool = False):
 
         # Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4).
         with state_lock:
-            reconfigure_active = STATE.reconfigure_active
-            reconfigure_started = STATE.reconfigure_started_at
-        if reconfigure_active and reconfigure_started is not None:
-            if (now - reconfigure_started) >= AP_MAX_DURATION:
-                handle_reconfigure_timeout()
-                if _sleep_or_finish_monitor_pass(run_once):
-                    return
-                continue
+            session = STATE.hotspot
+        if (session is not None
+                and session.purpose == HotspotPurpose.EXPLICIT_RECONFIGURE
+                and (now - session.entered_at) >= AP_MAX_DURATION):
+            handle_reconfigure_timeout()
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
 
         # Single immutable per-tick snapshot (WP1, Section 2.5): one
         # discover_adapters / wired probe / address enumeration for the whole
@@ -1700,7 +1685,9 @@ def network_monitor_loop(run_once: bool = False):
         # State is read under the lock; leave_setup_mode is called outside to avoid
         # a deadlock (leave_setup_mode also acquires state_lock, which is not re-entrant).
         with state_lock:
-            ethernet_wins = wired_ok and not STATE.manual_ap_active
+            # Ethernet suppresses an automatic-purpose hotspot, but a
+            # user-initiated one (MANUAL / EXPLICIT_RECONFIGURE) is left up.
+            ethernet_wins = wired_ok and not _hotspot_blocks_eth(STATE.hotspot)
             in_ap_for_eth = STATE.setup_mode
             if ethernet_wins:
                 STATE.conn_down_start = None
@@ -1732,29 +1719,29 @@ def network_monitor_loop(run_once: bool = False):
             continue
 
         with state_lock:
-            if wired_ok and STATE.manual_ap_active:
-                # User explicitly requested AP mode; do not auto-suppress it just because
-                # ethernet happens to be usable.
+            if wired_ok and _hotspot_blocks_eth(STATE.hotspot):
+                # A user-initiated hotspot (MANUAL / EXPLICIT) is held up even
+                # though ethernet is usable; do not let conn timers fire.
                 STATE.conn_down_start = None
                 STATE.last_reconnect_attempt = None
 
-        # If we're currently in AP mode, enforce the fixed 30-minute lifetime.
+        # If we're currently hosting a hotspot, enforce its purpose-driven policy
+        # from PURPOSE_TABLE (Section 2.3): probe-for-return and deadline.
         with state_lock:
             in_setup = STATE.setup_mode
-            ap_started = STATE.ap_enter_time
+            session = STATE.hotspot
+            last_reconnect = STATE.last_reconnect_attempt
 
-        if in_setup and ap_started is not None:
-            ap_age = now - ap_started
+        if in_setup and session is not None:
+            policy = PURPOSE_TABLE[session.purpose]
+            ap_age = now - session.entered_at
 
-            # Section 8.6: in automatic-recovery mode, probe for a returned USB
-            # adapter on every monitor pass and attempt USB-first reconnection
-            # immediately — do not wait for the 30-minute timeout.
-            with state_lock:
-                purpose = STATE.setup_purpose
-                last_reconnect = STATE.last_reconnect_attempt
-
-            if purpose == "automatic_recovery" and wifi_cfg:
-                # Use adapters already discovered at the top of this pass.
+            # Recovery purposes (BOOT_RECOVERY / USB_LOSS_RECOVERY) probe for the
+            # saved network's return each pass and reconnect immediately rather
+            # than waiting for the deadline (Section 8.6; defect 1 — BOOT_RECOVERY
+            # now probes, so a configured device that was offline at boot leaves
+            # the hotspot as soon as its network/USB returns).
+            if policy.probes_return and wifi_cfg:
                 usb_now = wifi_net.usb_candidates(adapters)
                 if usb_now:
                     reconnect_due = (
@@ -1766,28 +1753,24 @@ def network_monitor_loop(run_once: bool = False):
                             STATE.last_reconnect_attempt = now
                         _try_recovery_reconnect(adapters)
 
-            # Unconfigured devices (no WiFi profile) stay in AP indefinitely — they have
-            # nowhere else to go.  Only apply the timeout for previously-configured devices
-            # that failed to reconnect (recovery AP).  Ethernet suppression above handles
-            # the wired-ethernet exit path for unconfigured devices.
-            if ap_age >= AP_MAX_DURATION and wifi_cfg:
-                # Close AP mode; do not allow re-entry this boot (unless forced).
-                with state_lock:
-                    STATE.ap_exhausted = True
-                    STATE.ap_closed_time = now
-                    STATE.manual_ap_active = False
-                leave_setup_mode(f"AP mode lifetime expired after {ap_age:.0f}s (configured device)")
+            # Session lifetime: FIRST_RUN (deadline None) stays up indefinitely
+            # — an unconfigured device has nowhere else to go; every other
+            # purpose closes after its 30-minute deadline.
+            if policy.deadline_s is not None and ap_age >= policy.deadline_s:
+                leave_setup_mode(
+                    f"Hotspot lifetime expired after {ap_age:.0f}s ({session.purpose.value})")
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
 
-        # Decide whether we should enter AP mode during the boot window.
-        # Note: AP mode is only allowed once per boot (ap_exhausted).
+        # Decide whether we should enter the hotspot during the boot window.
+        # There is no once-per-boot budget (defect 2): a recovery hotspot is
+        # enterable whenever offline; the boot window only gates this initial
+        # auto-entry so NM/firmware get a chance to come up first.
         with state_lock:
-            ap_exhausted = STATE.ap_exhausted
-            forced = STATE.force_setup_mode
+            in_setup = STATE.setup_mode
 
-        if (not in_setup) and (not ap_exhausted) and (not forced):
+        if not in_setup:
             boot_age = now - boot_time
             # Auto-setup mode is only entered if:
             #   - WiFi is not configured, OR WiFi is not connected, OR WiFi is
@@ -1814,13 +1797,19 @@ def network_monitor_loop(run_once: bool = False):
                 log_on_change(
                     "boot_ap_window_expired", True,
                     f"Boot AP window expired (boot_age={boot_age:.0f}s); "
-                    f"device offline but automatic AP mode will not re-enter this boot cycle",
+                    f"device offline but automatic boot-window AP entry has passed",
                     logging.WARNING,
                 )
 
             if should_enter_ap:
+                # Defect 1: a configured-but-offline device enters BOOT_RECOVERY
+                # (which probes for the saved network's return), not FIRST_RUN;
+                # an unconfigured device enters FIRST_RUN (nothing saved to probe).
+                purpose = (HotspotPurpose.BOOT_RECOVERY if wifi_cfg
+                           else HotspotPurpose.FIRST_RUN)
                 enter_setup_mode(
-                    reason=f"boot_age={boot_age:.0f}s, wifi_cfg={wifi_cfg}, wifi_connected={wifi_connected}, client_ok={client_ok}"
+                    purpose,
+                    reason=f"boot_age={boot_age:.0f}s, wifi_cfg={wifi_cfg}, wifi_connected={wifi_connected}, client_ok={client_ok}",
                 )
                 if _sleep_or_finish_monitor_pass(run_once):
                     return
@@ -1878,7 +1867,6 @@ def network_monitor_loop(run_once: bool = False):
                     STATE.conn_down_start = None
                     STATE.last_reconnect_attempt = None
                     STATE.conn_reboot_retry_after = 0.0
-                    STATE.ap_closed_time = None
 
         with state_lock:
             in_setup = STATE.setup_mode
@@ -2230,9 +2218,7 @@ def _do_builtin_fallback_or_recovery(adapters: list, reason: str) -> bool:
         return True
 
     logger.warning("Built-in LAN fallback failed (%s); entering recovery hotspot", reason)
-    with state_lock:
-        STATE.setup_purpose = "automatic_recovery"
-    enter_setup_mode(reason=f"automatic_recovery: {reason}")
+    enter_setup_mode(HotspotPurpose.USB_LOSS_RECOVERY, reason=f"usb_loss_recovery: {reason}")
     return True
 
 

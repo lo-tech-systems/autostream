@@ -592,15 +592,16 @@ class TestEnterLeaveSetupMode:
         watcher.AP_MODE_FLAG_PATH = str(flag)
         with patch.object(watcher, "start_ap_mode"), \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode("test")
+            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "test")
         assert watcher.STATE.setup_mode is True
+        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.FIRST_RUN
 
     def test_enter_creates_ap_flag_file(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
         watcher.AP_MODE_FLAG_PATH = str(flag)
         with patch.object(watcher, "start_ap_mode"), \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode("test")
+            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "test")
         assert flag.exists()
 
     def test_enter_is_idempotent(self, watcher, tmp_path):
@@ -608,10 +609,11 @@ class TestEnterLeaveSetupMode:
         watcher.AP_MODE_FLAG_PATH = str(flag)
         with patch.object(watcher, "start_ap_mode") as mock_start, \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode("first")
-            watcher.enter_setup_mode("second")
-        # start_ap_mode called only once
+            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "first")
+            watcher.enter_setup_mode(watcher.HotspotPurpose.MANUAL, "second")
+        # start_ap_mode called only once; the original session is kept.
         assert mock_start.call_count == 1
+        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.FIRST_RUN
 
     def test_leave_sets_setup_mode_false(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
@@ -653,26 +655,21 @@ class TestEnterLeaveSetupMode:
             watcher.leave_setup_mode("done")
         mock_stop.assert_not_called()
 
-    def test_ap_exhausted_blocks_enter(self, watcher, tmp_path):
+    def test_recovery_hotspot_always_enterable_no_once_per_boot_budget(self, watcher, tmp_path):
+        # Defect 2: there is no ap_exhausted latch any more.  A hotspot that was
+        # entered and left earlier this boot can be re-entered immediately.
         flag = tmp_path / "apmode"
         watcher.AP_MODE_FLAG_PATH = str(flag)
-        watcher.STATE.ap_exhausted = True
-        watcher.STATE.force_setup_mode = False
-        with patch.object(watcher, "start_ap_mode") as mock_start:
-            watcher.enter_setup_mode("blocked")
-        mock_start.assert_not_called()
-        assert watcher.STATE.setup_mode is False
-
-    def test_force_setup_mode_bypasses_exhausted_latch(self, watcher, tmp_path):
-        flag = tmp_path / "apmode"
-        watcher.AP_MODE_FLAG_PATH = str(flag)
-        watcher.STATE.ap_exhausted = True
-        watcher.STATE.force_setup_mode = True
+        assert not hasattr(watcher.STATE, "ap_exhausted")
+        assert not hasattr(watcher.STATE, "force_setup_mode")
         with patch.object(watcher, "start_ap_mode") as mock_start, \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode("forced")
-        mock_start.assert_called_once()
+            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "first")
+            watcher.leave_setup_mode("done")
+            watcher.enter_setup_mode(watcher.HotspotPurpose.USB_LOSS_RECOVERY, "later loss")
+        assert mock_start.call_count == 2
         assert watcher.STATE.setup_mode is True
+        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_leave_calls_stop_ap_before_removing_flag(self, watcher, tmp_path):
         """stop_ap_mode must run before the AP flag is removed (ordering invariant)."""
@@ -1175,7 +1172,8 @@ class TestUsbFailureFallback:
             acted = watcher._do_builtin_fallback_or_recovery(adapters, "usb-only")
         assert acted is True
         enter.assert_called_once()
-        assert watcher.STATE.setup_purpose == "automatic_recovery"
+        # USB-loss fallback now enters a USB_LOSS_RECOVERY hotspot purpose.
+        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
 
 class TestRuntimeUsbAdoption:
@@ -1308,12 +1306,13 @@ class TestStartExplicitSetup:
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
              patch.object(watcher, "enter_setup_mode") as enter:
             watcher.start_explicit_setup()
-        assert watcher.STATE.reconfigure_active is True
-        assert watcher.STATE.setup_purpose == "explicit_reconfigure"
-        assert watcher.STATE.rollback_connection_name == "Home"
-        assert watcher.STATE.rollback_adapter_mac == "bb:bb:bb:bb:bb:01"
-        assert watcher.STATE.force_setup_mode is True  # bypass ap_exhausted
         enter.assert_called_once()
+        # Enters an EXPLICIT_RECONFIGURE hotspot carrying the rollback snapshot.
+        assert enter.call_args[0][0] is watcher.HotspotPurpose.EXPLICIT_RECONFIGURE
+        rollback = enter.call_args.kwargs["rollback"]
+        assert rollback.connection_name == "Home"
+        assert rollback.connection_uuid == "uuid-1"
+        assert rollback.adapter_mac == "bb:bb:bb:bb:bb:01"
 
     def test_disconnects_active_client_session(self, watcher):
         watcher.STATE.active_client_ifname = "wlan1"
@@ -1328,10 +1327,12 @@ class TestStartExplicitSetup:
 
 class TestReconnectSavedNetwork:
     def test_success_clears_state_and_leaves_setup(self, watcher):
-        watcher.STATE.setup_purpose = "explicit_reconfigure"
-        watcher.STATE.rollback_connection_name = "Home"
-        watcher.STATE.rollback_connection_uuid = "uuid-1"
-        watcher.STATE.rollback_adapter_mac = "aa:bb:cc:00:00:01"
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            entered_at=0.0,
+            rollback=watcher.RollbackSnapshot("Home", "uuid-1", "aa:bb:cc:00:00:01"),
+        )
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
@@ -1342,13 +1343,14 @@ class TestReconnectSavedNetwork:
             ok = watcher.reconnect_saved_network()
         assert ok is True
         leave.assert_called_once()
-        assert watcher.STATE.reconfigure_active is False
-        assert watcher.STATE.rollback_connection_name == ""
 
     def test_failure_retains_hotspot(self, watcher):
-        watcher.STATE.setup_purpose = "explicit_reconfigure"
-        watcher.STATE.rollback_connection_name = "Home"
-        watcher.STATE.rollback_connection_uuid = "uuid-1"
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            entered_at=0.0,
+            rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""),
+        )
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
@@ -1489,7 +1491,6 @@ class TestAttemptOnTargets:
         apflag.assert_called_once_with(True)
         leave.assert_not_called()
         assert watcher.STATE.setup_mode is True
-        assert watcher.STATE.ap_enter_time is not None
 
     def test_single_radio_failure_stops_tests_and_rebuilds_ap(self, watcher):
         usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
@@ -1521,7 +1522,6 @@ class TestApplyWifiAsync:
         leave.assert_not_called()
         enter.assert_called_once()
         assert watcher.STATE.last_apply_result == "failed"
-        assert watcher.STATE.force_setup_mode is True
         assert watcher.STATE.apply_in_progress is False
 
 
@@ -1532,11 +1532,17 @@ class TestReconfigureTimeout:
         rc.assert_called_once()
 
     def test_timeout_restore_failure_enters_recovery(self, watcher):
-        watcher.STATE.reconfigure_active = True
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            entered_at=0.0,
+            rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""),
+        )
         with patch.object(watcher, "reconnect_saved_network", return_value=False):
             watcher.handle_reconfigure_timeout()
-        assert watcher.STATE.reconfigure_active is False
-        assert watcher.STATE.setup_purpose == "automatic_recovery"
+        # Failed restore downgrades the session to an automatic recovery hotspot.
+        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert watcher.STATE.hotspot.rollback is None
 
 
 class TestSavedNetworkGating:
@@ -1546,7 +1552,11 @@ class TestSavedNetworkGating:
             assert watcher.wifi_web._has_saved_network(watcher) is True
 
     def test_has_saved_network_rollback_only(self, watcher):
-        watcher.STATE.rollback_connection_name = "Old"
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            entered_at=0.0,
+            rollback=watcher.RollbackSnapshot("Old", "", ""),
+        )
         with patch.object(watcher, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("", "")):
             assert watcher.wifi_web._has_saved_network(watcher) is True
@@ -2572,6 +2582,73 @@ def _run_monitor_once(
         return connect
 
 
+class TestHotspotPurposeMachine:
+    """WP3 — hotspot lifetime/probe policy driven by the purpose table; defects 1 & 2."""
+
+    def _session(self, watcher, purpose, entered_at):
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(purpose=purpose, entered_at=entered_at)
+
+    def test_defect1_boot_recovery_probes_for_return(self, watcher):
+        # A configured device offline at boot is BOOT_RECOVERY and probes for the
+        # saved network each pass — it does not sit until the 30-min deadline.
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
+        self._session(watcher, watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=100.0)
+        with patch.object(watcher, "_try_recovery_reconnect") as probe:
+            _run_monitor_once(watcher, now=120.0, wifi_cfg=True, adapters=[usb])
+        probe.assert_called_once()
+
+    def test_first_run_does_not_probe(self, watcher):
+        # FIRST_RUN has nothing saved to probe for.
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
+        self._session(watcher, watcher.HotspotPurpose.FIRST_RUN, entered_at=100.0)
+        with patch.object(watcher, "_try_recovery_reconnect") as probe, \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            _run_monitor_once(watcher, now=120.0, wifi_cfg=False, adapters=[usb])
+        probe.assert_not_called()
+        leave.assert_not_called()
+
+    def test_first_run_is_indefinite(self, watcher):
+        # Past 30 minutes, an unconfigured FIRST_RUN hotspot is not torn down.
+        self._session(watcher, watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+        now = watcher.AP_MAX_DURATION + 60.0
+        with patch.object(watcher, "leave_setup_mode") as leave:
+            _run_monitor_once(watcher, now=now, wifi_cfg=False)
+        leave.assert_not_called()
+
+    def test_recovery_purpose_expires_at_deadline(self, watcher):
+        self._session(watcher, watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+        now = watcher.AP_MAX_DURATION + 60.0
+        with patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "_try_recovery_reconnect"):
+            _run_monitor_once(watcher, now=now, wifi_cfg=True)
+        leave.assert_called_once()
+
+    def test_explicit_hotspot_not_torn_down_by_ethernet(self, watcher):
+        # EXPLICIT_RECONFIGURE is not eth-suppressible (Section 2.3).
+        self._session(watcher, watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=100.0)
+        with patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "_try_recovery_reconnect"):
+            _run_monitor_once(watcher, now=120.0, wifi_cfg=False,
+                              wired_connected=True, wired_ok=True)
+        leave.assert_not_called()
+
+    def test_defect2_recovery_enterable_after_earlier_session(self, watcher):
+        # After a hotspot was used and left earlier this boot, a later USB-loss
+        # fallback still raises a recovery hotspot (no once-per-boot suppression).
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        # Simulate an earlier session that has since been left.
+        with patch.object(watcher, "start_ap_mode"), patch.object(watcher, "stop_ap_mode"):
+            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "earlier")
+            watcher.leave_setup_mode("earlier done")
+        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            acted = watcher._do_builtin_fallback_or_recovery([builtin], "later usb loss")
+        assert acted is True
+        enter.assert_called_once()
+        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+
+
 class TestShadowModeModel:
     """WP2 — explicit Mode model in shadow; derive_mode tracks the flags."""
 
@@ -2932,8 +3009,8 @@ class TestNetworkMonitorCatchAll:
         watcher.STATE.boot_time = 0.0
         watcher.STATE.last_active_path_seen = 0.0
         watcher.STATE.setup_mode = True
-        watcher.STATE.manual_ap_active = True
-        watcher.STATE.ap_enter_time = now - 10.0
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.MANUAL, entered_at=now - 10.0)
         with patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher, "reboot_system", return_value=True) as reboot:
             _run_monitor_once(
