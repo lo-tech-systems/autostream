@@ -19,34 +19,37 @@ from importlib.machinery import SourceFileLoader
 REPO_ROOT = Path(__file__).parent.parent
 DIAL_WEBUI_ASSETS = REPO_ROOT / "dial" / "dial_webui_assets.py"
 WIFI_WATCHER = REPO_ROOT / "platform" / "wifi_watcher"
+# Presentation (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS) was extracted
+# to wifi_web.py (HTTP-extraction plan, WP1).
+WIFI_WEB = REPO_ROOT / "platform" / "wifi_web.py"
 DIAL_WATCHER_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_dial_wifi_watcher.service"
 MAIN_WATCHER_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_wifi_watcher.service"
 
 
-def _load_watcher(alias: str, env_overrides: dict | None = None) -> object:
-    """Load platform/wifi_watcher with optional environment overrides."""
+def _load_wifi_web(alias: str, env_overrides: dict | None = None) -> object:
+    """Load platform/wifi_web.py with optional environment overrides.
+
+    Presentation constants (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS)
+    are read at import time.  Flask is stubbed so the module imports in
+    isolation; the banner/CSS code paths use only the standard library.
+    """
+    from unittest.mock import MagicMock
+
     saved = {}
     try:
         env = env_overrides or {}
         for k, v in env.items():
             saved[k] = os.environ.get(k)
             os.environ[k] = v
-        loader = SourceFileLoader(alias, str(WIFI_WATCHER))
+        loader = SourceFileLoader(alias, str(WIFI_WEB))
         spec = importlib.util.spec_from_loader(alias, loader)
         mod = importlib.util.module_from_spec(spec)
-        # wifi_watcher imports Flask and autostream_sysutils at module level.
-        # Stub them out so the module can be imported in isolation.
-        _stub_names = [
-            "flask", "autostream_sysutils",
-        ]
         injected = []
-        from unittest.mock import MagicMock
-        for sn in _stub_names:
-            if sn not in sys.modules:
-                sys.modules[sn] = MagicMock()
-                injected.append(sn)
-        # Also stub Flask's exported names used at import time
-        sys.modules.setdefault("flask", MagicMock())
+        if "flask" not in sys.modules:
+            sys.modules["flask"] = MagicMock()
+            injected.append("flask")
+        # Drop any cached wifi_web so this fresh env takes effect.
+        sys.modules.pop("wifi_web", None)
         try:
             loader.exec_module(mod)
         finally:
@@ -126,16 +129,17 @@ class TestSetupPageBranding:
 
 class TestWifiWatcherBannerImage:
     def test_banner_image_env_var_read(self):
-        """wifi_watcher must read APP_BANNER_IMAGE from environment."""
-        src = WIFI_WATCHER.read_text(encoding="utf-8")
+        """wifi_web must read APP_BANNER_IMAGE from environment (presentation moved
+        out of the watcher in the HTTP-extraction plan, WP1)."""
+        src = WIFI_WEB.read_text(encoding="utf-8")
         assert "APP_BANNER_IMAGE" in src, (
-            "wifi_watcher must read APP_BANNER_IMAGE from os.environ"
+            "wifi_web must read APP_BANNER_IMAGE from os.environ"
         )
 
     def test_banner_html_is_img_when_env_var_set(self):
         """BANNER_HTML must be an <img> element when APP_BANNER_IMAGE is set."""
-        mod = _load_watcher(
-            "watcher_with_image",
+        mod = _load_wifi_web(
+            "web_with_image",
             {"APP_BANNER_IMAGE": "/autostream-dial-badge.png"},
         )
         assert "<img" in mod.BANNER_HTML, (
@@ -145,8 +149,8 @@ class TestWifiWatcherBannerImage:
 
     def test_banner_html_has_alt_text_from_app_title(self):
         """<img> BANNER_HTML must use APP_TITLE as alt text."""
-        mod = _load_watcher(
-            "watcher_with_image_title",
+        mod = _load_wifi_web(
+            "web_with_image_title",
             {
                 "APP_BANNER_IMAGE": "/autostream-dial-badge.png",
                 "APP_TITLE": "autostream dial",
@@ -156,12 +160,10 @@ class TestWifiWatcherBannerImage:
 
     def test_banner_html_is_div_when_env_var_absent(self):
         """BANNER_HTML must fall back to <div class=\"app-title\"> when APP_BANNER_IMAGE is unset."""
-        env = dict(os.environ)
-        env.pop("APP_BANNER_IMAGE", None)
         # Temporarily remove the env var if it was set
         old = os.environ.pop("APP_BANNER_IMAGE", None)
         try:
-            mod = _load_watcher("watcher_no_image")
+            mod = _load_wifi_web("web_no_image")
             assert 'class="app-title"' in mod.BANNER_HTML, (
                 "BANNER_HTML must fall back to <div class=\"app-title\"> "
                 "when APP_BANNER_IMAGE is not set"
@@ -173,14 +175,14 @@ class TestWifiWatcherBannerImage:
 
     def test_banner_html_is_div_when_env_var_empty(self):
         """BANNER_HTML must fall back to text div when APP_BANNER_IMAGE is empty string."""
-        mod = _load_watcher("watcher_empty_image", {"APP_BANNER_IMAGE": ""})
+        mod = _load_wifi_web("web_empty_image", {"APP_BANNER_IMAGE": ""})
         assert 'class="app-title"' in mod.BANNER_HTML
         assert "<img" not in mod.BANNER_HTML
 
     def test_app_banner_image_css_class_defined(self):
         """STYLE_CSS must define a .app-banner-image rule."""
-        mod = _load_watcher(
-            "watcher_css_check",
+        mod = _load_wifi_web(
+            "web_css_check",
             {"APP_BANNER_IMAGE": "/autostream-dial-badge.png"},
         )
         assert ".app-banner-image" in mod.STYLE_CSS, (
@@ -190,8 +192,8 @@ class TestWifiWatcherBannerImage:
     def test_banner_image_src_is_html_escaped(self):
         """Image src must be HTML-escaped to prevent injection."""
         # A safe URL with no special chars should pass through unchanged.
-        mod = _load_watcher(
-            "watcher_image_escape",
+        mod = _load_wifi_web(
+            "web_image_escape",
             {"APP_BANNER_IMAGE": "/autostream-dial-badge.png"},
         )
         # The src attribute must be quoted safely.
