@@ -79,6 +79,27 @@ class TestInstallerNetworkFileHandling:
             "autostream_install.sh must reference /etc/autostream-network.json"
         )
 
+    def test_installer_imports_saved_wifi_profile(self):
+        """Fresh install should import a unique saved NM Wi-Fi profile when no
+        Wi-Fi client is active, so Ethernet installs can still fall back to Wi-Fi."""
+        assert "_select_saved_wifi_connection()" in INSTALL_SH, (
+            "autostream_install.sh must fall back to saved NetworkManager Wi-Fi profiles"
+        )
+        start = INSTALL_SH.find("_select_saved_wifi_connection()")
+        body = INSTALL_SH[start: start + 3500]
+        assert "connection show" in body and "UUID,TYPE" in body
+        assert "connection.autoconnect" in body
+        assert "Hotspot" in body and "802-11-wireless" in body
+
+    def test_installer_writes_network_json_with_uuid(self):
+        """The installer should commit both profile name and UUID, not only the
+        legacy /opt/autostream/ssid mirror."""
+        start = INSTALL_SH.find("_record_wifi_connection_state()")
+        assert start != -1
+        body = INSTALL_SH[start: start + 2500]
+        assert "/etc/autostream-network.json" in body
+        assert "connection_name" in body and "connection_uuid" in body
+
     def test_installer_copies_wifi_watcher(self):
         """The main wifi_watcher binary must be copied during install."""
         assert 'wifi_watcher"' in INSTALL_SH or "wifi_watcher" in INSTALL_SH

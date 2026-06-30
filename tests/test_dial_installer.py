@@ -845,53 +845,84 @@ class TestDialNetworkStatePhase:
     def test_network_state_phase_uses_nmcli_device_status(self):
         """network_state_phase must use nmcli device status to detect active connection."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("network_state_phase()")
+        start = content.find("_select_active_wifi_connection()")
         assert start != -1
-        body = content[start: start + 800]
+        body = content[start: start + 2000]
         assert "nmcli" in body and "device" in body and "status" in body, (
-            "network_state_phase must query nmcli device status"
+            "_select_active_wifi_connection must query nmcli device status"
         )
 
     def test_network_state_phase_is_interface_neutral(self):
         """network_state_phase must not hard-code wlan0; it should select the
         active Wi-Fi client on whichever interface carries the default route."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("network_state_phase()")
+        start = content.find("_select_active_wifi_connection()")
         assert start != -1
-        body = content[start: start + 800]
+        body = content[start: start + 2000]
         # Must use nmcli device status to enumerate all Wi-Fi devices.
         assert "nmcli" in body and "device" in body and "status" in body, (
-            "network_state_phase must query nmcli device status"
+            "_select_active_wifi_connection must query nmcli device status"
         )
         # Must not limit selection to only wlan0.
         assert "wlan0" not in body, (
-            "network_state_phase must not hard-code wlan0; use interface-neutral selection"
+            "_select_active_wifi_connection must not hard-code wlan0; use interface-neutral selection"
         )
 
     def test_network_state_phase_rejects_ap_mode(self):
         """network_state_phase must not record a connection that is in AP mode."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("network_state_phase()")
+        start = content.find("_wifi_profile_mode()")
         assert start != -1
-        body = content[start: start + 2000]
+        body = content[start: start + 5000]
         assert "802-11-wireless.mode" in body or "wireless.mode" in body, (
-            "network_state_phase must check 802-11-wireless.mode to reject AP connections"
+            "network-state import must check 802-11-wireless.mode to reject AP connections"
         )
         assert '"ap"' in body or "'ap'" in body or "!= \"ap\"" in body or "!= 'ap'" in body, (
-            "network_state_phase must skip when mode is 'ap'"
+            "network-state import must skip when mode is 'ap'"
         )
 
     def test_network_state_phase_writes_ssid_file(self):
         """network_state_phase must write the connection name to /opt/autostream/ssid."""
         content = HELPERS_SH.read_text(encoding="utf-8")
-        start = content.find("network_state_phase()")
+        start = content.find("_record_wifi_connection_state()")
         assert start != -1
         body = content[start: start + 2000]
         assert "/opt/autostream/ssid" in body, (
-            "network_state_phase must write to /opt/autostream/ssid"
+            "_record_wifi_connection_state must write to /opt/autostream/ssid"
         )
         assert "printf" in body or "> " in body, (
-            "network_state_phase must write the connection name to the ssid file"
+            "_record_wifi_connection_state must write the connection name to the ssid file"
+        )
+
+    def test_network_state_phase_imports_saved_wifi_profiles(self):
+        """Fresh install must be able to record a saved Wi-Fi profile even when Ethernet is active."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        assert "_select_saved_wifi_connection()" in content, (
+            "network_state_phase must fall back to saved NetworkManager Wi-Fi profiles"
+        )
+        start = content.find("_select_saved_wifi_connection()")
+        body = content[start: start + 3500]
+        assert "connection show" in body and "UUID,TYPE" in body, (
+            "saved Wi-Fi selection must inspect NetworkManager saved connections"
+        )
+        assert "connection.autoconnect" in body, (
+            "saved Wi-Fi selection must prefer autoconnect profiles"
+        )
+        assert "Hotspot" in body and "802-11-wireless" in body, (
+            "saved Wi-Fi selection must exclude AP/hotspot profiles"
+        )
+
+    def test_network_state_phase_writes_network_json(self):
+        """Fresh install should commit the selected NM profile to the JSON state file as well as the legacy mirror."""
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("_record_wifi_connection_state()")
+        assert start != -1
+        body = content[start: start + 2500]
+        assert "/etc/autostream-network.json" in body, (
+            "network-state import must write /etc/autostream-network.json"
+        )
+        assert "connection_uuid" in body and "connection_name" in body, (
+            "network-state JSON must include the resolved profile UUID and name"
         )
 
     def test_network_state_phase_called_in_fresh_install_block(self):

@@ -203,32 +203,69 @@ EOF
     fi
 }
 
-# network_state_phase: record current WiFi client connection (fresh install only).
-# Mirrors the same function in autostream_install.sh.
-# Preserves an existing /opt/autostream/ssid if non-empty.
-# Writes the active non-AP wlan0 connection name; skips AP-mode and absent connections.
-network_state_phase() {
-    local ssid_file="/opt/autostream/ssid"
-
-    if [[ -s "${ssid_file}" ]]; then
-        echo "WiFi connection already recorded at ${ssid_file}"
-        return 0
+# _wifi_profile_mode: print the NetworkManager Wi-Fi mode for a profile.
+_wifi_profile_mode() {
+    local uuid="$1" name="${2:-}" ident=()
+    if [[ -n "${uuid}" ]]; then
+        ident=(uuid "${uuid}")
+    else
+        ident=("${name}")
     fi
+    nmcli -t -f 802-11-wireless.mode connection show "${ident[@]}" 2>/dev/null \
+        | awk -F: '{print tolower($2)}' | head -n1
+}
 
-    # Collect all active Wi-Fi connections: preferred-interface first, others
-    # after (one per line).  Iterate in bash and AP-filter each candidate so
-    # that a hotspot on the first row does not prevent recording a valid client
-    # connection on a subsequent row.
-    local default_dev wifi_candidates wifi_conn wifi_mode
+# _record_wifi_connection_state: persist the chosen NM connection identity.
+_record_wifi_connection_state() {
+    local wifi_conn="$1" wifi_uuid="${2:-}" ssid_file="/opt/autostream/ssid"
+
+    printf "%s\n" "${wifi_conn}" > "${ssid_file}"
+    AUTOSTREAM_WIFI_CONN_NAME="${wifi_conn}" \
+    AUTOSTREAM_WIFI_CONN_UUID="${wifi_uuid}" \
+        python3 - <<'PYEOF'
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "schema_version": 1,
+    "connection_name": os.environ["AUTOSTREAM_WIFI_CONN_NAME"],
+    "connection_uuid": os.environ.get("AUTOSTREAM_WIFI_CONN_UUID", ""),
+}
+Path("/etc/autostream-network.json").write_text(
+    json.dumps(payload, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PYEOF
+    chown root:root "${ssid_file}" /etc/autostream-network.json
+    chmod 0644 "${ssid_file}" /etc/autostream-network.json
+}
+
+# _network_state_configured: true if JSON state already commits a connection.
+_network_state_configured() {
+    python3 - <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+try:
+    data = json.loads(Path("/etc/autostream-network.json").read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(data, dict) and bool(str(data.get("connection_name", "")).strip()) else 1)
+PYEOF
+}
+
+# _select_active_wifi_connection: prefer the currently active non-AP Wi-Fi.
+_select_active_wifi_connection() {
+    local default_dev wifi_devices dev conn uuid mode
     default_dev="$(ip route show default 2>/dev/null | awk '/dev/{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1)"
-    wifi_candidates="$(
-        nmcli --escape no -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null \
+    wifi_devices="$(
+        nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null \
             | awk -F: -v prefer="${default_dev}" '
-                NF>=4 && $2=="wifi" && ($3=="connected" || $3=="activated") {
-                  conn=""; for(i=4;i<=NF;i++) conn=conn (i>4?":":"") $i
-                  if (conn=="") next
-                  if ($1==prefer) { preferred=conn }
-                  else { others[++n]=conn }
+                NF>=3 && $2=="wifi" && ($3=="connected" || $3=="activated") {
+                  if ($1==prefer) { preferred=$1 }
+                  else { others[++n]=$1 }
                 }
                 END {
                   if (preferred!="") print preferred
@@ -237,25 +274,110 @@ network_state_phase() {
               '
     )"
 
-    wifi_conn=""
-    while IFS= read -r _candidate; do
-        [[ -z "${_candidate}" ]] && continue
-        wifi_mode="$(
-            nmcli -t -f 802-11-wireless.mode connection show "${_candidate}" 2>/dev/null \
-                | awk -F: '{print tolower($2)}' | head -n1
-        )"
-        if [[ "${wifi_mode}" != "ap" ]]; then
-            wifi_conn="${_candidate}"
-            break
+    while IFS= read -r dev; do
+        [[ -z "${dev}" ]] && continue
+        conn="$(nmcli -g GENERAL.CONNECTION device show "${dev}" 2>/dev/null | head -n1)"
+        uuid="$(nmcli -g GENERAL.CON-UUID device show "${dev}" 2>/dev/null | head -n1)"
+        [[ -z "${conn}" || "${conn}" == "--" ]] && continue
+        mode="$(_wifi_profile_mode "${uuid}" "${conn}")"
+        if [[ "${mode}" != "ap" ]]; then
+            printf "%s\t%s\n" "${conn}" "${uuid}"
+            return 0
         fi
-        echo "Wi-Fi connection '${_candidate}' is AP mode; skipping"
-    done <<< "${wifi_candidates}"
+        echo "Wi-Fi connection '${conn}' is AP mode; skipping" >&2
+    done <<< "${wifi_devices}"
 
-    if [[ -n "${wifi_conn}" ]]; then
-        printf "%s\n" "${wifi_conn}" > "${ssid_file}"
-        echo "Recorded WiFi connection '${wifi_conn}' to ${ssid_file}"
+    return 1
+}
+
+# _select_saved_wifi_connection: import a unique saved infrastructure profile.
+_select_saved_wifi_connection() {
+    local uuid type name mode autoconnect priority
+    local best_auto_name="" best_auto_uuid="" best_auto_priority=-2147483648 best_auto_count=0
+    local only_name="" only_uuid="" suitable_count=0
+
+    while IFS=: read -r uuid type; do
+        [[ -z "${uuid}" ]] && continue
+        [[ "${type}" == "802-11-wireless" || "${type}" == "wifi" ]] || continue
+
+        name="$(nmcli -g connection.id connection show uuid "${uuid}" 2>/dev/null | head -n1)"
+        [[ -z "${name}" || "${name}" == "Hotspot" ]] && continue
+        mode="$(_wifi_profile_mode "${uuid}" "${name}")"
+        if [[ "${mode}" == "ap" ]]; then
+            echo "Saved Wi-Fi connection '${name}' is AP mode; skipping" >&2
+            continue
+        fi
+
+        suitable_count=$((suitable_count + 1))
+        only_name="${name}"
+        only_uuid="${uuid}"
+
+        autoconnect="$(nmcli -g connection.autoconnect connection show uuid "${uuid}" 2>/dev/null | head -n1 | tr '[:upper:]' '[:lower:]')"
+        priority="$(nmcli -g connection.autoconnect-priority connection show uuid "${uuid}" 2>/dev/null | head -n1)"
+        [[ "${priority}" =~ ^-?[0-9]+$ ]] || priority=0
+        if [[ "${autoconnect}" == "yes" ]]; then
+            if (( priority > best_auto_priority )); then
+                best_auto_name="${name}"
+                best_auto_uuid="${uuid}"
+                best_auto_priority="${priority}"
+                best_auto_count=1
+            elif (( priority == best_auto_priority )); then
+                best_auto_count=$((best_auto_count + 1))
+            fi
+        fi
+    done < <(nmcli -t -f UUID,TYPE connection show 2>/dev/null)
+
+    if (( best_auto_count == 1 )); then
+        printf "%s\t%s\n" "${best_auto_name}" "${best_auto_uuid}"
+        return 0
+    fi
+    if (( best_auto_count > 1 )); then
+        echo "Multiple saved autoconnect Wi-Fi profiles share priority ${best_auto_priority}; not recording a default" >&2
+        return 1
+    fi
+    if (( suitable_count == 1 )); then
+        printf "%s\t%s\n" "${only_name}" "${only_uuid}"
+        return 0
+    fi
+    if (( suitable_count > 1 )); then
+        echo "Multiple saved Wi-Fi profiles found and none is a unique autoconnect default; not recording a default" >&2
+    fi
+    return 1
+}
+
+# network_state_phase: record current or saved WiFi client connection (fresh install only).
+# Mirrors the same function in autostream_install.sh.
+# Preserves an existing /opt/autostream/ssid if non-empty.
+network_state_phase() {
+    local ssid_file="/opt/autostream/ssid"
+
+    if [[ -s "${ssid_file}" ]]; then
+        echo "WiFi connection already recorded at ${ssid_file}"
+        return 0
+    fi
+    if _network_state_configured; then
+        echo "WiFi connection already recorded at /etc/autostream-network.json"
+        return 0
+    fi
+
+    local selected wifi_conn wifi_uuid source
+    selected="$(_select_active_wifi_connection || true)"
+    source="active"
+    if [[ -z "${selected}" ]]; then
+        selected="$(_select_saved_wifi_connection || true)"
+        source="saved"
+    fi
+
+    if [[ -n "${selected}" ]]; then
+        wifi_conn="${selected%%$'\t'*}"
+        wifi_uuid="${selected#*$'\t'}"
+        if [[ "${wifi_uuid}" == "${wifi_conn}" ]]; then
+            wifi_uuid=""
+        fi
+        _record_wifi_connection_state "${wifi_conn}" "${wifi_uuid}"
+        echo "Recorded ${source} WiFi connection '${wifi_conn}' to ${ssid_file} and /etc/autostream-network.json"
     else
-        echo "No active WiFi client connection detected; hotspot mode will be used if wired connection is not detected"
+        echo "No active or uniquely selectable saved WiFi client connection detected; hotspot mode will be used if wired connection is not detected"
     fi
 }
 
