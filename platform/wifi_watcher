@@ -82,6 +82,7 @@ import logging
 import sys
 import json
 import urllib.request
+from enum import Enum
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -207,6 +208,75 @@ DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW = 3   # cross-boot dead-PHY reboot cap
 RUNTIME_LOG_LEVELS = {"warning": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG}
 LOG_LEVEL_TTL_MIN = 60
 LOG_LEVEL_TTL_MAX = 3600
+
+
+# ** EXPLICIT STATE MODEL (state-machine refactor) **
+#
+# These types are the permanent explicit model the watcher migrates onto.  They
+# are pure data + pure classifiers (constraint 10): no STATE mutation, no
+# subprocess, no effects, and no dependency on the `w` seam — so they can later
+# lift into a pure platform/wifi_policy.py unchanged.  In WP2 the model is in
+# *shadow*: derive_mode() observes the current flags and the mode is published
+# additively in the status snapshot; no decision site reads it yet.
+
+
+class Mode(Enum):
+    """The watcher's explicit connectivity operating mode (Section 2.2)."""
+    BOOT = "boot"
+    ONLINE = "online"
+    OFFLINE_RECONNECTING = "offline_reconnecting"
+    HOTSPOT = "hotspot"
+    REBOOT_PENDING = "reboot_pending"
+
+
+class HotspotPurpose(Enum):
+    """Why the setup hotspot is up — the single key into PURPOSE_TABLE (Section 2.3)."""
+    FIRST_RUN = "first_run"
+    BOOT_RECOVERY = "boot_recovery"
+    USB_LOSS_RECOVERY = "usb_loss_recovery"
+    EXPLICIT_RECONFIGURE = "explicit_reconfigure"
+    MANUAL = "manual"
+
+
+@dataclass(frozen=True)
+class PurposePolicy:
+    """One row of PURPOSE_TABLE (Section 2.3) — pure data, no behaviour."""
+    deadline_s: Optional[float]   # None = indefinite (FIRST_RUN)
+    eth_suppressible: bool
+    probes_return: bool
+    rollback: bool
+
+
+# The five-row purpose table: the single source of hotspot entry/exit policy.
+# eth-suppressible == "automatic purpose"; user-initiated purposes
+# (EXPLICIT_RECONFIGURE, MANUAL) are never torn down by Ethernet appearing.
+PURPOSE_TABLE: "dict[HotspotPurpose, PurposePolicy]" = {
+    HotspotPurpose.FIRST_RUN:            PurposePolicy(None,          True,  False, False),
+    HotspotPurpose.BOOT_RECOVERY:        PurposePolicy(AP_MAX_DURATION, True,  True,  False),
+    HotspotPurpose.USB_LOSS_RECOVERY:    PurposePolicy(AP_MAX_DURATION, True,  True,  False),
+    HotspotPurpose.EXPLICIT_RECONFIGURE: PurposePolicy(AP_MAX_DURATION, False, True,  True),
+    HotspotPurpose.MANUAL:               PurposePolicy(AP_MAX_DURATION, False, True,  False),
+}
+
+
+@dataclass(frozen=True)
+class RollbackSnapshot:
+    """Rollback target for an EXPLICIT_RECONFIGURE session (mirrors rollback_* fields)."""
+    connection_name: str
+    connection_uuid: str
+    adapter_mac: str
+
+
+@dataclass
+class HotspotSession:
+    """The live hotspot session: purpose + entry time (+ rollback for reconfigure).
+
+    deadline / eth_suppressible / probes_return are not stored here — they are
+    looked up in PURPOSE_TABLE[purpose] so policy lives in exactly one place.
+    """
+    purpose: HotspotPurpose
+    entered_at: float
+    rollback: Optional[RollbackSnapshot] = None   # only EXPLICIT_RECONFIGURE
 
 
 logger = logging.getLogger(__name__)
@@ -1333,6 +1403,32 @@ def gather_facts() -> "Facts":
         addresses=wifi_net.list_interface_addresses(),
         taken_at=time.monotonic(),
     )
+
+
+def derive_mode(state, facts) -> "Mode":
+    """Shadow classifier: compute the explicit Mode from the current flags (WP2).
+
+    Pure (constraint 10): reads *state* fields and *facts* (needs only
+    ``facts.wired_ok`` and ``facts.taken_at``) plus module constants; it does
+    not mutate STATE, call subprocesses, run effects, or depend on the ``w``
+    seam.  This is migration scaffolding (deleted in WP8); it computes "what mode
+    would the device be in" from the existing boolean soup so the model can be
+    proven to track the flags before any decision site reads the mode.
+
+    Precedence mirrors the live loop: hotspot wins, then an accepted reboot, then
+    a usable path means ONLINE, then the boot grace window means BOOT, otherwise
+    the configured-but-offline device is OFFLINE_RECONNECTING.
+    """
+    if state.setup_mode:
+        return Mode.HOTSPOT
+    if state.conn_reboot_retry_after == float("inf"):
+        return Mode.REBOOT_PENDING
+    if bool(facts.wired_ok) or bool(state.connectivity_ok):
+        return Mode.ONLINE
+    boot_time = state.boot_time
+    if boot_time is not None and (facts.taken_at - boot_time) < BOOT_AP_GRACE:
+        return Mode.BOOT
+    return Mode.OFFLINE_RECONNECTING
 
 
 def _make_playing_status_memo():

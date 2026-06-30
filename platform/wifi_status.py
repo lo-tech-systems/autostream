@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import ipaddress
 import time
+from types import SimpleNamespace
 from typing import Optional
 
 import autostream_wifi_network as wifi_net
@@ -362,11 +363,19 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         no_active_age = max(0.0, now_monotonic - last_active_path_seen)
         no_active_remaining = max(0.0, w.NO_ACTIVE_PATH_REBOOT_AFTER - no_active_age)
 
+    # Shadow explicit-mode model (WP2): published additively so the migration
+    # can be observed.  No consumer reads device.mode yet; derive_mode is a pure
+    # classifier over the current flags.
+    mode_value = w.derive_mode(
+        w.STATE, SimpleNamespace(wired_ok=bool(wired_ok), taken_at=now_monotonic)
+    ).value
+
     return {
         "schema_version": wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
         "updated_at": now_wall,
         "device": {
             "state": device_state,
+            "mode": mode_value,
             "primary_ifname": primary_ifname,
             "primary_kind": primary_kind,
             "primary_ssid": primary_ssid,

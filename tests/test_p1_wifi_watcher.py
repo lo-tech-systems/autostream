@@ -25,7 +25,7 @@ import threading
 from contextlib import ExitStack
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch, call
 import ipaddress
 
@@ -2570,6 +2570,85 @@ def _run_monitor_once(
         connect = stack.enter_context(patch.object(watcher, "connect_to_configured_wifi"))
         watcher.network_monitor_loop(run_once=True)
         return connect
+
+
+class TestShadowModeModel:
+    """WP2 — explicit Mode model in shadow; derive_mode tracks the flags."""
+
+    @staticmethod
+    def _facts(watcher, *, wired_ok=False, taken_at=100.0):
+        return SimpleNamespace(wired_ok=wired_ok, taken_at=taken_at)
+
+    def test_setup_mode_is_hotspot(self, watcher):
+        watcher.STATE.setup_mode = True
+        # Hotspot wins even with a reboot accepted or a usable path.
+        watcher.STATE.conn_reboot_retry_after = float("inf")
+        assert watcher.derive_mode(watcher.STATE, self._facts(watcher, wired_ok=True)) is watcher.Mode.HOTSPOT
+
+    def test_reboot_pending(self, watcher):
+        watcher.STATE.conn_reboot_retry_after = float("inf")
+        assert watcher.derive_mode(watcher.STATE, self._facts(watcher)) is watcher.Mode.REBOOT_PENDING
+
+    def test_online_via_wired(self, watcher):
+        assert watcher.derive_mode(watcher.STATE, self._facts(watcher, wired_ok=True)) is watcher.Mode.ONLINE
+
+    def test_online_via_connectivity_ok(self, watcher):
+        watcher.STATE.connectivity_ok = True
+        assert watcher.derive_mode(watcher.STATE, self._facts(watcher)) is watcher.Mode.ONLINE
+
+    def test_boot_window_when_offline(self, watcher):
+        watcher.STATE.boot_time = 100.0
+        facts = self._facts(watcher, taken_at=100.0 + watcher.BOOT_AP_GRACE - 1)
+        assert watcher.derive_mode(watcher.STATE, facts) is watcher.Mode.BOOT
+
+    def test_offline_reconnecting_after_boot_grace(self, watcher):
+        watcher.STATE.boot_time = 100.0
+        facts = self._facts(watcher, taken_at=100.0 + watcher.BOOT_AP_GRACE + 1)
+        assert watcher.derive_mode(watcher.STATE, facts) is watcher.Mode.OFFLINE_RECONNECTING
+
+    def test_derive_mode_is_pure(self, watcher):
+        # No STATE mutation, returns a valid Mode value.
+        from dataclasses import fields, asdict
+        before = {f.name: getattr(watcher.STATE, f.name) for f in fields(watcher.STATE)}
+        watcher.STATE.boot_time = 50.0
+        before["boot_time"] = 50.0
+        mode = watcher.derive_mode(watcher.STATE, self._facts(watcher))
+        after = {f.name: getattr(watcher.STATE, f.name) for f in fields(watcher.STATE)}
+        assert mode in set(watcher.Mode)
+        assert after == before
+
+    def test_purpose_table_has_five_rows_matching_spec(self, watcher):
+        P = watcher.HotspotPurpose
+        T = watcher.PURPOSE_TABLE
+        assert set(T) == set(P)
+        # FIRST_RUN: indefinite, eth-suppressible, no probe, no rollback.
+        assert T[P.FIRST_RUN].deadline_s is None
+        assert T[P.FIRST_RUN].eth_suppressible is True
+        assert T[P.FIRST_RUN].probes_return is False
+        assert T[P.FIRST_RUN].rollback is False
+        # Recovery purposes: 30 min, eth-suppressible, probe for return.
+        for p in (P.BOOT_RECOVERY, P.USB_LOSS_RECOVERY):
+            assert T[p].deadline_s == watcher.AP_MAX_DURATION
+            assert T[p].eth_suppressible is True
+            assert T[p].probes_return is True
+            assert T[p].rollback is False
+        # User-initiated purposes: not eth-suppressible.
+        assert T[P.EXPLICIT_RECONFIGURE].eth_suppressible is False
+        assert T[P.EXPLICIT_RECONFIGURE].rollback is True
+        assert T[P.MANUAL].eth_suppressible is False
+        assert T[P.MANUAL].rollback is False
+
+    def test_snapshot_publishes_device_mode(self, watcher):
+        usb = _adapter(watcher, "wlan0", "AA:BB:CC:DD:EE:09", is_usb=True)
+        watcher.STATE.setup_mode = True
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+        assert snap["device"]["mode"] == "hotspot"
 
 
 class TestPerTickFactsSnapshot:
