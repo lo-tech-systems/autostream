@@ -672,7 +672,7 @@ def send_setup_page(
     network_card_inner_html = """
           <div id="networkCard">
             <p id="networkCardTitle" style="margin:0 0 0.5rem;font-weight:700;">Network</p>
-            <p id="networkAdapterInfo" style="margin:0 0 0.25rem;font-size:0.9rem;color:var(--color-text);">Checking status...</p>
+            <p id="networkAdapterInfo" style="margin:0 0 0.25rem;font-size:0.9rem;color:var(--color-text);white-space:pre-line;">Checking status...</p>
             <p id="networkAddressInfo" style="display:none;margin:0 0 0.25rem;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
             <p id="networkWarning" style="display:none;margin:0.25rem 0 0;font-size:0.8rem;font-weight:600;"></p>
             <p id="networkSupportDetail" style="display:none;margin:0.15rem 0 0.5rem;font-size:0.75rem;color:var(--color-text-muted,#888);"></p>
@@ -2536,7 +2536,10 @@ def send_setup_page(
             }}
             if (titleEl) titleEl.textContent = j.title || 'Network';
             if (adapterEl) {{
-              if (j.display) {{
+              if (Array.isArray(j.interface_lines) && j.interface_lines.length) {{
+                adapterEl.textContent = j.interface_lines.join('\\n');
+                adapterEl.style.display = '';
+              }} else if (j.display) {{
                 adapterEl.textContent = j.display;
                 adapterEl.style.display = '';
               }} else {{
@@ -2544,7 +2547,9 @@ def send_setup_page(
               }}
             }}
             if (addressEl) {{
-              if (j.detail) {{
+              if (Array.isArray(j.interface_lines) && j.interface_lines.length) {{
+                addressEl.style.display = 'none';
+              }} else if (j.detail) {{
                 addressEl.textContent = j.detail;
                 addressEl.style.display = '';
               }} else {{

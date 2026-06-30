@@ -2173,6 +2173,80 @@ def _network_ip_detail(device: dict) -> str:
     return f"IP: {ip_text} | Gateway: {gateway or 'Not available'}"
 
 
+def _network_ipv4_text(info: dict) -> str:
+    address = str(info.get("address") or "").strip()
+    if not address:
+        return ""
+    prefixlen = info.get("prefixlen")
+    if prefixlen is not None:
+        return f"{address}/{prefixlen}"
+    netmask = str(info.get("netmask") or "").strip()
+    if netmask:
+        return f"{address}/{netmask}"
+    return address
+
+
+def _network_adapter_ipv4_text(adapter: dict, device: dict) -> str:
+    facts = adapter.get("facts") if isinstance(adapter.get("facts"), dict) else {}
+    ipv4 = facts.get("ipv4") if isinstance(facts.get("ipv4"), list) else []
+    selected = None
+    for addr in ipv4:
+        if not isinstance(addr, dict):
+            continue
+        if addr.get("family") == "ipv4" and str(addr.get("scope") or "") == "global":
+            selected = addr
+            break
+        if selected is None and addr.get("family") == "ipv4":
+            selected = addr
+    if isinstance(selected, dict):
+        text = _network_ipv4_text(selected)
+        if text:
+            return text
+
+    if str(adapter.get("ifname") or "").strip() == str(device.get("primary_ifname") or "").strip():
+        info = device.get("primary_ipv4_info") if isinstance(device.get("primary_ipv4_info"), dict) else {}
+        return _network_ipv4_text(info)
+    return ""
+
+
+def _network_adapter_label(adapter: dict) -> str:
+    kind = str(adapter.get("kind") or "").strip()
+    if kind == "builtin_wifi":
+        return "On-board WiFi"
+    if kind == "usb_wifi":
+        return "USB WiFi"
+    return ""
+
+
+def _network_interface_lines(status: dict) -> list[str]:
+    device = status.get("device") if isinstance(status.get("device"), dict) else {}
+    lines: list[str] = []
+
+    if str(device.get("primary_kind") or "").strip() == "ethernet":
+        eth_text = _network_ipv4_text(
+            device.get("primary_ipv4_info") if isinstance(device.get("primary_ipv4_info"), dict) else {}
+        )
+        if eth_text:
+            lines.append(f"Ethernet: {eth_text}")
+
+    adapters = status.get("adapters") if isinstance(status.get("adapters"), list) else []
+    wifi_rows = []
+    for idx, adapter in enumerate(adapters):
+        if not isinstance(adapter, dict):
+            continue
+        label = _network_adapter_label(adapter)
+        if not label:
+            continue
+        ifname = str(adapter.get("ifname") or "").strip()
+        sort_kind = 0 if label == "On-board WiFi" else 1
+        wifi_rows.append((sort_kind, ifname, idx, label, adapter))
+
+    for _sort_kind, _ifname, _idx, label, adapter in sorted(wifi_rows):
+        ip_text = _network_adapter_ipv4_text(adapter, device)
+        lines.append(f"{label}: {ip_text or 'Disconnected'}")
+    return lines
+
+
 def _network_warning_rank(adapter: dict) -> int | None:
     policy = adapter.get("policy") if isinstance(adapter.get("policy"), dict) else {}
     warning = str(policy.get("warning") or "").strip()
@@ -2255,6 +2329,7 @@ def build_network_card_presentation(status: dict) -> dict:
         "title": "Network",
         "display": display,
         "detail": _network_ip_detail(device) if primary_kind else "",
+        "interface_lines": _network_interface_lines(status),
         "warning": "",
         "warning_severity": "",
         "support_detail": "",

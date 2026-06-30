@@ -81,11 +81,12 @@ def _with_device(status: dict, **fields) -> dict:
 
 def _usb_adapter(*, warning: str = "", quarantined: bool = False,
                  resets: int = 0, budget: int = 2, role: str = "client",
-                 ifname: str = "wlan1") -> dict:
+                 ifname: str = "wlan1", ipv4: list | None = None) -> dict:
     return {
         "kind": "usb_wifi",
         "ifname": ifname,
         "role": role,
+        "facts": {"ipv4": ipv4 or []},
         "health": {"state": "healthy"},
         "policy": {
             "warning": warning,
@@ -107,6 +108,51 @@ class TestBuildNetworkCardPresentation:
         assert result["title"] == "Network"
         assert result["display"] == "Connected via Ethernet"
         assert result["detail"] == "IP: 192.168.1.42/24 | Gateway: 192.168.1.1"
+        assert result["interface_lines"] == ["Ethernet: 192.168.1.42/24"]
+
+    def test_no_ethernet_row_when_not_primary(self):
+        result = build_network_card_presentation(_ok_status())
+        assert all(not line.startswith("Ethernet:") for line in result["interface_lines"])
+
+    def test_wifi_interface_rows(self):
+        s = _with_device(
+            _ok_status({
+                "adapters": [
+                    {
+                        "kind": "builtin_wifi",
+                        "ifname": "wlan0",
+                        "role": "idle",
+                        "facts": {"ipv4": []},
+                        "health": {"state": "idle"},
+                        "policy": {},
+                    },
+                    _usb_adapter(
+                        ifname="wlan1",
+                        ipv4=[{
+                            "family": "ipv4",
+                            "address": "192.168.1.38",
+                            "prefixlen": 24,
+                            "scope": "global",
+                        }],
+                    ),
+                ],
+            }),
+            primary_kind="usb_wifi",
+            primary_ifname="wlan1",
+            primary_ssid="MyNetwork",
+            primary_ipv4="192.168.1.38",
+            primary_ipv4_info={
+                "address": "192.168.1.38",
+                "prefixlen": 24,
+                "netmask": "255.255.255.0",
+                "gateway": "192.168.1.1",
+            },
+        )
+        result = build_network_card_presentation(s)
+        assert result["interface_lines"] == [
+            "On-board WiFi: Disconnected",
+            "USB WiFi: 192.168.1.38/24",
+        ]
 
     def test_usb_wifi_with_ssid(self):
         s = _with_device(_ok_status(), primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
@@ -512,6 +558,7 @@ class TestSetupPageNetworkCard:
 
     def test_adapter_info_element_present(self):
         assert 'id="networkAdapterInfo"' in self.PAGE_SRC
+        assert "white-space:pre-line" in self.PAGE_SRC
 
     def test_first_open_text_checks_status(self):
         assert "Checking status..." in self.PAGE_SRC
@@ -554,6 +601,8 @@ class TestSetupPageNetworkCard:
         assert "if (!r.ok || !j ||" in self.PAGE_SRC
 
     def test_refresh_network_adapter_info_updates_new_fields(self):
+        assert "Array.isArray(j.interface_lines)" in self.PAGE_SRC
+        assert "j.interface_lines.join('\\\\n')" in self.PAGE_SRC
         assert "addressEl.textContent = j.detail" in self.PAGE_SRC
         assert "warningEl.textContent = j.warning" in self.PAGE_SRC
         assert "j.warning_severity === 'danger'" in self.PAGE_SRC
