@@ -1116,6 +1116,83 @@ class TestQueryPlayingStatus:
             assert watcher.query_playing_status() is None
 
 
+class TestAdapterOverlayEvents:
+    """WP5a — overlay diagnoses and returns ClientFailed events; loop applies."""
+
+    def _diagnose(self, watcher, adapters, active_client):
+        return watcher.wifi_recovery.diagnose_client_failure(watcher, adapters, active_client)
+
+    def test_absent_usb_returns_client_failed_absent(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb_mac = "bb:bb:bb:bb:bb:01"
+        watcher._known_usb_macs.add(usb_mac)
+        watcher.STATE.active_client_mac = usb_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        event = self._diagnose(watcher, [builtin], None)
+        assert isinstance(event, watcher.ClientFailed)
+        assert event.reason == "absent"
+        assert event.mac == usb_mac
+        assert event.has_alt_path is True  # built-in present
+
+    def test_no_alt_path_when_no_builtin(self, watcher):
+        usb_mac = "bb:bb:bb:bb:bb:01"
+        watcher._known_usb_macs.add(usb_mac)
+        watcher.STATE.active_client_mac = usb_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        event = self._diagnose(watcher, [], None)  # USB gone, no built-in
+        assert event.reason == "absent"
+        assert event.has_alt_path is False
+
+    def test_one_transient_unhealthy_pass_returns_none(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
+        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False):
+            event = self._diagnose(watcher, adapters, usb)
+        assert event is None
+        assert watcher.STATE.active_usb_unhealthy_checks == 1
+
+    def test_two_unhealthy_passes_return_client_failed_no_ip(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
+        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.active_usb_unhealthy_checks = 1
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False):
+            event = self._diagnose(watcher, adapters, usb)
+        assert isinstance(event, watcher.ClientFailed)
+        assert event.reason == "no_ip"
+        assert event.ifname == "wlan1"
+        assert watcher.STATE.active_usb_unhealthy_checks == 0  # reset after firing
+
+    def test_healthy_usb_returns_none_and_resets_counter(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:04", is_usb=True)
+        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_usb_unhealthy_checks = 1
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+            event = self._diagnose(watcher, [usb], usb)
+        assert event is None
+        assert watcher.STATE.active_usb_unhealthy_checks == 0
+
+    def test_no_usb_involvement_returns_none(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        event = self._diagnose(watcher, [builtin], builtin)
+        assert event is None
+
+    def test_apply_client_failed_runs_fallback_transition(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
+                                     reason="no_ip", has_alt_path=True)
+        with patch.object(watcher, "_do_builtin_fallback_or_recovery", return_value=True) as fb:
+            acted = watcher.apply_client_failed(event, [builtin])
+        assert acted is True
+        fb.assert_called_once()
+
+
 class TestUsbFailureFallback:
     def test_absent_active_usb_triggers_immediate_fallback(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)

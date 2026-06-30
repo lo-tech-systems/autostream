@@ -2135,60 +2135,33 @@ def resolve_active_client(adapters: list) -> Optional[object]:
 
 
 def handle_usb_failure_fallback(adapters: list, active_client) -> bool:
-    """Debounced active-USB failure handling (Sections 8.4/8.5).
+    """Active-USB failure handling via the adapter-remediation overlay (WP5a).
 
-    Returns True when a transition (built-in fallback or recovery hotspot) was
-    performed on this pass; the caller then skips its ordinary reconnect/reboot
-    logic for this pass to avoid racing.  This path is never gated by playback.
+    The overlay (wifi_recovery.diagnose_client_failure) diagnoses the active
+    client and returns a ClientFailed event; this loop site applies the
+    connectivity transition.  Returns True when a transition was performed on
+    this pass; the caller then skips its ordinary reconnect/reboot logic for
+    this pass.  Never gated by playback.
     """
-    with state_lock:
-        recorded_mac = STATE.active_client_mac
-
-    active_is_usb = bool(active_client and active_client.is_usb)
-    recorded_usb_present = bool(recorded_mac) and any(
-        a.is_usb and a.permanent_mac == recorded_mac for a in adapters
-    )
-
-    # Case 1: the recorded active USB device is physically absent.
-    # Trigger immediate built-in fallback on this single pass.
-    if recorded_mac and _recorded_usb(recorded_mac) and not recorded_usb_present:
-        logger.info("Active USB adapter (%s) absent; attempting built-in fallback", recorded_mac)
-        return _do_builtin_fallback_or_recovery(adapters, reason="active-USB-absent")
-
-    # Case 2 (debounced): the recorded USB adapter is present in the discovered
-    # adapter list but NetworkManager has disconnected it (no longer the active
-    # client).  Treat identically to a present-but-unhealthy active USB client.
-    recorded_usb_disconnected = (
-        bool(recorded_mac)
-        and _recorded_usb(recorded_mac)
-        and recorded_usb_present
-        and not active_is_usb
-    )
-
-    # No USB involvement at all; reset counter and exit.
-    if not active_is_usb and not recorded_usb_disconnected:
-        with state_lock:
-            STATE.active_usb_unhealthy_checks = 0
+    event = wifi_recovery.diagnose_client_failure(_self_module(), adapters, active_client)
+    if event is None:
         return False
+    return apply_client_failed(event, adapters)
 
-    # Active USB client is healthy; reset counter and exit.
-    if active_is_usb and is_wifi_client_healthy(active_client.ifname):
-        with state_lock:
-            STATE.active_usb_unhealthy_checks = 0
-        return False
 
-    # Case 2: USB present but unhealthy or NM-disconnected → two consecutive passes.
-    with state_lock:
-        STATE.active_usb_unhealthy_checks += 1
-        count = STATE.active_usb_unhealthy_checks
-    reason_tag = "active-USB-disconnected" if recorded_usb_disconnected else "active-USB-unhealthy"
-    logger.debug("%s check %d/%d", reason_tag, count, USB_UNHEALTHY_DEBOUNCE)
-    if count >= USB_UNHEALTHY_DEBOUNCE:
-        logger.info("USB adapter %s for %d passes; attempting fallback", reason_tag, count)
-        with state_lock:
-            STATE.active_usb_unhealthy_checks = 0
-        return _do_builtin_fallback_or_recovery(adapters, reason=reason_tag)
-    return False
+def apply_client_failed(event, adapters: list) -> bool:
+    """Apply an overlay ClientFailed event (Section 3.1a).
+
+    ClientFailed with an alternate path → built-in fallback to ONLINE; without →
+    HOTSPOT(USB_LOSS_RECOVERY).  _do_builtin_fallback_or_recovery encodes both
+    (try built-in, else recovery hotspot), so the apply is a single call; the
+    has_alt_path hint is carried on the event for status/diagnostics.
+    """
+    logger.info(
+        "Overlay ClientFailed(%s) on %s; applying fallback transition",
+        event.reason, event.ifname or event.mac or "?",
+    )
+    return _do_builtin_fallback_or_recovery(adapters, reason=event.reason)
 
 
 # Remember which permanent MACs were last seen as USB, so that an absent active
@@ -2199,10 +2172,6 @@ _known_usb_macs: set[str] = set()
 # startup_connect_usb_first() is triggered at most once per new USB device
 # appearing within BOOT_AP_GRACE.
 _startup_window_usb_tried_macs: set[str] = set()
-
-
-def _recorded_usb(mac: str) -> bool:
-    return mac in _known_usb_macs
 
 
 def _do_builtin_fallback_or_recovery(adapters: list, reason: str) -> bool:
@@ -2377,6 +2346,11 @@ import wifi_recovery
 
 TargetAdapter = wifi_recovery.TargetAdapter
 INTERFACE_REAPPEAR_TIMEOUT = wifi_recovery.INTERFACE_REAPPEAR_TIMEOUT
+# Adapter-remediation overlay event contract (Section 3.1a), re-exported so the
+# loop and tests can reference the event shapes without importing wifi_recovery.
+OverlayEvent = wifi_recovery.OverlayEvent
+ClientFailed = wifi_recovery.ClientFailed
+NeedReboot = wifi_recovery.NeedReboot
 
 
 def _resolve_target_client(adapters):

@@ -23,11 +23,104 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 import autostream_wifi_network as wifi_net
 
 INTERFACE_REAPPEAR_TIMEOUT = 15  # seconds to wait for a netdev after a USB reset
+
+
+# ---- Adapter-remediation overlay event contract (Section 3.1a) ----
+#
+# The overlay *diagnoses* the active client adapter and emits events; the
+# connectivity loop *consumes* them and applies the transition (constraint 10 —
+# pure classify, watcher applies; no generic Action engine).  ClientFailed is
+# produced here by diagnose_client_failure (the USB-failure path); NeedReboot is
+# the dead-PHY ladder's offline-too-long escalation (the LINK_DOWN branch below,
+# which both diagnoses and — to keep the verified dead-PHY behaviour bit-for-bit
+# in WP5a — applies its own reboot in-module).
+
+
+class OverlayEvent(Enum):
+    CLIENT_FAILED = "client_failed"
+    NEED_REBOOT = "need_reboot"
+
+
+@dataclass(frozen=True)
+class ClientFailed:
+    """OverlayEvent.CLIENT_FAILED — the active client adapter is no longer usable."""
+    ifname: str
+    mac: str
+    reason: str              # "no_ip" | "absent" | "dead_phy_quarantined"
+    has_alt_path: bool       # a built-in fallback adapter is available
+
+
+@dataclass(frozen=True)
+class NeedReboot:
+    """OverlayEvent.NEED_REBOOT — only path dead and offline past the threshold."""
+    ifname: str
+    reason: str              # e.g. "dead_phy_only_path_offline_30min"
+
+
+def diagnose_client_failure(w, adapters: list, active_client) -> Optional[ClientFailed]:
+    """Diagnose active-USB client failure; return a ClientFailed event or None.
+
+    This is the overlay's DEGRADED_NO_IP / ABSENT diagnosis (Section 2.4),
+    extracted from the watcher's old handle_usb_failure_fallback.  It owns the
+    per-active-client debounce (STATE.active_usb_unhealthy_checks) and returns a
+    ClientFailed event when a fallback should happen — it does **not** mutate
+    STATE.mode or run effects; the loop applies the transition.  Behaviour is
+    preserved exactly (WP5a is a pure restructure).
+    """
+    with w.state_lock:
+        recorded_mac = w.STATE.active_client_mac
+        recorded_ifname = w.STATE.active_client_ifname
+
+    active_is_usb = bool(active_client and active_client.is_usb)
+    recorded_usb = bool(recorded_mac) and recorded_mac in w._known_usb_macs
+    recorded_usb_present = bool(recorded_mac) and any(
+        a.is_usb and a.permanent_mac == recorded_mac for a in adapters
+    )
+    has_alt_path = wifi_net.resolve_builtin(adapters) is not None
+
+    # Case 1: the recorded active USB device is physically absent.
+    if recorded_mac and recorded_usb and not recorded_usb_present:
+        w.logger.info("Active USB adapter (%s) absent; overlay ClientFailed(absent)", recorded_mac)
+        return ClientFailed(ifname=recorded_ifname, mac=recorded_mac,
+                            reason="absent", has_alt_path=has_alt_path)
+
+    # Case 2 (debounced): recorded USB present but NM disconnected it, or the
+    # active USB client is unhealthy.
+    recorded_usb_disconnected = (
+        recorded_usb and recorded_usb_present and not active_is_usb
+    )
+
+    # No USB involvement at all; reset counter and exit.
+    if not active_is_usb and not recorded_usb_disconnected:
+        with w.state_lock:
+            w.STATE.active_usb_unhealthy_checks = 0
+        return None
+
+    # Active USB client is healthy; reset counter and exit.
+    if active_is_usb and w.is_wifi_client_healthy(active_client.ifname):
+        with w.state_lock:
+            w.STATE.active_usb_unhealthy_checks = 0
+        return None
+
+    with w.state_lock:
+        w.STATE.active_usb_unhealthy_checks += 1
+        count = w.STATE.active_usb_unhealthy_checks
+    reason_tag = "active-USB-disconnected" if recorded_usb_disconnected else "active-USB-unhealthy"
+    w.logger.debug("%s check %d/%d", reason_tag, count, w.USB_UNHEALTHY_DEBOUNCE)
+    if count >= w.USB_UNHEALTHY_DEBOUNCE:
+        w.logger.info("USB adapter %s for %d passes; overlay ClientFailed(no_ip)", reason_tag, count)
+        with w.state_lock:
+            w.STATE.active_usb_unhealthy_checks = 0
+        ifname = active_client.ifname if active_client else recorded_ifname
+        return ClientFailed(ifname=ifname, mac=recorded_mac,
+                            reason="no_ip", has_alt_path=has_alt_path)
+    return None
 
 
 @dataclass(frozen=True)
