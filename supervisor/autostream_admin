@@ -1118,14 +1118,23 @@ def _validate_dial_name(name: str) -> None:
         raise ValueError(f"Dial name contains disallowed characters: {name!r}")
 
 
-def _write_fixed_service(path: Path, content: str) -> None:
+def _write_fixed_service(path: Path, content: str) -> bool:
     """Atomically write a fixed Avahi service file with fsync.
 
     Writes to a same-directory temporary file, fsyncs the fd, then uses
     os.replace() for atomic promotion. This avoids partial XML being read
     by avahi-daemon between write and close.
+
+    Returns True when the service file was replaced, or False when the
+    existing file already had the requested content.
     """
     _AVAHI_SERVICES_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == content:
+            return False
+    except Exception:
+        pass
+
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -1134,6 +1143,7 @@ def _write_fixed_service(path: Path, content: str) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp, 0o644)
         tmp.replace(path)
+        return True
     except Exception:
         try:
             tmp.unlink(missing_ok=True)
@@ -1164,11 +1174,12 @@ def _write_playing_service(args) -> int:
 </service-group>
 """
     try:
-        _write_fixed_service(_PLAYING_SERVICE, content)
+        changed = _write_fixed_service(_PLAYING_SERVICE, content)
     except Exception as e:
         log("ERROR", f"write-playing-service: {e!r}")
         return 1
-    log("INFO", f"write-playing-service: wrote {_PLAYING_SERVICE}")
+    if changed:
+        log("INFO", f"write-playing-service: wrote {_PLAYING_SERVICE}")
     return 0
 
 
@@ -1202,11 +1213,12 @@ def _write_appliance_service(args) -> int:
 </service-group>
 """
     try:
-        _write_fixed_service(_APPLIANCE_SERVICE, content)
+        changed = _write_fixed_service(_APPLIANCE_SERVICE, content)
     except Exception as e:
         log("ERROR", f"write-appliance-service: {e!r}")
         return 1
-    log("INFO", f"write-appliance-service: wrote {_APPLIANCE_SERVICE}")
+    if changed:
+        log("INFO", f"write-appliance-service: wrote {_APPLIANCE_SERVICE}")
     return 0
 
 

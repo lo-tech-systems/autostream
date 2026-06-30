@@ -1045,6 +1045,20 @@ class TestIsStaleInProgress:
 # ---------------------------------------------------------------------------
 
 class TestApplianceService:
+    def test_write_fixed_service_skips_identical_content(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+        content = "<service-group />\n"
+        svc_file.write_text(content, encoding="utf-8")
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir):
+            changed = m._write_fixed_service(svc_file, content)
+
+        assert changed is False
+        assert svc_file.read_text(encoding="utf-8") == content
+        assert not (svc_dir / "autostream.service.tmp").exists()
+
     def test_write_appliance_service_creates_xml(self, tmp_path):
         svc_dir = tmp_path / "avahi"
         svc_dir.mkdir()
@@ -1066,6 +1080,24 @@ class TestApplianceService:
         assert "ui=v1" in content
         assert "federation=v1" in content
         assert "version=" + args.version in content
+
+    def test_write_appliance_service_suppresses_unchanged_log(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            assert m._write_appliance_service(args) == 0
+            with patch.object(m, "log") as mock_log:
+                rc = m._write_appliance_service(args)
+
+        assert rc == 0
+        mock_log.assert_not_called()
 
     def test_write_appliance_service_rejects_invalid_id(self):
         args = MagicMock()
