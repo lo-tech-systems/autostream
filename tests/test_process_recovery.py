@@ -308,3 +308,37 @@ class TestCleanupDiscovery:
             if not _reloading:
                 _core_mod._cleanup_discovery()
         assert not called, "_cleanup_discovery must be skipped when _reloading is True"
+
+
+class TestOutputUsageStartup:
+    def test_output_usage_starts_before_monitor_startup_loop(self):
+        """Output usage discovery must start even if monitor startup never succeeds."""
+        cfg = MagicMock()
+        settings = MagicMock()
+        settings.snapshot.return_value = cfg
+        settings.save_now.return_value = True
+
+        calls = []
+        with patch.object(_core_mod, "stop_flag") as mock_flag, \
+             patch.object(_core_mod, "_install_signal_handlers"), \
+             patch.object(_core_mod, "setup_logging"), \
+             patch("autostream_log_policy.apply_startup_log_level"), \
+             patch.object(_core_mod, "_ensure_playback_tracker"), \
+             patch.object(_core_mod, "get_install_state", return_value={}), \
+             patch.object(_core_mod, "remove_avahi_playing_service",
+                          side_effect=lambda: calls.append("remove-playing")), \
+             patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(_core_mod, "_start_output_usage_poller",
+                          side_effect=lambda _cfg: calls.append("output-usage")), \
+             patch.object(_core_mod, "MonitorClient") as monitor_client, \
+             patch.object(_core_mod, "_cleanup_discovery"):
+            # Simulate shutdown being requested before monitor startup.  The
+            # poller should still be started because it now runs before the
+            # monitor retry loop.
+            mock_flag.is_set.return_value = True
+            avahi_path.exists.return_value = False
+
+            _core_mod.run_autostream("unused.json", settings=settings)
+
+        assert calls == ["remove-playing", "output-usage"]
+        monitor_client.assert_not_called()

@@ -592,6 +592,16 @@ def _cleanup_discovery() -> None:
         logging.debug("_cleanup_discovery: stop_appliance_scanner() raised", exc_info=True)
 
 
+def _start_output_usage_poller(cfg) -> None:
+    """Best-effort start/update of the cross-appliance output usage poller."""
+    try:
+        import autostream_output_usage as _ou
+        _ou.configure(cfg.webui.output_usage_poll_interval_seconds)
+        _ou.start(shutdown_event=stop_flag)
+    except Exception:
+        logging.warning("output-usage: failed to start poller", exc_info=True)
+
+
 def _install_signal_handlers() -> None:
     """Register SIGINT/SIGTERM handlers. Call once from the process entry point."""
     signal.signal(signal.SIGINT,  handle_signal)
@@ -2415,6 +2425,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     # does not attempt a redundant remove on the first poll.
     remove_avahi_playing_service()
     _playing_announced = _AVAHI_PLAYING_PATH.exists()
+    _start_output_usage_poller(cfg)
 
     # Outer loop: runs once normally; repeats after a config reload.
     while not stop_flag.is_set():
@@ -2510,12 +2521,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             _start_playing_reconciliation(_get_current_monitors, version)
             _reconcile_started = True
 
-        try:
-            import autostream_output_usage as _ou
-            _ou.configure(cfg.webui.output_usage_poll_interval_seconds)
-            _ou.start(shutdown_event=stop_flag)
-        except Exception:
-            logging.warning("output-usage: failed to start poller", exc_info=True)
+        _start_output_usage_poller(cfg)
 
         current: Optional[AudioMonitor] = None
         reconnect_at: float = 0.0

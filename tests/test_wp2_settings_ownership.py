@@ -262,6 +262,8 @@ class TestRunAutostreamFinalSave:
             patch("autostream_core._install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_core._ensure_playback_tracker"),
+            patch("autostream_core._start_output_usage_poller"),
+            patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_core.setup_logging"),
         ):
             sf.is_set.side_effect = _is_set
@@ -300,6 +302,8 @@ class TestRunAutostreamFinalSave:
             patch("autostream_core._install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_core._ensure_playback_tracker"),
+            patch("autostream_core._start_output_usage_poller"),
+            patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_core.setup_logging"),
             patch("autostream_settings.SettingsStore", CloseSpy),
         ):
