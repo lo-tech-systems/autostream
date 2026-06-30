@@ -3,17 +3,28 @@
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
-Flask presentation surface for the Autostream Wi-Fi watcher (HTTP-extraction
-plan, WP1).  This module owns the setup/captive-portal page rendering; later
-work packages add the Flask app factory, the captive/setup routes, and the
-loopback control/auth surface.
+Flask HTTP surface for the Autostream Wi-Fi watcher (HTTP-extraction plan).
+This module owns:
+
+  * presentation — the setup/captive-portal page rendering (render_setup_page,
+    render_wait_page) plus APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS;
+  * the Flask app factory ``build_app(w)`` and all routes — the captive-portal/
+    setup surface and the privileged loopback control surface;
+  * the loopback control/auth surface — the per-boot control token lifecycle
+    (init_control_token/remove_control_token), loopback+token authorisation
+    (_control_authorised, hmac.compare_digest), and request-shape validation.
+
+Routes only *validate, authenticate, and queue/trigger* via the watcher module
+``w``; all policy/orchestration (apply/scan, AP/setup transitions, the monitor
+loop's action consumption) stays in wifi_watcher.
 
 Runtime note:
 Like its sibling recovery modules (wifi_status.py, wifi_recovery.py) this runs
 on the system Python, not the app venv.  It imports only the standard library
 and ``flask``; it never imports an Autostream application module.  Functions
 that need watcher state receive the watcher module ``w`` as their first
-argument and read its constants/helpers through it (the star-topology seam).
+argument and read its constants/helpers through it (the star-topology seam):
+``w`` is the hub that owns STATE, state_lock, the logger, and the constants.
 """
 from __future__ import annotations
 

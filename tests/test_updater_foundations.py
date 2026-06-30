@@ -10,7 +10,9 @@ Covers:
 3. Both cmd_check() implementations must return ok: False when the
    GitHub API is unreachable rather than silently reporting no update.
 """
+import ast
 import importlib.util
+import re
 import sys
 import urllib.error
 from pathlib import Path
@@ -127,6 +129,83 @@ class TestRecoveryHelperManifest:
     def test_dial_installer_deploys_wifi_web(self):
         content = DIAL_INSTALLER.read_text(encoding="utf-8")
         assert "platform/wifi_web.py" in content
+
+
+def _join_continuations(text: str) -> str:
+    """Join shell backslash-newline line continuations so split `install`
+    commands can be matched on a single logical line."""
+    return re.sub(r"\\\s*\n\s*", " ", text)
+
+
+# This plan deploys wifi_web.py with an explicit `install -m 0644 -o root -g root`.
+# Assert that specific mode for wifi_web.py itself — NOT "matches the existing
+# siblings", which are copied with a bare `cp` and are not guaranteed 0644.
+_WIFI_WEB_INSTALL = re.compile(
+    r"install -m 0644 -o root -g root[^\n]*platform/wifi_web\.py"
+)
+
+
+class TestWifiWebDeploymentMode:
+    """HTTP-extraction WP4: wifi_web.py is deployed root-owned 0644 by both installers."""
+
+    def test_host_installer_installs_wifi_web_root_0644(self):
+        content = _join_continuations(HOST_INSTALLER.read_text(encoding="utf-8"))
+        assert _WIFI_WEB_INSTALL.search(content), (
+            "autostream_install.sh must deploy platform/wifi_web.py via explicit "
+            "`install -m 0644 -o root -g root`"
+        )
+
+    def test_dial_installer_installs_wifi_web_root_0644(self):
+        content = _join_continuations(DIAL_INSTALLER.read_text(encoding="utf-8"))
+        assert _WIFI_WEB_INSTALL.search(content), (
+            "autostream_dial_install.sh must deploy platform/wifi_web.py via explicit "
+            "`install -m 0644 -o root -g root`"
+        )
+
+
+class TestWifiWebImportIsolation:
+    """HTTP-extraction WP4: wifi_web runs on the system Python and must import
+    only the standard library + flask — never an Autostream application module —
+    so the recovery web surface survives an absent/broken app venv."""
+
+    WIFI_WEB = REPO_ROOT / "platform" / "wifi_web.py"
+    # Top-level package names wifi_web is permitted to import (stdlib + flask).
+    # `grp` is imported lazily inside init_control_token (Linux-only stdlib).
+    ALLOWED = {
+        "__future__", "hmac", "html", "json", "os", "secrets",
+        "tempfile", "threading", "typing", "grp", "flask",
+    }
+
+    def _imported_top_level(self) -> set[str]:
+        tree = ast.parse(self.WIFI_WEB.read_text(encoding="utf-8"))
+        mods: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    mods.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    mods.add(node.module.split(".")[0])
+        return mods
+
+    def test_no_autostream_module_imported(self):
+        mods = self._imported_top_level()
+        forbidden = {
+            m for m in mods
+            if m.startswith("autostream") or m.startswith("wifi_")
+        }
+        assert not forbidden, (
+            f"wifi_web must not import any Autostream module (got {forbidden}); "
+            "it receives the watcher lazily as `w` across the seam"
+        )
+
+    def test_only_stdlib_and_flask_imported(self):
+        mods = self._imported_top_level()
+        unexpected = mods - self.ALLOWED
+        assert not unexpected, (
+            f"wifi_web imported unexpected top-level modules {unexpected}; "
+            "only the standard library and flask are allowed on the recovery path"
+        )
 
 
 class TestHostDeploymentManifest:

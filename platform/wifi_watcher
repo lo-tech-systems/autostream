@@ -58,6 +58,19 @@ suspends this catch-all timer, and leaving setup/AP mode resets it.
 Note that this script always serves the setup page. The associated NGINX configuration
 controls which web server (this or autostream_webui.py) services requests via the presence
 (or not) of /tmp/apmode.
+
+== Module responsibility split (HTTP-extraction plan) ==
+
+This module owns recovery *policy/orchestration*: the state machine, timers,
+AP/setup transitions, apply/scan, fallback, dead-PHY recovery, and the runtime
+status snapshot. It is the star-topology hub that owns STATE, state_lock, the
+constants, and the logger. The Flask HTTP surface — page rendering, the app
+factory build_app(), all routes, and the loopback control-token/auth surface —
+lives in the deploy-together sibling wifi_web.py; this module wires the app at
+startup via ``app = wifi_web.build_app(_self_module())`` and drives the token
+lifecycle from __main__. Dead-PHY recovery lives in wifi_recovery.py and the
+status snapshot in wifi_status.py; both, like wifi_web, receive this module as
+``w`` across the seam and never import wifi_watcher.
 """
 
 import glob
