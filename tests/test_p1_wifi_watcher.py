@@ -2746,10 +2746,13 @@ class TestHotspotPurposeMachine:
     def test_defect1_boot_recovery_probes_for_return(self, watcher):
         # A configured device offline at boot is BOOT_RECOVERY and probes for the
         # saved network each pass — it does not sit until the 30-min deadline.
+        # Built-in hosts the hotspot; the returned USB is the second radio probed
+        # without dropping the AP (WP6 second-radio path).
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
         self._session(watcher, watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=100.0)
         with patch.object(watcher, "_try_recovery_reconnect") as probe:
-            _run_monitor_once(watcher, now=120.0, wifi_cfg=True, adapters=[usb])
+            _run_monitor_once(watcher, now=120.0, wifi_cfg=True, adapters=[builtin, usb])
         probe.assert_called_once()
 
     def test_first_run_does_not_probe(self, watcher):
@@ -2801,6 +2804,87 @@ class TestHotspotPurposeMachine:
         assert acted is True
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+
+
+class TestScanGatedRecovery:
+    """WP6 — recovery hotspots scan-gate the saved SSID before disrupting the AP."""
+
+    def test_second_radio_probes_without_dropping_ap(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
+        with patch.object(watcher, "_try_recovery_reconnect") as probe, \
+             patch.object(watcher, "stop_ap_mode") as stop_ap:
+            watcher._attempt_recovery_reconnect([builtin, usb], now=1000.0)
+        probe.assert_called_once()
+        stop_ap.assert_not_called()
+
+    def test_join_interval_bounds_second_radio_probe(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
+        watcher.STATE.last_reconnect_attempt = 1000.0
+        with patch.object(watcher, "_try_recovery_reconnect") as probe:
+            watcher._attempt_recovery_reconnect([builtin, usb], now=1000.0 + 30)
+        probe.assert_not_called()
+
+    def test_single_radio_scan_interval_gates_scan(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.last_recovery_scan = 1000.0
+        with patch.object(watcher, "_saved_ssid_visible") as vis, \
+             patch.object(watcher, "stop_ap_mode") as stop_ap:
+            # Within RECOVERY_SCAN_INTERVAL of the last scan: do not scan.
+            watcher._attempt_recovery_reconnect([builtin], now=1000.0 + 5)
+        vis.assert_not_called()
+        stop_ap.assert_not_called()
+
+    def test_single_radio_ssid_absent_keeps_ap(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher, "_saved_ssid_visible", return_value=False), \
+             patch.object(watcher, "stop_ap_mode") as stop_ap:
+            watcher._attempt_recovery_reconnect([builtin], now=1000.0)
+        stop_ap.assert_not_called()
+        assert watcher.STATE.last_recovery_scan == 1000.0
+
+    def test_single_radio_ssid_present_drops_ap_and_joins(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "_single_radio_recovery_join") as join:
+            watcher._attempt_recovery_reconnect([builtin], now=1000.0)
+        join.assert_called_once()
+
+    def test_single_radio_join_success_leaves_setup(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            ok = watcher._single_radio_recovery_join(builtin)
+        assert ok is True
+        stop_ap.assert_called_once()
+        leave.assert_called_once()
+
+    def test_single_radio_join_failure_rebuilds_ap(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "update_apmode_flag") as apflag, \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            ok = watcher._single_radio_recovery_join(builtin)
+        assert ok is False
+        stop_ap.assert_called_once()
+        start_ap.assert_called_once()
+        apflag.assert_called_once_with(True)
+        leave.assert_not_called()
+
+    def test_saved_ssid_visible_uses_scan(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher, "_saved_network_ssid", return_value="MyHomeWiFi"), \
+             patch.object(watcher.wifi_net, "scan_adapter", return_value={"MyHomeWiFi": -50}):
+            assert watcher._saved_ssid_visible(builtin) is True
+        with patch.object(watcher, "_saved_network_ssid", return_value="MyHomeWiFi"), \
+             patch.object(watcher.wifi_net, "scan_adapter", return_value={"Other": -50}):
+            assert watcher._saved_ssid_visible(builtin) is False
 
 
 class TestShadowModeModel:

@@ -942,6 +942,20 @@ def get_active_wifi_ssid(ifname: str = "") -> str:
     return ""
 
 
+def get_connection_ssid(name_or_uuid: str) -> str:
+    """Return the 802-11-wireless.ssid of a saved connection profile, or "".
+
+    Facts-only bounded primitive: used by the recovery-hotspot scan gate to learn
+    which SSID to look for.  Returns "" on any failure or for a non-Wi-Fi profile.
+    """
+    if not name_or_uuid:
+        return ""
+    r = run_cmd(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", name_or_uuid])
+    if r.returncode != 0:
+        return ""
+    return r.stdout.strip()
+
+
 def is_wifi_connected(ifname: str) -> bool:
     """True if *ifname* is connected to a non-AP Wi-Fi network."""
     result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])

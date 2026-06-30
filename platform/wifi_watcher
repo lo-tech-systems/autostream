@@ -161,7 +161,11 @@ NO_ACTIVE_PATH_REBOOT_AFTER = 12 * 60 * 60  # if no usable non-hotspot path for 
 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
 GW_DOWN_REBOOT_AFTER = 30 * 60          # gateway unreachable for this long -> reboot
-RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts
+RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts (expensive join lower bound)
+# Recovery-hotspot scan cadence (WP6): how often a recovery hotspot scans for the
+# saved SSID's return.  Bounds the cheap scan independently of the loop tick so a
+# recovery hotspot does not churn the radio/CPU on the Pi Zero every pass.
+RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery scans
 REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
 # Multi-adapter failure/adoption tuning (WP5).
@@ -397,6 +401,8 @@ class NetworkMonitorState:
     # Degradation tracking for "healthy connectivity"
     conn_down_start: Optional[float] = None
     last_reconnect_attempt: Optional[float] = None
+    # Last time a recovery hotspot scanned for the saved SSID (WP6 scan gate).
+    last_recovery_scan: Optional[float] = None
     # Reboot-request throttle: monotonic time before which another reboot request is
     # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
     # issued); any other value = retry permitted after that time.
@@ -1726,28 +1732,19 @@ def network_monitor_loop(run_once: bool = False):
         with state_lock:
             in_setup = STATE.setup_mode
             session = STATE.hotspot
-            last_reconnect = STATE.last_reconnect_attempt
 
         if in_setup and session is not None:
             policy = PURPOSE_TABLE[session.purpose]
             ap_age = now - session.entered_at
 
             # Recovery purposes (BOOT_RECOVERY / USB_LOSS_RECOVERY) probe for the
-            # saved network's return each pass and reconnect immediately rather
-            # than waiting for the deadline (Section 8.6; defect 1 — BOOT_RECOVERY
-            # now probes, so a configured device that was offline at boot leaves
-            # the hotspot as soon as its network/USB returns).
+            # saved network's return rather than waiting for the deadline
+            # (Section 8.6 / 2.8; defect 1 — BOOT_RECOVERY now probes).  With a
+            # second radio the probe runs without dropping the AP; on single-radio
+            # hardware the scan is rate-limited and only when the saved SSID is
+            # visible is the expensive tear-down→join→rebuild performed (WP6).
             if policy.probes_return and wifi_cfg:
-                usb_now = wifi_net.usb_candidates(adapters)
-                if usb_now:
-                    reconnect_due = (
-                        last_reconnect is None
-                        or (now - last_reconnect) >= RECONNECT_ATTEMPT_INTERVAL
-                    )
-                    if reconnect_due:
-                        with state_lock:
-                            STATE.last_reconnect_attempt = now
-                        _try_recovery_reconnect(adapters)
+                _attempt_recovery_reconnect(adapters, now)
 
             # Session lifetime: FIRST_RUN (deadline None) stays up indefinitely
             # — an unconfigured device has nowhere else to go; every other
@@ -2241,6 +2238,100 @@ def _try_recovery_reconnect(adapters: list) -> None:
             return
         wifi_recovery.record_noip_failure(_self_module(), candidate.permanent_mac, time.monotonic())
     logger.debug("Auto-recovery probe failed; retaining hotspot")
+
+
+def _saved_network_ssid() -> str:
+    """Return the SSID of the committed network profile, or "" if unknown."""
+    state = get_configured_network_state()
+    name = state.connection_uuid or state.connection_name
+    return wifi_net.get_connection_ssid(name) if name else ""
+
+
+def _saved_ssid_visible(hotspot_adapter) -> bool:
+    """True when the saved SSID is visible in a scan on the hotspot radio.
+
+    Scanning works in AP mode on the onboard radio without dropping the AP, so a
+    single-radio recovery hotspot can cheaply check for the network's return
+    before committing to the expensive tear-down→join (Section 2.8).
+    """
+    ssid = _saved_network_ssid()
+    if not ssid:
+        return False
+    scan = wifi_net.scan_adapter(hotspot_adapter)
+    return scan is not None and ssid in scan
+
+
+def _single_radio_recovery_join(hotspot) -> bool:
+    """Drop the AP, join the saved network on the sole radio, rebuild on failure.
+
+    The hotspot session stays intact across stop_ap_mode (it tears down only the
+    nmcli AP), so a failed join simply rebuilds the hotspot; a successful join
+    leaves setup mode.
+    """
+    logger.info("Recovery: single-radio rejoin on %s (saved SSID visible)", hotspot.ifname)
+    stop_ap_mode()
+    if _activate_committed_on(hotspot.ifname):
+        adapters = wifi_net.discover_adapters()
+        recovered = wifi_net.find_adapter_by_ifname(adapters, hotspot.ifname)
+        if recovered is not None:
+            _set_active_client(recovered)
+            wifi_recovery.clear_noip_failures(_self_module(), recovered.permanent_mac)
+        leave_setup_mode("recovery: single-radio rejoin succeeded")
+        verify_avahi_after_handover()
+        return True
+    logger.warning("Single-radio recovery join failed on %s; rebuilding hotspot", hotspot.ifname)
+    with state_lock:
+        STATE.setup_mode = True
+    start_ap_mode()
+    update_apmode_flag(True)
+    return False
+
+
+def _attempt_recovery_reconnect(adapters: list, now: float) -> None:
+    """Scan-gated recovery reconnect from within a recovery hotspot (WP6, §2.8).
+
+    With a second (non-hotspot) client-capable radio, probe it without dropping
+    the AP (existing behaviour), bounded by RECONNECT_ATTEMPT_INTERVAL.  On
+    single-radio hardware, scan for the saved SSID on a RECOVERY_SCAN_INTERVAL
+    cadence and only perform the tear-down→join (also join-interval bounded) when
+    the SSID is actually visible — so the AP is not blindly disrupted.
+    """
+    hotspot = resolve_hotspot_adapter(adapters)
+    hotspot_if = hotspot.ifname if hotspot else None
+    other_radios = [a for a in adapters if a.managed and a.ifname != hotspot_if]
+
+    with state_lock:
+        last_reconnect = STATE.last_reconnect_attempt
+    join_due = (last_reconnect is None
+                or (now - last_reconnect) >= RECONNECT_ATTEMPT_INTERVAL)
+
+    if other_radios:
+        # Second radio present: probe it (USB-first) without dropping the AP.
+        if join_due:
+            with state_lock:
+                STATE.last_reconnect_attempt = now
+            _try_recovery_reconnect(adapters)
+        return
+
+    if hotspot is None:
+        return
+
+    # Single radio: rate-limit the (cheap) scan independently of the loop tick.
+    with state_lock:
+        last_scan = STATE.last_recovery_scan
+    scan_due = last_scan is None or (now - last_scan) >= RECOVERY_SCAN_INTERVAL
+    if not scan_due:
+        return
+    with state_lock:
+        STATE.last_recovery_scan = now
+    if not _saved_ssid_visible(hotspot):
+        logger.debug("Recovery scan: saved SSID not visible on %s; AP retained", hotspot.ifname)
+        return
+    if not join_due:
+        return
+    with state_lock:
+        STATE.last_reconnect_attempt = now
+    _single_radio_recovery_join(hotspot)
 
 
 def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
