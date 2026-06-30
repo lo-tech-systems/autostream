@@ -189,6 +189,13 @@ class TestStateMachineInvariants:
         assert "class HotspotPurpose(" in WIFI_WATCHER_SRC
         assert "PURPOSE_TABLE" in WIFI_WATCHER_SRC
 
+    def test_permanent_next_mode_core_and_authoritative_state_mode(self):
+        """The permanent pure core is next_mode (+ PURPOSE_TABLE); STATE.mode is
+        applied by the loop.  The WP2 shadow classifier name is gone."""
+        assert "def next_mode(" in WIFI_WATCHER_SRC
+        assert "def derive_mode(" not in WIFI_WATCHER_SRC
+        assert "STATE.mode = next_mode(" in WIFI_WATCHER_SRC
+
     def test_retired_flags_are_gone_from_state(self):
         """The flags subsumed by HotspotSession / PURPOSE_TABLE are no longer
         read or written as STATE fields (defects 1 & 2; §3.2)."""

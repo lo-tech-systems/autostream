@@ -89,10 +89,11 @@ The operating mode is an explicit ``Mode`` (BOOT / ONLINE / OFFLINE_RECONNECTING
 published as ``device.mode``.  All hotspot entry/exit policy is one five-row
 ``PURPOSE_TABLE`` keyed by ``HotspotPurpose``; the live session is a
 ``HotspotSession`` on STATE.  The decision core is **pure** (constraint 10):
-``derive_mode(state, facts)`` and the ``PURPOSE_TABLE`` lookups take values in and
+``next_mode(state, facts)`` and the ``PURPOSE_TABLE`` lookups take values in and
 return values out — no STATE mutation, no subprocess, no effects, no ``w`` seam —
 so they can lift into a pure ``platform/wifi_policy.py`` unchanged.  The watcher's
-loop *applies* those values (setting ``STATE.hotspot`` and invoking effects).  The
+loop *applies* those values each pass (setting ``STATE.mode``/``STATE.hotspot`` and
+invoking effects).  The
 adapter-remediation overlay (``wifi_recovery.diagnose_client_failure`` and the
 no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
 consumes them and applies the connectivity transition.  Off-thread slow
@@ -246,9 +247,9 @@ LOG_LEVEL_TTL_MAX = 3600
 # These types are the permanent explicit model the watcher migrates onto.  They
 # are pure data + pure classifiers (constraint 10): no STATE mutation, no
 # subprocess, no effects, and no dependency on the `w` seam — so they can later
-# lift into a pure platform/wifi_policy.py unchanged.  In WP2 the model is in
-# *shadow*: derive_mode() observes the current flags and the mode is published
-# additively in the status snapshot; no decision site reads it yet.
+# lift into a pure platform/wifi_policy.py unchanged.  next_mode() is the
+# permanent pure forward classifier; the loop applies its result by setting
+# STATE.mode each pass, and the mode is published as device.mode.
 
 
 class Mode(Enum):
@@ -410,6 +411,9 @@ class NetworkMonitorState:
     # ap_closed_time are gone.
     setup_mode: bool = False
     hotspot: "Optional[HotspotSession]" = None
+    # Authoritative connectivity mode, applied by the loop each pass from the
+    # pure next_mode() classifier and published as device.mode.
+    mode: "Mode" = field(default_factory=lambda: Mode.BOOT)
 
     # Timers (monotonic seconds)
     boot_time: Optional[float] = None
@@ -1426,14 +1430,15 @@ def gather_facts() -> "Facts":
     )
 
 
-def derive_mode(state, facts) -> "Mode":
-    """The permanent pure mode classifier: state + facts -> Mode (constraints 10).
+def next_mode(state, facts) -> "Mode":
+    """The permanent pure forward mode classifier: state + facts -> Mode (constraint 10).
 
     Pure: reads *state* fields and *facts* (needs only ``facts.wired_ok`` and
     ``facts.taken_at``) plus module constants; it does not mutate STATE, call
     subprocesses, run effects, or depend on the ``w`` seam — so it can lift into a
-    pure ``platform/wifi_policy.py`` unchanged.  Published as ``device.mode`` in
-    the status snapshot.  Together with PURPOSE_TABLE it is the explicit-model
+    pure ``platform/wifi_policy.py`` unchanged.  The loop *applies* the returned
+    value by setting ``STATE.mode`` each pass, and it is published as
+    ``device.mode``.  Together with PURPOSE_TABLE it is the explicit-model
     decision core the refactor settles on.
 
     Precedence mirrors the live loop: hotspot wins, then an accepted reboot, then
@@ -1690,6 +1695,9 @@ def network_monitor_loop(run_once: bool = False):
             if active_path_ok and not STATE.setup_mode:
                 STATE.last_active_path_seen = now
                 STATE.conn_reboot_retry_after = 0.0
+            # Apply the pure forward classifier: STATE.mode is authoritative.
+            STATE.mode = next_mode(STATE, facts)
+            log_on_change("device_mode", STATE.mode, f"Mode changed -> {STATE.mode.value}")
             log_on_change("wifistate", STATE.wifistate, f"WiFi state changed -> {STATE.wifistate}")
             log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
             log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
@@ -2019,10 +2027,10 @@ def startup_connect_usb_first() -> bool:
             if builtin and wifi_net.is_wifi_connected(builtin.ifname):
                 logger.info("Startup USB-first: disconnecting built-in client on %s", builtin.ifname)
                 run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
-            wifi_recovery.clear_noip_failures(_self_module(), candidate.permanent_mac)
+            wifi_recovery.clear_noip_failures(_self_module(), candidate.stable_id)
             logger.info("Startup USB-first: connection established on %s", candidate.ifname)
             return True
-        wifi_recovery.record_noip_failure(_self_module(), candidate.permanent_mac, time.monotonic())
+        wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, time.monotonic())
         logger.debug("Startup USB-first: attempt on %s failed", candidate.ifname)
 
     if usb:
@@ -2247,12 +2255,12 @@ def _try_recovery_reconnect(adapters: list) -> None:
                                 interval=WAIT_FOR_CONNECTION_INTERVAL)
                 and is_wifi_client_healthy(candidate.ifname)):
             _set_active_client(candidate)
-            wifi_recovery.clear_noip_failures(_self_module(), candidate.permanent_mac)
+            wifi_recovery.clear_noip_failures(_self_module(), candidate.stable_id)
             leave_setup_mode("automatic_recovery: adapter returned and reconnected")
             verify_avahi_after_handover()
             logger.info("Auto-recovery resolved on %s", candidate.ifname)
             return
-        wifi_recovery.record_noip_failure(_self_module(), candidate.permanent_mac, time.monotonic())
+        wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, time.monotonic())
     logger.debug("Auto-recovery probe failed; retaining hotspot")
 
 
@@ -2291,7 +2299,7 @@ def _single_radio_recovery_join(hotspot) -> bool:
         recovered = wifi_net.find_adapter_by_ifname(adapters, hotspot.ifname)
         if recovered is not None:
             _set_active_client(recovered)
-            wifi_recovery.clear_noip_failures(_self_module(), recovered.permanent_mac)
+            wifi_recovery.clear_noip_failures(_self_module(), recovered.stable_id)
         leave_setup_mode("recovery: single-radio rejoin succeeded")
         verify_avahi_after_handover()
         return True
@@ -2379,7 +2387,7 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
     # Escalating no-IP back-off (WP5b): a dongle that repeatedly associates but
     # cannot get an IP is held back (and eventually stopped) instead of thrashing
     # adoption every cycle.
-    if wifi_recovery.noip_retry_suppressed(_self_module(), candidate.permanent_mac, now):
+    if wifi_recovery.noip_retry_suppressed(_self_module(), candidate.stable_id, now):
         return False
 
     active_client = resolve_active_client(adapters)
@@ -2423,7 +2431,7 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
             STATE.using_builtin_fallback = False
         _set_active_client(candidate)
         _clear_pending_adoption()
-        wifi_recovery.clear_noip_failures(_self_module(), candidate.permanent_mac)
+        wifi_recovery.clear_noip_failures(_self_module(), candidate.stable_id)
         logger.info("Runtime USB adoption succeeded on %s", candidate.ifname)
         verify_avahi_after_handover()
         return True
@@ -2431,7 +2439,7 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
     logger.warning("Runtime USB adoption failed on %s; retaining built-in", candidate.ifname)
     # Record the no-IP failure to escalate the back-off (replaces the fixed
     # usb_adoption_retry_after interval) and surface the DEGRADED_NO_IP status.
-    wifi_recovery.record_noip_failure(_self_module(), candidate.permanent_mac, now)
+    wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, now)
     _clear_pending_adoption()
     return False
 
@@ -2454,8 +2462,12 @@ def update_known_adapters(adapters: list) -> None:
     if prev is not None and prev != macs:
         logger.info("Detected Wi-Fi adapter set changed: %s", sorted(macs))
     # Drop no-IP ledgers for adapters that are no longer present so a replaced
-    # or removed dongle starts fresh (the back-off ceiling releases, WP5b).
-    wifi_recovery.prune_noip_ledgers(_self_module(), set(macs))
+    # or removed dongle starts fresh (the back-off ceiling releases, WP5b).  The
+    # ledger is keyed by stable_id (permanent MAC, else ifname), so prune by the
+    # present stable_ids — not just permanent MACs — or a MAC-less adapter's
+    # ledger would be dropped every pass.
+    present_stable_ids = {a.stable_id for a in adapters if a.stable_id}
+    wifi_recovery.prune_noip_ledgers(_self_module(), present_stable_ids)
 
 
 # ** DEAD-PHY RECOVERY (WP2/WP3; extracted to wifi_recovery.py in WP8) **

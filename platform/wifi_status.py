@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import ipaddress
 import time
-from types import SimpleNamespace
 from typing import Optional
 
 import autostream_wifi_network as wifi_net
@@ -214,10 +213,10 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
         # Overlay no-IP verdict (defect 3): managed + carrier-up + not healthy +
         # repeated no-IP failures recorded in the overlay ledger.
-        noip_count = w._noip_failure_count(a.permanent_mac)
+        noip_count = w._noip_failure_count(a.stable_id)
         is_no_ip = w._is_degraded_no_ip(
             managed=a.managed, carrier=carrier, healthy=healthy,
-            stable_id=a.permanent_mac,
+            stable_id=a.stable_id,
         )
 
         if is_hotspot:
@@ -386,12 +385,11 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         no_active_age = max(0.0, now_monotonic - last_active_path_seen)
         no_active_remaining = max(0.0, w.NO_ACTIVE_PATH_REBOOT_AFTER - no_active_age)
 
-    # Shadow explicit-mode model (WP2): published additively so the migration
-    # can be observed.  No consumer reads device.mode yet; derive_mode is a pure
-    # classifier over the current flags.
-    mode_value = w.derive_mode(
-        w.STATE, SimpleNamespace(wired_ok=bool(wired_ok), taken_at=now_monotonic)
-    ).value
+    # Publish the authoritative STATE.mode the loop applies from the pure
+    # next_mode() classifier each pass (set just before publish).  Standalone
+    # diagnostic/test builds reflect the current STATE.mode.
+    with w.state_lock:
+        mode_value = w.STATE.mode.value
 
     return {
         "schema_version": wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
