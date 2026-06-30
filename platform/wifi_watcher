@@ -320,6 +320,12 @@ class NetworkMonitorState:
     # issued); any other value = retry permitted after that time.
     conn_reboot_retry_after: float = 0.0
 
+    # Groundwork for off-thread slow transitions (WP7).  Set/cleared around the
+    # long inline activation effect but INERT in WP1: the single-threaded loop
+    # cannot re-enter a blocking action, so no decision reads this yet.  WP7 makes
+    # it load-bearing (the worker path needs it to avoid duplicate transitions).
+    transitioning: bool = False
+
     # ---- WiFi apply workflow / wait-page status ----
     apply_in_progress: bool = False
     # idle | applying | ok | failed
@@ -1289,6 +1295,62 @@ def _clear_reconfigure_state() -> None:
 # ** MAIN NETWORK STATUS MONITORING LOOP **
 
 
+@dataclass(frozen=True)
+class Facts:
+    """One immutable per-tick snapshot of network facts (Section 2.5).
+
+    Gathered once at the top of each monitor pass via gather_facts() so every
+    in-pass decision reads the same view of the world (no within-tick
+    inconsistency) and the dominant subprocess cost on the Pi Zero (discovery,
+    wired probes, address enumeration) is paid once per pass rather than per
+    decision site.  Playback is intentionally NOT a field here: it is resolved
+    lazily via a per-pass memoised callable (see _make_playing_status_memo)
+    because it is comparatively expensive and not always needed.
+    """
+    wifi_configured: bool
+    adapters: list
+    wired_connected: bool
+    wired_ok: bool
+    active_client: Optional[object]
+    addresses: dict
+    taken_at: float
+
+
+def gather_facts() -> "Facts":
+    """Gather the single immutable Facts snapshot for one monitor pass.
+
+    The sole caller of discover_adapters/is_wired_connected/any_wired_path_healthy/
+    resolve_active_client/list_interface_addresses for the pass.  Downstream
+    decisions read the returned Facts rather than re-querying these helpers.
+    """
+    adapters = wifi_net.discover_adapters()
+    return Facts(
+        wifi_configured=is_wifi_configured(),
+        adapters=adapters,
+        wired_connected=is_wired_connected(),
+        wired_ok=any_wired_path_healthy(),
+        active_client=resolve_active_client(adapters),
+        addresses=wifi_net.list_interface_addresses(),
+        taken_at=time.monotonic(),
+    )
+
+
+def _make_playing_status_memo():
+    """Return a closure that resolves playback at most once per pass.
+
+    query_playing_status() performs a loopback HTTP GET, so callers that gate on
+    playback share one memoised result for the pass instead of re-querying.
+    """
+    cache: dict = {}
+
+    def memo() -> Optional[bool]:
+        if "value" not in cache:
+            cache["value"] = query_playing_status()
+        return cache["value"]
+
+    return memo
+
+
 def _sleep_or_finish_monitor_pass(run_once: bool) -> bool:
     """Sleep between monitor passes, or signal one-pass tests to return."""
     if run_once:
@@ -1430,14 +1492,20 @@ def network_monitor_loop(run_once: bool = False):
                     return
                 continue
 
-        wifi_cfg = is_wifi_configured()
-        wired_connected = is_wired_connected()
-        wired_ok = any_wired_path_healthy()
+        # Single immutable per-tick snapshot (WP1, Section 2.5): one
+        # discover_adapters / wired probe / address enumeration for the whole
+        # pass.  Every decision below reads these locals, not fresh subprocess
+        # calls.  Playback is resolved lazily through the per-pass memo.
+        facts = gather_facts()
+        wifi_cfg = facts.wifi_configured
+        wired_connected = facts.wired_connected
+        wired_ok = facts.wired_ok
+        adapters = facts.adapters
+        active_client = facts.active_client
+        playing_status = _make_playing_status_memo()
 
         # --- Multi-adapter discovery and active-client resolution (WP5) ---
-        adapters = wifi_net.discover_adapters()
         update_known_adapters(adapters)
-        active_client = resolve_active_client(adapters)
 
         # --- Startup USB-adoption window: re-probe when a new USB adapter
         # appears while BOOT_AP_GRACE is still open (Section 4.3).
@@ -1490,7 +1558,7 @@ def network_monitor_loop(run_once: bool = False):
 
         # --- Optional idle-time USB adoption from a healthy built-in client. ---
         if wifi_cfg and conn_ok and not STATE.setup_mode:
-            if handle_runtime_usb_adoption(adapters, wired_ok):
+            if handle_runtime_usb_adoption(adapters, wired_ok, playing_fn=playing_status):
                 if _sleep_or_finish_monitor_pass(run_once):
                     return
                 continue
@@ -1528,8 +1596,9 @@ def network_monitor_loop(run_once: bool = False):
             log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
             log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
 
-        # Publish the runtime status snapshot served by /network_status.
-        publish_network_status(adapters, wired_connected, wired_ok)
+        # Publish the runtime status snapshot served by /network_status.  Pass
+        # the per-tick addresses so the status builder does not re-enumerate.
+        publish_network_status(adapters, wired_connected, wired_ok, facts.addresses)
 
         # Ethernet suppresses AP mode entirely (unless the user explicitly requested AP).
         # State is read under the lock; leave_setup_mode is called outside to avoid
@@ -1552,7 +1621,7 @@ def network_monitor_loop(run_once: bool = False):
             if active_wifi_ifname and not skip_policy_disconnect:
                 winning_eth = first_healthy_wired_ifname()
                 if winning_eth and wifi_net.same_l3_segment(active_wifi_ifname, winning_eth):
-                    playing = query_playing_status()
+                    playing = playing_status()
                     if playing is False:
                         logger.info(
                             "Ethernet %s is on the same L3 segment as WiFi %s; disconnecting idle WiFi",
@@ -1923,10 +1992,20 @@ def _activate_committed_on(ifname: str) -> bool:
     uuid = _resolve_committed_uuid(state)
     if uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
-    run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
-    return (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                                interval=WAIT_FOR_CONNECTION_INTERVAL)
-            and is_wifi_client_healthy(ifname))
+    # Mark the slow transition posture (WP1 groundwork; inert until WP7).  The
+    # single-threaded loop cannot re-enter this blocking effect today, so the
+    # flag changes no behaviour yet — it exists so WP7's worker path can prevent
+    # duplicate concurrent transitions.
+    with state_lock:
+        STATE.transitioning = True
+    try:
+        run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
+        return (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+                                    interval=WAIT_FOR_CONNECTION_INTERVAL)
+                and is_wifi_client_healthy(ifname))
+    finally:
+        with state_lock:
+            STATE.transitioning = False
 
 
 def verify_avahi_after_handover() -> None:
@@ -2104,15 +2183,19 @@ def _try_recovery_reconnect(adapters: list) -> None:
     logger.debug("Auto-recovery probe failed; retaining hotspot")
 
 
-def handle_runtime_usb_adoption(adapters: list, wired_connected: bool) -> bool:
+def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
+                                playing_fn=None) -> bool:
     """Optional idle-time adoption of a newly available USB adapter (Section 8.2).
 
     Adopts USB only when: Ethernet is not active; built-in carries a healthy
     Wi-Fi client (or built-in fallback is active); no USB is already the active
     client; the same deterministic USB candidate has been present for two passes;
     and (main appliance) playback is confirmed idle.  Returns True if a handover
-    was performed.
+    was performed.  *playing_fn* is the per-pass memoised playback resolver; it
+    defaults to query_playing_status for direct callers/tests.
     """
+    if playing_fn is None:
+        playing_fn = query_playing_status
     now = time.monotonic()
     with state_lock:
         retry_after = STATE.usb_adoption_retry_after
@@ -2152,7 +2235,7 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool) -> bool:
         return False
 
     # Playback gating (main appliance only).
-    playing = query_playing_status()
+    playing = playing_fn()
     if playing is None:
         logger.debug("USB adoption deferred: playback status uncertain")
         return False
@@ -2268,15 +2351,18 @@ import wifi_status
 
 def build_network_status_snapshot(adapters: Optional[list] = None,
                                   wired_connected: Optional[bool] = None,
-                                  wired_ok: Optional[bool] = None) -> dict:
+                                  wired_ok: Optional[bool] = None,
+                                  addresses: Optional[dict] = None) -> dict:
     return wifi_status.build_network_status_snapshot(
-        _self_module(), adapters, wired_connected, wired_ok)
+        _self_module(), adapters, wired_connected, wired_ok, addresses)
 
 
 def publish_network_status(adapters: Optional[list] = None,
                            wired_connected: Optional[bool] = None,
-                           wired_ok: Optional[bool] = None) -> None:
-    wifi_status.publish_network_status(_self_module(), adapters, wired_connected, wired_ok)
+                           wired_ok: Optional[bool] = None,
+                           addresses: Optional[dict] = None) -> None:
+    wifi_status.publish_network_status(
+        _self_module(), adapters, wired_connected, wired_ok, addresses)
 
 
 # ** AVAHI mDNS HOSTNAME MONITORING **

@@ -2554,6 +2554,7 @@ def _run_monitor_once(
         stack.enter_context(patch.object(watcher, "is_wired_connected", return_value=wired_connected))
         stack.enter_context(patch.object(watcher, "any_wired_path_healthy", return_value=wired_ok))
         stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters))
+        stack.enter_context(patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}))
         stack.enter_context(patch.object(watcher, "update_known_adapters"))
         stack.enter_context(patch.object(watcher, "resolve_active_client", return_value=active_client))
         stack.enter_context(patch.object(watcher, "handle_usb_failure_fallback", return_value=False))
@@ -2569,6 +2570,132 @@ def _run_monitor_once(
         connect = stack.enter_context(patch.object(watcher, "connect_to_configured_wifi"))
         watcher.network_monitor_loop(run_once=True)
         return connect
+
+
+class TestPerTickFactsSnapshot:
+    """WP1 — one immutable Facts snapshot gathered per pass (Section 2.5)."""
+
+    def _run_online_idle_pass(self, watcher, *, capture: dict):
+        """Run one online/idle monitor pass with all fact helpers wrapped to
+        count calls and record the adapter object each decision observes."""
+        builtin = _adapter(watcher, "wlan0", "AA:BB:CC:DD:EE:01", is_builtin=True)
+        adapters = [builtin]
+
+        discover = MagicMock(return_value=adapters)
+        addrs = MagicMock(return_value={})
+        wired_conn = MagicMock(return_value=False)
+        wired_ok = MagicMock(return_value=False)
+        resolve_active = MagicMock(return_value=builtin)
+
+        def _record_publish(a, *args, **kw):
+            capture["publish_adapters"] = a
+
+        def _record_dead(a, *args, **kw):
+            capture["dead_adapters"] = a
+            return False
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("time.monotonic", return_value=100.0))
+            stack.enter_context(patch.object(watcher, "check_and_repair_avahi_hostname"))
+            stack.enter_context(patch.object(watcher, "maybe_reannounce_mdns"))
+            stack.enter_context(patch.object(watcher, "revert_expired_log_level"))
+            stack.enter_context(patch.object(watcher, "is_wifi_configured", return_value=True))
+            stack.enter_context(patch.object(watcher, "is_wired_connected", wired_conn))
+            stack.enter_context(patch.object(watcher, "any_wired_path_healthy", wired_ok))
+            stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", discover))
+            stack.enter_context(patch.object(watcher.wifi_net, "list_interface_addresses", addrs))
+            stack.enter_context(patch.object(watcher, "update_known_adapters"))
+            stack.enter_context(patch.object(watcher, "resolve_active_client", resolve_active))
+            stack.enter_context(patch.object(watcher, "handle_usb_failure_fallback", return_value=False))
+            stack.enter_context(patch.object(watcher.wifi_net, "is_wifi_connected", return_value=True))
+            stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=True))
+            stack.enter_context(patch.object(watcher, "handle_runtime_usb_adoption", return_value=False))
+            stack.enter_context(patch.object(watcher, "escalate_dead_adapter_recovery", _record_dead))
+            stack.enter_context(patch.object(watcher, "publish_network_status", _record_publish))
+            stack.enter_context(patch.object(watcher, "log_on_change"))
+            watcher.network_monitor_loop(run_once=True)
+
+        return {
+            "adapters": adapters,
+            "discover": discover,
+            "addresses": addrs,
+            "wired_connected": wired_conn,
+            "wired_ok": wired_ok,
+            "resolve_active": resolve_active,
+        }
+
+    def test_single_discover_adapters_per_pass(self, watcher):
+        m = self._run_online_idle_pass(watcher, capture={})
+        assert m["discover"].call_count == 1
+
+    def test_subprocess_fact_ceiling_per_pass(self, watcher):
+        # Pi Zero budget guard: each costly fact helper is gathered exactly once
+        # per pass (the per-pass subprocess ceiling; a later WP may not raise it).
+        m = self._run_online_idle_pass(watcher, capture={})
+        assert m["discover"].call_count == 1
+        assert m["addresses"].call_count == 1
+        assert m["wired_connected"].call_count == 1
+        assert m["wired_ok"].call_count == 1
+        assert m["resolve_active"].call_count == 1
+
+    def test_two_decisions_observe_identical_adapter_facts(self, watcher):
+        capture: dict = {}
+        m = self._run_online_idle_pass(watcher, capture=capture)
+        # Both the dead-PHY overlay and the status publisher must see the exact
+        # adapter list produced by the single discover_adapters call this pass.
+        assert capture["dead_adapters"] is m["adapters"]
+        assert capture["publish_adapters"] is m["adapters"]
+
+    def test_gather_facts_returns_consistent_snapshot(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "AA:BB:CC:DD:EE:01", is_builtin=True)
+        adapters = [builtin]
+        with patch("time.monotonic", return_value=42.0), \
+             patch.object(watcher, "is_wifi_configured", return_value=True), \
+             patch.object(watcher, "is_wired_connected", return_value=False), \
+             patch.object(watcher, "any_wired_path_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters), \
+             patch.object(watcher.wifi_net, "list_interface_addresses", return_value={"wlan0": []}), \
+             patch.object(watcher, "resolve_active_client", return_value=builtin):
+            facts = watcher.gather_facts()
+        assert facts.wifi_configured is True
+        assert facts.adapters is adapters
+        assert facts.active_client is builtin
+        assert facts.addresses == {"wlan0": []}
+        assert facts.taken_at == 42.0
+
+    def test_playing_status_memo_queries_once(self, watcher):
+        calls = {"n": 0}
+
+        def _q():
+            calls["n"] += 1
+            return False
+
+        with patch.object(watcher, "query_playing_status", _q):
+            memo = watcher._make_playing_status_memo()
+            assert memo() is False
+            assert memo() is False
+            assert memo() is False
+        assert calls["n"] == 1
+
+    def test_transitioning_flag_inert_and_cleared(self, watcher):
+        # The WP1 groundwork flag is set during the slow activation effect and
+        # cleared afterwards; no behaviour depends on it yet.
+        observed = {}
+
+        def _wait(*a, **kw):
+            observed["during"] = watcher.STATE.transitioning
+            return True
+
+        state = watcher.wifi_net.NetworkState(
+            connection_name="Home", connection_uuid="uuid-1")
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher, "_resolve_committed_uuid", return_value="uuid-1"), \
+             patch.object(watcher, "run_cmd", MagicMock()), \
+             patch.object(watcher, "wait_for_connection", _wait), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+            assert watcher._activate_committed_on("wlan0") is True
+        assert observed["during"] is True
+        assert watcher.STATE.transitioning is False
 
 
 class TestAvahiHandoverReannounce:

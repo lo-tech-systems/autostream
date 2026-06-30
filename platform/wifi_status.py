@@ -132,11 +132,14 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
 
 def build_network_status_snapshot(w, adapters: Optional[list] = None,
                                   wired_connected: Optional[bool] = None,
-                                  wired_ok: Optional[bool] = None) -> dict:
+                                  wired_ok: Optional[bool] = None,
+                                  addresses: Optional[dict] = None) -> dict:
     """Build the schema_version:1 runtime network-status snapshot.
 
     Uses the watcher's facts and the dead-PHY recovery ledger.  All derived
-    meaning is computed here (platform policy); core only supplies facts.
+    meaning is computed here (platform policy); core only supplies facts.  When
+    *addresses* is supplied (the per-tick Facts snapshot, WP1) it is reused
+    rather than re-enumerated via ``ip``.
     """
     if adapters is None:
         try:
@@ -148,7 +151,8 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     if wired_ok is None:
         wired_ok = w.any_wired_path_healthy()
 
-    addresses = wifi_net.list_interface_addresses()
+    if addresses is None:
+        addresses = wifi_net.list_interface_addresses()
     now_wall = time.time()
     now_monotonic = time.monotonic()
 
@@ -396,11 +400,13 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
 def publish_network_status(w, adapters: Optional[list] = None,
                            wired_connected: Optional[bool] = None,
-                           wired_ok: Optional[bool] = None) -> None:
+                           wired_ok: Optional[bool] = None,
+                           addresses: Optional[dict] = None) -> None:
     """Build and publish the latest runtime status snapshot in memory."""
     global _status_schema_logged
     try:
-        snapshot = build_network_status_snapshot(w, adapters, wired_connected, wired_ok)
+        snapshot = build_network_status_snapshot(
+            w, adapters, wired_connected, wired_ok, addresses)
         snapshot["ok"] = True
         with w.state_lock:
             w.STATE.network_status_snapshot = snapshot
