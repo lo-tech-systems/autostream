@@ -2806,6 +2806,48 @@ class TestHotspotPurposeMachine:
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
 
+class TestExplicitModelInvariants:
+    """WP8 — the permanent decision core is pure and the overlay decision is sited."""
+
+    def test_derive_mode_always_returns_valid_mode(self, watcher):
+        import inspect
+        facts = SimpleNamespace(wired_ok=False, taken_at=0.0)
+        # Exercise a spread of states; every result must be a Mode member.
+        for setup, reboot, conn, boot in [
+            (True, 0.0, False, None), (False, float("inf"), False, None),
+            (False, 0.0, True, None), (False, 0.0, False, 0.0), (False, 0.0, False, None),
+        ]:
+            watcher.STATE.setup_mode = setup
+            watcher.STATE.conn_reboot_retry_after = reboot
+            watcher.STATE.connectivity_ok = conn
+            watcher.STATE.boot_time = boot
+            assert watcher.derive_mode(watcher.STATE, facts) in set(watcher.Mode)
+
+    def test_decision_core_has_no_w_seam(self, watcher):
+        # The pure classifier must not take the `w` hub seam (constraint 10).
+        import inspect
+        params = list(inspect.signature(watcher.derive_mode).parameters)
+        assert "w" not in params
+
+    def test_purpose_table_entries_are_frozen(self, watcher):
+        policy = watcher.PURPOSE_TABLE[watcher.HotspotPurpose.MANUAL]
+        with pytest.raises(Exception):
+            policy.deadline_s = 1.0  # frozen dataclass
+
+    def test_overlay_decision_only_in_wifi_recovery(self, watcher):
+        wr = watcher.wifi_recovery
+        assert hasattr(wr, "diagnose_client_failure")
+        assert hasattr(wr, "is_degraded_no_ip")
+        # wifi_status consumes the verdict; it must not define the decision.
+        assert not hasattr(watcher.wifi_status, "diagnose_client_failure")
+        assert not hasattr(watcher.wifi_status, "is_degraded_no_ip")
+
+    def test_builtin_is_preferred_recovery_path(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
+        assert watcher.resolve_hotspot_adapter([usb, builtin]) is builtin
+
+
 class TestScanGatedRecovery:
     """WP6 — recovery hotspots scan-gate the saved SSID before disrupting the AP."""
 

@@ -81,6 +81,23 @@ startup via ``app = wifi_web.build_app(_self_module())`` and drives the token
 lifecycle from __main__. Dead-PHY recovery lives in wifi_recovery.py and the
 status snapshot in wifi_status.py; both, like wifi_web, receive this module as
 ``w`` across the seam and never import wifi_watcher.
+
+== Explicit state-machine model (state-machine refactor) ==
+
+The operating mode is an explicit ``Mode`` (BOOT / ONLINE / OFFLINE_RECONNECTING
+/ HOTSPOT / REBOOT_PENDING), not an emergent property of a dozen booleans, and is
+published as ``device.mode``.  All hotspot entry/exit policy is one five-row
+``PURPOSE_TABLE`` keyed by ``HotspotPurpose``; the live session is a
+``HotspotSession`` on STATE.  The decision core is **pure** (constraint 10):
+``derive_mode(state, facts)`` and the ``PURPOSE_TABLE`` lookups take values in and
+return values out — no STATE mutation, no subprocess, no effects, no ``w`` seam —
+so they can lift into a pure ``platform/wifi_policy.py`` unchanged.  The watcher's
+loop *applies* those values (setting ``STATE.hotspot`` and invoking effects).  The
+adapter-remediation overlay (``wifi_recovery.diagnose_client_failure`` and the
+no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
+consumes them and applies the connectivity transition.  Off-thread slow
+transitions (the monitoring-blackout fix) are deliberately deferred — the inert
+``STATE.transitioning`` flag is the groundwork.
 """
 
 import glob
@@ -446,7 +463,6 @@ class NetworkMonitorState:
     active_client_mac: str = ""
     pending_usb_adoption_mac: Optional[str] = None
     pending_usb_adoption_checks: int = 0
-    usb_adoption_retry_after: float = 0.0
     # Per-stable-id "associated but no IP" / adoption-failure ledger (WP5b).
     # stable_id -> {"count": int, "retry_after": float}.  Drives the
     # DEGRADED_NO_IP status taxonomy and the escalating adoption back-off.
@@ -1411,14 +1427,14 @@ def gather_facts() -> "Facts":
 
 
 def derive_mode(state, facts) -> "Mode":
-    """Shadow classifier: compute the explicit Mode from the current flags (WP2).
+    """The permanent pure mode classifier: state + facts -> Mode (constraints 10).
 
-    Pure (constraint 10): reads *state* fields and *facts* (needs only
-    ``facts.wired_ok`` and ``facts.taken_at``) plus module constants; it does
-    not mutate STATE, call subprocesses, run effects, or depend on the ``w``
-    seam.  This is migration scaffolding (deleted in WP8); it computes "what mode
-    would the device be in" from the existing boolean soup so the model can be
-    proven to track the flags before any decision site reads the mode.
+    Pure: reads *state* fields and *facts* (needs only ``facts.wired_ok`` and
+    ``facts.taken_at``) plus module constants; it does not mutate STATE, call
+    subprocesses, run effects, or depend on the ``w`` seam — so it can lift into a
+    pure ``platform/wifi_policy.py`` unchanged.  Published as ``device.mode`` in
+    the status snapshot.  Together with PURPOSE_TABLE it is the explicit-model
+    decision core the refactor settles on.
 
     Precedence mirrors the live loop: hotspot wins, then an accepted reboot, then
     a usable path means ONLINE, then the boot grace window means BOOT, otherwise
@@ -2349,12 +2365,9 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
         playing_fn = query_playing_status
     now = time.monotonic()
     with state_lock:
-        retry_after = STATE.usb_adoption_retry_after
         in_setup = STATE.setup_mode
     if in_setup or wired_connected:
         _clear_pending_adoption()
-        return False
-    if retry_after and now < retry_after:
         return False
 
     usb = wifi_net.usb_candidates(adapters)

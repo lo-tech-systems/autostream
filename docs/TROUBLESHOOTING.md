@@ -363,17 +363,29 @@ If your Wi-Fi name or password changes, the device may no longer be able to conn
 
 * Starts if Wi-Fi is **unconfigured** or still **offline after ~60 seconds** after boot
 * Stays active **indefinitely** for unconfigured devices; runs for **up to 30 minutes** for previously-configured devices
-* Is **suppressed if wired Ethernet is usable** (carrier plus a valid non-link-local IPv4 address). Carrier-only Ethernet is reported as a fact but does not suppress setup mode.
-* If an entered Wi-Fi key is wrong during reconfiguration, the hotspot stays reachable so you can retry without reconnecting to a newly restarted hotspot.
+* Is **suppressed if wired Ethernet is usable** (carrier plus a valid non-link-local IPv4 address). Carrier-only Ethernet is reported as a fact but does not suppress setup mode. A hotspot you started yourself (Change Wi-Fi, or an explicit request) is **not** closed by Ethernet appearing — it exists to connect a new network.
+* The **recovery hotspot is always available when the device is offline** — there is no longer a once-per-boot limit. The 30-minute session lifetime is the only rate limit, and a failed Wi-Fi attempt simply re-opens setup. A device that was offline at boot keeps scanning for its saved network and **leaves the hotspot as soon as the network returns** (e.g. after the router finishes booting) rather than waiting out the 30 minutes.
 * Uses an SSID derived from the Wi-Fi MAC address:
   * `autostream_XXXX` (last 4 hex digits), or fallback `autostream_SETUP`
 * Uses a local AP IP of:
   * `192.168.4.1/24`
 
-When wired Ethernet is plugged into the same subnet as the active Wi-Fi connection,
-**autostream** disconnects Wi-Fi once playback is idle. This leaves one primary IP
-address and one mDNS address. If Ethernet is unplugged later, the saved Wi-Fi
-profile is reconnected promptly.
+When **usable wired Ethernet is present, it wins regardless of subnet**:
+**autostream** disconnects the redundant Wi-Fi client and runs on Ethernet,
+leaving one primary IP address and one mDNS address. The only thing that defers
+the disconnect is **active playback** (switching the active interface changes the
+appliance IP and would interrupt an in-flight stream), so the switch happens on
+the next idle moment. If Ethernet is unplugged later, the saved Wi-Fi profile is
+reconnected promptly.
+
+#### "USB Wi-Fi adapter detected but could not get a network address"
+
+If a USB Wi-Fi dongle associates with the network but repeatedly cannot obtain an
+IP address (no DHCP lease), the Network card shows this warning and the adapter is
+reported as *degraded (no address)*. **autostream** backs off retrying that dongle
+on an escalating schedule (instead of thrashing every cycle) and eventually stops
+until the adapter is changed or removed. Check the network's DHCP, the adapter's
+band (2.4 vs 5 GHz), or try a different dongle.
 
 #### Recovery steps (re-provision Wi-Fi)
 
@@ -397,7 +409,7 @@ and 'forget' the network, and try again. As last resource, navigate using Safari
 
 If you miss the AP window:
 
-* For previously-configured devices, AP mode is available **once per boot for up to 30 minutes**. For unconfigured devices, it stays active until a network is configured.
+* The recovery hotspot is available **whenever the device is offline** (no once-per-boot limit); each session lasts up to 30 minutes. For unconfigured devices it stays active until a network is configured.
 * Power-cycle/reboot and try again.
 
 ---
@@ -443,6 +455,18 @@ unplugged still counts toward expiry. This is deliberate because the watcher
 cannot distinguish a manual reseat from a fault-induced USB bus drop. If the
 `USB_MAX_RESETS_TOTAL` cap is what exhausted the budget, quarantine can outlast
 the rolling `resets_24h` window.
+
+#### Pi Zero resource budget
+
+The watcher runs on an ARMv6 single-core Pi Zero, where the dominant cost is
+`fork` + `nmcli`/`ip` subprocess spawns. Each monitor pass gathers one immutable
+**Facts** snapshot at the top of the loop, so the costly fact helpers
+(`discover_adapters`, `is_wired_connected`, `any_wired_path_healthy`,
+`resolve_active_client`, `list_interface_addresses`) run **exactly once per pass**
+— a ceiling of **1 call each**, asserted in the test suite as a regression guard
+that later changes may not silently raise. Recovery-hotspot scanning is separately
+rate-limited (`RECOVERY_SCAN_INTERVAL`, 30 s) so a recovery session does not churn
+the radio every 15-second tick.
 
 Log lines operators are expected to see (watcher log
 `/var/log/autostream/autostream_wifi_watcher.log`):

@@ -176,6 +176,48 @@ class TestBuiltinAdapterRecovery:
 
 
 # ---------------------------------------------------------------------------
+# Invariant 6: Explicit state-machine model (state-machine refactor)
+# ---------------------------------------------------------------------------
+
+class TestStateMachineInvariants:
+    RECOVERY_SRC = (REPO_ROOT / "platform" / "wifi_recovery.py").read_text(encoding="utf-8")
+    STATUS_SRC = (REPO_ROOT / "platform" / "wifi_status.py").read_text(encoding="utf-8")
+
+    def test_explicit_mode_and_purpose_table_present(self):
+        """The operating mode and hotspot policy are explicit, not emergent."""
+        assert "class Mode(" in WIFI_WATCHER_SRC
+        assert "class HotspotPurpose(" in WIFI_WATCHER_SRC
+        assert "PURPOSE_TABLE" in WIFI_WATCHER_SRC
+
+    def test_retired_flags_are_gone_from_state(self):
+        """The flags subsumed by HotspotSession / PURPOSE_TABLE are no longer
+        read or written as STATE fields (defects 1 & 2; §3.2)."""
+        for flag in (
+            "ap_exhausted", "force_setup_mode", "policy_disconnected_wifi",
+            "setup_purpose", "manual_ap_active", "ap_enter_time",
+            "reconfigure_active", "usb_adoption_retry_after",
+        ):
+            assert f"STATE.{flag}" not in WIFI_WATCHER_SRC, (
+                f"retired flag STATE.{flag} still referenced"
+            )
+
+    def test_overlay_decision_lives_only_in_wifi_recovery(self):
+        """The adapter-remediation overlay's decision (failure diagnosis + the
+        no-IP verdict) lives in wifi_recovery.py; wifi_status only reads it
+        (constraint 11)."""
+        assert "def diagnose_client_failure" in self.RECOVERY_SRC
+        assert "def is_degraded_no_ip" in self.RECOVERY_SRC
+        assert "def diagnose_client_failure" not in self.STATUS_SRC
+        assert "def is_degraded_no_ip" not in self.STATUS_SRC
+
+    def test_same_subnet_machinery_removed(self):
+        """Wired-wins replaced the same-subnet policy (§2.7)."""
+        assert "def same_l3_segment" not in WIFI_NETWORK_SRC
+        assert "def _single_usable_ipv4_interface" not in WIFI_NETWORK_SRC
+        assert "same_l3_segment(" not in WIFI_WATCHER_SRC
+
+
+# ---------------------------------------------------------------------------
 # Regression: verify test counts are not unexpectedly reduced
 # ---------------------------------------------------------------------------
 
