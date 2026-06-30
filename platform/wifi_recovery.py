@@ -63,6 +63,100 @@ class NeedReboot:
     reason: str              # e.g. "dead_phy_only_path_offline_30min"
 
 
+# ---- "Associated but no IP" / adoption-failure ledger (WP5b, defect 3) ----
+#
+# Separate from the dead-PHY reset ledger: this counts how many times a managed
+# adapter associated (or was adopted/reconnected) but failed to obtain a usable
+# IP/gateway.  It both drives the escalating adoption back-off (so a dongle that
+# cannot get a DHCP lease stops thrashing every 90s) and feeds the DEGRADED_NO_IP
+# status taxonomy.
+
+NOIP_STOP_AFTER = 5            # failures before retries are suppressed until the MAC changes
+
+
+def _noip_ledger_locked(w, stable_id: str, create: bool = True) -> Optional[dict]:
+    if not stable_id:
+        return None
+    led = w.STATE.adapter_noip_ledgers.get(stable_id)
+    if led is None and create:
+        led = {"count": 0, "retry_after": 0.0}
+        w.STATE.adapter_noip_ledgers[stable_id] = led
+    return led
+
+
+def record_noip_failure(w, stable_id: str, now: float) -> int:
+    """Record one associate-but-no-IP failure for *stable_id*; return the new count.
+
+    The retry back-off escalates from RECONNECT_ATTEMPT_INTERVAL up to
+    USB_EMERGENCY_BACKOFF; after NOIP_STOP_AFTER failures retries are suppressed
+    indefinitely (retry_after = inf) until the ledger is cleared (the MAC changes
+    or disappears).
+    """
+    if not stable_id:
+        return 0
+    with w.state_lock:
+        led = _noip_ledger_locked(w, stable_id)
+        led["count"] += 1
+        n = led["count"]
+        if n >= NOIP_STOP_AFTER:
+            led["retry_after"] = float("inf")
+        else:
+            interval = min(
+                w.RECONNECT_ATTEMPT_INTERVAL * (2 ** (n - 1)), w.USB_EMERGENCY_BACKOFF
+            )
+            led["retry_after"] = now + interval
+    w.logger.info(
+        "No-IP failure #%d recorded for adapter %s; backing off adoption", n, stable_id
+    )
+    return n
+
+
+def noip_failure_count(w, stable_id: str) -> int:
+    if not stable_id:
+        return 0
+    with w.state_lock:
+        led = _noip_ledger_locked(w, stable_id, create=False)
+        return int(led["count"]) if led else 0
+
+
+def noip_retry_suppressed(w, stable_id: str, now: float) -> bool:
+    """True when adoption of *stable_id* should be skipped this pass (back-off)."""
+    if not stable_id:
+        return False
+    with w.state_lock:
+        led = _noip_ledger_locked(w, stable_id, create=False)
+        retry_after = led["retry_after"] if led else 0.0
+    return now < retry_after
+
+
+def clear_noip_failures(w, stable_id: str) -> None:
+    """Clear the no-IP ledger for *stable_id* (success, or the MAC disappeared)."""
+    if not stable_id:
+        return
+    with w.state_lock:
+        w.STATE.adapter_noip_ledgers.pop(stable_id, None)
+
+
+def prune_noip_ledgers(w, present_stable_ids: set) -> None:
+    """Drop ledgers for adapters that are no longer present (MAC disappeared)."""
+    with w.state_lock:
+        for sid in list(w.STATE.adapter_noip_ledgers):
+            if sid not in present_stable_ids:
+                w.STATE.adapter_noip_ledgers.pop(sid, None)
+
+
+def is_degraded_no_ip(w, *, managed: bool, carrier: bool, healthy: bool,
+                      stable_id: str) -> bool:
+    """Overlay verdict: managed + carrier-up + not healthy + repeated no-IP failure.
+
+    This is the DEGRADED_NO_IP determination (Section 2.4 / defect 3) — distinct
+    from the transient ``connecting`` that wifi_status reports for a freshly
+    associating adapter.  It requires an accumulated no-IP failure count so a
+    single in-flight DHCP attempt is not misreported.
+    """
+    return bool(managed and carrier and not healthy and noip_failure_count(w, stable_id) > 0)
+
+
 def diagnose_client_failure(w, adapters: list, active_client) -> Optional[ClientFailed]:
     """Diagnose active-USB client failure; return a ClientFailed event or None.
 

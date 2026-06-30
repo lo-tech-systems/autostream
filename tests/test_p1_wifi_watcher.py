@@ -1116,6 +1116,79 @@ class TestQueryPlayingStatus:
             assert watcher.query_playing_status() is None
 
 
+class TestNoIpLedgerAndDiagnosis:
+    """WP5b — no-IP/adoption-failure ledger, escalating back-off, defect 3 status."""
+
+    MAC = "bb:bb:bb:bb:bb:21"
+
+    def test_back_off_escalates_and_then_stops(self, watcher):
+        wr = watcher.wifi_recovery
+        # Each failure escalates the back-off; after NOIP_STOP_AFTER it is
+        # suppressed indefinitely (retry_after == inf).
+        prev = 0.0
+        for i in range(1, wr.NOIP_STOP_AFTER):
+            wr.record_noip_failure(watcher, self.MAC, now=0.0)
+            led = watcher.STATE.adapter_noip_ledgers[self.MAC]
+            assert led["count"] == i
+            assert led["retry_after"] >= prev
+            prev = led["retry_after"]
+        wr.record_noip_failure(watcher, self.MAC, now=0.0)
+        assert watcher.STATE.adapter_noip_ledgers[self.MAC]["retry_after"] == float("inf")
+        assert wr.noip_retry_suppressed(watcher, self.MAC, now=1e12) is True
+
+    def test_clear_resets_ledger(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_noip_failure(watcher, self.MAC, now=0.0)
+        wr.clear_noip_failures(watcher, self.MAC)
+        assert wr.noip_failure_count(watcher, self.MAC) == 0
+
+    def test_prune_drops_absent_macs(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_noip_failure(watcher, self.MAC, now=0.0)
+        wr.prune_noip_ledgers(watcher, set())  # MAC no longer present
+        assert wr.noip_failure_count(watcher, self.MAC) == 0
+
+    def test_no_ip_adapter_classified_degraded_no_ip(self, watcher):
+        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.wifi_recovery.record_noip_failure(watcher, usb.permanent_mac, now=100.0)
+        addrs = {}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+        rec = snap["adapters"][0]
+        assert rec["health"]["state"] == "degraded_no_ip"
+        assert rec["health"]["checks"] >= 1
+        assert rec["health"]["reason"] == "associated_no_ip"
+        assert rec["policy"]["warning"] == "no_ip_address"
+
+    def test_idle_unusable_usb_does_not_degrade_online_appliance(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:31", is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = builtin.permanent_mac
+        addrs = {"wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                            "prefixlen": 24, "scope": "global"}]}
+
+        def _health(ifname, *a, **k):
+            return ifname == "wlan0"  # built-in healthy, idle USB not
+
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
+             patch.object(watcher, "is_wifi_client_healthy", side_effect=_health), \
+             patch.object(watcher, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot(
+                [builtin, usb], wired_connected=False, wired_ok=False)
+        # The idle, unattributed USB must not flip the device to degraded.
+        assert snap["device"]["state"] == "online"
+
+
 class TestAdapterOverlayEvents:
     """WP5a — overlay diagnoses and returns ClientFailed events; loop applies."""
 
@@ -1342,7 +1415,11 @@ class TestRuntimeUsbAdoption:
             watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
             r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
         assert r is False
-        assert watcher.STATE.usb_adoption_retry_after > 0
+        # The failed adoption records a no-IP failure and arms the escalating
+        # back-off (replacing the fixed usb_adoption_retry_after).
+        assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) >= 1
+        assert watcher.wifi_recovery.noip_retry_suppressed(
+            watcher, usb.permanent_mac, 0.0) is True
         assert watcher.STATE.using_builtin_fallback is False
 
 

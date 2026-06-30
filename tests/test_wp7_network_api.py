@@ -184,6 +184,14 @@ class TestBuildNetworkCardPresentation:
         assert result["warning"] == "USB WiFi adapter is being reset. Network connection may be unstable for a minute."
         assert result["warning_severity"] == "warning"
 
+    def test_no_ip_address_warning(self):
+        # WP5b defect 3: USB associated but could not get a network address.
+        s = _with_device(_ok_status({"adapters": [_usb_adapter(warning="no_ip_address", role="client", ifname="wlan1")]}),
+                         primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
+        result = build_network_card_presentation(s)
+        assert "could not get a network address" in result["warning"]
+        assert result["warning_severity"] == "warning"
+
     def test_active_usb_warning_preferred_over_spare_higher_priority(self):
         s = _with_device(
             _ok_status({

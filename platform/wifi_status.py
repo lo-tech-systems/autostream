@@ -102,7 +102,8 @@ def _primary_wired_ifname(addresses: dict) -> str:
 
 
 def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
-                             is_dead, is_link_down, quarantined, is_hotspot):
+                             is_dead, is_link_down, quarantined, is_hotspot,
+                             is_no_ip=False):
     """Map facts + recovery flags to a defined adapter health state/severity."""
     if not present:
         state = "absent"
@@ -116,6 +117,10 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
         state = "dead_phy"
     elif healthy:
         state = "healthy"
+    elif is_no_ip:
+        # Overlay verdict: associated/carrier-up but repeatedly could not get a
+        # usable IP/gateway (defect 3) — distinct from a transient `connecting`.
+        state = "degraded_no_ip"
     elif is_link_down:
         state = "link_down"
     elif nm_state in ("connecting", "config", "ip-config", "prepare", "need-auth"):
@@ -207,9 +212,30 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         )
         v4, v6 = _adapter_ip_lists(addresses, a.ifname)
 
+        # Overlay no-IP verdict (defect 3): managed + carrier-up + not healthy +
+        # repeated no-IP failures recorded in the overlay ledger.
+        noip_count = w._noip_failure_count(a.permanent_mac)
+        is_no_ip = w._is_degraded_no_ip(
+            managed=a.managed, carrier=carrier, healthy=healthy,
+            stable_id=a.permanent_mac,
+        )
+
+        if is_hotspot:
+            role = "hotspot"
+        elif a.ifname == active_ifname or (active_mac and a.permanent_mac == active_mac):
+            role = "client"
+        else:
+            role = "idle"
+
         if healthy:
             any_healthy = True
-        elif a.managed and not is_hotspot:
+        elif a.managed and not is_hotspot and (
+            role == "client" or is_no_ip or is_dead or quarantined
+        ):
+            # Only an *attributed* problem degrades whole-device state: the active
+            # client, a no-IP adapter, a dead-PHY adapter, or a quarantined one.
+            # An idle unusable spare (merely unhealthy, no attribution) does not
+            # silently flip device.state to degraded (defect 3 tightening).
             any_unhealthy = True
 
         gw_ipv4 = wifi_net.default_gateway_ipv4(a.ifname)
@@ -219,15 +245,8 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         state, severity = _classify_adapter_health(
             present=True, managed=a.managed, carrier=carrier, healthy=healthy,
             nm_state=a.state, is_dead=is_dead, is_link_down=(link_down is True),
-            quarantined=quarantined, is_hotspot=is_hotspot,
+            quarantined=quarantined, is_hotspot=is_hotspot, is_no_ip=is_no_ip,
         )
-
-        if is_hotspot:
-            role = "hotspot"
-        elif a.ifname == active_ifname or (active_mac and a.permanent_mac == active_mac):
-            role = "client"
-        else:
-            role = "idle"
 
         if quarantined:
             action = "quarantined"
@@ -249,6 +268,8 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             warning = "resetting"
         elif budget_exhausted:
             warning = "reset_budget_exhausted"
+        elif is_no_ip:
+            warning = "no_ip_address"
         elif recent_reset_count:
             warning = "recent_resets"
         else:
@@ -279,8 +300,9 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 "state": state,
                 "severity": severity,
                 "since": dead_since if is_dead else None,
-                "checks": dead_checks if is_dead else 0,
-                "reason": "link_down_unhealthy" if is_dead else "",
+                "checks": dead_checks if is_dead else (noip_count if is_no_ip else 0),
+                "reason": ("link_down_unhealthy" if is_dead
+                           else ("associated_no_ip" if is_no_ip else "")),
             },
             "policy": {
                 "eligible": a.managed,

@@ -2180,10 +2180,12 @@ def _network_warning_rank(adapter: dict) -> int | None:
         return 0
     if warning == "reset_budget_exhausted":
         return 1
-    if warning == "resetting":
+    if warning == "no_ip_address":
         return 2
-    if warning == "recent_resets":
+    if warning == "resetting":
         return 3
+    if warning == "recent_resets":
+        return 4
     return None
 
 
@@ -2206,9 +2208,13 @@ def _network_warning_fields(adapter: dict) -> dict:
         warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
         severity = "danger"
     elif rank == 2:
-        warning = "USB WiFi adapter is being reset. Network connection may be unstable for a minute."
+        warning = ("USB WiFi adapter detected but could not get a network address — "
+                   "check the network's DHCP, the adapter's band, or the dongle.")
         severity = "warning"
     elif rank == 3:
+        warning = "USB WiFi adapter is being reset. Network connection may be unstable for a minute."
+        severity = "warning"
+    elif rank == 4:
         reset_text = "1 reset" if resets == 1 else f"{resets} resets"
         warning = f"Warning: the USB WiFi adapter has needed {reset_text} in the last 24 hours."
         severity = "warning"

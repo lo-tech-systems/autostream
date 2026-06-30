@@ -441,6 +441,10 @@ class NetworkMonitorState:
     pending_usb_adoption_mac: Optional[str] = None
     pending_usb_adoption_checks: int = 0
     usb_adoption_retry_after: float = 0.0
+    # Per-stable-id "associated but no IP" / adoption-failure ledger (WP5b).
+    # stable_id -> {"count": int, "retry_after": float}.  Drives the
+    # DEGRADED_NO_IP status taxonomy and the escalating adoption back-off.
+    adapter_noip_ledgers: dict = field(default_factory=dict)
     last_detected_adapter_macs: Optional[frozenset] = None
     last_playing_status_warn: float = 0.0
 
@@ -2002,8 +2006,10 @@ def startup_connect_usb_first() -> bool:
             if builtin and wifi_net.is_wifi_connected(builtin.ifname):
                 logger.info("Startup USB-first: disconnecting built-in client on %s", builtin.ifname)
                 run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
+            wifi_recovery.clear_noip_failures(_self_module(), candidate.permanent_mac)
             logger.info("Startup USB-first: connection established on %s", candidate.ifname)
             return True
+        wifi_recovery.record_noip_failure(_self_module(), candidate.permanent_mac, time.monotonic())
         logger.debug("Startup USB-first: attempt on %s failed", candidate.ifname)
 
     if usb:
@@ -2228,10 +2234,12 @@ def _try_recovery_reconnect(adapters: list) -> None:
                                 interval=WAIT_FOR_CONNECTION_INTERVAL)
                 and is_wifi_client_healthy(candidate.ifname)):
             _set_active_client(candidate)
+            wifi_recovery.clear_noip_failures(_self_module(), candidate.permanent_mac)
             leave_setup_mode("automatic_recovery: adapter returned and reconnected")
             verify_avahi_after_handover()
             logger.info("Auto-recovery resolved on %s", candidate.ifname)
             return
+        wifi_recovery.record_noip_failure(_self_module(), candidate.permanent_mac, time.monotonic())
     logger.debug("Auto-recovery probe failed; retaining hotspot")
 
 
@@ -2263,6 +2271,12 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
         _clear_pending_adoption()
         return False
     candidate = usb[0]
+
+    # Escalating no-IP back-off (WP5b): a dongle that repeatedly associates but
+    # cannot get an IP is held back (and eventually stopped) instead of thrashing
+    # adoption every cycle.
+    if wifi_recovery.noip_retry_suppressed(_self_module(), candidate.permanent_mac, now):
+        return False
 
     active_client = resolve_active_client(adapters)
     # Do not switch from a healthy USB client to another USB adapter.
@@ -2305,13 +2319,15 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
             STATE.using_builtin_fallback = False
         _set_active_client(candidate)
         _clear_pending_adoption()
+        wifi_recovery.clear_noip_failures(_self_module(), candidate.permanent_mac)
         logger.info("Runtime USB adoption succeeded on %s", candidate.ifname)
         verify_avahi_after_handover()
         return True
 
     logger.warning("Runtime USB adoption failed on %s; retaining built-in", candidate.ifname)
-    with state_lock:
-        STATE.usb_adoption_retry_after = now + RECONNECT_ATTEMPT_INTERVAL
+    # Record the no-IP failure to escalate the back-off (replaces the fixed
+    # usb_adoption_retry_after interval) and surface the DEGRADED_NO_IP status.
+    wifi_recovery.record_noip_failure(_self_module(), candidate.permanent_mac, now)
     _clear_pending_adoption()
     return False
 
@@ -2333,6 +2349,9 @@ def update_known_adapters(adapters: list) -> None:
         STATE.last_detected_adapter_macs = macs
     if prev is not None and prev != macs:
         logger.info("Detected Wi-Fi adapter set changed: %s", sorted(macs))
+    # Drop no-IP ledgers for adapters that are no longer present so a replaced
+    # or removed dongle starts fresh (the back-off ceiling releases, WP5b).
+    wifi_recovery.prune_noip_ledgers(_self_module(), set(macs))
 
 
 # ** DEAD-PHY RECOVERY (WP2/WP3; extracted to wifi_recovery.py in WP8) **
@@ -2395,6 +2414,17 @@ def wait_for_interface_reappears(target, timeout=INTERFACE_REAPPEAR_TIMEOUT):
 
 def escalate_dead_adapter_recovery(adapters, wired_connected):
     return wifi_recovery.escalate_dead_adapter_recovery(_self_module(), adapters, wired_connected)
+
+
+def _noip_failure_count(stable_id):
+    return wifi_recovery.noip_failure_count(_self_module(), stable_id)
+
+
+def _is_degraded_no_ip(*, managed, carrier, healthy, stable_id):
+    return wifi_recovery.is_degraded_no_ip(
+        _self_module(), managed=managed, carrier=carrier, healthy=healthy,
+        stable_id=stable_id,
+    )
 
 
 # ** RUNTIME NETWORK-STATUS SNAPSHOT (WP6; extracted to wifi_status.py in WP8) **
