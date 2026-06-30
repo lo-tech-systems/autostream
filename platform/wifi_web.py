@@ -17,12 +17,28 @@ argument and read its constants/helpers through it (the star-topology seam).
 """
 from __future__ import annotations
 
+import hmac
 import html
 import json
 import os
+import secrets
+import tempfile
 import threading
+from typing import Optional
 
 from flask import Flask, request, jsonify, redirect, url_for, make_response
+
+# Per-boot control token (Section 10.1).  Generated at startup; the normal Web
+# UI reads the token file and supplies it as an X-Autostream-Wifi-Control header
+# on direct-localhost requests.  Never sent to the browser or logged.  This is
+# the single source of truth for the loopback control surface (the watcher calls
+# init_control_token(w)/remove_control_token() at startup/shutdown).
+CONTROL_TOKEN_DIR = os.environ.get('APP_RUN_DIR', '/run/autostream')
+CONTROL_TOKEN_PATH = os.environ.get(
+    'APP_WIFI_CONTROL_TOKEN', '/run/autostream/wifi-control.token'
+)
+CONTROL_TOKEN_HEADER = "X-Autostream-Wifi-Control"
+_control_token: str = ""
 
 APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 APP_BANNER_IMAGE = os.environ.get('APP_BANNER_IMAGE', '').strip()
@@ -551,6 +567,112 @@ def _has_saved_network(w) -> bool:
         return bool(w.STATE.rollback_connection_name)
 
 
+# ---------------------------------------------------------------------------
+# Local control / auth surface (loopback + per-boot token; Section 10.1)
+# ---------------------------------------------------------------------------
+
+def _atomic_write(path: str, data: str, mode: int = 0o644) -> None:
+    """Atomically write *data* to *path* with *mode* (stdlib-only).
+
+    Creates a temp file in the same directory, flushes, fsyncs, sets mode, then
+    ``os.replace`` over the destination.  Equivalent to the watcher helper's
+    atomic write; inlined here so wifi_web stays self-contained on the
+    system-Python recovery path (it imports no Autostream module).
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def init_control_token(w) -> str:
+    """Generate the per-boot control token and write it root:autostream 0640.
+
+    The runtime dir is created root:autostream 0750 when needed.  Replacement at
+    each startup is authoritative.  Returns the token (also stored in module
+    state).  Never logged.
+    """
+    global _control_token
+    _control_token = secrets.token_urlsafe(32)
+    try:
+        os.makedirs(CONTROL_TOKEN_DIR, exist_ok=True)
+        try:
+            os.chmod(CONTROL_TOKEN_DIR, 0o750)
+        except OSError:
+            pass
+        _atomic_write(CONTROL_TOKEN_PATH, _control_token + "\n", mode=0o640)
+        # Best-effort group ownership so the unprivileged Web UI can read it.
+        try:
+            import grp
+            gid = grp.getgrnam("autostream").gr_gid
+            os.chown(CONTROL_TOKEN_PATH, 0, gid)
+            os.chown(CONTROL_TOKEN_DIR, 0, gid)
+        except (KeyError, OSError, ImportError):
+            pass
+    except Exception as e:
+        w.logger.error("Failed to write control token file: %s", e)
+    return _control_token
+
+
+def remove_control_token() -> None:
+    try:
+        os.unlink(CONTROL_TOKEN_PATH)
+    except OSError:
+        pass
+
+
+def _is_loopback_remote() -> bool:
+    return (request.remote_addr or "") in ("127.0.0.1", "127.0.1.1", "::1")
+
+
+def _control_authorised() -> bool:
+    """Require BOTH a loopback source AND a matching per-boot token header.
+
+    Loopback alone is insufficient: during AP mode nginx proxies external
+    captive-portal clients to the watcher, so Flask may see loopback.  Tokens are
+    compared with hmac.compare_digest.
+    """
+    if not _is_loopback_remote():
+        return False
+    supplied = request.headers.get(CONTROL_TOKEN_HEADER, "")
+    if not supplied or not _control_token:
+        return False
+    return hmac.compare_digest(supplied, _control_token)
+
+
+_VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved", "set_log_level"}
+
+
+def validate_log_level_request(w, level, ttl) -> tuple[str, Optional[int]]:
+    """Validate a set_log_level request (WP7).
+
+    Returns ``(error, clamped_ttl)``; *error* is "" when valid.  ``debug``
+    requires a TTL; provided TTLs must be numeric and are clamped to
+    [LOG_LEVEL_TTL_MIN, LOG_LEVEL_TTL_MAX].
+    """
+    if level not in w.RUNTIME_LOG_LEVELS:
+        return "invalid_level", None
+    if ttl is None:
+        if level == "debug":
+            return "ttl_required_for_debug", None
+        return "", None
+    if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or ttl <= 0:
+        return "invalid_ttl", None
+    clamped = int(max(w.LOG_LEVEL_TTL_MIN, min(w.LOG_LEVEL_TTL_MAX, ttl)))
+    return "", clamped
+
+
 def build_app(w) -> Flask:
     """Build the watcher's Flask app and register the captive-portal/setup routes.
 
@@ -705,8 +827,118 @@ def build_app(w) -> Flask:
         resp.headers["Pragma"] = "no-cache"
         return resp
 
-    # The watcher's still-resident control routes (version/network_status/
-    # network_control/request_ap_mode) register themselves onto this same app
-    # object via module-level @app.route decorators as the watcher finishes
-    # loading.  They move into this factory in WP3.
+    # ** LOCAL CONTROL API (WP6, Section 10.1) **
+    # Privileged loopback surface: every route requires loopback AND the
+    # per-boot token (_control_authorised); handlers only validate/authenticate
+    # and queue/trigger — all policy consumption stays in the watcher.
+
+    @app.route("/version", methods=["GET"])
+    def version():
+        if not _control_authorised():
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        return jsonify({
+            "ok": True,
+            "component": "wifi_watcher",
+            "version": w.WIFI_WATCHER_VERSION,
+        })
+
+    @app.route("/network_status", methods=["GET"])
+    def network_status():
+        if not _control_authorised():
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        with w.state_lock:
+            snapshot = w.STATE.network_status_snapshot
+        if not snapshot:
+            return jsonify({
+                "ok": True,
+                "schema_version": w.wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
+                "device": {"state": "unknown"},
+                "stale": True,
+            })
+        return jsonify(snapshot)
+
+    @app.route("/network_control", methods=["POST"])
+    def network_control():
+        """Queue a disruptive network action; never execute it in the request thread.
+
+        Validates/authenticates, stores one pending action under the state lock,
+        signals the monitor loop, and returns a queued response before any interface
+        is disconnected.  Rejects unknown actions/fields and a second conflicting
+        action while one is pending or in progress.
+        """
+        if not _control_authorised():
+            w.logger.warning("Rejected /network_control (unauthenticated/non-loopback)")
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"ok": False, "error": "invalid_body"}), 400
+        action = payload.get("action")
+        keys = set(payload.keys())
+
+        # Per-action field validation (WP7).  start_setup/reconnect_saved accept
+        # only {"action"}; set_log_level accepts {"action","level","ttl_seconds?"}.
+        params: dict = {}
+        if action in ("start_setup", "reconnect_saved"):
+            if keys != {"action"}:
+                return jsonify({"ok": False, "error": "invalid_action"}), 400
+        elif action == "set_log_level":
+            if not keys <= {"action", "level", "ttl_seconds"}:
+                return jsonify({"ok": False, "error": "invalid_action"}), 400
+            level = payload.get("level")
+            ttl = payload.get("ttl_seconds", None)
+            error, clamped = validate_log_level_request(w, level, ttl)
+            if error:
+                w.logger.warning("Rejected set_log_level request: %s", error)
+                return jsonify({"ok": False, "error": error}), 400
+            params = {"level": level, "ttl_seconds": clamped}
+        else:
+            return jsonify({"ok": False, "error": "invalid_action"}), 400
+
+        with w.state_lock:
+            if w.STATE.pending_control_action or w.STATE.control_in_progress:
+                return jsonify({"ok": False, "error": "busy"}), 409
+            w.STATE.pending_control_action = action
+            w.STATE.pending_control_params = params
+            w.control_action_event.set()
+
+        w.logger.info("Queued network control action: %s", action)
+        return jsonify({"ok": True, "queued": True, "action": action})
+
+    @app.route("/request_ap_mode", methods=["POST"])
+    def request_ap_mode():
+        """Allow the normal (non-setup) WebUI to request AP/setup mode.
+
+        Retained for compatibility but now requires both a loopback source and the
+        per-boot control token, so no unauthenticated privileged loopback-only route
+        remains behind nginx.
+        """
+        if not _control_authorised():
+            w.logger.warning("Rejected /request_ap_mode (unauthenticated/non-loopback)")
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+
+        reason = ""
+        if request.is_json:
+            payload = request.get_json(silent=True) or {}
+            reason = str(payload.get("reason", "")).strip()
+        if not reason:
+            reason = (request.form.get("reason") or "").strip()
+
+        with w.state_lock:
+            # Reject early if AP mode is exhausted for this boot cycle and cannot be
+            # force-entered (i.e. no recent failed config attempt).  Without this the
+            # caller would receive a success response but AP mode would never start.
+            if w.STATE.ap_exhausted and not w.STATE.force_setup_mode:
+                w.logger.warning("AP mode request rejected: ap_exhausted latch set (reason='%s')", reason or "UserRequest")
+                return jsonify({
+                    "ok": False,
+                    "error": "ap_exhausted",
+                    "message": "AP mode is not available until the device is power-cycled.",
+                }), 409
+            w.STATE.ap_request_reason = reason
+            w.ap_request_event.set()
+
+        w.logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")
+        return jsonify({"ok": True, "queued": True})
+
     return app

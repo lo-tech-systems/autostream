@@ -823,18 +823,18 @@ class TestStatusRoute:
 
     def test_request_ap_mode_rejected_from_non_localhost(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "10.0.0.5"},
         )
         assert rv.status_code == 403
 
     def test_request_ap_mode_rejected_without_token(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
@@ -846,11 +846,11 @@ class TestStatusRoute:
 
     def test_request_ap_mode_accepted_with_token(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         # If AP exhausted or other condition, might return 409; accept that too.
@@ -862,16 +862,16 @@ class TestNetworkControlRoutes:
 
     def test_network_status_requires_token(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.get("/network_status", environ_base={"REMOTE_ADDR": "127.0.0.1"})
         assert rv.status_code == 403
 
     def test_network_status_ok_with_token(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.get(
             "/network_status",
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 200
@@ -882,16 +882,16 @@ class TestNetworkControlRoutes:
 
     def test_version_requires_token(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.get("/version", environ_base={"REMOTE_ADDR": "127.0.0.1"})
         assert rv.status_code == 403
 
     def test_version_ok_with_token(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.get(
             "/version",
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 200
@@ -904,47 +904,47 @@ class TestNetworkControlRoutes:
 
     def test_network_control_rejects_non_loopback(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.post(
             "/network_control",
             json={"action": "start_setup"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "10.0.0.5"},
         )
         assert rv.status_code == 403
 
     def test_network_control_rejects_unknown_action(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.post(
             "/network_control",
             json={"action": "wipe_everything"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 400
 
     def test_network_control_rejects_extra_fields(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.post(
             "/network_control",
             json={"action": "start_setup", "evil": 1},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 400
 
     def test_network_control_queues_before_disconnect(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         # Reset pending state.
         mod.STATE.pending_control_action = ""
         mod.STATE.control_in_progress = False
         rv = client.post(
             "/network_control",
             json={"action": "start_setup"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 200
@@ -956,12 +956,12 @@ class TestNetworkControlRoutes:
 
     def test_second_conflicting_action_rejected(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         mod.STATE.pending_control_action = "start_setup"
         rv = client.post(
             "/network_control",
             json={"action": "reconnect_saved"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 409
@@ -1278,9 +1278,9 @@ class TestRuntimeUsbAdoption:
 class TestControlToken:
     def test_token_file_written_with_mode(self, watcher, tmp_path):
         token_path = tmp_path / "run" / "wifi-control.token"
-        watcher.CONTROL_TOKEN_DIR = str(tmp_path / "run")
-        watcher.CONTROL_TOKEN_PATH = str(token_path)
-        tok = watcher.init_control_token()
+        watcher.wifi_web.CONTROL_TOKEN_DIR = str(tmp_path / "run")
+        watcher.wifi_web.CONTROL_TOKEN_PATH = str(token_path)
+        tok = watcher.wifi_web.init_control_token(watcher)
         assert tok and token_path.exists()
         # Token never empty; file content matches.
         assert token_path.read_text(encoding="utf-8").strip() == tok
@@ -1293,10 +1293,10 @@ class TestControlToken:
     def test_remove_token_best_effort(self, watcher, tmp_path):
         token_path = tmp_path / "wifi-control.token"
         token_path.write_text("x", encoding="utf-8")
-        watcher.CONTROL_TOKEN_PATH = str(token_path)
-        watcher.remove_control_token()
+        watcher.wifi_web.CONTROL_TOKEN_PATH = str(token_path)
+        watcher.wifi_web.remove_control_token()
         assert not token_path.exists()
-        watcher.remove_control_token()  # no error when absent
+        watcher.wifi_web.remove_control_token()  # no error when absent
 
 
 class TestStartExplicitSetup:
@@ -1559,29 +1559,29 @@ class TestSavedNetworkGating:
 
 class TestControlAuthLogic:
     def test_authorised_requires_token_match(self, watcher):
-        watcher._control_token = "secret"
+        watcher.wifi_web._control_token = "secret"
         # Simulate request object with header + remote.
         req = MagicMock()
         req.remote_addr = "127.0.0.1"
-        req.headers = {watcher.CONTROL_TOKEN_HEADER: "secret"}
-        with patch.object(watcher, "request", req):
-            assert watcher._control_authorised() is True
+        req.headers = {watcher.wifi_web.CONTROL_TOKEN_HEADER: "secret"}
+        with patch.object(watcher.wifi_web, "request", req):
+            assert watcher.wifi_web._control_authorised() is True
 
     def test_authorised_rejects_wrong_token(self, watcher):
-        watcher._control_token = "secret"
+        watcher.wifi_web._control_token = "secret"
         req = MagicMock()
         req.remote_addr = "127.0.0.1"
-        req.headers = {watcher.CONTROL_TOKEN_HEADER: "wrong"}
-        with patch.object(watcher, "request", req):
-            assert watcher._control_authorised() is False
+        req.headers = {watcher.wifi_web.CONTROL_TOKEN_HEADER: "wrong"}
+        with patch.object(watcher.wifi_web, "request", req):
+            assert watcher.wifi_web._control_authorised() is False
 
     def test_authorised_rejects_non_loopback(self, watcher):
-        watcher._control_token = "secret"
+        watcher.wifi_web._control_token = "secret"
         req = MagicMock()
         req.remote_addr = "10.0.0.5"
-        req.headers = {watcher.CONTROL_TOKEN_HEADER: "secret"}
-        with patch.object(watcher, "request", req):
-            assert watcher._control_authorised() is False
+        req.headers = {watcher.wifi_web.CONTROL_TOKEN_HEADER: "secret"}
+        with patch.object(watcher.wifi_web, "request", req):
+            assert watcher.wifi_web._control_authorised() is False
 
     def test_process_control_action_start_setup(self, watcher):
         with patch.object(watcher, "start_explicit_setup") as ss:
@@ -3394,7 +3394,7 @@ class TestBuildNetworkStatusSnapshot:
 class TestNetworkStatusRoute:
     def test_forbidden_without_auth(self, flask_client):
         client, mod = flask_client
-        with patch.object(mod, "_control_authorised", return_value=False):
+        with patch.object(mod.wifi_web, "_control_authorised", return_value=False):
             resp = client.get("/network_status")
         assert resp.status_code == 403
 
@@ -3406,7 +3406,7 @@ class TestNetworkStatusRoute:
             "device": {"state": "online"},
             "connectivity": {"active_path_ok": True, "wired_ok": True},
         }
-        with patch.object(mod, "_control_authorised", return_value=True):
+        with patch.object(mod.wifi_web, "_control_authorised", return_value=True):
             resp = client.get("/network_status")
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
@@ -3416,7 +3416,7 @@ class TestNetworkStatusRoute:
     def test_unknown_stale_before_first_snapshot(self, flask_client):
         client, mod = flask_client
         mod.STATE.network_status_snapshot = None
-        with patch.object(mod, "_control_authorised", return_value=True):
+        with patch.object(mod.wifi_web, "_control_authorised", return_value=True):
             resp = client.get("/network_status")
         assert resp.status_code == 200
         body = resp.get_json()
@@ -3436,31 +3436,31 @@ class TestNetworkStatusRoute:
 
 class TestLogLevelValidation:
     def test_valid_info_no_ttl(self, watcher):
-        assert watcher.validate_log_level_request("info", None) == ("", None)
+        assert watcher.wifi_web.validate_log_level_request(watcher,"info", None) == ("", None)
 
     def test_debug_requires_ttl(self, watcher):
-        err, ttl = watcher.validate_log_level_request("debug", None)
+        err, ttl = watcher.wifi_web.validate_log_level_request(watcher,"debug", None)
         assert err == "ttl_required_for_debug"
 
     def test_debug_with_ttl_ok(self, watcher):
-        assert watcher.validate_log_level_request("debug", 900) == ("", 900)
+        assert watcher.wifi_web.validate_log_level_request(watcher,"debug", 900) == ("", 900)
 
     def test_invalid_level_rejected(self, watcher):
-        err, _ = watcher.validate_log_level_request("trace", None)
+        err, _ = watcher.wifi_web.validate_log_level_request(watcher,"trace", None)
         assert err == "invalid_level"
 
     def test_numeric_level_rejected(self, watcher):
-        err, _ = watcher.validate_log_level_request(10, 900)
+        err, _ = watcher.wifi_web.validate_log_level_request(watcher,10, 900)
         assert err == "invalid_level"
 
     def test_ttl_clamped(self, watcher):
-        assert watcher.validate_log_level_request("debug", 5)[1] == watcher.LOG_LEVEL_TTL_MIN
-        assert watcher.validate_log_level_request("debug", 99999)[1] == watcher.LOG_LEVEL_TTL_MAX
+        assert watcher.wifi_web.validate_log_level_request(watcher,"debug", 5)[1] == watcher.LOG_LEVEL_TTL_MIN
+        assert watcher.wifi_web.validate_log_level_request(watcher,"debug", 99999)[1] == watcher.LOG_LEVEL_TTL_MAX
 
     def test_non_numeric_ttl_rejected(self, watcher):
-        err, _ = watcher.validate_log_level_request("debug", "soon")
+        err, _ = watcher.wifi_web.validate_log_level_request(watcher,"debug", "soon")
         assert err == "invalid_ttl"
-        err2, _ = watcher.validate_log_level_request("debug", True)
+        err2, _ = watcher.wifi_web.validate_log_level_request(watcher,"debug", True)
         assert err2 == "invalid_ttl"
 
 
@@ -3495,13 +3495,13 @@ class TestApplyAndRevertLogLevel:
 class TestSetLogLevelControlRoute:
     def test_accepts_debug_with_ttl(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         mod.STATE.pending_control_action = ""
         mod.STATE.control_in_progress = False
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "debug", "ttl_seconds": 900},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 200
@@ -3513,59 +3513,59 @@ class TestSetLogLevelControlRoute:
 
     def test_rejects_invalid_level(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         mod.STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "trace"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 400
 
     def test_rejects_debug_without_ttl(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         mod.STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "debug"},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 400
 
     def test_rejects_unknown_field(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         mod.STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "info", "evil": 1},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 400
 
     def test_rejects_non_loopback(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "debug", "ttl_seconds": 900},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "10.0.0.5"},
         )
         assert rv.status_code == 403
 
     def test_start_setup_still_only_action(self, flask_client):
         client, mod = flask_client
-        mod._control_token = "tok"
+        mod.wifi_web._control_token = "tok"
         mod.STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "start_setup", "ttl_seconds": 900},
-            headers={mod.CONTROL_TOKEN_HEADER: "tok"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 400
