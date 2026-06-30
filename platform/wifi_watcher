@@ -480,10 +480,10 @@ def resolve_recovery_ifname() -> Optional[str]:
 # Resolved once at startup; None disables avahi mDNS hostname monitoring.
 _DBUS_SEND: Optional[str] = shutil.which("dbus-send")
 
-# Build the Flask app via the wifi_web factory (HTTP-extraction plan).  The
-# captive-portal/setup routes are registered here; the watcher's still-resident
-# control routes register onto this same app object via the @app.route
-# decorators further down as this module finishes loading.
+# Build the Flask app via the wifi_web factory (HTTP-extraction plan).  All
+# routes (captive-portal/setup and the loopback control/auth surface) live in
+# wifi_web; keeping wifi_watcher.app importable here preserves the Flask-test-
+# client tests and the __main__ app.run() startup.
 app = wifi_web.build_app(_self_module())
 
 # ** LOGGING **
