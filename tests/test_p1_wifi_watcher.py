@@ -101,6 +101,12 @@ def _get_watcher() -> ModuleType:
         sysutils.reboot_system = MM()
         sysutils.get_system_hostname = MM(return_value="autostream")
 
+        # wifi_web is a sibling that binds Flask symbols at import; drop any
+        # cached copy so the watcher's `import wifi_web` re-binds against the
+        # flask currently in sys.modules (stubbed here). The watcher keeps its
+        # own reference as `mod.wifi_web`.
+        sys.modules.pop("wifi_web", None)
+
         try:
             loader.exec_module(mod)
         finally:
@@ -178,6 +184,10 @@ def flask_client(watcher):
 
     saved_sysutils = sys.modules.get("autostream_sysutils")
     sys.modules["autostream_sysutils"] = sysutils_stub
+    # Drop any cached wifi_web so it re-binds against the real flask used here
+    # (an earlier unit load may have bound it to the stubbed flask). The fresh
+    # watcher keeps its own reference as `flask_mod.wifi_web`.
+    sys.modules.pop("wifi_web", None)
     try:
         loader.exec_module(flask_mod)
     finally:

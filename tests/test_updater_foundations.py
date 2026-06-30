@@ -119,6 +119,15 @@ class TestRecoveryHelperManifest:
         assert "-o root -g root" in content
         assert "autostream_wifi_network.py" in content
 
+    def test_host_installer_deploys_wifi_web(self):
+        """wifi_web.py is part of the recovery component (HTTP-extraction WP1)."""
+        content = HOST_INSTALLER.read_text(encoding="utf-8")
+        assert "platform/wifi_web.py" in content
+
+    def test_dial_installer_deploys_wifi_web(self):
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        assert "platform/wifi_web.py" in content
+
 
 class TestHostDeploymentManifest:
     def test_update_support_deployed_by_host_installer(self):

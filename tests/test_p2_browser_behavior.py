@@ -281,48 +281,154 @@ class TestDialCardHtmlEscaping:
         assert '"><script>xss</script>' not in result
 
 
-class TestWifiWatcherHtmlEscaping:
-    """wifi_watcher's render_setup_page must HTML-escape user-controlled content."""
+WIFI_WEB_PATH = REPO_ROOT / "platform" / "wifi_web.py"
 
-    def _load_watcher(self) -> ModuleType:
-        alias = "wifi_watcher_p2_escape_test"
-        loader = importlib.machinery.SourceFileLoader(
-            alias, str(REPO_ROOT / "platform" / "wifi_watcher")
-        )
+
+def _load_wifi_web(env: dict | None = None) -> ModuleType:
+    """Load platform/wifi_web.py under a fresh alias with the given env.
+
+    Presentation constants (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML) are read at
+    import time, so a fresh load per env lets the banner variants be exercised.
+    Requires real Flask (wifi_web binds ``from flask import request``).
+    """
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        pytest.skip("flask not installed — wifi_web render tests skipped")
+    import os
+
+    env = env or {}
+    saved: dict[str, str | None] = {}
+    # APP_BANNER_IMAGE controls the banner branch; default it absent so the
+    # no-banner variant is deterministic unless the test asks otherwise.
+    keys = set(env) | {"APP_TITLE", "APP_BANNER_IMAGE"}
+    for k in keys:
+        saved[k] = os.environ.get(k)
+        if k in env:
+            os.environ[k] = env[k]
+        else:
+            os.environ.pop(k, None)
+    try:
+        alias = "wifi_web_p2_" + str(abs(hash(tuple(sorted(env.items())))))
+        loader = importlib.machinery.SourceFileLoader(alias, str(WIFI_WEB_PATH))
         spec = importlib.util.spec_from_loader(alias, loader)
         mod = importlib.util.module_from_spec(spec)
-        flask_stub = MagicMock()
-        flask_stub.Flask = lambda *a, **kw: MagicMock()
-        sysutils_stub = MagicMock()
-        sysutils_stub.get_system_hostname = MagicMock(return_value="autostream")
-        saved = {}
-        for name, stub in [("flask", flask_stub), ("autostream_sysutils", sysutils_stub)]:
-            saved[name] = sys.modules.get(name)
-            sys.modules[name] = stub
-        try:
-            loader.exec_module(mod)
-        finally:
-            for name, orig in saved.items():
-                if orig is None:
-                    sys.modules.pop(name, None)
-                else:
-                    sys.modules[name] = orig
-        return mod
+        loader.exec_module(mod)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return mod
+
+
+class _FakeWatcher:
+    """Minimal seam object for render_wait_page (w.get_system_hostname / w._DIAL_MODE)."""
+
+    def __init__(self, dial_mode: bool, hostname: str = "autostream"):
+        self._DIAL_MODE = dial_mode
+        self._hostname = hostname
+
+    def get_system_hostname(self) -> str:
+        return self._hostname
+
+
+def _render_wait(web: ModuleType, w, ssid: str = "", user_agent: str = "") -> str:
+    """Render the wait page inside a Flask request context (needs request.headers)."""
+    import flask
+    app = flask.Flask(__name__)
+    headers = {"User-Agent": user_agent} if user_agent else {}
+    with app.test_request_context("/setup", headers=headers):
+        return web.render_wait_page(w, ssid)
+
+
+class TestWifiWebHtmlEscaping:
+    """wifi_web's render_setup_page must HTML-escape user-controlled content."""
 
     def test_error_code_rendered_safely(self):
-        mod = self._load_watcher()
+        web = _load_wifi_web()
         # render_setup_page maps error codes to fixed messages; the raw code
         # is never inserted into the page.  An unknown hostile code must not leak.
-        result = mod.render_setup_page(error_code='<script>bad</script>')
+        result = web.render_setup_page(error_code='<script>bad</script>')
         assert '<script>bad</script>' not in result
 
     def test_app_title_is_escaped(self):
         """APP_TITLE in BANNER_HTML must be HTML-escaped."""
-        mod = self._load_watcher()
+        web = _load_wifi_web(env={"APP_TITLE": "<b>title</b>"})
         # BANNER_HTML was set at import time with escaped title.
-        banner = mod.BANNER_HTML
-        if "<" in banner or ">" in banner:
-            assert html.escape(mod.APP_TITLE) in banner or mod.APP_TITLE not in banner
+        banner = web.BANNER_HTML
+        assert "<b>title</b>" not in banner
+        assert html.escape("<b>title</b>") in banner
+
+
+class TestWifiWebRender:
+    """WP1 verbatim-move proof: rendered setup/wait pages have the expected
+    semantic content across the banner/error-code/show_reconnect/dial variants."""
+
+    def test_setup_default_structure(self):
+        web = _load_wifi_web()
+        out = web.render_setup_page()
+        assert out.startswith("<!DOCTYPE html>") or "<!DOCTYPE html>" in out[:64]
+        assert "Connect to WiFi" in out
+        assert 'action="/setup"' in out
+        assert web.STYLE_CSS in out
+        # No banner image configured -> the app-title div banner is used.
+        assert '<div class="app-title">' in out
+        # No error and no reconnect by default.
+        assert "Connection failed." not in out
+        assert "Reconnect to saved network" not in out
+
+    def test_setup_banner_image_used_when_configured(self):
+        web = _load_wifi_web(env={"APP_BANNER_IMAGE": "https://x/logo.png"})
+        out = web.render_setup_page()
+        assert 'class="app-banner-image"' in out
+        assert "https://x/logo.png" in out
+
+    def test_setup_show_reconnect_adds_button(self):
+        web = _load_wifi_web()
+        with_btn = web.render_setup_page(show_reconnect=True)
+        without_btn = web.render_setup_page(show_reconnect=False)
+        assert "Reconnect to saved network" in with_btn
+        assert "Reconnect to saved network" not in without_btn
+
+    def test_setup_error_code_messages(self):
+        web = _load_wifi_web()
+        assert "no usable local IPv4 address" in web.render_setup_page("no-local-ip")
+        assert "Unable to connect to that WiFi network" in web.render_setup_page("nmcli-failed")
+        assert "WiFi connection attempt failed" in web.render_setup_page("something-else")
+        # The raw internal code itself never leaks into the page.
+        assert "no-local-ip" not in web.render_setup_page("no-local-ip")
+
+    def test_wait_dial_mode_appliance_instruction(self):
+        web = _load_wifi_web()
+        out = _render_wait(web, _FakeWatcher(dial_mode=True), ssid="MyNet")
+        assert "Continue setup from an autostream appliance" in out
+        assert "window.location.replace('http://" not in out
+        assert "MyNet" in out
+
+    def test_wait_non_dial_redirects_to_local(self):
+        web = _load_wifi_web()
+        out = _render_wait(web, _FakeWatcher(dial_mode=False, hostname="myhost"), ssid="MyNet")
+        assert "myhost.local" in out
+        assert "window.location.replace('http://" in out
+
+    def test_wait_failure_redirect_in_both_modes(self):
+        web = _load_wifi_web()
+        for dial in (True, False):
+            out = _render_wait(web, _FakeWatcher(dial_mode=dial), ssid="N")
+            assert "/setup?e=" in out
+
+    def test_wait_user_agent_browser_name(self):
+        web = _load_wifi_web()
+        out = _render_wait(web, _FakeWatcher(dial_mode=False), ssid="N",
+                           user_agent="Mozilla/5.0 (iPhone)")
+        assert "Open Safari and go to" in out
+
+    def test_wait_ssid_escaped(self):
+        web = _load_wifi_web()
+        out = _render_wait(web, _FakeWatcher(dial_mode=False), ssid="<script>x</script>")
+        assert "<script>x</script>" not in out
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,8 @@ Covers:
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
+import importlib.util
 import os
 import sys
 import types
@@ -21,6 +23,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
+WIFI_WEB_PATH = REPO_ROOT / "platform" / "wifi_web.py"
 DIAL_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_dial_wifi_watcher.service"
 
 # The watcher imports its sibling helper `autostream_wifi_network` (deployed
@@ -124,7 +127,7 @@ class TestConfigureWifiCandidateTransaction:
         """``nmcli device wifi connect`` reuses/modifies an existing profile and
         undermines rollback; it must not be used to submit credentials."""
         src = _watcher_src()
-        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "render_setup_page")
+        fn_body = _fn_body(src, "configure_wifi_with_nmcli", "wait_for_connection")
         assert '"connect"' not in fn_body, (
             "credential submission must not call nmcli device wifi connect"
         )
@@ -258,61 +261,77 @@ class TestApProfileDeletion:
 # Dial mode wait page — instruction text and JS behaviour
 # ---------------------------------------------------------------------------
 
+def _load_wifi_web() -> types.ModuleType:
+    """Load platform/wifi_web.py (owns render_wait_page) with real Flask."""
+    try:
+        import flask  # noqa: F401
+    except ImportError:
+        pytest.skip("flask not installed — wifi_web render tests skipped")
+    loader = importlib.machinery.SourceFileLoader("wifi_web_dial_test", str(WIFI_WEB_PATH))
+    spec = importlib.util.spec_from_loader("wifi_web_dial_test", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+class _FakeWatcher:
+    """Seam stub for render_wait_page (w._DIAL_MODE / w.get_system_hostname)."""
+
+    def __init__(self, dial_mode: bool, hostname: str = "dial-host"):
+        self._DIAL_MODE = dial_mode
+        self._hostname = hostname
+
+    def get_system_hostname(self) -> str:
+        return self._hostname
+
+
+def _render_wait(dial_mode: bool, ssid: str = "MyNet", hostname: str = "dial-host") -> str:
+    import flask
+    web = _load_wifi_web()
+    app = flask.Flask(__name__)
+    with app.test_request_context("/setup"):
+        return web.render_wait_page(_FakeWatcher(dial_mode, hostname), ssid)
+
+
 class TestDialWaitPageInstruction:
+    """render_wait_page moved to wifi_web (HTTP-extraction WP1); assert behaviour."""
+
     def test_dial_mode_shows_appliance_instruction(self):
         """Dial mode wait page must include 'Continue setup from an autostream appliance'."""
-        src = _watcher_src()
-        fn_body = _fn_body(src, "render_wait_page", "@app.route")
-        assert "Continue setup from an autostream appliance" in fn_body, (
+        out = _render_wait(dial_mode=True)
+        assert "Continue setup from an autostream appliance" in out, (
             "render_wait_page must include 'Continue setup from an autostream appliance' "
             "in the dial mode branch"
         )
 
     def test_dial_mode_no_redirect_to_host_local(self):
         """Dial mode success path must not redirect to the dial's own .local hostname."""
-        src = _watcher_src()
-        fn_body = _fn_body(src, "render_wait_page", "@app.route")
-        # Find the dial-mode branch by locating the _DIAL_MODE conditional
-        dial_idx = fn_body.index("_DIAL_MODE")
-        # Find 'success_js' assignment under the dial branch
-        success_js_idx = fn_body.index("success_js", dial_idx)
-        # The value assigned in the dial branch must NOT contain window.location.replace
-        # The else branch (non-dial) will assign the redirect
-        dial_branch = fn_body[dial_idx: success_js_idx + 200]
-        # The dial mode assigns a no-op / comment, not a redirect
-        dial_assign = dial_branch[dial_branch.index("success_js"):]
-        assign_end = dial_assign.index("\n") + 1
-        dial_value = dial_assign[:assign_end]
-        assert "window.location.replace" not in dial_value, (
-            "Dial mode success_js must not contain window.location.replace"
+        out = _render_wait(dial_mode=True, hostname="dial-host")
+        assert "window.location.replace('http://dial-host.local" not in out, (
+            "Dial mode success path must not redirect to the dial's own .local hostname"
         )
 
     def test_non_dial_mode_redirects_to_local(self):
         """Non-dial mode wait page must redirect to the appliance's .local hostname."""
-        src = _watcher_src()
-        fn_body = _fn_body(src, "render_wait_page", "@app.route")
-        # The else branch assigns the redirect
-        else_idx = fn_body.rindex("else:")
-        else_branch = fn_body[else_idx: else_idx + 400]
-        assert "window.location.replace" in else_branch or "host_safe" in else_branch, (
+        out = _render_wait(dial_mode=False, hostname="appliance")
+        assert "window.location.replace('http://appliance.local" in out, (
             "Non-dial mode must redirect to the appliance's .local hostname on success"
         )
 
     def test_dial_mode_variable_used(self):
-        """render_wait_page must branch on _DIAL_MODE."""
-        src = _watcher_src()
-        fn_body = _fn_body(src, "render_wait_page", "@app.route")
-        assert "_DIAL_MODE" in fn_body, (
+        """render_wait_page must branch on _DIAL_MODE (dial vs non-dial differ)."""
+        dial_out = _render_wait(dial_mode=True)
+        non_dial_out = _render_wait(dial_mode=False)
+        assert dial_out != non_dial_out, (
             "render_wait_page must branch on _DIAL_MODE to distinguish dial from appliance mode"
         )
 
     def test_failure_redirect_preserved_in_both_modes(self):
         """Both dial and non-dial wait pages must redirect to /setup on failure."""
-        src = _watcher_src()
-        fn_body = _fn_body(src, "render_wait_page", "@app.route")
-        assert "/setup?e=" in fn_body, (
-            "Wait page must redirect to /setup on failure in both dial and non-dial mode"
-        )
+        for dial in (True, False):
+            assert "/setup?e=" in _render_wait(dial_mode=dial), (
+                "Wait page must redirect to /setup on failure in both dial and non-dial mode"
+            )
 
 
 # ---------------------------------------------------------------------------

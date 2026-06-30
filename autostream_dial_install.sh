@@ -93,6 +93,8 @@ install -m 0644 -o root -g root "$DEPLOY/platform/wifi_status.py" \
     /opt/autostream/wifi_status.py
 install -m 0644 -o root -g root "$DEPLOY/platform/wifi_recovery.py" \
     /opt/autostream/wifi_recovery.py
+install -m 0644 -o root -g root "$DEPLOY/platform/wifi_web.py" \
+    /opt/autostream/wifi_web.py
 cp -a "$DEPLOY/dial/."     /opt/autostream/
 install -m 0644 "$DEPLOY/dial/autostream_dial_control.py" \
     /opt/autostream/autostream_dial_control.py
