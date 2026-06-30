@@ -18,9 +18,11 @@ argument and read its constants/helpers through it (the star-topology seam).
 from __future__ import annotations
 
 import html
+import json
 import os
+import threading
 
-from flask import request
+from flask import Flask, request, jsonify, redirect, url_for, make_response
 
 APP_TITLE = os.environ.get('APP_TITLE', 'autostream')
 APP_BANNER_IMAGE = os.environ.get('APP_BANNER_IMAGE', '').strip()
@@ -512,3 +514,199 @@ def render_wait_page(w, selected_ssid: str = "") -> str:
         </body>
         </html>
         """
+
+
+# ---------------------------------------------------------------------------
+# Captive-portal / setup HTTP surface
+# ---------------------------------------------------------------------------
+
+def _captive_response(html: str):
+    resp = make_response(html, 200)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+CAPTIVE_LANDING = """<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta http-equiv="refresh" content="0; url=/setup">
+    <title>Wi-Fi setup</title>
+  </head>
+  <body>
+    <p>Redirecting to setup…</p>
+    <p><a href="/setup">Open setup</a></p>
+  </body>
+</html>
+"""
+
+
+def _has_saved_network(w) -> bool:
+    """True if a committed or rollback connection exists (Section 11.5)."""
+    if w.get_configured_network_state().is_configured:
+        return True
+    with w.state_lock:
+        return bool(w.STATE.rollback_connection_name)
+
+
+def build_app(w) -> Flask:
+    """Build the watcher's Flask app and register the captive-portal/setup routes.
+
+    Handlers close over the watcher module ``w`` (the star-topology hub) and
+    read/queue through it: ``w.STATE``, ``w.state_lock``, ``w.apply_wifi_async``,
+    ``w.scan_all_networks``, ``w.control_action_event``, ``w.logger``.  Endpoint
+    (handler) names are preserved so ``url_for`` keeps resolving.
+    """
+    app = Flask(w.__name__)
+
+    @app.route("/", methods=["GET"])
+    def index():
+        """Redirect root to the /setup page."""
+        return redirect(url_for("setup"))
+
+    @app.errorhandler(404)
+    def page_not_found(_):
+        return _captive_response(CAPTIVE_LANDING)
+
+    @app.route("/setup", methods=["GET", "POST"])
+    def setup():
+        if request.method == "POST":
+            # Accept both the “real” names and your innocuous names
+            ssid = (request.form.get("ssid") or request.form.get("s") or "").strip()
+            pw = request.form.get("password") or request.form.get("k") or ""
+
+            if not ssid:
+                w.logger.warning("WiFi configuration POST received without SSID")
+                return _captive_response(render_setup_page())
+
+            with w.state_lock:
+                if w.STATE.apply_in_progress:
+                    w.logger.info("Apply already in progress; showing wait page again")
+                    return _captive_response(render_wait_page(w, ssid))
+                    #return render_wait_page(ssid)
+                w.STATE.apply_in_progress = True
+                w.STATE.last_apply_result = "applying"
+                w.STATE.last_apply_error = ""
+
+            # IMPORTANT: return wait page first, then reconfigure in background
+            t = threading.Thread(target=w.apply_wifi_async, args=(ssid, pw), daemon=True)
+            t.start()
+            return _captive_response(render_wait_page(w, ssid))
+
+        # GET: show the setup form (include last failure, if any)
+        with w.state_lock:
+            e = (request.args.get("e") or "").strip()
+            if not e and w.STATE.last_apply_result == "failed":
+                e = w.STATE.last_apply_error or "failed"
+
+        w.logger.info("User requested /setup (error: %s)", e)
+
+        # Offer "Reconnect to saved network" only when a saved network exists —
+        # never during first-run unconfigured setup (Section 11.5).
+        show_reconnect = _has_saved_network(w)
+        return _captive_response(render_setup_page(e, show_reconnect=show_reconnect))
+
+    @app.route("/networks", methods=["GET"])
+    def networks():
+        """Return merged, deduplicated networks seen by all detected adapters.
+
+        Response shape (Section 6.2):
+            {"networks": [{ssid, signal, builtin_visible, usb_visible,
+                           adapter_macs}, ...], "builtin_scan_known": bool}
+        """
+        nets, builtin_scan_known = w.scan_all_networks()
+        return jsonify({"networks": nets, "builtin_scan_known": builtin_scan_known})
+
+    @app.route("/reconnect_saved", methods=["POST"])
+    def reconnect_saved():
+        """Narrowly handled captive-page action: reconnect to the saved network.
+
+        Available to AP clients (not loopback) but strictly limited to reconnecting
+        an existing committed/rollback profile — it does NOT expose the general
+        network-control API.  Queues the work for the monitor loop; the browser may
+        lose AP connectivity, so success does not depend on a final acknowledgement.
+        """
+        if not _has_saved_network(w):
+            return jsonify({"ok": False, "error": "no_saved_network"}), 409
+        with w.state_lock:
+            if w.STATE.apply_in_progress:
+                return jsonify({"ok": False, "error": "apply_in_progress"}), 409
+            if w.STATE.pending_control_action or w.STATE.control_in_progress:
+                return jsonify({"ok": False, "error": "busy"}), 409
+            w.STATE.pending_control_action = "reconnect_saved"
+            w.control_action_event.set()
+        w.logger.info("Captive-page reconnect_saved queued")
+        return jsonify({"ok": True, "queued": True})
+
+    @app.route("/status", methods=["GET"])
+    def status():
+        """Return a simple JSON status including SetupMode and link states."""
+        with w.state_lock:
+            wifistate = w.STATE.wifistate
+            wiredstate = w.STATE.wiredstate
+            gateway_reachable = w.STATE.connectivity_ok
+            SetupMode = w.STATE.setup_mode
+            aip = w.STATE.apply_in_progress
+            lar = w.STATE.last_apply_result
+            lae = w.STATE.last_apply_error
+
+        return jsonify(
+            {
+                "wifistate": wifistate,
+                "wiredstate": wiredstate,
+                "gateway_reachable": gateway_reachable,
+                "SetupMode": SetupMode,
+                "apply_in_progress": aip,
+                "last_apply_result": lar,
+                "last_apply_error": lae,
+            }
+        )
+
+    # iOS / Apple captive probes
+    @app.route("/hotspot-detect.html", methods=["GET"])
+    @app.route("/library/test/success.html", methods=["GET"])
+    def apple_captive_probe():
+        w.logger.debug("Captive portal probe (Apple): %s", request.path)
+        return _captive_response(CAPTIVE_LANDING)
+
+    # Android / Chrome probes
+    @app.route("/generate_204", methods=["GET"])
+    @app.route("/gen_204", methods=["GET"])
+    def android_probe():
+        w.logger.debug("Captive portal probe (Android): %s", request.path)
+        return _captive_response(CAPTIVE_LANDING)
+
+    # Windows NCSI probe
+    @app.route("/ncsi.txt", methods=["GET"])
+    @app.route("/connecttest.txt", methods=["GET"])
+    def windows_probe():
+        w.logger.debug("Captive portal probe (Windows): %s", request.path)
+        return _captive_response(CAPTIVE_LANDING)
+
+    @app.route("/.well-known/captive-portal", methods=["GET"])
+    def captive_portal_api():
+        """
+        RFC 8910 Captive Portal API endpoint (DHCP option 114 points here).
+        iOS/macOS expect application/captive+json and typically respect no-store.
+        """
+        # Use whatever host the client used (often 192.168.4.1 via DNS hijack / proxy)
+        base = (request.host_url or "http://192.168.4.1/").rstrip("/")
+
+        payload = {
+            "captive": True,
+            "user-portal-url": f"{base}/setup",
+        }
+
+        resp = make_response(json.dumps(payload), 200)
+        resp.headers["Content-Type"] = "application/captive+json; charset=utf-8"
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
+
+    # The watcher's still-resident control routes (version/network_status/
+    # network_control/request_ap_mode) register themselves onto this same app
+    # object via module-level @app.route decorators as the watcher finishes
+    # loading.  They move into this factory in WP3.
+    return app

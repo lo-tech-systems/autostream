@@ -72,7 +72,7 @@ import sys
 import json
 import urllib.request
 from typing import Optional
-from flask import Flask, request, jsonify, redirect, url_for, make_response
+from flask import request, jsonify
 from dataclasses import dataclass, field
 
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
@@ -85,11 +85,21 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-# Flask presentation surface (page rendering; later the app factory + routes +
-# control/auth surface).  Deployed beside the watcher in /opt/autostream; it
-# takes this module across the seam and never imports wifi_watcher (HTTP-
-# extraction plan).
+# Flask presentation/HTTP surface (page rendering, app factory, captive/setup
+# routes).  Deployed beside the watcher in /opt/autostream; it takes this module
+# across the seam and never imports wifi_watcher (HTTP-extraction plan).
 import wifi_web
+
+
+def _self_module():
+    """Return this watcher module object for the split-module seam.
+
+    Works whether the watcher is run as a script (__main__) or loaded under an
+    alias by the test harness.  Defined early so the Flask app factory can be
+    wired at the original app-creation point.
+    """
+    return sys.modules.get(__name__) or sys.modules.get("__main__") or globals().get("__SELF__")
+
 
 _DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
 WIFI_WATCHER_VERSION = "1.0.0"
@@ -466,7 +476,11 @@ def resolve_recovery_ifname() -> Optional[str]:
 # Resolved once at startup; None disables avahi mDNS hostname monitoring.
 _DBUS_SEND: Optional[str] = shutil.which("dbus-send")
 
-app = Flask(__name__)
+# Build the Flask app via the wifi_web factory (HTTP-extraction plan).  The
+# captive-portal/setup routes are registered here; the watcher's still-resident
+# control routes register onto this same app object via the @app.route
+# decorators further down as this module finishes loading.
+app = wifi_web.build_app(_self_module())
 
 # ** LOGGING **
 
@@ -1084,189 +1098,6 @@ def apply_wifi_async(ssid: str, pw: str) -> None:
     finally:
         with state_lock:
             STATE.apply_in_progress = False
-
-# ** WEB APP **
-
-@app.route("/", methods=["GET"])
-def index():
-    """Redirect root to the /setup page."""
-    return redirect(url_for("setup"))
-
-@app.errorhandler(404)
-def page_not_found(_):
-    return _captive_response(CAPTIVE_LANDING)
-
-
-@app.route("/setup", methods=["GET", "POST"])
-def setup():
-    if request.method == "POST":
-        # Accept both the “real” names and your innocuous names
-        ssid = (request.form.get("ssid") or request.form.get("s") or "").strip()
-        pw = request.form.get("password") or request.form.get("k") or ""
-
-        if not ssid:
-            logger.warning("WiFi configuration POST received without SSID")
-            return _captive_response(wifi_web.render_setup_page())
-
-        with state_lock:
-            if STATE.apply_in_progress:
-                logger.info("Apply already in progress; showing wait page again")
-                return _captive_response(wifi_web.render_wait_page(_self_module(), ssid))
-                #return render_wait_page(ssid)
-            STATE.apply_in_progress = True
-            STATE.last_apply_result = "applying"
-            STATE.last_apply_error = ""
-
-        # IMPORTANT: return wait page first, then reconfigure in background
-        t = threading.Thread(target=apply_wifi_async, args=(ssid, pw), daemon=True)
-        t.start()
-        return _captive_response(wifi_web.render_wait_page(_self_module(), ssid))
-
-    # GET: show the setup form (include last failure, if any)
-    with state_lock:
-        e = (request.args.get("e") or "").strip()
-        if not e and STATE.last_apply_result == "failed":
-            e = STATE.last_apply_error or "failed"
-
-    logger.info("User requested /setup (error: %s)", e)
-
-    # Offer "Reconnect to saved network" only when a saved network exists —
-    # never during first-run unconfigured setup (Section 11.5).
-    show_reconnect = _has_saved_network()
-    return _captive_response(wifi_web.render_setup_page(e, show_reconnect=show_reconnect))
-
-
-@app.route("/networks", methods=["GET"])
-def networks():
-    """Return merged, deduplicated networks seen by all detected adapters.
-
-    Response shape (Section 6.2):
-        {"networks": [{ssid, signal, builtin_visible, usb_visible,
-                       adapter_macs}, ...], "builtin_scan_known": bool}
-    """
-    nets, builtin_scan_known = scan_all_networks()
-    return jsonify({"networks": nets, "builtin_scan_known": builtin_scan_known})
-
-
-def _has_saved_network() -> bool:
-    """True if a committed or rollback connection exists (Section 11.5)."""
-    if get_configured_network_state().is_configured:
-        return True
-    with state_lock:
-        return bool(STATE.rollback_connection_name)
-
-
-@app.route("/reconnect_saved", methods=["POST"])
-def reconnect_saved():
-    """Narrowly handled captive-page action: reconnect to the saved network.
-
-    Available to AP clients (not loopback) but strictly limited to reconnecting
-    an existing committed/rollback profile — it does NOT expose the general
-    network-control API.  Queues the work for the monitor loop; the browser may
-    lose AP connectivity, so success does not depend on a final acknowledgement.
-    """
-    if not _has_saved_network():
-        return jsonify({"ok": False, "error": "no_saved_network"}), 409
-    with state_lock:
-        if STATE.apply_in_progress:
-            return jsonify({"ok": False, "error": "apply_in_progress"}), 409
-        if STATE.pending_control_action or STATE.control_in_progress:
-            return jsonify({"ok": False, "error": "busy"}), 409
-        STATE.pending_control_action = "reconnect_saved"
-        control_action_event.set()
-    logger.info("Captive-page reconnect_saved queued")
-    return jsonify({"ok": True, "queued": True})
-
-
-@app.route("/status", methods=["GET"])
-def status():
-    """Return a simple JSON status including SetupMode and link states."""
-    with state_lock:
-        wifistate = STATE.wifistate
-        wiredstate = STATE.wiredstate
-        gateway_reachable = STATE.connectivity_ok
-        SetupMode = STATE.setup_mode
-        aip = STATE.apply_in_progress
-        lar = STATE.last_apply_result
-        lae = STATE.last_apply_error
-    
-    return jsonify(
-        {
-            "wifistate": wifistate,
-            "wiredstate": wiredstate,
-            "gateway_reachable": gateway_reachable,
-            "SetupMode": SetupMode,
-            "apply_in_progress": aip,
-            "last_apply_result": lar,
-            "last_apply_error": lae,
-        }
-    )
-
-
-def _captive_response(html: str):
-    resp = make_response(html, 200)
-    resp.headers["Content-Type"] = "text/html; charset=utf-8"
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    return resp
-
-CAPTIVE_LANDING = """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta http-equiv="refresh" content="0; url=/setup">
-    <title>Wi-Fi setup</title>
-  </head>
-  <body>
-    <p>Redirecting to setup…</p>
-    <p><a href="/setup">Open setup</a></p>
-  </body>
-</html>
-"""
-
-# iOS / Apple captive probes
-@app.route("/hotspot-detect.html", methods=["GET"])
-@app.route("/library/test/success.html", methods=["GET"])
-def apple_captive_probe():
-    logger.debug("Captive portal probe (Apple): %s", request.path)
-    return _captive_response(CAPTIVE_LANDING)
-
-# Android / Chrome probes
-@app.route("/generate_204", methods=["GET"])
-@app.route("/gen_204", methods=["GET"])
-def android_probe():
-    logger.debug("Captive portal probe (Android): %s", request.path)
-    return _captive_response(CAPTIVE_LANDING)
-
-# Windows NCSI probe
-@app.route("/ncsi.txt", methods=["GET"])
-@app.route("/connecttest.txt", methods=["GET"])
-def windows_probe():
-    logger.debug("Captive portal probe (Windows): %s", request.path)
-    return _captive_response(CAPTIVE_LANDING)
-
-
-@app.route("/.well-known/captive-portal", methods=["GET"])
-def captive_portal_api():
-    """
-    RFC 8910 Captive Portal API endpoint (DHCP option 114 points here).
-    iOS/macOS expect application/captive+json and typically respect no-store.
-    """
-    # Use whatever host the client used (often 192.168.4.1 via DNS hijack / proxy)
-    base = (request.host_url or "http://192.168.4.1/").rstrip("/")
-
-    payload = {
-        "captive": True,
-        "user-portal-url": f"{base}/setup",
-    }
-
-    resp = make_response(json.dumps(payload), 200)
-    resp.headers["Content-Type"] = "application/captive+json; charset=utf-8"
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    return resp
-
 
 # ** LOCAL CONTROL API (WP6, Section 10.1) **
 
@@ -2621,15 +2452,6 @@ def escalate_dead_adapter_recovery(adapters, wired_connected):
 # helpers, and constants without a circular import.
 
 import wifi_status
-
-
-def _self_module():
-    """Return this watcher module object for the split-module seam.
-
-    Works whether the watcher is run as a script (__main__) or loaded under an
-    alias by the test harness.
-    """
-    return sys.modules.get(__name__) or sys.modules.get("__main__") or globals().get("__SELF__")
 
 
 def build_network_status_snapshot(adapters: Optional[list] = None,
