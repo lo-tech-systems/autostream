@@ -1358,37 +1358,7 @@ def default_gateway_ipv4(ifname: str) -> str:
     return gateways[0] if gateways else ""
 
 
-def _single_usable_ipv4_interface(ifname: str) -> Optional[ipaddress.IPv4Interface]:
-    usable: list[ipaddress.IPv4Interface] = []
-    for addr in list_interface_addresses(ifname).get(ifname, []):
-        if addr.get("family") != "ipv4":
-            continue
-        address = addr.get("address", "")
-        prefixlen = addr.get("prefixlen")
-        if not is_usable_unicast_ipv4(address):
-            continue
-        try:
-            iface = ipaddress.ip_interface(f"{address}/{prefixlen}")
-        except ValueError:
-            return None
-        if not isinstance(iface, ipaddress.IPv4Interface):
-            continue
-        usable.append(iface)
-    return usable[0] if len(usable) == 1 else None
-
-
-def same_l3_segment(if_a: str, if_b: str) -> bool:
-    """True only when two interfaces unambiguously share one IPv4 L3 segment."""
-    addr_a = _single_usable_ipv4_interface(if_a)
-    addr_b = _single_usable_ipv4_interface(if_b)
-    if addr_a is None or addr_b is None:
-        return False
-
-    gateways_a = _default_gateways_ipv4(if_a)
-    gateways_b = _default_gateways_ipv4(if_b)
-    if len(gateways_a) != 1 or len(gateways_b) != 1:
-        return False
-    if gateways_a[0] != gateways_b[0]:
-        return False
-
-    return addr_a.network == addr_b.network
+# same_l3_segment / _single_usable_ipv4_interface were removed with the
+# same-subnet Wi-Fi-disconnect policy: the watcher now runs a simple "usable
+# wired Ethernet wins" policy regardless of subnet (state-machine refactor,
+# Section 2.7), so the helper no longer needs to compare L3 segments.

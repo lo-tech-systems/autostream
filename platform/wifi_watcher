@@ -49,10 +49,12 @@ If the WiFi is configured and usable wired ethernet is down, the script monitors
 health by monitoring the kernel's view of the default gateway. If this goes offline for more
 than 5 minutes, the script trys to reconnect to the network periodically.
 
-When usable ethernet wins and is on the same IPv4 L3 segment as the active WiFi client, the watcher
-disconnects idle WiFi to leave a single deterministic network path and mDNS address. Playback,
-active WiFi apply/setup work, ambiguous addressing, and different subnets defer or skip that policy;
-if ethernet later drops after a policy disconnect, the watcher promptly reconnects the saved WiFi.
+When usable wired ethernet is present it wins regardless of subnet: the watcher disconnects the
+idle WiFi client and runs on ethernet to leave a single deterministic network path and mDNS
+address (Section 2.7). The only gate is playback — switching the active interface changes the
+appliance IP and would break an in-flight stream, so the disconnect is deferred while playback
+is active or uncertain (and while apply/setup work is in progress). If ethernet later drops, the
+watcher attempts a prompt reconnect on entry to the offline-reconnecting state (no 5-minute wait).
 
 If the gateway remains unreachable for more than 30 minutes, the script will reboot the device.
 Whilst this seems aggressive, the WiFi chipset in the Pi-Zero range is not great in terms
@@ -436,7 +438,6 @@ class NetworkMonitorState:
     using_builtin_fallback: bool = False
     active_client_ifname: str = ""
     active_client_mac: str = ""
-    policy_disconnected_wifi: bool = False
     pending_usb_adoption_mac: Optional[str] = None
     pending_usb_adoption_checks: int = 0
     usb_adoption_retry_after: float = 0.0
@@ -1644,23 +1645,13 @@ def network_monitor_loop(run_once: bool = False):
                     return
                 continue
 
-        with state_lock:
-            reconnect_policy_wifi = STATE.policy_disconnected_wifi and not wired_ok
-            policy_disconnected_wifi = STATE.policy_disconnected_wifi
-            if reconnect_policy_wifi:
-                STATE.policy_disconnected_wifi = False
-        if reconnect_policy_wifi:
-            connect_to_configured_wifi()
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-
         # --- Dead-PHY recovery: detect a wedged-but-present client adapter and
         # run the reset ladder.  This runs before the ethernet-wins short-circuit
         # so a genuinely dead Wi-Fi PHY is reset even while ethernet is attached.
-        # A watcher-owned idle Wi-Fi disconnect is different: while ethernet is
-        # still healthy, leave the radio down instead of spending reset budget.
-        if wifi_cfg and not (policy_disconnected_wifi and wired_ok):
+        # But when wired Ethernet wins and the Wi-Fi client has already been
+        # dropped (wired-wins, Section 2.7), the idle radio is administratively
+        # down by design — leave it down rather than spending reset budget on it.
+        if wifi_cfg and not (wired_ok and active_client is None):
             if escalate_dead_adapter_recovery(adapters, wired_ok):
                 if _sleep_or_finish_monitor_pass(run_once):
                     return
@@ -1698,22 +1689,23 @@ def network_monitor_loop(run_once: bool = False):
                 leave_setup_mode("Wired ethernet is up; suppressing AP mode")
             with state_lock:
                 active_wifi_ifname = STATE.active_client_ifname
-                skip_policy_disconnect = (
+                skip_disconnect = (
                     STATE.apply_in_progress or STATE.setup_mode or in_ap_for_eth
                 )
-            if active_wifi_ifname and not skip_policy_disconnect:
-                winning_eth = first_healthy_wired_ifname()
-                if winning_eth and wifi_net.same_l3_segment(active_wifi_ifname, winning_eth):
-                    playing = playing_status()
-                    if playing is False:
-                        logger.info(
-                            "Ethernet %s is on the same L3 segment as WiFi %s; disconnecting idle WiFi",
-                            winning_eth, active_wifi_ifname,
-                        )
-                        run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname])
-                        _set_active_client(None)
-                        with state_lock:
-                            STATE.policy_disconnected_wifi = True
+            # Wired wins (Section 2.7): when usable Ethernet is present, run on it
+            # and drop the redundant Wi-Fi client — regardless of subnet — so there
+            # is one deterministic path and one mDNS address.  The single gate is
+            # playback: switching the active interface changes the appliance IP and
+            # would break an in-flight AirPlay/OwnTone stream, so defer (do not
+            # disconnect) while streaming or while playback is uncertain.
+            if active_wifi_ifname and not skip_disconnect:
+                if playing_status() is False:
+                    logger.info(
+                        "Usable wired Ethernet present; disconnecting idle WiFi client %s",
+                        active_wifi_ifname,
+                    )
+                    run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname])
+                    _set_active_client(None)
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
@@ -1823,10 +1815,19 @@ def network_monitor_loop(run_once: bool = False):
                 last_attempt = STATE.last_reconnect_attempt
 
             if not conn_ok:
-                if down_start is None:
+                first_entry = down_start is None
+                if first_entry:
+                    # Entering OFFLINE_RECONNECTING (Section 2.7): attempt one
+                    # prompt reconnect immediately rather than waiting for the
+                    # 5-minute gateway-down threshold.  This is how Wi-Fi comes
+                    # back after a wired-wins disconnect once Ethernet drops,
+                    # without a policy flag or a 5-minute wait.
                     with state_lock:
                         STATE.conn_down_start = now
+                        STATE.last_reconnect_attempt = now
                     down_start = now
+                    logger.info("Connectivity lost; attempting prompt reconnect on entry")
+                    connect_to_configured_wifi()
 
                 down_for = now - down_start
 
@@ -1856,7 +1857,7 @@ def network_monitor_loop(run_once: bool = False):
                             retry_after - now,
                         )
 
-                if down_for >= GW_DOWN_RECONNECT_AFTER:
+                if (not first_entry) and down_for >= GW_DOWN_RECONNECT_AFTER:
                     if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
                         with state_lock:
                             STATE.last_reconnect_attempt = now

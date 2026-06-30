@@ -3052,13 +3052,13 @@ class TestNetworkMonitorCatchAll:
 
 
 class TestEthernetWinsWifiDisconnectPolicy:
-    def _run_with_active_wifi(self, watcher, *, same_l3=True, playing=False, setup=False):
+    """WP4 — usable wired Ethernet wins regardless of subnet; one playback gate."""
+
+    def _run_with_active_wifi(self, watcher, *, playing=False, setup=False):
         now = 1000.0
         wifi = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
         watcher.STATE.setup_mode = setup
-        with patch.object(watcher, "first_healthy_wired_ifname", return_value="eth0"), \
-             patch.object(watcher.wifi_net, "same_l3_segment", return_value=same_l3), \
-             patch.object(watcher, "query_playing_status", return_value=playing), \
+        with patch.object(watcher, "query_playing_status", return_value=playing), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as run:
             _run_monitor_once(
                 watcher,
@@ -3073,83 +3073,66 @@ class TestEthernetWinsWifiDisconnectPolicy:
             )
         return run
 
-    def test_same_subnet_idle_disconnects_wifi_once_and_sets_flag(self, watcher):
-        run = self._run_with_active_wifi(watcher, same_l3=True, playing=False)
-
+    def test_wired_up_idle_disconnects_wifi_once(self, watcher):
+        # Regardless of subnet: usable Ethernet present + idle → drop Wi-Fi once.
+        run = self._run_with_active_wifi(watcher, playing=False)
         run.assert_called_once_with(["nmcli", "device", "disconnect", "wlan1"])
         assert watcher.STATE.active_client_ifname == ""
         assert watcher.STATE.active_client_mac == ""
-        assert watcher.STATE.policy_disconnected_wifi is True
 
-    def test_playback_active_does_not_disconnect(self, watcher):
-        run = self._run_with_active_wifi(watcher, same_l3=True, playing=True)
-
+    def test_playback_active_retains_wifi(self, watcher):
+        run = self._run_with_active_wifi(watcher, playing=True)
         run.assert_not_called()
         assert watcher.STATE.active_client_ifname == "wlan1"
-        assert watcher.STATE.policy_disconnected_wifi is False
 
-    def test_playback_uncertain_does_not_disconnect(self, watcher):
-        run = self._run_with_active_wifi(watcher, same_l3=True, playing=None)
-
+    def test_playback_uncertain_retains_wifi(self, watcher):
+        run = self._run_with_active_wifi(watcher, playing=None)
         run.assert_not_called()
         assert watcher.STATE.active_client_ifname == "wlan1"
-        assert watcher.STATE.policy_disconnected_wifi is False
-
-    def test_different_l3_segment_does_not_disconnect(self, watcher):
-        run = self._run_with_active_wifi(watcher, same_l3=False, playing=False)
-
-        run.assert_not_called()
-        assert watcher.STATE.active_client_ifname == "wlan1"
-        assert watcher.STATE.policy_disconnected_wifi is False
 
     def test_apply_in_progress_skips_disconnect(self, watcher):
         watcher.STATE.apply_in_progress = True
-        run = self._run_with_active_wifi(watcher, same_l3=True, playing=False)
-
+        run = self._run_with_active_wifi(watcher, playing=False)
         run.assert_not_called()
         assert watcher.STATE.active_client_ifname == "wlan1"
-        assert watcher.STATE.policy_disconnected_wifi is False
 
     def test_setup_mode_skips_disconnect(self, watcher):
         with patch.object(watcher, "leave_setup_mode"):
-            run = self._run_with_active_wifi(watcher, same_l3=True, playing=False, setup=True)
-
+            run = self._run_with_active_wifi(watcher, playing=False, setup=True)
         run.assert_not_called()
         assert watcher.STATE.active_client_ifname == "wlan1"
-        assert watcher.STATE.policy_disconnected_wifi is False
 
-    def test_ethernet_loss_reconnects_policy_disconnected_wifi_once(self, watcher):
-        watcher.STATE.policy_disconnected_wifi = True
-        dead_recovery = MagicMock(return_value=True)
+    def test_wired_drop_attempts_prompt_reconnect_on_entry(self, watcher):
+        # Entering OFFLINE_RECONNECTING (e.g. Ethernet drops after a wired-wins
+        # disconnect) attempts one prompt reconnect immediately — no 5-min wait,
+        # no policy flag.
+        watcher.STATE.conn_down_start = None
         connect = _run_monitor_once(
             watcher,
             now=1000.0,
             wifi_cfg=True,
             wired_connected=False,
             wired_ok=False,
-            dead_recovery=dead_recovery,
+            client_ok=False,
         )
-
         connect.assert_called_once()
-        dead_recovery.assert_not_called()
-        assert watcher.STATE.policy_disconnected_wifi is False
+        assert watcher.STATE.conn_down_start == 1000.0
+        assert watcher.STATE.last_reconnect_attempt == 1000.0
 
-    def test_policy_disconnect_does_not_trigger_dead_phy_recovery_while_ethernet_is_healthy(self, watcher):
-        watcher.STATE.policy_disconnected_wifi = True
+    def test_dead_phy_skipped_when_wired_wins_and_no_wifi_client(self, watcher):
+        # After a wired-wins disconnect the idle radio is down by design; do not
+        # spend reset budget on it while Ethernet carries traffic.
         dead_recovery = MagicMock(return_value=True)
-
-        connect = _run_monitor_once(
+        _run_monitor_once(
             watcher,
             now=1000.0,
             wifi_cfg=True,
             wired_connected=True,
             wired_ok=True,
+            active_client=None,
             dead_recovery=dead_recovery,
         )
-
-        connect.assert_not_called()
         dead_recovery.assert_not_called()
-        assert watcher.STATE.policy_disconnected_wifi is True
 
 
 # ---------------------------------------------------------------------------
