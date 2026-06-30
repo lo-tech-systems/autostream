@@ -27,6 +27,9 @@ WEBUI_SRC = (REPO_ROOT / "core" / "autostream_webui.py").read_text(encoding="utf
 WEBUI_API_SRC = (REPO_ROOT / "core" / "autostream_webui_api.py").read_text(encoding="utf-8")
 WIFI_NETWORK_SRC = (REPO_ROOT / "core" / "autostream_wifi_network.py").read_text(encoding="utf-8")
 WIFI_WATCHER_SRC = (REPO_ROOT / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+# The Flask HTTP surface — including the per-boot control-token lifecycle — was
+# extracted to wifi_web.py (HTTP-extraction plan); the watcher wires/invokes it.
+WIFI_WEB_SRC = (REPO_ROOT / "platform" / "wifi_web.py").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +108,11 @@ class TestWatcherControlAuthentication:
         assert "_read_watcher_control_token" in WEBUI_API_SRC
 
     def test_watcher_generates_token_on_startup(self):
-        """The watcher writes a per-boot token so the Web UI can authenticate."""
-        assert "wifi-control.token" in WIFI_WATCHER_SRC or "control.token" in WIFI_WATCHER_SRC
+        """The recovery component writes a per-boot token so the Web UI can
+        authenticate.  The token lifecycle lives in wifi_web; the watcher invokes
+        it on startup (HTTP-extraction plan, WP3)."""
+        assert "wifi-control.token" in WIFI_WEB_SRC or "control.token" in WIFI_WEB_SRC
+        assert "init_control_token" in WIFI_WATCHER_SRC
 
     def test_webui_api_sends_token_in_header(self):
         """The control token is sent as an HTTP header, not in the URL."""
