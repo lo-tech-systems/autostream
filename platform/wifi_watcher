@@ -1682,6 +1682,116 @@ def _request_network_down_reboot(now: float, reason: str) -> None:
         )
 
 
+# ** MONITOR-LOOP HANDLER DECOMPOSITION (loop-handlers plan) **
+#
+# The monitor loop is an ordered set of handlers, each returning a Verdict over
+# one of three per-pass context types (strictly more info per stage), plus a small
+# driver-owned LoopState for the one value that must persist across passes.  The
+# handlers are extracted in place first; the run_steps driver lands last.
+
+
+class Verdict(Enum):
+    """A handler's result: it either owned the pass or falls through."""
+    OWN_PASS = "own_pass"   # transition performed; driver sleeps/returns, loop restarts
+    CONTINUE = "continue"   # fall through to the next handler in the same pass
+
+
+@dataclass(frozen=True)
+class PreFactsContext:
+    """Phase A context (event/timer), before gather_facts().
+
+    ``avahi_ok`` (``not setup_mode and not apply_in_progress``) is read in the same
+    top-of-pass state_lock block as ``boot_time`` so the avahi/mDNS handlers gate on
+    it without re-reading STATE (which would change the lock/read timing).
+    """
+    now: float
+    boot_time: float
+    avahi_ok: bool
+
+
+@dataclass(frozen=True)
+class FactsContext:
+    """Phase B-early context: PreFactsContext + the per-pass Facts and playback memo.
+
+    Carries no health fields, so a handler that must run before
+    _set_active_client() (step_usb_failure_fallback) structurally cannot read them.
+    """
+    pre: PreFactsContext
+    facts: "Facts"
+    playing: object            # per-pass memoised playback resolver (callable)
+
+    @property
+    def now(self) -> float: return self.pre.now
+    @property
+    def boot_time(self) -> float: return self.pre.boot_time
+    @property
+    def avahi_ok(self) -> bool: return self.pre.avahi_ok
+
+
+@dataclass(frozen=True)
+class HealthContext:
+    """Phase B-late context: FactsContext + the five health fields.
+
+    Produced by finalize_active_client_and_health() after _set_active_client().
+    """
+    fctx: FactsContext
+    health_ifname: str
+    wifi_connected: bool
+    client_ok: bool
+    conn_ok: bool
+    active_path_ok: bool
+
+    @property
+    def now(self) -> float: return self.fctx.now
+    @property
+    def boot_time(self) -> float: return self.fctx.boot_time
+    @property
+    def avahi_ok(self) -> bool: return self.fctx.avahi_ok
+    @property
+    def facts(self) -> "Facts": return self.fctx.facts
+    @property
+    def playing(self) -> object: return self.fctx.playing
+
+
+@dataclass
+class LoopState:
+    """Driver-owned state that persists across passes (not per-pass context).
+
+    Home for cross-pass loop-locals so handlers never smuggle persistent state
+    through a per-pass context.  Currently just the avahi hostname-check rate limit.
+    """
+    last_avahi_check: float = 0.0
+
+
+def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
+    """Named phase boundary (not a Verdict handler): set the active client and
+    compute the five health fields, returning the HealthContext for Phase B-late.
+
+    Wraps _set_active_client() plus the health computation; it may mutate
+    STATE.active_client_* but never owns the pass.
+    """
+    facts = fctx.facts
+    active_client = facts.active_client
+    wifi_cfg = facts.wifi_configured
+
+    _set_active_client(active_client)
+    # Health is scoped to the *active client* adapter; fall back to the built-in
+    # interface name for an unconfigured/idle device.
+    health_ifname = active_client.ifname if active_client else AP_IFNAME
+    wifi_connected = wifi_net.is_wifi_connected(health_ifname) if wifi_cfg else False
+    client_ok = (
+        is_wifi_client_healthy(health_ifname, wifi_connected=wifi_connected)
+        if wifi_cfg
+        else False
+    )
+    active_path_ok = bool(facts.wired_ok or client_ok)
+    conn_ok = active_path_ok
+    return HealthContext(
+        fctx, health_ifname=health_ifname, wifi_connected=wifi_connected,
+        client_ok=client_ok, conn_ok=conn_ok, active_path_ok=active_path_ok,
+    )
+
+
 def network_monitor_loop(run_once: bool = False):
     """Background loop to check network state and enforce the narrative rules.
 
@@ -1716,17 +1826,18 @@ def network_monitor_loop(run_once: bool = False):
         if STATE.last_active_path_seen is None:
             STATE.last_active_path_seen = STATE.boot_time
 
-    last_avahi_check: float = 0.0
+    loop_state = LoopState()
 
     while True:
         now = time.monotonic()
         with state_lock:
             boot_time = STATE.boot_time or now
             _avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
+        pre = PreFactsContext(now=now, boot_time=boot_time, avahi_ok=_avahi_ok)
 
         # Avahi mDNS hostname check (reduced frequency; skip during setup and WiFi apply)
-        if _avahi_ok and (now - last_avahi_check) >= AVAHI_CHECK_INTERVAL:
-            last_avahi_check = now
+        if _avahi_ok and (now - loop_state.last_avahi_check) >= AVAHI_CHECK_INTERVAL:
+            loop_state.last_avahi_check = now
             check_and_repair_avahi_hostname()
 
         # mDNS host-record re-announce: catch passive network-path changes (e.g. a
@@ -1796,6 +1907,7 @@ def network_monitor_loop(run_once: bool = False):
         adapters = facts.adapters
         active_client = facts.active_client
         playing_status = _make_playing_status_memo()
+        fctx = FactsContext(pre, facts, playing_status)
 
         # --- Multi-adapter discovery and active-client resolution (WP5) ---
         update_known_adapters(adapters)
@@ -1835,19 +1947,15 @@ def network_monitor_loop(run_once: bool = False):
                     return
                 continue
 
-        _set_active_client(active_client)
-        # Health is scoped to the *active client* adapter; fall back to the
-        # built-in interface name for an unconfigured/idle device.
-        health_ifname = active_client.ifname if active_client else AP_IFNAME
-        wifi_connected = wifi_net.is_wifi_connected(health_ifname) if wifi_cfg else False
-
-        client_ok = (
-            is_wifi_client_healthy(health_ifname, wifi_connected=wifi_connected)
-            if wifi_cfg
-            else False
-        )
-        active_path_ok = bool(wired_ok or client_ok)
-        conn_ok = active_path_ok
+        # Named phase boundary: set the active client and compute health once,
+        # producing the HealthContext the Phase B-late handlers read.  Unpacked to
+        # locals here (handlers land in later WPs).
+        hctx = finalize_active_client_and_health(fctx)
+        health_ifname = hctx.health_ifname
+        wifi_connected = hctx.wifi_connected
+        client_ok = hctx.client_ok
+        conn_ok = hctx.conn_ok
+        active_path_ok = hctx.active_path_ok
 
         # --- Optional idle-time USB adoption from a healthy built-in client. ---
         if wifi_cfg and conn_ok and not STATE.setup_mode:
