@@ -1792,6 +1792,80 @@ def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
     )
 
 
+# ---- Phase A handlers (event/timer, PreFactsContext, before gather_facts) ----
+
+
+def step_avahi_hostname(pre: "PreFactsContext", loop_state: "LoopState") -> "Verdict":
+    """Avahi mDNS hostname check (rate-limited; skipped during setup/apply)."""
+    if pre.avahi_ok and (pre.now - loop_state.last_avahi_check) >= AVAHI_CHECK_INTERVAL:
+        loop_state.last_avahi_check = pre.now
+        check_and_repair_avahi_hostname()
+    return Verdict.CONTINUE
+
+
+def step_mdns_reannounce(pre: "PreFactsContext") -> "Verdict":
+    """Debounced mDNS host-record re-announce (skipped during setup/apply)."""
+    if pre.avahi_ok:
+        maybe_reannounce_mdns(pre.now)
+    return Verdict.CONTINUE
+
+
+def step_manual_ap_request(pre: "PreFactsContext") -> "Verdict":
+    """Enter a MANUAL hotspot on a WebUI request (overrides the boot-AP cutoff)."""
+    if ap_request_event.is_set():
+        with state_lock:
+            reason = STATE.ap_request_reason
+            # Clear stored reason once consumed (optional but keeps it tidy)
+            STATE.ap_request_reason = ""
+            ap_request_event.clear()
+            already_in_ap = STATE.setup_mode
+        # If we're not already in AP mode, enter a MANUAL hotspot now.  A MANUAL
+        # session is not torn down by Ethernet (Section 2.3).
+        if not already_in_ap:
+            enter_setup_mode(HotspotPurpose.MANUAL,
+                             reason=f"manual_request: {reason or 'UserRequest'}")
+            return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
+def step_revert_log_level(pre: "PreFactsContext") -> "Verdict":
+    """Revert a temporary runtime log level once its TTL expires (WP7)."""
+    revert_expired_log_level(pre.now)
+    return Verdict.CONTINUE
+
+
+def step_control_action(pre: "PreFactsContext") -> "Verdict":
+    """Consume a queued local-control action.
+
+    Disruptive actions own the pass; the non-disruptive set_log_level is applied
+    and the pass continues normally.
+    """
+    if control_action_event.is_set():
+        with state_lock:
+            action = STATE.pending_control_action
+            params = dict(STATE.pending_control_params)
+            STATE.pending_control_action = ""
+            STATE.pending_control_params = {}
+            control_action_event.clear()
+        if action:
+            process_control_action(action, params)
+            if action != "set_log_level":
+                return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
+def step_reconfigure_timeout(pre: "PreFactsContext") -> "Verdict":
+    """Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4)."""
+    with state_lock:
+        session = STATE.hotspot
+    if (session is not None
+            and session.purpose == HotspotPurpose.EXPLICIT_RECONFIGURE
+            and (pre.now - session.entered_at) >= AP_MAX_DURATION):
+        handle_reconfigure_timeout()
+        return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
 def network_monitor_loop(run_once: bool = False):
     """Background loop to check network state and enforce the narrative rules.
 
@@ -1835,63 +1909,22 @@ def network_monitor_loop(run_once: bool = False):
             _avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
         pre = PreFactsContext(now=now, boot_time=boot_time, avahi_ok=_avahi_ok)
 
-        # Avahi mDNS hostname check (reduced frequency; skip during setup and WiFi apply)
-        if _avahi_ok and (now - loop_state.last_avahi_check) >= AVAHI_CHECK_INTERVAL:
-            loop_state.last_avahi_check = now
-            check_and_repair_avahi_hostname()
-
-        # mDNS host-record re-announce: catch passive network-path changes (e.g. a
-        # USB Wi-Fi adapter removed while ethernet stays up) as well as orchestrated
-        # handovers, debounced until the published address set settles.  Runs every
-        # pass; skipped during setup and WiFi apply (folded into _avahi_ok).
-        if _avahi_ok:
-            maybe_reannounce_mdns(now)
-
-        # Handle manual request to enter AP mode (from the normal WebUI via localhost).
-        # This overrides the boot-time auto-AP cutoff.
-        if ap_request_event.is_set():
-            with state_lock:
-                reason = STATE.ap_request_reason
-                # Clear stored reason once consumed (optional but keeps it tidy)
-                STATE.ap_request_reason = ""
-                ap_request_event.clear()
-                already_in_ap = STATE.setup_mode
-            # If we're not already in AP mode, enter a MANUAL hotspot now.  A
-            # MANUAL session is not torn down by Ethernet (Section 2.3).
-            if not already_in_ap:
-                enter_setup_mode(HotspotPurpose.MANUAL,
-                                 reason=f"manual_request: {reason or 'UserRequest'}")
-                if _sleep_or_finish_monitor_pass(run_once):
-                    return
-                continue
-
-        # Revert a temporary runtime log level once its TTL expires (WP7).
-        revert_expired_log_level(now)
-
-        # Handle queued local-control actions (start_setup / reconnect_saved /
-        # set_log_level).  Disruptive actions own the pass; the non-disruptive
-        # set_log_level is applied and the pass continues normally.
-        if control_action_event.is_set():
-            with state_lock:
-                action = STATE.pending_control_action
-                params = dict(STATE.pending_control_params)
-                STATE.pending_control_action = ""
-                STATE.pending_control_params = {}
-                control_action_event.clear()
-            if action:
-                process_control_action(action, params)
-                if action != "set_log_level":
-                    if _sleep_or_finish_monitor_pass(run_once):
-                        return
-                    continue
-
-        # Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4).
-        with state_lock:
-            session = STATE.hotspot
-        if (session is not None
-                and session.purpose == HotspotPurpose.EXPLICIT_RECONFIGURE
-                and (now - session.entered_at) >= AP_MAX_DURATION):
-            handle_reconfigure_timeout()
+        # Phase A — event/timer handlers (before the expensive gather_facts()).
+        # Always-CONTINUE handlers are called for their side effect; the ones that
+        # can own the pass are wrapped in the inline sleep/continue idiom (folded
+        # into the run_steps driver in WP5).
+        step_avahi_hostname(pre, loop_state)
+        step_mdns_reannounce(pre)
+        if step_manual_ap_request(pre) is Verdict.OWN_PASS:
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+        step_revert_log_level(pre)
+        if step_control_action(pre) is Verdict.OWN_PASS:
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+        if step_reconfigure_timeout(pre) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
