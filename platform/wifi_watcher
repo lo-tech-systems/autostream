@@ -103,6 +103,19 @@ no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
 consumes them and applies the connectivity transition.  Off-thread slow
 transitions (the monitoring-blackout fix) are deliberately deferred — the inert
 ``STATE.transitioning`` flag is the groundwork.
+
+A second pure classifier, ``next_recovery_action(state, recovery_facts)``, owns the
+*recovery priority ladder* — Ethernet > preferred USB > onboard client >
+hotspot-as-last-resort — over a per-pass ``RecoveryFacts`` snapshot built from the
+shared per-adapter facts in ``wifi_recovery.adapter_recovery_facts`` (health,
+carrier, reset budget, quarantine, no-IP).  It is the single source of the
+client-path-vs-hotspot decision that was previously scattered across the
+boot-entry, USB-failure fallback, and recovery-hotspot probe sites; a wedged USB
+with no onboard alternative is left to the dead-PHY reset/quarantine/reboot
+mechanics in ``wifi_recovery``.  The fix it encodes: a broken USB dongle must
+never trap the device in a 30-minute hotspot on the only working radio — the
+onboard is tried as a client before hosting a recovery AP (boot entry) and is
+climbed back to from within a recovery hotspot (the exit edge).
 """
 
 import glob
@@ -1470,6 +1483,160 @@ def next_mode(state, facts) -> "Mode":
     return Mode.OFFLINE_RECONNECTING
 
 
+# ** RECOVERY LADDER (recovery-ladder unification) **
+#
+# The recovery decision is a second pure classifier alongside next_mode:
+# next_recovery_action(state, recovery_facts) -> RecoveryAction (WP2).  Like
+# next_mode it reads a pre-gathered immutable snapshot and module constants only
+# (constraint 10) so it can lift into wifi_policy.py unchanged.  RecoveryFacts is
+# that snapshot; gather_recovery_facts() is its sole (effectful) gatherer.
+
+
+@dataclass(frozen=True)
+class RecoveryFacts:
+    """One immutable per-tick snapshot for the recovery-ladder classifier.
+
+    Adapter identity is carried as ifnames (hashable, pure data); the apply layer
+    re-resolves adapter objects from the live Facts.adapters when it needs them.
+    ``preferred_usb_ifname`` is the first deterministic USB candidate still worth
+    engaging as a client (present, managed, not quarantined, not no-IP-suppressed)
+    — the "USB budget spent -> drop to onboard" rung falls out of this being "".
+    """
+    adapters_by_ifname: dict          # ifname -> wifi_recovery.AdapterRecoveryFacts
+    onboard_ifname: str               # "" when no built-in radio
+    usb_ifnames: tuple                # USB candidate ifnames, deterministic order
+    preferred_usb_ifname: str         # first usable USB, else ""
+    hotspot_ifname: str               # AP-hosting adapter while in setup, else ""
+    active_ifname: str                # active client ifname, else ""
+    saved_configured: bool            # a client profile is committed
+    wired_ok: bool
+    taken_at: float
+
+
+def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
+    """Gather the recovery-ladder snapshot from the per-pass Facts.
+
+    Reuses Facts.adapters (single discover per pass) and derives the per-adapter
+    recovery facts via the shared wifi_recovery helper so the classifier and the
+    status snapshot agree exactly.
+    """
+    now = facts.taken_at
+    adapters = facts.adapters
+    by_ifname = {a.ifname: _adapter_recovery_facts(a, now) for a in adapters}
+
+    builtin = wifi_net.resolve_builtin(adapters)
+    usb = wifi_net.usb_candidates(adapters)
+    hotspot = resolve_hotspot_adapter(adapters)
+    with state_lock:
+        in_setup = STATE.setup_mode
+
+    preferred_usb = ""
+    for a in usb:
+        rf = by_ifname.get(a.ifname)
+        if rf is not None and rf.managed and not rf.quarantined and not rf.noip_suppressed:
+            preferred_usb = a.ifname
+            break
+
+    return RecoveryFacts(
+        adapters_by_ifname=by_ifname,
+        onboard_ifname=builtin.ifname if builtin is not None else "",
+        usb_ifnames=tuple(a.ifname for a in usb),
+        preferred_usb_ifname=preferred_usb,
+        hotspot_ifname=(hotspot.ifname if (in_setup and hotspot is not None) else ""),
+        active_ifname=facts.active_client.ifname if facts.active_client else "",
+        saved_configured=facts.wifi_configured,
+        wired_ok=bool(facts.wired_ok),
+        taken_at=now,
+    )
+
+
+class RecoveryKind(Enum):
+    """The single recovery remediation the ladder selects for this pass."""
+    HOLD = "hold"                      # active path fine / Ethernet / defer to dead-PHY reset
+    ACTIVATE_USB = "activate_usb"      # (re)activate the committed profile on the preferred USB
+    ACTIVATE_ONBOARD = "activate_onboard"  # run the client on the built-in radio (drop AP if hosting)
+    ENTER_HOTSPOT = "enter_hotspot"    # last resort: no radio can carry a client
+
+
+@dataclass(frozen=True)
+class RecoveryAction:
+    """One recovery decision — pure data returned by next_recovery_action()."""
+    kind: RecoveryKind
+    ifname: str = ""                              # target radio for ACTIVATE_*
+    purpose: "Optional[HotspotPurpose]" = None    # for ENTER_HOTSPOT
+    drop_hotspot: bool = False                    # ACTIVATE_* must tear down the AP on ifname first
+    reason: str = ""
+
+
+def next_recovery_action(state, facts) -> "RecoveryAction":
+    """Pure recovery-ladder classifier: state + RecoveryFacts -> RecoveryAction.
+
+    Like next_mode() this reads a pre-gathered immutable snapshot and module
+    constants only (constraint 10): no STATE mutation, no subprocess, no effects,
+    no ``w`` seam — so it lifts into wifi_policy.py unchanged.  It owns the
+    *client-path-vs-hotspot* priority ladder (Ethernet > preferred USB > onboard >
+    hotspot-last-resort) that was previously scattered across the boot-entry,
+    USB-failure fallback, and recovery-hotspot probe sites.  The low-level USB
+    reset/quarantine/reboot *mechanics* remain owned by the dead-PHY module; a
+    wedged USB with no onboard alternative is deferred to it via HOLD.
+    """
+    by = facts.adapters_by_ifname
+    active = facts.active_ifname
+    active_rf = by.get(active) if active else None
+    in_hotspot = bool(facts.hotspot_ifname)
+
+    # Ethernet wins; the recovery ladder does not engage.
+    if facts.wired_ok:
+        return RecoveryAction(RecoveryKind.HOLD, reason="wired_ok")
+
+    # Unconfigured: nothing to reconnect; a first-run hotspot is the only option.
+    if not facts.saved_configured:
+        if in_hotspot:
+            return RecoveryAction(RecoveryKind.HOLD, reason="unconfigured_hotspot_up")
+        return RecoveryAction(RecoveryKind.ENTER_HOTSPOT,
+                              purpose=HotspotPurpose.FIRST_RUN, reason="unconfigured")
+
+    # Active client already healthy -> nothing to recover (idle USB adoption is a
+    # separate, playback-gated optimisation, not part of failure recovery).
+    if active_rf is not None and active_rf.healthy and not in_hotspot:
+        return RecoveryAction(RecoveryKind.HOLD, reason="active_healthy")
+
+    preferred_usb = facts.preferred_usb_ifname
+    usb_rf = by.get(preferred_usb) if preferred_usb else None
+    usb_has_carrier = usb_rf is not None and usb_rf.link_down is not True
+    onboard = facts.onboard_ifname
+
+    # (1) USB is the highest-priority client path.  A usable (carrier-up) preferred
+    #     USB that is not already our active client -> (re)activate it.
+    if usb_has_carrier and active != preferred_usb:
+        return RecoveryAction(RecoveryKind.ACTIVATE_USB, ifname=preferred_usb,
+                              drop_hotspot=(preferred_usb == facts.hotspot_ifname),
+                              reason="usb_preferred")
+    # (1b) USB is the active client but unhealthy with carrier (associating / no-IP):
+    #      hold — the no-IP ledger governs and promotes onboard once suppressed.
+    if usb_has_carrier and active == preferred_usb:
+        return RecoveryAction(RecoveryKind.HOLD, reason="usb_active_no_ip")
+
+    # (2) No usable USB right now (absent / quarantined / no-IP-suppressed / wedged).
+    #     Try the onboard radio as a client before any hotspot — this is the
+    #     boot-entry onboard-first rule AND the exit edge from a recovery hotspot.
+    if onboard and active != onboard:
+        return RecoveryAction(RecoveryKind.ACTIVATE_ONBOARD, ifname=onboard,
+                              drop_hotspot=(onboard == facts.hotspot_ifname),
+                              reason="onboard_before_hotspot")
+
+    # (3) A wedged/quarantined USB with no onboard alternative -> leave it to the
+    #     dead-PHY reset/quarantine/reboot ladder (it owns a resettable USB PHY).
+    if usb_rf is not None and not onboard:
+        return RecoveryAction(RecoveryKind.HOLD, reason="usb_only_defer_reset_ladder")
+
+    # (4) No radio can carry a client -> last-resort recovery hotspot.
+    if not in_hotspot:
+        return RecoveryAction(RecoveryKind.ENTER_HOTSPOT,
+                              purpose=HotspotPurpose.BOOT_RECOVERY, reason="no_client_path")
+    return RecoveryAction(RecoveryKind.HOLD, reason="hotspot_last_resort")
+
+
 def _make_playing_status_memo():
     """Return a closure that resolves playback at most once per pass.
 
@@ -1835,6 +2002,22 @@ def network_monitor_loop(run_once: bool = False):
                 )
 
             if should_enter_ap:
+                # Recovery-ladder unification: before committing a radio to a
+                # recovery hotspot, try the highest-priority *client* path the
+                # ladder selects (preferred USB, else the onboard radio).  A
+                # configured device with a wedged/failed USB but a working onboard
+                # must run on the onboard rather than tie it up as an AP for 30
+                # minutes (field log 30-Jun-2026).  Only an ACTIVATE_* that comes
+                # up healthy short-circuits the hotspot; HOLD / ENTER_HOTSPOT (and a
+                # failed activation) fall through so an offline device still gets a
+                # setup portal.
+                raction = next_recovery_action(STATE, gather_recovery_facts(facts))
+                if raction.kind in (RecoveryKind.ACTIVATE_USB,
+                                    RecoveryKind.ACTIVATE_ONBOARD) \
+                        and _apply_client_activation(raction, facts):
+                    if _sleep_or_finish_monitor_pass(run_once):
+                        return
+                    continue
                 # Defect 1: a configured-but-offline device enters BOOT_RECOVERY
                 # (which probes for the saved network's return), not FIRST_RUN;
                 # an unconfigured device enters FIRST_RUN (nothing saved to probe).
@@ -2091,6 +2274,21 @@ def _warn_playing_status_unavailable() -> None:
         logger.warning("Playing status unavailable while USB adoption pending; deferring")
 
 
+def _activation_network_absent(result) -> bool:
+    """True when nmcli reported the target SSID is not currently visible.
+
+    A hard "network could not be found" activation failure means waiting the full
+    WAIT_FOR_CONNECTION_TIMEOUT for an IPv4 lease is pointless — the join never
+    started — so the recovery ladder should fail this rung immediately and climb
+    to the next one (e.g. the onboard) far sooner.  Field log 30-Jun-2026: 45s was
+    wasted after every "could not be found" probe of a wedged USB.
+    """
+    if result is None or getattr(result, "returncode", 0) == 0:
+        return False
+    stderr = (getattr(result, "stderr", "") or "").lower()
+    return "could not be found" in stderr or "no network with ssid" in stderr
+
+
 def _activate_committed_on(ifname: str) -> bool:
     """Activate the committed profile on *ifname* and validate health.
 
@@ -2112,7 +2310,12 @@ def _activate_committed_on(ifname: str) -> bool:
     with state_lock:
         STATE.transitioning = True
     try:
-        run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
+        r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
+        # Probe-patience: a "network not found" activation cannot yield an IP, so
+        # skip the IPv4 wait and fail fast (frees the ladder to climb sooner).
+        if _activation_network_absent(r_up):
+            logger.info("Committed network not visible on %s; skipping IPv4 wait", ifname)
+            return False
         return (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
                                     interval=WAIT_FOR_CONNECTION_INTERVAL)
                 and is_wifi_client_healthy(ifname))
@@ -2220,6 +2423,64 @@ def _do_builtin_fallback_or_recovery(adapters: list, reason: str) -> bool:
     return True
 
 
+def _apply_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
+    """Apply an ACTIVATE_USB / ACTIVATE_ONBOARD recovery action (WP3).
+
+    Tears down the hotspot on the target radio first when the action requires it
+    (the exit edge out of a recovery hotspot), activates the committed profile on
+    ``action.ifname``, and on a healthy result adopts it as the active client and
+    leaves setup mode.  Returns True only when the client came up healthy.  On
+    failure: a USB activation records a no-IP failure (so the ladder promotes the
+    onboard once the USB budget is spent); a torn-down AP is rebuilt so the portal
+    stays available.
+    """
+    ifname = action.ifname
+    if not ifname:
+        return False
+
+    dropped_ap = False
+    with state_lock:
+        in_setup = STATE.setup_mode
+    if action.drop_hotspot and in_setup:
+        stop_ap_mode()
+        dropped_ap = True
+
+    if _activate_committed_on(ifname):
+        adapters = wifi_net.discover_adapters()
+        adapter = wifi_net.find_adapter_by_ifname(adapters, ifname)
+        if adapter is not None:
+            _set_active_client(adapter)
+            wifi_recovery.clear_noip_failures(_self_module(), adapter.stable_id)
+        with state_lock:
+            # Onboard counts as a fallback only when a USB path also exists (a
+            # broken configured USB); a lone onboard client is not "degraded".
+            usb_present = any(a.is_usb for a in facts.adapters)
+            STATE.using_builtin_fallback = (
+                action.kind == RecoveryKind.ACTIVATE_ONBOARD and usb_present
+            )
+            STATE.conn_down_start = None
+            STATE.last_reconnect_attempt = None
+        leave_setup_mode(f"recovery: client up on {ifname} ({action.reason})")
+        verify_avahi_after_handover()
+        logger.info("Recovery: client activated on %s (%s)", ifname, action.reason)
+        return True
+
+    # Activation failed.  Rebuild the AP if we tore it down so the portal stays up.
+    if dropped_ap:
+        with state_lock:
+            STATE.setup_mode = True
+        start_ap_mode()
+        update_apmode_flag(True)
+    # Record a no-IP failure only for USB so the ladder eventually promotes the
+    # onboard; do not suppress the onboard fallback (it is retried, rate-limited).
+    if action.kind == RecoveryKind.ACTIVATE_USB:
+        adapter = wifi_net.find_adapter_by_ifname(facts.adapters, ifname)
+        stable_id = adapter.stable_id if adapter is not None else ifname
+        wifi_recovery.record_noip_failure(_self_module(), stable_id, facts.taken_at)
+    logger.info("Recovery: client activation failed on %s (%s)", ifname, action.reason)
+    return False
+
+
 def _try_recovery_reconnect(adapters: list) -> None:
     """USB-first reconnect attempt during automatic-recovery hotspot (Section 8.6).
 
@@ -2248,9 +2509,14 @@ def _try_recovery_reconnect(adapters: list) -> None:
 
     for candidate in candidates:
         logger.info("Auto-recovery: probing USB %s", candidate.ifname)
-        run_cmd(wifi_net.activate_connection_cmd(
+        r_up = run_cmd(wifi_net.activate_connection_cmd(
             recovery_uuid, state.connection_name, candidate.ifname,
         ))
+        if _activation_network_absent(r_up):
+            logger.info("Auto-recovery: saved network not visible on %s; skipping IPv4 wait",
+                        candidate.ifname)
+            wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, time.monotonic())
+            continue
         if (wait_for_connection(candidate.ifname,
                                 timeout=WAIT_FOR_CONNECTION_TIMEOUT,
                                 interval=WAIT_FOR_CONNECTION_INTERVAL)
@@ -2312,26 +2578,47 @@ def _single_radio_recovery_join(hotspot) -> bool:
     return False
 
 
+def _usable_second_radio(adapters: list, hotspot_if, now: float):
+    """Return a non-hotspot radio still worth probing as a client, else None.
+
+    A wedged (no-carrier), quarantined, or no-IP-suppressed second radio (e.g. a
+    dead USB dongle) is NOT usable and must not block the onboard drop-AP rejoin.
+    That was the field-log trap (30-Jun-2026): a dead USB was probed for the full
+    30-minute hotspot lifetime while the AP-hosting onboard — which could reach the
+    network — was never tried as a client.  Usability is read from the shared
+    recovery facts so this agrees exactly with next_recovery_action().
+    """
+    for a in adapters:
+        if not a.managed or a.ifname == hotspot_if:
+            continue
+        rf = _adapter_recovery_facts(a, now)
+        if rf.link_down is not True and not rf.quarantined and not rf.noip_suppressed:
+            return a
+    return None
+
+
 def _attempt_recovery_reconnect(adapters: list, now: float) -> None:
     """Scan-gated recovery reconnect from within a recovery hotspot (WP6, §2.8).
 
-    With a second (non-hotspot) client-capable radio, probe it without dropping
-    the AP (existing behaviour), bounded by RECONNECT_ATTEMPT_INTERVAL.  On
-    single-radio hardware, scan for the saved SSID on a RECOVERY_SCAN_INTERVAL
-    cadence and only perform the tear-down→join (also join-interval bounded) when
-    the SSID is actually visible — so the AP is not blindly disrupted.
+    With a *usable* second (non-hotspot) client-capable radio, probe it without
+    dropping the AP (existing behaviour), bounded by RECONNECT_ATTEMPT_INTERVAL.
+    Otherwise — single-radio hardware, or the only second radio is a dead/
+    quarantined USB — scan for the saved SSID on the AP-hosting (onboard) radio on
+    a RECOVERY_SCAN_INTERVAL cadence and only perform the tear-down→join (also
+    join-interval bounded) when the SSID is visible.  This onboard climb is the
+    exit edge back to a client that the dead-second-radio case previously lacked.
     """
     hotspot = resolve_hotspot_adapter(adapters)
     hotspot_if = hotspot.ifname if hotspot else None
-    other_radios = [a for a in adapters if a.managed and a.ifname != hotspot_if]
+    usable_other = _usable_second_radio(adapters, hotspot_if, now)
 
     with state_lock:
         last_reconnect = STATE.last_reconnect_attempt
     join_due = (last_reconnect is None
                 or (now - last_reconnect) >= RECONNECT_ATTEMPT_INTERVAL)
 
-    if other_radios:
-        # Second radio present: probe it (USB-first) without dropping the AP.
+    if usable_other is not None:
+        # Usable second radio present: probe it (USB-first) without dropping the AP.
         if join_due:
             with state_lock:
                 STATE.last_reconnect_attempt = now
@@ -2515,6 +2802,10 @@ def _adapter_reset_ledger_snapshot(target, now):
 
 def _adapter_quarantined_until(target, now):
     return wifi_recovery.adapter_quarantined_until(_self_module(), target, now)
+
+
+def _adapter_recovery_facts(adapter, now):
+    return wifi_recovery.adapter_recovery_facts(_self_module(), adapter, now)
 
 
 def _dead_phy_reboot_guard_permits(now_wall):

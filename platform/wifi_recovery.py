@@ -500,6 +500,89 @@ def record_adapter_reset(w, target: Optional[TargetAdapter], now: float) -> None
     )
 
 
+# ---- Shared per-adapter recovery facts (recovery-ladder unification) ----
+#
+# One place that derives the per-adapter health/budget/quarantine/no-IP facts the
+# recovery ladder and the status snapshot both need.  Consumed by
+# wifi_status.build_network_status_snapshot (presentation) and by the watcher's
+# per-pass recovery-facts gatherer that feeds the pure next_recovery_action
+# classifier — keeping a single source of truth for "is this adapter usable".
+
+
+@dataclass(frozen=True)
+class AdapterRecoveryFacts:
+    """Per-adapter facts the recovery ladder reasons over (pure data)."""
+    ifname: str
+    stable_id: str
+    kind: str                 # "usb_wifi" | "builtin_wifi" | passthrough
+    is_usb: bool
+    is_builtin: bool
+    managed: bool
+    healthy: bool
+    link_down: Optional[bool]
+    carrier: bool
+    quarantined_until: Optional[float]
+    quarantined: bool
+    recent_reset_count: int
+    total_reset_count: int
+    budget_exhausted: bool
+    noip_count: int
+    noip_suppressed: bool
+    is_no_ip: bool
+
+
+def adapter_recovery_facts(w, a, now_monotonic: float) -> AdapterRecoveryFacts:
+    """Derive the shared recovery facts for one discovered adapter *a*.
+
+    Reuses the reset/quarantine/no-IP ledgers so the recovery classifier and the
+    status snapshot agree exactly.  Pure w.r.t. STATE (reads ledgers, does not
+    mutate); performs the same fact reads (health, link state) the snapshot did.
+    """
+    healthy = bool(a.managed and w.is_wifi_client_healthy(a.ifname))
+    link_down = wifi_net.read_link_down(a.ifname)
+    carrier = (link_down is False)
+    kind = a.kind + ("_wifi" if a.kind in ("usb", "builtin") else "")
+    target = TargetAdapter(
+        ifname=a.ifname,
+        stable_id=a.stable_id,
+        kind=kind,
+        is_usb=bool(a.is_usb),
+        is_builtin=bool(a.is_builtin),
+        present_in_nm=True,
+        present_in_sysfs=True,
+        resettable_usb=bool(a.is_usb),
+    )
+    ledger = adapter_reset_ledger_snapshot(w, target, now_monotonic)
+    quarantined_until = adapter_quarantined_until(w, target, now_monotonic)
+    recent = len(ledger.get("recent_resets", []))
+    total = int(ledger.get("total_resets", 0) or 0)
+    budget_exhausted = (
+        recent >= w.USB_MAX_RESETS_PER_WINDOW or total >= w.USB_MAX_RESETS_TOTAL
+    )
+    return AdapterRecoveryFacts(
+        ifname=a.ifname,
+        stable_id=a.stable_id,
+        kind=kind,
+        is_usb=bool(a.is_usb),
+        is_builtin=bool(a.is_builtin),
+        managed=bool(a.managed),
+        healthy=healthy,
+        link_down=link_down,
+        carrier=carrier,
+        quarantined_until=quarantined_until,
+        quarantined=quarantined_until is not None,
+        recent_reset_count=recent,
+        total_reset_count=total,
+        budget_exhausted=budget_exhausted,
+        noip_count=noip_failure_count(w, a.stable_id),
+        noip_suppressed=noip_retry_suppressed(w, a.stable_id, now_monotonic),
+        is_no_ip=is_degraded_no_ip(
+            w, managed=a.managed, carrier=carrier, healthy=healthy,
+            stable_id=a.stable_id,
+        ),
+    )
+
+
 # ---- Persistent dead-PHY reboot guard (cross-boot loop prevention, Section 4) ----
 
 def _empty_reboot_guard(now_wall: float) -> dict:

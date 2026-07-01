@@ -184,40 +184,26 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     any_healthy = False
     any_unhealthy = False
     for a in adapters:
-        healthy = a.managed and w.is_wifi_client_healthy(a.ifname)
-        link_down = wifi_net.read_link_down(a.ifname)
+        # Shared per-adapter recovery facts (single source of truth with the
+        # recovery-ladder classifier); presentation-only fields stay here.
+        rf = w._adapter_recovery_facts(a, now_monotonic)
+        healthy = rf.healthy
+        link_down = rf.link_down
         operstate = wifi_net.read_operstate(a.ifname)
-        carrier = (link_down is False)
+        carrier = rf.carrier
         is_dead = (a.ifname == dead_ifname)
         is_hotspot = (a.ifname == hotspot_ifname)
-        target = w.TargetAdapter(
-            ifname=a.ifname,
-            stable_id=a.stable_id,
-            kind=a.kind + ("_wifi" if a.kind in ("usb", "builtin") else ""),
-            is_usb=bool(a.is_usb),
-            is_builtin=bool(a.is_builtin),
-            present_in_nm=True,
-            present_in_sysfs=True,
-            resettable_usb=bool(a.is_usb),
-        )
-        ledger = w._adapter_reset_ledger_snapshot(target, now_monotonic)
-        quarantined_until = w._adapter_quarantined_until(target, now_monotonic)
-        quarantined = quarantined_until is not None
-        recent_reset_count = len(ledger.get("recent_resets", []))
-        total_reset_count = int(ledger.get("total_resets", 0) or 0)
-        budget_exhausted = (
-            recent_reset_count >= w.USB_MAX_RESETS_PER_WINDOW
-            or total_reset_count >= w.USB_MAX_RESETS_TOTAL
-        )
+        quarantined_until = rf.quarantined_until
+        quarantined = rf.quarantined
+        recent_reset_count = rf.recent_reset_count
+        total_reset_count = rf.total_reset_count
+        budget_exhausted = rf.budget_exhausted
         v4, v6 = _adapter_ip_lists(addresses, a.ifname)
 
         # Overlay no-IP verdict (defect 3): managed + carrier-up + not healthy +
         # repeated no-IP failures recorded in the overlay ledger.
-        noip_count = w._noip_failure_count(a.stable_id)
-        is_no_ip = w._is_degraded_no_ip(
-            managed=a.managed, carrier=carrier, healthy=healthy,
-            stable_id=a.stable_id,
-        )
+        noip_count = rf.noip_count
+        is_no_ip = rf.is_no_ip
 
         if is_hotspot:
             role = "hotspot"

@@ -438,6 +438,19 @@ offline). On single-radio hardware (e.g. a Pi 2 whose only client is a USB
 dongle) the reset ladder runs even in setup/hotspot mode so a dead sole radio
 does not deadlock.
 
+**Recovery priority ladder (onboard before hotspot).** When a device has both a
+built-in radio and a USB dongle and the USB fails, autostream runs a single
+priority ladder — **Ethernet > preferred USB > onboard client > setup hotspot** —
+so the setup hotspot is a genuine *last* resort. A wedged/failed USB never traps
+the device in a 30-minute hotspot on the only working radio: the built-in radio is
+tried as a **client** before it is committed to hosting a recovery AP, and if a
+recovery hotspot is already up on the built-in it is dropped to rejoin the saved
+network as soon as that network is visible (the "exit edge"). A dead USB dongle is
+no longer treated as a usable second radio, and an activation that reports *"The
+Wi-Fi network could not be found"* fails fast instead of waiting out the local-IP
+timeout — both so the ladder climbs to the working radio in seconds rather than
+minutes.
+
 **Reset budgets and reboot loop prevention.** A USB adapter is reset at most
 **2 times per 24h** and **5 times total** before it is *quarantined* for preferred
 client use (while another network path exists); USB-only hardware keeps making

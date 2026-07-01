@@ -2852,6 +2852,216 @@ class TestHotspotPurposeMachine:
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
 
+class TestBootEntryOnboardFirst:
+    """Recovery-ladder WP3 — boot-window entry tries a client before the hotspot."""
+
+    def test_wedged_usb_boot_entry_activates_onboard_not_hotspot(self, watcher):
+        # Field-log shape: USB active but wedged, onboard idle. Boot-window entry
+        # must run the client on the onboard rather than open a hotspot on it.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.STATE.boot_time = 300.0  # now=1000 -> boot_age 700s, inside window
+        with patch.object(watcher, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher, "enter_setup_mode") as enter, \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"):
+            _run_monitor_once(
+                watcher, now=1000.0, wifi_cfg=True, wifi_connected=True,
+                client_ok=False, adapters=[builtin, usb], active_client=usb,
+            )
+        act.assert_called_with("wlan0")
+        enter.assert_not_called()
+        assert watcher.STATE.active_client_ifname == "wlan0"
+        assert watcher.STATE.using_builtin_fallback is True
+
+    def test_onboard_fails_boot_entry_falls_through_to_hotspot(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.STATE.boot_time = 300.0
+        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "enter_setup_mode") as enter, \
+             patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"):
+            _run_monitor_once(
+                watcher, now=1000.0, wifi_cfg=True, wifi_connected=True,
+                client_ok=False, adapters=[builtin, usb], active_client=usb,
+            )
+        enter.assert_called_once()
+        assert enter.call_args[0][0] is watcher.HotspotPurpose.BOOT_RECOVERY
+
+
+class TestRecoveryFacts:
+    """Recovery-ladder WP1 — shared per-adapter facts + RecoveryFacts snapshot."""
+
+    def _facts(self, watcher, adapters, *, active_client=None, now=1000.0,
+               wifi_cfg=True, wired_ok=False):
+        return watcher.Facts(
+            wifi_configured=wifi_cfg,
+            adapters=adapters,
+            wired_connected=False,
+            wired_ok=wired_ok,
+            active_client=active_client,
+            addresses={},
+            taken_at=now,
+        )
+
+    def test_adapter_recovery_facts_healthy_builtin(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False):
+            rf = watcher._adapter_recovery_facts(builtin, 1000.0)
+        assert rf.ifname == "wlan0"
+        assert rf.is_builtin and not rf.is_usb
+        assert rf.healthy is True and rf.carrier is True
+        assert rf.quarantined is False and rf.budget_exhausted is False
+
+    def test_gather_prefers_usable_usb(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        facts = self._facts(watcher, [builtin, usb], active_client=usb)
+        with patch.object(watcher, "is_wifi_client_healthy",
+                          side_effect=lambda ifn, **k: ifn == "wlan0"), \
+             patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.onboard_ifname == "wlan0"
+        assert rec.usb_ifnames == ("wlan1",)
+        assert rec.preferred_usb_ifname == "wlan1"
+        assert rec.active_ifname == "wlan1"
+        assert rec.hotspot_ifname == ""  # not in setup
+
+    def test_gather_excludes_quarantined_usb(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.STATE.adapter_reset_ledgers[usb.stable_id] = {
+            "recent_resets": [], "total_resets": 5, "quarantined_until": 1000.0 + 3600,
+        }
+        facts = self._facts(watcher, [builtin, usb])
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.preferred_usb_ifname == ""  # quarantined USB is not preferred
+        assert rec.adapters_by_ifname["wlan1"].quarantined is True
+
+    def test_gather_excludes_noip_suppressed_usb(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        # Past the no-IP stop budget -> suppressed until MAC changes.
+        watcher.STATE.adapter_noip_ledgers[usb.stable_id] = {
+            "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf"),
+        }
+        facts = self._facts(watcher, [builtin, usb])
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.preferred_usb_ifname == ""
+        assert rec.adapters_by_ifname["wlan1"].noip_suppressed is True
+
+
+class TestNextRecoveryAction:
+    """Recovery-ladder WP2 — the pure next_recovery_action classifier."""
+
+    def _arf(self, watcher, ifname, *, is_usb=False, is_builtin=False, healthy=False,
+             link_down=False, quarantined=False, noip_suppressed=False):
+        return watcher.wifi_recovery.AdapterRecoveryFacts(
+            ifname=ifname, stable_id=ifname,
+            kind=("usb_wifi" if is_usb else "builtin_wifi"),
+            is_usb=is_usb, is_builtin=is_builtin, managed=True, healthy=healthy,
+            link_down=link_down, carrier=(link_down is False),
+            quarantined_until=(1.0 if quarantined else None), quarantined=quarantined,
+            recent_reset_count=0, total_reset_count=0, budget_exhausted=False,
+            noip_count=0, noip_suppressed=noip_suppressed, is_no_ip=False,
+        )
+
+    def _rf(self, watcher, records, *, onboard="", usb=(), preferred_usb="",
+            hotspot="", active="", saved=True, wired_ok=False, now=1000.0):
+        return watcher.RecoveryFacts(
+            adapters_by_ifname={r.ifname: r for r in records},
+            onboard_ifname=onboard, usb_ifnames=tuple(usb),
+            preferred_usb_ifname=preferred_usb, hotspot_ifname=hotspot,
+            active_ifname=active, saved_configured=saved, wired_ok=wired_ok, taken_at=now,
+        )
+
+    def _act(self, watcher, facts):
+        return watcher.next_recovery_action(watcher.STATE, facts)
+
+    def test_wired_ok_holds(self, watcher):
+        facts = self._rf(watcher, [], wired_ok=True)
+        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
+
+    def test_unconfigured_enters_first_run(self, watcher):
+        facts = self._rf(watcher, [], saved=False)
+        a = self._act(watcher, facts)
+        assert a.kind is watcher.RecoveryKind.ENTER_HOTSPOT
+        assert a.purpose is watcher.HotspotPurpose.FIRST_RUN
+
+    def test_unconfigured_in_hotspot_holds(self, watcher):
+        facts = self._rf(watcher, [], saved=False, hotspot="wlan0")
+        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
+
+    def test_active_healthy_holds(self, watcher):
+        usb = self._arf(watcher, "wlan1", is_usb=True, healthy=True)
+        facts = self._rf(watcher, [usb], usb=("wlan1",), preferred_usb="wlan1",
+                         active="wlan1")
+        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
+
+    def test_field_log_wedged_usb_activates_onboard(self, watcher):
+        # The 30-Jun scenario: in a BOOT_RECOVERY hotspot on onboard wlan0, USB
+        # wlan1 wedged and no-IP-suppressed -> climb to onboard, dropping the AP.
+        onboard = self._arf(watcher, "wlan0", is_builtin=True, healthy=False)
+        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=True, noip_suppressed=True)
+        facts = self._rf(watcher, [onboard, usb], onboard="wlan0", usb=("wlan1",),
+                         preferred_usb="", hotspot="wlan0", active="wlan1")
+        a = self._act(watcher, facts)
+        assert a.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert a.ifname == "wlan0"
+        assert a.drop_hotspot is True
+
+    def test_boot_entry_tries_onboard_before_hotspot(self, watcher):
+        # USB active but wedged, onboard idle, not yet in a hotspot -> onboard first.
+        onboard = self._arf(watcher, "wlan0", is_builtin=True)
+        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=True)
+        facts = self._rf(watcher, [onboard, usb], onboard="wlan0", usb=("wlan1",),
+                         preferred_usb="wlan1", active="wlan1")
+        a = self._act(watcher, facts)
+        assert a.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert a.drop_hotspot is False
+
+    def test_usable_usb_preferred_over_onboard(self, watcher):
+        onboard = self._arf(watcher, "wlan0", is_builtin=True)
+        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=False)
+        facts = self._rf(watcher, [onboard, usb], onboard="wlan0", usb=("wlan1",),
+                         preferred_usb="wlan1", active="")
+        a = self._act(watcher, facts)
+        assert a.kind is watcher.RecoveryKind.ACTIVATE_USB
+        assert a.ifname == "wlan1"
+
+    def test_usb_active_no_ip_holds(self, watcher):
+        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=False, healthy=False)
+        facts = self._rf(watcher, [usb], usb=("wlan1",), preferred_usb="wlan1",
+                         active="wlan1")
+        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
+
+    def test_onboard_failed_active_no_usb_enters_hotspot(self, watcher):
+        onboard = self._arf(watcher, "wlan0", is_builtin=True, healthy=False)
+        facts = self._rf(watcher, [onboard], onboard="wlan0", active="wlan0")
+        a = self._act(watcher, facts)
+        assert a.kind is watcher.RecoveryKind.ENTER_HOTSPOT
+        assert a.purpose is watcher.HotspotPurpose.BOOT_RECOVERY
+
+    def test_single_wedged_usb_no_onboard_defers_to_reset_ladder(self, watcher):
+        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=True)
+        facts = self._rf(watcher, [usb], usb=("wlan1",), preferred_usb="wlan1",
+                         active="wlan1")
+        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
+
+    def test_classifier_has_no_w_seam(self, watcher):
+        import inspect
+        params = list(inspect.signature(watcher.next_recovery_action).parameters)
+        assert "w" not in params
+
+
 class TestExplicitModelInvariants:
     """WP8 — the permanent decision core is pure and the overlay decision is sited."""
 
@@ -2892,6 +3102,122 @@ class TestExplicitModelInvariants:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
         assert watcher.resolve_hotspot_adapter([usb, builtin]) is builtin
+
+
+class TestRecoveryExitEdge:
+    """Recovery-ladder WP4 — a dead second radio no longer blocks the onboard climb."""
+
+    def test_dead_second_radio_falls_through_to_onboard_rejoin(self, watcher):
+        # Field-log shape: AP on onboard wlan0, USB wlan1 wedged. The wedged USB
+        # must NOT be treated as a usable second radio; the onboard drop-AP rejoin
+        # (exit edge) runs instead of probing the dead USB forever.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        with patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_try_recovery_reconnect") as probe, \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "_single_radio_recovery_join") as join:
+            watcher._attempt_recovery_reconnect([builtin, usb], now=1000.0)
+        probe.assert_not_called()
+        join.assert_called_once()
+
+    def test_quarantined_second_radio_falls_through_to_onboard(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.STATE.adapter_reset_ledgers[usb.stable_id] = {
+            "recent_resets": [], "total_resets": 5, "quarantined_until": 1000.0 + 3600,
+        }
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_try_recovery_reconnect") as probe, \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "_single_radio_recovery_join") as join:
+            watcher._attempt_recovery_reconnect([builtin, usb], now=1000.0)
+        probe.assert_not_called()
+        join.assert_called_once()
+
+    def test_healthy_second_radio_still_probes_without_dropping_ap(self, watcher):
+        # A genuinely usable second radio keeps the existing behaviour.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_try_recovery_reconnect") as probe, \
+             patch.object(watcher, "stop_ap_mode") as stop_ap:
+            watcher._attempt_recovery_reconnect([builtin, usb], now=1000.0)
+        probe.assert_called_once()
+        stop_ap.assert_not_called()
+
+
+class TestProbePatience:
+    """Recovery-ladder WP4 — fail fast when nmcli reports the SSID is not visible."""
+
+    def test_network_absent_detects_hard_failure(self, watcher):
+        absent = MagicMock(returncode=4,
+                           stderr="Error: activation failed: The Wi-Fi network could not be found")
+        assert watcher._activation_network_absent(absent) is True
+
+    def test_network_absent_false_on_success_and_other_errors(self, watcher):
+        ok = MagicMock(returncode=0, stderr="")
+        other = MagicMock(returncode=1, stderr="Error: something else")
+        assert watcher._activation_network_absent(ok) is False
+        assert watcher._activation_network_absent(other) is False
+
+    def test_activate_committed_on_skips_wait_when_absent(self, watcher):
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u1")
+        absent = MagicMock(returncode=4,
+                           stderr="Error: The Wi-Fi network could not be found")
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher, "_resolve_committed_uuid", return_value="u1"), \
+             patch.object(watcher, "run_cmd", return_value=absent), \
+             patch.object(watcher, "wait_for_connection") as waiter:
+            result = watcher._activate_committed_on("wlan1")
+        assert result is False
+        waiter.assert_not_called()
+
+
+class TestFieldLogRecoveryRegression:
+    """Recovery-ladder — end-to-end regression for the 30-Jun-2026 field log.
+
+    A wedged USB (wlan1) trapped the device in a BOOT_RECOVERY hotspot on the only
+    good radio (onboard wlan0) for 30 minutes because the dead USB was probed
+    forever and the onboard was never tried as a client.  These pass the full
+    monitor loop and assert the onboard client path is taken promptly instead.
+    """
+
+    def test_boot_entry_recovers_on_onboard_without_hotspot(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.STATE.boot_time = 300.0  # boot_age 700s at now=1000 (inside window)
+        with patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher, "enter_setup_mode") as enter, \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"):
+            _run_monitor_once(
+                watcher, now=1000.0, wifi_cfg=True, wifi_connected=True,
+                client_ok=False, adapters=[builtin, usb], active_client=usb,
+            )
+        enter.assert_not_called()  # no hotspot: ran on the onboard instead
+        assert watcher.STATE.active_client_ifname == "wlan0"
+
+    def test_in_hotspot_climbs_to_onboard_not_dead_usb(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
+        with patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"), \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "_try_recovery_reconnect") as probe, \
+             patch.object(watcher, "_single_radio_recovery_join") as join:
+            _run_monitor_once(watcher, now=120.0, wifi_cfg=True,
+                              adapters=[builtin, usb], active_client=usb)
+        probe.assert_not_called()   # the dead USB is not probed
+        join.assert_called_once()   # the onboard drop-AP rejoin runs instead
 
 
 class TestScanGatedRecovery:
