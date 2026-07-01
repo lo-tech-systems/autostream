@@ -128,6 +128,7 @@ import sys
 import json
 import urllib.request
 from enum import Enum
+from functools import partial
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -2169,6 +2170,22 @@ def step_catchall_reboot(hctx: "HealthContext") -> "Verdict":
     return Verdict.CONTINUE
 
 
+def run_steps(steps, ctx) -> "Verdict":
+    """Run *steps* in order, returning on the first OWN_PASS, else CONTINUE.
+
+    Single uniform calling convention — ``step(ctx)`` — with no ``*extra`` channel;
+    the one handler that needs the cross-pass LoopState (step_avahi_hostname) is
+    bound with functools.partial at list-build time, so every entry is a plain
+    ``(ctx) -> Verdict`` callable.  The internal short-circuit on OWN_PASS is
+    load-bearing even for the final phase: an owning late handler must prevent the
+    trailing CONTINUE handlers from running.
+    """
+    for step in steps:
+        if step(ctx) is Verdict.OWN_PASS:
+            return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
 def network_monitor_loop(run_once: bool = False):
     """Background loop to check network state and enforce the narrative rules.
 
@@ -2203,87 +2220,61 @@ def network_monitor_loop(run_once: bool = False):
         if STATE.last_active_path_seen is None:
             STATE.last_active_path_seen = STATE.boot_time
 
-    loop_state = LoopState()
+    loop_state = LoopState()  # persists across passes (last_avahi_check)
+
+    # Ordered handler lists.  Built once.  step_avahi_hostname also needs the
+    # cross-pass loop_state; it is bound with functools.partial so run_steps keeps
+    # a single uniform step(ctx) calling convention (§4.4).
+    phase_a = [
+        partial(step_avahi_hostname, loop_state=loop_state),
+        step_mdns_reannounce,
+        step_manual_ap_request,
+        step_revert_log_level,
+        step_control_action,
+        step_reconfigure_timeout,
+    ]
+    phase_b_early = [
+        step_update_known_adapters,
+        step_startup_usb_window,
+        step_usb_failure_fallback,
+    ]
+    phase_b_late = [
+        step_runtime_usb_adoption,
+        step_dead_phy_recovery,
+        step_publish_state,
+        step_ethernet_wins,
+        step_hotspot_policy,
+        step_boot_ap_entry,
+        step_connection_reliability,
+        step_catchall_reboot,
+    ]
 
     while True:
         now = time.monotonic()
         with state_lock:
             boot_time = STATE.boot_time or now
-            _avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
-        pre = PreFactsContext(now=now, boot_time=boot_time, avahi_ok=_avahi_ok)
-
-        # Phase A — event/timer handlers (before the expensive gather_facts()).
-        # Always-CONTINUE handlers are called for their side effect; the ones that
-        # can own the pass are wrapped in the inline sleep/continue idiom (folded
-        # into the run_steps driver in WP5).
-        step_avahi_hostname(pre, loop_state)
-        step_mdns_reannounce(pre)
-        if step_manual_ap_request(pre) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        step_revert_log_level(pre)
-        if step_control_action(pre) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        if step_reconfigure_timeout(pre) is Verdict.OWN_PASS:
+            avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
+        pre = PreFactsContext(now=now, boot_time=boot_time, avahi_ok=avahi_ok)
+        if run_steps(phase_a, pre) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
 
-        # Single immutable per-tick snapshot (WP1, Section 2.5): one
-        # discover_adapters / wired probe / address enumeration for the whole
-        # pass.  Every decision below reads these locals, not fresh subprocess
-        # calls.  Playback is resolved lazily through the per-pass memo.
-        facts = gather_facts()
-        fctx = FactsContext(pre, facts, _make_playing_status_memo())
-
-        # Phase B-early — facts-only handlers, before health finalization.
-        # step_usb_failure_fallback MUST precede finalize_active_client_and_health
-        # (it reads the pre-_set_active_client active_client_mac).
-        step_update_known_adapters(fctx)
-        if step_startup_usb_window(fctx) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        if step_usb_failure_fallback(fctx) is Verdict.OWN_PASS:
+        # Single immutable per-tick snapshot (Section 2.5): one discover_adapters /
+        # wired probe / address enumeration per pass; playback via the per-pass memo.
+        fctx = FactsContext(pre, gather_facts(), _make_playing_status_memo())
+        if run_steps(phase_b_early, fctx) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
 
-        # Named phase boundary: set the active client and compute the health
-        # fields, producing the HealthContext the Phase B-late handlers read.
+        # Named phase boundary between B-early and B-late (never owns the pass).
         hctx = finalize_active_client_and_health(fctx)
-
-        # Phase B-late — health/state handlers.  Owning handlers use the inline
-        # sleep/continue idiom (folded into the run_steps driver in WP5); the
-        # always-CONTINUE handlers (publish, connection reliability, catch-all) are
-        # called for their side effects.
-        if step_runtime_usb_adoption(hctx) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        if step_dead_phy_recovery(hctx) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        step_publish_state(hctx)
-        if step_ethernet_wins(hctx) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        if step_hotspot_policy(hctx) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        if step_boot_ap_entry(hctx) is Verdict.OWN_PASS:
-            if _sleep_or_finish_monitor_pass(run_once):
-                return
-            continue
-        step_connection_reliability(hctx)
-        step_catchall_reboot(hctx)
-
+        # Final phase: run_steps still short-circuits internally on the first
+        # OWN_PASS (so the trailing CONTINUE handlers do not run after an owning
+        # handler); the driver omits only the outer branch because the next line
+        # sleeps regardless.
+        run_steps(phase_b_late, hctx)
         if _sleep_or_finish_monitor_pass(run_once):
             return
 
