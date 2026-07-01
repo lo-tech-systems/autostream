@@ -1917,6 +1917,258 @@ def step_usb_failure_fallback(fctx: "FactsContext") -> "Verdict":
     return Verdict.CONTINUE
 
 
+# ---- Phase B-late handlers (health/state, HealthContext) ----
+
+
+def step_runtime_usb_adoption(hctx: "HealthContext") -> "Verdict":
+    """Optional idle-time adoption of a newly available USB adapter (Section 8.2)."""
+    facts = hctx.facts
+    if facts.wifi_configured and hctx.conn_ok and not STATE.setup_mode:
+        if handle_runtime_usb_adoption(facts.adapters, facts.wired_ok, playing_fn=hctx.playing):
+            return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
+def step_dead_phy_recovery(hctx: "HealthContext") -> "Verdict":
+    """Detect a wedged-but-present client adapter and run the reset ladder.
+
+    Runs before the ethernet-wins short-circuit so a genuinely dead Wi-Fi PHY is
+    reset even while ethernet is attached.  But when wired Ethernet wins and the
+    Wi-Fi client has already been dropped (wired-wins, Section 2.7), the idle radio
+    is administratively down by design — leave it down rather than spending reset
+    budget on it.
+    """
+    facts = hctx.facts
+    if facts.wifi_configured and not (facts.wired_ok and facts.active_client is None):
+        if escalate_dead_adapter_recovery(facts.adapters, facts.wired_ok):
+            return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
+def step_publish_state(hctx: "HealthContext") -> "Verdict":
+    """Apply the pure mode classifier, log on change, and publish the snapshot."""
+    facts = hctx.facts
+    with state_lock:
+        STATE.wifistate = "configured" if facts.wifi_configured else "unconfigured"
+        STATE.wiredstate = "connected" if facts.wired_connected else "disconnected"
+        STATE.connectivity_ok = hctx.conn_ok
+        if hctx.active_path_ok and not STATE.setup_mode:
+            STATE.last_active_path_seen = hctx.now
+            STATE.conn_reboot_retry_after = 0.0
+        # Apply the pure forward classifier: STATE.mode is authoritative.
+        STATE.mode = next_mode(STATE, facts)
+        log_on_change("device_mode", STATE.mode, f"Mode changed -> {STATE.mode.value}")
+        log_on_change("wifistate", STATE.wifistate, f"WiFi state changed -> {STATE.wifistate}")
+        log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
+        log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
+
+    # Publish the runtime status snapshot served by /network_status.  Pass the
+    # per-tick addresses so the status builder does not re-enumerate.
+    publish_network_status(facts.adapters, facts.wired_connected, facts.wired_ok, facts.addresses)
+    return Verdict.CONTINUE
+
+
+def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
+    """Usable wired Ethernet wins regardless of subnet (Section 2.7).
+
+    Owns the pass whenever the ``ethernet_wins`` predicate holds — independent of
+    whether it actually leaves AP mode or disconnects Wi-Fi (matching the current
+    short-circuit).  The single disconnect gate is playback.  When ethernet is
+    usable but held off by a user-initiated hotspot, the conn timers are cleared
+    and the pass continues.
+    """
+    facts = hctx.facts
+    with state_lock:
+        # Ethernet suppresses an automatic-purpose hotspot, but a user-initiated
+        # one (MANUAL / EXPLICIT_RECONFIGURE) is left up.
+        ethernet_wins = facts.wired_ok and not _hotspot_blocks_eth(STATE.hotspot)
+        in_ap_for_eth = STATE.setup_mode
+        if ethernet_wins:
+            STATE.conn_down_start = None
+            STATE.last_reconnect_attempt = None
+
+    if ethernet_wins:
+        # leave_setup_mode is called outside the lock (it re-acquires state_lock,
+        # which is not re-entrant).
+        if in_ap_for_eth:
+            leave_setup_mode("Wired ethernet is up; suppressing AP mode")
+        with state_lock:
+            active_wifi_ifname = STATE.active_client_ifname
+            skip_disconnect = (
+                STATE.apply_in_progress or STATE.setup_mode or in_ap_for_eth
+            )
+        # Drop the redundant Wi-Fi client so there is one deterministic path and
+        # one mDNS address.  Deferred while streaming or while playback is
+        # uncertain (switching the active interface would break an in-flight
+        # AirPlay/OwnTone stream).
+        if active_wifi_ifname and not skip_disconnect:
+            if hctx.playing() is False:
+                logger.info(
+                    "Usable wired Ethernet present; disconnecting idle WiFi client %s",
+                    active_wifi_ifname,
+                )
+                run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname])
+                _set_active_client(None)
+        return Verdict.OWN_PASS
+
+    with state_lock:
+        if facts.wired_ok and _hotspot_blocks_eth(STATE.hotspot):
+            # A user-initiated hotspot (MANUAL / EXPLICIT) is held up even though
+            # ethernet is usable; do not let conn timers fire.
+            STATE.conn_down_start = None
+            STATE.last_reconnect_attempt = None
+    return Verdict.CONTINUE
+
+
+def step_hotspot_policy(hctx: "HealthContext") -> "Verdict":
+    """Enforce the active hotspot's purpose-driven policy from PURPOSE_TABLE."""
+    facts = hctx.facts
+    with state_lock:
+        in_setup = STATE.setup_mode
+        session = STATE.hotspot
+
+    if in_setup and session is not None:
+        policy = PURPOSE_TABLE[session.purpose]
+        ap_age = hctx.now - session.entered_at
+        # Recovery purposes probe for the saved network's return; user-initiated
+        # hotspots wait policy.probe_grace_s after entry before probing so the
+        # watcher does not rejoin the network the user opened the portal to change.
+        if policy.probes_return and facts.wifi_configured and ap_age >= policy.probe_grace_s:
+            _attempt_recovery_reconnect(facts.adapters, hctx.now)
+        # FIRST_RUN (deadline None) stays up indefinitely; every other purpose
+        # closes after its deadline.
+        if policy.deadline_s is not None and ap_age >= policy.deadline_s:
+            leave_setup_mode(
+                f"Hotspot lifetime expired after {ap_age:.0f}s ({session.purpose.value})")
+        return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
+def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
+    """Enter a recovery hotspot during the boot window — client path tried first.
+
+    No once-per-boot budget (defect 2); the boot window only gates this initial
+    auto-entry so NM/firmware get a chance to come up first.  Before committing a
+    radio to a hotspot, the recovery ladder tries the highest-priority client path
+    (preferred USB, else onboard); only an ACTIVATE_* that comes up healthy
+    short-circuits the hotspot (field log 30-Jun-2026).
+    """
+    facts = hctx.facts
+    with state_lock:
+        in_setup = STATE.setup_mode
+    if in_setup:
+        return Verdict.CONTINUE
+
+    boot_age = hctx.now - hctx.boot_time
+    offline = (not facts.wifi_configured) or (not hctx.wifi_connected) or (not hctx.client_ok)
+    should_enter_ap = (
+        boot_age >= BOOT_AP_GRACE
+        and boot_age <= BOOT_AP_CUTOFF
+        and offline
+    )
+
+    if boot_age <= BOOT_AP_CUTOFF:
+        logger.debug(
+            "Boot window: age=%.0fs/%.0fs, wifi_cfg=%s, connected=%s, client_ok=%s",
+            boot_age, BOOT_AP_CUTOFF, facts.wifi_configured, hctx.wifi_connected, hctx.client_ok,
+        )
+    if offline and boot_age > BOOT_AP_CUTOFF:
+        log_on_change(
+            "boot_ap_window_expired", True,
+            f"Boot AP window expired (boot_age={boot_age:.0f}s); "
+            f"device offline but automatic boot-window AP entry has passed",
+            logging.WARNING,
+        )
+
+    if should_enter_ap:
+        raction = next_recovery_action(STATE, gather_recovery_facts(facts))
+        if raction.kind in (RecoveryKind.ACTIVATE_USB,
+                            RecoveryKind.ACTIVATE_ONBOARD) \
+                and _apply_client_activation(raction, facts):
+            return Verdict.OWN_PASS
+        # Configured-but-offline enters BOOT_RECOVERY (probes for return);
+        # unconfigured enters FIRST_RUN (nothing saved to probe).
+        purpose = (HotspotPurpose.BOOT_RECOVERY if facts.wifi_configured
+                   else HotspotPurpose.FIRST_RUN)
+        enter_setup_mode(
+            purpose,
+            reason=(f"boot_age={boot_age:.0f}s, wifi_cfg={facts.wifi_configured}, "
+                    f"wifi_connected={hctx.wifi_connected}, client_ok={hctx.client_ok}"),
+        )
+        return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
+def step_connection_reliability(hctx: "HealthContext") -> "Verdict":
+    """WiFi configured, ethernet down: prompt/periodic reconnect + gateway-down reboot.
+
+    Always CONTINUE — reconnect/reboot never own the pass, so the 12-hour
+    catch-all still runs afterward in the same pass.
+    """
+    facts = hctx.facts
+    if not (facts.wifi_configured and not facts.wired_ok):
+        return Verdict.CONTINUE
+
+    now = hctx.now
+    with state_lock:
+        down_start = STATE.conn_down_start
+        last_attempt = STATE.last_reconnect_attempt
+
+    if not hctx.conn_ok:
+        first_entry = down_start is None
+        if first_entry:
+            # Entering OFFLINE_RECONNECTING (Section 2.7): one prompt reconnect
+            # immediately rather than waiting for the 5-minute threshold.
+            with state_lock:
+                STATE.conn_down_start = now
+                STATE.last_reconnect_attempt = now
+            down_start = now
+            logger.info("Connectivity lost; attempting prompt reconnect on entry")
+            connect_to_configured_wifi()
+
+        down_for = now - down_start
+
+        # Generic gateway-down 30-minute reboot: a configured client connected but
+        # with no usable gateway (NOT a wedged/NO-CARRIER adapter — that is the
+        # dead-PHY ladder's domain).
+        if down_for >= GW_DOWN_REBOOT_AFTER:
+            _request_network_down_reboot(
+                now,
+                "Connectivity unhealthy for %.0fs (threshold %ss)"
+                % (down_for, GW_DOWN_REBOOT_AFTER),
+            )
+
+        if (not first_entry) and down_for >= GW_DOWN_RECONNECT_AFTER:
+            if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
+                with state_lock:
+                    STATE.last_reconnect_attempt = now
+                logger.info("Connectivity unhealthy for %.0fs; attempting reconnect", down_for)
+                connect_to_configured_wifi()
+    else:
+        with state_lock:
+            STATE.conn_down_start = None
+            STATE.last_reconnect_attempt = None
+            STATE.conn_reboot_retry_after = 0.0
+    return Verdict.CONTINUE
+
+
+def step_catchall_reboot(hctx: "HealthContext") -> "Verdict":
+    """12-hour no-active-path catch-all reboot (suspended during setup/AP mode)."""
+    with state_lock:
+        in_setup = STATE.setup_mode
+        last_active_path_seen = STATE.last_active_path_seen
+
+    if not in_setup and last_active_path_seen is not None:
+        no_active_for = hctx.now - last_active_path_seen
+        if no_active_for >= NO_ACTIVE_PATH_REBOOT_AFTER:
+            _request_network_down_reboot(
+                hctx.now,
+                "No usable network path for %.0fs (threshold %ss)"
+                % (no_active_for, NO_ACTIVE_PATH_REBOOT_AFTER),
+            )
+    return Verdict.CONTINUE
+
+
 def network_monitor_loop(run_once: bool = False):
     """Background loop to check network state and enforce the narrative rules.
 
@@ -1985,13 +2237,7 @@ def network_monitor_loop(run_once: bool = False):
         # pass.  Every decision below reads these locals, not fresh subprocess
         # calls.  Playback is resolved lazily through the per-pass memo.
         facts = gather_facts()
-        wifi_cfg = facts.wifi_configured
-        wired_connected = facts.wired_connected
-        wired_ok = facts.wired_ok
-        adapters = facts.adapters
-        active_client = facts.active_client
-        playing_status = _make_playing_status_memo()
-        fctx = FactsContext(pre, facts, playing_status)
+        fctx = FactsContext(pre, facts, _make_playing_status_memo())
 
         # Phase B-early — facts-only handlers, before health finalization.
         # step_usb_failure_fallback MUST precede finalize_active_client_and_health
@@ -2006,257 +2252,37 @@ def network_monitor_loop(run_once: bool = False):
                 return
             continue
 
-        # Named phase boundary: set the active client and compute health once,
-        # producing the HealthContext the Phase B-late handlers read.  Unpacked to
-        # locals here (handlers land in later WPs).
+        # Named phase boundary: set the active client and compute the health
+        # fields, producing the HealthContext the Phase B-late handlers read.
         hctx = finalize_active_client_and_health(fctx)
-        health_ifname = hctx.health_ifname
-        wifi_connected = hctx.wifi_connected
-        client_ok = hctx.client_ok
-        conn_ok = hctx.conn_ok
-        active_path_ok = hctx.active_path_ok
 
-        # --- Optional idle-time USB adoption from a healthy built-in client. ---
-        if wifi_cfg and conn_ok and not STATE.setup_mode:
-            if handle_runtime_usb_adoption(adapters, wired_ok, playing_fn=playing_status):
-                if _sleep_or_finish_monitor_pass(run_once):
-                    return
-                continue
-
-        # --- Dead-PHY recovery: detect a wedged-but-present client adapter and
-        # run the reset ladder.  This runs before the ethernet-wins short-circuit
-        # so a genuinely dead Wi-Fi PHY is reset even while ethernet is attached.
-        # But when wired Ethernet wins and the Wi-Fi client has already been
-        # dropped (wired-wins, Section 2.7), the idle radio is administratively
-        # down by design — leave it down rather than spending reset budget on it.
-        if wifi_cfg and not (wired_ok and active_client is None):
-            if escalate_dead_adapter_recovery(adapters, wired_ok):
-                if _sleep_or_finish_monitor_pass(run_once):
-                    return
-                continue
-
-        with state_lock:
-            STATE.wifistate = "configured" if wifi_cfg else "unconfigured"
-            STATE.wiredstate = "connected" if wired_connected else "disconnected"
-            STATE.connectivity_ok = conn_ok
-            if active_path_ok and not STATE.setup_mode:
-                STATE.last_active_path_seen = now
-                STATE.conn_reboot_retry_after = 0.0
-            # Apply the pure forward classifier: STATE.mode is authoritative.
-            STATE.mode = next_mode(STATE, facts)
-            log_on_change("device_mode", STATE.mode, f"Mode changed -> {STATE.mode.value}")
-            log_on_change("wifistate", STATE.wifistate, f"WiFi state changed -> {STATE.wifistate}")
-            log_on_change("wiredstate", STATE.wiredstate, f"Wired state changed -> {STATE.wiredstate}")
-            log_on_change("gateway_reachable", STATE.connectivity_ok, f"Connectivity changed -> {STATE.connectivity_ok}")
-
-        # Publish the runtime status snapshot served by /network_status.  Pass
-        # the per-tick addresses so the status builder does not re-enumerate.
-        publish_network_status(adapters, wired_connected, wired_ok, facts.addresses)
-
-        # Ethernet suppresses AP mode entirely (unless the user explicitly requested AP).
-        # State is read under the lock; leave_setup_mode is called outside to avoid
-        # a deadlock (leave_setup_mode also acquires state_lock, which is not re-entrant).
-        with state_lock:
-            # Ethernet suppresses an automatic-purpose hotspot, but a
-            # user-initiated one (MANUAL / EXPLICIT_RECONFIGURE) is left up.
-            ethernet_wins = wired_ok and not _hotspot_blocks_eth(STATE.hotspot)
-            in_ap_for_eth = STATE.setup_mode
-            if ethernet_wins:
-                STATE.conn_down_start = None
-                STATE.last_reconnect_attempt = None
-
-        if ethernet_wins:
-            if in_ap_for_eth:
-                leave_setup_mode("Wired ethernet is up; suppressing AP mode")
-            with state_lock:
-                active_wifi_ifname = STATE.active_client_ifname
-                skip_disconnect = (
-                    STATE.apply_in_progress or STATE.setup_mode or in_ap_for_eth
-                )
-            # Wired wins (Section 2.7): when usable Ethernet is present, run on it
-            # and drop the redundant Wi-Fi client — regardless of subnet — so there
-            # is one deterministic path and one mDNS address.  The single gate is
-            # playback: switching the active interface changes the appliance IP and
-            # would break an in-flight AirPlay/OwnTone stream, so defer (do not
-            # disconnect) while streaming or while playback is uncertain.
-            if active_wifi_ifname and not skip_disconnect:
-                if playing_status() is False:
-                    logger.info(
-                        "Usable wired Ethernet present; disconnecting idle WiFi client %s",
-                        active_wifi_ifname,
-                    )
-                    run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname])
-                    _set_active_client(None)
+        # Phase B-late — health/state handlers.  Owning handlers use the inline
+        # sleep/continue idiom (folded into the run_steps driver in WP5); the
+        # always-CONTINUE handlers (publish, connection reliability, catch-all) are
+        # called for their side effects.
+        if step_runtime_usb_adoption(hctx) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
-
-        with state_lock:
-            if wired_ok and _hotspot_blocks_eth(STATE.hotspot):
-                # A user-initiated hotspot (MANUAL / EXPLICIT) is held up even
-                # though ethernet is usable; do not let conn timers fire.
-                STATE.conn_down_start = None
-                STATE.last_reconnect_attempt = None
-
-        # If we're currently hosting a hotspot, enforce its purpose-driven policy
-        # from PURPOSE_TABLE (Section 2.3): probe-for-return and deadline.
-        with state_lock:
-            in_setup = STATE.setup_mode
-            session = STATE.hotspot
-
-        if in_setup and session is not None:
-            policy = PURPOSE_TABLE[session.purpose]
-            ap_age = now - session.entered_at
-
-            # Recovery purposes (BOOT_RECOVERY / USB_LOSS_RECOVERY) probe for the
-            # saved network's return rather than waiting for the deadline
-            # (Section 8.6 / 2.8; defect 1 — BOOT_RECOVERY now probes).  With a
-            # second radio the probe runs without dropping the AP; on single-radio
-            # hardware the scan is rate-limited and only when the saved SSID is
-            # visible is the expensive tear-down→join→rebuild performed (WP6).
-            # User-initiated hotspots wait policy.probe_grace_s after entry before
-            # probing, so the watcher does not rejoin the very network the user
-            # opened the portal to change before they can select a new one.
-            if policy.probes_return and wifi_cfg and ap_age >= policy.probe_grace_s:
-                _attempt_recovery_reconnect(adapters, now)
-
-            # Session lifetime: FIRST_RUN (deadline None) stays up indefinitely
-            # — an unconfigured device has nowhere else to go; every other
-            # purpose closes after its 30-minute deadline.
-            if policy.deadline_s is not None and ap_age >= policy.deadline_s:
-                leave_setup_mode(
-                    f"Hotspot lifetime expired after {ap_age:.0f}s ({session.purpose.value})")
+        if step_dead_phy_recovery(hctx) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
-
-        # Decide whether we should enter the hotspot during the boot window.
-        # There is no once-per-boot budget (defect 2): a recovery hotspot is
-        # enterable whenever offline; the boot window only gates this initial
-        # auto-entry so NM/firmware get a chance to come up first.
-        with state_lock:
-            in_setup = STATE.setup_mode
-
-        if not in_setup:
-            boot_age = now - boot_time
-            # Auto-setup mode is only entered if:
-            #   - WiFi is not configured, OR WiFi is not connected, OR WiFi is
-            #     connected but the client is unhealthy (NM activated but no
-            #     usable IPv4/gateway — e.g. DHCP failure or router changed)
-            #   - still offline AFTER the boot grace period.
-            #   - still offline BEFORE the boot cutoff period.
-            # This avoids immediately switching to AP mode before NetworkManager /
-            # firmware has had a chance to come up.
-            offline = (not wifi_cfg) or (not wifi_connected) or (not client_ok)
-            should_enter_ap = (
-                boot_age >= BOOT_AP_GRACE
-                and boot_age <= BOOT_AP_CUTOFF
-                and offline
-            )
-
-            if boot_age <= BOOT_AP_CUTOFF:
-                logger.debug(
-                    "Boot window: age=%.0fs/%.0fs, wifi_cfg=%s, connected=%s, client_ok=%s",
-                    boot_age, BOOT_AP_CUTOFF, wifi_cfg, wifi_connected, client_ok,
-                )
-
-            if offline and boot_age > BOOT_AP_CUTOFF:
-                log_on_change(
-                    "boot_ap_window_expired", True,
-                    f"Boot AP window expired (boot_age={boot_age:.0f}s); "
-                    f"device offline but automatic boot-window AP entry has passed",
-                    logging.WARNING,
-                )
-
-            if should_enter_ap:
-                # Recovery-ladder unification: before committing a radio to a
-                # recovery hotspot, try the highest-priority *client* path the
-                # ladder selects (preferred USB, else the onboard radio).  A
-                # configured device with a wedged/failed USB but a working onboard
-                # must run on the onboard rather than tie it up as an AP for 30
-                # minutes (field log 30-Jun-2026).  Only an ACTIVATE_* that comes
-                # up healthy short-circuits the hotspot; HOLD / ENTER_HOTSPOT (and a
-                # failed activation) fall through so an offline device still gets a
-                # setup portal.
-                raction = next_recovery_action(STATE, gather_recovery_facts(facts))
-                if raction.kind in (RecoveryKind.ACTIVATE_USB,
-                                    RecoveryKind.ACTIVATE_ONBOARD) \
-                        and _apply_client_activation(raction, facts):
-                    if _sleep_or_finish_monitor_pass(run_once):
-                        return
-                    continue
-                # Defect 1: a configured-but-offline device enters BOOT_RECOVERY
-                # (which probes for the saved network's return), not FIRST_RUN;
-                # an unconfigured device enters FIRST_RUN (nothing saved to probe).
-                purpose = (HotspotPurpose.BOOT_RECOVERY if wifi_cfg
-                           else HotspotPurpose.FIRST_RUN)
-                enter_setup_mode(
-                    purpose,
-                    reason=f"boot_age={boot_age:.0f}s, wifi_cfg={wifi_cfg}, wifi_connected={wifi_connected}, client_ok={client_ok}",
-                )
-                if _sleep_or_finish_monitor_pass(run_once):
-                    return
-                continue
-
-        # Connection reliability monitoring: WiFi configured, usable ethernet down.
-        # Use the same "local IPv4 readiness" health indicator (conn_ok) as used elsewhere.
-        if wifi_cfg and not wired_ok:
-            with state_lock:
-                down_start = STATE.conn_down_start
-                last_attempt = STATE.last_reconnect_attempt
-
-            if not conn_ok:
-                first_entry = down_start is None
-                if first_entry:
-                    # Entering OFFLINE_RECONNECTING (Section 2.7): attempt one
-                    # prompt reconnect immediately rather than waiting for the
-                    # 5-minute gateway-down threshold.  This is how Wi-Fi comes
-                    # back after a wired-wins disconnect once Ethernet drops,
-                    # without a policy flag or a 5-minute wait.
-                    with state_lock:
-                        STATE.conn_down_start = now
-                        STATE.last_reconnect_attempt = now
-                    down_start = now
-                    logger.info("Connectivity lost; attempting prompt reconnect on entry")
-                    connect_to_configured_wifi()
-
-                down_for = now - down_start
-
-                # Generic gateway-down 30-minute reboot (WP4): this governs a
-                # configured client that is connected but has no usable gateway
-                # (e.g. DHCP/router change), NOT a wedged/NO-CARRIER adapter —
-                # that case is owned by the dead-PHY ladder above.
-                if down_for >= GW_DOWN_REBOOT_AFTER:
-                    _request_network_down_reboot(
-                        now,
-                        "Connectivity unhealthy for %.0fs (threshold %ss)"
-                        % (down_for, GW_DOWN_REBOOT_AFTER),
-                    )
-
-                if (not first_entry) and down_for >= GW_DOWN_RECONNECT_AFTER:
-                    if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
-                        with state_lock:
-                            STATE.last_reconnect_attempt = now
-                        logger.info("Connectivity unhealthy for %.0fs; attempting reconnect", down_for)
-                        connect_to_configured_wifi()
-            else:
-                with state_lock:
-                    STATE.conn_down_start = None
-                    STATE.last_reconnect_attempt = None
-                    STATE.conn_reboot_retry_after = 0.0
-
-        with state_lock:
-            in_setup = STATE.setup_mode
-            last_active_path_seen = STATE.last_active_path_seen
-
-        if not in_setup and last_active_path_seen is not None:
-            no_active_for = now - last_active_path_seen
-            if no_active_for >= NO_ACTIVE_PATH_REBOOT_AFTER:
-                _request_network_down_reboot(
-                    now,
-                    "No usable network path for %.0fs (threshold %ss)"
-                    % (no_active_for, NO_ACTIVE_PATH_REBOOT_AFTER),
-                )
+        step_publish_state(hctx)
+        if step_ethernet_wins(hctx) is Verdict.OWN_PASS:
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+        if step_hotspot_policy(hctx) is Verdict.OWN_PASS:
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+        if step_boot_ap_entry(hctx) is Verdict.OWN_PASS:
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+        step_connection_reliability(hctx)
+        step_catchall_reboot(hctx)
 
         if _sleep_or_finish_monitor_pass(run_once):
             return
