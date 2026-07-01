@@ -3220,6 +3220,152 @@ class TestFieldLogRecoveryRegression:
         join.assert_called_once()   # the onboard drop-AP rejoin runs instead
 
 
+class TestLoopHandlers:
+    """Loop-handlers WP6 — direct per-handler tests over synthetic contexts.
+
+    Isolation: the `watcher` fixture resets STATE (and _last_logged_values); the
+    event-setting tests clear the threading.Events they touch so they cannot leak.
+    """
+
+    def _pre(self, watcher, *, now=1000.0, boot_time=0.0, avahi_ok=True):
+        return watcher.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=avahi_ok)
+
+    def _facts(self, watcher, *, adapters=None, wifi_cfg=False, wired_ok=False,
+               wired_connected=False, active_client=None, now=1000.0):
+        return watcher.Facts(
+            wifi_configured=wifi_cfg, adapters=adapters or [],
+            wired_connected=wired_connected, wired_ok=wired_ok,
+            active_client=active_client, addresses={}, taken_at=now,
+        )
+
+    def _hctx(self, watcher, facts, *, playing=None, health_ifname="wlan0",
+              wifi_connected=False, client_ok=False, conn_ok=False, active_path_ok=False):
+        pre = self._pre(watcher, now=facts.taken_at)
+        fctx = watcher.FactsContext(pre, facts, playing or (lambda: False))
+        return watcher.HealthContext(
+            fctx, health_ifname=health_ifname, wifi_connected=wifi_connected,
+            client_ok=client_ok, conn_ok=conn_ok, active_path_ok=active_path_ok,
+        )
+
+    # ---- run_steps driver ----
+
+    def test_run_steps_short_circuits_on_first_own_pass(self, watcher):
+        calls = []
+        def cont(ctx): calls.append("c1"); return watcher.Verdict.CONTINUE
+        def own(ctx): calls.append("own"); return watcher.Verdict.OWN_PASS
+        def after(ctx): calls.append("after"); return watcher.Verdict.CONTINUE
+        result = watcher.run_steps([cont, own, after], None)
+        assert result is watcher.Verdict.OWN_PASS
+        assert calls == ["c1", "own"]  # `after` never runs
+
+    def test_run_steps_all_continue(self, watcher):
+        result = watcher.run_steps(
+            [lambda c: watcher.Verdict.CONTINUE, lambda c: watcher.Verdict.CONTINUE], None)
+        assert result is watcher.Verdict.CONTINUE
+
+    def test_late_own_pass_blocks_trailing_handlers(self, watcher):
+        # A Phase B-late OWN_PASS (hotspot policy) must prevent the trailing
+        # always-CONTINUE handlers from running — the load-bearing short-circuit.
+        watcher.STATE.boot_time = 0.0
+        with patch.object(watcher, "step_hotspot_policy",
+                          return_value=watcher.Verdict.OWN_PASS) as hp, \
+             patch.object(watcher, "step_connection_reliability") as cr, \
+             patch.object(watcher, "step_catchall_reboot") as co:
+            _run_monitor_once(watcher, now=1000.0, wifi_cfg=True)
+        hp.assert_called_once()
+        cr.assert_not_called()
+        co.assert_not_called()
+
+    # ---- Phase A ----
+
+    def test_step_avahi_hostname_gated_and_rate_limited(self, watcher):
+        ls = watcher.LoopState()
+        with patch.object(watcher, "check_and_repair_avahi_hostname") as chk:
+            v = watcher.step_avahi_hostname(self._pre(watcher, now=1000.0), ls)
+        assert v is watcher.Verdict.CONTINUE
+        chk.assert_called_once()
+        assert ls.last_avahi_check == 1000.0
+        # Within AVAHI_CHECK_INTERVAL -> not called again.
+        with patch.object(watcher, "check_and_repair_avahi_hostname") as chk2:
+            watcher.step_avahi_hostname(self._pre(watcher, now=1005.0), ls)
+        chk2.assert_not_called()
+        # avahi_ok False -> skipped regardless of interval.
+        with patch.object(watcher, "check_and_repair_avahi_hostname") as chk3:
+            watcher.step_avahi_hostname(self._pre(watcher, now=99999.0, avahi_ok=False), ls)
+        chk3.assert_not_called()
+
+    def test_step_manual_ap_request_enters_when_not_in_ap(self, watcher):
+        watcher.ap_request_event.clear()
+        watcher.STATE.ap_request_reason = "user"
+        watcher.ap_request_event.set()
+        with patch.object(watcher, "enter_setup_mode") as enter:
+            v = watcher.step_manual_ap_request(self._pre(watcher))
+        assert v is watcher.Verdict.OWN_PASS
+        enter.assert_called_once()
+        assert enter.call_args[0][0] is watcher.HotspotPurpose.MANUAL
+        assert not watcher.ap_request_event.is_set()
+
+    def test_step_manual_ap_request_continue_when_already_in_ap(self, watcher):
+        watcher.ap_request_event.clear()
+        watcher.STATE.setup_mode = True
+        watcher.ap_request_event.set()
+        with patch.object(watcher, "enter_setup_mode") as enter:
+            v = watcher.step_manual_ap_request(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE
+        enter.assert_not_called()
+        assert not watcher.ap_request_event.is_set()  # event still consumed
+
+    # ---- Phase B-early (health-ordering guarantee) ----
+
+    def test_step_usb_failure_fallback_precedes_set_active_client(self, watcher):
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
+        fctx = watcher.FactsContext(self._pre(watcher), facts, lambda: False)
+        watcher.STATE.active_client_mac = "dc:62:79:91:4d:d6"  # previously recorded
+        with patch.object(watcher, "handle_usb_failure_fallback", return_value=True) as h, \
+             patch.object(watcher, "_set_active_client") as sac:
+            v = watcher.step_usb_failure_fallback(fctx)
+        assert v is watcher.Verdict.OWN_PASS
+        h.assert_called_once_with([usb], usb)
+        sac.assert_not_called()  # _set_active_client is finalize's job, not this handler's
+        assert watcher.STATE.active_client_mac == "dc:62:79:91:4d:d6"  # unchanged here
+
+    # ---- Phase B-late (pinned verdicts) ----
+
+    def test_step_ethernet_wins_owns_pass_even_when_nothing_disconnects(self, watcher):
+        facts = self._facts(watcher, wired_ok=True)
+        hctx = self._hctx(watcher, facts, playing=lambda: False,
+                          conn_ok=True, active_path_ok=True)
+        with patch.object(watcher, "run_cmd") as run, \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            v = watcher.step_ethernet_wins(hctx)
+        assert v is watcher.Verdict.OWN_PASS  # owns on the predicate
+        run.assert_not_called()               # nothing to disconnect
+        leave.assert_not_called()
+
+    def test_step_ethernet_wins_continue_when_not_wired(self, watcher):
+        hctx = self._hctx(watcher, self._facts(watcher, wired_ok=False))
+        assert watcher.step_ethernet_wins(hctx) is watcher.Verdict.CONTINUE
+
+    def test_step_connection_reliability_always_continue(self, watcher):
+        facts = self._facts(watcher, wifi_cfg=True, wired_ok=False)
+        hctx = self._hctx(watcher, facts, conn_ok=False)
+        with patch.object(watcher, "connect_to_configured_wifi") as conn:
+            v = watcher.step_connection_reliability(hctx)
+        assert v is watcher.Verdict.CONTINUE   # never owns, even when it reconnects
+        conn.assert_called_once()              # prompt reconnect on first entry
+        assert watcher.STATE.conn_down_start == hctx.now
+
+    def test_step_catchall_reboot_always_continue(self, watcher):
+        watcher.STATE.last_active_path_seen = 0.0
+        facts = self._facts(watcher, now=watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0)
+        hctx = self._hctx(watcher, facts)
+        with patch.object(watcher, "_request_network_down_reboot") as reboot:
+            v = watcher.step_catchall_reboot(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        reboot.assert_called_once()
+
+
 class TestScanGatedRecovery:
     """WP6 — recovery hotspots scan-gate the saved SSID before disrupting the AP."""
 
