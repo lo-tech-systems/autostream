@@ -2809,6 +2809,33 @@ class TestHotspotPurposeMachine:
                               wired_connected=True, wired_ok=True)
         leave.assert_not_called()
 
+    def test_user_hotspot_does_not_probe_within_grace(self, watcher):
+        # A user opened the portal to change networks; within HOTSPOT_PROBE_GRACE
+        # the watcher must NOT probe for (and rejoin) the old saved network, or it
+        # would tear the hotspot down before the user can pick a new one.
+        self._session(watcher, watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=100.0)
+        within = 100.0 + watcher.HOTSPOT_PROBE_GRACE - 1.0
+        with patch.object(watcher, "_attempt_recovery_reconnect") as probe:
+            _run_monitor_once(watcher, now=within, wifi_cfg=True)
+        probe.assert_not_called()
+
+    def test_user_hotspot_probes_after_grace(self, watcher):
+        # Once the grace window elapses, the user-initiated hotspot resumes
+        # probing for the saved network (idle-user recovery before the deadline).
+        self._session(watcher, watcher.HotspotPurpose.MANUAL, entered_at=0.0)
+        after = watcher.HOTSPOT_PROBE_GRACE + 30.0
+        with patch.object(watcher, "_attempt_recovery_reconnect") as probe:
+            _run_monitor_once(watcher, now=after, wifi_cfg=True)
+        probe.assert_called_once()
+
+    def test_recovery_hotspot_probes_immediately_no_grace(self, watcher):
+        # Automatic recovery purposes have probe_grace_s == 0: they lost the path
+        # involuntarily and must probe from the first pass.
+        self._session(watcher, watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=100.0)
+        with patch.object(watcher, "_attempt_recovery_reconnect") as probe:
+            _run_monitor_once(watcher, now=101.0, wifi_cfg=True)
+        probe.assert_called_once()
+
     def test_defect2_recovery_enterable_after_earlier_session(self, watcher):
         # After a hotspot was used and left earlier this boot, a later USB-loss
         # fallback still raises a recovery hotspot (no once-per-boot suppression).
@@ -3008,17 +3035,23 @@ class TestExplicitModeClassifier:
         assert T[P.FIRST_RUN].eth_suppressible is True
         assert T[P.FIRST_RUN].probes_return is False
         assert T[P.FIRST_RUN].rollback is False
-        # Recovery purposes: 30 min, eth-suppressible, probe for return.
+        # Recovery purposes: 30 min, eth-suppressible, probe for return
+        # immediately (involuntary loss -> rejoin ASAP, no grace).
         for p in (P.BOOT_RECOVERY, P.USB_LOSS_RECOVERY):
             assert T[p].deadline_s == watcher.AP_MAX_DURATION
             assert T[p].eth_suppressible is True
             assert T[p].probes_return is True
             assert T[p].rollback is False
-        # User-initiated purposes: not eth-suppressible.
+            assert T[p].probe_grace_s == 0.0
+        # User-initiated purposes: not eth-suppressible, and they delay probing
+        # for the saved network by HOTSPOT_PROBE_GRACE so the watcher does not
+        # rejoin the network the user opened the portal to change.
         assert T[P.EXPLICIT_RECONFIGURE].eth_suppressible is False
         assert T[P.EXPLICIT_RECONFIGURE].rollback is True
+        assert T[P.EXPLICIT_RECONFIGURE].probe_grace_s == watcher.HOTSPOT_PROBE_GRACE
         assert T[P.MANUAL].eth_suppressible is False
         assert T[P.MANUAL].rollback is False
+        assert T[P.MANUAL].probe_grace_s == watcher.HOTSPOT_PROBE_GRACE
 
     def test_snapshot_publishes_authoritative_state_mode(self, watcher):
         # device.mode publishes the authoritative STATE.mode the loop applies.

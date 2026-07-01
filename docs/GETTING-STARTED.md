@@ -48,7 +48,7 @@ autostream automatically uses a USB Wi-Fi adapter when one is detected:
 
 1. Go to **Setup → System → Network → Change Wi-Fi Network**.
 2. The setup hotspot opens for up to 30 minutes.
-3. Connect to the hotspot SSID and select the new network.
+3. Connect to the hotspot SSID and select the new network. For the first **15 minutes** autostream leaves the hotspot up and will not rejoin your old network, so you have time to connect and choose the new one — even if the old network is still in range.
 4. If setup is not completed within 30 minutes, autostream reconnects to the previous network automatically.
 
 ---

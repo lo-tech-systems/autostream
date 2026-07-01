@@ -28,6 +28,10 @@ read from one five-row purpose table (PURPOSE_TABLE) rather than a soup of boole
   - USB_LOSS_RECOVERY (configured, lost its client path at runtime): same 30-minute,
         probe-for-return policy.
   - EXPLICIT_RECONFIGURE / MANUAL (user-initiated): 30 minutes, not suppressed by ethernet.
+        These probe for the saved network too, but only after a HOTSPOT_PROBE_GRACE window
+        (15 min) so the watcher does not rejoin the network the user opened the portal to
+        change before they have selected a new one.  EXPLICIT_RECONFIGURE still rolls back to
+        the previous network at the 30-minute deadline if the user never completes setup.
 
 There is no once-per-boot AP budget: the 30-minute session lifetime is the only rate limit,
 so a recovery hotspot is available whenever the device is offline (defect 2 fix).  A failed
@@ -285,17 +289,18 @@ class PurposePolicy:
     eth_suppressible: bool
     probes_return: bool
     rollback: bool
+    probe_grace_s: float = 0.0    # delay after entry before probing for the saved network (user-initiated hotspots)
 
 
 # The five-row purpose table: the single source of hotspot entry/exit policy.
 # eth-suppressible == "automatic purpose"; user-initiated purposes
 # (EXPLICIT_RECONFIGURE, MANUAL) are never torn down by Ethernet appearing.
 PURPOSE_TABLE: "dict[HotspotPurpose, PurposePolicy]" = {
-    HotspotPurpose.FIRST_RUN:            PurposePolicy(None,          True,  False, False),
-    HotspotPurpose.BOOT_RECOVERY:        PurposePolicy(AP_MAX_DURATION, True,  True,  False),
-    HotspotPurpose.USB_LOSS_RECOVERY:    PurposePolicy(AP_MAX_DURATION, True,  True,  False),
-    HotspotPurpose.EXPLICIT_RECONFIGURE: PurposePolicy(AP_MAX_DURATION, False, True,  True),
-    HotspotPurpose.MANUAL:               PurposePolicy(AP_MAX_DURATION, False, True,  False),
+    HotspotPurpose.FIRST_RUN:            PurposePolicy(None,          True,  False, False, 0.0),
+    HotspotPurpose.BOOT_RECOVERY:        PurposePolicy(AP_MAX_DURATION, True,  True,  False, 0.0),
+    HotspotPurpose.USB_LOSS_RECOVERY:    PurposePolicy(AP_MAX_DURATION, True,  True,  False, 0.0),
+    HotspotPurpose.EXPLICIT_RECONFIGURE: PurposePolicy(AP_MAX_DURATION, False, True,  True,  HOTSPOT_PROBE_GRACE),
+    HotspotPurpose.MANUAL:               PurposePolicy(AP_MAX_DURATION, False, True,  False, HOTSPOT_PROBE_GRACE),
 }
 
 
@@ -1775,7 +1780,10 @@ def network_monitor_loop(run_once: bool = False):
             # second radio the probe runs without dropping the AP; on single-radio
             # hardware the scan is rate-limited and only when the saved SSID is
             # visible is the expensive tear-down→join→rebuild performed (WP6).
-            if policy.probes_return and wifi_cfg:
+            # User-initiated hotspots wait policy.probe_grace_s after entry before
+            # probing, so the watcher does not rejoin the very network the user
+            # opened the portal to change before they can select a new one.
+            if policy.probes_return and wifi_cfg and ap_age >= policy.probe_grace_s:
                 _attempt_recovery_reconnect(adapters, now)
 
             # Session lifetime: FIRST_RUN (deadline None) stays up indefinitely
