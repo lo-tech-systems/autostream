@@ -1866,6 +1866,57 @@ def step_reconfigure_timeout(pre: "PreFactsContext") -> "Verdict":
     return Verdict.CONTINUE
 
 
+# ---- Phase B-early handlers (facts only, FactsContext, before health) ----
+
+
+def step_update_known_adapters(fctx: "FactsContext") -> "Verdict":
+    """Track USB MACs and log adapter-set changes (multi-adapter discovery)."""
+    update_known_adapters(fctx.facts.adapters)
+    return Verdict.CONTINUE
+
+
+def step_startup_usb_window(fctx: "FactsContext") -> "Verdict":
+    """Re-probe when a new USB adapter appears while BOOT_AP_GRACE is open (§4.3).
+
+    USB firmware/drivers may finish enumeration after the initial
+    startup_connect_usb_first() call; triggering it again for any new USB MAC
+    prevents a USB-only network from falling to hotspot mode.
+    """
+    facts = fctx.facts
+    boot_age_now = fctx.now - fctx.boot_time
+    if (boot_age_now < BOOT_AP_GRACE
+            and facts.wifi_configured
+            and not facts.wired_ok
+            and not STATE.setup_mode):
+        usb_macs_now = {a.permanent_mac for a in wifi_net.usb_candidates(facts.adapters)}
+        new_usb = usb_macs_now - _startup_window_usb_tried_macs
+        if new_usb:
+            _startup_window_usb_tried_macs.update(usb_macs_now)
+            active_is_usb = facts.active_client is not None and facts.active_client.is_usb
+            if not active_is_usb:
+                logger.info(
+                    "Startup USB-adoption window: new USB adapter(s) appeared %s;"
+                    " retrying USB-first connection", sorted(new_usb),
+                )
+                if startup_connect_usb_first():
+                    return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
+def step_usb_failure_fallback(fctx: "FactsContext") -> "Verdict":
+    """Active-USB failure fallback — immediate/debounced, never gated by playback.
+
+    Must run BEFORE finalize_active_client_and_health()'s _set_active_client() so
+    that STATE.active_client_mac still holds the previously recorded USB MAC when
+    the adapter physically disappears from discovery.
+    """
+    facts = fctx.facts
+    if facts.wifi_configured and not facts.wired_ok and not STATE.setup_mode:
+        if handle_usb_failure_fallback(facts.adapters, facts.active_client):
+            return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
 def network_monitor_loop(run_once: bool = False):
     """Background loop to check network state and enforce the narrative rules.
 
@@ -1942,43 +1993,18 @@ def network_monitor_loop(run_once: bool = False):
         playing_status = _make_playing_status_memo()
         fctx = FactsContext(pre, facts, playing_status)
 
-        # --- Multi-adapter discovery and active-client resolution (WP5) ---
-        update_known_adapters(adapters)
-
-        # --- Startup USB-adoption window: re-probe when a new USB adapter
-        # appears while BOOT_AP_GRACE is still open (Section 4.3).
-        # USB firmware/drivers may finish enumeration after the initial
-        # startup_connect_usb_first() call; triggering it again for any new
-        # USB MAC prevents a USB-only network from falling to hotspot mode.
-        boot_age_now = now - boot_time
-        if (boot_age_now < BOOT_AP_GRACE
-                and wifi_cfg
-                and not wired_ok
-                and not STATE.setup_mode):
-            usb_macs_now = {a.permanent_mac for a in wifi_net.usb_candidates(adapters)}
-            new_usb = usb_macs_now - _startup_window_usb_tried_macs
-            if new_usb:
-                _startup_window_usb_tried_macs.update(usb_macs_now)
-                active_is_usb = active_client is not None and active_client.is_usb
-                if not active_is_usb:
-                    logger.info(
-                        "Startup USB-adoption window: new USB adapter(s) appeared %s;"
-                        " retrying USB-first connection", sorted(new_usb),
-                    )
-                    if startup_connect_usb_first():
-                        if _sleep_or_finish_monitor_pass(run_once):
-                            return
-                        continue
-
-        # --- Active-USB failure fallback (immediate/debounced; never gated by
-        # playback). Must run BEFORE _set_active_client() so that
-        # STATE.active_client_mac still holds the previously recorded USB MAC
-        # when the adapter physically disappears from discovery. ---
-        if wifi_cfg and not wired_ok and not STATE.setup_mode:
-            if handle_usb_failure_fallback(adapters, active_client):
-                if _sleep_or_finish_monitor_pass(run_once):
-                    return
-                continue
+        # Phase B-early — facts-only handlers, before health finalization.
+        # step_usb_failure_fallback MUST precede finalize_active_client_and_health
+        # (it reads the pre-_set_active_client active_client_mac).
+        step_update_known_adapters(fctx)
+        if step_startup_usb_window(fctx) is Verdict.OWN_PASS:
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
+        if step_usb_failure_fallback(fctx) is Verdict.OWN_PASS:
+            if _sleep_or_finish_monitor_pass(run_once):
+                return
+            continue
 
         # Named phase boundary: set the active client and compute health once,
         # producing the HealthContext the Phase B-late handlers read.  Unpacked to
