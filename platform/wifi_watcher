@@ -175,6 +175,14 @@ NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
 BOOT_AP_GRACE = 60                      # if still offline after boot grace -> enter AP mode
 BOOT_AP_CUTOFF = 15 * 60                # ONLY allow *automatic* entry into AP mode within this many seconds of boot
 AP_MAX_DURATION = 30 * 60               # AP mode lifetime for configured devices (fixed, not extended by web activity)
+# User-initiated hotspots (EXPLICIT_RECONFIGURE / MANUAL) suppress the
+# probe-for-saved-network-return for this long after entry.  The user opened the
+# portal to change networks and the old (saved) SSID is almost always still in
+# range, so probing immediately would rejoin — and, on single-radio hardware,
+# tear the hotspot down — before the user can select a new network.  Automatic
+# recovery purposes (BOOT_RECOVERY / USB_LOSS_RECOVERY) use grace 0: they lost
+# connectivity involuntarily and should rejoin as soon as the network returns.
+HOTSPOT_PROBE_GRACE = 15 * 60          # seconds a user-opened hotspot waits before probing for the saved network
 NO_ACTIVE_PATH_REBOOT_AFTER = 12 * 60 * 60  # if no usable non-hotspot path for 12h -> reboot
 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
@@ -1861,26 +1869,11 @@ def network_monitor_loop(run_once: bool = False):
                 # (e.g. DHCP/router change), NOT a wedged/NO-CARRIER adapter —
                 # that case is owned by the dead-PHY ladder above.
                 if down_for >= GW_DOWN_REBOOT_AFTER:
-                    with state_lock:
-                        retry_after = STATE.conn_reboot_retry_after
-                    if now >= retry_after:
-                        logger.warning(
-                            "Connectivity unhealthy for %.0fs (threshold %ss); requesting reboot",
-                            down_for, GW_DOWN_REBOOT_AFTER,
-                        )
-                        accepted = reboot_system("NetworkDown")
-                        with state_lock:
-                            STATE.conn_reboot_retry_after = (
-                                float('inf') if accepted
-                                else now + REBOOT_RATE_LIMIT_RETRY
-                            )
-                    elif retry_after == float('inf'):
-                        logger.debug("NetworkDown reboot accepted; waiting for system to reboot")
-                    else:
-                        logger.debug(
-                            "NetworkDown reboot suppressed; will retry in %.0fs",
-                            retry_after - now,
-                        )
+                    _request_network_down_reboot(
+                        now,
+                        "Connectivity unhealthy for %.0fs (threshold %ss)"
+                        % (down_for, GW_DOWN_REBOOT_AFTER),
+                    )
 
                 if (not first_entry) and down_for >= GW_DOWN_RECONNECT_AFTER:
                     if (last_attempt is None) or (now - last_attempt >= RECONNECT_ATTEMPT_INTERVAL):
