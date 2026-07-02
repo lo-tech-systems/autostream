@@ -1425,31 +1425,11 @@ next_mode = wifi_policy.next_mode
 # ** RECOVERY LADDER (recovery-ladder unification) **
 #
 # The recovery decision is a second pure classifier alongside next_mode:
-# next_recovery_action(state, recovery_facts) -> RecoveryAction (WP2).  Like
-# next_mode it reads a pre-gathered immutable snapshot and module constants only
-# (constraint 10) so it can lift into wifi_policy.py unchanged.  RecoveryFacts is
-# that snapshot; gather_recovery_facts() is its sole (effectful) gatherer.
-
-
-@dataclass(frozen=True)
-class RecoveryFacts:
-    """One immutable per-tick snapshot for the recovery-ladder classifier.
-
-    Adapter identity is carried as ifnames (hashable, pure data); the apply layer
-    re-resolves adapter objects from the live Facts.adapters when it needs them.
-    ``preferred_usb_ifname`` is the first deterministic USB candidate still worth
-    engaging as a client (present, managed, not quarantined, not no-IP-suppressed)
-    — the "USB budget spent -> drop to onboard" rung falls out of this being "".
-    """
-    adapters_by_ifname: dict          # ifname -> wifi_recovery.AdapterRecoveryFacts
-    onboard_ifname: str               # "" when no built-in radio
-    usb_ifnames: tuple                # USB candidate ifnames, deterministic order
-    preferred_usb_ifname: str         # first usable USB, else ""
-    hotspot_ifname: str               # AP-hosting adapter while in setup, else ""
-    active_ifname: str                # active client ifname, else ""
-    saved_configured: bool            # a client profile is committed
-    wired_ok: bool
-    taken_at: float
+# next_recovery_action(state, recovery_facts) -> RecoveryAction.  It now lives in
+# wifi_policy (with RecoveryFacts / RecoveryKind / RecoveryAction); the watcher
+# owns only gather_recovery_facts(), the effectful gatherer that adapts the
+# per-pass runtime facts into the plain RecoveryFacts snapshot.
+RecoveryFacts = wifi_policy.RecoveryFacts
 
 
 def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
@@ -1489,91 +1469,12 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     )
 
 
-class RecoveryKind(Enum):
-    """The single recovery remediation the ladder selects for this pass."""
-    HOLD = "hold"                      # active path fine / Ethernet / defer to dead-PHY reset
-    ACTIVATE_USB = "activate_usb"      # (re)activate the committed profile on the preferred USB
-    ACTIVATE_ONBOARD = "activate_onboard"  # run the client on the built-in radio (drop AP if hosting)
-    ENTER_HOTSPOT = "enter_hotspot"    # last resort: no radio can carry a client
-
-
-@dataclass(frozen=True)
-class RecoveryAction:
-    """One recovery decision — pure data returned by next_recovery_action()."""
-    kind: RecoveryKind
-    ifname: str = ""                              # target radio for ACTIVATE_*
-    purpose: "Optional[HotspotPurpose]" = None    # for ENTER_HOTSPOT
-    drop_hotspot: bool = False                    # ACTIVATE_* must tear down the AP on ifname first
-    reason: str = ""
-
-
-def next_recovery_action(state, facts) -> "RecoveryAction":
-    """Pure recovery-ladder classifier: state + RecoveryFacts -> RecoveryAction.
-
-    Like next_mode() this reads a pre-gathered immutable snapshot and module
-    constants only (constraint 10): no STATE mutation, no subprocess, no effects,
-    no ``w`` seam — so it lifts into wifi_policy.py unchanged.  It owns the
-    *client-path-vs-hotspot* priority ladder (Ethernet > preferred USB > onboard >
-    hotspot-last-resort) that was previously scattered across the boot-entry,
-    USB-failure fallback, and recovery-hotspot probe sites.  The low-level USB
-    reset/quarantine/reboot *mechanics* remain owned by the dead-PHY module; a
-    wedged USB with no onboard alternative is deferred to it via HOLD.
-    """
-    by = facts.adapters_by_ifname
-    active = facts.active_ifname
-    active_rf = by.get(active) if active else None
-    in_hotspot = bool(facts.hotspot_ifname)
-
-    # Ethernet wins; the recovery ladder does not engage.
-    if facts.wired_ok:
-        return RecoveryAction(RecoveryKind.HOLD, reason="wired_ok")
-
-    # Unconfigured: nothing to reconnect; a first-run hotspot is the only option.
-    if not facts.saved_configured:
-        if in_hotspot:
-            return RecoveryAction(RecoveryKind.HOLD, reason="unconfigured_hotspot_up")
-        return RecoveryAction(RecoveryKind.ENTER_HOTSPOT,
-                              purpose=HotspotPurpose.FIRST_RUN, reason="unconfigured")
-
-    # Active client already healthy -> nothing to recover (idle USB adoption is a
-    # separate, playback-gated optimisation, not part of failure recovery).
-    if active_rf is not None and active_rf.healthy and not in_hotspot:
-        return RecoveryAction(RecoveryKind.HOLD, reason="active_healthy")
-
-    preferred_usb = facts.preferred_usb_ifname
-    usb_rf = by.get(preferred_usb) if preferred_usb else None
-    usb_has_carrier = usb_rf is not None and usb_rf.link_down is not True
-    onboard = facts.onboard_ifname
-
-    # (1) USB is the highest-priority client path.  A usable (carrier-up) preferred
-    #     USB that is not already our active client -> (re)activate it.
-    if usb_has_carrier and active != preferred_usb:
-        return RecoveryAction(RecoveryKind.ACTIVATE_USB, ifname=preferred_usb,
-                              drop_hotspot=(preferred_usb == facts.hotspot_ifname),
-                              reason="usb_preferred")
-    # (1b) USB is the active client but unhealthy with carrier (associating / no-IP):
-    #      hold — the no-IP ledger governs and promotes onboard once suppressed.
-    if usb_has_carrier and active == preferred_usb:
-        return RecoveryAction(RecoveryKind.HOLD, reason="usb_active_no_ip")
-
-    # (2) No usable USB right now (absent / quarantined / no-IP-suppressed / wedged).
-    #     Try the onboard radio as a client before any hotspot — this is the
-    #     boot-entry onboard-first rule AND the exit edge from a recovery hotspot.
-    if onboard and active != onboard:
-        return RecoveryAction(RecoveryKind.ACTIVATE_ONBOARD, ifname=onboard,
-                              drop_hotspot=(onboard == facts.hotspot_ifname),
-                              reason="onboard_before_hotspot")
-
-    # (3) A wedged/quarantined USB with no onboard alternative -> leave it to the
-    #     dead-PHY reset/quarantine/reboot ladder (it owns a resettable USB PHY).
-    if usb_rf is not None and not onboard:
-        return RecoveryAction(RecoveryKind.HOLD, reason="usb_only_defer_reset_ladder")
-
-    # (4) No radio can carry a client -> last-resort recovery hotspot.
-    if not in_hotspot:
-        return RecoveryAction(RecoveryKind.ENTER_HOTSPOT,
-                              purpose=HotspotPurpose.BOOT_RECOVERY, reason="no_client_path")
-    return RecoveryAction(RecoveryKind.HOLD, reason="hotspot_last_resort")
+# The recovery-ladder enums, action type, and pure classifier now live in
+# wifi_policy; re-exported so the apply sites and tests keep using
+# wifi_watcher.<name>.
+RecoveryKind = wifi_policy.RecoveryKind
+RecoveryAction = wifi_policy.RecoveryAction
+next_recovery_action = wifi_policy.next_recovery_action
 
 
 def _make_playing_status_memo():
