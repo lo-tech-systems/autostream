@@ -1831,6 +1831,66 @@ class TestWifiPolicyModule:
         assert set(wifi_policy.PURPOSE_TABLE) == set(wifi_policy.HotspotPurpose)
 
 
+class TestConnectivityHysteresis:
+    """C-WP1: connectivity_ok is slow to condemn (soft N-pass) and quick to
+    forgive (any healthy pass), with hard signals bypassing the debounce
+    (field log 01-Jul-2026)."""
+
+    def _facts(self, watcher, adapters, active, *, wired_ok=False, wifi_configured=True):
+        return watcher.Facts(
+            wifi_configured=wifi_configured, adapters=adapters, wired_connected=False,
+            wired_ok=wired_ok, active_client=active, addresses={}, taken_at=1000.0,
+        )
+
+    def test_single_soft_blip_holds_prior_true(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:31", is_usb=True)
+        watcher.STATE.connectivity_ok = True  # was online this boot
+        facts = self._facts(watcher, [usb], usb)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False):  # carrier up -> soft
+            ok = watcher._debounced_connectivity(facts, usb, client_ok=False)
+        assert ok is True                       # a single soft blip does NOT flip
+        assert watcher.STATE.conn_unhealthy_checks == 1
+
+    def test_two_soft_passes_condemn(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:32", is_usb=True)
+        watcher.STATE.connectivity_ok = True
+        facts = self._facts(watcher, [usb], usb)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False):
+            first = watcher._debounced_connectivity(facts, usb, client_ok=False)
+            second = watcher._debounced_connectivity(facts, usb, client_ok=False)
+        assert (first, second) == (True, False)  # condemned only after N consecutive
+
+    def test_healthy_pass_recovers_immediately_and_resets(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:33", is_usb=True)
+        watcher.STATE.conn_unhealthy_checks = 1
+        facts = self._facts(watcher, [usb], usb)
+        ok = watcher._debounced_connectivity(facts, usb, client_ok=True)
+        assert ok is True
+        assert watcher.STATE.conn_unhealthy_checks == 0
+
+    def test_no_active_client_is_hard(self, watcher):
+        watcher.STATE.connectivity_ok = True
+        facts = self._facts(watcher, [], None)
+        ok = watcher._debounced_connectivity(facts, None, client_ok=False)
+        assert ok is False                       # hard: condemned immediately
+        assert watcher.STATE.conn_unhealthy_checks == 0
+
+    def test_carrier_down_is_hard(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:34", is_usb=True)
+        watcher.STATE.connectivity_ok = True
+        facts = self._facts(watcher, [usb], usb)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=True):  # NO-CARRIER
+            ok = watcher._debounced_connectivity(facts, usb, client_ok=False)
+        assert ok is False
+
+    def test_wired_ok_is_online_without_debounce(self, watcher):
+        watcher.STATE.conn_unhealthy_checks = 5
+        facts = self._facts(watcher, [], None, wired_ok=True)
+        ok = watcher._debounced_connectivity(facts, None, client_ok=False)
+        assert ok is True
+        assert watcher.STATE.conn_unhealthy_checks == 0
+
+
 class TestHealthMemo:
     """C-WP0: is_wifi_client_healthy is sampled once per (pass, ifname) and the
     recovery classifier and status snapshot see the same verdict in a pass."""

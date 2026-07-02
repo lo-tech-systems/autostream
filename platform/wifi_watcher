@@ -224,6 +224,13 @@ REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot aft
 
 # Multi-adapter failure/adoption tuning (WP5).
 USB_UNHEALTHY_DEBOUNCE = 2              # consecutive unhealthy passes before adapter fallback
+# Source-level connectivity_ok hysteresis (C-WP1): a *soft* unhealthy signal
+# (client connected with carrier up but gateway/IPv4 not ready — transient) must
+# persist this many consecutive passes before the path is declared down.  A
+# healthy pass clears it immediately (slow to condemn, quick to forgive).  HARD
+# signals (no active client / NO-CARRIER) bypass the debounce.  Chosen equal to
+# USB_UNHEALTHY_DEBOUNCE so the effective 2-pass USB debounce is preserved.
+CONNECTIVITY_DOWN_DEBOUNCE = 2
 USB_ADOPTION_STABLE_PASSES = 2         # consecutive passes a USB candidate must be present
 PLAYING_STATUS_URL = os.environ.get(
     'APP_PLAYING_STATUS_URL', 'http://127.0.0.1:8080/api/playing-status'
@@ -407,6 +414,9 @@ class NetworkMonitorState:
     wifistate: str = "unknown"        # "configured" / "unconfigured" / "unknown"
     wiredstate: str = "unknown"       # "connected" / "disconnected" / "unknown"
     connectivity_ok: bool = False     # "healthy" using the same validation logic as initial wifi checks
+    # Consecutive *soft* unhealthy passes for the connectivity_ok down-debounce
+    # (C-WP1); reset to 0 on any healthy pass or a hard failure.
+    conn_unhealthy_checks: int = 0
 
     # Setup / AP state.  ``setup_mode`` stays the "a hotspot session is active"
     # boolean read across the modules and tests; ``hotspot`` is the authoritative
@@ -1650,12 +1660,52 @@ def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
         if wifi_cfg
         else False
     )
-    active_path_ok = bool(facts.wired_ok or client_ok)
-    conn_ok = active_path_ok
+    # Apply source-level hysteresis (C-WP1): one stable connectivity verdict that
+    # every downstream consumer (next_mode, boot-entry, reconnect) reads, so a
+    # single soft blip on the active path no longer flips Mode or triggers a
+    # failover.  active_path_ok tracks the same debounced verdict.
+    conn_ok = _debounced_connectivity(facts, active_client, client_ok)
+    active_path_ok = conn_ok
     return HealthContext(
         fctx, health_ifname=health_ifname, wifi_connected=wifi_connected,
         client_ok=client_ok, conn_ok=conn_ok, active_path_ok=active_path_ok,
     )
+
+
+def _connectivity_failure_is_hard(facts: "Facts", active_client) -> bool:
+    """True when this pass's connectivity failure is a HARD signal (no debounce).
+
+    Hard: nothing configured, no adapter carrying a client, or the active client
+    reports NO-CARRIER (link down).  Soft (debounced): the client is connected
+    with carrier up but the gateway/IPv4 is not ready — the transient-prone case
+    the field log identified (a single ``is_gateway_reachable`` miss).
+    """
+    if not facts.wifi_configured or active_client is None:
+        return True
+    return wifi_net.read_link_down(active_client.ifname) is True
+
+
+def _debounced_connectivity(facts: "Facts", active_client, client_ok: bool) -> bool:
+    """Stable connectivity_ok with soft-fail hysteresis (C-WP1, field log 01-Jul).
+
+    Healthy (wired or client) -> True immediately and the counter resets.  A hard
+    unhealthy signal condemns the path at once.  A soft unhealthy signal only
+    condemns after CONNECTIVITY_DOWN_DEBOUNCE consecutive passes; until then the
+    prior verdict is held (slow to condemn, quick to forgive).
+    """
+    if facts.wired_ok or client_ok:
+        with state_lock:
+            STATE.conn_unhealthy_checks = 0
+        return True
+    if _connectivity_failure_is_hard(facts, active_client):
+        with state_lock:
+            STATE.conn_unhealthy_checks = 0
+        return False
+    with state_lock:
+        STATE.conn_unhealthy_checks += 1
+        condemned = STATE.conn_unhealthy_checks >= CONNECTIVITY_DOWN_DEBOUNCE
+        prior = STATE.connectivity_ok
+    return False if condemned else prior
 
 
 # ---- Phase A handlers (event/timer, PreFactsContext, before gather_facts) ----
@@ -1927,7 +1977,11 @@ def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
         return Verdict.CONTINUE
 
     boot_age = hctx.now - hctx.boot_time
-    offline = (not facts.wifi_configured) or (not hctx.wifi_connected) or (not hctx.client_ok)
+    # Consume the *debounced* connectivity verdict (C-WP1): a single soft blur on
+    # the active path in the boot window must not trip boot-entry into a failover
+    # (field log 01-Jul-2026).  wifi_connected stays as a fast hard-disconnect
+    # signal; conn_ok replaces the raw per-pass client_ok.
+    offline = (not facts.wifi_configured) or (not hctx.wifi_connected) or (not hctx.conn_ok)
     should_enter_ap = (
         boot_age >= BOOT_AP_GRACE
         and boot_age <= BOOT_AP_CUTOFF
