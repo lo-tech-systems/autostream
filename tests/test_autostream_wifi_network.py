@@ -885,3 +885,42 @@ class TestDefaultGatewayIpv4:
         with patch.object(wifi_net, "_run_ip_json", return_value=routes):
             assert wifi_net.default_gateway_ipv4("wlan0") == "192.168.1.1"
             assert wifi_net.default_gateway_ipv4("wlan1") == ""
+
+
+class TestConfigureCandidateCmds:
+    """D-WP1 — newly-committed client profiles are created with autoconnect=no so
+    the watcher's single-decider path is the only agent that brings a client up."""
+
+    def _modify_cmd(self, cmds):
+        # The connection.modify command is the one carrying the property tokens.
+        return next(c for c in cmds if c[:3] == ["nmcli", "connection", "modify"])
+
+    def test_open_network_sets_autoconnect_no(self):
+        cmds, log_cmds = wifi_net.configure_candidate_cmds(
+            "autostream-cand", "wlan0", "HomeNet", "")
+        modify = self._modify_cmd(cmds)
+        assert "connection.autoconnect" in modify
+        idx = modify.index("connection.autoconnect")
+        assert modify[idx + 1] == "no"
+        # infrastructure + ipv4.method auto are still present.
+        assert "802-11-wireless.mode" in modify and "infrastructure" in modify
+        assert "ipv4.method" in modify and "auto" in modify
+        # No PSK command for an open network.
+        assert not any("802-11-wireless-security.psk" in c for c in cmds)
+
+    def test_protected_network_sets_autoconnect_no_and_masks_psk(self):
+        cmds, log_cmds = wifi_net.configure_candidate_cmds(
+            "autostream-cand", "wlan0", "HomeNet", "s3cr3tpass")
+        modify = self._modify_cmd(cmds)
+        idx = modify.index("connection.autoconnect")
+        assert modify[idx + 1] == "no"
+        # The PSK is present in cmds but masked in log_cmds.
+        assert any("s3cr3tpass" in c for c in cmds)
+        assert not any("s3cr3tpass" in c for c in log_cmds)
+
+    def test_autoconnect_no_applies_on_both_variants(self):
+        # configure_candidate_cmds is variant-agnostic (same module drives the
+        # appliance and the Dial), so a single assertion covers both.
+        cmds, _ = wifi_net.configure_candidate_cmds("c", "wlan1", "SSID", "pw12345678")
+        modify = self._modify_cmd(cmds)
+        assert modify[modify.index("connection.autoconnect") + 1] == "no"

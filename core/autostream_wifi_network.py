@@ -1201,6 +1201,9 @@ def configure_candidate_cmds(
         "nmcli", "connection", "modify", con_name,
         "802-11-wireless.mode", "infrastructure",
         "ipv4.method", "auto",
+        # D-WP1: the watcher owns activation/reconnection; disable NM autoconnect
+        # so NM never races the watcher's single-decider path onto a stale radio.
+        "connection.autoconnect", "no",
     ]
     cmds = [add, modify]
     log_cmds = [add, modify]
