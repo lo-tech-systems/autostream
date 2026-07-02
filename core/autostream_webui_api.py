@@ -2252,14 +2252,18 @@ def _network_warning_rank(adapter: dict) -> int | None:
     warning = str(policy.get("warning") or "").strip()
     if policy.get("quarantined") is True or warning == "quarantined":
         return 0
-    if warning == "reset_budget_exhausted":
+    # A no-IP-suppressed / demoted adapter is as serious as a reset budget spend
+    # (held back out of service) — rank it just below quarantined (C-WP4).
+    if warning == "no_ip_held_back" or policy.get("held_back") is True:
         return 1
-    if warning == "no_ip_address":
+    if warning == "reset_budget_exhausted":
         return 2
-    if warning == "resetting":
+    if warning == "no_ip_address":
         return 3
-    if warning == "recent_resets":
+    if warning == "resetting":
         return 4
+    if warning == "recent_resets":
+        return 5
     return None
 
 
@@ -2279,16 +2283,23 @@ def _network_warning_fields(adapter: dict) -> dict:
             warning = "USB WiFi adapter held back after repeated failures. Replace the adapter if this keeps happening."
         severity = "danger"
     elif rank == 1:
-        warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+        # C-WP4: no-IP-suppressed / demoted spare — the "held back" copy now
+        # covers no-IP suppression (previously wired only to quarantine), and
+        # notes the device fell back to the on-board radio.
+        warning = ("USB WiFi adapter held back after repeated failures — running on on-board WiFi. "
+                   "Replace the adapter if this keeps happening.")
         severity = "danger"
     elif rank == 2:
+        warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+        severity = "danger"
+    elif rank == 3:
         warning = ("USB WiFi adapter detected but could not get a network address — "
                    "check the network's DHCP, the adapter's band, or the dongle.")
         severity = "warning"
-    elif rank == 3:
+    elif rank == 4:
         warning = "USB WiFi adapter is being reset. Network connection may be unstable for a minute."
         severity = "warning"
-    elif rank == 4:
+    elif rank == 5:
         reset_text = "1 reset" if resets == 1 else f"{resets} resets"
         warning = f"Warning: the USB WiFi adapter has needed {reset_text} in the last 24 hours."
         severity = "warning"

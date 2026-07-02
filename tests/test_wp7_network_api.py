@@ -238,6 +238,26 @@ class TestBuildNetworkCardPresentation:
         assert "could not get a network address" in result["warning"]
         assert result["warning_severity"] == "warning"
 
+    def test_no_ip_held_back_warning(self):
+        # C-WP4: a no-IP-suppressed / demoted spare renders the "held back …
+        # running on on-board WiFi" copy (previously wired only to quarantine).
+        adapter = _usb_adapter(warning="no_ip_held_back", role="spare", ifname="wlan1")
+        adapter["policy"]["held_back"] = True
+        s = _ok_status({"adapters": [adapter]})
+        result = build_network_card_presentation(s)
+        assert "held back after repeated failures" in result["warning"]
+        assert "on-board WiFi" in result["warning"]
+        assert result["warning_severity"] == "danger"
+
+    def test_held_back_flag_alone_renders_warning(self):
+        # The held_back policy flag drives the warning even without the code.
+        adapter = _usb_adapter(role="spare", ifname="wlan1")
+        adapter["policy"]["held_back"] = True
+        s = _ok_status({"adapters": [adapter]})
+        result = build_network_card_presentation(s)
+        assert "held back after repeated failures" in result["warning"]
+        assert result["warning_severity"] == "danger"
+
     def test_active_usb_warning_preferred_over_spare_higher_priority(self):
         s = _with_device(
             _ok_status({
