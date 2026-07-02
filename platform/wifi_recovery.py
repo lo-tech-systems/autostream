@@ -740,45 +740,20 @@ def _maybe_request_dead_phy_reboot(w, target: TargetAdapter, now: float) -> bool
 
     Returns True only when a reboot was accepted (owns the pass).  When the
     persistent guard or in-process rate limit suppresses the reboot, returns
-    False so the monitor loop's no-active-path catch-all can still apply.
+    False so the monitor loop's no-active-path catch-all can still apply.  The
+    guard/throttle/stamp mechanics live in the shared request_guarded_reboot
+    (C2-WP5); this function owns only the dead-for threshold and the target.
     """
     with w.state_lock:
         first_failure = w.STATE.dead_adapter_first_failure
-        retry_after = w.STATE.conn_reboot_retry_after
     base = first_failure if first_failure is not None else now
     dead_for = now - base
     if dead_for < w.DEAD_ADAPTER_REBOOT_AFTER:
         return False
 
-    now_wall = time.time()
-    if not dead_phy_reboot_guard_permits(w, now_wall):
-        w.logger.warning(
-            "Persistent dead-PHY reboot guard suppresses reboot for %s; "
-            "leaving no-active-path catch-all in effect", target.ifname,
-        )
-        return False
-
-    if now < retry_after:
-        if retry_after == float('inf'):
-            w.logger.debug("Dead-PHY NetworkDown reboot accepted; awaiting reboot")
-        else:
-            w.logger.debug("Dead-PHY reboot suppressed (in-process); retry in %.0fs",
-                           retry_after - now)
-        return False
-
-    w.logger.warning(
-        "Dead Wi-Fi adapter %s offline > %ds; requesting reboot",
-        target.ifname, w.DEAD_ADAPTER_REBOOT_AFTER,
-    )
-    accepted = w.reboot_system("NetworkDown")
-    with w.state_lock:
-        w.STATE.conn_reboot_retry_after = (
-            float('inf') if accepted else now + w.REBOOT_RATE_LIMIT_RETRY
-        )
-    if accepted:
-        record_dead_phy_reboot_request(w, now_wall, target)
-        return True
-    return False
+    reason = ("Dead Wi-Fi adapter %s offline > %ds"
+              % (target.ifname, w.DEAD_ADAPTER_REBOOT_AFTER))
+    return w.request_guarded_reboot(now, reason, domain="dead_phy", target=target)
 
 
 def escalate_dead_adapter_recovery(w, adapters: list, wired_connected: bool) -> bool:

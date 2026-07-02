@@ -139,6 +139,23 @@ def _restore_root_log_level():
     _logging.getLogger().setLevel(saved)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_reboot_guard(tmp_path):
+    """Point the persistent reboot-guard stamp at a per-test temp file.
+
+    C2-WP5 routes every reboot domain (gateway-down, 12-hour catch-all, dead-PHY)
+    through request_guarded_reboot, which consults/writes the persistent guard, so
+    any reboot-exercising test now touches the stamp.  Isolating it per test keeps
+    the guard off the real /var path and prevents cross-test accumulation.  Tests
+    that need their own stamp path still patch DEAD_ADAPTER_REBOOT_STAMP locally
+    (the inner patch wins).
+    """
+    mod = _get_watcher()
+    stamp = str(tmp_path / "reboot-guard.json")
+    with patch.object(mod, "DEAD_ADAPTER_REBOOT_STAMP", stamp):
+        yield
+
+
 @pytest.fixture()
 def watcher():
     """Return the loaded wifi_watcher module and reset STATE before each test."""
@@ -2787,6 +2804,70 @@ class TestDeadPhyRebootGuard:
         stamp.write_text("{ not json", encoding="utf-8")
         with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(stamp)):
             assert watcher._dead_phy_reboot_guard_permits(1_000_000.0) is True
+
+
+class TestUnifiedGuardedReboot:
+    """C2-WP5 — every reboot domain (gateway-down, 12-hour catch-all, dead-PHY)
+    goes through request_guarded_reboot, sharing one persistent cross-boot guard
+    and one in-process throttle.  The stamp is isolated per test by the autouse
+    _isolate_reboot_guard fixture."""
+
+    def _read_guard(self, watcher, now_wall=1_000_000.0):
+        return watcher.wifi_recovery.read_dead_phy_reboot_guard(watcher, now_wall)
+
+    def test_network_down_domain_records_in_persistent_guard(self, watcher):
+        # Gap closed: an accepted network-down reboot is now counted in the same
+        # cross-boot window as dead-PHY (previously it was not recorded at all).
+        now = 5000.0
+        with patch("time.time", return_value=1_000_000.0), \
+             patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            accepted = watcher.request_guarded_reboot(now, "gw down", domain="network_down")
+        assert accepted is True
+        reboot.assert_called_once_with("NetworkDown")
+        assert watcher.STATE.conn_reboot_retry_after == float("inf")
+        assert len(self._read_guard(watcher)["requests"]) == 1
+
+    def test_persistent_guard_suppresses_network_down_domain(self, watcher):
+        # A network-down reboot is now suppressed once the cross-boot cap is hit.
+        now = 5000.0
+        with patch("time.time", return_value=1_000_000.0):
+            for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
+                watcher._record_dead_phy_reboot_request(1_000_000.0, None)
+            with patch.object(watcher, "reboot_system", return_value=True) as reboot:
+                accepted = watcher.request_guarded_reboot(now, "gw down", domain="network_down")
+        assert accepted is False
+        reboot.assert_not_called()
+
+    def test_in_process_throttle_suppresses(self, watcher):
+        now = 5000.0
+        watcher.STATE.conn_reboot_retry_after = now + 60.0
+        with patch("time.time", return_value=1_000_000.0), \
+             patch.object(watcher, "reboot_system", return_value=True) as reboot:
+            accepted = watcher.request_guarded_reboot(now, "gw down", domain="network_down")
+        assert accepted is False
+        reboot.assert_not_called()
+
+    def test_rejected_reboot_sets_finite_retry_and_no_record(self, watcher):
+        now = 5000.0
+        with patch("time.time", return_value=1_000_000.0), \
+             patch.object(watcher, "reboot_system", return_value=False) as reboot:
+            accepted = watcher.request_guarded_reboot(now, "gw down", domain="network_down")
+        assert accepted is False
+        reboot.assert_called_once_with("NetworkDown")
+        assert watcher.STATE.conn_reboot_retry_after == now + watcher.REBOOT_RATE_LIMIT_RETRY
+        assert self._read_guard(watcher)["requests"] == []  # only accepted reboots are stamped
+
+    def test_dead_phy_domain_records_target_identity(self, watcher):
+        target = watcher.wifi_recovery.TargetAdapter(
+            ifname="wlan1", stable_id="sid-1", kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True, resettable_usb=True)
+        now = 5000.0
+        with patch("time.time", return_value=1_000_000.0), \
+             patch.object(watcher, "reboot_system", return_value=True):
+            watcher.request_guarded_reboot(now, "dead phy", domain="dead_phy", target=target)
+        req = self._read_guard(watcher)["requests"][0]
+        assert req["ifname"] == "wlan1"
+        assert req["stable_id"] == "sid-1"
 
 
 # ---------------------------------------------------------------------------

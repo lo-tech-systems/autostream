@@ -1554,25 +1554,50 @@ def _sleep_or_finish_monitor_pass(run_once: bool) -> bool:
     return False
 
 
-def _request_network_down_reboot(now: float, reason: str) -> None:
-    """Request a guarded NetworkDown reboot using the shared in-process throttle."""
+def request_guarded_reboot(now: float, reason: str, *, domain: str, target=None) -> bool:
+    """Single guarded NetworkDown reboot entry point for every reboot domain (C2-WP5).
+
+    Applies BOTH the persistent cross-boot guard (previously dead-PHY only) and the
+    shared in-process throttle to every request, so the gateway-down and 12-hour
+    catch-all domains are now counted in the same 24h reboot window as dead-PHY.
+    A reboot happens only when the persistent guard permits AND the in-process
+    throttle allows; an accepted reboot stamps both.  Returns True only when a
+    reboot was accepted (the caller may then own the pass).
+
+    ``domain`` is a short label for logging; ``target`` (a dead-PHY TargetAdapter)
+    is recorded in the guard entry when present, else the entry carries no adapter.
+    """
+    now_wall = time.time()
+    if not wifi_recovery.dead_phy_reboot_guard_permits(_self_module(), now_wall):
+        logger.warning("Persistent reboot guard suppresses %s reboot (%s)", domain, reason)
+        return False
     with state_lock:
         retry_after = STATE.conn_reboot_retry_after
-    if now >= retry_after:
-        logger.warning("%s; requesting reboot", reason)
-        accepted = reboot_system("NetworkDown")
-        with state_lock:
-            STATE.conn_reboot_retry_after = (
-                float('inf') if accepted
-                else now + REBOOT_RATE_LIMIT_RETRY
-            )
-    elif retry_after == float('inf'):
-        logger.debug("NetworkDown reboot accepted; waiting for system to reboot")
-    else:
-        logger.debug(
-            "NetworkDown reboot suppressed; will retry in %.0fs",
-            retry_after - now,
+    if now < retry_after:
+        if retry_after == float('inf'):
+            logger.debug("%s reboot accepted; waiting for system to reboot", domain)
+        else:
+            logger.debug("%s reboot suppressed; will retry in %.0fs", domain, retry_after - now)
+        return False
+    logger.warning("%s; requesting reboot", reason)
+    accepted = reboot_system("NetworkDown")
+    with state_lock:
+        STATE.conn_reboot_retry_after = (
+            float('inf') if accepted else now + REBOOT_RATE_LIMIT_RETRY
         )
+    if accepted:
+        wifi_recovery.record_dead_phy_reboot_request(_self_module(), now_wall, target)
+        return True
+    return False
+
+
+def _request_network_down_reboot(now: float, reason: str) -> None:
+    """Request a guarded NetworkDown reboot (gateway-down / 12-hour catch-all).
+
+    Thin wrapper over request_guarded_reboot (C2-WP5) so these domains share the
+    persistent cross-boot guard and the in-process throttle with dead-PHY.
+    """
+    request_guarded_reboot(now, reason, domain="network_down")
 
 
 # ** MONITOR-LOOP HANDLER DECOMPOSITION (loop-handlers plan) **
