@@ -1162,6 +1162,40 @@ class TestNoIpLedgerAndDiagnosis:
         assert rec["health"]["state"] == "degraded_no_ip"
         assert rec["policy"]["warning"] == "no_ip_address"
 
+    def test_suppressed_spare_published_as_held_back(self, watcher):
+        # C-WP3: a no-IP-suppressed spare is a distinct held-back state (not the
+        # transient degraded_no_ip), carries the held_back marker, and is
+        # surfaced even with carrier down.
+        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        for _ in range(watcher.wifi_recovery.NOIP_STOP_AFTER):
+            watcher.wifi_recovery.record_noip_failure(watcher, usb.permanent_mac, now=100.0)
+        assert watcher.wifi_recovery.noip_retry_suppressed(watcher, usb.permanent_mac, 100.0) is True
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+        rec = snap["adapters"][0]
+        assert rec["health"]["state"] == "no_ip_held_back"   # not link_down / degraded_no_ip
+        assert rec["policy"]["warning"] == "no_ip_held_back"
+        assert rec["policy"]["held_back"] is True
+
+    def test_device_publishes_builtin_fallback_marker(self, watcher):
+        # C-WP3: the demoted-from-active marker — device reports it is running on
+        # the on-board radio as a fallback.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.using_builtin_fallback = True
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.build_network_status_snapshot([builtin], wired_connected=False, wired_ok=False)
+        assert snap["device"]["using_builtin_fallback"] is True
+
     def test_prune_drops_absent_macs(self, watcher):
         wr = watcher.wifi_recovery
         wr.record_noip_failure(watcher, self.MAC, now=0.0)

@@ -102,7 +102,7 @@ def _primary_wired_ifname(addresses: dict) -> str:
 
 def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
                              is_dead, is_link_down, quarantined, is_hotspot,
-                             is_no_ip=False):
+                             is_no_ip=False, noip_suppressed=False):
     """Map facts + recovery flags to a defined adapter health state/severity."""
     if not present:
         state = "absent"
@@ -116,6 +116,13 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
         state = "dead_phy"
     elif healthy:
         state = "healthy"
+    elif noip_suppressed:
+        # No-IP ledger spent (retries suppressed): the adapter has been *held
+        # back* / demoted out of service (C-WP3).  Distinct from a transient
+        # degraded_no_ip, and surfaced regardless of carrier so a demoted
+        # carrier-down spare is no longer indistinguishable from a plain
+        # link_down / "".
+        state = "no_ip_held_back"
     elif is_no_ip:
         # Overlay verdict: associated/carrier-up but repeatedly could not get a
         # usable IP/gateway (defect 3) — distinct from a transient `connecting`.
@@ -205,6 +212,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         # repeated no-IP failures recorded in the overlay ledger.
         noip_count = rf.noip_count
         is_no_ip = rf.is_no_ip
+        noip_suppressed = rf.noip_suppressed
 
         if is_hotspot:
             role = "hotspot"
@@ -216,7 +224,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         if healthy:
             any_healthy = True
         elif a.managed and not is_hotspot and (
-            role == "client" or is_no_ip or is_dead or quarantined
+            role == "client" or is_no_ip or noip_suppressed or is_dead or quarantined
         ):
             # Only an *attributed* problem degrades whole-device state: the active
             # client, a no-IP adapter, a dead-PHY adapter, or a quarantined one.
@@ -232,6 +240,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             present=True, managed=a.managed, carrier=carrier, healthy=healthy,
             nm_state=a.state, is_dead=is_dead, is_link_down=(link_down is True),
             quarantined=quarantined, is_hotspot=is_hotspot, is_no_ip=is_no_ip,
+            noip_suppressed=noip_suppressed,
         )
 
         if quarantined:
@@ -254,6 +263,11 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             warning = "resetting"
         elif budget_exhausted:
             warning = "reset_budget_exhausted"
+        elif noip_suppressed:
+            # Retries suppressed: demoted/held back out of service (C-WP3).  A
+            # distinct code from the transient "no_ip_address" so the web card
+            # can say the adapter was taken out of service, not merely slow.
+            warning = "no_ip_held_back"
         elif is_no_ip:
             warning = "no_ip_address"
         elif recent_reset_count:
@@ -300,6 +314,9 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 "resets_24h": recent_reset_count,
                 "reset_budget_24h": w.USB_MAX_RESETS_PER_WINDOW,
                 "warning": warning,
+                # Demoted/held back out of service after repeated no-IP failures
+                # (C-WP3): the no-IP retry budget is spent for this adapter.
+                "held_back": bool(noip_suppressed),
             },
         })
 
@@ -384,6 +401,10 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         "device": {
             "state": device_state,
             "mode": mode_value,
+            # True when the client is running on the built-in radio as a fallback
+            # because a configured USB path failed/was demoted (C-WP3): lets the
+            # web card say "running on on-board WiFi".
+            "using_builtin_fallback": bool(using_fallback),
             "primary_ifname": primary_ifname,
             "primary_kind": primary_kind,
             "primary_ssid": primary_ssid,
