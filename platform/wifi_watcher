@@ -92,12 +92,12 @@ The operating mode is an explicit ``Mode`` (BOOT / ONLINE / OFFLINE_RECONNECTING
 / HOTSPOT / REBOOT_PENDING), not an emergent property of a dozen booleans, and is
 published as ``device.mode``.  All hotspot entry/exit policy is one five-row
 ``PURPOSE_TABLE`` keyed by ``HotspotPurpose``; the live session is a
-``HotspotSession`` on STATE.  The decision core is **pure** (constraint 10):
-``next_mode(state, facts)`` and the ``PURPOSE_TABLE`` lookups take values in and
-return values out — no STATE mutation, no subprocess, no effects, no ``w`` seam —
-so they can lift into a pure ``platform/wifi_policy.py`` unchanged.  The watcher's
-loop *applies* those values each pass (setting ``STATE.mode``/``STATE.hotspot`` and
-invoking effects).  The
+``HotspotSession`` on STATE.  The decision core is **pure** (constraint 10) and
+now lives in ``platform/wifi_policy.py``: ``next_mode(state, facts)``, the
+``PURPOSE_TABLE`` lookups, and ``next_recovery_action`` take values in and return
+values out — no STATE mutation, no subprocess, no effects, no ``w`` seam.  The
+watcher re-exports those names and its loop *applies* the returned values each
+pass (setting ``STATE.mode``/``STATE.hotspot`` and invoking effects).  The
 adapter-remediation overlay (``wifi_recovery.diagnose_client_failure`` and the
 no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
 consumes them and applies the connectivity transition.  Off-thread slow
@@ -280,10 +280,10 @@ LOG_LEVEL_TTL_MAX = 3600
 
 # ** EXPLICIT STATE MODEL (state-machine refactor) **
 #
-# These types are the permanent explicit model the watcher migrates onto.  They
-# are pure data + pure classifiers (constraint 10): no STATE mutation, no
-# subprocess, no effects, and no dependency on the `w` seam — so they can later
-# lift into a pure platform/wifi_policy.py unchanged.  next_mode() is the
+# These types are the permanent explicit model the watcher runs on.  They are
+# pure data + pure classifiers (constraint 10): no STATE mutation, no subprocess,
+# no effects, and no dependency on the `w` seam — and now live in the standalone
+# platform/wifi_policy.py module (re-exported below).  next_mode() is the
 # permanent pure forward classifier; the loop applies its result by setting
 # STATE.mode each pass, and the mode is published as device.mode.
 

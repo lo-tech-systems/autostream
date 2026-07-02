@@ -182,18 +182,24 @@ class TestBuiltinAdapterRecovery:
 class TestStateMachineInvariants:
     RECOVERY_SRC = (REPO_ROOT / "platform" / "wifi_recovery.py").read_text(encoding="utf-8")
     STATUS_SRC = (REPO_ROOT / "platform" / "wifi_status.py").read_text(encoding="utf-8")
+    # The pure decision core moved to platform/wifi_policy.py (Phase B); the
+    # watcher re-exports the names and its loop applies the results.
+    POLICY_SRC = (REPO_ROOT / "platform" / "wifi_policy.py").read_text(encoding="utf-8")
 
     def test_explicit_mode_and_purpose_table_present(self):
         """The operating mode and hotspot policy are explicit, not emergent."""
-        assert "class Mode(" in WIFI_WATCHER_SRC
-        assert "class HotspotPurpose(" in WIFI_WATCHER_SRC
+        assert "class Mode(" in self.POLICY_SRC
+        assert "class HotspotPurpose(" in self.POLICY_SRC
+        assert "PURPOSE_TABLE" in self.POLICY_SRC
+        # Still re-exported by the watcher for its callers.
         assert "PURPOSE_TABLE" in WIFI_WATCHER_SRC
 
     def test_permanent_next_mode_core_and_authoritative_state_mode(self):
-        """The permanent pure core is next_mode (+ PURPOSE_TABLE); STATE.mode is
-        applied by the loop.  The WP2 shadow classifier name is gone."""
-        assert "def next_mode(" in WIFI_WATCHER_SRC
+        """The permanent pure core is next_mode (+ PURPOSE_TABLE) in wifi_policy;
+        STATE.mode is applied by the loop.  The WP2 shadow classifier name is gone."""
+        assert "def next_mode(" in self.POLICY_SRC
         assert "def derive_mode(" not in WIFI_WATCHER_SRC
+        assert "def derive_mode(" not in self.POLICY_SRC
         assert "STATE.mode = next_mode(" in WIFI_WATCHER_SRC
 
     def test_retired_flags_are_gone_from_state(self):

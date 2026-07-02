@@ -3231,136 +3231,12 @@ class TestRecoveryFacts:
         assert rec.adapters_by_ifname["wlan1"].noip_suppressed is True
 
 
-class TestNextRecoveryAction:
-    """Recovery-ladder WP2 — the pure next_recovery_action classifier."""
-
-    def _arf(self, watcher, ifname, *, is_usb=False, is_builtin=False, healthy=False,
-             link_down=False, quarantined=False, noip_suppressed=False):
-        return watcher.wifi_recovery.AdapterRecoveryFacts(
-            ifname=ifname, stable_id=ifname,
-            kind=("usb_wifi" if is_usb else "builtin_wifi"),
-            is_usb=is_usb, is_builtin=is_builtin, managed=True, healthy=healthy,
-            link_down=link_down, carrier=(link_down is False),
-            quarantined_until=(1.0 if quarantined else None), quarantined=quarantined,
-            recent_reset_count=0, total_reset_count=0, budget_exhausted=False,
-            noip_count=0, noip_suppressed=noip_suppressed, is_no_ip=False,
-        )
-
-    def _rf(self, watcher, records, *, onboard="", usb=(), preferred_usb="",
-            hotspot="", active="", saved=True, wired_ok=False, now=1000.0):
-        return watcher.RecoveryFacts(
-            adapters_by_ifname={r.ifname: r for r in records},
-            onboard_ifname=onboard, usb_ifnames=tuple(usb),
-            preferred_usb_ifname=preferred_usb, hotspot_ifname=hotspot,
-            active_ifname=active, saved_configured=saved, wired_ok=wired_ok, taken_at=now,
-        )
-
-    def _act(self, watcher, facts):
-        return watcher.next_recovery_action(watcher.STATE, facts)
-
-    def test_wired_ok_holds(self, watcher):
-        facts = self._rf(watcher, [], wired_ok=True)
-        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
-
-    def test_unconfigured_enters_first_run(self, watcher):
-        facts = self._rf(watcher, [], saved=False)
-        a = self._act(watcher, facts)
-        assert a.kind is watcher.RecoveryKind.ENTER_HOTSPOT
-        assert a.purpose is watcher.HotspotPurpose.FIRST_RUN
-
-    def test_unconfigured_in_hotspot_holds(self, watcher):
-        facts = self._rf(watcher, [], saved=False, hotspot="wlan0")
-        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
-
-    def test_active_healthy_holds(self, watcher):
-        usb = self._arf(watcher, "wlan1", is_usb=True, healthy=True)
-        facts = self._rf(watcher, [usb], usb=("wlan1",), preferred_usb="wlan1",
-                         active="wlan1")
-        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
-
-    def test_field_log_wedged_usb_activates_onboard(self, watcher):
-        # The 30-Jun scenario: in a BOOT_RECOVERY hotspot on onboard wlan0, USB
-        # wlan1 wedged and no-IP-suppressed -> climb to onboard, dropping the AP.
-        onboard = self._arf(watcher, "wlan0", is_builtin=True, healthy=False)
-        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=True, noip_suppressed=True)
-        facts = self._rf(watcher, [onboard, usb], onboard="wlan0", usb=("wlan1",),
-                         preferred_usb="", hotspot="wlan0", active="wlan1")
-        a = self._act(watcher, facts)
-        assert a.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
-        assert a.ifname == "wlan0"
-        assert a.drop_hotspot is True
-
-    def test_boot_entry_tries_onboard_before_hotspot(self, watcher):
-        # USB active but wedged, onboard idle, not yet in a hotspot -> onboard first.
-        onboard = self._arf(watcher, "wlan0", is_builtin=True)
-        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=True)
-        facts = self._rf(watcher, [onboard, usb], onboard="wlan0", usb=("wlan1",),
-                         preferred_usb="wlan1", active="wlan1")
-        a = self._act(watcher, facts)
-        assert a.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
-        assert a.drop_hotspot is False
-
-    def test_usable_usb_preferred_over_onboard(self, watcher):
-        onboard = self._arf(watcher, "wlan0", is_builtin=True)
-        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=False)
-        facts = self._rf(watcher, [onboard, usb], onboard="wlan0", usb=("wlan1",),
-                         preferred_usb="wlan1", active="")
-        a = self._act(watcher, facts)
-        assert a.kind is watcher.RecoveryKind.ACTIVATE_USB
-        assert a.ifname == "wlan1"
-
-    def test_usb_active_no_ip_holds(self, watcher):
-        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=False, healthy=False)
-        facts = self._rf(watcher, [usb], usb=("wlan1",), preferred_usb="wlan1",
-                         active="wlan1")
-        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
-
-    def test_onboard_failed_active_no_usb_enters_hotspot(self, watcher):
-        onboard = self._arf(watcher, "wlan0", is_builtin=True, healthy=False)
-        facts = self._rf(watcher, [onboard], onboard="wlan0", active="wlan0")
-        a = self._act(watcher, facts)
-        assert a.kind is watcher.RecoveryKind.ENTER_HOTSPOT
-        assert a.purpose is watcher.HotspotPurpose.BOOT_RECOVERY
-
-    def test_single_wedged_usb_no_onboard_defers_to_reset_ladder(self, watcher):
-        usb = self._arf(watcher, "wlan1", is_usb=True, link_down=True)
-        facts = self._rf(watcher, [usb], usb=("wlan1",), preferred_usb="wlan1",
-                         active="wlan1")
-        assert self._act(watcher, facts).kind is watcher.RecoveryKind.HOLD
-
-    def test_classifier_has_no_w_seam(self, watcher):
-        import inspect
-        params = list(inspect.signature(watcher.next_recovery_action).parameters)
-        assert "w" not in params
-
-
 class TestExplicitModelInvariants:
-    """WP8 — the permanent decision core is pure and the overlay decision is sited."""
+    """WP8 — the overlay decision is sited in wifi_recovery.
 
-    def test_next_mode_always_returns_valid_mode(self, watcher):
-        import inspect
-        facts = SimpleNamespace(wired_ok=False, taken_at=0.0)
-        # Exercise a spread of states; every result must be a Mode member.
-        for setup, reboot, conn, boot in [
-            (True, 0.0, False, None), (False, float("inf"), False, None),
-            (False, 0.0, True, None), (False, 0.0, False, 0.0), (False, 0.0, False, None),
-        ]:
-            watcher.STATE.setup_mode = setup
-            watcher.STATE.conn_reboot_retry_after = reboot
-            watcher.STATE.connectivity_ok = conn
-            watcher.STATE.boot_time = boot
-            assert watcher.next_mode(watcher.STATE, facts) in set(watcher.Mode)
-
-    def test_decision_core_has_no_w_seam(self, watcher):
-        # The pure classifier must not take the `w` hub seam (constraint 10).
-        import inspect
-        params = list(inspect.signature(watcher.next_mode).parameters)
-        assert "w" not in params
-
-    def test_purpose_table_entries_are_frozen(self, watcher):
-        policy = watcher.PURPOSE_TABLE[watcher.HotspotPurpose.MANUAL]
-        with pytest.raises(Exception):
-            policy.deadline_s = 1.0  # frozen dataclass
+    The pure next_mode / next_recovery_action / PURPOSE_TABLE purity and
+    invariant tests moved to tests/test_wifi_policy.py (Phase B-WP4).
+    """
 
     def test_overlay_decision_only_in_wifi_recovery(self, watcher):
         wr = watcher.wifi_recovery
@@ -3722,82 +3598,18 @@ class TestScanGatedRecovery:
 
 
 class TestExplicitModeClassifier:
-    """WP2/WP8 — the pure next_mode classifier tracks state+facts -> Mode."""
+    """WP2/WP8 — the loop applies the pure next_mode classifier.
 
-    @staticmethod
-    def _facts(watcher, *, wired_ok=False, taken_at=100.0):
-        return SimpleNamespace(wired_ok=wired_ok, taken_at=taken_at)
-
-    def test_setup_mode_is_hotspot(self, watcher):
-        watcher.STATE.setup_mode = True
-        # Hotspot wins even with a reboot accepted or a usable path.
-        watcher.STATE.conn_reboot_retry_after = float("inf")
-        assert watcher.next_mode(watcher.STATE, self._facts(watcher, wired_ok=True)) is watcher.Mode.HOTSPOT
-
-    def test_reboot_pending(self, watcher):
-        watcher.STATE.conn_reboot_retry_after = float("inf")
-        assert watcher.next_mode(watcher.STATE, self._facts(watcher)) is watcher.Mode.REBOOT_PENDING
-
-    def test_online_via_wired(self, watcher):
-        assert watcher.next_mode(watcher.STATE, self._facts(watcher, wired_ok=True)) is watcher.Mode.ONLINE
-
-    def test_online_via_connectivity_ok(self, watcher):
-        watcher.STATE.connectivity_ok = True
-        assert watcher.next_mode(watcher.STATE, self._facts(watcher)) is watcher.Mode.ONLINE
-
-    def test_boot_window_when_offline(self, watcher):
-        watcher.STATE.boot_time = 100.0
-        facts = self._facts(watcher, taken_at=100.0 + watcher.BOOT_AP_GRACE - 1)
-        assert watcher.next_mode(watcher.STATE, facts) is watcher.Mode.BOOT
-
-    def test_offline_reconnecting_after_boot_grace(self, watcher):
-        watcher.STATE.boot_time = 100.0
-        facts = self._facts(watcher, taken_at=100.0 + watcher.BOOT_AP_GRACE + 1)
-        assert watcher.next_mode(watcher.STATE, facts) is watcher.Mode.OFFLINE_RECONNECTING
-
-    def test_next_mode_is_pure(self, watcher):
-        # No STATE mutation, returns a valid Mode value.
-        from dataclasses import fields, asdict
-        before = {f.name: getattr(watcher.STATE, f.name) for f in fields(watcher.STATE)}
-        watcher.STATE.boot_time = 50.0
-        before["boot_time"] = 50.0
-        mode = watcher.next_mode(watcher.STATE, self._facts(watcher))
-        after = {f.name: getattr(watcher.STATE, f.name) for f in fields(watcher.STATE)}
-        assert mode in set(watcher.Mode)
-        assert after == before
+    The pure next_mode state->Mode cases moved to tests/test_wifi_policy.py
+    (Phase B-WP4); these remaining tests verify the loop *applies* the
+    classifier and publishes it as device.mode.
+    """
 
     def test_loop_applies_authoritative_state_mode(self, watcher):
         # The loop applies the classifier by setting STATE.mode each full pass.
         _run_monitor_once(watcher, now=1000.0, wifi_cfg=True,
                           wifi_connected=True, client_ok=True)
         assert watcher.STATE.mode is watcher.Mode.ONLINE
-
-    def test_purpose_table_has_five_rows_matching_spec(self, watcher):
-        P = watcher.HotspotPurpose
-        T = watcher.PURPOSE_TABLE
-        assert set(T) == set(P)
-        # FIRST_RUN: indefinite, eth-suppressible, no probe, no rollback.
-        assert T[P.FIRST_RUN].deadline_s is None
-        assert T[P.FIRST_RUN].eth_suppressible is True
-        assert T[P.FIRST_RUN].probes_return is False
-        assert T[P.FIRST_RUN].rollback is False
-        # Recovery purposes: 30 min, eth-suppressible, probe for return
-        # immediately (involuntary loss -> rejoin ASAP, no grace).
-        for p in (P.BOOT_RECOVERY, P.USB_LOSS_RECOVERY):
-            assert T[p].deadline_s == watcher.AP_MAX_DURATION
-            assert T[p].eth_suppressible is True
-            assert T[p].probes_return is True
-            assert T[p].rollback is False
-            assert T[p].probe_grace_s == 0.0
-        # User-initiated purposes: not eth-suppressible, and they delay probing
-        # for the saved network by HOTSPOT_PROBE_GRACE so the watcher does not
-        # rejoin the network the user opened the portal to change.
-        assert T[P.EXPLICIT_RECONFIGURE].eth_suppressible is False
-        assert T[P.EXPLICIT_RECONFIGURE].rollback is True
-        assert T[P.EXPLICIT_RECONFIGURE].probe_grace_s == watcher.HOTSPOT_PROBE_GRACE
-        assert T[P.MANUAL].eth_suppressible is False
-        assert T[P.MANUAL].rollback is False
-        assert T[P.MANUAL].probe_grace_s == watcher.HOTSPOT_PROBE_GRACE
 
     def test_snapshot_publishes_authoritative_state_mode(self, watcher):
         # device.mode publishes the authoritative STATE.mode the loop applies.
