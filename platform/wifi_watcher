@@ -2647,24 +2647,45 @@ def handle_usb_failure_fallback(facts: "Facts") -> bool:
 def apply_client_failed(event, facts: "Facts") -> bool:
     """Apply an overlay ClientFailed event through the single recovery decider.
 
-    C2-WP1: the USB-failure fallback now ranks client paths via
-    next_recovery_action (the one priority ladder) and engages one via
-    activate_client (through _apply_client_activation), instead of a private
-    builtin-else-hotspot rule.  Behaviour delta: a quarantined / no-IP-suppressed
-    onboard is no longer blindly engaged — the ladder skips it (onboard
-    usability is gated in gather_recovery_facts) and we enter the recovery
-    hotspot instead.  Any non-ACTIVATE verdict (HOLD / ENTER_HOTSPOT) or a failed
-    activation falls to the USB_LOSS_RECOVERY hotspot, preserving the previous
-    "a diagnosed USB failure always ends in onboard-or-hotspot" behaviour.
+    C2-WP1: the USB-failure fallback ranks client paths via next_recovery_action
+    (the one priority ladder) and engages one via activate_client (through
+    _apply_client_activation), instead of a private builtin-else-hotspot rule.
+    Behaviour delta: a quarantined / no-IP-suppressed onboard is no longer
+    blindly engaged — the ladder / gather_recovery_facts gate onboard usability,
+    so a demoted onboard is skipped and we go to the recovery hotspot instead.
+
+    The pre-C2 behaviour "a diagnosed USB failure always tries the built-in
+    before the hotspot" is preserved via an explicit onboard fallback: the
+    overlay fires a ClientFailed on a 2-pass debounce, but the ladder returns
+    HOLD("usb_active_no_ip") for an active USB that still has carrier (it wants
+    the no-IP ledger to govern in steady state), and it may also pick
+    ACTIVATE_USB (re-activate) for an NM-dropped-but-present USB.  In either case
+    — a HOLD, or a failed ladder activation — we still try a *usable* onboard
+    (one the gate did not exclude, and not the adapter the ladder just failed on)
+    before falling to the USB_LOSS_RECOVERY hotspot.  (C2-WP3 will retire the
+    2-pass overlay debounce in favour of the C-WP1 hysteresis, at which point the
+    no-IP-USB case flows entirely through the ladder.)
     """
     logger.info(
         "Overlay ClientFailed(%s) on %s; applying via recovery ladder",
         event.reason, event.ifname or event.mac or "?",
     )
-    raction = next_recovery_action(STATE, gather_recovery_facts(facts))
+    rf = gather_recovery_facts(facts)
+    raction = next_recovery_action(STATE, rf)
     if raction.kind in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD) \
             and _apply_client_activation(raction, facts):
         return True
+    # Ladder held on the failing USB, or its chosen client path failed: fall back
+    # to a usable onboard before the hotspot (not the adapter just attempted, and
+    # not a gated-out quarantined/suppressed onboard).
+    if rf.onboard_ifname and rf.onboard_ifname != raction.ifname:
+        onboard_action = RecoveryAction(
+            RecoveryKind.ACTIVATE_ONBOARD, ifname=rf.onboard_ifname,
+            drop_hotspot=(rf.onboard_ifname == rf.hotspot_ifname),
+            reason="usb_failure_onboard_fallback",
+        )
+        if _apply_client_activation(onboard_action, facts):
+            return True
     logger.warning("No usable client path on USB failure (%s); entering recovery hotspot",
                    event.reason)
     enter_setup_mode(HotspotPurpose.USB_LOSS_RECOVERY, reason=f"usb_loss_recovery: {event.reason}")

@@ -1332,21 +1332,68 @@ class TestAdapterOverlayEvents:
         assert acted is True
         ap.assert_called_once()
 
+    def _rf_stub(self, watcher, *, onboard="", hotspot="", active=""):
+        return watcher.RecoveryFacts(
+            adapters_by_ifname={}, onboard_ifname=onboard, usb_ifnames=(),
+            preferred_usb_ifname="", hotspot_ifname=hotspot, active_ifname=active,
+            saved_configured=True, wired_ok=False, taken_at=1000.0,
+        )
+
     def test_apply_client_failed_enters_hotspot_when_no_client_path(self, watcher):
-        # C2-WP1: HOLD / ENTER_HOTSPOT verdicts (e.g. quarantined onboard, no
-        # usable radio) fall to the USB_LOSS_RECOVERY hotspot.
+        # C2-WP1: ENTER_HOTSPOT with no usable onboard falls to USB_LOSS_RECOVERY.
         facts = _facts_for(watcher, [], None)
         event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
                                      reason="absent", has_alt_path=False)
         action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
                                         purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
-        with patch.object(watcher, "gather_recovery_facts"), \
+        with patch.object(watcher, "gather_recovery_facts",
+                          return_value=self._rf_stub(watcher, onboard="")), \
              patch.object(watcher, "next_recovery_action", return_value=action), \
              patch.object(watcher, "_apply_client_activation") as ap, \
              patch.object(watcher, "enter_setup_mode") as enter:
             acted = watcher.apply_client_failed(event, facts)
         assert acted is True
         ap.assert_not_called()
+        enter.assert_called_once()
+        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+
+    def test_active_usb_no_ip_falls_back_to_onboard_not_hotspot(self, watcher):
+        # Regression fix (C2-WP1 review): an active USB with carrier but no IP
+        # yields a ladder HOLD("usb_active_no_ip").  apply_client_failed must
+        # still try the usable onboard before the hotspot (real gather+ladder).
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:50", is_usb=True)
+        facts = _facts_for(watcher, [builtin, usb], usb)  # USB is the active client
+        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:50",
+                                     reason="no_ip", has_alt_path=True)
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "_apply_client_activation", return_value=True) as ap, \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            acted = watcher.apply_client_failed(event, facts)
+        assert acted is True
+        enter.assert_not_called()          # onboard fallback, NOT straight to hotspot
+        ap.assert_called_once()
+        applied = ap.call_args[0][0]
+        assert applied.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert applied.ifname == "wlan0"
+
+    def test_active_usb_no_ip_with_demoted_onboard_enters_hotspot(self, watcher):
+        # The named delta under the real ladder: a no-IP-suppressed onboard is
+        # gated out, so there is no usable onboard fallback -> hotspot.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:51", is_usb=True)
+        watcher.STATE.adapter_noip_ledgers[builtin.stable_id] = {
+            "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf")}
+        facts = _facts_for(watcher, [builtin, usb], usb)
+        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:51",
+                                     reason="no_ip", has_alt_path=True)
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "_apply_client_activation", return_value=False), \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            acted = watcher.apply_client_failed(event, facts)
+        assert acted is True
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
@@ -3289,7 +3336,11 @@ class TestHotspotPurposeMachine:
                                      reason="later usb loss", has_alt_path=False)
         action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
                                         purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
-        with patch.object(watcher, "gather_recovery_facts"), \
+        rf = watcher.RecoveryFacts(
+            adapters_by_ifname={}, onboard_ifname="", usb_ifnames=(),
+            preferred_usb_ifname="", hotspot_ifname="", active_ifname="",
+            saved_configured=True, wired_ok=False, taken_at=1000.0)
+        with patch.object(watcher, "gather_recovery_facts", return_value=rf), \
              patch.object(watcher, "next_recovery_action", return_value=action), \
              patch.object(watcher, "enter_setup_mode") as enter:
             acted = watcher.apply_client_failed(event, facts)
