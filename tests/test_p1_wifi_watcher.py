@@ -1066,6 +1066,15 @@ def _adapter(mod, ifname, mac, is_usb=False, is_builtin=False):
     )
 
 
+def _facts_for(mod, adapters, active_client, *, wifi_cfg=True, wired_ok=False,
+               wired_connected=False, now=1000.0):
+    """Build a per-pass Facts snapshot for handler/apply tests."""
+    return mod.Facts(
+        wifi_configured=wifi_cfg, adapters=adapters, wired_connected=wired_connected,
+        wired_ok=wired_ok, active_client=active_client, addresses={}, taken_at=now,
+    )
+
+
 class TestQueryPlayingStatus:
     def test_dial_mode_always_idle(self, watcher):
         with patch.object(watcher, "_DIAL_MODE", True):
@@ -1310,14 +1319,55 @@ class TestAdapterOverlayEvents:
         event = self._diagnose(watcher, [builtin], builtin)
         assert event is None
 
-    def test_apply_client_failed_runs_fallback_transition(self, watcher):
+    def test_apply_client_failed_activates_via_ladder(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        facts = _facts_for(watcher, [builtin], None)
         event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
                                      reason="no_ip", has_alt_path=True)
-        with patch.object(watcher, "_do_builtin_fallback_or_recovery", return_value=True) as fb:
-            acted = watcher.apply_client_failed(event, [builtin])
+        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        with patch.object(watcher, "gather_recovery_facts"), \
+             patch.object(watcher, "next_recovery_action", return_value=action), \
+             patch.object(watcher, "_apply_client_activation", return_value=True) as ap:
+            acted = watcher.apply_client_failed(event, facts)
         assert acted is True
-        fb.assert_called_once()
+        ap.assert_called_once()
+
+    def test_apply_client_failed_enters_hotspot_when_no_client_path(self, watcher):
+        # C2-WP1: HOLD / ENTER_HOTSPOT verdicts (e.g. quarantined onboard, no
+        # usable radio) fall to the USB_LOSS_RECOVERY hotspot.
+        facts = _facts_for(watcher, [], None)
+        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
+                                     reason="absent", has_alt_path=False)
+        action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
+                                        purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
+        with patch.object(watcher, "gather_recovery_facts"), \
+             patch.object(watcher, "next_recovery_action", return_value=action), \
+             patch.object(watcher, "_apply_client_activation") as ap, \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            acted = watcher.apply_client_failed(event, facts)
+        assert acted is True
+        ap.assert_not_called()
+        enter.assert_called_once()
+        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+
+    def test_apply_client_failed_onboard_success_sets_fallback(self, watcher):
+        # Real _apply_client_activation path (ACTIVATE_ONBOARD with a USB also
+        # present) sets using_builtin_fallback, matching the old builtin fallback.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:09", is_usb=True)
+        facts = _facts_for(watcher, [builtin, usb], None)
+        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:09",
+                                     reason="no_ip", has_alt_path=True)
+        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        with patch.object(watcher, "gather_recovery_facts"), \
+             patch.object(watcher, "next_recovery_action", return_value=action), \
+             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
+             patch.object(watcher, "leave_setup_mode"), \
+             patch.object(watcher, "verify_avahi_after_handover"):
+            acted = watcher.apply_client_failed(event, facts)
+        assert acted is True
+        assert watcher.STATE.using_builtin_fallback is True
 
 
 class TestUsbFailureFallback:
@@ -1327,25 +1377,26 @@ class TestUsbFailureFallback:
         watcher._known_usb_macs.add(usb_mac)
         watcher.STATE.active_client_mac = usb_mac
         watcher.STATE.active_client_ifname = "wlan1"
-        adapters = [builtin]  # USB gone
-        with patch.object(watcher, "_activate_committed_on", return_value=True) as act, \
-             patch.object(watcher, "verify_avahi_after_handover"):
-            acted = watcher.handle_usb_failure_fallback(adapters, None)
+        facts = _facts_for(watcher, [builtin], None)  # USB gone
+        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        with patch.object(watcher, "gather_recovery_facts"), \
+             patch.object(watcher, "next_recovery_action", return_value=action), \
+             patch.object(watcher, "_apply_client_activation", return_value=True) as ap:
+            acted = watcher.handle_usb_failure_fallback(facts)
         assert acted is True
-        act.assert_called_once_with("wlan0")
-        assert watcher.STATE.using_builtin_fallback is True
+        ap.assert_called_once()
 
     def test_one_transient_unhealthy_pass_does_not_switch(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
         watcher._known_usb_macs.add(usb.permanent_mac)
         watcher.STATE.active_client_mac = usb.permanent_mac
         watcher.STATE.active_client_ifname = "wlan1"
-        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        facts = _facts_for(watcher, [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb], usb)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_do_builtin_fallback_or_recovery") as fb:
-            acted = watcher.handle_usb_failure_fallback(adapters, usb)
+             patch.object(watcher, "apply_client_failed") as ap:
+            acted = watcher.handle_usb_failure_fallback(facts)
         assert acted is False
-        fb.assert_not_called()
+        ap.assert_not_called()
         assert watcher.STATE.active_usb_unhealthy_checks == 1
 
     def test_two_unhealthy_passes_trigger_fallback(self, watcher):
@@ -1354,30 +1405,12 @@ class TestUsbFailureFallback:
         watcher.STATE.active_client_mac = usb.permanent_mac
         watcher.STATE.active_client_ifname = "wlan1"
         watcher.STATE.active_usb_unhealthy_checks = 1
-        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        facts = _facts_for(watcher, [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb], usb)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_do_builtin_fallback_or_recovery", return_value=True) as fb:
-            acted = watcher.handle_usb_failure_fallback(adapters, usb)
+             patch.object(watcher, "apply_client_failed", return_value=True) as ap:
+            acted = watcher.handle_usb_failure_fallback(facts)
         assert acted is True
-        fb.assert_called_once()
-
-    def test_builtin_fallback_restores_lan(self, watcher):
-        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
-        with patch.object(watcher, "_activate_committed_on", return_value=True), \
-             patch.object(watcher, "verify_avahi_after_handover"):
-            acted = watcher._do_builtin_fallback_or_recovery(adapters, "test")
-        assert acted is True
-        assert watcher.STATE.using_builtin_fallback is True
-
-    def test_usb_only_enters_recovery_hotspot(self, watcher):
-        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)]
-        with patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "enter_setup_mode") as enter:
-            acted = watcher._do_builtin_fallback_or_recovery(adapters, "usb-only")
-        assert acted is True
-        enter.assert_called_once()
-        # USB-loss fallback now enters a USB_LOSS_RECOVERY hotspot purpose.
-        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        ap.assert_called_once()
 
 
 class TestActivateClient:
@@ -2449,12 +2482,13 @@ class TestNmDisconnectedUsbDebounce:
         watcher.STATE.active_client_ifname = ""  # NM disconnected; ifname cleared
 
         # Pass 1: USB is present but disconnected from NM → counter should go 0→1.
+        facts = _facts_for(watcher, adapters, None)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_do_builtin_fallback_or_recovery") as fb:
+             patch.object(watcher, "apply_client_failed") as ap:
             # active_client is None because resolve_active_client found no connected iface.
-            acted = watcher.handle_usb_failure_fallback(adapters, None)
+            acted = watcher.handle_usb_failure_fallback(facts)
         assert acted is False
-        fb.assert_not_called()
+        ap.assert_not_called()
         assert watcher.STATE.active_usb_unhealthy_checks == 1
 
         # Simulate _set_active_client(None) preserving the MAC (fix verified above).
@@ -2463,10 +2497,10 @@ class TestNmDisconnectedUsbDebounce:
 
         # Pass 2: counter == 1 → fallback should fire.
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_do_builtin_fallback_or_recovery", return_value=True) as fb:
-            acted = watcher.handle_usb_failure_fallback(adapters, None)
+             patch.object(watcher, "apply_client_failed", return_value=True) as ap:
+            acted = watcher.handle_usb_failure_fallback(facts)
         assert acted is True
-        fb.assert_called_once()
+        ap.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -3250,9 +3284,15 @@ class TestHotspotPurposeMachine:
         with patch.object(watcher, "start_ap_mode"), patch.object(watcher, "stop_ap_mode"):
             watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "earlier")
             watcher.leave_setup_mode("earlier done")
-        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+        facts = _facts_for(watcher, [builtin], None)
+        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:0a",
+                                     reason="later usb loss", has_alt_path=False)
+        action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
+                                        purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
+        with patch.object(watcher, "gather_recovery_facts"), \
+             patch.object(watcher, "next_recovery_action", return_value=action), \
              patch.object(watcher, "enter_setup_mode") as enter:
-            acted = watcher._do_builtin_fallback_or_recovery([builtin], "later usb loss")
+            acted = watcher.apply_client_failed(event, facts)
         assert acted is True
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
@@ -3363,6 +3403,32 @@ class TestRecoveryFacts:
             rec = watcher.gather_recovery_facts(facts)
         assert rec.preferred_usb_ifname == ""
         assert rec.adapters_by_ifname["wlan1"].noip_suppressed is True
+
+    def test_gather_excludes_noip_suppressed_onboard(self, watcher):
+        # C2-WP1: a no-IP-suppressed onboard is not offered as a client rung, so
+        # the single decider won't blindly engage it on a USB failure.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.adapter_noip_ledgers[builtin.stable_id] = {
+            "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf"),
+        }
+        facts = self._facts(watcher, [builtin])
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.onboard_ifname == ""   # gated out
+        assert rec.adapters_by_ifname["wlan0"].noip_suppressed is True
+
+    def test_gather_excludes_quarantined_onboard(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        # Quarantine the onboard via the reset ledger.
+        watcher.STATE.adapter_reset_ledgers[builtin.stable_id] = {
+            "quarantined_until": 1e12, "recent_resets": [], "total_resets": 0,
+        }
+        facts = self._facts(watcher, [builtin])
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.onboard_ifname == ""
 
 
 class TestExplicitModelInvariants:
@@ -3637,7 +3703,7 @@ class TestLoopHandlers:
              patch.object(watcher, "_set_active_client") as sac:
             v = watcher.step_usb_failure_fallback(fctx)
         assert v is watcher.Verdict.OWN_PASS
-        h.assert_called_once_with([usb], usb)
+        h.assert_called_once_with(facts)
         sac.assert_not_called()  # _set_active_client is finalize's job, not this handler's
         assert watcher.STATE.active_client_mac == "dc:62:79:91:4d:d6"  # unchanged here
 

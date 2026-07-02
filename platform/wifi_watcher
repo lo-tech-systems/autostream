@@ -1496,9 +1496,19 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
             preferred_usb = a.ifname
             break
 
+    # The onboard is only offered as a client rung when it is actually usable
+    # (managed, not quarantined, not no-IP-suppressed) — mirroring preferred_usb.
+    # This is what lets the single decider (C2-WP1) skip a demoted/quarantined
+    # onboard on a USB failure instead of blindly engaging it.
+    onboard_ifname = ""
+    if builtin is not None:
+        brf = by_ifname.get(builtin.ifname)
+        if brf is not None and brf.managed and not brf.quarantined and not brf.noip_suppressed:
+            onboard_ifname = builtin.ifname
+
     return RecoveryFacts(
         adapters_by_ifname=by_ifname,
-        onboard_ifname=builtin.ifname if builtin is not None else "",
+        onboard_ifname=onboard_ifname,
         usb_ifnames=tuple(a.ifname for a in usb),
         preferred_usb_ifname=preferred_usb,
         hotspot_ifname=(hotspot.ifname if (in_setup and hotspot is not None) else ""),
@@ -1832,7 +1842,7 @@ def step_usb_failure_fallback(fctx: "FactsContext") -> "Verdict":
     """
     facts = fctx.facts
     if facts.wifi_configured and not facts.wired_ok and not STATE.setup_mode:
-        if handle_usb_failure_fallback(facts.adapters, facts.active_client):
+        if handle_usb_failure_fallback(facts):
             return Verdict.OWN_PASS
     return Verdict.CONTINUE
 
@@ -2618,7 +2628,7 @@ def resolve_active_client(adapters: list) -> Optional[object]:
     return None
 
 
-def handle_usb_failure_fallback(adapters: list, active_client) -> bool:
+def handle_usb_failure_fallback(facts: "Facts") -> bool:
     """Active-USB failure handling via the adapter-remediation overlay (WP5a).
 
     The overlay (wifi_recovery.diagnose_client_failure) diagnoses the active
@@ -2627,25 +2637,38 @@ def handle_usb_failure_fallback(adapters: list, active_client) -> bool:
     this pass; the caller then skips its ordinary reconnect/reboot logic for
     this pass.  Never gated by playback.
     """
-    event = wifi_recovery.diagnose_client_failure(_self_module(), adapters, active_client)
+    event = wifi_recovery.diagnose_client_failure(
+        _self_module(), facts.adapters, facts.active_client)
     if event is None:
         return False
-    return apply_client_failed(event, adapters)
+    return apply_client_failed(event, facts)
 
 
-def apply_client_failed(event, adapters: list) -> bool:
-    """Apply an overlay ClientFailed event (Section 3.1a).
+def apply_client_failed(event, facts: "Facts") -> bool:
+    """Apply an overlay ClientFailed event through the single recovery decider.
 
-    ClientFailed with an alternate path → built-in fallback to ONLINE; without →
-    HOTSPOT(USB_LOSS_RECOVERY).  _do_builtin_fallback_or_recovery encodes both
-    (try built-in, else recovery hotspot), so the apply is a single call; the
-    has_alt_path hint is carried on the event for status/diagnostics.
+    C2-WP1: the USB-failure fallback now ranks client paths via
+    next_recovery_action (the one priority ladder) and engages one via
+    activate_client (through _apply_client_activation), instead of a private
+    builtin-else-hotspot rule.  Behaviour delta: a quarantined / no-IP-suppressed
+    onboard is no longer blindly engaged — the ladder skips it (onboard
+    usability is gated in gather_recovery_facts) and we enter the recovery
+    hotspot instead.  Any non-ACTIVATE verdict (HOLD / ENTER_HOTSPOT) or a failed
+    activation falls to the USB_LOSS_RECOVERY hotspot, preserving the previous
+    "a diagnosed USB failure always ends in onboard-or-hotspot" behaviour.
     """
     logger.info(
-        "Overlay ClientFailed(%s) on %s; applying fallback transition",
+        "Overlay ClientFailed(%s) on %s; applying via recovery ladder",
         event.reason, event.ifname or event.mac or "?",
     )
-    return _do_builtin_fallback_or_recovery(adapters, reason=event.reason)
+    raction = next_recovery_action(STATE, gather_recovery_facts(facts))
+    if raction.kind in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD) \
+            and _apply_client_activation(raction, facts):
+        return True
+    logger.warning("No usable client path on USB failure (%s); entering recovery hotspot",
+                   event.reason)
+    enter_setup_mode(HotspotPurpose.USB_LOSS_RECOVERY, reason=f"usb_loss_recovery: {event.reason}")
+    return True
 
 
 # Remember which permanent MACs were last seen as USB, so that an absent active
@@ -2656,24 +2679,6 @@ _known_usb_macs: set[str] = set()
 # startup_connect_usb_first() is triggered at most once per new USB device
 # appearing within BOOT_AP_GRACE.
 _startup_window_usb_tried_macs: set[str] = set()
-
-
-def _do_builtin_fallback_or_recovery(adapters: list, reason: str) -> bool:
-    """Attempt built-in LAN fallback; enter recovery hotspot if it fails."""
-    builtin = wifi_net.resolve_builtin(adapters)
-    if builtin is not None and _activate_committed_on(builtin.ifname):
-        with state_lock:
-            STATE.using_builtin_fallback = True
-            STATE.conn_down_start = None
-            STATE.last_reconnect_attempt = None
-        _set_active_client(builtin)
-        logger.info("Built-in LAN fallback connected (%s)", reason)
-        verify_avahi_after_handover()
-        return True
-
-    logger.warning("Built-in LAN fallback failed (%s); entering recovery hotspot", reason)
-    enter_setup_mode(HotspotPurpose.USB_LOSS_RECOVERY, reason=f"usb_loss_recovery: {reason}")
-    return True
 
 
 def _apply_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
