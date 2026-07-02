@@ -26,6 +26,7 @@ from typing import Optional
 # once-per-boot AP budget: the 30-minute session lifetime is the rate limit.
 AP_MAX_DURATION = 30 * 60               # AP mode lifetime for configured devices
 HOTSPOT_PROBE_GRACE = 15 * 60           # user-opened hotspot delay before probing for the saved network
+BOOT_AP_GRACE = 60                      # still offline after this many seconds of boot -> boot-window AP entry
 
 
 class Mode(Enum):
@@ -66,3 +67,29 @@ PURPOSE_TABLE: "dict[HotspotPurpose, PurposePolicy]" = {
     HotspotPurpose.EXPLICIT_RECONFIGURE: PurposePolicy(AP_MAX_DURATION, False, True,  True,  HOTSPOT_PROBE_GRACE),
     HotspotPurpose.MANUAL:               PurposePolicy(AP_MAX_DURATION, False, True,  False, HOTSPOT_PROBE_GRACE),
 }
+
+
+def next_mode(state, facts) -> "Mode":
+    """The permanent pure forward mode classifier: state + facts -> Mode (constraint 10).
+
+    Pure: reads *state* fields and *facts* (needs only ``facts.wired_ok`` and
+    ``facts.taken_at``) plus this module's constants; it does not mutate STATE,
+    call subprocesses, run effects, or depend on the ``w`` seam.  The watcher's
+    loop *applies* the returned value by setting ``STATE.mode`` each pass, and it
+    is published as ``device.mode``.  Together with PURPOSE_TABLE it is the
+    explicit-model decision core the refactor settles on.
+
+    Precedence mirrors the live loop: hotspot wins, then an accepted reboot, then
+    a usable path means ONLINE, then the boot grace window means BOOT, otherwise
+    the configured-but-offline device is OFFLINE_RECONNECTING.
+    """
+    if state.setup_mode:
+        return Mode.HOTSPOT
+    if state.conn_reboot_retry_after == float("inf"):
+        return Mode.REBOOT_PENDING
+    if bool(facts.wired_ok) or bool(state.connectivity_ok):
+        return Mode.ONLINE
+    boot_time = state.boot_time
+    if boot_time is not None and (facts.taken_at - boot_time) < BOOT_AP_GRACE:
+        return Mode.BOOT
+    return Mode.OFFLINE_RECONNECTING
