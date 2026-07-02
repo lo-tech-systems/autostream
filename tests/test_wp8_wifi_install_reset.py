@@ -91,6 +91,20 @@ class TestInstallerNetworkFileHandling:
         assert "connection.autoconnect" in body
         assert "Hotspot" in body and "802-11-wireless" in body
 
+    def test_saved_selection_has_single_profile_fallback(self):
+        """D-WP3: the suitable_count==1 fallback (which does not require
+        autoconnect=yes) must remain, so a lone profile — including one a user set
+        to autoconnect=no before install — is still imported under Phase D."""
+        start = INSTALL_SH.find("_select_saved_wifi_connection()")
+        body = INSTALL_SH[start: start + 3500]
+        assert "suitable_count == 1" in body, (
+            "the single-suitable-profile fallback must remain so Phase D's "
+            "autoconnect=no profiles are still selectable at install"
+        )
+        # The D-WP3 trace conclusion is recorded at the selection site (the
+        # note sits in the comment block directly above the function).
+        assert "D-WP3" in INSTALL_SH
+
     def test_installer_writes_network_json_with_uuid(self):
         """The installer should commit both profile name and UUID, not only the
         legacy /opt/autostream/ssid mirror."""
