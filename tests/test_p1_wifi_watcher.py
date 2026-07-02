@@ -2362,155 +2362,103 @@ class TestResolveCommittedUuid:
 # Regression: delayed startup USB enumeration re-probe (Section 4.3 / WP4)
 # ---------------------------------------------------------------------------
 
-class TestStartupWindowUsbReprobe:
-    """Delayed startup USB enumeration re-probe (Section 4.3 / WP4).
+class TestBootClientBringup:
+    """C2-WP4 — the BOOT-window client bring-up is a loop rung that runs the single
+    recovery ladder (preferred USB, else onboard) each pass while BOOT_AP_GRACE is
+    open, replacing the retired pre-loop startup_connect_usb_first() one-shot and
+    its tried-MACs re-probe gate.  The apply mechanics (net-absent short-circuit,
+    UUID resolution, no-IP ledger) live in activate_client and are covered by
+    TestActivateClient; these tests assert the boot rung's routing and gating."""
 
-    Tests the module-level _startup_window_usb_tried_macs gate and the
-    startup_connect_usb_first() function it guards.  Full loop-ordering
-    coverage (verifying the branch fires at exactly the right point inside
-    network_monitor_loop) requires an integration test with a controllable
-    monitor loop and is not in scope for the offline unit suite.
-    """
+    def _fctx(self, watcher, adapters, active_client, *, wifi_cfg=True, wired_ok=False,
+              now=10.0, boot_time=0.0):
+        facts = _facts_for(watcher, adapters, active_client, wifi_cfg=wifi_cfg,
+                           wired_ok=wired_ok, now=now)
+        pre = watcher.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=True)
+        return watcher.FactsContext(pre, facts, lambda: False)
 
-    def test_new_usb_mac_not_in_tried_set_initially(self, watcher):
-        """_startup_window_usb_tried_macs starts empty; a fresh MAC is considered new."""
-        watcher._startup_window_usb_tried_macs.clear()
-        usb_mac = "cc:dd:ee:ff:00:01"
-        new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
-        assert new_usb == {usb_mac}
-
-    def test_mac_in_tried_set_is_not_new(self, watcher):
-        """Once added to _startup_window_usb_tried_macs, the MAC is no longer
-        'new' — startup_connect_usb_first must not be re-triggered for it."""
-        usb_mac = "cc:dd:ee:ff:00:02"
-        watcher._startup_window_usb_tried_macs.clear()
-        watcher._startup_window_usb_tried_macs.add(usb_mac)
-        new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
-        assert not new_usb, (
-            "USB MAC already in _startup_window_usb_tried_macs must not "
-            "appear in the new_usb set used by the loop to gate re-probing"
-        )
-
-    def test_startup_connect_usb_first_succeeds_on_new_adapter(self, watcher):
-        """startup_connect_usb_first() connects on the first available USB
-        adapter and returns True; the MAC can then be recorded as tried."""
-        usb_mac = "cc:dd:ee:ff:00:03"
-        watcher._startup_window_usb_tried_macs.clear()
-        usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
+    def test_boot_window_engages_preferred_usb(self, watcher):
+        # Offline in the boot window with a usable USB and no active client: the
+        # ladder selects ACTIVATE_USB (rung 1) and the rung owns the pass.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:03", is_usb=True)
+        fctx = self._fctx(watcher, [builtin, usb], None)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+            v = watcher.step_boot_client_bringup(fctx)
+        assert v is watcher.Verdict.OWN_PASS
+        apply.assert_called_once()
+        action = apply.call_args[0][0]
+        assert action.kind is watcher.RecoveryKind.ACTIVATE_USB
+        assert action.ifname == "wlan1"    # USB tried before the built-in
 
-        with patch.object(watcher, "any_wired_path_healthy", return_value=False), \
-             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
-             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
-             patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
-             patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False), \
-             patch.object(watcher, "get_configured_network_state") as gcns, \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
-             patch.object(watcher, "wait_for_connection", return_value=True), \
-             patch.object(watcher, "verify_avahi_after_handover") as avahi, \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
-            gcns.return_value = MagicMock(
-                is_configured=True,
-                connection_uuid="uuid-abc",
-                connection_name="HomeNetwork",
-            )
-            result = watcher.startup_connect_usb_first()
-
-        assert result is True
-        # A-WP4 inconsistency 3: the startup USB-first path now re-announces
-        # mDNS on a successful handover (previously omitted).
-        avahi.assert_called_once()
-        # After success the loop records the MAC; verify the set gate works.
-        watcher._startup_window_usb_tried_macs.add(usb_mac)
-        new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
-        assert not new_usb, "MAC must be gated out after being recorded as tried"
-
-    def test_startup_usb_netabsent_skips_ipv4_wait(self, watcher):
-        """A-WP4 inconsistency 1: a "network could not be found" activation at
-        boot must short-circuit the IPv4 wait instead of burning the full
-        WAIT_FOR_CONNECTION_TIMEOUT."""
-        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:09", is_usb=True)
+    def test_boot_window_falls_to_onboard_when_no_usb(self, watcher):
+        # No USB present: the ladder engages the onboard (rung 2) as a client.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        absent = MagicMock(
-            returncode=10,
-            stderr="Error: Connection activation failed: The Wi-Fi network could not be found",
-        )
-        with patch.object(watcher, "any_wired_path_healthy", return_value=False), \
-             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
-             patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
-             patch.object(watcher, "get_configured_network_state",
-                          return_value=watcher.wifi_net.NetworkState("HomeNetwork", "uuid-abc")), \
-             patch.object(watcher, "run_cmd", return_value=absent), \
-             patch.object(watcher, "wait_for_connection") as wait, \
-             patch.object(watcher, "connect_to_configured_wifi", return_value=False) as fallback:
-            watcher.startup_connect_usb_first()
-        wait.assert_not_called()      # net-absent short-circuit: no 45s wait at boot
-        fallback.assert_called_once()  # all USB failed -> built-in fallback
+        fctx = self._fctx(watcher, [builtin], None)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+            v = watcher.step_boot_client_bringup(fctx)
+        assert v is watcher.Verdict.OWN_PASS
+        action = apply.call_args[0][0]
+        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.ifname == "wlan0"
 
-    def test_startup_connect_usb_first_ignores_carrier_only_ethernet(self, watcher):
-        """Carrier-only Ethernet must not block USB-first Wi-Fi recovery."""
+    def test_wired_ok_short_circuits(self, watcher):
+        # Usable wired Ethernet: the boot rung does not engage a Wi-Fi client.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:04", is_usb=True)
+        fctx = self._fctx(watcher, [builtin, usb], None, wired_ok=True)
+        with patch.object(watcher, "_apply_client_activation") as apply:
+            v = watcher.step_boot_client_bringup(fctx)
+        assert v is watcher.Verdict.CONTINUE
+        apply.assert_not_called()
+
+    def test_healthy_client_holds_no_reprobe(self, watcher):
+        # A client is already up and healthy: the ladder HOLDs (no thrash).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        calls = []
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:05", is_usb=True)
+        fctx = self._fctx(watcher, [builtin, usb], usb)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "_apply_client_activation") as apply:
+            v = watcher.step_boot_client_bringup(fctx)
+        assert v is watcher.Verdict.CONTINUE
+        apply.assert_not_called()
 
-        def capture_run_cmd(cmd, **_):
-            calls.append(cmd)
-            return MagicMock(returncode=0)
-
-        with patch.object(watcher, "is_wired_connected", return_value=True), \
-             patch.object(watcher, "any_wired_path_healthy", return_value=False), \
-             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
-             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
-             patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
-             patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False), \
-             patch.object(watcher, "get_configured_network_state") as gcns, \
-             patch.object(watcher, "run_cmd", side_effect=capture_run_cmd), \
-             patch.object(watcher, "wait_for_connection", return_value=True), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
-            gcns.return_value = MagicMock(
-                is_configured=True,
-                connection_uuid="uuid-abc",
-                connection_name="HomeNetwork",
-            )
-            result = watcher.startup_connect_usb_first()
-
-        assert result is True
-        assert any(
-            c == watcher.wifi_net.activate_connection_cmd("uuid-abc", "HomeNetwork", "wlan1")
-            for c in calls
-        )
-
-    def test_no_usb_adapters_does_not_clear_restrictions(self, watcher):
-        """When no USB adapters are present, startup_connect_usb_first must NOT
-        call clear_restrictions_cmd.  Modifying an active connection profile
-        when no cross-adapter move is needed can trigger NM to briefly re-
-        activate, causing client_ok=False during the boot health window."""
+    def test_after_grace_window_defers(self, watcher):
+        # Past BOOT_AP_GRACE the boot rung is inactive; step_boot_ap_entry owns the
+        # ladder-then-hotspot decision.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        calls = []
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:06", is_usb=True)
+        fctx = self._fctx(watcher, [builtin, usb], None,
+                          now=watcher.BOOT_AP_GRACE + 10.0, boot_time=0.0)
+        with patch.object(watcher, "_apply_client_activation") as apply:
+            v = watcher.step_boot_client_bringup(fctx)
+        assert v is watcher.Verdict.CONTINUE
+        apply.assert_not_called()
 
-        def capture_run_cmd(cmd, **_):
-            calls.append(cmd)
-            return MagicMock(returncode=0)
+    def test_setup_mode_skips(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:07", is_usb=True)
+        watcher.STATE.setup_mode = True
+        fctx = self._fctx(watcher, [builtin, usb], None)
+        with patch.object(watcher, "_apply_client_activation") as apply:
+            v = watcher.step_boot_client_bringup(fctx)
+        assert v is watcher.Verdict.CONTINUE
+        apply.assert_not_called()
 
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
-             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
-             patch.object(watcher.wifi_net, "usb_candidates", return_value=[]), \
-             patch.object(watcher, "get_configured_network_state") as gcns, \
-             patch.object(watcher, "run_cmd", side_effect=capture_run_cmd), \
-             patch.object(watcher, "connect_to_configured_wifi", return_value=True):
-            gcns.return_value = MagicMock(
-                is_configured=True,
-                connection_uuid="uuid-abc",
-                connection_name="HomeNetwork",
-            )
-            watcher.startup_connect_usb_first()
-
-        modify_calls = [c for c in calls if "modify" in c]
-        assert not modify_calls, (
-            "startup_connect_usb_first must not call 'nmcli connection modify' "
-            "when no USB adapters are present; doing so can disturb the active "
-            f"connection and cause client_ok=False at boot: {modify_calls}"
-        )
+    def test_unconfigured_skips(self, watcher):
+        # Nothing committed: the boot rung has no client profile to bring up.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:08", is_usb=True)
+        fctx = self._fctx(watcher, [builtin, usb], None, wifi_cfg=False)
+        with patch.object(watcher, "_apply_client_activation") as apply:
+            v = watcher.step_boot_client_bringup(fctx)
+        assert v is watcher.Verdict.CONTINUE
+        apply.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -3167,7 +3115,8 @@ def _run_monitor_once(
         stack.enter_context(patch.object(watcher, "escalate_dead_adapter_recovery", dead_recovery))
         stack.enter_context(patch.object(watcher, "publish_network_status"))
         stack.enter_context(patch.object(watcher, "log_on_change"))
-        stack.enter_context(patch.object(watcher, "startup_connect_usb_first", return_value=False))
+        stack.enter_context(patch.object(watcher, "step_boot_client_bringup",
+                                          return_value=watcher.Verdict.CONTINUE))
         connect = stack.enter_context(patch.object(watcher, "connect_to_configured_wifi"))
         watcher.network_monitor_loop(run_once=True)
         return connect
