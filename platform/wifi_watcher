@@ -1370,22 +1370,14 @@ def reconnect_saved_network() -> bool:
     if not committed.is_configured:
         return False
 
-    # Resolve UUID (lazily persisting if missing) and clear cross-adapter
-    # restrictions once, before iterating over target adapters, so a legacy
-    # profile bound to a specific interface/MAC can be activated on any adapter.
-    committed_uuid = _resolve_committed_uuid(committed)
-    if committed_uuid:
-        run_cmd(wifi_net.clear_restrictions_cmd(committed_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
-
     def _attempt(target) -> bool:
-        run_cmd(wifi_net.activate_connection_cmd(
-            committed_uuid, committed.connection_name, target.ifname))
-        if wait_for_connection(target.ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                               interval=WAIT_FOR_CONNECTION_INTERVAL) \
-                and is_wifi_client_healthy(target.ifname):
-            logger.info("Reconnected to saved network on %s", target.ifname)
-            return True
-        return False
+        # Route the per-target activate+validate through the shared core so this
+        # path gains UUID resolution, cross-adapter restriction clearing and the
+        # net-absent short-circuit for free (A-WP4, inconsistency 1 — previously
+        # a "network could not be found" on each target burnt the full IPv4
+        # wait).  attempt_on_targets owns the success tail (set_active /
+        # leave_setup / avahi) and the per-hotspot-target AP rebuild.
+        return _activate_profile_on(target.ifname, committed)
 
     if attempt_on_targets(targets, _attempt):
         return True
@@ -2361,39 +2353,27 @@ def startup_connect_usb_first() -> bool:
         return False
 
     adapters = wifi_net.discover_adapters()
-    builtin = wifi_net.resolve_builtin(adapters)
     usb = wifi_net.usb_candidates(adapters)
-
-    # Resolve UUID (lazily persisting if missing) then clear cross-adapter
-    # restrictions before any USB activation attempt so a legacy profile bound
-    # to built-in by interface-name/MAC/BSSID/band/channel can be activated on
-    # a USB interface.  Only cleared when USB adapters are present; modifying
-    # an active profile when no cross-adapter move is needed can cause NM to
-    # briefly re-activate, disrupting the existing connection.
-    uuid = _resolve_committed_uuid(state)
-    if uuid and usb:
-        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
 
     for candidate in usb:
         logger.info(
             "Startup USB-first: trying committed profile on %s (%s)",
             candidate.ifname, candidate.permanent_mac,
         )
-        run_cmd(wifi_net.activate_connection_cmd(
-            uuid, state.connection_name, candidate.ifname,
-        ))
-        if (wait_for_connection(candidate.ifname,
-                                timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                                interval=WAIT_FOR_CONNECTION_INTERVAL)
-                and is_wifi_client_healthy(candidate.ifname)):
-            # Deactivate built-in client connection if still active.
-            if builtin and wifi_net.is_wifi_connected(builtin.ifname):
-                logger.info("Startup USB-first: disconnecting built-in client on %s", builtin.ifname)
-                run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
-            wifi_recovery.clear_noip_failures(_self_module(), candidate.stable_id)
+        # activate_client supplies UUID resolution + cross-adapter restriction
+        # clearing (via the core), the net-absent short-circuit (inconsistency 1
+        # — no longer burns the full IPv4 wait at boot on "network not found"),
+        # the built-in deactivation, the no-IP ledger record/clear, and the
+        # avahi re-announce that this path previously omitted (inconsistency 3).
+        if activate_client(
+            candidate.ifname,
+            adapter=candidate,
+            records_noip=True,
+            stable_id=candidate.stable_id,
+            deactivates_builtin=True,
+        ):
             logger.info("Startup USB-first: connection established on %s", candidate.ifname)
             return True
-        wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, time.monotonic())
         logger.debug("Startup USB-first: attempt on %s failed", candidate.ifname)
 
     if usb:

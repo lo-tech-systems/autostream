@@ -1728,6 +1728,25 @@ class TestReconnectSavedNetwork:
         start_ap.assert_not_called()  # hotspot not recreated on success
         leave.assert_called_once()
 
+    def test_netabsent_skips_ipv4_wait(self, watcher):
+        """A-WP4 inconsistency 1: reconnect_saved_network must short-circuit the
+        IPv4 wait when nmcli reports the saved network is not visible."""
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        absent = MagicMock(
+            returncode=10,
+            stderr="Error: Connection activation failed: The Wi-Fi network could not be found",
+        )
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin]), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "run_cmd", return_value=absent), \
+             patch.object(watcher, "wait_for_connection") as wait, \
+             patch.object(watcher, "leave_setup_mode"):
+            ok = watcher.reconnect_saved_network()
+        assert ok is False
+        wait.assert_not_called()
+
     def test_clears_restrictions_before_activation_with_empty_uuid(self, watcher):
         """reconnect_saved_network must resolve and clear cross-adapter restrictions
         before the first activation attempt, even when the stored UUID is empty."""
@@ -2044,6 +2063,7 @@ class TestStartupWindowUsbReprobe:
              patch.object(watcher, "get_configured_network_state") as gcns, \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
              patch.object(watcher, "wait_for_connection", return_value=True), \
+             patch.object(watcher, "verify_avahi_after_handover") as avahi, \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True):
             gcns.return_value = MagicMock(
                 is_configured=True,
@@ -2053,10 +2073,35 @@ class TestStartupWindowUsbReprobe:
             result = watcher.startup_connect_usb_first()
 
         assert result is True
+        # A-WP4 inconsistency 3: the startup USB-first path now re-announces
+        # mDNS on a successful handover (previously omitted).
+        avahi.assert_called_once()
         # After success the loop records the MAC; verify the set gate works.
         watcher._startup_window_usb_tried_macs.add(usb_mac)
         new_usb = {usb_mac} - watcher._startup_window_usb_tried_macs
         assert not new_usb, "MAC must be gated out after being recorded as tried"
+
+    def test_startup_usb_netabsent_skips_ipv4_wait(self, watcher):
+        """A-WP4 inconsistency 1: a "network could not be found" activation at
+        boot must short-circuit the IPv4 wait instead of burning the full
+        WAIT_FOR_CONNECTION_TIMEOUT."""
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:09", is_usb=True)
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        absent = MagicMock(
+            returncode=10,
+            stderr="Error: Connection activation failed: The Wi-Fi network could not be found",
+        )
+        with patch.object(watcher, "any_wired_path_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
+             patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("HomeNetwork", "uuid-abc")), \
+             patch.object(watcher, "run_cmd", return_value=absent), \
+             patch.object(watcher, "wait_for_connection") as wait, \
+             patch.object(watcher, "connect_to_configured_wifi", return_value=False) as fallback:
+            watcher.startup_connect_usb_first()
+        wait.assert_not_called()      # net-absent short-circuit: no 45s wait at boot
+        fallback.assert_called_once()  # all USB failed -> built-in fallback
 
     def test_startup_connect_usb_first_ignores_carrier_only_ethernet(self, watcher):
         """Carrier-only Ethernet must not block USB-first Wi-Fi recovery."""
