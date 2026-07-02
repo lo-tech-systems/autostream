@@ -198,6 +198,28 @@ class TestGetCPUTemperature:
 
 
 # ---------------------------------------------------------------------------
+# get_raspberry_pi_model
+# ---------------------------------------------------------------------------
+
+class TestGetRaspberryPiModel:
+    def test_reads_device_tree_model(self, tmp_path):
+        model_file = tmp_path / "model"
+        model_file.write_bytes(b"Raspberry Pi 4 Model B Rev 1.5\x00")
+        with patch.object(rpi, "RPI_MODEL_FILE", model_file):
+            assert rpi.get_raspberry_pi_model() == "Raspberry Pi 4 Model B Rev 1.5"
+
+    def test_missing_model_returns_unknown(self, tmp_path):
+        with patch.object(rpi, "RPI_MODEL_FILE", tmp_path / "missing"):
+            assert rpi.get_raspberry_pi_model() == "unknown"
+
+    def test_blank_model_returns_unknown(self, tmp_path):
+        model_file = tmp_path / "model"
+        model_file.write_bytes(b"\x00")
+        with patch.object(rpi, "RPI_MODEL_FILE", model_file):
+            assert rpi.get_raspberry_pi_model() == "unknown"
+
+
+# ---------------------------------------------------------------------------
 # get_cpu_serial
 # ---------------------------------------------------------------------------
 

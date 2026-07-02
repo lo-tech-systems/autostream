@@ -323,6 +323,7 @@ class TestOutputUsageStartup:
              patch.object(_core_mod, "_install_signal_handlers"), \
              patch.object(_core_mod, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level"), \
+             patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(_core_mod, "_ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(_core_mod, "remove_avahi_playing_service",
@@ -342,3 +343,17 @@ class TestOutputUsageStartup:
 
         assert calls == ["remove-playing", "output-usage"]
         monitor_client.assert_not_called()
+
+
+class TestStaticSystemFactsStartupAudit:
+    def test_audit_runs_after_logging_and_before_webui_startup(self):
+        import inspect
+        src = inspect.getsource(_core_mod.run_autostream)
+        idx_logging = src.find("setup_logging(")
+        idx_audit = src.find("audit_static_system_facts()")
+        idx_webui = src.find("webui_thread = start_webui")
+
+        assert idx_logging != -1
+        assert idx_audit != -1
+        assert idx_webui != -1
+        assert idx_logging < idx_audit < idx_webui

@@ -148,6 +148,90 @@ class TestRunCmd:
 
 
 # ---------------------------------------------------------------------------
+# startup static system facts
+# ---------------------------------------------------------------------------
+
+class TestOsReleaseInfo:
+    def test_parses_expected_fields(self, tmp_path):
+        f = tmp_path / "os-release"
+        f.write_text(
+            'PRETTY_NAME="Raspberry Pi OS GNU/Linux 13 (trixie)"\n'
+            'VERSION_ID="13"\n'
+            "VERSION_CODENAME=trixie\n",
+            encoding="utf-8",
+        )
+        result = su.get_os_release_info(f)
+        assert result == {
+            "pretty_name": "Raspberry Pi OS GNU/Linux 13 (trixie)",
+            "version_id": "13",
+            "version_codename": "trixie",
+        }
+
+    def test_missing_file_returns_unknowns(self, tmp_path):
+        result = su.get_os_release_info(tmp_path / "missing")
+        assert result == {
+            "pretty_name": "unknown",
+            "version_id": "unknown",
+            "version_codename": "unknown",
+        }
+
+
+class TestNginxVersion:
+    def test_parses_stderr_version(self):
+        import subprocess
+        cp = subprocess.CompletedProcess(
+            ["nginx", "-v"],
+            0,
+            stdout="",
+            stderr="nginx version: nginx/1.22.1\n",
+        )
+        with patch.object(su, "run_cmd", return_value=cp) as m_run:
+            assert su.get_nginx_version() == "nginx/1.22.1"
+        m_run.assert_called_once_with(
+            ["nginx", "-v"],
+            timeout=2.0,
+            warn_on_failure=False,
+        )
+
+    def test_nonzero_returns_unknown(self):
+        import subprocess
+        cp = subprocess.CompletedProcess(["nginx", "-v"], 1, stdout="", stderr="nope")
+        with patch.object(su, "run_cmd", return_value=cp):
+            assert su.get_nginx_version() == "unknown"
+
+
+class TestStaticSystemFactsAudit:
+    def teardown_method(self):
+        su._static_system_facts = None
+
+    def test_get_static_system_facts_defaults_to_unknowns(self):
+        su._static_system_facts = None
+        assert su.get_static_system_facts() == su.StaticSystemFacts()
+
+    def test_audit_collects_stores_and_logs_facts(self):
+        with patch.object(su, "get_os_release_info", return_value={
+                "pretty_name": "Raspberry Pi OS GNU/Linux 13 (trixie)",
+                "version_id": "13",
+                "version_codename": "trixie",
+             }), \
+             patch.object(su, "get_nginx_version", return_value="nginx/1.22.1"), \
+             patch("autostream_rpi.get_raspberry_pi_model",
+                   return_value="Raspberry Pi 4 Model B Rev 1.5"), \
+             patch.object(su.logger, "info") as m_info:
+            facts = su.audit_static_system_facts()
+
+        assert facts == su.StaticSystemFacts(
+            os_pretty_name="Raspberry Pi OS GNU/Linux 13 (trixie)",
+            os_version_id="13",
+            os_version_codename="trixie",
+            raspberry_pi_model="Raspberry Pi 4 Model B Rev 1.5",
+            nginx_version="nginx/1.22.1",
+        )
+        assert su.get_static_system_facts() == facts
+        assert m_info.call_count == 3
+
+
+# ---------------------------------------------------------------------------
 # run_admin_cmd: sudo wrapping
 # ---------------------------------------------------------------------------
 

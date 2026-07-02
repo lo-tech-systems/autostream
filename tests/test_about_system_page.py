@@ -16,6 +16,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_player_service as _ps
+from autostream_sysutils import StaticSystemFacts
 import autostream_webui_page_about as _about
 
 
@@ -79,6 +80,7 @@ def _collect_with_mocks(
     cpu_temp=48.2,
     disk_usage=(32_000_000_000, 12_000_000_000, 20_000_000_000),
     sd_health=96,
+    static_facts=None,
     systemctl_stdout="",
     systemctl_returncode=0,
     systemctl_raises=None,
@@ -91,6 +93,14 @@ def _collect_with_mocks(
         vibra_info = _vibra_info()
     if playback_snap is None:
         playback_snap = _playback_snap()
+    if static_facts is None:
+        static_facts = StaticSystemFacts(
+            os_pretty_name="Raspberry Pi OS GNU/Linux 13 (trixie)",
+            os_version_id="13",
+            os_version_codename="trixie",
+            raspberry_pi_model="Raspberry Pi 4 Model B Rev 1.5",
+            nginx_version="nginx/1.22.1",
+        )
 
     def fake_systemctl(*args, **kwargs):
         if systemctl_raises is not None:
@@ -110,6 +120,7 @@ def _collect_with_mocks(
          patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=cpu_temp), \
          patch("autostream_webui_page_about.get_root_disk_usage", return_value=disk_usage), \
          patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=sd_health), \
+         patch("autostream_webui_page_about.get_static_system_facts", return_value=static_facts), \
          patch("autostream_webui_page_about.subprocess.run", side_effect=fake_systemctl):
         return _about._collect_system_info()
 
@@ -167,6 +178,18 @@ class TestCollectSystemInfoShape:
         result2 = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL, cpu_temp=None)
         assert result2["cpu_temperature_c"] is None
 
+    def test_device_model_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert result["device"]["model"] == "Raspberry Pi 4 Model B Rev 1.5"
+
+    def test_os_build_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert result["os"] == {
+            "pretty_name": "Raspberry Pi OS GNU/Linux 13 (trixie)",
+            "version_id": "13",
+            "version_codename": "trixie",
+        }
+
     def test_disk_available_always_present(self):
         result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
         assert "available" in result["disk"]
@@ -178,6 +201,11 @@ class TestCollectSystemInfoShape:
     def test_services_has_six_entries(self):
         result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
         assert len(result["services"]) == 6
+
+    def test_nginx_service_includes_static_version(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        svc = next(s for s in result["services"] if s["unit"] == "nginx.service")
+        assert svc["version"] == "nginx/1.22.1"
 
 
 # ---------------------------------------------------------------------------
@@ -832,6 +860,8 @@ class TestTopLevelExceptionHandling:
 
 _REQUIRED_IDS = [
     "aboutBuildAutostream",
+    "aboutDeviceModel",
+    "aboutOsBuild",
     "aboutPlaybackHours",
     "aboutCpuTemperature",
     "aboutDiskSection",

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 CPU_INFO = Path("/var/lib/autostream/cpuinfo")
 LICENSE_CHECK = False
+RPI_MODEL_FILE = Path("/proc/device-tree/model")
 
 # ---------------------------------------------------------------------------
 # Appliance identity constants
@@ -171,6 +172,16 @@ def get_cpu_temperature_c() -> Optional[float]:
         pass
 
     return None
+
+
+def get_raspberry_pi_model() -> str:
+    """Return the Raspberry Pi model string, or "unknown" if unavailable."""
+    try:
+        raw = RPI_MODEL_FILE.read_bytes()
+        model = raw.replace(b"\x00", b"").decode("utf-8", errors="ignore").strip()
+        return model or "unknown"
+    except Exception:
+        return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -471,4 +482,3 @@ def setup_button(gpio: int, on_press, bounce_time: float = 0.1):
     except Exception as e:
         logger.warning("setup_button: GPIO init failed: %s", e)
         return None
-

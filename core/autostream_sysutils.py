@@ -16,6 +16,7 @@ import os
 import tempfile
 import time
 import json
+from dataclasses import dataclass
 from typing import Callable, IO, Optional
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,22 @@ def atomic_write_file(
         raise
 
 SDCARD_HEALTH_JSON_FILE = Path("/var/lib/autostream/sdcardhealth.json")
+OS_RELEASE_FILE = Path("/etc/os-release")
 
 # Privileged helper (installed outside /opt/autostream)
 AUTOSTREAM_ADMIN_BIN = os.environ.get("AUTOSTREAM_ADMIN_BIN", "/usr/local/libexec/autostream/autostream_admin")
+
+
+@dataclass(frozen=True)
+class StaticSystemFacts:
+    os_pretty_name: str = "unknown"
+    os_version_id: str = "unknown"
+    os_version_codename: str = "unknown"
+    raspberry_pi_model: str = "unknown"
+    nginx_version: str = "unknown"
+
+
+_static_system_facts: StaticSystemFacts | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +218,100 @@ def run_admin_cmd(
     # but keep enough detail to diagnose failures.
     log_cmd = ["sudo", "-n", "autostream_admin", *args]
     return run_cmd(cmd, timeout=timeout, log_cmd=log_cmd)
+
+
+# ---------------------------------------------------------------------------
+# Startup system diagnostics
+# ---------------------------------------------------------------------------
+
+def _strip_env_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        value = value[1:-1]
+    return value
+
+
+def get_os_release_info(path: Path | str = OS_RELEASE_FILE) -> dict[str, str]:
+    """Parse /etc/os-release without sourcing it."""
+    info = {
+        "pretty_name": "unknown",
+        "version_id": "unknown",
+        "version_codename": "unknown",
+    }
+    try:
+        for raw in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = _strip_env_quotes(value)
+            if key == "PRETTY_NAME":
+                info["pretty_name"] = value or "unknown"
+            elif key == "VERSION_ID":
+                info["version_id"] = value or "unknown"
+            elif key == "VERSION_CODENAME":
+                info["version_codename"] = value or "unknown"
+    except Exception:
+        pass
+    return info
+
+
+def get_nginx_version() -> str:
+    """Return the installed NGINX version string, or "unknown" if unavailable."""
+    result = run_cmd(["nginx", "-v"], timeout=2.0, warn_on_failure=False)
+    if result.returncode != 0:
+        return "unknown"
+    text = " ".join(
+        part.strip()
+        for part in (result.stderr, result.stdout)
+        if part and part.strip()
+    )
+    if not text:
+        return "unknown"
+    m = re.search(r"nginx version:\s*(\S+)", text)
+    if m:
+        return m.group(1).strip() or "unknown"
+    m = re.search(r"\b(nginx/\S+)", text)
+    if m:
+        return m.group(1).strip() or "unknown"
+    return "unknown"
+
+
+def audit_static_system_facts() -> StaticSystemFacts:
+    """Collect startup static system facts once, store them, and log them."""
+    global _static_system_facts
+
+    os_info = get_os_release_info()
+    try:
+        from autostream_rpi import get_raspberry_pi_model
+        rpi_model = get_raspberry_pi_model()
+    except Exception:
+        rpi_model = "unknown"
+
+    facts = StaticSystemFacts(
+        os_pretty_name=os_info.get("pretty_name") or "unknown",
+        os_version_id=os_info.get("version_id") or "unknown",
+        os_version_codename=os_info.get("version_codename") or "unknown",
+        raspberry_pi_model=rpi_model or "unknown",
+        nginx_version=get_nginx_version(),
+    )
+    _static_system_facts = facts
+
+    logger.info(
+        "System audit: OS=%r version_id=%s codename=%s",
+        facts.os_pretty_name,
+        facts.os_version_id,
+        facts.os_version_codename,
+    )
+    logger.info("System audit: Device=%r", facts.raspberry_pi_model)
+    logger.info("System audit: NGINX version=%r", facts.nginx_version)
+    return facts
+
+
+def get_static_system_facts() -> StaticSystemFacts:
+    """Return the startup-collected static system facts, or unknown defaults."""
+    return _static_system_facts or StaticSystemFacts()
 
 
 

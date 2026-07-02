@@ -63,6 +63,7 @@ from autostream_playback_stats import (
     make_fallback_input_snapshot,
 )
 from autostream_sysutils import (
+    audit_static_system_facts,
     get_install_state,
     write_avahi_playing_service,
     remove_avahi_playing_service,
@@ -2406,6 +2407,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         _apply_startup_log_level(config_path)
     except Exception:
         logging.warning("apply_startup_log_level: import or apply failed; continuing")
+    audit_static_system_facts()
     _ensure_playback_tracker(cfg)
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))
     version = _install_state.get("AUTOSTREAM_RELEASE_TAG", "")

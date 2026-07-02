@@ -28,7 +28,12 @@ from typing import Optional
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_temperature_c
-from autostream_sysutils import fmt_bytes, get_root_disk_usage, get_sdcard_health_percent
+from autostream_sysutils import (
+    fmt_bytes,
+    get_root_disk_usage,
+    get_sdcard_health_percent,
+    get_static_system_facts,
+)
 from track_id.vibra_shazam import get_vibra_runtime_info
 
 from autostream_webui_common import (
@@ -110,6 +115,12 @@ def send_about_page(handler, state: WebUIState) -> None:
         "<div class='bar-label'><strong>autostream Build</strong>"
         "<span id='aboutBuildAutostream'>Loading...</span></div>"
         "<div class='bar-label' style='margin-top:0.65rem;'>"
+        "<strong>Device</strong>"
+        "<span id='aboutDeviceModel'>Loading...</span></div>"
+        "<div class='bar-label' style='margin-top:0.65rem;'>"
+        "<strong>OS Build</strong>"
+        "<span id='aboutOsBuild'>Loading...</span></div>"
+        "<div class='bar-label' style='margin-top:0.65rem;'>"
         "<strong>Total Playback Time</strong>"
         "<span id='aboutPlaybackHours'>Loading...</span></div>"
         "<div class='bar-label' style='margin-top:0.65rem;'>"
@@ -178,7 +189,8 @@ def send_about_page(handler, state: WebUIState) -> None:
         "var _VS={healthy:1,warning:1,critical:1};"
         "function _ss(s){return _VS[s]?String(s):'healthy';}"
         "function _fail(){"
-        "['aboutBuildAutostream','aboutPlaybackHours','aboutCpuTemperature'].forEach(function(id){"
+        "['aboutBuildAutostream','aboutDeviceModel','aboutOsBuild',"
+        "'aboutPlaybackHours','aboutCpuTemperature'].forEach(function(id){"
         "var e=document.getElementById(id);"
         "if(e&&e.textContent==='Loading...')e.textContent='Unavailable';});"
         "document.querySelectorAll('#aboutServices [data-service-unit] .about-svc-state')"
@@ -192,7 +204,11 @@ def send_about_page(handler, state: WebUIState) -> None:
         ".then(function(d){"
         "if(d.ok!==true)throw new Error('ok!=true');"
         "var b=d.builds||{};"
+        "var dev=d.device||{};"
+        "var os=d.os||{};"
         "_s('aboutBuildAutostream',String(b.autostream||'unknown'));"
+        "_s('aboutDeviceModel',String(dev.model||'unknown'));"
+        "_s('aboutOsBuild',String(os.pretty_name||os.version_codename||'unknown'));"
         "_s('aboutPlaybackHours',typeof d.playback_hours==='number'"
         "?d.playback_hours.toFixed(1)+' hours':'Unavailable');"
         "_s('aboutCpuTemperature',typeof d.cpu_temperature_c==='number'"
@@ -512,13 +528,21 @@ def _collect_system_info() -> dict:
     except Exception:
         pass
 
-    # 9. systemd service states (on-demand query)
+    # 9. Startup-collected static system facts
+    try:
+        facts = get_static_system_facts()
+    except Exception:
+        from autostream_sysutils import StaticSystemFacts
+        facts = StaticSystemFacts()
+
+    # 10. systemd service states (on-demand query)
     _service_versions = {
         "autostream.service": autostream_version,
         "autostream_monitor.service": monitor_build,
         "autostream_wifi_watcher.service": wifi_watcher_build,
         "owntone.service": owntone_build,
         "vibra-mini.service": vibra_build,
+        "nginx.service": facts.nginx_version,
     }
     services = _collect_service_states(owntone_backend_id, _service_versions)
 
@@ -533,6 +557,14 @@ def _collect_system_info() -> dict:
         },
         "playback_hours": playback_hours,
         "cpu_temperature_c": cpu_temp_c,
+        "device": {
+            "model": facts.raspberry_pi_model,
+        },
+        "os": {
+            "pretty_name": facts.os_pretty_name,
+            "version_id": facts.os_version_id,
+            "version_codename": facts.os_version_codename,
+        },
         "disk": disk,
         "sd_card": sd_card,
         "services": services,
