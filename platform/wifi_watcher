@@ -2542,6 +2542,7 @@ def _set_active_client(adapter) -> None:
 
 
 def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" = None,
+                    adapter: "Optional[object]" = None,
                     drop_hotspot: bool = False, on_success_leaves_setup: bool = False,
                     leave_reason: str = "", records_noip: bool = False,
                     noip_at: "Optional[float]" = None,
@@ -2561,6 +2562,8 @@ def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" =
     Flags:
       - ``profile``: activate this NetworkState instead of the configured
         committed profile (used by the rollback-restore path).
+      - ``adapter``: use this already-resolved adapter object for the success
+        tail instead of re-discovering by ifname.
       - ``drop_hotspot``: if a hotspot session is active, tear down the AP on
         this radio before activating and rebuild it on failure.
       - ``on_success_leaves_setup`` / ``leave_reason``: leave setup mode on
@@ -2603,18 +2606,25 @@ def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" =
         return True
 
     if ok:
-        adapters = wifi_net.discover_adapters()
-        adapter = wifi_net.find_adapter_by_ifname(adapters, ifname)
-        if adapter is not None:
-            _set_active_client(adapter)
+        # Resolve the adapter object unless the caller already has it (avoids a
+        # redundant discover on the recovery-probe path).
+        resolved = adapter
+        adapters = None
+        if resolved is None:
+            adapters = wifi_net.discover_adapters()
+            resolved = wifi_net.find_adapter_by_ifname(adapters, ifname)
+        if resolved is not None:
+            _set_active_client(resolved)
         if deactivates_builtin:
+            if adapters is None:
+                adapters = wifi_net.discover_adapters()
             builtin = wifi_net.resolve_builtin(adapters)
             if (builtin is not None and builtin.ifname != ifname
                     and wifi_net.is_wifi_connected(builtin.ifname)):
                 logger.info("activate_client: disconnecting built-in client on %s", builtin.ifname)
                 run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
         clear_id = stable_id if stable_id is not None else (
-            adapter.stable_id if adapter is not None else "")
+            resolved.stable_id if resolved is not None else "")
         if clear_id:
             wifi_recovery.clear_noip_failures(_self_module(), clear_id)
         with state_lock:
@@ -2637,8 +2647,10 @@ def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" =
     if records_noip:
         record_id = stable_id
         if record_id is None:
-            adapter = wifi_net.find_adapter_by_ifname(wifi_net.discover_adapters(), ifname)
-            record_id = adapter.stable_id if adapter is not None else ifname
+            record_id = adapter.stable_id if adapter is not None else None
+        if record_id is None:
+            found = wifi_net.find_adapter_by_ifname(wifi_net.discover_adapters(), ifname)
+            record_id = found.stable_id if found is not None else ifname
         wifi_recovery.record_noip_failure(
             _self_module(), record_id,
             noip_at if noip_at is not None else time.monotonic())
@@ -2726,47 +2738,32 @@ def _apply_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
     if not ifname:
         return False
 
-    dropped_ap = False
-    with state_lock:
-        in_setup = STATE.setup_mode
-    if action.drop_hotspot and in_setup:
-        stop_ap_mode()
-        dropped_ap = True
-
-    if _activate_committed_on(ifname):
-        adapters = wifi_net.discover_adapters()
-        adapter = wifi_net.find_adapter_by_ifname(adapters, ifname)
-        if adapter is not None:
-            _set_active_client(adapter)
-            wifi_recovery.clear_noip_failures(_self_module(), adapter.stable_id)
-        with state_lock:
-            # Onboard counts as a fallback only when a USB path also exists (a
-            # broken configured USB); a lone onboard client is not "degraded".
-            usb_present = any(a.is_usb for a in facts.adapters)
-            STATE.using_builtin_fallback = (
-                action.kind == RecoveryKind.ACTIVATE_ONBOARD and usb_present
-            )
-            STATE.conn_down_start = None
-            STATE.last_reconnect_attempt = None
-        leave_setup_mode(f"recovery: client up on {ifname} ({action.reason})")
-        verify_avahi_after_handover()
-        logger.info("Recovery: client activated on %s (%s)", ifname, action.reason)
-        return True
-
-    # Activation failed.  Rebuild the AP if we tore it down so the portal stays up.
-    if dropped_ap:
-        with state_lock:
-            STATE.setup_mode = True
-        start_ap_mode()
-        update_apmode_flag(True)
+    # Onboard counts as a fallback only when a USB path also exists (a broken
+    # configured USB); a lone onboard client is not "degraded".
+    usb_present = any(a.is_usb for a in facts.adapters)
+    sets_fallback = action.kind == RecoveryKind.ACTIVATE_ONBOARD and usb_present
     # Record a no-IP failure only for USB so the ladder eventually promotes the
     # onboard; do not suppress the onboard fallback (it is retried, rate-limited).
-    if action.kind == RecoveryKind.ACTIVATE_USB:
+    records_usb_noip = action.kind == RecoveryKind.ACTIVATE_USB
+    stable_id = None
+    if records_usb_noip:
         adapter = wifi_net.find_adapter_by_ifname(facts.adapters, ifname)
         stable_id = adapter.stable_id if adapter is not None else ifname
-        wifi_recovery.record_noip_failure(_self_module(), stable_id, facts.taken_at)
-    logger.info("Recovery: client activation failed on %s (%s)", ifname, action.reason)
-    return False
+
+    ok = activate_client(
+        ifname,
+        drop_hotspot=action.drop_hotspot,
+        on_success_leaves_setup=True,
+        leave_reason=f"recovery: client up on {ifname} ({action.reason})",
+        records_noip=records_usb_noip,
+        noip_at=facts.taken_at,
+        sets_builtin_fallback=sets_fallback,
+        clears_down_timers=True,
+        stable_id=stable_id,
+    )
+    logger.info("Recovery: client activation %s on %s (%s)",
+                "succeeded" if ok else "failed", ifname, action.reason)
+    return ok
 
 
 def _try_recovery_reconnect(adapters: list) -> None:
@@ -2789,33 +2786,20 @@ def _try_recovery_reconnect(adapters: list) -> None:
         logger.debug("Auto-recovery: no USB candidates; hotspot retained")
         return
 
-    # Resolve UUID (lazily persisting if missing) and clear cross-adapter
-    # restrictions once before probing USB candidates.
-    recovery_uuid = _resolve_committed_uuid(state)
-    if recovery_uuid:
-        run_cmd(wifi_net.clear_restrictions_cmd(recovery_uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
-
     for candidate in candidates:
         logger.info("Auto-recovery: probing USB %s", candidate.ifname)
-        r_up = run_cmd(wifi_net.activate_connection_cmd(
-            recovery_uuid, state.connection_name, candidate.ifname,
-        ))
-        if _activation_network_absent(r_up):
-            logger.info("Auto-recovery: saved network not visible on %s; skipping IPv4 wait",
-                        candidate.ifname)
-            wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, time.monotonic())
-            continue
-        if (wait_for_connection(candidate.ifname,
-                                timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                                interval=WAIT_FOR_CONNECTION_INTERVAL)
-                and is_wifi_client_healthy(candidate.ifname)):
-            _set_active_client(candidate)
-            wifi_recovery.clear_noip_failures(_self_module(), candidate.stable_id)
-            leave_setup_mode("automatic_recovery: adapter returned and reconnected")
-            verify_avahi_after_handover()
+        # Probe the USB radio without dropping the AP (drop_hotspot=False): the
+        # AP runs on the onboard/hotspot radio, not this candidate.
+        if activate_client(
+            candidate.ifname,
+            adapter=candidate,
+            on_success_leaves_setup=True,
+            leave_reason="automatic_recovery: adapter returned and reconnected",
+            records_noip=True,
+            stable_id=candidate.stable_id,
+        ):
             logger.info("Auto-recovery resolved on %s", candidate.ifname)
             return
-        wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, time.monotonic())
     logger.debug("Auto-recovery probe failed; retaining hotspot")
 
 
@@ -2848,22 +2832,15 @@ def _single_radio_recovery_join(hotspot) -> bool:
     leaves setup mode.
     """
     logger.info("Recovery: single-radio rejoin on %s (saved SSID visible)", hotspot.ifname)
-    stop_ap_mode()
-    if _activate_committed_on(hotspot.ifname):
-        adapters = wifi_net.discover_adapters()
-        recovered = wifi_net.find_adapter_by_ifname(adapters, hotspot.ifname)
-        if recovered is not None:
-            _set_active_client(recovered)
-            wifi_recovery.clear_noip_failures(_self_module(), recovered.stable_id)
-        leave_setup_mode("recovery: single-radio rejoin succeeded")
-        verify_avahi_after_handover()
-        return True
-    logger.warning("Single-radio recovery join failed on %s; rebuilding hotspot", hotspot.ifname)
-    with state_lock:
-        STATE.setup_mode = True
-    start_ap_mode()
-    update_apmode_flag(True)
-    return False
+    ok = activate_client(
+        hotspot.ifname,
+        drop_hotspot=True,
+        on_success_leaves_setup=True,
+        leave_reason="recovery: single-radio rejoin succeeded",
+    )
+    if not ok:
+        logger.warning("Single-radio recovery join failed on %s; hotspot rebuilt", hotspot.ifname)
+    return ok
 
 
 def _usable_second_radio(adapters: list, hotspot_if, now: float):

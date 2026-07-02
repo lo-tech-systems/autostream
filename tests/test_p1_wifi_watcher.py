@@ -3551,6 +3551,7 @@ class TestScanGatedRecovery:
 
     def test_single_radio_join_success_leaves_setup(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.setup_mode = True  # only ever called from within a recovery hotspot
         with patch.object(watcher, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "_activate_committed_on", return_value=True), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
@@ -3563,6 +3564,7 @@ class TestScanGatedRecovery:
 
     def test_single_radio_join_failure_rebuilds_ap(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.setup_mode = True  # only ever called from within a recovery hotspot
         with patch.object(watcher, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
              patch.object(watcher, "start_ap_mode") as start_ap, \
