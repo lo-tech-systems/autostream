@@ -1812,6 +1812,47 @@ class TestCandidateValidateTail:
                    if isinstance(c.args[0], (list, tuple))), "failed candidate must be deleted"
 
 
+class TestConnectToConfiguredWifiUuid:
+    """A-WP6: the steady-state reconnect resolves the UUID and clears
+    cross-adapter restrictions (inconsistency 4), fire-and-forget (no wait)."""
+
+    def test_reconnect_carries_uuid_and_clears_restrictions_no_wait(self, watcher):
+        calls = []
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "")), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          return_value="resolved-uuid"), \
+             patch.object(watcher.wifi_net, "save_network_state"), \
+             patch.object(watcher, "run_cmd",
+                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher, "wait_for_connection") as wait:
+            ok = watcher.connect_to_configured_wifi()
+        assert ok is True
+        wait.assert_not_called()  # fire-and-forget: no blocking IPv4 wait in the loop
+        str_calls = [str(c) for c in calls]
+        assert any("modify" in c and "resolved-uuid" in c for c in str_calls), (
+            "reconnect must clear cross-adapter restrictions with the resolved UUID"
+        )
+        up = next((c for c in calls if isinstance(c, list) and "up" in c), None)
+        assert up is not None and "resolved-uuid" in up, (
+            "the activation command must carry the resolved UUID"
+        )
+
+    def test_healthy_returns_early_without_activation(self, watcher):
+        calls = []
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "run_cmd",
+                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)):
+            ok = watcher.connect_to_configured_wifi()
+        assert ok is True
+        assert not any(isinstance(c, list) and "up" in c for c in calls), (
+            "healthy path must not issue nmcli connection up"
+        )
+
+
 class TestAttemptOnTargets:
     def test_non_hotspot_target_keeps_ap_up_and_success_leaves_setup(self, watcher):
         hotspot = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)

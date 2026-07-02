@@ -2266,22 +2266,35 @@ def connect_to_configured_wifi() -> bool:
     connection to try.  Use startup_connect_usb_first() at boot; this function is
     the built-in fallback path called when USB-first selection is not applicable.
     """
-    connection_name = get_configured_wifi_connection_name()
-    if not connection_name:
+    state = get_configured_network_state()
+    if not state.is_configured:
         return False
+    connection_name = state.connection_name
 
     # If the configured WiFi is already healthy, do not disturb it.
     if is_wifi_client_healthy():
         logger.debug("Configured WiFi '%s' already healthy; no action needed", connection_name)
         return True
 
-    # NOTE: the former `nmcli device disconnect/connect` bounce was removed —
-    # it is ineffective for a wedged USB PHY (NO-CARRIER) and the dead-PHY USB
-    # reset ladder supersedes it.  Just (re)activate the configured profile.
+    # A-WP6 (inconsistency 4): resolve the UUID and clear cross-adapter
+    # restrictions before (re)activating, so a legacy profile pinned to another
+    # adapter can reconnect on this steady-state path exactly as it would at
+    # every other join site.  This is fire-and-forget — no blocking IPv4 wait is
+    # added to the monitor loop (the loop validates on a later pass) — and no
+    # ifname is pinned, so NM's adapter selection is unchanged.  The former
+    # `nmcli device disconnect/connect` bounce remains gone (superseded by the
+    # dead-PHY USB reset ladder).
+    uuid = _resolve_committed_uuid(state)
+    if uuid:
+        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
     logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
-    r_up = run_cmd(["nmcli", "connection", "up", connection_name])
-    if r_up.returncode != 0:
-        logger.warning("nmcli connection up '%s' failed (rc=%d): %s", connection_name, r_up.returncode, r_up.stderr.strip())
+    ident = ["uuid", uuid] if uuid else ["id", connection_name]
+    r_up = run_cmd(["nmcli", "connection", "up", *ident])
+    if _activation_network_absent(r_up):
+        logger.info("Configured network '%s' not visible; reconnect deferred", connection_name)
+    elif r_up.returncode != 0:
+        logger.warning("nmcli connection up '%s' failed (rc=%d): %s",
+                       connection_name, r_up.returncode, r_up.stderr.strip())
     return True
 
 
