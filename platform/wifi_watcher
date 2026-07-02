@@ -1967,7 +1967,7 @@ def step_hotspot_policy(hctx: "HealthContext") -> "Verdict":
         # hotspots wait policy.probe_grace_s after entry before probing so the
         # watcher does not rejoin the network the user opened the portal to change.
         if policy.probes_return and facts.wifi_configured and ap_age >= policy.probe_grace_s:
-            _attempt_recovery_reconnect(facts.adapters, hctx.now)
+            _attempt_recovery_reconnect(facts)
         # FIRST_RUN (deadline None) stays up indefinitely; every other purpose
         # closes after its deadline.
         if policy.deadline_s is not None and ap_age >= policy.deadline_s:
@@ -2745,43 +2745,6 @@ def _apply_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
     return ok
 
 
-def _try_recovery_reconnect(adapters: list) -> None:
-    """USB-first reconnect attempt during automatic-recovery hotspot (Section 8.6).
-
-    Tries the committed profile on USB adapters first, then built-in.  On
-    success, calls leave_setup_mode() so nginx returns to the application
-    backend without waiting for the 30-minute timeout.  On failure, retains
-    the hotspot; the caller schedules the next retry via RECONNECT_ATTEMPT_INTERVAL.
-    """
-    state = get_configured_network_state()
-    if not state.is_configured:
-        return
-    # Only probe USB adapters while the recovery hotspot is running on the
-    # built-in radio.  Activating a client on the built-in while it hosts the
-    # AP would displace the hotspot; that path is handled by the 30-minute
-    # timeout rollback in handle_reconfigure_timeout/leave_setup_mode.
-    candidates = wifi_net.usb_candidates(adapters)
-    if not candidates:
-        logger.debug("Auto-recovery: no USB candidates; hotspot retained")
-        return
-
-    for candidate in candidates:
-        logger.info("Auto-recovery: probing USB %s", candidate.ifname)
-        # Probe the USB radio without dropping the AP (drop_hotspot=False): the
-        # AP runs on the onboard/hotspot radio, not this candidate.
-        if activate_client(
-            candidate.ifname,
-            adapter=candidate,
-            on_success_leaves_setup=True,
-            leave_reason="automatic_recovery: adapter returned and reconnected",
-            records_noip=True,
-            stable_id=candidate.stable_id,
-        ):
-            logger.info("Auto-recovery resolved on %s", candidate.ifname)
-            return
-    logger.debug("Auto-recovery probe failed; retaining hotspot")
-
-
 def _saved_network_ssid() -> str:
     """Return the SSID of the committed network profile, or "" if unknown."""
     state = get_configured_network_state()
@@ -2803,91 +2766,58 @@ def _saved_ssid_visible(hotspot_adapter) -> bool:
     return scan is not None and ssid in scan
 
 
-def _single_radio_recovery_join(hotspot) -> bool:
-    """Drop the AP, join the saved network on the sole radio, rebuild on failure.
-
-    The hotspot session stays intact across stop_ap_mode (it tears down only the
-    nmcli AP), so a failed join simply rebuilds the hotspot; a successful join
-    leaves setup mode.
-    """
-    logger.info("Recovery: single-radio rejoin on %s (saved SSID visible)", hotspot.ifname)
-    ok = activate_client(
-        hotspot.ifname,
-        drop_hotspot=True,
-        on_success_leaves_setup=True,
-        leave_reason="recovery: single-radio rejoin succeeded",
-    )
-    if not ok:
-        logger.warning("Single-radio recovery join failed on %s; hotspot rebuilt", hotspot.ifname)
-    return ok
-
-
-def _usable_second_radio(adapters: list, hotspot_if, now: float):
-    """Return a non-hotspot radio still worth probing as a client, else None.
-
-    A wedged (no-carrier), quarantined, or no-IP-suppressed second radio (e.g. a
-    dead USB dongle) is NOT usable and must not block the onboard drop-AP rejoin.
-    That was the field-log trap (30-Jun-2026): a dead USB was probed for the full
-    30-minute hotspot lifetime while the AP-hosting onboard — which could reach the
-    network — was never tried as a client.  Usability is read from the shared
-    recovery facts so this agrees exactly with next_recovery_action().
-    """
-    for a in adapters:
-        if not a.managed or a.ifname == hotspot_if:
-            continue
-        rf = _adapter_recovery_facts(a, now)
-        if rf.link_down is not True and not rf.quarantined and not rf.noip_suppressed:
-            return a
-    return None
-
-
-def _attempt_recovery_reconnect(adapters: list, now: float) -> None:
+def _attempt_recovery_reconnect(facts: "Facts") -> None:
     """Scan-gated recovery reconnect from within a recovery hotspot (WP6, §2.8).
 
-    With a *usable* second (non-hotspot) client-capable radio, probe it without
-    dropping the AP (existing behaviour), bounded by RECONNECT_ATTEMPT_INTERVAL.
-    Otherwise — single-radio hardware, or the only second radio is a dead/
-    quarantined USB — scan for the saved SSID on the AP-hosting (onboard) radio on
-    a RECOVERY_SCAN_INTERVAL cadence and only perform the tear-down→join (also
-    join-interval bounded) when the SSID is visible.  This onboard climb is the
-    exit edge back to a client that the dead-second-radio case previously lacked.
+    Routes the client-path-vs-hotspot choice through the single recovery ladder
+    (C2-WP2): next_recovery_action ranks the usable radios exactly as it does at
+    boot-entry and on USB failure, so the in-hotspot probe can no longer diverge
+    from those sites.  A second (non-hotspot) radio the ladder still rates usable
+    is (re)activated without dropping the AP; when the only client path is the
+    AP-hosting radio itself the ladder returns ACTIVATE_ONBOARD with
+    drop_hotspot=True — the single-radio exit edge.
+
+    This function keeps only the *apply-layer mechanics* the ladder does not own:
+    the RECONNECT_ATTEMPT_INTERVAL bound on the (expensive) join, and — before a
+    drop-AP rejoin — the RECOVERY_SCAN_INTERVAL-gated _saved_ssid_visible scan
+    that cheaply confirms the saved network is back before tearing the AP down.
     """
-    hotspot = resolve_hotspot_adapter(adapters)
-    hotspot_if = hotspot.ifname if hotspot else None
-    usable_other = _usable_second_radio(adapters, hotspot_if, now)
+    now = facts.taken_at
+    raction = next_recovery_action(STATE, gather_recovery_facts(facts))
+    if raction.kind not in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD):
+        # HOLD / ENTER_HOTSPOT: the active path is fine, Ethernet is up, or a
+        # wedged-USB-only case the dead-PHY ladder owns — retain the hotspot.
+        return
 
     with state_lock:
         last_reconnect = STATE.last_reconnect_attempt
     join_due = (last_reconnect is None
                 or (now - last_reconnect) >= RECONNECT_ATTEMPT_INTERVAL)
 
-    if usable_other is not None:
-        # Usable second radio present: probe it (USB-first) without dropping the AP.
-        if join_due:
-            with state_lock:
-                STATE.last_reconnect_attempt = now
-            _try_recovery_reconnect(adapters)
-        return
+    # A drop-AP rejoin on the AP-hosting radio is expensive and tears the hotspot
+    # down; gate it behind the cheap saved-SSID scan (single-radio exit edge,
+    # §2.8) so the AP is dropped only once the network is actually visible again.
+    if raction.drop_hotspot:
+        hotspot = resolve_hotspot_adapter(facts.adapters)
+        if hotspot is None:
+            return
+        with state_lock:
+            last_scan = STATE.last_recovery_scan
+        scan_due = last_scan is None or (now - last_scan) >= RECOVERY_SCAN_INTERVAL
+        if not scan_due:
+            return
+        with state_lock:
+            STATE.last_recovery_scan = now
+        if not _saved_ssid_visible(hotspot):
+            logger.debug("Recovery scan: saved SSID not visible on %s; AP retained",
+                         hotspot.ifname)
+            return
 
-    if hotspot is None:
-        return
-
-    # Single radio: rate-limit the (cheap) scan independently of the loop tick.
-    with state_lock:
-        last_scan = STATE.last_recovery_scan
-    scan_due = last_scan is None or (now - last_scan) >= RECOVERY_SCAN_INTERVAL
-    if not scan_due:
-        return
-    with state_lock:
-        STATE.last_recovery_scan = now
-    if not _saved_ssid_visible(hotspot):
-        logger.debug("Recovery scan: saved SSID not visible on %s; AP retained", hotspot.ifname)
-        return
     if not join_due:
         return
     with state_lock:
         STATE.last_reconnect_attempt = now
-    _single_radio_recovery_join(hotspot)
+    _apply_client_activation(raction, facts)
 
 
 def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
