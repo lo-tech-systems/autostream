@@ -2319,6 +2319,33 @@ def connect_to_configured_wifi() -> bool:
     return True
 
 
+def migrate_client_profiles_autoconnect_no() -> int:
+    """D-WP2: idempotently disable NM autoconnect on every managed non-AP Wi-Fi
+    client profile at boot (self-healing).
+
+    D-WP1 creates newly-committed profiles with autoconnect=no, but a profile may
+    pre-exist the install (OS/user-created, or imported by the installer with
+    autoconnect=yes).  Running this every boot ensures no client profile can race
+    the watcher's single-decider path onto a stale radio.  AP (hotspot) profiles
+    are skipped so the recovery hotspot is unaffected.  Best-effort: a per-profile
+    nmcli failure is logged and does not abort the sweep.  Returns the number of
+    client profiles for which the modify succeeded.
+    """
+    modified = 0
+    for uuid, name in wifi_net.list_wifi_connection_profiles():
+        if wifi_net.wifi_profile_mode(uuid or name) == "ap":
+            continue
+        r = run_cmd(wifi_net.set_autoconnect_no_cmd(uuid, name))
+        if r.returncode == 0:
+            modified += 1
+        else:
+            logger.warning("autoconnect=no migration failed for '%s' (rc=%d): %s",
+                           name or uuid, r.returncode, r.stderr.strip())
+    if modified:
+        logger.info("D-WP2: ensured autoconnect=no on %d client profile(s)", modified)
+    return modified
+
+
 def _resolve_committed_uuid(state: "wifi_net.NetworkState") -> str:
     """Return the UUID for the committed profile, resolving and persisting if absent.
 
@@ -3334,6 +3361,13 @@ if __name__ == "__main__":
     run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
     # an any associated hotspot request markers
     clear_apmode_flag()
+    # D-WP2: idempotently disable NM autoconnect on every managed non-AP client
+    # profile (self-healing for pre-existing/installer-imported autoconnect=yes
+    # profiles), so the watcher is the sole agent that brings a client up.
+    try:
+        migrate_client_profiles_autoconnect_no()
+    except Exception as e:
+        logger.warning("autoconnect=no startup migration failed: %s", e)
     # C2-WP4: initial USB-first client bring-up is no longer a pre-loop one-shot;
     # the monitor loop's BOOT-window ladder rung (step_boot_client_bringup) does it
     # from the first pass, so a single decider ranks the client paths at boot.

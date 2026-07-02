@@ -924,3 +924,51 @@ class TestConfigureCandidateCmds:
         cmds, _ = wifi_net.configure_candidate_cmds("c", "wlan1", "SSID", "pw12345678")
         modify = self._modify_cmd(cmds)
         assert modify[modify.index("connection.autoconnect") + 1] == "no"
+
+
+class TestClientProfileMigrationHelpers:
+    """D-WP2 — enumerate saved Wi-Fi profiles, read their mode, and build the
+    idempotent autoconnect=no modify command."""
+
+    def _res(self, rc=0, stdout="", stderr=""):
+        return MagicMock(returncode=rc, stdout=stdout, stderr=stderr)
+
+    def test_list_wifi_connection_profiles_filters_wifi(self):
+        out = ("Home:uuid-1:802-11-wireless\n"
+               "Wired:uuid-2:802-3-ethernet\n"
+               "Hotspot:uuid-3:802-11-wireless\n")
+        with patch.object(wifi_net, "run_cmd", return_value=self._res(stdout=out)):
+            profiles = wifi_net.list_wifi_connection_profiles()
+        assert profiles == [("uuid-1", "Home"), ("uuid-3", "Hotspot")]
+
+    def test_list_wifi_connection_profiles_accepts_short_type(self):
+        with patch.object(wifi_net, "run_cmd",
+                          return_value=self._res(stdout="Home:uuid-1:wifi\n")):
+            assert wifi_net.list_wifi_connection_profiles() == [("uuid-1", "Home")]
+
+    def test_list_wifi_connection_profiles_empty_on_failure(self):
+        with patch.object(wifi_net, "run_cmd", return_value=self._res(rc=1)):
+            assert wifi_net.list_wifi_connection_profiles() == []
+
+    def test_wifi_profile_mode_parses_ap_and_infrastructure(self):
+        with patch.object(wifi_net, "run_cmd",
+                          return_value=self._res(stdout="802-11-wireless.mode:ap\n")):
+            assert wifi_net.wifi_profile_mode("uuid-3") == "ap"
+        with patch.object(wifi_net, "run_cmd",
+                          return_value=self._res(stdout="802-11-wireless.mode:infrastructure\n")):
+            assert wifi_net.wifi_profile_mode("uuid-1") == "infrastructure"
+
+    def test_wifi_profile_mode_empty_on_blank_or_failure(self):
+        assert wifi_net.wifi_profile_mode("") == ""
+        with patch.object(wifi_net, "run_cmd", return_value=self._res(rc=1)):
+            assert wifi_net.wifi_profile_mode("x") == ""
+
+    def test_set_autoconnect_no_cmd_prefers_uuid(self):
+        assert wifi_net.set_autoconnect_no_cmd("uuid-1", "Home") == [
+            "nmcli", "connection", "modify", "uuid", "uuid-1",
+            "connection.autoconnect", "no"]
+
+    def test_set_autoconnect_no_cmd_falls_back_to_name(self):
+        assert wifi_net.set_autoconnect_no_cmd("", "Home") == [
+            "nmcli", "connection", "modify", "id", "Home",
+            "connection.autoconnect", "no"]

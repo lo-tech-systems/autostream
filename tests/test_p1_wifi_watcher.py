@@ -2379,6 +2379,58 @@ class TestResolveCommittedUuid:
 # Regression: delayed startup USB enumeration re-probe (Section 4.3 / WP4)
 # ---------------------------------------------------------------------------
 
+class TestClientProfileAutoconnectMigration:
+    """D-WP2 — the startup migration disables NM autoconnect on every managed
+    non-AP Wi-Fi client profile (self-healing), skipping AP profiles."""
+
+    def _res(self, rc=0, stderr=""):
+        return MagicMock(returncode=rc, stderr=stderr)
+
+    def test_modifies_client_profiles_and_skips_ap(self, watcher):
+        profiles = [("uuid-1", "Home"), ("uuid-ap", "autostream-Hotspot"),
+                    ("uuid-2", "Guest")]
+        modes = {"uuid-1": "infrastructure", "uuid-ap": "ap", "uuid-2": ""}
+        modified = []
+
+        def fake_modify(cmd, *a, **k):
+            # cmd == set_autoconnect_no_cmd(...); capture the uuid it targets.
+            modified.append(cmd[cmd.index("uuid") + 1])
+            return self._res()
+
+        with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=profiles), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode",
+                          side_effect=lambda ident: modes[ident]), \
+             patch.object(watcher, "run_cmd", side_effect=fake_modify):
+            count = watcher.migrate_client_profiles_autoconnect_no()
+
+        assert count == 2
+        assert modified == ["uuid-1", "uuid-2"]   # AP profile skipped
+
+    def test_no_profiles_is_noop(self, watcher):
+        with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=[]), \
+             patch.object(watcher, "run_cmd") as run:
+            count = watcher.migrate_client_profiles_autoconnect_no()
+        assert count == 0
+        run.assert_not_called()
+
+    def test_per_profile_failure_does_not_abort_sweep(self, watcher):
+        profiles = [("uuid-1", "Home"), ("uuid-2", "Guest")]
+
+        def fake_modify(cmd, *a, **k):
+            uuid = cmd[cmd.index("uuid") + 1]
+            return self._res(rc=1, stderr="boom") if uuid == "uuid-1" else self._res()
+
+        with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=profiles), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode",
+                          return_value="infrastructure"), \
+             patch.object(watcher, "run_cmd", side_effect=fake_modify):
+            count = watcher.migrate_client_profiles_autoconnect_no()
+        assert count == 1   # uuid-1 failed, uuid-2 succeeded, sweep continued
+
+
 class TestBootClientBringup:
     """C2-WP4 — the BOOT-window client bring-up is a loop rung that runs the single
     recovery ladder (preferred USB, else onboard) each pass while BOOT_AP_GRACE is

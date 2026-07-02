@@ -1223,6 +1223,54 @@ def configure_candidate_cmds(
     return cmds, log_cmds
 
 
+def list_wifi_connection_profiles() -> list[tuple[str, str]]:
+    """Return ``(uuid, name)`` for every saved 802-11-wireless connection profile.
+
+    Facts-only primitive for the D-WP2 startup migration; the caller filters out
+    AP-mode profiles via wifi_profile_mode().  Returns [] on any nmcli failure.
+    """
+    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"])
+    if r.returncode != 0:
+        return []
+    out: list[tuple[str, str]] = []
+    for line in r.stdout.splitlines():
+        if not line:
+            continue
+        parts = split_nmcli_terse(line, maxsplit=2)
+        if len(parts) != 3:
+            continue
+        name, uuid, ctype = parts
+        # nmcli reports the connection type as "802-11-wireless" (terse -f TYPE)
+        # on most releases; accept the short "wifi" spelling too for robustness.
+        if ctype in ("802-11-wireless", "wifi"):
+            out.append((uuid, name))
+    return out
+
+
+def wifi_profile_mode(name_or_uuid: str) -> str:
+    """Return the lowercased 802-11-wireless.mode of a profile.
+
+    "ap" for a hotspot profile, "infrastructure" (or "") for a client profile.
+    Returns "" on any failure or for a non-Wi-Fi profile.
+    """
+    if not name_or_uuid:
+        return ""
+    r = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", name_or_uuid])
+    if r.returncode != 0:
+        return ""
+    _, _, mode = r.stdout.strip().partition(":")
+    return mode.strip().lower()
+
+
+def set_autoconnect_no_cmd(uuid: str, name: str = "") -> list[str]:
+    """Build the idempotent 'disable NM autoconnect' modify command for a profile.
+
+    Prefers ``uuid <...>``; falls back to ``id <name>`` for unresolved legacy state.
+    """
+    ident = ["uuid", uuid] if uuid else ["id", name]
+    return ["nmcli", "connection", "modify", *ident, "connection.autoconnect", "no"]
+
+
 def get_profile_uuid(con_name: str) -> str:
     """Return the UUID of a profile by exact name, or "" if not found/ambiguous."""
     r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"])
