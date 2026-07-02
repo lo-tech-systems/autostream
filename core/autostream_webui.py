@@ -102,7 +102,7 @@ from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page, send_about_system_json
 from autostream_webui_page_equaliser import send_equaliser_page, send_remote_equaliser_page
 from autostream_webui_page_airplay import send_airplay_page, send_remote_home_page
-from autostream_webui_page_logs import handle_logs_download, handle_logs_post, send_logs_page
+from autostream_webui_page_logs import handle_logs_download, send_logs_page
 from autostream_webui_page_owntone import (
     send_owntone_ready_json,
     send_owntone_restarting_page,
@@ -727,7 +727,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         csrf_token = token_from_header or token_from_body
 
         if not AUTH.validate_csrf(self, csrf_token):
-            if path in ("/setup", "/owntone-setup", "/logs", "/service"):
+            if path in ("/setup", "/owntone-setup", "/service"):
                 self._redirect_with_error_flash("Settings not saved, please try again")
             else:
                 self.send_error(403, "CSRF validation failed")
@@ -741,7 +741,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 or path.startswith("/api/auth/")
                 or path == "/first-boot/owntone/continue"
                 or path == "/first-boot/appliance/finish"
-                or path == "/logs"
                 or path == "/api/output"
                 or path == "/api/output_eq/reset"
                 or path == "/api/service/reset"
@@ -822,14 +821,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/first-boot/appliance/finish":
             if not AUTH.require_authenticated_if_pin_enabled(self): return
             handle_first_boot_finish_post(self, STATE, AUTH, body_str)
-
-        elif path == "/logs":
-            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path="/logs"):
-                return
-            if not body_str:
-                self.send_error(400, "Missing request body")
-                return
-            handle_logs_post(self, STATE, body_str)
 
         elif path == "/api/settings":
             if not AUTH.require_authenticated_if_pin_enabled(self):

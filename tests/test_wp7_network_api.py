@@ -526,7 +526,7 @@ class TestRouteWiring:
             setattr(sys.modules["autostream_webui_page_equaliser"], attr, MagicMock())
         for attr in ("send_airplay_page", "send_remote_home_page"):
             setattr(sys.modules["autostream_webui_page_airplay"], attr, MagicMock())
-        for attr in ("handle_logs_download", "handle_logs_post", "send_logs_page"):
+        for attr in ("handle_logs_download", "send_logs_page"):
             setattr(sys.modules["autostream_webui_page_logs"], attr, MagicMock())
         for attr in ("send_owntone_ready_json", "send_owntone_restarting_page", "send_owntone_setup_page"):
             setattr(sys.modules["autostream_webui_page_owntone"], attr, MagicMock())

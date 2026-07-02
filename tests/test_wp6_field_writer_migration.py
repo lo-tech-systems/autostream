@@ -7,17 +7,14 @@ Tests cover:
   - apply_eq_field: dB field via store (uses pre-write snapshot), dB fallback
   - apply_eq_reset: zeroes all bands via store, fallback path
   - send_service_config_json: persistence via store, fallback when no store
-  - handle_logs_post: log_level persisted via store, fallback when no store
   - Callers in webui_api and gateway pass settings= to apply_eq_field/reset
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import sys
-import tempfile
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -261,49 +258,6 @@ class TestServiceConfigJsonViaStore:
         send_service_config_json(handler, state, body)
         assert sent["code"] == 400
         assert sent["body"]["ok"] is False
-
-
-# ── handle_logs_post ──────────────────────────────────────────────────────────
-
-class TestLogsPostViaStore:
-    def _make_logs_state(self, config_path, store):
-        state = MagicMock()
-        state.config_path = config_path
-        state.settings = store
-        state.request_path = "/logs"
-        return state
-
-    def test_set_log_level_called_with_user(self, tmp_path):
-        # handle_logs_post now delegates to set_log_level(changed_by="user")
-        from autostream_webui_page_logs import handle_logs_post
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = self._make_logs_state(config_path, store)
-        handler = MagicMock()
-        handler.headers = {}
-        ok_result = {"ok": True, "level": "debug", "changed_by": "user",
-                     "changed_at": "2026-01-01T00:00:00Z", "changed": True,
-                     "applied": {"monitor": True, "owntone": None}}
-        with patch("autostream_log_policy.set_log_level", return_value=ok_result) as m_set, \
-             patch("autostream_webui_page_logs._set_flash_cookie"), \
-             patch("autostream_webui_page_logs.build_page_html", return_value=""):
-            handle_logs_post(handler, state, "log_level=DEBUG")
-        m_set.assert_called_once_with(config_path, "debug", changed_by="user")
-
-    def test_set_log_level_error_shows_flash(self, tmp_path):
-        # When set_log_level returns ok=False, a flash error page is rendered
-        from autostream_webui_page_logs import handle_logs_post
-        config_path = _make_config(str(tmp_path))
-        state = self._make_logs_state(config_path, None)
-        handler = MagicMock()
-        handler.headers = {}
-        bad_result = {"ok": False, "error": "invalid level"}
-        with patch("autostream_log_policy.set_log_level", return_value=bad_result), \
-             patch("autostream_webui_page_logs.send_logs_page") as m_page:
-            handle_logs_post(handler, state, "log_level=DEBUG")
-        m_page.assert_called_once()
-        _, kwargs = m_page.call_args
-        assert kwargs.get("flash_type") == "error"
 
 
 # ── Callers pass settings= ────────────────────────────────────────────────────

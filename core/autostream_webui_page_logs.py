@@ -3,12 +3,11 @@
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
-Page renderer and non-JS fallback POST handler for the /logs route.
+Page renderer for the /logs route.
 
 Responsibilities:
   - Render the Logs page (log file tail, log-level selector card with API
     integration)
-  - Non-JS fallback: handle log-level form POST using the shared setter
   - Log bundle download
 """
 
@@ -24,15 +23,13 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs
 
-from autostream_config import get_log_level_options, normalize_log_level
+from autostream_config import get_log_level_options
 
 from autostream_sysutils import tail_lines
 
 from autostream_webui_common import (
     _config_snapshot,
-    _set_flash_cookie,
     build_page_html,
     build_top_banner_html,
 )
@@ -156,13 +153,6 @@ def send_logs_page(
         f"<p class='actions'><a href='/logs/download' class='pill-btn' id='logDlBtn'"
         f" style='display:block;width:100%;text-align:center;box-sizing:border-box;'>"
         f"Download Log Bundle</a></p>"
-        f"<noscript>"
-        f"<form method='post' action='/logs'>"
-        f"<input type='hidden' name='csrf_token' value='{html.escape(csrf_token)}'>"
-        f"<input type='hidden' name='log_level' id='logLevelFallback' value=''>"
-        f"<p><button type='submit' class='pill-btn'>Save (no-JS fallback)</button></p>"
-        f"</form>"
-        f"</noscript>"
     )
     _body_suffix = (
         "<script>\n"
@@ -257,43 +247,6 @@ def send_logs_page(
     handler.send_header("Content-Length", str(len(body_bytes)))
     handler.end_headers()
     handler.wfile.write(body_bytes)
-
-
-# -----------------------------------------------------------------------------
-# POST handler
-# -----------------------------------------------------------------------------
-
-def handle_logs_post(handler, state: WebUIState, body: str) -> None:
-    """Non-JS fallback: parse form and call the shared log-level setter."""
-    try:
-        form = parse_qs(body, keep_blank_values=True)
-        new_log_level = normalize_log_level((form.get("log_level") or [""])[0])
-
-        from autostream_log_policy import set_log_level
-        result = set_log_level(state.config_path, new_log_level, changed_by="user")
-
-        if not result.get("ok"):
-            raise RuntimeError(result.get("error", "set_log_level failed"))
-
-        applied = result.get("applied", {})
-        monitor_updated = applied.get("monitor", False)
-        owntone_result = applied.get("owntone")
-
-        flash_text = "Log level saved"
-        if not monitor_updated:
-            flash_text = "Log level saved, but monitor runtime log level was not updated"
-        if owntone_result is False:
-            flash_text = "Log level saved, but OwnTone was not updated"
-            if not monitor_updated:
-                flash_text += " and monitor runtime update failed"
-
-        _set_flash_cookie(handler, flash_text, max_age=30)
-        handler.send_response(302)
-        handler.send_header("Location", "/logs")
-        handler.end_headers()
-    except Exception:
-        logging.exception("Failed saving log level from Logs page.")
-        send_logs_page(handler, state, flash_msg="Save failed", flash_type="error")
 
 
 def handle_logs_download(handler) -> None:

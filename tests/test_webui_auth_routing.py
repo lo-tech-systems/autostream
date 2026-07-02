@@ -105,7 +105,6 @@ def _make_handler(path: str, sess_token: str, csrf_token: str) -> "ConfigWebHand
 # auth guard were absent, so assert_not_called() proves the guard fired.
 _PROTECTED = [
     ("/setup",              "autostream_webui.handle_setup_post"),
-    ("/logs",               "autostream_webui.handle_logs_post"),
     ("/api/input_eq",       "autostream_webui.handle_live_input_eq_update"),
     ("/api/input_gain",     "autostream_webui.handle_live_input_gain_update"),
     ("/api/update/apply",   "autostream_webui.run_updater"),
@@ -168,7 +167,7 @@ class TestPostRouterAuthEnforcement:
 
 @_skip_no_webui
 class TestRetiredFormRoutes:
-    """Routes whose form POST was retired must return 405 unconditionally."""
+    """Routes whose form POST was retired must no longer reach mutation handlers."""
 
     def test_owntone_setup_post_returns_405(self):
         """POST /owntone-setup must return 405 — form POST retired in favour of autosave."""
@@ -184,6 +183,19 @@ class TestRetiredFormRoutes:
              patch("autostream_webui.is_commissioning_required", return_value=False):
             handler.do_POST()
         assert sent and sent[0] == 405
+
+    def test_logs_post_returns_404(self):
+        """POST /logs has been removed; log-level changes use PUT /api/log-level."""
+        mgr = _make_manager()
+        sess_token, csrf_token = _csrf_session(mgr)
+        handler = _make_handler("/logs", sess_token, csrf_token)
+
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.is_commissioning_required", return_value=False):
+            handler.do_POST()
+
+        handler.send_error.assert_called_once_with(404, "Not found")
 
 
 @_skip_no_webui
