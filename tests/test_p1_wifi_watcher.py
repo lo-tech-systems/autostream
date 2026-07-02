@@ -1831,6 +1831,46 @@ class TestWifiPolicyModule:
         assert set(wifi_policy.PURPOSE_TABLE) == set(wifi_policy.HotspotPurpose)
 
 
+class TestHealthMemo:
+    """C-WP0: is_wifi_client_healthy is sampled once per (pass, ifname) and the
+    recovery classifier and status snapshot see the same verdict in a pass."""
+
+    def test_health_memo_samples_once_per_ifname(self, watcher):
+        n = {"c": 0}
+
+        def fake(ifname=watcher.AP_IFNAME, wifi_connected=None):
+            n["c"] += 1
+            return True
+
+        with patch.object(watcher, "is_wifi_client_healthy", side_effect=fake):
+            memo = watcher._make_health_memo()
+            assert memo("wlan0") is True
+            assert memo("wlan0", wifi_connected=True) is True
+            assert memo("wlan1") is True
+            assert memo("wlan1") is True
+        assert n["c"] == 2  # one sample per distinct ifname, cached thereafter
+
+    def test_within_pass_agreement_between_recovery_and_active_health(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:07", is_usb=True)
+        facts = watcher.Facts(
+            wifi_configured=True, adapters=[usb], wired_connected=False,
+            wired_ok=False, active_client=usb, addresses={}, taken_at=1000.0,
+        )
+        # A hostile source: True first, then False.  Without memoisation the two
+        # consumers would disagree within the pass.
+        seq = iter([True, False, False, False])
+        with patch.object(watcher, "is_wifi_client_healthy",
+                          side_effect=lambda *a, **k: next(seq)), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "usb_candidates", return_value=[usb]), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            rf = watcher.gather_recovery_facts(facts)
+            active_healthy = facts.health_memo("wlan1")
+        assert rf.adapters_by_ifname["wlan1"].healthy is True
+        assert active_healthy is True  # same cached sample, not the later False
+
+
 class TestConnectToConfiguredWifiUuid:
     """A-WP6: the steady-state reconnect resolves the UUID and clears
     cross-adapter restrictions (inconsistency 4), fire-and-forget (no wait)."""

@@ -1376,6 +1376,28 @@ def handle_reconfigure_timeout() -> None:
 # ** MAIN NETWORK STATUS MONITORING LOOP **
 
 
+def _make_health_memo():
+    """Return a per-pass memo that samples client health once per (pass, ifname).
+
+    ``is_wifi_client_healthy`` performs per-interface gateway-reachability and
+    IPv4 probes (subprocess cost on the Pi Zero).  Several in-pass consumers —
+    finalize_active_client_and_health, gather_recovery_facts, and
+    build_network_status_snapshot — used to re-sample it independently, so two
+    samples in one pass could disagree (the snapshot could contradict the
+    debounced verdict it publishes).  Memoising per ifname closes that hole and
+    cuts the per-tick subprocess load.  Validators outside the loop keep calling
+    is_wifi_client_healthy directly (fresh) — they must not read a stale sample.
+    """
+    cache: dict = {}
+
+    def memo(ifname: str = AP_IFNAME, wifi_connected: Optional[bool] = None) -> bool:
+        if ifname not in cache:
+            cache[ifname] = is_wifi_client_healthy(ifname, wifi_connected=wifi_connected)
+        return cache[ifname]
+
+    return memo
+
+
 @dataclass(frozen=True)
 class Facts:
     """One immutable per-tick snapshot of network facts (Section 2.5).
@@ -1386,7 +1408,9 @@ class Facts:
     wired probes, address enumeration) is paid once per pass rather than per
     decision site.  Playback is intentionally NOT a field here: it is resolved
     lazily via a per-pass memoised callable (see _make_playing_status_memo)
-    because it is comparatively expensive and not always needed.
+    because it is comparatively expensive and not always needed.  ``health_memo``
+    is the per-pass client-health memo (C-WP0): the in-pass consumers share it so
+    is_wifi_client_healthy is sampled at most once per (pass, ifname).
     """
     wifi_configured: bool
     adapters: list
@@ -1395,6 +1419,7 @@ class Facts:
     active_client: Optional[object]
     addresses: dict
     taken_at: float
+    health_memo: object = field(default_factory=_make_health_memo)
 
 
 def gather_facts() -> "Facts":
@@ -1441,7 +1466,8 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     """
     now = facts.taken_at
     adapters = facts.adapters
-    by_ifname = {a.ifname: _adapter_recovery_facts(a, now) for a in adapters}
+    by_ifname = {a.ifname: _adapter_recovery_facts(a, now, facts.health_memo)
+                 for a in adapters}
 
     builtin = wifi_net.resolve_builtin(adapters)
     usb = wifi_net.usb_candidates(adapters)
@@ -1620,7 +1646,7 @@ def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
     health_ifname = active_client.ifname if active_client else AP_IFNAME
     wifi_connected = wifi_net.is_wifi_connected(health_ifname) if wifi_cfg else False
     client_ok = (
-        is_wifi_client_healthy(health_ifname, wifi_connected=wifi_connected)
+        facts.health_memo(health_ifname, wifi_connected=wifi_connected)
         if wifi_cfg
         else False
     )
@@ -1804,7 +1830,8 @@ def step_publish_state(hctx: "HealthContext") -> "Verdict":
 
     # Publish the runtime status snapshot served by /network_status.  Pass the
     # per-tick addresses so the status builder does not re-enumerate.
-    publish_network_status(facts.adapters, facts.wired_connected, facts.wired_ok, facts.addresses)
+    publish_network_status(facts.adapters, facts.wired_connected, facts.wired_ok,
+                           facts.addresses, facts.health_memo)
     return Verdict.CONTINUE
 
 
@@ -2927,8 +2954,8 @@ def _adapter_quarantined_until(target, now):
     return wifi_recovery.adapter_quarantined_until(_self_module(), target, now)
 
 
-def _adapter_recovery_facts(adapter, now):
-    return wifi_recovery.adapter_recovery_facts(_self_module(), adapter, now)
+def _adapter_recovery_facts(adapter, now, health_fn=None):
+    return wifi_recovery.adapter_recovery_facts(_self_module(), adapter, now, health_fn)
 
 
 def _dead_phy_reboot_guard_permits(now_wall):
@@ -2970,17 +2997,19 @@ import wifi_status
 def build_network_status_snapshot(adapters: Optional[list] = None,
                                   wired_connected: Optional[bool] = None,
                                   wired_ok: Optional[bool] = None,
-                                  addresses: Optional[dict] = None) -> dict:
+                                  addresses: Optional[dict] = None,
+                                  health_fn=None) -> dict:
     return wifi_status.build_network_status_snapshot(
-        _self_module(), adapters, wired_connected, wired_ok, addresses)
+        _self_module(), adapters, wired_connected, wired_ok, addresses, health_fn)
 
 
 def publish_network_status(adapters: Optional[list] = None,
                            wired_connected: Optional[bool] = None,
                            wired_ok: Optional[bool] = None,
-                           addresses: Optional[dict] = None) -> None:
+                           addresses: Optional[dict] = None,
+                           health_fn=None) -> None:
     wifi_status.publish_network_status(
-        _self_module(), adapters, wired_connected, wired_ok, addresses)
+        _self_module(), adapters, wired_connected, wired_ok, addresses, health_fn)
 
 
 # ** AVAHI mDNS HOSTNAME MONITORING **

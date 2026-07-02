@@ -138,7 +138,8 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
 def build_network_status_snapshot(w, adapters: Optional[list] = None,
                                   wired_connected: Optional[bool] = None,
                                   wired_ok: Optional[bool] = None,
-                                  addresses: Optional[dict] = None) -> dict:
+                                  addresses: Optional[dict] = None,
+                                  health_fn=None) -> dict:
     """Build the schema_version:1 runtime network-status snapshot.
 
     Uses the watcher's facts and the dead-PHY recovery ledger.  All derived
@@ -186,7 +187,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     for a in adapters:
         # Shared per-adapter recovery facts (single source of truth with the
         # recovery-ladder classifier); presentation-only fields stay here.
-        rf = w._adapter_recovery_facts(a, now_monotonic)
+        rf = w._adapter_recovery_facts(a, now_monotonic, health_fn)
         healthy = rf.healthy
         link_down = rf.link_down
         operstate = wifi_net.read_operstate(a.ifname)
@@ -417,12 +418,13 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 def publish_network_status(w, adapters: Optional[list] = None,
                            wired_connected: Optional[bool] = None,
                            wired_ok: Optional[bool] = None,
-                           addresses: Optional[dict] = None) -> None:
+                           addresses: Optional[dict] = None,
+                           health_fn=None) -> None:
     """Build and publish the latest runtime status snapshot in memory."""
     global _status_schema_logged
     try:
         snapshot = build_network_status_snapshot(
-            w, adapters, wired_connected, wired_ok, addresses)
+            w, adapters, wired_connected, wired_ok, addresses, health_fn)
         snapshot["ok"] = True
         with w.state_lock:
             w.STATE.network_status_snapshot = snapshot

@@ -531,14 +531,20 @@ class AdapterRecoveryFacts:
     is_no_ip: bool
 
 
-def adapter_recovery_facts(w, a, now_monotonic: float) -> AdapterRecoveryFacts:
+def adapter_recovery_facts(w, a, now_monotonic: float, health_fn=None) -> AdapterRecoveryFacts:
     """Derive the shared recovery facts for one discovered adapter *a*.
 
     Reuses the reset/quarantine/no-IP ledgers so the recovery classifier and the
     status snapshot agree exactly.  Pure w.r.t. STATE (reads ledgers, does not
     mutate); performs the same fact reads (health, link state) the snapshot did.
+
+    ``health_fn`` is the optional per-pass health memo (C-WP0): when supplied it
+    samples ``is_wifi_client_healthy`` at most once per (pass, ifname), so the
+    recovery classifier and the status snapshot see the *same* health verdict in
+    a pass.  When absent (ad-hoc calls) it falls back to a fresh sample.
     """
-    healthy = bool(a.managed and w.is_wifi_client_healthy(a.ifname))
+    health = health_fn or w.is_wifi_client_healthy
+    healthy = bool(a.managed and health(a.ifname))
     link_down = wifi_net.read_link_down(a.ifname)
     carrier = (link_down is False)
     kind = a.kind + ("_wifi" if a.kind in ("usb", "builtin") else "")
