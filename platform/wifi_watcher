@@ -417,6 +417,10 @@ class NetworkMonitorState:
     # Consecutive *soft* unhealthy passes for the connectivity_ok down-debounce
     # (C-WP1); reset to 0 on any healthy pass or a hard failure.
     conn_unhealthy_checks: int = 0
+    # True once the device has been ONLINE at least once this boot (C-WP2).  A
+    # runtime connectivity loss after this must be handled by the debounced
+    # runtime paths, never by re-entering the boot-recovery rung.
+    been_online_this_boot: bool = False
 
     # Setup / AP state.  ``setup_mode`` stays the "a hotspot session is active"
     # boolean read across the modules and tests; ``hotspot`` is the authoritative
@@ -1868,6 +1872,8 @@ def step_publish_state(hctx: "HealthContext") -> "Verdict":
         STATE.wifistate = "configured" if facts.wifi_configured else "unconfigured"
         STATE.wiredstate = "connected" if facts.wired_connected else "disconnected"
         STATE.connectivity_ok = hctx.conn_ok
+        if hctx.conn_ok:
+            STATE.been_online_this_boot = True
         if hctx.active_path_ok and not STATE.setup_mode:
             STATE.last_active_path_seen = hctx.now
             STATE.conn_reboot_retry_after = 0.0
@@ -2002,6 +2008,14 @@ def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
         )
 
     if should_enter_ap:
+        # C-WP2: once the device has been ONLINE this boot, a runtime loss must
+        # not re-enter the boot-recovery rung; the debounced runtime paths
+        # (reconnect, USB-failure fallback, dead-PHY) own it.  The unconfigured
+        # first-run path is unaffected (it can never have been online on Wi-Fi).
+        with state_lock:
+            been_online = STATE.been_online_this_boot
+        if facts.wifi_configured and been_online:
+            return Verdict.CONTINUE
         raction = next_recovery_action(STATE, gather_recovery_facts(facts))
         if raction.kind in (RecoveryKind.ACTIVATE_USB,
                             RecoveryKind.ACTIVATE_ONBOARD) \

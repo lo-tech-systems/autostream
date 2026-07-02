@@ -3524,6 +3524,35 @@ class TestLoopHandlers:
         cr.assert_not_called()
         co.assert_not_called()
 
+    # ---- C-WP2: boot-recovery-not-after-online gate ----
+
+    def test_boot_entry_skipped_after_online_this_boot(self, watcher):
+        watcher.STATE.been_online_this_boot = True
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:41", is_usb=True)
+        facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb, now=100.0)
+        hctx = self._hctx(watcher, facts, wifi_connected=True, client_ok=False, conn_ok=False)
+        with patch.object(watcher, "next_recovery_action") as nra, \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            v = watcher.step_boot_ap_entry(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        nra.assert_not_called()   # runtime paths own it, not boot-entry
+        enter.assert_not_called()
+
+    def test_boot_entry_runs_when_never_online(self, watcher):
+        watcher.STATE.been_online_this_boot = False
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:42", is_usb=True)
+        facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb, now=100.0)
+        hctx = self._hctx(watcher, facts, wifi_connected=True, client_ok=False, conn_ok=False)
+        action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
+                                        purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
+        with patch.object(watcher, "gather_recovery_facts"), \
+             patch.object(watcher, "next_recovery_action", return_value=action) as nra, \
+             patch.object(watcher, "enter_setup_mode") as enter:
+            v = watcher.step_boot_ap_entry(hctx)
+        assert v is watcher.Verdict.OWN_PASS
+        nra.assert_called_once()
+        enter.assert_called_once()
+
     # ---- Phase A ----
 
     def test_step_avahi_hostname_gated_and_rate_limited(self, watcher):
