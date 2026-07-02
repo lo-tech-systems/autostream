@@ -1783,6 +1783,35 @@ class TestReconnectSavedNetwork:
         )
 
 
+class TestCandidateValidateTail:
+    """A-WP5: _try_candidate_on_adapter validates via the shared tail, so the
+    net-absent short-circuit reaches the credential-apply path too."""
+
+    def test_candidate_netabsent_skips_ipv4_wait_and_deletes(self, watcher):
+        target = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:aa", is_usb=True)
+
+        def fake_run(cmd, **kw):
+            s = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+            if "connection" in s and "up" in s.split():
+                return MagicMock(
+                    returncode=10,
+                    stderr="Error: activation failed: The Wi-Fi network could not be found",
+                )
+            return MagicMock(returncode=0, stderr="")
+
+        with patch.object(watcher.wifi_net, "configure_candidate_cmds",
+                          return_value=([["nmcli", "connection", "add"]], ["nmcli connection add"])), \
+             patch.object(watcher.wifi_net, "get_profile_uuid", return_value="cand-uuid"), \
+             patch.object(watcher, "run_cmd", side_effect=fake_run) as run_cmd, \
+             patch.object(watcher, "wait_for_connection") as wait:
+            ok = watcher._try_candidate_on_adapter("SSID", "pw", target)
+
+        assert ok is False
+        wait.assert_not_called()   # net-absent short-circuit reached the candidate path
+        assert any("delete" in " ".join(c.args[0]) for c in run_cmd.call_args_list
+                   if isinstance(c.args[0], (list, tuple))), "failed candidate must be deleted"
+
+
 class TestAttemptOnTargets:
     def test_non_hotspot_target_keeps_ap_up_and_success_leaves_setup(self, watcher):
         hotspot = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)

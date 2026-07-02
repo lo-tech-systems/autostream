@@ -943,16 +943,10 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     if r_up.returncode != 0:
         logger.warning("Candidate activation failed on %s (rc=%d)", ifname, r_up.returncode)
 
-    # 6) validate local IPv4 + interface-specific gateway.
-    ip_ok = wait_for_connection(
-        ifname,
-        timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-        interval=WAIT_FOR_CONNECTION_INTERVAL,
-    )
-    logger.info("Candidate %s: ip_ready=%s", ifname, ip_ok)
-    gw_ok = ip_ok and is_wifi_client_healthy(ifname)
-    logger.info("Candidate %s: gw_healthy=%s", ifname, gw_ok)
-    ok = gw_ok
+    # 6) validate via the shared tail (net-absent short-circuit -> local IPv4 ->
+    #    interface-specific gateway); the net-absent fix reaches this path too.
+    ok = _validate_activation(ifname, r_up)
+    logger.info("Candidate %s: validated=%s", ifname, ok)
 
     if not ok:
         # 9) on failure delete only the candidate; keep the previous committed profile.
@@ -2466,13 +2460,26 @@ def _activate_profile_on(ifname: str, state: "wifi_net.NetworkState",
     if uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
     r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
+    return _validate_activation(ifname, r_up, wait_for_validation=wait_for_validation)
+
+
+def _validate_activation(ifname: str, activation_result,
+                         *, wait_for_validation: bool = True) -> bool:
+    """Shared post-activation validation tail (net-absent -> IPv4 -> gateway).
+
+    Used by every join path (committed-profile core and the candidate-profile
+    builder) so the "network could not be found" short-circuit and the
+    IPv4-then-gateway health check are defined once.  Returns True only when the
+    interface becomes a healthy, non-AP client; when ``wait_for_validation`` is
+    False it is fire-and-forget (True iff the activation command succeeded).
+    """
     # Probe-patience: a "network not found" activation cannot yield an IP, so
     # skip the IPv4 wait and fail fast (frees the ladder to climb sooner).
-    if _activation_network_absent(r_up):
-        logger.info("Committed network not visible on %s; skipping IPv4 wait", ifname)
+    if _activation_network_absent(activation_result):
+        logger.info("Network not visible on %s; skipping IPv4 wait", ifname)
         return False
     if not wait_for_validation:
-        return getattr(r_up, "returncode", 1) == 0
+        return getattr(activation_result, "returncode", 1) == 0
     return (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
                                 interval=WAIT_FOR_CONNECTION_INTERVAL)
             and is_wifi_client_healthy(ifname))
