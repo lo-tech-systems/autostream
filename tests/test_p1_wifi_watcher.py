@@ -1812,6 +1812,25 @@ class TestCandidateValidateTail:
                    if isinstance(c.args[0], (list, tuple))), "failed candidate must be deleted"
 
 
+class TestWifiPolicyModule:
+    """Phase B: the pure policy core lives in a standalone importable module and
+    is re-exported by the watcher for backwards compatibility."""
+
+    def test_reexports_are_the_policy_objects(self, watcher):
+        import wifi_policy
+        assert watcher.Mode is wifi_policy.Mode
+        assert watcher.HotspotPurpose is wifi_policy.HotspotPurpose
+        assert watcher.PurposePolicy is wifi_policy.PurposePolicy
+        assert watcher.PURPOSE_TABLE is wifi_policy.PURPOSE_TABLE
+        assert watcher.AP_MAX_DURATION == wifi_policy.AP_MAX_DURATION
+        assert watcher.HOTSPOT_PROBE_GRACE == wifi_policy.HOTSPOT_PROBE_GRACE
+
+    def test_policy_module_has_no_watcher_dependency(self):
+        # Importable without loading the watcher / flask / sysutils stubs.
+        import wifi_policy
+        assert set(wifi_policy.PURPOSE_TABLE) == set(wifi_policy.HotspotPurpose)
+
+
 class TestConnectToConfiguredWifiUuid:
     """A-WP6: the steady-state reconnect resolves the UUID and clears
     cross-adapter restrictions (inconsistency 4), fire-and-forget (no wait)."""
