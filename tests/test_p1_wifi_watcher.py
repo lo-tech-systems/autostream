@@ -3645,27 +3645,6 @@ class TestPerTickFactsSnapshot:
             assert memo() is False
         assert calls["n"] == 1
 
-    def test_transitioning_flag_inert_and_cleared(self, watcher):
-        # The WP1 groundwork flag is set during the slow activation effect and
-        # cleared afterwards; no behaviour depends on it yet.
-        observed = {}
-
-        def _wait(*a, **kw):
-            observed["during"] = watcher.STATE.transitioning
-            return True
-
-        state = watcher.wifi_net.NetworkState(
-            connection_name="Home", connection_uuid="uuid-1")
-        with patch.object(watcher, "get_configured_network_state", return_value=state), \
-             patch.object(watcher, "_resolve_committed_uuid", return_value="uuid-1"), \
-             patch.object(watcher, "run_cmd", MagicMock()), \
-             patch.object(watcher, "wait_for_connection", _wait), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
-            assert watcher._activate_committed_on("wlan0") is True
-        assert observed["during"] is True
-        assert watcher.STATE.transitioning is False
-
-
 class TestAvahiHandoverReannounce:
     def _ok_result(self):
         return MagicMock(returncode=0, stdout="", stderr="")

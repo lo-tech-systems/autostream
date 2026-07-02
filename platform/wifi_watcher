@@ -101,8 +101,9 @@ invoking effects).  The
 adapter-remediation overlay (``wifi_recovery.diagnose_client_failure`` and the
 no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
 consumes them and applies the connectivity transition.  Off-thread slow
-transitions (the monitoring-blackout fix) are deliberately deferred — the inert
-``STATE.transitioning`` flag is the groundwork.
+transitions (the monitoring-blackout fix) are deliberately deferred to the
+follow-on async-activation workstream, which reintroduces a load-bearing
+in-flight-job flag alongside the worker.
 
 A second pure classifier, ``next_recovery_action(state, recovery_facts)``, owns the
 *recovery priority ladder* — Ethernet > preferred USB > onboard client >
@@ -455,12 +456,6 @@ class NetworkMonitorState:
     # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
     # issued); any other value = retry permitted after that time.
     conn_reboot_retry_after: float = 0.0
-
-    # Groundwork for off-thread slow transitions (WP7).  Set/cleared around the
-    # long inline activation effect but INERT in WP1: the single-threaded loop
-    # cannot re-enter a blocking action, so no decision reads this yet.  WP7 makes
-    # it load-bearing (the worker path needs it to avoid duplicate transitions).
-    transitioning: bool = False
 
     # ---- WiFi apply workflow / wait-page status ----
     apply_in_progress: bool = False
@@ -2487,25 +2482,15 @@ def _activate_committed_on(ifname: str) -> bool:
     uuid = _resolve_committed_uuid(state)
     if uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
-    # Mark the slow transition posture (WP1 groundwork; inert until WP7).  The
-    # single-threaded loop cannot re-enter this blocking effect today, so the
-    # flag changes no behaviour yet — it exists so WP7's worker path can prevent
-    # duplicate concurrent transitions.
-    with state_lock:
-        STATE.transitioning = True
-    try:
-        r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
-        # Probe-patience: a "network not found" activation cannot yield an IP, so
-        # skip the IPv4 wait and fail fast (frees the ladder to climb sooner).
-        if _activation_network_absent(r_up):
-            logger.info("Committed network not visible on %s; skipping IPv4 wait", ifname)
-            return False
-        return (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
-                                    interval=WAIT_FOR_CONNECTION_INTERVAL)
-                and is_wifi_client_healthy(ifname))
-    finally:
-        with state_lock:
-            STATE.transitioning = False
+    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
+    # Probe-patience: a "network not found" activation cannot yield an IP, so
+    # skip the IPv4 wait and fail fast (frees the ladder to climb sooner).
+    if _activation_network_absent(r_up):
+        logger.info("Committed network not visible on %s; skipping IPv4 wait", ifname)
+        return False
+    return (wait_for_connection(ifname, timeout=WAIT_FOR_CONNECTION_TIMEOUT,
+                                interval=WAIT_FOR_CONNECTION_INTERVAL)
+            and is_wifi_client_healthy(ifname))
 
 
 def verify_avahi_after_handover() -> None:
