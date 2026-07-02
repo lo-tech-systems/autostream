@@ -1253,70 +1253,80 @@ class TestNoIpLedgerAndDiagnosis:
 
 
 class TestAdapterOverlayEvents:
-    """WP5a — overlay diagnoses and returns ClientFailed events; loop applies."""
+    """WP5a / C2-WP3 — the overlay is now a pure classifier over the debounced
+    connectivity verdict (conn_ok): it fires ClientFailed only once the loop's
+    hysteresis has condemned the path, and only when the condemnation is
+    attributable to the recorded USB client.  The 2-pass debounce lives in the
+    hysteresis (see TestConnectivityHysteresis), not here."""
 
-    def _diagnose(self, watcher, adapters, active_client):
-        return watcher.wifi_recovery.diagnose_client_failure(watcher, adapters, active_client)
+    def _diagnose(self, watcher, adapters, active_client, *, conn_ok=False,
+                  prev_mac="", prev_ifname=""):
+        return watcher.wifi_recovery.diagnose_client_failure(
+            watcher, adapters, active_client, conn_ok, prev_mac, prev_ifname)
 
     def test_absent_usb_returns_client_failed_absent(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb_mac = "bb:bb:bb:bb:bb:01"
         watcher._known_usb_macs.add(usb_mac)
-        watcher.STATE.active_client_mac = usb_mac
-        watcher.STATE.active_client_ifname = "wlan1"
-        event = self._diagnose(watcher, [builtin], None)
+        event = self._diagnose(watcher, [builtin], None,
+                               conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
         assert isinstance(event, watcher.ClientFailed)
         assert event.reason == "absent"
         assert event.mac == usb_mac
+        assert event.ifname == "wlan1"
         assert event.has_alt_path is True  # built-in present
 
     def test_no_alt_path_when_no_builtin(self, watcher):
         usb_mac = "bb:bb:bb:bb:bb:01"
         watcher._known_usb_macs.add(usb_mac)
-        watcher.STATE.active_client_mac = usb_mac
-        watcher.STATE.active_client_ifname = "wlan1"
-        event = self._diagnose(watcher, [], None)  # USB gone, no built-in
+        event = self._diagnose(watcher, [], None,  # USB gone, no built-in
+                               conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
         assert event.reason == "absent"
         assert event.has_alt_path is False
 
-    def test_one_transient_unhealthy_pass_returns_none(self, watcher):
+    def test_conn_ok_true_returns_none(self, watcher):
+        # The hysteresis has not (yet) condemned the path (e.g. a single transient
+        # unhealthy pass held prior True): the overlay must not fire.
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
         watcher._known_usb_macs.add(usb.permanent_mac)
-        watcher.STATE.active_client_mac = usb.permanent_mac
-        watcher.STATE.active_client_ifname = "wlan1"
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=False):
-            event = self._diagnose(watcher, adapters, usb)
+        event = self._diagnose(watcher, adapters, usb,
+                               conn_ok=True, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
         assert event is None
-        assert watcher.STATE.active_usb_unhealthy_checks == 1
 
-    def test_two_unhealthy_passes_return_client_failed_no_ip(self, watcher):
+    def test_condemned_present_usb_returns_no_ip(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
         watcher._known_usb_macs.add(usb.permanent_mac)
-        watcher.STATE.active_client_mac = usb.permanent_mac
-        watcher.STATE.active_client_ifname = "wlan1"
-        watcher.STATE.active_usb_unhealthy_checks = 1
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=False):
-            event = self._diagnose(watcher, adapters, usb)
+        event = self._diagnose(watcher, adapters, usb,
+                               conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
         assert isinstance(event, watcher.ClientFailed)
         assert event.reason == "no_ip"
         assert event.ifname == "wlan1"
-        assert watcher.STATE.active_usb_unhealthy_checks == 0  # reset after firing
 
-    def test_healthy_usb_returns_none_and_resets_counter(self, watcher):
-        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:04", is_usb=True)
+    def test_condemned_nm_disconnected_usb_uses_prev_ifname(self, watcher):
+        # USB present but NM-disconnected: active_client is None, so the event
+        # ifname comes from the recorded (prev) identity.
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:07", is_usb=True)
         watcher._known_usb_macs.add(usb.permanent_mac)
-        watcher.STATE.active_client_mac = usb.permanent_mac
-        watcher.STATE.active_usb_unhealthy_checks = 1
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=True):
-            event = self._diagnose(watcher, [usb], usb)
-        assert event is None
-        assert watcher.STATE.active_usb_unhealthy_checks == 0
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        event = self._diagnose(watcher, adapters, None,
+                               conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
+        assert event.reason == "no_ip"       # present -> no_ip (not absent)
+        assert event.ifname == "wlan1"
 
-    def test_no_usb_involvement_returns_none(self, watcher):
+    def test_condemned_non_usb_returns_none(self, watcher):
+        # The condemned path is a built-in client (prev_mac not a known USB):
+        # reconnect / dead-PHY own it, not the USB-failure overlay.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        event = self._diagnose(watcher, [builtin], builtin)
+        event = self._diagnose(watcher, [builtin], builtin,
+                               conn_ok=False, prev_mac="aa:bb:cc:00:00:01", prev_ifname="wlan0")
+        assert event is None
+
+    def test_no_recorded_client_returns_none(self, watcher):
+        # Condemned but nothing was ever recorded as active: nothing to attribute.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        event = self._diagnose(watcher, [builtin], None, conn_ok=False, prev_mac="")
         assert event is None
 
     def test_apply_client_failed_activates_via_ladder(self, watcher):
@@ -1418,44 +1428,52 @@ class TestAdapterOverlayEvents:
 
 
 class TestUsbFailureFallback:
+    """C2-WP3 — handle_usb_failure_fallback consumes the debounced verdict from the
+    HealthContext (conn_ok + pre-set-active identity) and wires diagnose->apply."""
+
+    def _hctx(self, watcher, facts, *, conn_ok, prev_mac="", prev_ifname=""):
+        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.FactsContext(pre, facts, lambda: False)
+        return watcher.HealthContext(
+            fctx, health_ifname="wlan1", wifi_connected=False, client_ok=False,
+            conn_ok=conn_ok, active_path_ok=conn_ok,
+            prev_active_mac=prev_mac, prev_active_ifname=prev_ifname)
+
     def test_absent_active_usb_triggers_immediate_fallback(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb_mac = "bb:bb:bb:bb:bb:01"
         watcher._known_usb_macs.add(usb_mac)
-        watcher.STATE.active_client_mac = usb_mac
-        watcher.STATE.active_client_ifname = "wlan1"
         facts = _facts_for(watcher, [builtin], None)  # USB gone
+        hctx = self._hctx(watcher, facts, conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
         action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher, "gather_recovery_facts"), \
              patch.object(watcher, "next_recovery_action", return_value=action), \
              patch.object(watcher, "_apply_client_activation", return_value=True) as ap:
-            acted = watcher.handle_usb_failure_fallback(facts)
+            acted = watcher.handle_usb_failure_fallback(hctx)
         assert acted is True
         ap.assert_called_once()
 
-    def test_one_transient_unhealthy_pass_does_not_switch(self, watcher):
+    def test_conn_ok_holds_off_fallback(self, watcher):
+        # The hysteresis has not condemned the path yet (transient blip held True):
+        # no fallback this pass.
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
         watcher._known_usb_macs.add(usb.permanent_mac)
-        watcher.STATE.active_client_mac = usb.permanent_mac
-        watcher.STATE.active_client_ifname = "wlan1"
         facts = _facts_for(watcher, [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb], usb)
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "apply_client_failed") as ap:
-            acted = watcher.handle_usb_failure_fallback(facts)
+        hctx = self._hctx(watcher, facts, conn_ok=True,
+                          prev_mac=usb.permanent_mac, prev_ifname="wlan1")
+        with patch.object(watcher, "apply_client_failed") as ap:
+            acted = watcher.handle_usb_failure_fallback(hctx)
         assert acted is False
         ap.assert_not_called()
-        assert watcher.STATE.active_usb_unhealthy_checks == 1
 
-    def test_two_unhealthy_passes_trigger_fallback(self, watcher):
+    def test_condemned_usb_triggers_fallback(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
         watcher._known_usb_macs.add(usb.permanent_mac)
-        watcher.STATE.active_client_mac = usb.permanent_mac
-        watcher.STATE.active_client_ifname = "wlan1"
-        watcher.STATE.active_usb_unhealthy_checks = 1
         facts = _facts_for(watcher, [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb], usb)
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "apply_client_failed", return_value=True) as ap:
-            acted = watcher.handle_usb_failure_fallback(facts)
+        hctx = self._hctx(watcher, facts, conn_ok=False,
+                          prev_mac=usb.permanent_mac, prev_ifname="wlan1")
+        with patch.object(watcher, "apply_client_failed", return_value=True) as ap:
+            acted = watcher.handle_usb_failure_fallback(hctx)
         assert acted is True
         ap.assert_called_once()
 
@@ -1989,6 +2007,29 @@ class TestConnectivityHysteresis:
         assert ok is False                       # hard: condemned immediately
         assert watcher.STATE.conn_unhealthy_checks == 0
 
+    def test_nm_disconnected_present_usb_is_soft(self, watcher):
+        # C2-WP3: no active client this pass, but the recorded USB is still present
+        # (NM merely disconnected it) -> soft, debounced 2 passes (the behaviour the
+        # retired overlay counter used to provide).
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:35", is_usb=True)
+        watcher.STATE.connectivity_ok = True
+        facts = self._facts(watcher, [usb], None)  # USB present, not the active client
+        first = watcher._debounced_connectivity(facts, None, client_ok=False,
+                                                prev_mac=usb.permanent_mac)
+        second = watcher._debounced_connectivity(facts, None, client_ok=False,
+                                                 prev_mac=usb.permanent_mac)
+        assert (first, second) == (True, False)   # 2-pass debounce, not immediate
+        assert watcher.STATE.conn_unhealthy_checks == 2
+
+    def test_absent_recorded_usb_is_hard(self, watcher):
+        # Recorded USB physically gone from adapters -> hard (immediate), no debounce.
+        watcher.STATE.connectivity_ok = True
+        facts = self._facts(watcher, [], None)     # USB gone
+        ok = watcher._debounced_connectivity(facts, None, client_ok=False,
+                                             prev_mac="bb:bb:bb:bb:bb:36")
+        assert ok is False
+        assert watcher.STATE.conn_unhealthy_checks == 0
+
     def test_carrier_down_is_hard(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:34", is_usb=True)
         watcher.STATE.connectivity_ok = True
@@ -2477,77 +2518,65 @@ class TestStartupWindowUsbReprobe:
 # ---------------------------------------------------------------------------
 
 class TestNmDisconnectedUsbDebounce:
-    """When a USB adapter is physically present but NM has disconnected it,
-    handle_usb_failure_fallback requires two consecutive unhealthy passes.
-    _set_active_client must preserve active_client_mac on pass 1 so that
-    pass 2 can still identify the offending adapter."""
+    """C2-WP3 — a USB physically present but NM-disconnected is now debounced by
+    the single connectivity hysteresis (2 passes); _set_active_client preserves
+    active_client_mac while that soft debounce is in progress so pass 2 can still
+    attribute the adapter."""
 
-    def test_mac_preserved_across_debounce_passes(self, watcher):
-        """On pass 1 (unhealthy_checks = 0 → 1), _set_active_client(None) must
-        NOT clear active_client_mac because the debounce counter is > 0."""
+    def test_mac_preserved_while_hysteresis_debounce_in_progress(self, watcher):
         usb_mac = "bb:bb:bb:bb:bb:20"
         watcher.STATE.active_client_mac = usb_mac
         watcher.STATE.active_client_ifname = "wlan1"
-        watcher.STATE.active_usb_unhealthy_checks = 1  # debounce in progress
-
-        # Calling _set_active_client with None must preserve the MAC.
+        watcher.STATE.conn_unhealthy_checks = 1  # soft debounce in progress
         watcher._set_active_client(None)
-
         assert watcher.STATE.active_client_mac == usb_mac, (
-            "_set_active_client(None) cleared active_client_mac while debounce counter > 0"
+            "_set_active_client(None) cleared active_client_mac while the debounce is in progress"
         )
-        assert watcher.STATE.active_client_ifname == "", (
-            "_set_active_client(None) must still clear active_client_ifname"
-        )
+        assert watcher.STATE.active_client_ifname == ""
 
     def test_mac_cleared_when_no_debounce(self, watcher):
-        """When no debounce is in progress (unhealthy_checks == 0),
-        _set_active_client(None) must clear both ifname and mac."""
         watcher.STATE.active_client_mac = "bb:bb:bb:bb:bb:21"
         watcher.STATE.active_client_ifname = "wlan1"
-        watcher.STATE.active_usb_unhealthy_checks = 0
-
+        watcher.STATE.conn_unhealthy_checks = 0
         watcher._set_active_client(None)
-
         assert watcher.STATE.active_client_mac == ""
         assert watcher.STATE.active_client_ifname == ""
 
     def test_two_pass_nm_disconnected_triggers_fallback(self, watcher):
-        """Full two-pass debounce for NM-disconnected-but-present USB adapter.
+        """End-to-end 2-pass debounce through finalize (hysteresis + MAC
+        preservation) and then the Phase B-late USB-failure handler.
 
-        Pass 1: USB present, NM-disconnected → counter incremented, no fallback.
-        Pass 2 (after MAC preserved via _set_active_client fix): counter == 1
-               → handle_usb_failure_fallback calls _do_builtin_fallback_or_recovery.
+        Pass 1: USB present, NM-disconnected -> hysteresis holds prior True, MAC
+                preserved; the handler does not fire.
+        Pass 2: hysteresis condemns the path (conn_ok False) -> the handler fires.
         """
         usb_mac = "bb:bb:bb:bb:bb:22"
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
         adapters = [builtin, usb]
-
         watcher._known_usb_macs.add(usb_mac)
         watcher.STATE.active_client_mac = usb_mac
-        watcher.STATE.active_client_ifname = ""  # NM disconnected; ifname cleared
+        watcher.STATE.active_client_ifname = "wlan1"
+        watcher.STATE.connectivity_ok = True
 
-        # Pass 1: USB is present but disconnected from NM → counter should go 0→1.
-        facts = _facts_for(watcher, adapters, None)
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "apply_client_failed") as ap:
-            # active_client is None because resolve_active_client found no connected iface.
-            acted = watcher.handle_usb_failure_fallback(facts)
-        assert acted is False
-        ap.assert_not_called()
-        assert watcher.STATE.active_usb_unhealthy_checks == 1
+        def _one_pass():
+            # NM-disconnected: resolve_active_client finds nothing connected.
+            facts = _facts_for(watcher, adapters, None)
+            pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+            fctx = watcher.FactsContext(pre, facts, lambda: False)
+            hctx = watcher.finalize_active_client_and_health(fctx)
+            return watcher.step_usb_failure_fallback(hctx)
 
-        # Simulate _set_active_client(None) preserving the MAC (fix verified above).
-        watcher.STATE.active_client_ifname = ""
-        # active_client_mac remains usb_mac (preserved by the fix).
-
-        # Pass 2: counter == 1 → fallback should fire.
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+        with patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "apply_client_failed", return_value=True) as ap:
-            acted = watcher.handle_usb_failure_fallback(facts)
-        assert acted is True
-        ap.assert_called_once()
+            v1 = _one_pass()
+            assert v1 is watcher.Verdict.CONTINUE            # pass 1: held, no fallback
+            assert ap.call_count == 0
+            assert watcher.STATE.active_client_mac == usb_mac  # preserved for pass 2
+            v2 = _one_pass()
+            assert v2 is watcher.Verdict.OWN_PASS            # pass 2: condemned -> fallback
+            ap.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -3689,20 +3718,38 @@ class TestLoopHandlers:
         enter.assert_not_called()
         assert not watcher.ap_request_event.is_set()  # event still consumed
 
-    # ---- Phase B-early (health-ordering guarantee) ----
+    # ---- Phase B-late USB-failure fallback (over the debounced verdict) ----
 
-    def test_step_usb_failure_fallback_precedes_set_active_client(self, watcher):
+    def test_step_usb_failure_fallback_owns_pass_on_fallback(self, watcher):
+        # C2-WP3: the handler is a Phase B-late handler over the HealthContext; it
+        # delegates to handle_usb_failure_fallback(hctx) and owns the pass when a
+        # transition fires.
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
-        fctx = watcher.FactsContext(self._pre(watcher), facts, lambda: False)
-        watcher.STATE.active_client_mac = "dc:62:79:91:4d:d6"  # previously recorded
-        with patch.object(watcher, "handle_usb_failure_fallback", return_value=True) as h, \
-             patch.object(watcher, "_set_active_client") as sac:
-            v = watcher.step_usb_failure_fallback(fctx)
+        hctx = self._hctx(watcher, facts, conn_ok=False)
+        with patch.object(watcher, "handle_usb_failure_fallback", return_value=True) as h:
+            v = watcher.step_usb_failure_fallback(hctx)
         assert v is watcher.Verdict.OWN_PASS
-        h.assert_called_once_with(facts)
-        sac.assert_not_called()  # _set_active_client is finalize's job, not this handler's
-        assert watcher.STATE.active_client_mac == "dc:62:79:91:4d:d6"  # unchanged here
+        h.assert_called_once_with(hctx)
+
+    def test_step_usb_failure_fallback_continue_when_no_transition(self, watcher):
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
+        hctx = self._hctx(watcher, facts, conn_ok=True)
+        with patch.object(watcher, "handle_usb_failure_fallback", return_value=False) as h:
+            v = watcher.step_usb_failure_fallback(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        h.assert_called_once_with(hctx)
+
+    def test_step_usb_failure_fallback_skips_in_setup_mode(self, watcher):
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
+        hctx = self._hctx(watcher, facts, conn_ok=False)
+        watcher.STATE.setup_mode = True
+        with patch.object(watcher, "handle_usb_failure_fallback") as h:
+            v = watcher.step_usb_failure_fallback(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        h.assert_not_called()
 
     # ---- Phase B-late (pinned verdicts) ----
 

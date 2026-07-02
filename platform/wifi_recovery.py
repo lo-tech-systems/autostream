@@ -157,64 +157,44 @@ def is_degraded_no_ip(w, *, managed: bool, carrier: bool, healthy: bool,
     return bool(managed and carrier and not healthy and noip_failure_count(w, stable_id) > 0)
 
 
-def diagnose_client_failure(w, adapters: list, active_client) -> Optional[ClientFailed]:
-    """Diagnose active-USB client failure; return a ClientFailed event or None.
+def diagnose_client_failure(w, adapters: list, active_client, conn_ok: bool,
+                            prev_mac: str, prev_ifname: str) -> Optional[ClientFailed]:
+    """Classify an active-USB client failure over the debounced verdict; event/None.
 
-    This is the overlay's DEGRADED_NO_IP / ABSENT diagnosis (Section 2.4),
-    extracted from the watcher's old handle_usb_failure_fallback.  It owns the
-    per-active-client debounce (STATE.active_usb_unhealthy_checks) and returns a
-    ClientFailed event when a fallback should happen — it does **not** mutate
-    STATE.mode or run effects; the loop applies the transition.  Behaviour is
-    preserved exactly (WP5a is a pure restructure).
+    C2-WP3 retired the overlay's own per-client debounce
+    (``active_usb_unhealthy_checks`` / ``USB_UNHEALTHY_DEBOUNCE``) in favour of the
+    single C-WP1 connectivity hysteresis.  This is now a *pure classifier*: it
+    fires only once the loop's debounced verdict has already condemned the active
+    path (``conn_ok is False``), and only when that condemnation is attributable
+    to the recorded USB client.  The hysteresis provides the debounce
+    (NM-disconnected and carrier-up-no-IP are both *soft* — condemned after
+    CONNECTIVITY_DOWN_DEBOUNCE passes; a vanished adapter is *hard* — condemned at
+    once), so the previous 2-pass USB behaviour is preserved without a second
+    counter.  ``prev_mac``/``prev_ifname`` are the identity recorded *before* this
+    pass's _set_active_client (captured by finalize), so an adapter that has just
+    disappeared is still attributable.  No STATE mutation, no effects — the loop
+    applies the transition.
     """
-    with w.state_lock:
-        recorded_mac = w.STATE.active_client_mac
-        recorded_ifname = w.STATE.active_client_ifname
+    # The active path is fine (or held True through a transient blip): nothing to do.
+    if conn_ok:
+        return None
 
-    active_is_usb = bool(active_client and active_client.is_usb)
-    recorded_usb = bool(recorded_mac) and recorded_mac in w._known_usb_macs
-    recorded_usb_present = bool(recorded_mac) and any(
-        a.is_usb and a.permanent_mac == recorded_mac for a in adapters
+    recorded_usb = bool(prev_mac) and prev_mac in w._known_usb_macs
+    if not recorded_usb:
+        # The condemned path is not a recorded USB client (built-in / unconfigured
+        # / genuinely nothing); reconnect and the dead-PHY ladder own those.
+        return None
+
+    recorded_usb_present = any(
+        a.is_usb and a.permanent_mac == prev_mac for a in adapters
     )
     has_alt_path = wifi_net.resolve_builtin(adapters) is not None
-
-    # Case 1: the recorded active USB device is physically absent.
-    if recorded_mac and recorded_usb and not recorded_usb_present:
-        w.logger.info("Active USB adapter (%s) absent; overlay ClientFailed(absent)", recorded_mac)
-        return ClientFailed(ifname=recorded_ifname, mac=recorded_mac,
-                            reason="absent", has_alt_path=has_alt_path)
-
-    # Case 2 (debounced): recorded USB present but NM disconnected it, or the
-    # active USB client is unhealthy.
-    recorded_usb_disconnected = (
-        recorded_usb and recorded_usb_present and not active_is_usb
-    )
-
-    # No USB involvement at all; reset counter and exit.
-    if not active_is_usb and not recorded_usb_disconnected:
-        with w.state_lock:
-            w.STATE.active_usb_unhealthy_checks = 0
-        return None
-
-    # Active USB client is healthy; reset counter and exit.
-    if active_is_usb and w.is_wifi_client_healthy(active_client.ifname):
-        with w.state_lock:
-            w.STATE.active_usb_unhealthy_checks = 0
-        return None
-
-    with w.state_lock:
-        w.STATE.active_usb_unhealthy_checks += 1
-        count = w.STATE.active_usb_unhealthy_checks
-    reason_tag = "active-USB-disconnected" if recorded_usb_disconnected else "active-USB-unhealthy"
-    w.logger.debug("%s check %d/%d", reason_tag, count, w.USB_UNHEALTHY_DEBOUNCE)
-    if count >= w.USB_UNHEALTHY_DEBOUNCE:
-        w.logger.info("USB adapter %s for %d passes; overlay ClientFailed(no_ip)", reason_tag, count)
-        with w.state_lock:
-            w.STATE.active_usb_unhealthy_checks = 0
-        ifname = active_client.ifname if active_client else recorded_ifname
-        return ClientFailed(ifname=ifname, mac=recorded_mac,
-                            reason="no_ip", has_alt_path=has_alt_path)
-    return None
+    reason = "no_ip" if recorded_usb_present else "absent"
+    ifname = active_client.ifname if active_client else prev_ifname
+    w.logger.info("Recorded USB client %s condemned (%s); overlay ClientFailed(%s)",
+                  prev_mac, "present" if recorded_usb_present else "absent", reason)
+    return ClientFailed(ifname=ifname, mac=prev_mac,
+                        reason=reason, has_alt_path=has_alt_path)
 
 
 @dataclass(frozen=True)

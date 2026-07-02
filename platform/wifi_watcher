@@ -223,13 +223,15 @@ RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery sc
 REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
 # Multi-adapter failure/adoption tuning (WP5).
-USB_UNHEALTHY_DEBOUNCE = 2              # consecutive unhealthy passes before adapter fallback
-# Source-level connectivity_ok hysteresis (C-WP1): a *soft* unhealthy signal
-# (client connected with carrier up but gateway/IPv4 not ready — transient) must
+# Source-level connectivity_ok hysteresis (C-WP1): a *soft* unhealthy signal must
 # persist this many consecutive passes before the path is declared down.  A
-# healthy pass clears it immediately (slow to condemn, quick to forgive).  HARD
-# signals (no active client / NO-CARRIER) bypass the debounce.  Chosen equal to
-# USB_UNHEALTHY_DEBOUNCE so the effective 2-pass USB debounce is preserved.
+# healthy pass clears it immediately (slow to condemn, quick to forgive).  Soft
+# signals: client connected with carrier up but gateway/IPv4 not ready
+# (transient), and — since C2-WP3 folded the overlay's own USB debounce in here —
+# a recorded USB client NM-disconnected but still physically present.  HARD
+# signals (nothing configured, no client and no present USB to reconnect,
+# NO-CARRIER) bypass the debounce.  This N is the single 2-pass debounce that the
+# retired USB_UNHEALTHY_DEBOUNCE used to duplicate.
 CONNECTIVITY_DOWN_DEBOUNCE = 2
 USB_ADOPTION_STABLE_PASSES = 2         # consecutive passes a USB candidate must be present
 PLAYING_STATUS_URL = os.environ.get(
@@ -475,7 +477,8 @@ class NetworkMonitorState:
     mdns_reannounce_pending: bool = False
 
     # ---- Multi-adapter failure / adoption (WP5, Section 8.1) ----
-    active_usb_unhealthy_checks: int = 0
+    # (C2-WP3 retired active_usb_unhealthy_checks: the single conn_unhealthy_checks
+    #  hysteresis counter now debounces the active-USB failure case as well.)
     using_builtin_fallback: bool = False
     active_client_ifname: str = ""
     active_client_mac: str = ""
@@ -1620,9 +1623,12 @@ class FactsContext:
 
 @dataclass(frozen=True)
 class HealthContext:
-    """Phase B-late context: FactsContext + the five health fields.
+    """Phase B-late context: FactsContext + the health fields.
 
-    Produced by finalize_active_client_and_health() after _set_active_client().
+    Produced by finalize_active_client_and_health().  ``prev_active_mac`` /
+    ``prev_active_ifname`` carry the active-client identity recorded *before* this
+    pass's _set_active_client, so the Phase B-late USB-failure handler can still
+    attribute a just-vanished adapter (C2-WP3).
     """
     fctx: FactsContext
     health_ifname: str
@@ -1630,6 +1636,8 @@ class HealthContext:
     client_ok: bool
     conn_ok: bool
     active_path_ok: bool
+    prev_active_mac: str = ""
+    prev_active_ifname: str = ""
 
     @property
     def now(self) -> float: return self.fctx.now
@@ -1664,7 +1672,14 @@ def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
     active_client = facts.active_client
     wifi_cfg = facts.wifi_configured
 
-    _set_active_client(active_client)
+    # Capture the identity recorded *before* this pass's _set_active_client so the
+    # Phase B-late USB-failure handler can attribute a just-vanished adapter, and
+    # so the soft-fail hysteresis can recognise an NM-disconnected-but-present USB
+    # (C2-WP3).
+    with state_lock:
+        prev_active_mac = STATE.active_client_mac
+        prev_active_ifname = STATE.active_client_ifname
+
     # Health is scoped to the *active client* adapter; fall back to the built-in
     # interface name for an unconfigured/idle device.
     health_ifname = active_client.ifname if active_client else AP_IFNAME
@@ -1675,43 +1690,61 @@ def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
         else False
     )
     # Apply source-level hysteresis (C-WP1): one stable connectivity verdict that
-    # every downstream consumer (next_mode, boot-entry, reconnect) reads, so a
-    # single soft blip on the active path no longer flips Mode or triggers a
-    # failover.  active_path_ok tracks the same debounced verdict.
-    conn_ok = _debounced_connectivity(facts, active_client, client_ok)
+    # every downstream consumer (next_mode, boot-entry, reconnect, the USB-failure
+    # overlay) reads, so a single soft blip on the active path no longer flips
+    # Mode or triggers a failover.  active_path_ok tracks the same debounced
+    # verdict.  Computed before _set_active_client so the incremented debounce
+    # counter is visible to _set_active_client's MAC-preservation.
+    conn_ok = _debounced_connectivity(facts, active_client, client_ok, prev_active_mac)
     active_path_ok = conn_ok
+    _set_active_client(active_client)
     return HealthContext(
         fctx, health_ifname=health_ifname, wifi_connected=wifi_connected,
         client_ok=client_ok, conn_ok=conn_ok, active_path_ok=active_path_ok,
+        prev_active_mac=prev_active_mac, prev_active_ifname=prev_active_ifname,
     )
 
 
-def _connectivity_failure_is_hard(facts: "Facts", active_client) -> bool:
+def _connectivity_failure_is_hard(facts: "Facts", active_client, prev_mac: str) -> bool:
     """True when this pass's connectivity failure is a HARD signal (no debounce).
 
-    Hard: nothing configured, no adapter carrying a client, or the active client
-    reports NO-CARRIER (link down).  Soft (debounced): the client is connected
-    with carrier up but the gateway/IPv4 is not ready — the transient-prone case
-    the field log identified (a single ``is_gateway_reachable`` miss).
+    Hard: nothing configured; the active client reports NO-CARRIER (link down); or
+    there is no client this pass and no recorded USB left to reconnect to.  Soft
+    (debounced): the client is connected with carrier up but gateway/IPv4 is not
+    ready (the transient-prone case the field log identified), OR — folded in by
+    C2-WP3 — there is no active client this pass but the recorded USB is still
+    physically present (NM merely disconnected it, may reassociate).  Softening the
+    NM-disconnected case gives it the same 2-pass debounce the retired overlay
+    counter used to provide.
     """
-    if not facts.wifi_configured or active_client is None:
+    if not facts.wifi_configured:
         return True
-    return wifi_net.read_link_down(active_client.ifname) is True
+    if active_client is not None:
+        return wifi_net.read_link_down(active_client.ifname) is True
+    # No active client: soft only if the recorded USB is still present (a
+    # disconnect that may recover); otherwise the path is genuinely down.
+    recorded_usb_present = bool(prev_mac) and any(
+        a.is_usb and a.permanent_mac == prev_mac for a in facts.adapters
+    )
+    return not recorded_usb_present
 
 
-def _debounced_connectivity(facts: "Facts", active_client, client_ok: bool) -> bool:
+def _debounced_connectivity(facts: "Facts", active_client, client_ok: bool,
+                            prev_mac: str = "") -> bool:
     """Stable connectivity_ok with soft-fail hysteresis (C-WP1, field log 01-Jul).
 
     Healthy (wired or client) -> True immediately and the counter resets.  A hard
     unhealthy signal condemns the path at once.  A soft unhealthy signal only
     condemns after CONNECTIVITY_DOWN_DEBOUNCE consecutive passes; until then the
-    prior verdict is held (slow to condemn, quick to forgive).
+    prior verdict is held (slow to condemn, quick to forgive).  ``prev_mac`` is the
+    pre-_set_active_client recorded MAC, used to keep an NM-disconnected-but-
+    present USB in the soft (debounced) class (C2-WP3).
     """
     if facts.wired_ok or client_ok:
         with state_lock:
             STATE.conn_unhealthy_checks = 0
         return True
-    if _connectivity_failure_is_hard(facts, active_client):
+    if _connectivity_failure_is_hard(facts, active_client, prev_mac):
         with state_lock:
             STATE.conn_unhealthy_checks = 0
         return False
@@ -1833,16 +1866,18 @@ def step_startup_usb_window(fctx: "FactsContext") -> "Verdict":
     return Verdict.CONTINUE
 
 
-def step_usb_failure_fallback(fctx: "FactsContext") -> "Verdict":
-    """Active-USB failure fallback — immediate/debounced, never gated by playback.
+def step_usb_failure_fallback(hctx: "HealthContext") -> "Verdict":
+    """Active-USB failure fallback — over the debounced verdict, never playback-gated.
 
-    Must run BEFORE finalize_active_client_and_health()'s _set_active_client() so
-    that STATE.active_client_mac still holds the previously recorded USB MAC when
-    the adapter physically disappears from discovery.
+    C2-WP3 moved this from Phase B-early to the front of Phase B-late so it can
+    read the finalized connectivity hysteresis verdict (hctx.conn_ok): the overlay
+    no longer keeps its own debounce.  The pre-_set_active_client identity it needs
+    to attribute a vanished adapter is carried on the HealthContext
+    (prev_active_mac / prev_active_ifname).
     """
-    facts = fctx.facts
+    facts = hctx.facts
     if facts.wifi_configured and not facts.wired_ok and not STATE.setup_mode:
-        if handle_usb_failure_fallback(facts):
+        if handle_usb_failure_fallback(hctx):
             return Verdict.OWN_PASS
     return Verdict.CONTINUE
 
@@ -2180,9 +2215,9 @@ def network_monitor_loop(run_once: bool = False):
     phase_b_early = [
         step_update_known_adapters,
         step_startup_usb_window,
-        step_usb_failure_fallback,
     ]
     phase_b_late = [
+        step_usb_failure_fallback,
         step_runtime_usb_adoption,
         step_dead_phy_recovery,
         step_publish_state,
@@ -2491,10 +2526,11 @@ def verify_avahi_after_handover() -> None:
 
 def _set_active_client(adapter) -> None:
     with state_lock:
-        if adapter is None and STATE.active_usb_unhealthy_checks > 0:
-            # Debounce in progress: clear ifname so the loop knows there is no
-            # active client, but keep active_client_mac so that the next pass of
-            # handle_usb_failure_fallback can still match the recorded USB adapter.
+        if adapter is None and STATE.conn_unhealthy_checks > 0:
+            # Soft debounce in progress (C2-WP3: the single connectivity
+            # hysteresis counter): clear ifname so the loop knows there is no
+            # active client, but keep active_client_mac so the next pass can still
+            # match the recorded USB adapter (NM-disconnected-but-present case).
             STATE.active_client_ifname = ""
             return
         changed = STATE.active_client_ifname != (adapter.ifname if adapter else "")
@@ -2628,17 +2664,19 @@ def resolve_active_client(adapters: list) -> Optional[object]:
     return None
 
 
-def handle_usb_failure_fallback(facts: "Facts") -> bool:
+def handle_usb_failure_fallback(hctx: "HealthContext") -> bool:
     """Active-USB failure handling via the adapter-remediation overlay (WP5a).
 
-    The overlay (wifi_recovery.diagnose_client_failure) diagnoses the active
-    client and returns a ClientFailed event; this loop site applies the
-    connectivity transition.  Returns True when a transition was performed on
-    this pass; the caller then skips its ordinary reconnect/reboot logic for
-    this pass.  Never gated by playback.
+    The overlay (wifi_recovery.diagnose_client_failure) classifies the condemned
+    active path over the debounced verdict (C2-WP3) and returns a ClientFailed
+    event; this loop site applies the connectivity transition.  Returns True when
+    a transition was performed on this pass; the caller then skips its ordinary
+    reconnect/reboot logic for this pass.  Never gated by playback.
     """
+    facts = hctx.facts
     event = wifi_recovery.diagnose_client_failure(
-        _self_module(), facts.adapters, facts.active_client)
+        _self_module(), facts.adapters, facts.active_client,
+        hctx.conn_ok, hctx.prev_active_mac, hctx.prev_active_ifname)
     if event is None:
         return False
     return apply_client_failed(event, facts)
@@ -2656,15 +2694,14 @@ def apply_client_failed(event, facts: "Facts") -> bool:
 
     The pre-C2 behaviour "a diagnosed USB failure always tries the built-in
     before the hotspot" is preserved via an explicit onboard fallback: the
-    overlay fires a ClientFailed on a 2-pass debounce, but the ladder returns
+    overlay fires a ClientFailed once the connectivity hysteresis has condemned
+    the path (C2-WP3: the single 2-pass debounce), but the ladder returns
     HOLD("usb_active_no_ip") for an active USB that still has carrier (it wants
     the no-IP ledger to govern in steady state), and it may also pick
     ACTIVATE_USB (re-activate) for an NM-dropped-but-present USB.  In either case
     — a HOLD, or a failed ladder activation — we still try a *usable* onboard
     (one the gate did not exclude, and not the adapter the ladder just failed on)
-    before falling to the USB_LOSS_RECOVERY hotspot.  (C2-WP3 will retire the
-    2-pass overlay debounce in favour of the C-WP1 hysteresis, at which point the
-    no-IP-USB case flows entirely through the ladder.)
+    before falling to the USB_LOSS_RECOVERY hotspot.
     """
     logger.info(
         "Overlay ClientFailed(%s) on %s; applying via recovery ladder",
