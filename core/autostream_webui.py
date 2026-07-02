@@ -989,16 +989,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_log_level_put_json(self, STATE, json_obj, "system")
             return
 
-        # Browser-proxied path: require CSRF and PIN authentication.
+        # Browser-proxied path: require CSRF, but not PIN authentication.
         token_from_header = self.headers.get("X-CSRF-Token", "") or ""
         token_from_body = str(json_obj.get("csrf_token") or "")
         csrf_token = token_from_header or token_from_body
 
         if not AUTH.validate_csrf(self, csrf_token):
             send_browser_api_error(self, 403, "CSRF validation failed")
-            return
-
-        if not AUTH.require_authenticated_if_pin_enabled(self):
             return
 
         send_log_level_put_json(self, STATE, json_obj, "user")

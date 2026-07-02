@@ -701,7 +701,7 @@ curl -s -X PUT http://127.0.0.1:8080/api/log-level \
   -d '{"level": "debug"}'
 ```
 
-From a browser: use the **Logs** page in the web UI. Changes made from the browser are marked `changed_by = "user"` and are not automatically reverted by the storage guard.
+From a browser: use the **Logs** page in the web UI. No PIN is required for the log-level API, and changes made from the browser are marked `changed_by = "user"`.
 
 See [LOG-LEVEL-API.md](LOG-LEVEL-API.md) for the full API reference.
 

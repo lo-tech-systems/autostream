@@ -8,7 +8,7 @@ autostream exposes two JSON endpoints for reading and writing the active log lev
 
 ### `GET /api/log-level`
 
-Returns the current log-level state. Requires PIN authentication from a browser.
+Returns the current log-level state. Browser callers do not need PIN authentication.
 
 **Response (200)**
 
@@ -79,14 +79,15 @@ Only the `level` field is accepted. Any other field causes a 400 error.
 
 ## Authentication model
 
-### Browser requests (PIN-protected)
+### Browser requests (CSRF-protected)
 
 Requests that arrive via NGINX (from a user's browser) must include:
 
-- A valid `X-CSRF-Token` header
-- An authenticated session cookie (PIN verified)
+- A valid `X-CSRF-Token` header for `PUT /api/log-level`
 
-The `changed_by` field is automatically set to `"user"` for these requests. Callers cannot supply or override this value.
+PIN authentication is not required for `GET` or `PUT /api/log-level`. The
+`changed_by` field is automatically set to `"user"` for browser-proxied writes.
+Callers cannot supply or override this value.
 
 ### Direct-local requests (internal services)
 
@@ -95,7 +96,7 @@ A request is treated as *direct-local* (bypassing PIN auth) only when **all** of
 1. The TCP peer is a loopback address (`127.x.x.x` or `::1`)
 2. No `X-Forwarded-For` header is present
 3. No `X-Real-IP` header is present
-4. The `Content-Type` is `application/json`
+4. For `PUT` requests, the `Content-Type` is `application/json`
 
 Conditions 2 and 3 ensure NGINX-proxied browser requests (which set both headers) are never misclassified as direct-local, even though NGINX itself connects to the Python server over loopback.
 

@@ -2,7 +2,7 @@
 
 Covers:
   - GET /api/log-level: returns state, available without PIN
-  - PUT /api/log-level: browser path (CSRF + PIN), direct-local path (system)
+  - PUT /api/log-level: browser path (CSRF, no PIN), direct-local path (system)
   - Unknown fields in PUT body rejected
   - _is_direct_local() classification
   - GET /api/playing-status: direct-local no auth, proxied requires auth
@@ -84,6 +84,39 @@ def _make_handler(
     auth.require_authenticated_if_pin_enabled.return_value = authenticated
     h._auth = auth
 
+    return h
+
+
+def _make_put_handler(
+    body: bytes = b'{"level":"debug"}',
+    *,
+    peer: str = "127.0.0.1",
+    xff: str | None = "10.0.0.5",
+    xri: str | None = "10.0.0.5",
+    csrf_token: str = "csrf-token",
+) -> object:
+    from autostream_webui import ConfigWebHandler
+
+    h = ConfigWebHandler.__new__(ConfigWebHandler)
+    h.path = "/api/log-level"
+    h.command = "PUT"
+    h.request_version = "HTTP/1.1"
+    h.headers = {
+        "Content-Type": "application/json",
+        "Content-Length": str(len(body)),
+        "X-CSRF-Token": csrf_token,
+        "X-Forwarded-For": xff or "",
+        "X-Real-IP": xri or "",
+    }
+    h.client_address = (peer, 12345)
+    h.rfile = BytesIO(body)
+    h.wfile = BytesIO()
+    h.send_response = MagicMock()
+    h.send_header = MagicMock()
+    h.end_headers = MagicMock()
+    h.send_error = MagicMock()
+    h._pending_auth_cookie = None
+    h._pending_set_cookies = []
     return h
 
 
@@ -245,6 +278,43 @@ class TestSendLogLevelPutJson:
 
 
 # ---------------------------------------------------------------------------
+# ConfigWebHandler.do_PUT routing
+# ---------------------------------------------------------------------------
+
+class TestLogLevelPutRouting:
+    def test_browser_put_requires_csrf_but_not_pin_session(self):
+        h = _make_put_handler()
+        auth = MagicMock()
+        auth.validate_csrf.return_value = True
+        auth.require_authenticated_if_pin_enabled.return_value = False
+
+        with patch("autostream_webui.AUTH", auth), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.send_log_level_put_json") as m_put:
+            h.do_PUT()
+
+        auth.validate_csrf.assert_called_once_with(h, "csrf-token")
+        auth.require_authenticated_if_pin_enabled.assert_not_called()
+        m_put.assert_called_once()
+        assert m_put.call_args[0][2] == {"level": "debug"}
+        assert m_put.call_args[0][3] == "user"
+
+    def test_browser_put_rejects_invalid_csrf(self):
+        h = _make_put_handler(csrf_token="")
+        auth = MagicMock()
+        auth.validate_csrf.return_value = False
+
+        with patch("autostream_webui.AUTH", auth), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.send_browser_api_error") as m_error, \
+             patch("autostream_webui.send_log_level_put_json") as m_put:
+            h.do_PUT()
+
+        m_error.assert_called_once_with(h, 403, "CSRF validation failed")
+        m_put.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # send_playing_status_json
 # ---------------------------------------------------------------------------
 
@@ -288,14 +358,15 @@ class TestSendPlayingStatusJson:
 
 
 # ---------------------------------------------------------------------------
-# /api/log-level and /api/playing-status both require auth for browser callers;
-# only direct-local callers bypass the auth gate via _is_direct_local().
+# /api/log-level is intentionally available without PIN authentication.
+# /api/playing-status requires auth for browser callers; only direct-local
+# callers bypass the auth gate via _is_direct_local().
 # ---------------------------------------------------------------------------
 
 class TestAuthAllowlist:
-    def test_log_level_not_in_allowlist(self):
-        # Browser callers must authenticate; only direct-local bypasses auth.
-        assert "/api/log-level" not in auth_mod.ALLOWLIST_PATHS
+    def test_log_level_in_allowlist(self):
+        # Browser callers may read log-level state without PIN authentication.
+        assert "/api/log-level" in auth_mod.ALLOWLIST_PATHS
 
     def test_playing_status_not_in_allowlist(self):
         # /api/playing-status intentionally requires auth for browser callers.

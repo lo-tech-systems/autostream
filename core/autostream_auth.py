@@ -88,6 +88,7 @@ ALLOWLIST_PATHS = {
     "/auth",
     "/api/status",
     "/api/auth/verify",
+    "/api/log-level",
     "/api/owntone/outputs_state",
     "/api/output_eq/config",
     "/api/output_eq/status",
