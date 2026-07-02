@@ -192,6 +192,32 @@ class TestSystemdUnitStructure:
                 )
 
 
+class TestWifiWatcherProcessRecovery:
+    """D-WP0 — with Phase D (autoconnect=no) the watcher is the sole reconnection
+    agent, so its unit must survive crash *and* clean exit and never give up."""
+
+    WATCHER_UNITS = [
+        SYSTEMD_DIR / "autostream_wifi_watcher.service",
+        SYSTEMD_DIR / "autostream_dial_wifi_watcher.service",
+    ]
+
+    @pytest.mark.parametrize("unit", WATCHER_UNITS, ids=lambda u: u.name)
+    def test_restart_always(self, unit):
+        restart = (_unit_section(unit, "Service").get("Restart") or [""])[0]
+        assert restart == "always", (
+            f"{unit.name}: Phase D needs Restart=always (a clean exit must restart "
+            f"the sole reconnection agent), found {restart!r}"
+        )
+
+    @pytest.mark.parametrize("unit", WATCHER_UNITS, ids=lambda u: u.name)
+    def test_start_limit_disabled(self, unit):
+        interval = (_unit_section(unit, "Unit").get("StartLimitIntervalSec") or [""])[0]
+        assert interval == "0", (
+            f"{unit.name}: StartLimitIntervalSec=0 required so the watcher can never "
+            f"land in start-limit-hit and stop retrying, found {interval!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Systemd dependency ordering
 # ---------------------------------------------------------------------------
