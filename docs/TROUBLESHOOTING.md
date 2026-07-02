@@ -1237,3 +1237,60 @@ journalctl -u avahi-daemon -n 30 --no-pager
 ```
 
 A transient disappearance of `_autostream._tcp` during network transition is expected; it reappears within a few seconds.
+
+### The Wi-Fi watcher owns reconnection (client profiles are `autoconnect=no`)
+
+autostream configures every saved Wi-Fi **client** profile with NetworkManager
+autoconnect **disabled** (`connection.autoconnect no`). This is deliberate: the
+Wi-Fi watcher — not NetworkManager — is the single agent that decides which radio
+carries the client and brings it up (built-in vs. USB, failover, hotspot
+recovery). With autoconnect off, NetworkManager can no longer race the watcher and
+reactivate a profile on a stale or wrong adapter behind its back.
+
+- **Newly saved profiles** (created through the setup portal) are written
+  `autoconnect=no` at creation.
+- **Pre-existing profiles** (created by the OS or a user, or imported by the
+  installer) are switched to `autoconnect=no` idempotently on **every boot** by the
+  watcher, so a stray `autoconnect=yes` profile can never reappear. Hotspot/AP
+  profiles are left untouched.
+
+Check a profile's setting:
+
+```bash
+nmcli -g connection.autoconnect connection show "<profile-name-or-uuid>"   # expect: no
+nmcli -t -f NAME,UUID,TYPE,AUTOCONNECT connection show                     # survey all
+```
+
+This is **expected**, not a fault. The watcher issues an explicit
+`nmcli connection up` when it wants a client active, so connectivity is unaffected;
+you simply won't see NetworkManager auto-joining a network on its own.
+
+#### Consequence: the watcher process must be running
+
+Because the watcher is now the *sole* reconnection agent, a watcher that is not
+running means the device will not rejoin Wi-Fi or raise a recovery hotspot on its
+own. Two independent safety nets cover this:
+
+- **Process death (crash or clean exit).** Both watcher units use
+  `Restart=always` with `StartLimitIntervalSec=0`, so systemd restarts the process
+  immediately and can never give up ("start-limit-hit"). Verify:
+
+  ```bash
+  systemctl show autostream_wifi_watcher.service -p Restart -p StartLimitIntervalSec
+  # Restart=always
+  # StartLimitIntervalSec=0
+  systemctl status autostream_wifi_watcher.service        # main appliance
+  systemctl status autostream_dial_wifi_watcher.service   # dial
+  ```
+
+- **A wedged (running but stuck) process.** The watcher's own guarded reboot
+  domains (gateway-down, dead-PHY, and the 12-hour no-usable-path catch-all)
+  reboot the device when it has been offline too long, bounded by a persistent
+  cross-boot cap so it cannot loop. A systemd `WatchdogSec` for faster wedged-
+  process recovery is intentionally **not** enabled yet — the monitor loop can
+  block for up to ~45 s during an activation, which would trip a watchdog
+  spuriously; it will be added once activation moves off the loop thread.
+
+If Wi-Fi does not recover, first confirm the watcher service is active and check
+its journal (see **Watcher journal** above); a crash-looping or inactive unit is
+the thing to fix, since nothing else will rejoin the network.
