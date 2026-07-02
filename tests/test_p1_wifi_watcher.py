@@ -16,6 +16,7 @@ These tests cover the Wi-Fi watcher state machine and captive-portal integration
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.util
 import json
@@ -1343,6 +1344,143 @@ class TestUsbFailureFallback:
         enter.assert_called_once()
         # USB-loss fallback now enters a USB_LOSS_RECOVERY hotspot purpose.
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+
+
+class TestActivateClient:
+    """Flag-matrix unit tests for the consolidated activate_client() (Phase A A-WP2)."""
+
+    @contextlib.contextmanager
+    def _harness(self, watcher, *, core_ok=True, target=None):
+        """Patch the activation core and all tail effects.
+
+        Yields a dict of the effect mocks so a test can assert on them.  The
+        core (_activate_committed_on / _activate_profile_on) is patched to
+        return ``core_ok``; discovery resolves ``target`` for the ifname.
+        """
+        tgt = target if target is not None else _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:aa", is_usb=True)
+        with patch.object(watcher, "_activate_committed_on", return_value=core_ok) as core, \
+             patch.object(watcher, "_activate_profile_on", return_value=core_ok) as core2, \
+             patch.object(watcher, "_set_active_client") as set_active, \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover") as avahi, \
+             patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "update_apmode_flag") as apflag, \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as run_cmd, \
+             patch.object(watcher.wifi_recovery, "clear_noip_failures") as clear_noip, \
+             patch.object(watcher.wifi_recovery, "record_noip_failure") as record_noip, \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[tgt]), \
+             patch.object(watcher.wifi_net, "find_adapter_by_ifname", return_value=tgt), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
+             patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False):
+            yield {
+                "core": core, "core2": core2, "set_active": set_active,
+                "leave": leave, "avahi": avahi, "stop_ap": stop_ap,
+                "start_ap": start_ap, "apflag": apflag, "run_cmd": run_cmd,
+                "clear_noip": clear_noip, "record_noip": record_noip, "target": tgt,
+            }
+
+    def test_success_minimal_tail(self, watcher):
+        with self._harness(watcher) as h:
+            ok = watcher.activate_client("wlan1")
+        assert ok is True
+        h["set_active"].assert_called_once_with(h["target"])
+        h["clear_noip"].assert_called_once()
+        h["avahi"].assert_called_once()
+        h["leave"].assert_not_called()          # no on_success_leaves_setup
+        h["record_noip"].assert_not_called()
+
+    def test_success_does_not_touch_builtin_fallback_or_timers_by_default(self, watcher):
+        watcher.STATE.using_builtin_fallback = True
+        watcher.STATE.conn_down_start = 123.0
+        with self._harness(watcher):
+            watcher.activate_client("wlan1")
+        assert watcher.STATE.using_builtin_fallback is True   # untouched (flag None)
+        assert watcher.STATE.conn_down_start == 123.0         # untouched
+
+    def test_sets_builtin_fallback_and_clears_timers(self, watcher):
+        watcher.STATE.conn_down_start = 5.0
+        watcher.STATE.last_reconnect_attempt = 6.0
+        with self._harness(watcher):
+            watcher.activate_client("wlan1", sets_builtin_fallback=True,
+                                    clears_down_timers=True)
+        assert watcher.STATE.using_builtin_fallback is True
+        assert watcher.STATE.conn_down_start is None
+        assert watcher.STATE.last_reconnect_attempt is None
+
+    def test_on_success_leaves_setup(self, watcher):
+        with self._harness(watcher) as h:
+            watcher.activate_client("wlan1", on_success_leaves_setup=True,
+                                    leave_reason="done")
+        h["leave"].assert_called_once_with("done")
+
+    def test_drop_hotspot_when_in_setup_then_success_no_rebuild(self, watcher):
+        watcher.STATE.setup_mode = True
+        with self._harness(watcher) as h:
+            watcher.activate_client("wlan1", drop_hotspot=True)
+        h["stop_ap"].assert_called_once()
+        h["start_ap"].assert_not_called()       # success -> no rebuild
+
+    def test_drop_hotspot_rebuilds_on_failure(self, watcher):
+        watcher.STATE.setup_mode = True
+        with self._harness(watcher, core_ok=False) as h:
+            ok = watcher.activate_client("wlan1", drop_hotspot=True)
+        assert ok is False
+        h["stop_ap"].assert_called_once()
+        h["start_ap"].assert_called_once()
+        h["apflag"].assert_called_once_with(True)
+        assert watcher.STATE.setup_mode is True
+
+    def test_drop_hotspot_skipped_when_not_in_setup(self, watcher):
+        watcher.STATE.setup_mode = False
+        with self._harness(watcher) as h:
+            watcher.activate_client("wlan1", drop_hotspot=True)
+        h["stop_ap"].assert_not_called()
+
+    def test_records_noip_on_failure(self, watcher):
+        with self._harness(watcher, core_ok=False) as h:
+            ok = watcher.activate_client("wlan1", records_noip=True,
+                                         stable_id="sid-1", noip_at=42.0)
+        assert ok is False
+        h["record_noip"].assert_called_once()
+        args = h["record_noip"].call_args[0]
+        assert args[1] == "sid-1" and args[2] == 42.0
+        h["set_active"].assert_not_called()      # no success tail on failure
+        h["avahi"].assert_not_called()
+
+    def test_deactivates_builtin_when_connected(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with self._harness(watcher) as h:
+            with patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+                 patch.object(watcher.wifi_net, "is_wifi_connected", return_value=True):
+                watcher.activate_client("wlan1", deactivates_builtin=True)
+            disconnect = [c for c in h["run_cmd"].call_args_list
+                          if "disconnect" in str(c) and "wlan0" in str(c)]
+            assert disconnect, "expected nmcli device disconnect wlan0"
+
+    def test_wait_for_validation_false_is_fire_and_forget(self, watcher):
+        with self._harness(watcher) as h:
+            ok = watcher.activate_client("wlan1", wait_for_validation=False)
+        assert ok is True
+        h["core2"].assert_called_once()          # routed through _activate_profile_on
+        h["core"].assert_not_called()
+        h["set_active"].assert_not_called()      # no success tail
+        h["clear_noip"].assert_not_called()
+        h["avahi"].assert_not_called()
+
+    def test_profile_override_uses_profile_core(self, watcher):
+        rollback = watcher.wifi_net.NetworkState(
+            connection_name="Old", connection_uuid="old-uuid")
+        with self._harness(watcher) as h:
+            watcher.activate_client("wlan1", profile=rollback)
+        h["core2"].assert_called_once()
+        assert h["core2"].call_args[0][1] is rollback
+        h["core"].assert_not_called()
+
+    def test_empty_ifname_returns_false(self, watcher):
+        with self._harness(watcher) as h:
+            assert watcher.activate_client("") is False
+        h["core"].assert_not_called()
 
 
 class TestRuntimeUsbAdoption:
