@@ -34,7 +34,6 @@ import json
 import os
 import secrets
 import tempfile
-import threading
 from typing import Optional
 
 from flask import Flask, request, jsonify, redirect, url_for, make_response
@@ -690,7 +689,7 @@ def build_app(w) -> Flask:
     """Build the watcher's Flask app and register the captive-portal/setup routes.
 
     Handlers close over the watcher module ``w`` (the star-topology hub) and
-    read/queue through it: ``w.STATE``, ``w.state_lock``, ``w.apply_wifi_async``,
+    read/queue through it: ``w.STATE``, ``w.state_lock``, ``w.submit_apply_credentials``,
     ``w.scan_all_networks``, ``w.control_action_event``, ``w.logger``.  Endpoint
     (handler) names are preserved so ``url_for`` keeps resolving.
     """
@@ -716,18 +715,12 @@ def build_app(w) -> Flask:
                 w.logger.warning("WiFi configuration POST received without SSID")
                 return _captive_response(render_setup_page())
 
-            with w.state_lock:
-                if w.STATE.apply_in_progress:
-                    w.logger.info("Apply already in progress; showing wait page again")
-                    return _captive_response(render_wait_page(w, ssid))
-                    #return render_wait_page(ssid)
-                w.STATE.apply_in_progress = True
-                w.STATE.last_apply_result = "applying"
-                w.STATE.last_apply_error = ""
-
-            # IMPORTANT: return wait page first, then reconfigure in background
-            t = threading.Thread(target=w.apply_wifi_async, args=(ssid, pw), daemon=True)
-            t.start()
+            # WS1-WP4: enqueue the apply on the shared activation worker instead of
+            # spawning a Flask thread, so it is serialised with the loop's
+            # activations (no unmanaged second writer).  submit_apply_credentials
+            # sets apply_in_progress + "applying" on accept.
+            if not w.submit_apply_credentials(ssid, pw):
+                w.logger.info("Apply already in progress / worker busy; showing wait page again")
             return _captive_response(render_wait_page(w, ssid))
 
         # GET: show the setup form (include last failure, if any)

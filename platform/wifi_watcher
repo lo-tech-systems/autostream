@@ -1110,7 +1110,7 @@ def start_ap_mode() -> None:
     be handled elsewhere.
     """
     with ap_mode_lock:
-        # Guard against a race where leave_setup_mode ran (from apply_wifi_async or the
+        # Guard against a race where leave_setup_mode ran (from the credential-apply or the
         # ethernet-suppression path) between enter_setup_mode setting setup_mode=True and
         # this function acquiring ap_mode_lock.  In that case stop_ap_mode has already
         # run and setup_mode is False; starting AP now would leave it running unmanaged.
@@ -1217,39 +1217,29 @@ def scan_all_networks() -> tuple[list[dict], bool]:
     return merged, builtin_scan_known
 
 
-def apply_wifi_async(ssid: str, pw: str) -> None:
-    try:
-        with state_lock:
-            STATE.last_apply_result = "applying"
-            STATE.last_apply_error = ""
-        logger.info("Async apply starting for SSID '%s'", ssid)
+def submit_apply_credentials(ssid: str, pw: str) -> bool:
+    """Enqueue a credential-apply job on the shared worker (WS1-WP4).
 
-        time.sleep(0.5)
-
-        # The candidate transaction already validates local IPv4 and the
-        # interface-specific gateway on the chosen adapter before committing,
-        # so a True result means connectivity has been verified.
-        success = configure_wifi_with_nmcli(ssid, pw)
-        if success:
-            with state_lock:
-                STATE.last_apply_result = "ok"
-                STATE.last_apply_error = ""
-            # A successful new connection ends the hotspot session entirely
-            # (leave_setup_mode in attempt_on_targets clears STATE.hotspot).
-            logger.info("WiFi configuration and connectivity verified")
-        else:
-            with state_lock:
-                STATE.last_apply_result = "failed"
-                STATE.last_apply_error = "nmcli-failed"
-                # Re-enter with whatever purpose the interrupted session held
-                # (configure_wifi_with_nmcli keeps setup_mode set on failure, so
-                # this re-entry is normally a no-op); fall back to FIRST_RUN.
-                purpose = STATE.hotspot.purpose if STATE.hotspot else HotspotPurpose.FIRST_RUN
-            logger.warning("WiFi configuration failed; returning to SetupMode")
-            enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
-    finally:
-        with state_lock:
-            STATE.apply_in_progress = False
+    Replaces the Flask-spawned apply thread: the /setup route calls this instead of
+    starting its own thread, so the credential apply is serialised with the loop's
+    activations by the transitioning gate (one effectful transition at a time — the
+    unmanaged second writer is gone).  On accept, sets the wait-page "applying"
+    status; the worker runs configure_wifi_with_nmcli and the loop applies the
+    ok/failed tail (apply_activation_result).  Returns False when the worker is busy
+    with another in-flight transition (the caller keeps the user on setup to retry).
+    """
+    with state_lock:
+        if STATE.apply_in_progress:
+            return False
+    job = ActivationJob(epoch=_next_activation_epoch(), kind="apply_credentials",
+                        ifname="", ssid=ssid, password=pw)
+    if not submit_activation_job(job):
+        return False
+    with state_lock:
+        STATE.apply_in_progress = True
+        STATE.last_apply_result = "applying"
+        STATE.last_apply_error = ""
+    return True
 
 # ** TRANSACTIONAL CHANGE-WI-FI FLOW (WP6) **
 
@@ -2665,9 +2655,11 @@ class ActivationJob:
     """One activation request (worker input).  Carries the loop-applied tail flags
     unchanged so apply_activation_result reproduces activate_client's tail."""
     epoch: int
-    kind: str                                     # "activate_committed" | "activate_profile"
+    kind: str                          # "activate_committed" | "activate_profile" | "apply_credentials"
     ifname: str
     profile: "Optional[wifi_net.NetworkState]" = None
+    ssid: str = ""                     # apply_credentials only
+    password: str = ""                 # apply_credentials only (never logged)
     drop_hotspot: bool = False
     on_success_leaves_setup: bool = False
     leave_reason: str = ""
@@ -2710,6 +2702,14 @@ def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
     ``state_lock`` only for the brief flag reads/writes, never across the blocking
     nmcli/wait calls (§3.2).  Returns the outcome; the loop applies the tail.
     """
+    if job.kind == "apply_credentials":
+        # WS1-WP4: the credential-apply transaction runs the rollback-safe candidate
+        # sequence itself (scan -> ordered targets -> commit-on-success); the loop
+        # applies the wait-page status tail.
+        logger.info("Async apply starting for SSID '%s'", job.ssid)
+        ok = configure_wifi_with_nmcli(job.ssid, job.password)
+        return ActivationResult(job.epoch, ok, "", job, error="" if ok else "nmcli-failed")
+
     if not job.ifname:
         return ActivationResult(job.epoch, False, "", job, error="no_ifname")
 
@@ -2749,6 +2749,28 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
     loop re-resolves by ``result.ifname`` from a fresh discover (§Result identity).
     """
     job = result.job
+
+    if job.kind == "apply_credentials":
+        # WS1-WP4: the wait-page status tail (applying -> ok/failed), clearing
+        # apply_in_progress and, on failure, returning to setup mode.
+        if result.ok:
+            with state_lock:
+                STATE.last_apply_result = "ok"
+                STATE.last_apply_error = ""
+                STATE.apply_in_progress = False
+            logger.info("WiFi configuration and connectivity verified")
+            return True
+        with state_lock:
+            STATE.last_apply_result = "failed"
+            STATE.last_apply_error = "nmcli-failed"
+            STATE.apply_in_progress = False
+            # Re-enter with whatever purpose the interrupted session held
+            # (configure_wifi_with_nmcli keeps setup_mode set on failure, so this is
+            # normally a no-op); fall back to FIRST_RUN.
+            purpose = STATE.hotspot.purpose if STATE.hotspot else HotspotPurpose.FIRST_RUN
+        logger.warning("WiFi configuration failed; returning to SetupMode")
+        enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
+        return False
 
     if result.ok and not job.wait_for_validation:
         # Fire-and-forget: activation issued, loop validates on a later pass.

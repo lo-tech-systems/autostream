@@ -2338,16 +2338,47 @@ class TestAttemptOnTargets:
         apflag.assert_called_once_with(True)
 
 
-class TestApplyWifiAsync:
-    def test_total_failure_retains_setup_mode_and_does_not_leave_first(self, watcher):
+class TestApplyCredentialsWorker:
+    """WS1-WP4 — credential apply runs on the shared worker (no Flask thread).
+    submit_apply_credentials enqueues an apply_credentials job; the worker runs
+    configure_wifi_with_nmcli and the loop applies the wait-page status tail."""
+
+    def test_submit_sets_applying_and_enqueues_job(self, watcher):
+        with patch.object(watcher, "submit_activation_job", wraps=watcher.submit_activation_job):
+            assert watcher.submit_apply_credentials("Home", "s3cr3t") is True
+        assert watcher.STATE.apply_in_progress is True
+        assert watcher.STATE.last_apply_result == "applying"
+        job = watcher._activation_job_queue.get_nowait()
+        assert job.kind == "apply_credentials"
+        assert job.ssid == "Home" and job.password == "s3cr3t"
+
+    def test_submit_refused_when_apply_already_in_progress(self, watcher):
+        watcher.STATE.apply_in_progress = True
+        with patch.object(watcher, "submit_activation_job") as submit:
+            assert watcher.submit_apply_credentials("Home", "x") is False
+        submit.assert_not_called()
+
+    def test_success_result_sets_ok_and_clears_flag(self, watcher):
+        job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
+                                    kind="apply_credentials", ifname="", ssid="Home", password="x")
+        watcher.STATE.apply_in_progress = True
+        with patch.object(watcher, "configure_wifi_with_nmcli", return_value=True):
+            result = watcher._run_activation_job(job)
+            watcher.apply_activation_result(result)
+        assert result.ok is True
+        assert watcher.STATE.last_apply_result == "ok"
+        assert watcher.STATE.apply_in_progress is False
+
+    def test_failure_retains_setup_and_returns_to_setup_mode(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.apply_in_progress = True
-        with patch("time.sleep"), \
-             patch.object(watcher, "configure_wifi_with_nmcli", return_value=False), \
+        job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
+                                    kind="apply_credentials", ifname="", ssid="Home", password="bad")
+        with patch.object(watcher, "configure_wifi_with_nmcli", return_value=False), \
              patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher, "enter_setup_mode") as enter:
-            watcher.apply_wifi_async("Home", "bad-password")
-
+            result = watcher._run_activation_job(job)
+            watcher.apply_activation_result(result)
         leave.assert_not_called()
         enter.assert_called_once()
         assert watcher.STATE.last_apply_result == "failed"
