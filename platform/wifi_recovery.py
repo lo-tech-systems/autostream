@@ -694,6 +694,19 @@ def _perform_reset_step(w, target: TargetAdapter, now: float) -> bool:
 
     Always returns True: the reset attempt owns the monitor pass regardless of
     outcome.
+
+    WS1-WP5 (deferred, owner-approved — design note §3.3): this dead-PHY USB
+    rebind/re-enumerate plus wait_for_interface_reappears (up to
+    INTERFACE_REAPPEAR_TIMEOUT ~15 s) is a *second* thing that blocks the monitor
+    loop, distinct from the activate_client join that WS1 moved to the worker.  It
+    is deliberately left synchronous for WS1: it is a different effect family (USB
+    rebind/reenumerate) with its own budget/quarantine/reboot ladder, and folding
+    it onto the worker widens the blast radius for little gain (a wedged reset is
+    already backstopped by the loop's guarded reboot ladder, which keeps running
+    because the loop never blocks on the worker).  step_dead_phy_recovery is gated
+    on STATE.transitioning (WS1-WP3), so a reset never overlaps a worker activation
+    — only one blocking effect runs at a time.  Moving the reset off-thread is a
+    later workstream if the ~15 s dead-PHY blackout proves to matter in the field.
     """
     with w.state_lock:
         method = "B" if w.STATE.last_reset_method == "A" else "A"
