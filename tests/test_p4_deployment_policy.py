@@ -281,6 +281,28 @@ class TestSystemdDependencyOrdering:
         installer = INSTALL_SH.read_text(encoding="utf-8")
         assert "systemctl restart autostream_wifi_watcher.service" in installer
 
+    def test_installers_deploy_every_watcher_sibling_module(self):
+        """Every platform/wifi_*.py the watcher imports must be copied to
+        /opt/autostream by BOTH installers, or the deployed watcher crashes on
+        import (this guards the WS2-WP1 wifi_mdns split and the wifi_policy gap it
+        surfaced)."""
+        import re
+        watcher = (REPO_ROOT / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+        siblings = sorted({
+            m for m in re.findall(r"^\s*import (wifi_\w+)", watcher, re.MULTILINE)
+            if (REPO_ROOT / "platform" / f"{m}.py").exists()
+        })
+        assert "wifi_mdns" in siblings and "wifi_policy" in siblings, siblings
+        appliance = INSTALL_SH.read_text(encoding="utf-8")
+        dial = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")
+        for mod in siblings:
+            assert f"platform/{mod}.py" in appliance, (
+                f"autostream_install.sh does not deploy platform/{mod}.py"
+            )
+            assert f"platform/{mod}.py" in dial, (
+                f"autostream_dial_install.sh does not deploy platform/{mod}.py"
+            )
+
     def test_installers_normalize_wifi_watcher_line_endings(self):
         appliance_installer = INSTALL_SH.read_text(encoding="utf-8")
         dial_installer = (REPO_ROOT / "autostream_dial_install.sh").read_text(

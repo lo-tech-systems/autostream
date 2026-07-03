@@ -229,6 +229,20 @@ class TestStateMachineInvariants:
         assert "def _single_usable_ipv4_interface" not in WIFI_NETWORK_SRC
         assert "same_l3_segment(" not in WIFI_WATCHER_SRC
 
+    MDNS_SRC = (REPO_ROOT / "platform" / "wifi_mdns.py").read_text(encoding="utf-8")
+
+    def test_avahi_mdns_block_lives_in_wifi_mdns(self):
+        """WS2-WP1: the avahi/mDNS hostname-repair + re-announce block moved to
+        platform/wifi_mdns.py; the watcher keeps only thin delegating wrappers."""
+        for fn in ("check_and_repair_avahi_hostname", "maybe_reannounce_mdns",
+                   "get_avahi_registered_hostname", "restart_avahi_daemon",
+                   "_current_mdns_address_set", "mark_mdns_reannounce_pending"):
+            assert f"def {fn}(w" in self.MDNS_SRC, f"{fn} not extracted to wifi_mdns"
+        # The watcher imports the module and re-exports the loop entry points.
+        assert "import wifi_mdns" in WIFI_WATCHER_SRC
+        assert "wifi_mdns.check_and_repair_avahi_hostname(" in WIFI_WATCHER_SRC
+        assert "wifi_mdns.maybe_reannounce_mdns(" in WIFI_WATCHER_SRC
+
 
 # ---------------------------------------------------------------------------
 # Regression: verify test counts are not unexpectedly reduced
