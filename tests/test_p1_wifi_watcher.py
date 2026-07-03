@@ -165,6 +165,7 @@ def watcher():
     for f in fields(defaults):
         setattr(mod.STATE, f.name, getattr(defaults, f.name))
     mod._last_logged_values.clear()
+    mod._last_throttled_log.clear()
     yield mod
     # Reset again in case the test mutated STATE
     for f in fields(defaults):
@@ -4908,6 +4909,43 @@ class TestNetworkStatusRoute:
         client, mod = flask_client
         rules = {rule.rule for rule in mod.app.url_map.iter_rules()}
         assert "/network_status_v2" not in rules
+
+
+class TestLogThrottled:
+    """WS2-WP4 — the shared time-window throttled-log helper and the
+    playing-status warning folded onto it."""
+
+    def test_first_call_logs_then_suppresses_within_interval(self, watcher):
+        with patch.object(watcher, "logger") as log:
+            assert watcher.log_throttled("k", "msg", interval=300, now=0.0) is True
+            assert watcher.log_throttled("k", "msg", interval=300, now=299.0) is False
+        log.log.assert_called_once()
+
+    def test_logs_again_after_interval(self, watcher):
+        with patch.object(watcher, "logger") as log:
+            watcher.log_throttled("k", "msg", interval=300, now=0.0)
+            assert watcher.log_throttled("k", "msg", interval=300, now=300.0) is True
+        assert log.log.call_count == 2
+
+    def test_distinct_keys_are_independent(self, watcher):
+        with patch.object(watcher, "logger") as log:
+            assert watcher.log_throttled("a", "m", interval=300, now=0.0) is True
+            assert watcher.log_throttled("b", "m", interval=300, now=0.0) is True
+        assert log.log.call_count == 2
+
+    def test_warn_playing_status_gated_on_pending_and_throttled(self, watcher):
+        # No pending adoption -> never warns.
+        watcher.STATE.pending_usb_adoption_mac = None
+        with patch.object(watcher, "logger") as log:
+            watcher._warn_playing_status_unavailable()
+        log.warning.assert_not_called()
+
+        # Pending adoption -> warns once, then throttled within the window.
+        watcher.STATE.pending_usb_adoption_mac = "aa:bb:cc:00:00:01"
+        with patch.object(watcher, "logger") as log:
+            watcher._warn_playing_status_unavailable()
+            watcher._warn_playing_status_unavailable()
+        log.log.assert_called_once()   # log_throttled uses logger.log(level, ...)
 
 
 # ---------------------------------------------------------------------------

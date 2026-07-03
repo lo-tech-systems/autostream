@@ -489,7 +489,8 @@ class NetworkMonitorState:
     # DEGRADED_NO_IP status taxonomy and the escalating adoption back-off.
     adapter_noip_ledgers: dict = field(default_factory=dict)
     last_detected_adapter_macs: Optional[frozenset] = None
-    last_playing_status_warn: float = 0.0
+    # (WS2-WP4 retired last_playing_status_warn: the "playing status unavailable"
+    #  warning now uses the shared log_throttled time-window helper.)
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing now live
     # on the HotspotSession (STATE.hotspot); see the purpose table (Section 2.3).
@@ -617,14 +618,42 @@ app = wifi_web.build_app(_self_module())
 # ** LOGGING **
 
 _last_logged_values: dict[str, object] = {}
+_last_throttled_log: dict[str, float] = {}
 
 
+# Log de-duplication — three complementary mechanisms, one job each (WS2-WP4).
+# New code should pick the one matching intent:
+#   * DeduplicateFilter — transport-level; drops any record identical to one seen
+#     in the last 60 s.  A blanket backstop; do not rely on it for semantics.
+#   * log_on_change(key, value, ...) — semantic *transitions*; emit only when a
+#     tracked value changes (state/mode flips).  Use for "X changed -> Y".
+#   * log_throttled(key, msg, interval=...) — time-window *rate limit*; emit at
+#     most once per `interval` seconds for a condition that stays true (avoids
+#     hammering while a persistent condition holds).  Use for repeated warnings.
 def log_on_change(key: str, value: object, msg: str, level: int = logging.INFO) -> None:
-    """Log msg at *level* only when (key -> value) changes."""
+    """Log msg at *level* only when (key -> value) changes (semantic transition)."""
     prev = _last_logged_values.get(key, object())
     if prev != value:
         _last_logged_values[key] = value
         logger.log(level, "%s", msg)
+
+
+def log_throttled(key: str, msg: str, *, interval: float,
+                  level: int = logging.WARNING, now: "Optional[float]" = None) -> bool:
+    """Log msg at most once per *interval* seconds per *key* (time-window throttle).
+
+    The shared rate-limiter for a condition that stays true across passes.  Returns
+    True when it logged this call.  Unlocked module state, matching log_on_change
+    (best-effort; a race at most emits one extra line).
+    """
+    if now is None:
+        now = time.monotonic()
+    prev = _last_throttled_log.get(key)
+    if prev is None or (now - prev) >= interval:
+        _last_throttled_log[key] = now
+        logger.log(level, "%s", msg)
+        return True
+    return False
 
 
 # ** SETUP/AP MODE **
@@ -2396,18 +2425,19 @@ def query_playing_status() -> Optional[bool]:
 
 
 def _warn_playing_status_unavailable() -> None:
-    """Throttled WARNING when playback status is unavailable during pending adoption."""
-    now = time.monotonic()
+    """Throttled WARNING when playback status is unavailable during pending adoption.
+
+    WS2-WP4: the bespoke STATE.last_playing_status_warn throttle was folded onto
+    the shared log_throttled time-window helper.
+    """
     with state_lock:
         pending = STATE.pending_usb_adoption_mac is not None
-        last = STATE.last_playing_status_warn
-        if pending and (now - last) >= PLAYING_STATUS_WARN_THROTTLE:
-            STATE.last_playing_status_warn = now
-            do_warn = True
-        else:
-            do_warn = False
-    if do_warn:
-        logger.warning("Playing status unavailable while USB adoption pending; deferring")
+    if pending:
+        log_throttled(
+            "playing_status_unavailable",
+            "Playing status unavailable while USB adoption pending; deferring",
+            interval=PLAYING_STATUS_WARN_THROTTLE,
+        )
 
 
 def _activation_network_absent(result) -> bool:
