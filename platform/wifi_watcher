@@ -817,20 +817,6 @@ def first_healthy_wired_ifname() -> Optional[str]:
     return None
 
 
-# Interface-aware health/routing primitives live in the helper.  These names
-# are re-exported so existing call sites and tests keep working.
-_OK_NEIGH_STATES = wifi_net._OK_NEIGH_STATES
-_RFC1918_NETS = wifi_net._RFC1918_NETS
-_LINK_LOCAL_NET = wifi_net._LINK_LOCAL_NET
-_stateset = wifi_net._stateset
-_is_rfc1918_ipv4 = wifi_net._is_rfc1918_ipv4
-_nmcli_dev_show_fields = wifi_net._nmcli_dev_show_fields
-
-
-def _run_ip_json(args: list[str]) -> list[dict]:
-    return wifi_net._run_ip_json(args)
-
-
 def is_gateway_reachable(ifname: str = AP_IFNAME) -> bool:
     """Interface-specific kernel gateway reachability (policy wrapper).
 
@@ -1146,24 +1132,6 @@ def stop_ap_mode() -> None:
         run_cmd(["systemctl", "stop", DNSMASQ_SERVICE])
         wifi_net.remove_dnsmasq_runtime_config(DNSMASQ_RUNTIME_PATH)
         run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
-
-
-def scan_wifi_networks(ifname: str = AP_IFNAME):
-    """Scan one interface and return ``[{"ssid", "signal"}]`` (legacy shape).
-
-    Retained for backward compatibility; the captive portal uses the combined
-    multi-adapter scan below.
-    """
-    cmd = ["nmcli", "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list", "ifname", ifname]
-    result = run_cmd(cmd)
-    if result.returncode != 0:
-        logger.warning("Error scanning WiFi networks: %s", result.stderr.strip())
-        return []
-    strongest = wifi_net.parse_scan_output(result.stdout)
-    return sorted(
-        ({"ssid": s, "signal": sig} for s, sig in strongest.items()),
-        key=lambda n: n["signal"], reverse=True,
-    )
 
 
 def scan_all_networks() -> tuple[list[dict], bool]:

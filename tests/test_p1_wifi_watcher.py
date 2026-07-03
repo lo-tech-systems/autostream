@@ -225,47 +225,47 @@ def flask_client(watcher):
 class TestStateset:
     def test_string_input_uppercased(self):
         mod = _get_watcher()
-        assert mod._stateset("reachable") == {"REACHABLE"}
+        assert mod.wifi_net._stateset("reachable") == {"REACHABLE"}
 
     def test_list_input_each_uppercased(self):
         mod = _get_watcher()
-        assert mod._stateset(["STALE", "delay"]) == {"STALE", "DELAY"}
+        assert mod.wifi_net._stateset(["STALE", "delay"]) == {"STALE", "DELAY"}
 
     def test_empty_string_returns_empty_set(self):
         mod = _get_watcher()
-        assert mod._stateset("") == {""}
+        assert mod.wifi_net._stateset("") == {""}
 
     def test_none_like_returns_empty_set(self):
         mod = _get_watcher()
-        assert mod._stateset(42) == set()
+        assert mod.wifi_net._stateset(42) == set()
 
     def test_ok_neigh_states_are_recognised(self):
         mod = _get_watcher()
         ok = {"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"}
         for s in ok:
-            assert mod._stateset(s) & mod._OK_NEIGH_STATES
+            assert mod.wifi_net._stateset(s) & mod.wifi_net._OK_NEIGH_STATES
 
 
 class TestIsRfc1918Ipv4:
     def test_10_range_is_rfc1918(self):
         mod = _get_watcher()
-        assert mod._is_rfc1918_ipv4(ipaddress.IPv4Address("10.0.0.1"))
+        assert mod.wifi_net._is_rfc1918_ipv4(ipaddress.IPv4Address("10.0.0.1"))
 
     def test_172_range_is_rfc1918(self):
         mod = _get_watcher()
-        assert mod._is_rfc1918_ipv4(ipaddress.IPv4Address("172.16.0.1"))
+        assert mod.wifi_net._is_rfc1918_ipv4(ipaddress.IPv4Address("172.16.0.1"))
 
     def test_192_168_range_is_rfc1918(self):
         mod = _get_watcher()
-        assert mod._is_rfc1918_ipv4(ipaddress.IPv4Address("192.168.1.1"))
+        assert mod.wifi_net._is_rfc1918_ipv4(ipaddress.IPv4Address("192.168.1.1"))
 
     def test_public_ip_is_not_rfc1918(self):
         mod = _get_watcher()
-        assert not mod._is_rfc1918_ipv4(ipaddress.IPv4Address("8.8.8.8"))
+        assert not mod.wifi_net._is_rfc1918_ipv4(ipaddress.IPv4Address("8.8.8.8"))
 
     def test_loopback_is_not_rfc1918(self):
         mod = _get_watcher()
-        assert not mod._is_rfc1918_ipv4(ipaddress.IPv4Address("127.0.0.1"))
+        assert not mod.wifi_net._is_rfc1918_ipv4(ipaddress.IPv4Address("127.0.0.1"))
 
 
 # ---------------------------------------------------------------------------
@@ -518,54 +518,26 @@ class TestIsGatewayReachable:
 
 
 # ---------------------------------------------------------------------------
-# scan_wifi_networks — parses nmcli output, deduplication
+# scan parsing — parse_scan_output (WS2-WP2 retired the legacy
+# scan_wifi_networks wrapper; the portal uses scan_all_networks / scan_adapter,
+# and the SSID/SIGNAL parsing lives in wifi_net.parse_scan_output).
 # ---------------------------------------------------------------------------
 
-class TestScanWifiNetworks:
-    def _make_run_cmd(self, output: str, rc: int = 0):
-        return MagicMock(returncode=rc, stdout=output, stderr="")
-
-    def test_returns_sorted_by_signal_descending(self, watcher):
-        output = "NetA:40\nNetB:80\nNetC:60\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
-            nets = watcher.scan_wifi_networks()
-        assert [n["ssid"] for n in nets] == ["NetB", "NetC", "NetA"]
-
+class TestParseScanOutput:
     def test_deduplicates_same_ssid_keeps_strongest(self, watcher):
-        output = "MyNet:50\nMyNet:75\nMyNet:30\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
-            nets = watcher.scan_wifi_networks()
-        assert len(nets) == 1
-        assert nets[0]["signal"] == 75
+        out = "MyNet:50\nMyNet:75\nMyNet:30\n"
+        assert watcher.wifi_net.parse_scan_output(out) == {"MyNet": 75}
 
-    def test_empty_output_returns_empty_list(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("")):
-            assert watcher.scan_wifi_networks() == []
+    def test_empty_output_returns_empty(self, watcher):
+        assert watcher.wifi_net.parse_scan_output("") == {}
 
-    def test_command_failure_returns_empty_list(self, watcher):
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd("", rc=1)):
-            assert watcher.scan_wifi_networks() == []
-
-    def test_blank_ssid_lines_skipped(self, watcher):
-        output = ":50\n\nGoodNet:70\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
-            nets = watcher.scan_wifi_networks()
-        assert all(n["ssid"] for n in nets)
+    def test_blank_and_hidden_ssid_lines_skipped(self, watcher):
+        out = ":50\n\nGoodNet:70\n"
+        assert watcher.wifi_net.parse_scan_output(out) == {"GoodNet": 70}
 
     def test_non_numeric_signal_skipped(self, watcher):
-        output = "GoodNet:70\nBadNet:notanumber\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
-            nets = watcher.scan_wifi_networks()
-        assert len(nets) == 1
-        assert nets[0]["ssid"] == "GoodNet"
-
-    def test_hidden_network_empty_ssid_skipped(self, watcher):
-        # nmcli sometimes emits a line with empty SSID for hidden networks
-        output = ":60\nVisible:80\n"
-        with patch.object(watcher, "run_cmd", return_value=self._make_run_cmd(output)):
-            nets = watcher.scan_wifi_networks()
-        ssids = [n["ssid"] for n in nets]
-        assert "" not in ssids
+        out = "GoodNet:70\nBadNet:notanumber\n"
+        assert watcher.wifi_net.parse_scan_output(out) == {"GoodNet": 70}
 
 
 # ---------------------------------------------------------------------------

@@ -251,7 +251,7 @@ class TestApProfileDeletion:
     def test_stop_ap_mode_deletes_only_ap_connection_name(self):
         """stop_ap_mode must delete AP_CONNECTION_NAME, not other profiles."""
         src = _watcher_src()
-        fn_body = _fn_body(src, "stop_ap_mode", "scan_wifi_networks")
+        fn_body = _fn_body(src, "stop_ap_mode", "\ndef scan_all_networks(")
         assert "AP_CONNECTION_NAME" in fn_body
         # Must not reference ssid variable (would delete user profile)
         assert '"delete", ssid' not in fn_body
