@@ -140,6 +140,21 @@ def _restore_root_log_level():
 
 
 @pytest.fixture(autouse=True)
+def _reset_activation_worker():
+    """Reset the module-level activation-worker slots between tests (WS1)."""
+    mod = _get_watcher()
+    yield
+    try:
+        while True:
+            mod._activation_job_queue.get_nowait()
+    except Exception:
+        pass
+    mod._activation_result_slot = None
+    mod.activation_result_event.clear()
+    mod._inflight_activation_epoch = None
+
+
+@pytest.fixture(autouse=True)
 def _isolate_reboot_guard(tmp_path):
     """Point the persistent reboot-guard stamp at a per-test temp file.
 
@@ -1466,6 +1481,149 @@ class TestUsbFailureFallback:
             acted = watcher.handle_usb_failure_fallback(hctx)
         assert acted is True
         ap.assert_called_once()
+
+
+class TestActivationWorker:
+    """WS1-WP2 — the off-thread activation worker skeleton: job/result split,
+    single-slot queue + transitioning gate, result application at pass top, and
+    the peek-then-consume control-action deferral.  No call sites are migrated yet
+    (WS1-WP3/WP4), so these drive the skeleton directly."""
+
+    def _job(self, watcher, **kw):
+        defaults = dict(epoch=watcher._next_activation_epoch(), kind="activate_committed",
+                        ifname="wlan1")
+        defaults.update(kw)
+        return watcher.ActivationJob(**defaults)
+
+    # ---- the split: _run_activation_job (worker half) ----
+
+    def test_run_job_empty_ifname_fails(self, watcher):
+        job = self._job(watcher, ifname="")
+        r = watcher._run_activation_job(job)
+        assert r.ok is False and r.error == "no_ifname"
+
+    def test_run_job_success_carries_job_and_epoch(self, watcher):
+        job = self._job(watcher)
+        with patch.object(watcher, "_activate_committed_on", return_value=True):
+            r = watcher._run_activation_job(job)
+        assert r.ok is True and r.ifname == "wlan1" and r.job is job and r.epoch == job.epoch
+
+    def test_run_job_drops_and_rebuilds_ap_on_failure(self, watcher):
+        # Worker owns symmetric AP drop-for-attempt + rebuild-on-own-failure.
+        watcher.STATE.setup_mode = True
+        job = self._job(watcher, drop_hotspot=True)
+        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "stop_ap_mode") as stop_ap, \
+             patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "update_apmode_flag") as apflag:
+            r = watcher._run_activation_job(job)
+        assert r.ok is False
+        stop_ap.assert_called_once()
+        start_ap.assert_called_once()
+        apflag.assert_called_once_with(True)
+
+    def test_command_timeout_yields_failure_result(self, watcher):
+        # A hung nmcli killed by run_cmd(timeout=…) returns rc 124 -> validation
+        # fails -> the job result is ok=False (the loop then clears the gate).
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u1")
+        timed_out = MagicMock(returncode=124, stderr="")
+        job = self._job(watcher, kind="activate_profile", profile=state)
+        with patch.object(watcher, "_resolve_committed_uuid", return_value="u1"), \
+             patch.object(watcher, "run_cmd", return_value=timed_out), \
+             patch.object(watcher, "wait_for_connection", return_value=False):
+            r = watcher._run_activation_job(job)
+        assert r.ok is False
+
+    # ---- submit / drain / transitioning gate ----
+
+    def test_submit_sets_transitioning_and_second_submit_deferred(self, watcher):
+        job = self._job(watcher)
+        assert watcher.submit_activation_job(job) is True
+        assert watcher.STATE.transitioning is True
+        assert watcher._inflight_activation_epoch == job.epoch
+        # A second submit while transitioning is refused (belt-and-braces gate).
+        assert watcher.submit_activation_job(self._job(watcher)) is False
+
+    def test_worker_thread_processes_job_and_posts_result(self, watcher):
+        job = self._job(watcher)
+        with patch.object(watcher, "_activate_committed_on", return_value=True):
+            watcher.submit_activation_job(job)
+            t = watcher.start_activation_worker()
+            try:
+                assert watcher.activation_result_event.wait(timeout=5.0)
+                result = watcher.drain_activation_result()
+            finally:
+                watcher._activation_job_queue.put(None)  # stop sentinel
+                t.join(timeout=5.0)
+        assert result is not None and result.ok is True and result.epoch == job.epoch
+
+    def test_step_apply_applies_tail_and_clears_gate(self, watcher):
+        job = self._job(watcher, on_success_leaves_setup=True, leave_reason="done")
+        watcher.submit_activation_job(job)          # sets transitioning + inflight epoch
+        watcher._activation_job_queue.get_nowait()  # (don't run the real worker)
+        watcher._post_activation_result(
+            watcher.ActivationResult(job.epoch, True, "wlan1", job))
+        with patch.object(watcher, "apply_activation_result", return_value=True) as apply:
+            v = watcher.step_apply_activation_result(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE
+        apply.assert_called_once()
+        assert watcher.STATE.transitioning is False
+        assert watcher._inflight_activation_epoch is None
+
+    def test_step_apply_no_result_is_noop(self, watcher):
+        with patch.object(watcher, "apply_activation_result") as apply:
+            v = watcher.step_apply_activation_result(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE
+        apply.assert_not_called()
+
+    def test_step_apply_stale_epoch_discarded_but_gate_cleared(self, watcher):
+        job = self._job(watcher)
+        watcher.submit_activation_job(job)
+        watcher._activation_job_queue.get_nowait()
+        # Post a result with a mismatched epoch (defensive path).
+        watcher._post_activation_result(
+            watcher.ActivationResult(job.epoch + 999, True, "wlan1", job))
+        with patch.object(watcher, "apply_activation_result") as apply:
+            watcher.step_apply_activation_result(self._pre(watcher))
+        apply.assert_not_called()                  # stale -> discarded
+        assert watcher.STATE.transitioning is False  # but the gate is cleared
+
+    def _pre(self, watcher):
+        return watcher.PreFactsContext(now=1000.0, boot_time=0.0, avahi_ok=True)
+
+    # ---- peek-then-consume control action (§3.6) ----
+
+    def test_disruptive_control_action_deferred_while_transitioning(self, watcher):
+        watcher.STATE.transitioning = True
+        watcher.STATE.pending_control_action = "start_setup"
+        watcher.STATE.pending_control_params = {}
+        watcher.control_action_event.set()
+        with patch.object(watcher, "process_control_action") as proc:
+            v = watcher.step_control_action(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE
+        proc.assert_not_called()                       # not consumed
+        assert watcher.STATE.pending_control_action == "start_setup"  # left queued
+        assert watcher.control_action_event.is_set()
+
+        # Once the transition completes, the queued action is applied exactly once.
+        watcher.STATE.transitioning = False
+        with patch.object(watcher, "process_control_action") as proc:
+            v = watcher.step_control_action(self._pre(watcher))
+        assert v is watcher.Verdict.OWN_PASS
+        proc.assert_called_once()
+        assert watcher.STATE.pending_control_action == ""
+
+    def test_set_log_level_applied_even_while_transitioning(self, watcher):
+        watcher.STATE.transitioning = True
+        watcher.STATE.pending_control_action = "set_log_level"
+        watcher.STATE.pending_control_params = {"level": "debug"}
+        watcher.control_action_event.set()
+        with patch.object(watcher, "process_control_action") as proc:
+            v = watcher.step_control_action(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE           # non-disruptive: pass continues
+        proc.assert_called_once()                      # applied immediately
+        assert watcher.STATE.pending_control_action == ""  # consumed
+        assert not watcher.control_action_event.is_set()
 
 
 class TestActivateClient:

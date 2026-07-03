@@ -124,6 +124,7 @@ import os
 import shutil
 import time
 import threading
+import queue
 import logging
 import sys
 import json
@@ -246,6 +247,12 @@ PLAYING_STATUS_WARN_THROTTLE = 5 * 60   # throttle "playing status unavailable" 
 #   - wlan0 has a non-link-local RFC1918 IPv4 address (i.e., not 169.254/16)
 WAIT_FOR_CONNECTION_TIMEOUT = 45        # Seconds to wait for local IPv4 after config
 WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for local IPv4 checks
+# Enforceable per-command bounds for the worker-path nmcli subprocesses (WS1 §3.7):
+# run_cmd(timeout=…) SIGKILLs a hung child (rc 124), so the job's total bound is
+# the deterministic sum of these plus the wait_for_connection deadline — a thread
+# cannot self-interrupt in subprocess.run, so command-level timeouts are the bound.
+NMCLI_ACTIVATE_TIMEOUT = WAIT_FOR_CONNECTION_TIMEOUT  # `nmcli connection up`
+NMCLI_QUICK_TIMEOUT = 15                # modify / add / delete / device disconnect
 
 # Avahi mDNS hostname monitoring
 AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname checks
@@ -475,6 +482,14 @@ class NetworkMonitorState:
     mdns_address_changed_at: Optional[float] = None
     # Explicit re-announce nudge from an orchestrated handover.
     mdns_reannounce_pending: bool = False
+
+    # ---- Off-thread activation worker (WS1) ----
+    # Set when an activation job is in flight on the worker and cleared when its
+    # result is applied at pass top.  While set, handlers that would start a
+    # conflicting connectivity/AP transition hold off (one effectful transition at
+    # a time); monitoring, status publishing and non-disruptive control actions
+    # keep running.  Load-bearing (unlike the inert flag A-WP1 removed).
+    transitioning: bool = False
 
     # ---- Multi-adapter failure / adoption (WP5, Section 8.1) ----
     # (C2-WP3 retired active_usb_unhealthy_checks: the single conn_unhealthy_checks
@@ -926,18 +941,18 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     # 1-2) create + configure the uniquely named candidate.
     cmds, log_cmds = wifi_net.configure_candidate_cmds(con_name, ifname, ssid, password)
     for cmd, log_cmd in zip(cmds, log_cmds):
-        r = run_cmd(cmd, log_cmd=log_cmd)
+        r = run_cmd(cmd, log_cmd=log_cmd, timeout=NMCLI_QUICK_TIMEOUT)
         if r.returncode != 0:
             logger.warning("Candidate profile setup step failed on %s", ifname)
             # Best-effort cleanup of a partially created profile by name.
-            run_cmd(["nmcli", "connection", "delete", con_name])
+            run_cmd(["nmcli", "connection", "delete", con_name], timeout=NMCLI_QUICK_TIMEOUT)
             return False
 
     # 3) obtain its UUID.
     uuid = wifi_net.get_profile_uuid(con_name)
     if not uuid:
         logger.warning("Could not resolve candidate UUID for '%s'", con_name)
-        run_cmd(["nmcli", "connection", "delete", con_name])
+        run_cmd(["nmcli", "connection", "delete", con_name], timeout=NMCLI_QUICK_TIMEOUT)
         return False
 
     # 4) clear cross-adapter restrictions EXCEPT connection.interface-name,
@@ -946,10 +961,11 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
         k for k in wifi_net.CROSS_ADAPTER_RESTRICTIONS
         if k != "connection.interface-name"
     )
-    run_cmd(wifi_net.clear_restrictions_cmd(uuid, pre_keys))
+    run_cmd(wifi_net.clear_restrictions_cmd(uuid, pre_keys), timeout=NMCLI_QUICK_TIMEOUT)
 
     # 5) activate explicitly on the target interface.
-    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, con_name, ifname))
+    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, con_name, ifname),
+                   timeout=NMCLI_ACTIVATE_TIMEOUT)
     if r_up.returncode != 0:
         logger.warning("Candidate activation failed on %s (rc=%d)", ifname, r_up.returncode)
 
@@ -961,11 +977,12 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     if not ok:
         # 9) on failure delete only the candidate; keep the previous committed profile.
         logger.warning("Candidate validation failed on %s; deleting candidate", ifname)
-        run_cmd(wifi_net.delete_connection_cmd(uuid))
+        run_cmd(wifi_net.delete_connection_cmd(uuid), timeout=NMCLI_QUICK_TIMEOUT)
         return False
 
     # 7) clear connection.interface-name so the committed profile is portable.
-    run_cmd(wifi_net.clear_restrictions_cmd(uuid, ("connection.interface-name",)))
+    run_cmd(wifi_net.clear_restrictions_cmd(uuid, ("connection.interface-name",)),
+            timeout=NMCLI_QUICK_TIMEOUT)
 
     # 8) commit name/UUID + legacy mirror.
     _commit_network_state(con_name, uuid)
@@ -1820,22 +1837,34 @@ def step_revert_log_level(pre: "PreFactsContext") -> "Verdict":
 
 
 def step_control_action(pre: "PreFactsContext") -> "Verdict":
-    """Consume a queued local-control action.
+    """Consume a queued local-control action (peek-then-consume, WS1 §3.6).
 
     Disruptive actions own the pass; the non-disruptive set_log_level is applied
-    and the pass continues normally.
+    and the pass continues normally.  While a worker activation is in flight
+    (STATE.transitioning), a *disruptive* action (start_setup / reconnect_saved)
+    is peeked but NOT consumed — it is left queued and applied on the first pass
+    after the transition completes, so it is deferred, never dropped.  A
+    non-disruptive set_log_level is always consumed and applied immediately (it
+    touches no connectivity/AP state).
     """
-    if control_action_event.is_set():
-        with state_lock:
-            action = STATE.pending_control_action
-            params = dict(STATE.pending_control_params)
+    if not control_action_event.is_set():
+        return Verdict.CONTINUE
+    with state_lock:
+        action = STATE.pending_control_action
+        params = dict(STATE.pending_control_params)
+        disruptive = bool(action) and action != "set_log_level"
+        defer = disruptive and STATE.transitioning
+        if not defer:
             STATE.pending_control_action = ""
             STATE.pending_control_params = {}
             control_action_event.clear()
-        if action:
-            process_control_action(action, params)
-            if action != "set_log_level":
-                return Verdict.OWN_PASS
+    if defer:
+        # Leave the disruptive action queued (event stays set) for a later pass.
+        return Verdict.CONTINUE
+    if action:
+        process_control_action(action, params)
+        if action != "set_log_level":
+            return Verdict.OWN_PASS
     return Verdict.CONTINUE
 
 
@@ -2224,6 +2253,7 @@ def network_monitor_loop(run_once: bool = False):
     # cross-pass loop_state; it is bound with functools.partial so run_steps keeps
     # a single uniform step(ctx) calling convention (§4.4).
     phase_a = [
+        step_apply_activation_result,
         partial(step_avahi_hostname, loop_state=loop_state),
         step_mdns_reannounce,
         step_manual_ap_request,
@@ -2471,8 +2501,10 @@ def _activate_profile_on(ifname: str, state: "wifi_net.NetworkState",
         return False
     uuid = _resolve_committed_uuid(state)
     if uuid:
-        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
-    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname))
+        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS),
+                timeout=NMCLI_QUICK_TIMEOUT)
+    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname),
+                   timeout=NMCLI_ACTIVATE_TIMEOUT)
     return _validate_activation(ifname, r_up, wait_for_validation=wait_for_validation)
 
 
@@ -2542,6 +2574,155 @@ def _set_active_client(adapter) -> None:
         logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
 
 
+# ---- Off-thread activation worker (WS1) — job/result types + the two halves ----
+#
+# WS1 splits the blocking activation into a worker half (_run_activation_job:
+# slow, bounded effects — AP drop for the attempt, the nmcli core, and symmetric
+# AP rebuild on its own failure) and a loop half (apply_activation_result: the
+# success/failure connectivity tail).  The synchronous activate_client is retained
+# and simply composes the two halves inline (single source of truth); WS1-WP3/WP4
+# move the worker half onto the worker thread while the loop applies the tail.
+
+
+@dataclass(frozen=True)
+class ActivationJob:
+    """One activation request (worker input).  Carries the loop-applied tail flags
+    unchanged so apply_activation_result reproduces activate_client's tail."""
+    epoch: int
+    kind: str                                     # "activate_committed" | "activate_profile"
+    ifname: str
+    profile: "Optional[wifi_net.NetworkState]" = None
+    drop_hotspot: bool = False
+    on_success_leaves_setup: bool = False
+    leave_reason: str = ""
+    records_noip: bool = False
+    noip_at: "Optional[float]" = None
+    sets_builtin_fallback: "Optional[bool]" = None
+    clears_down_timers: bool = False
+    deactivates_builtin: bool = False
+    stable_id: "Optional[str]" = None
+    wait_for_validation: bool = True
+
+
+@dataclass(frozen=True)
+class ActivationResult:
+    """One activation outcome (worker output); the loop applies the tail."""
+    epoch: int
+    ok: bool
+    ifname: str
+    job: "ActivationJob"
+    error: str = ""
+
+
+_activation_epoch_counter: int = 0
+
+
+def _next_activation_epoch() -> int:
+    """Monotonic epoch so a stale worker result can be recognised and discarded."""
+    global _activation_epoch_counter
+    with state_lock:
+        _activation_epoch_counter += 1
+        return _activation_epoch_counter
+
+
+def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
+    """Worker half: the slow, bounded effects only (no connectivity/session tail).
+
+    Optional AP drop for the attempt, the shared activation core, and — symmetric
+    self-undo — rebuild the AP if this attempt dropped it and then failed.  Takes
+    ``state_lock`` only for the brief flag reads/writes, never across the blocking
+    nmcli/wait calls (§3.2).  Returns the outcome; the loop applies the tail.
+    """
+    if not job.ifname:
+        return ActivationResult(job.epoch, False, "", job, error="no_ifname")
+
+    dropped_ap = False
+    if job.drop_hotspot:
+        with state_lock:
+            in_setup = STATE.setup_mode
+        if in_setup:
+            stop_ap_mode()
+            dropped_ap = True
+
+    if job.profile is None and job.wait_for_validation:
+        # Common case: route through the named _activate_committed_on seam so
+        # existing per-caller test patches continue to intercept the core.
+        ok = _activate_committed_on(job.ifname)
+    else:
+        state = job.profile if job.profile is not None else get_configured_network_state()
+        ok = _activate_profile_on(job.ifname, state, wait_for_validation=job.wait_for_validation)
+
+    # Worker self-undo: rebuild the AP it tore down so the portal stays up.  On
+    # success the AP teardown (leave_setup_mode) is a loop-applied tail instead.
+    if not ok and dropped_ap:
+        with state_lock:
+            STATE.setup_mode = True
+        start_ap_mode()
+        update_apmode_flag(True)
+
+    return ActivationResult(job.epoch, ok, job.ifname, job,
+                            error="" if ok else "activation_failed")
+
+
+def apply_activation_result(result: "ActivationResult", adapter: "Optional[object]" = None) -> bool:
+    """Loop half: apply the success/failure connectivity tail (loop thread only).
+
+    Exactly activate_client's tail today.  ``adapter`` lets the synchronous path
+    reuse an already-resolved adapter object; the async path passes None and the
+    loop re-resolves by ``result.ifname`` from a fresh discover (§Result identity).
+    """
+    job = result.job
+
+    if result.ok and not job.wait_for_validation:
+        # Fire-and-forget: activation issued, loop validates on a later pass.
+        return True
+
+    if result.ok:
+        resolved = adapter
+        adapters = None
+        if resolved is None:
+            adapters = wifi_net.discover_adapters()
+            resolved = wifi_net.find_adapter_by_ifname(adapters, result.ifname)
+        if resolved is not None:
+            _set_active_client(resolved)
+        if job.deactivates_builtin:
+            if adapters is None:
+                adapters = wifi_net.discover_adapters()
+            builtin = wifi_net.resolve_builtin(adapters)
+            if (builtin is not None and builtin.ifname != result.ifname
+                    and wifi_net.is_wifi_connected(builtin.ifname)):
+                logger.info("activate_client: disconnecting built-in client on %s", builtin.ifname)
+                run_cmd(["nmcli", "device", "disconnect", builtin.ifname],
+                        timeout=NMCLI_QUICK_TIMEOUT)
+        clear_id = job.stable_id if job.stable_id is not None else (
+            resolved.stable_id if resolved is not None else "")
+        if clear_id:
+            wifi_recovery.clear_noip_failures(_self_module(), clear_id)
+        with state_lock:
+            if job.sets_builtin_fallback is not None:
+                STATE.using_builtin_fallback = job.sets_builtin_fallback
+            if job.clears_down_timers:
+                STATE.conn_down_start = None
+                STATE.last_reconnect_attempt = None
+        if job.on_success_leaves_setup:
+            leave_setup_mode(job.leave_reason)
+        verify_avahi_after_handover()
+        return True
+
+    # Failure tail (the worker already rebuilt any AP it dropped).
+    if job.records_noip:
+        record_id = job.stable_id
+        if record_id is None:
+            record_id = adapter.stable_id if adapter is not None else None
+        if record_id is None:
+            found = wifi_net.find_adapter_by_ifname(wifi_net.discover_adapters(), result.ifname)
+            record_id = found.stable_id if found is not None else result.ifname
+        wifi_recovery.record_noip_failure(
+            _self_module(), record_id,
+            job.noip_at if job.noip_at is not None else time.monotonic())
+    return False
+
+
 def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" = None,
                     adapter: "Optional[object]" = None,
                     drop_hotspot: bool = False, on_success_leaves_setup: bool = False,
@@ -2553,12 +2734,10 @@ def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" =
                     wait_for_validation: bool = True) -> bool:
     """The single parameterised "bring up a client on *ifname*" operation (Phase A).
 
-    Wraps the shared activation core (``_activate_committed_on`` /
-    ``_activate_profile_on``) with the optional AP-drop, success-tail and
-    failure-tail effects that the individual join variants previously
-    copy-pasted with subtly divergent behaviour.  All effects are opt-in via
-    flags so each caller reproduces its prior behaviour exactly; the callers
-    become thin wrappers.
+    Synchronous facade retained behind the same interface (WS1): it composes the
+    worker half (_run_activation_job) and the loop half (apply_activation_result)
+    inline on the calling thread, so its behaviour is identical to the pre-WS1
+    monolith.  WS1-WP3 migrates the loop-initiated call sites onto the worker.
 
     Flags:
       - ``profile``: activate this NetworkState instead of the configured
@@ -2585,77 +2764,121 @@ def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" =
     """
     if not ifname:
         return False
+    kind = "activate_committed" if (profile is None and wait_for_validation) else "activate_profile"
+    job = ActivationJob(
+        epoch=_next_activation_epoch(), kind=kind, ifname=ifname, profile=profile,
+        drop_hotspot=drop_hotspot, on_success_leaves_setup=on_success_leaves_setup,
+        leave_reason=leave_reason, records_noip=records_noip, noip_at=noip_at,
+        sets_builtin_fallback=sets_builtin_fallback, clears_down_timers=clears_down_timers,
+        deactivates_builtin=deactivates_builtin, stable_id=stable_id,
+        wait_for_validation=wait_for_validation,
+    )
+    result = _run_activation_job(job)
+    return apply_activation_result(result, adapter=adapter)
 
-    dropped_ap = False
-    if drop_hotspot:
+
+# ---- Worker thread: single-slot job queue + result slot (WS1-WP2) ----
+#
+# There is never more than one in-flight activation — the STATE.transitioning gate
+# enforces it — so the queue and result slot are single-slot.  The loop submits a
+# job (setting transitioning) and keeps ticking; the worker runs the one slow job
+# and posts a result; step_apply_activation_result drains and applies it at pass
+# top and clears transitioning.  No call sites submit yet (WS1-WP3/WP4); the
+# skeleton is exercised directly by tests.
+
+_activation_job_queue: "queue.Queue" = queue.Queue(maxsize=1)
+_activation_result_slot: "Optional[ActivationResult]" = None
+_activation_result_lock = threading.Lock()
+activation_result_event = threading.Event()
+_inflight_activation_epoch: "Optional[int]" = None
+
+
+def submit_activation_job(job: "ActivationJob") -> bool:
+    """Submit at most one in-flight activation job; set the transitioning gate.
+
+    Returns False without enqueuing when a job is already in flight (the caller
+    must have honoured the transitioning gate; this is the belt-and-braces guard).
+    """
+    global _inflight_activation_epoch
+    with state_lock:
+        if STATE.transitioning:
+            return False
+        STATE.transitioning = True
+        _inflight_activation_epoch = job.epoch
+    _activation_job_queue.put(job)
+    return True
+
+
+def _post_activation_result(result: "ActivationResult") -> None:
+    """Worker -> loop hand-off: store the result and signal the loop."""
+    global _activation_result_slot
+    with _activation_result_lock:
+        _activation_result_slot = result
+    activation_result_event.set()
+
+
+def drain_activation_result() -> "Optional[ActivationResult]":
+    """Loop-side: take the pending worker result (if any) and clear the signal."""
+    global _activation_result_slot
+    with _activation_result_lock:
+        result = _activation_result_slot
+        _activation_result_slot = None
+    activation_result_event.clear()
+    return result
+
+
+def _activation_worker_loop() -> None:
+    """Worker thread body: run one job at a time, posting each result.
+
+    A ``None`` job is the stop sentinel (used by tests).  The worker never mutates
+    connectivity/session state — it only runs _run_activation_job (slow bounded
+    effects) and posts the outcome for the loop to apply.
+    """
+    while True:
+        job = _activation_job_queue.get()
+        if job is None:
+            return
+        try:
+            result = _run_activation_job(job)
+        except Exception as e:  # never let the worker thread die silently
+            logger.exception("activation worker: job failed")
+            result = ActivationResult(job.epoch, False, job.ifname, job,
+                                      error=f"worker_exception: {e}")
+        _post_activation_result(result)
+
+
+def start_activation_worker() -> "threading.Thread":
+    """Start the daemon worker thread (idle until a job is submitted)."""
+    t = threading.Thread(target=_activation_worker_loop, daemon=True,
+                         name="activation-worker")
+    t.start()
+    return t
+
+
+def step_apply_activation_result(pre: "PreFactsContext") -> "Verdict":
+    """Phase A: drain a completed worker result at pass top, apply its tail, and
+    clear the transitioning gate (WS1-WP2).
+
+    A result whose epoch is not the in-flight one is discarded (defensive — the
+    single-slot gate makes it unreachable in normal operation) but still clears the
+    gate so the loop can never wedge.  Never owns the pass.
+    """
+    global _inflight_activation_epoch
+    result = drain_activation_result()
+    if result is None:
+        return Verdict.CONTINUE
+    stale = result.epoch != _inflight_activation_epoch
+    try:
+        if stale:
+            logger.warning("activation result epoch %s != in-flight %s; discarding",
+                           result.epoch, _inflight_activation_epoch)
+        else:
+            apply_activation_result(result)
+    finally:
+        _inflight_activation_epoch = None
         with state_lock:
-            in_setup = STATE.setup_mode
-        if in_setup:
-            stop_ap_mode()
-            dropped_ap = True
-
-    if profile is None and wait_for_validation:
-        # Common case: route through the named _activate_committed_on seam so
-        # existing per-caller test patches continue to intercept the core.
-        ok = _activate_committed_on(ifname)
-    else:
-        state = profile if profile is not None else get_configured_network_state()
-        ok = _activate_profile_on(ifname, state, wait_for_validation=wait_for_validation)
-
-    if ok and not wait_for_validation:
-        # Fire-and-forget: activation issued, loop validates on a later pass.
-        return True
-
-    if ok:
-        # Resolve the adapter object unless the caller already has it (avoids a
-        # redundant discover on the recovery-probe path).
-        resolved = adapter
-        adapters = None
-        if resolved is None:
-            adapters = wifi_net.discover_adapters()
-            resolved = wifi_net.find_adapter_by_ifname(adapters, ifname)
-        if resolved is not None:
-            _set_active_client(resolved)
-        if deactivates_builtin:
-            if adapters is None:
-                adapters = wifi_net.discover_adapters()
-            builtin = wifi_net.resolve_builtin(adapters)
-            if (builtin is not None and builtin.ifname != ifname
-                    and wifi_net.is_wifi_connected(builtin.ifname)):
-                logger.info("activate_client: disconnecting built-in client on %s", builtin.ifname)
-                run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
-        clear_id = stable_id if stable_id is not None else (
-            resolved.stable_id if resolved is not None else "")
-        if clear_id:
-            wifi_recovery.clear_noip_failures(_self_module(), clear_id)
-        with state_lock:
-            if sets_builtin_fallback is not None:
-                STATE.using_builtin_fallback = sets_builtin_fallback
-            if clears_down_timers:
-                STATE.conn_down_start = None
-                STATE.last_reconnect_attempt = None
-        if on_success_leaves_setup:
-            leave_setup_mode(leave_reason)
-        verify_avahi_after_handover()
-        return True
-
-    # Failure tail: rebuild the AP if we tore it down so the portal stays up.
-    if dropped_ap:
-        with state_lock:
-            STATE.setup_mode = True
-        start_ap_mode()
-        update_apmode_flag(True)
-    if records_noip:
-        record_id = stable_id
-        if record_id is None:
-            record_id = adapter.stable_id if adapter is not None else None
-        if record_id is None:
-            found = wifi_net.find_adapter_by_ifname(wifi_net.discover_adapters(), ifname)
-            record_id = found.stable_id if found is not None else ifname
-        wifi_recovery.record_noip_failure(
-            _self_module(), record_id,
-            noip_at if noip_at is not None else time.monotonic())
-    return False
+            STATE.transitioning = False
+    return Verdict.CONTINUE
 
 
 def resolve_active_client(adapters: list) -> Optional[object]:
@@ -3104,6 +3327,9 @@ if __name__ == "__main__":
 
     # Generate the per-boot control token before accepting any control request.
     wifi_web.init_control_token(_self_module())
+
+    # Start the off-thread activation worker (WS1); idle until a job is submitted.
+    start_activation_worker()
 
     # Start the network monitor in a background thread
     monitor_thread = threading.Thread(target=network_monitor_loop, daemon=True)
