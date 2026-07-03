@@ -235,6 +235,14 @@ REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot aft
 # retired USB_UNHEALTHY_DEBOUNCE used to duplicate.
 CONNECTIVITY_DOWN_DEBOUNCE = 2
 USB_ADOPTION_STABLE_PASSES = 2         # consecutive passes a USB candidate must be present
+# WS1-WP3: bound async onboard-client activation failures per offline episode so a
+# present-but-failing onboard (which the no-IP ledger never suppresses) eventually
+# yields to the recovery hotspot.  Once this many onboard activations fail in an
+# episode, gather_recovery_facts stops offering the onboard as a client rung, so
+# the ladder returns ENTER_HOTSPOT.  Reset on any healthy pass.  (In the pre-WS1
+# synchronous path this was implicit: a site tried the onboard once, then entered
+# the hotspot in the same pass; the async model needs an explicit bound.)
+ONBOARD_ACTIVATION_MAX_FAILURES = 2
 PLAYING_STATUS_URL = os.environ.get(
     'APP_PLAYING_STATUS_URL', 'http://127.0.0.1:8080/api/playing-status'
 )
@@ -490,6 +498,10 @@ class NetworkMonitorState:
     # a time); monitoring, status publishing and non-disruptive control actions
     # keep running.  Load-bearing (unlike the inert flag A-WP1 removed).
     transitioning: bool = False
+    # WS1-WP3: async onboard-activation failures this offline episode (reset on a
+    # healthy pass).  When it reaches ONBOARD_ACTIVATION_MAX_FAILURES the onboard
+    # is no longer offered as a client rung, so the ladder falls to the hotspot.
+    onboard_activation_failures: int = 0
 
     # ---- Multi-adapter failure / adoption (WP5, Section 8.1) ----
     # (C2-WP3 retired active_usb_unhealthy_checks: the single conn_unhealthy_checks
@@ -1505,6 +1517,8 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     hotspot = resolve_hotspot_adapter(adapters)
     with state_lock:
         in_setup = STATE.setup_mode
+        onboard_budget_spent = (
+            STATE.onboard_activation_failures >= ONBOARD_ACTIVATION_MAX_FAILURES)
 
     preferred_usb = ""
     for a in usb:
@@ -1516,9 +1530,12 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     # The onboard is only offered as a client rung when it is actually usable
     # (managed, not quarantined, not no-IP-suppressed) — mirroring preferred_usb.
     # This is what lets the single decider (C2-WP1) skip a demoted/quarantined
-    # onboard on a USB failure instead of blindly engaging it.
+    # onboard on a USB failure instead of blindly engaging it.  WS1-WP3 adds the
+    # async onboard-failure bound: once onboard activations have failed
+    # ONBOARD_ACTIVATION_MAX_FAILURES times this episode, stop offering it so the
+    # ladder falls to the recovery hotspot instead of retrying onboard forever.
     onboard_ifname = ""
-    if builtin is not None:
+    if builtin is not None and not onboard_budget_spent:
         brf = by_ifname.get(builtin.ifname)
         if brf is not None and brf.managed and not brf.quarantined and not brf.noip_suppressed:
             onboard_ifname = builtin.ifname
@@ -1902,14 +1919,17 @@ def step_boot_client_bringup(fctx: "FactsContext") -> "Verdict":
     """
     facts = fctx.facts
     boot_age_now = fctx.now - fctx.boot_time
+    with state_lock:
+        transitioning = STATE.transitioning
     if not (boot_age_now < BOOT_AP_GRACE
             and facts.wifi_configured
             and not facts.wired_ok
-            and not STATE.setup_mode):
+            and not STATE.setup_mode
+            and not transitioning):        # WS1-WP3: hold off while a job is in flight
         return Verdict.CONTINUE
     raction = next_recovery_action(STATE, gather_recovery_facts(facts))
     if raction.kind in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD) \
-            and _apply_client_activation(raction, facts):
+            and _submit_client_activation(raction, facts):
         return Verdict.OWN_PASS
     return Verdict.CONTINUE
 
@@ -1924,6 +1944,11 @@ def step_usb_failure_fallback(hctx: "HealthContext") -> "Verdict":
     (prev_active_mac / prev_active_ifname).
     """
     facts = hctx.facts
+    with state_lock:
+        transitioning = STATE.transitioning
+    # WS1-WP3: defer the failure fallback while an activation is in flight (§2.3).
+    if transitioning:
+        return Verdict.CONTINUE
     if facts.wifi_configured and not facts.wired_ok and not STATE.setup_mode:
         if handle_usb_failure_fallback(hctx):
             return Verdict.OWN_PASS
@@ -1934,8 +1959,17 @@ def step_usb_failure_fallback(hctx: "HealthContext") -> "Verdict":
 
 
 def step_runtime_usb_adoption(hctx: "HealthContext") -> "Verdict":
-    """Optional idle-time adoption of a newly available USB adapter (Section 8.2)."""
+    """Optional idle-time adoption of a newly available USB adapter (Section 8.2).
+
+    WS1-WP3: this transactional idle-time optimisation stays synchronous (it
+    validates the USB before dropping the healthy built-in), but is deferred while
+    an activation is in flight so it never overlaps a worker transition (§2.3).
+    """
     facts = hctx.facts
+    with state_lock:
+        transitioning = STATE.transitioning
+    if transitioning:
+        return Verdict.CONTINUE
     if facts.wifi_configured and hctx.conn_ok and not STATE.setup_mode:
         if handle_runtime_usb_adoption(facts.adapters, facts.wired_ok, playing_fn=hctx.playing):
             return Verdict.OWN_PASS
@@ -1952,6 +1986,12 @@ def step_dead_phy_recovery(hctx: "HealthContext") -> "Verdict":
     budget on it.
     """
     facts = hctx.facts
+    with state_lock:
+        transitioning = STATE.transitioning
+    # WS1-WP3 (§2.3/§3.3): the dead-PHY reset is a second blocking effect; defer it
+    # while an activation is in flight so at most one effectful transition runs.
+    if transitioning:
+        return Verdict.CONTINUE
     if facts.wifi_configured and not (facts.wired_ok and facts.active_client is None):
         if escalate_dead_adapter_recovery(facts.adapters, facts.wired_ok):
             return Verdict.OWN_PASS
@@ -1967,6 +2007,9 @@ def step_publish_state(hctx: "HealthContext") -> "Verdict":
         STATE.connectivity_ok = hctx.conn_ok
         if hctx.conn_ok:
             STATE.been_online_this_boot = True
+            # A healthy pass ends the offline episode: reset the onboard-failure
+            # bound so a later failure gets a fresh set of attempts (WS1-WP3).
+            STATE.onboard_activation_failures = 0
         if hctx.active_path_ok and not STATE.setup_mode:
             STATE.last_active_path_seen = hctx.now
             STATE.conn_reboot_retry_after = 0.0
@@ -1999,9 +2042,20 @@ def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
         # one (MANUAL / EXPLICIT_RECONFIGURE) is left up.
         ethernet_wins = facts.wired_ok and not _hotspot_blocks_eth(STATE.hotspot)
         in_ap_for_eth = STATE.setup_mode
+        transitioning = STATE.transitioning
         if ethernet_wins:
             STATE.conn_down_start = None
             STATE.last_reconnect_attempt = None
+
+    if ethernet_wins and transitioning:
+        # WS1-WP3 (§3.5): Ethernet is observed (timers cleared above, snapshot
+        # already published) but its *enforcement* — the AP leave / Wi-Fi client
+        # drop — is deferred until the in-flight transition completes, so at most
+        # one effectful transition is ever in flight.  Fires on the next pass.
+        log_on_change("eth_wins_deferred", True,
+                      "Usable wired Ethernet present but an activation is in flight; "
+                      "deferring the Wi-Fi client drop until it completes")
+        return Verdict.OWN_PASS
 
     if ethernet_wins:
         # leave_setup_mode is called outside the lock (it re-acquires state_lock,
@@ -2037,15 +2091,31 @@ def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
 
 
 def step_hotspot_policy(hctx: "HealthContext") -> "Verdict":
-    """Enforce the active hotspot's purpose-driven policy from PURPOSE_TABLE."""
+    """Enforce the active hotspot's purpose-driven policy from PURPOSE_TABLE.
+
+    WS1-WP3 (§2.3 / §3.5): while an activation is in flight the deadline is still
+    *observed* (measured, published) but its *enforcement* (the probe that could
+    start a rejoin, and the deadline leave_setup_mode) is deferred to the pass
+    after the job completes, so at most one effectful transition is in flight.
+    """
     facts = hctx.facts
     with state_lock:
         in_setup = STATE.setup_mode
         session = STATE.hotspot
+        transitioning = STATE.transitioning
 
     if in_setup and session is not None:
         policy = PURPOSE_TABLE[session.purpose]
         ap_age = hctx.now - session.entered_at
+        deadline_expired = policy.deadline_s is not None and ap_age >= policy.deadline_s
+        if transitioning:
+            # Observe only: a deferred deadline is logged so the operator still
+            # sees it; the leave/probe fire once the in-flight transition ends.
+            if deadline_expired:
+                log_on_change("hotspot_deadline_deferred", session.purpose,
+                              f"Hotspot deadline reached ({session.purpose.value}) but an "
+                              f"activation is in flight; enforcing after it completes")
+            return Verdict.OWN_PASS
         # Recovery purposes probe for the saved network's return; user-initiated
         # hotspots wait policy.probe_grace_s after entry before probing so the
         # watcher does not rejoin the network the user opened the portal to change.
@@ -2053,7 +2123,7 @@ def step_hotspot_policy(hctx: "HealthContext") -> "Verdict":
             _attempt_recovery_reconnect(facts)
         # FIRST_RUN (deadline None) stays up indefinitely; every other purpose
         # closes after its deadline.
-        if policy.deadline_s is not None and ap_age >= policy.deadline_s:
+        if deadline_expired:
             leave_setup_mode(
                 f"Hotspot lifetime expired after {ap_age:.0f}s ({session.purpose.value})")
         return Verdict.OWN_PASS
@@ -2072,7 +2142,12 @@ def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
     facts = hctx.facts
     with state_lock:
         in_setup = STATE.setup_mode
+        transitioning = STATE.transitioning
     if in_setup:
+        return Verdict.CONTINUE
+    # WS1-WP3: an activation is in flight — hold off starting a conflicting AP
+    # transition; the result is applied at the next pass top (§2.3).
+    if transitioning:
         return Verdict.CONTINUE
 
     boot_age = hctx.now - hctx.boot_time
@@ -2112,9 +2187,10 @@ def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
         raction = next_recovery_action(STATE, gather_recovery_facts(facts))
         if raction.kind in (RecoveryKind.ACTIVATE_USB,
                             RecoveryKind.ACTIVATE_ONBOARD) \
-                and _apply_client_activation(raction, facts):
+                and _submit_client_activation(raction, facts):
             return Verdict.OWN_PASS
-        # Configured-but-offline enters BOOT_RECOVERY (probes for return);
+        # No client path this pass (ladder held / ENTER_HOTSPOT / onboard budget
+        # spent).  Configured-but-offline enters BOOT_RECOVERY (probes for return);
         # unconfigured enters FIRST_RUN (nothing saved to probe).
         purpose = (HotspotPurpose.BOOT_RECOVERY if facts.wifi_configured
                    else HotspotPurpose.FIRST_RUN)
@@ -2597,6 +2673,7 @@ class ActivationJob:
     leave_reason: str = ""
     records_noip: bool = False
     noip_at: "Optional[float]" = None
+    records_onboard_failure: bool = False   # WS1-WP3: count onboard failures toward the hotspot bound
     sets_builtin_fallback: "Optional[bool]" = None
     clears_down_timers: bool = False
     deactivates_builtin: bool = False
@@ -2704,12 +2781,20 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
             if job.clears_down_timers:
                 STATE.conn_down_start = None
                 STATE.last_reconnect_attempt = None
+            # A client came up: the offline episode is over — reset the onboard
+            # failure bound (WS1-WP3).
+            STATE.onboard_activation_failures = 0
         if job.on_success_leaves_setup:
             leave_setup_mode(job.leave_reason)
         verify_avahi_after_handover()
         return True
 
     # Failure tail (the worker already rebuilt any AP it dropped).
+    if job.records_onboard_failure:
+        # WS1-WP3: count this onboard failure toward the recovery-hotspot bound so
+        # a present-but-failing onboard eventually yields to the hotspot.
+        with state_lock:
+            STATE.onboard_activation_failures += 1
     if job.records_noip:
         record_id = job.stable_id
         if record_id is None:
@@ -2924,9 +3009,14 @@ def apply_client_failed(event, facts: "Facts") -> bool:
     HOLD("usb_active_no_ip") for an active USB that still has carrier (it wants
     the no-IP ledger to govern in steady state), and it may also pick
     ACTIVATE_USB (re-activate) for an NM-dropped-but-present USB.  In either case
-    — a HOLD, or a failed ladder activation — we still try a *usable* onboard
-    (one the gate did not exclude, and not the adapter the ladder just failed on)
-    before falling to the USB_LOSS_RECOVERY hotspot.
+    — a HOLD, or the ladder offering no client path — we still try a *usable*
+    onboard (one the gate did not exclude) before the USB_LOSS_RECOVERY hotspot.
+
+    WS1-WP3: the chosen activation is *submitted* to the worker (non-blocking) and
+    owns the pass; its result is applied at the next pass top, and the ladder
+    re-evaluates.  A failing USB is no-IP-suppressed after its budget, and a
+    failing onboard is bounded (ONBOARD_ACTIVATION_MAX_FAILURES) so onboard stops
+    being offered and this handler falls to the hotspot instead of retrying forever.
     """
     logger.info(
         "Overlay ClientFailed(%s) on %s; applying via recovery ladder",
@@ -2934,19 +3024,20 @@ def apply_client_failed(event, facts: "Facts") -> bool:
     )
     rf = gather_recovery_facts(facts)
     raction = next_recovery_action(STATE, rf)
-    if raction.kind in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD) \
-            and _apply_client_activation(raction, facts):
-        return True
-    # Ladder held on the failing USB, or its chosen client path failed: fall back
-    # to a usable onboard before the hotspot (not the adapter just attempted, and
-    # not a gated-out quarantined/suppressed onboard).
-    if rf.onboard_ifname and rf.onboard_ifname != raction.ifname:
+    if raction.kind in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD):
+        if _submit_client_activation(raction, facts):
+            return True
+    # Ladder held on the failing USB, or offered no client path: try a usable
+    # onboard before the hotspot (not the adapter the ladder targeted, and not a
+    # gated-out quarantined/suppressed/budget-spent onboard — rf.onboard_ifname is
+    # "" once the onboard failure bound is reached).
+    elif rf.onboard_ifname and rf.onboard_ifname != raction.ifname:
         onboard_action = RecoveryAction(
             RecoveryKind.ACTIVATE_ONBOARD, ifname=rf.onboard_ifname,
             drop_hotspot=(rf.onboard_ifname == rf.hotspot_ifname),
             reason="usb_failure_onboard_fallback",
         )
-        if _apply_client_activation(onboard_action, facts):
+        if _submit_client_activation(onboard_action, facts):
             return True
     logger.warning("No usable client path on USB failure (%s); entering recovery hotspot",
                    event.reason)
@@ -2959,16 +3050,19 @@ def apply_client_failed(event, facts: "Facts") -> bool:
 _known_usb_macs: set[str] = set()
 
 
-def _apply_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
-    """Apply an ACTIVATE_USB / ACTIVATE_ONBOARD recovery action (WP3).
+def _submit_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
+    """Submit an ACTIVATE_USB / ACTIVATE_ONBOARD recovery action to the worker (WS1-WP3).
 
-    Tears down the hotspot on the target radio first when the action requires it
-    (the exit edge out of a recovery hotspot), activates the committed profile on
-    ``action.ifname``, and on a healthy result adopts it as the active client and
-    leaves setup mode.  Returns True only when the client came up healthy.  On
-    failure: a USB activation records a no-IP failure (so the ladder promotes the
-    onboard once the USB budget is spent); a torn-down AP is rebuilt so the portal
-    stays available.
+    Builds an ActivationJob with exactly the tail flags the pre-WS1 synchronous
+    _apply_client_activation passed to activate_client, and submits it
+    (non-blocking).  Returns True when the job was accepted (the loop owns the pass
+    and apply_activation_result runs the tail at the next pass top); False if a job
+    is already in flight (transitioning) or the action has no target.
+
+    Cross-pass progression: on failure the ladder re-evaluates each pass — a USB
+    failure is no-IP-recorded (suppressed after its budget), and an onboard failure
+    is counted toward ONBOARD_ACTIVATION_MAX_FAILURES so the onboard eventually
+    stops being offered and the ladder falls to the recovery hotspot.
     """
     ifname = action.ifname
     if not ifname:
@@ -2978,28 +3072,27 @@ def _apply_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
     # configured USB); a lone onboard client is not "degraded".
     usb_present = any(a.is_usb for a in facts.adapters)
     sets_fallback = action.kind == RecoveryKind.ACTIVATE_ONBOARD and usb_present
-    # Record a no-IP failure only for USB so the ladder eventually promotes the
-    # onboard; do not suppress the onboard fallback (it is retried, rate-limited).
+    # Record a no-IP failure only for USB (the ladder promotes the onboard once the
+    # USB budget is spent); onboard failures instead count toward the hotspot bound.
     records_usb_noip = action.kind == RecoveryKind.ACTIVATE_USB
+    records_onboard = action.kind == RecoveryKind.ACTIVATE_ONBOARD
     stable_id = None
     if records_usb_noip:
         adapter = wifi_net.find_adapter_by_ifname(facts.adapters, ifname)
         stable_id = adapter.stable_id if adapter is not None else ifname
 
-    ok = activate_client(
-        ifname,
-        drop_hotspot=action.drop_hotspot,
-        on_success_leaves_setup=True,
+    job = ActivationJob(
+        epoch=_next_activation_epoch(), kind="activate_committed", ifname=ifname,
+        drop_hotspot=action.drop_hotspot, on_success_leaves_setup=True,
         leave_reason=f"recovery: client up on {ifname} ({action.reason})",
-        records_noip=records_usb_noip,
-        noip_at=facts.taken_at,
-        sets_builtin_fallback=sets_fallback,
-        clears_down_timers=True,
-        stable_id=stable_id,
+        records_noip=records_usb_noip, noip_at=facts.taken_at,
+        records_onboard_failure=records_onboard,
+        sets_builtin_fallback=sets_fallback, clears_down_timers=True, stable_id=stable_id,
     )
-    logger.info("Recovery: client activation %s on %s (%s)",
-                "succeeded" if ok else "failed", ifname, action.reason)
-    return ok
+    submitted = submit_activation_job(job)
+    if submitted:
+        logger.info("Recovery: submitted client activation on %s (%s)", ifname, action.reason)
+    return submitted
 
 
 def _saved_network_ssid() -> str:
@@ -3074,7 +3167,7 @@ def _attempt_recovery_reconnect(facts: "Facts") -> None:
         return
     with state_lock:
         STATE.last_reconnect_attempt = now
-    _apply_client_activation(raction, facts)
+    _submit_client_activation(raction, facts)
 
 
 def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,

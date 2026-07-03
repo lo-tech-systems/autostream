@@ -1342,7 +1342,7 @@ class TestAdapterOverlayEvents:
         action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher, "gather_recovery_facts"), \
              patch.object(watcher, "next_recovery_action", return_value=action), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as ap:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as ap:
             acted = watcher.apply_client_failed(event, facts)
         assert acted is True
         ap.assert_called_once()
@@ -1364,7 +1364,7 @@ class TestAdapterOverlayEvents:
         with patch.object(watcher, "gather_recovery_facts",
                           return_value=self._rf_stub(watcher, onboard="")), \
              patch.object(watcher, "next_recovery_action", return_value=action), \
-             patch.object(watcher, "_apply_client_activation") as ap, \
+             patch.object(watcher, "_submit_client_activation") as ap, \
              patch.object(watcher, "enter_setup_mode") as enter:
             acted = watcher.apply_client_failed(event, facts)
         assert acted is True
@@ -1383,7 +1383,7 @@ class TestAdapterOverlayEvents:
                                      reason="no_ip", has_alt_path=True)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as ap, \
+             patch.object(watcher, "_submit_client_activation", return_value=True) as ap, \
              patch.object(watcher, "enter_setup_mode") as enter:
             acted = watcher.apply_client_failed(event, facts)
         assert acted is True
@@ -1405,7 +1405,7 @@ class TestAdapterOverlayEvents:
                                      reason="no_ip", has_alt_path=True)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
-             patch.object(watcher, "_apply_client_activation", return_value=False), \
+             patch.object(watcher, "_submit_client_activation", return_value=False), \
              patch.object(watcher, "enter_setup_mode") as enter:
             acted = watcher.apply_client_failed(event, facts)
         assert acted is True
@@ -1413,8 +1413,9 @@ class TestAdapterOverlayEvents:
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_apply_client_failed_onboard_success_sets_fallback(self, watcher):
-        # Real _apply_client_activation path (ACTIVATE_ONBOARD with a USB also
-        # present) sets using_builtin_fallback, matching the old builtin fallback.
+        # WS1-WP3 async cycle: apply_client_failed submits an ACTIVATE_ONBOARD job
+        # (USB also present); running the worker + applying the result sets
+        # using_builtin_fallback, matching the old built-in fallback behaviour.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:09", is_usb=True)
         facts = _facts_for(watcher, [builtin, usb], None)
@@ -1425,10 +1426,16 @@ class TestAdapterOverlayEvents:
              patch.object(watcher, "next_recovery_action", return_value=action), \
              patch.object(watcher, "_activate_committed_on", return_value=True), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
+             patch.object(watcher.wifi_net, "find_adapter_by_ifname", return_value=builtin), \
              patch.object(watcher, "leave_setup_mode"), \
              patch.object(watcher, "verify_avahi_after_handover"):
-            acted = watcher.apply_client_failed(event, facts)
-        assert acted is True
+            acted = watcher.apply_client_failed(event, facts)     # submits the job
+            assert acted is True
+            assert watcher.STATE.transitioning is True
+            job = watcher._activation_job_queue.get_nowait()
+            assert job.sets_builtin_fallback is True              # onboard + usb present
+            result = watcher._run_activation_job(job)             # _activate_committed_on -> True
+            watcher.apply_activation_result(result)               # loop applies the tail
         assert watcher.STATE.using_builtin_fallback is True
 
 
@@ -1453,7 +1460,7 @@ class TestUsbFailureFallback:
         action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher, "gather_recovery_facts"), \
              patch.object(watcher, "next_recovery_action", return_value=action), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as ap:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as ap:
             acted = watcher.handle_usb_failure_fallback(hctx)
         assert acted is True
         ap.assert_called_once()
@@ -2585,7 +2592,7 @@ class TestBootClientBringup:
         fctx = self._fctx(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.OWN_PASS
         apply.assert_called_once()
@@ -2599,7 +2606,7 @@ class TestBootClientBringup:
         fctx = self._fctx(watcher, [builtin], None)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.OWN_PASS
         action = apply.call_args[0][0]
@@ -2611,7 +2618,7 @@ class TestBootClientBringup:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:04", is_usb=True)
         fctx = self._fctx(watcher, [builtin, usb], None, wired_ok=True)
-        with patch.object(watcher, "_apply_client_activation") as apply:
+        with patch.object(watcher, "_submit_client_activation") as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
@@ -2623,7 +2630,7 @@ class TestBootClientBringup:
         fctx = self._fctx(watcher, [builtin, usb], usb)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "_apply_client_activation") as apply:
+             patch.object(watcher, "_submit_client_activation") as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
@@ -2635,7 +2642,7 @@ class TestBootClientBringup:
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:06", is_usb=True)
         fctx = self._fctx(watcher, [builtin, usb], None,
                           now=watcher.BOOT_AP_GRACE + 10.0, boot_time=0.0)
-        with patch.object(watcher, "_apply_client_activation") as apply:
+        with patch.object(watcher, "_submit_client_activation") as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
@@ -2645,7 +2652,7 @@ class TestBootClientBringup:
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:07", is_usb=True)
         watcher.STATE.setup_mode = True
         fctx = self._fctx(watcher, [builtin, usb], None)
-        with patch.object(watcher, "_apply_client_activation") as apply:
+        with patch.object(watcher, "_submit_client_activation") as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
@@ -2655,7 +2662,7 @@ class TestBootClientBringup:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:08", is_usb=True)
         fctx = self._fctx(watcher, [builtin, usb], None, wifi_cfg=False)
-        with patch.object(watcher, "_apply_client_activation") as apply:
+        with patch.object(watcher, "_submit_client_activation") as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
@@ -3493,34 +3500,134 @@ class TestHotspotPurposeMachine:
         assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
 
+class TestWs1Wp3AsyncRecovery:
+    """WS1-WP3 — the recovery handlers submit activations to the worker, the
+    onboard-failure bound yields to the hotspot, and the deferred handlers hold
+    off while a job is in flight (transitioning)."""
+
+    def _hctx(self, watcher, facts, *, conn_ok=False):
+        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.FactsContext(pre, facts, lambda: False)
+        return watcher.HealthContext(
+            fctx, health_ifname="wlan0", wifi_connected=False, client_ok=False,
+            conn_ok=conn_ok, active_path_ok=conn_ok)
+
+    # ---- onboard-failure bound ----
+
+    def test_onboard_activation_failure_increments_bound(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
+        facts = _facts_for(watcher, [builtin, usb], None)
+        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        with patch.object(watcher, "submit_activation_job", return_value=True) as submit:
+            watcher._submit_client_activation(action, facts)
+        job = submit.call_args[0][0]
+        assert job.records_onboard_failure is True
+        # Applying a failed result increments the bound.
+        watcher.apply_activation_result(watcher.ActivationResult(job.epoch, False, "wlan0", job))
+        assert watcher.STATE.onboard_activation_failures == 1
+
+    def test_gather_drops_onboard_when_budget_spent(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        facts = _facts_for(watcher, [builtin], None)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False):
+            watcher.STATE.onboard_activation_failures = 0
+            rf = watcher.gather_recovery_facts(facts)
+            assert rf.onboard_ifname == "wlan0"
+            watcher.STATE.onboard_activation_failures = watcher.ONBOARD_ACTIVATION_MAX_FAILURES
+            rf2 = watcher.gather_recovery_facts(facts)
+            assert rf2.onboard_ifname == ""     # budget spent -> not offered
+
+    def test_healthy_pass_resets_onboard_bound(self, watcher):
+        watcher.STATE.onboard_activation_failures = 2
+        facts = _facts_for(watcher, [], None)
+        hctx = self._hctx(watcher, facts, conn_ok=True)
+        with patch.object(watcher, "publish_network_status"), \
+             patch.object(watcher, "next_mode", return_value=watcher.Mode.ONLINE):
+            watcher.step_publish_state(hctx)
+        assert watcher.STATE.onboard_activation_failures == 0
+
+    # ---- transitioning defer-gates (§2.3) ----
+
+    def test_deferred_handlers_hold_off_while_transitioning(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
+        facts = _facts_for(watcher, [usb], None, wifi_cfg=True)
+        hctx = self._hctx(watcher, facts, conn_ok=True)
+        watcher.STATE.transitioning = True
+        with patch.object(watcher, "handle_usb_failure_fallback") as usb_fb, \
+             patch.object(watcher, "handle_runtime_usb_adoption") as adopt, \
+             patch.object(watcher, "escalate_dead_adapter_recovery") as dead, \
+             patch.object(watcher, "_submit_client_activation") as submit:
+            assert watcher.step_usb_failure_fallback(hctx) is watcher.Verdict.CONTINUE
+            assert watcher.step_runtime_usb_adoption(hctx) is watcher.Verdict.CONTINUE
+            assert watcher.step_dead_phy_recovery(hctx) is watcher.Verdict.CONTINUE
+            assert watcher.step_boot_ap_entry(hctx) is watcher.Verdict.CONTINUE
+        usb_fb.assert_not_called()
+        adopt.assert_not_called()
+        dead.assert_not_called()
+        submit.assert_not_called()
+
+    def test_ethernet_wins_defers_enforcement_while_transitioning(self, watcher):
+        facts = _facts_for(watcher, [], None, wired_ok=True)
+        hctx = self._hctx(watcher, facts, conn_ok=True)
+        watcher.STATE.setup_mode = True
+        watcher.STATE.transitioning = True
+        with patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "run_cmd") as run:
+            v = watcher.step_ethernet_wins(hctx)
+        assert v is watcher.Verdict.OWN_PASS   # observed (owns pass)
+        leave.assert_not_called()              # enforcement deferred
+        run.assert_not_called()
+
+    def test_hotspot_deadline_deferred_while_transitioning(self, watcher):
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+        watcher.STATE.transitioning = True
+        facts = _facts_for(watcher, [], None, wifi_cfg=True,
+                           now=watcher.AP_MAX_DURATION + 60.0)
+        hctx = self._hctx(watcher, facts)
+        with patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "_attempt_recovery_reconnect") as probe:
+            v = watcher.step_hotspot_policy(hctx)
+        assert v is watcher.Verdict.OWN_PASS
+        leave.assert_not_called()   # deadline observed, not enforced
+        probe.assert_not_called()   # probe deferred
+
+
 class TestBootEntryOnboardFirst:
     """Recovery-ladder WP3 — boot-window entry tries a client before the hotspot."""
 
-    def test_wedged_usb_boot_entry_activates_onboard_not_hotspot(self, watcher):
+    def test_wedged_usb_boot_entry_submits_onboard_not_hotspot(self, watcher):
         # Field-log shape: USB active but wedged, onboard idle. Boot-window entry
-        # must run the client on the onboard rather than open a hotspot on it.
+        # must SUBMIT the client on the onboard (WS1-WP3) rather than open a hotspot.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.STATE.boot_time = 300.0  # now=1000 -> boot_age 700s, inside window
-        with patch.object(watcher, "_activate_committed_on", return_value=True) as act, \
+        with patch.object(watcher, "_submit_client_activation", return_value=True) as submit, \
              patch.object(watcher, "enter_setup_mode") as enter, \
-             patch.object(watcher, "verify_avahi_after_handover"), \
              patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"):
             _run_monitor_once(
                 watcher, now=1000.0, wifi_cfg=True, wifi_connected=True,
                 client_ok=False, adapters=[builtin, usb], active_client=usb,
             )
-        act.assert_called_with("wlan0")
-        enter.assert_not_called()
-        assert watcher.STATE.active_client_ifname == "wlan0"
-        assert watcher.STATE.using_builtin_fallback is True
+        submit.assert_called_once()
+        action = submit.call_args[0][0]
+        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.ifname == "wlan0"
+        enter.assert_not_called()   # onboard submitted -> no hotspot this pass
 
-    def test_onboard_fails_boot_entry_falls_through_to_hotspot(self, watcher):
+    def test_onboard_budget_spent_boot_entry_falls_to_hotspot(self, watcher):
+        # WS1-WP3: once the onboard failure bound is reached the ladder stops
+        # offering onboard, so boot entry falls to the recovery hotspot (the async
+        # replacement for the old in-pass "onboard failed -> hotspot").
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.STATE.boot_time = 300.0
-        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+        watcher.STATE.onboard_activation_failures = watcher.ONBOARD_ACTIVATION_MAX_FAILURES
+        with patch.object(watcher, "_submit_client_activation") as submit, \
              patch.object(watcher, "enter_setup_mode") as enter, \
              patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"):
@@ -3528,6 +3635,7 @@ class TestBootEntryOnboardFirst:
                 watcher, now=1000.0, wifi_cfg=True, wifi_connected=True,
                 client_ok=False, adapters=[builtin, usb], active_client=usb,
             )
+        submit.assert_not_called()   # onboard budget spent, USB wedged -> no client path
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.HotspotPurpose.BOOT_RECOVERY
 
@@ -3674,7 +3782,7 @@ class TestRecoveryExitEdge:
                           side_effect=lambda ifn: ifn == "wlan1"), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][0]
@@ -3693,7 +3801,7 @@ class TestRecoveryExitEdge:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][0]
@@ -3710,7 +3818,7 @@ class TestRecoveryExitEdge:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible") as vis, \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][0]
@@ -3729,7 +3837,7 @@ class TestRecoveryExitEdge:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible") as vis, \
-             patch.object(watcher, "_apply_client_activation") as apply:
+             patch.object(watcher, "_submit_client_activation") as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_not_called()
         vis.assert_not_called()
@@ -3772,20 +3880,22 @@ class TestFieldLogRecoveryRegression:
     """
 
     def test_boot_entry_recovers_on_onboard_without_hotspot(self, watcher):
+        # WS1-WP3: boot entry submits the onboard client (not a hotspot on it).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.STATE.boot_time = 300.0  # boot_age 700s at now=1000 (inside window)
-        with patch.object(watcher, "_activate_committed_on", return_value=True), \
+        with patch.object(watcher, "_submit_client_activation", return_value=True) as submit, \
              patch.object(watcher, "enter_setup_mode") as enter, \
-             patch.object(watcher, "verify_avahi_after_handover"), \
              patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"):
             _run_monitor_once(
                 watcher, now=1000.0, wifi_cfg=True, wifi_connected=True,
                 client_ok=False, adapters=[builtin, usb], active_client=usb,
             )
-        enter.assert_not_called()  # no hotspot: ran on the onboard instead
-        assert watcher.STATE.active_client_ifname == "wlan0"
+        enter.assert_not_called()  # no hotspot: submitted the onboard client instead
+        action = submit.call_args[0][0]
+        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.ifname == "wlan0"
 
     def test_in_hotspot_climbs_to_onboard_not_dead_usb(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -3796,7 +3906,7 @@ class TestFieldLogRecoveryRegression:
         with patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             _run_monitor_once(watcher, now=120.0, wifi_cfg=True,
                               adapters=[builtin, usb], active_client=usb)
         # The ladder selects the onboard drop-AP rejoin, not the dead USB probe.
@@ -4021,7 +4131,7 @@ class TestScanGatedRecovery:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible") as vis, \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         assert apply.call_args[0][0].drop_hotspot is False
@@ -4035,7 +4145,7 @@ class TestScanGatedRecovery:
         facts = _facts_for(watcher, [builtin, usb], None, now=1000.0 + 30)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_apply_client_activation") as apply:
+             patch.object(watcher, "_submit_client_activation") as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_not_called()
 
@@ -4047,7 +4157,7 @@ class TestScanGatedRecovery:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible") as vis, \
-             patch.object(watcher, "_apply_client_activation") as apply:
+             patch.object(watcher, "_submit_client_activation") as apply:
             # Within RECOVERY_SCAN_INTERVAL of the last scan: do not scan or join.
             watcher._attempt_recovery_reconnect(facts)
         vis.assert_not_called()
@@ -4060,7 +4170,7 @@ class TestScanGatedRecovery:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=False), \
-             patch.object(watcher, "_apply_client_activation") as apply:
+             patch.object(watcher, "_submit_client_activation") as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_not_called()
         assert watcher.STATE.last_recovery_scan == 1000.0
@@ -4072,7 +4182,7 @@ class TestScanGatedRecovery:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
-             patch.object(watcher, "_apply_client_activation", return_value=True) as apply:
+             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][0]
