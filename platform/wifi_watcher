@@ -2954,44 +2954,15 @@ ClientFailed = wifi_recovery.ClientFailed
 NeedReboot = wifi_recovery.NeedReboot
 
 
-def _resolve_target_client(adapters):
-    return wifi_recovery.resolve_target_client(_self_module(), adapters)
-
-
-def _update_dead_adapter_detection(adapters, target):
-    return wifi_recovery.update_dead_adapter_detection(_self_module(), adapters, target)
-
-
-def _clear_dead_adapter_state():
-    wifi_recovery.clear_dead_adapter_state(_self_module())
-
-
-def _adapter_reset_budget_exhausted(target, now):
-    return wifi_recovery.adapter_reset_budget_exhausted(_self_module(), target, now)
-
-
-def _record_adapter_reset(target, now):
-    wifi_recovery.record_adapter_reset(_self_module(), target, now)
-
-
-def _adapter_reset_ledger_snapshot(target, now):
-    return wifi_recovery.adapter_reset_ledger_snapshot(_self_module(), target, now)
-
-
-def _adapter_quarantined_until(target, now):
-    return wifi_recovery.adapter_quarantined_until(_self_module(), target, now)
+# WS2-WP3: the test-only dead-PHY passthrough wrappers were retired; their tests
+# now call wifi_recovery.<name>(<module>, ...) directly.  Only wrappers with a
+# genuine production caller remain: _adapter_recovery_facts (gather_recovery_facts
+# + wifi_status), wait_for_interface_reappears and escalate_dead_adapter_recovery
+# (the dead-PHY reset ladder / step_dead_phy_recovery).
 
 
 def _adapter_recovery_facts(adapter, now, health_fn=None):
     return wifi_recovery.adapter_recovery_facts(_self_module(), adapter, now, health_fn)
-
-
-def _dead_phy_reboot_guard_permits(now_wall):
-    return wifi_recovery.dead_phy_reboot_guard_permits(_self_module(), now_wall)
-
-
-def _record_dead_phy_reboot_request(now_wall, target):
-    wifi_recovery.record_dead_phy_reboot_request(_self_module(), now_wall, target)
 
 
 def wait_for_interface_reappears(target, timeout=INTERFACE_REAPPEAR_TIMEOUT):
@@ -3002,17 +2973,6 @@ def escalate_dead_adapter_recovery(adapters, wired_connected):
     return wifi_recovery.escalate_dead_adapter_recovery(_self_module(), adapters, wired_connected)
 
 
-def _noip_failure_count(stable_id):
-    return wifi_recovery.noip_failure_count(_self_module(), stable_id)
-
-
-def _is_degraded_no_ip(*, managed, carrier, healthy, stable_id):
-    return wifi_recovery.is_degraded_no_ip(
-        _self_module(), managed=managed, carrier=carrier, healthy=healthy,
-        stable_id=stable_id,
-    )
-
-
 # ** RUNTIME NETWORK-STATUS SNAPSHOT (WP6; extracted to wifi_status.py in WP8) **
 #
 # Snapshot construction/publishing lives in platform/wifi_status.py.  These
@@ -3021,14 +2981,9 @@ def _is_degraded_no_ip(*, managed, carrier, healthy, stable_id):
 
 import wifi_status
 
-
-def build_network_status_snapshot(adapters: Optional[list] = None,
-                                  wired_connected: Optional[bool] = None,
-                                  wired_ok: Optional[bool] = None,
-                                  addresses: Optional[dict] = None,
-                                  health_fn=None) -> dict:
-    return wifi_status.build_network_status_snapshot(
-        _self_module(), adapters, wired_connected, wired_ok, addresses, health_fn)
+# WS2-WP3: the test-only build_network_status_snapshot wrapper was retired (its
+# tests call wifi_status.build_network_status_snapshot(<module>, ...) directly).
+# publish_network_status is kept — step_publish_state calls it every pass.
 
 
 def publish_network_status(adapters: Optional[list] = None,

@@ -1155,7 +1155,7 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "degraded_no_ip"
         assert rec["policy"]["warning"] == "no_ip_address"
@@ -1174,7 +1174,7 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "no_ip_held_back"   # not link_down / degraded_no_ip
         assert rec["policy"]["warning"] == "no_ip_held_back"
@@ -1191,7 +1191,7 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([builtin], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [builtin], wired_connected=False, wired_ok=False)
         assert snap["device"]["using_builtin_fallback"] is True
 
     def test_prune_drops_absent_macs(self, watcher):
@@ -1210,7 +1210,7 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "degraded_no_ip"
         assert rec["health"]["checks"] >= 1
@@ -1235,7 +1235,7 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher, "is_wifi_client_healthy", side_effect=_health), \
              patch.object(watcher, "is_gateway_reachable", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot(
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, 
                 [builtin, usb], wired_connected=False, wired_ok=False)
         # The idle, unattributed USB must not flip the device to degraded.
         assert snap["device"]["state"] == "online"
@@ -2629,7 +2629,7 @@ class TestDeadAdapterTargetResolution:
         usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"]):
-            target = watcher._resolve_target_client([usb])
+            target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
         assert target is not None
         assert target.ifname == "wlan0"
         assert target.is_usb and target.resettable_usb
@@ -2640,7 +2640,7 @@ class TestDeadAdapterTargetResolution:
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    sysfs_mac="dc:62:79:91:4d:d6"):
-            target = watcher._resolve_target_client([])
+            target = watcher.wifi_recovery.resolve_target_client(watcher, [])
         assert target is not None
         assert target.ifname == "wlan0"
         assert target.present_in_nm is False
@@ -2649,7 +2649,7 @@ class TestDeadAdapterTargetResolution:
 
     def test_falls_back_to_ap_ifname_literal(self, watcher):
         with _patch_dead_phy_facts(watcher, sysfs_names=[]):
-            target = watcher._resolve_target_client([])
+            target = watcher.wifi_recovery.resolve_target_client(watcher, [])
         assert target is not None
         assert target.ifname == watcher.AP_IFNAME
 
@@ -2663,11 +2663,11 @@ class TestDeadAdapterDetection:
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=True, healthy=False):
-            target = watcher._resolve_target_client([usb])
-            assert watcher._update_dead_adapter_detection([usb], target) is False
+            target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
+            assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is False
             assert watcher.STATE.dead_adapter_checks == 1
             assert watcher.STATE.dead_adapter_ifname == ""
-            assert watcher._update_dead_adapter_detection([usb], target) is True
+            assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is True
         assert watcher.STATE.dead_adapter_ifname == "wlan0"
         assert watcher.STATE.dead_adapter_since is not None
         assert watcher.STATE.dead_adapter_first_failure is not None
@@ -2680,8 +2680,8 @@ class TestDeadAdapterDetection:
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=False, healthy=True):
-            target = watcher._resolve_target_client([usb])
-            assert watcher._update_dead_adapter_detection([usb], target) is False
+            target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
+            assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is False
         assert watcher.STATE.dead_adapter_ifname == ""
         assert watcher.STATE.dead_adapter_checks == 0
         assert watcher.STATE.dead_adapter_since is None
@@ -2701,8 +2701,8 @@ class TestDeadAdapterDetection:
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=False, healthy=True), \
              patch("time.monotonic", return_value=now):
-            target = watcher._resolve_target_client([usb])
-            assert watcher._update_dead_adapter_detection([usb], target) is False
+            target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
+            assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is False
         assert watcher.STATE.dead_adapter_ifname == ""
         assert _ledger(watcher, usb.stable_id)["recent_resets"] == [100.0]
 
@@ -2718,8 +2718,8 @@ class TestDeadAdapterDetection:
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=True, healthy=False):
-            target = watcher._resolve_target_client([usb])
-            watcher._update_dead_adapter_detection([usb], target)
+            target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
+            watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target)
         # Active tracking resets on identity change, but the old ledger is isolated.
         assert watcher.STATE.dead_adapter_checks == 1
         assert _ledger(watcher, "old:identity:value:00:00:00")["total_resets"] == 4
@@ -2727,7 +2727,7 @@ class TestDeadAdapterDetection:
     def test_none_target_clears_state(self, watcher):
         watcher.STATE.dead_adapter_ifname = "wlan0"
         watcher.STATE.dead_adapter_checks = 2
-        assert watcher._update_dead_adapter_detection([], None) is False
+        assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [], None) is False
         assert watcher.STATE.dead_adapter_ifname == ""
         assert watcher.STATE.dead_adapter_checks == 0
 
@@ -2736,33 +2736,33 @@ class TestResetBudget:
     def _target(self, watcher):
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"]):
-            return watcher._resolve_target_client(
+            return watcher.wifi_recovery.resolve_target_client(watcher, 
                 [_adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)])
 
     def test_exhausted_after_per_window_budget(self, watcher):
         t = self._target(watcher)
         now = 1000.0
-        assert watcher._adapter_reset_budget_exhausted(t, now) is False
-        watcher._record_adapter_reset(t, now)
-        watcher._record_adapter_reset(t, now)
-        assert watcher._adapter_reset_budget_exhausted(t, now) is True
+        assert watcher.wifi_recovery.adapter_reset_budget_exhausted(watcher, t, now) is False
+        watcher.wifi_recovery.record_adapter_reset(watcher, t, now)
+        watcher.wifi_recovery.record_adapter_reset(watcher, t, now)
+        assert watcher.wifi_recovery.adapter_reset_budget_exhausted(watcher, t, now) is True
 
     def test_window_prunes_old_resets_but_total_persists(self, watcher):
         t = self._target(watcher)
-        watcher._record_adapter_reset(t, 0.0)
-        watcher._record_adapter_reset(t, 0.0)
+        watcher.wifi_recovery.record_adapter_reset(watcher, t, 0.0)
+        watcher.wifi_recovery.record_adapter_reset(watcher, t, 0.0)
         later = watcher.USB_RESET_WINDOW + 1.0
         # Per-window budget recovered, total still 2 (< total cap) -> not exhausted.
-        assert watcher._adapter_reset_budget_exhausted(t, later) is False
+        assert watcher.wifi_recovery.adapter_reset_budget_exhausted(watcher, t, later) is False
         assert _ledger(watcher, t.stable_id)["total_resets"] == 2
 
     def test_total_cap_exhausts(self, watcher):
         t = self._target(watcher)
         # Spread resets across windows so per-window never trips, but total does.
         for i in range(watcher.USB_MAX_RESETS_TOTAL):
-            watcher._record_adapter_reset(t, i * (watcher.USB_RESET_WINDOW + 1.0))
+            watcher.wifi_recovery.record_adapter_reset(watcher, t, i * (watcher.USB_RESET_WINDOW + 1.0))
         last = (watcher.USB_MAX_RESETS_TOTAL) * (watcher.USB_RESET_WINDOW + 1.0)
-        assert watcher._adapter_reset_budget_exhausted(t, last) is True
+        assert watcher.wifi_recovery.adapter_reset_budget_exhausted(watcher, t, last) is True
 
     def test_resets_are_per_adapter_identity(self, watcher):
         a = self._target(watcher)
@@ -2776,10 +2776,10 @@ class TestResetBudget:
             present_in_sysfs=True,
             resettable_usb=True,
         )
-        watcher._record_adapter_reset(a, 100.0)
-        watcher._record_adapter_reset(a, 101.0)
-        assert watcher._adapter_reset_budget_exhausted(a, 101.0) is True
-        assert watcher._adapter_reset_budget_exhausted(b, 101.0) is False
+        watcher.wifi_recovery.record_adapter_reset(watcher, a, 100.0)
+        watcher.wifi_recovery.record_adapter_reset(watcher, a, 101.0)
+        assert watcher.wifi_recovery.adapter_reset_budget_exhausted(watcher, a, 101.0) is True
+        assert watcher.wifi_recovery.adapter_reset_budget_exhausted(watcher, b, 101.0) is False
         assert _ledger(watcher, a.stable_id)["recent_resets"] == [100.0, 101.0]
         assert _ledger(watcher, b.stable_id)["recent_resets"] == []
 
@@ -2795,8 +2795,8 @@ class TestResetBudget:
             present_in_sysfs=a.present_in_sysfs,
             resettable_usb=a.resettable_usb,
         )
-        watcher._record_adapter_reset(a, 100.0)
-        watcher._record_adapter_reset(replacement, 200.0)
+        watcher.wifi_recovery.record_adapter_reset(watcher, a, 100.0)
+        watcher.wifi_recovery.record_adapter_reset(watcher, replacement, 200.0)
         assert set(watcher.STATE.adapter_reset_ledgers) == {a.stable_id, replacement.stable_id}
         assert _ledger(watcher, a.stable_id)["recent_resets"] == [100.0]
         assert _ledger(watcher, replacement.stable_id)["recent_resets"] == [200.0]
@@ -2807,27 +2807,27 @@ class TestDeadPhyRebootGuard:
         stamp = str(tmp_path / "guard.json")
         with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", stamp):
             now = 1_000_000.0
-            assert watcher._dead_phy_reboot_guard_permits(now) is True
+            assert watcher.wifi_recovery.dead_phy_reboot_guard_permits(watcher, now) is True
             for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
-                assert watcher._dead_phy_reboot_guard_permits(now) is True
-                watcher._record_dead_phy_reboot_request(now, None)
-            assert watcher._dead_phy_reboot_guard_permits(now) is False
+                assert watcher.wifi_recovery.dead_phy_reboot_guard_permits(watcher, now) is True
+                watcher.wifi_recovery.record_dead_phy_reboot_request(watcher, now, None)
+            assert watcher.wifi_recovery.dead_phy_reboot_guard_permits(watcher, now) is False
 
     def test_old_requests_pruned(self, watcher, tmp_path):
         stamp = str(tmp_path / "guard.json")
         with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", stamp):
             t0 = 1_000_000.0
             for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
-                watcher._record_dead_phy_reboot_request(t0, None)
-            assert watcher._dead_phy_reboot_guard_permits(t0) is False
+                watcher.wifi_recovery.record_dead_phy_reboot_request(watcher, t0, None)
+            assert watcher.wifi_recovery.dead_phy_reboot_guard_permits(watcher, t0) is False
             later = t0 + watcher.DEAD_ADAPTER_REBOOT_WINDOW + 1.0
-            assert watcher._dead_phy_reboot_guard_permits(later) is True
+            assert watcher.wifi_recovery.dead_phy_reboot_guard_permits(watcher, later) is True
 
     def test_corrupt_guard_treated_as_empty(self, watcher, tmp_path):
         stamp = tmp_path / "guard.json"
         stamp.write_text("{ not json", encoding="utf-8")
         with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(stamp)):
-            assert watcher._dead_phy_reboot_guard_permits(1_000_000.0) is True
+            assert watcher.wifi_recovery.dead_phy_reboot_guard_permits(watcher, 1_000_000.0) is True
 
 
 class TestUnifiedGuardedReboot:
@@ -2856,7 +2856,7 @@ class TestUnifiedGuardedReboot:
         now = 5000.0
         with patch("time.time", return_value=1_000_000.0):
             for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
-                watcher._record_dead_phy_reboot_request(1_000_000.0, None)
+                watcher.wifi_recovery.record_dead_phy_reboot_request(watcher, 1_000_000.0, None)
             with patch.object(watcher, "reboot_system", return_value=True) as reboot:
                 accepted = watcher.request_guarded_reboot(now, "gw down", domain="network_down")
         assert accepted is False
@@ -3035,7 +3035,7 @@ class TestEscalateDeadAdapterRecovery:
         with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)):
             # Fill the guard to the cap.
             for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
-                watcher._record_dead_phy_reboot_request(1_000_000.0, None)
+                watcher.wifi_recovery.record_dead_phy_reboot_request(watcher, 1_000_000.0, None)
             with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                        usb_paths_ifaces=[],
                                        link_down=True, healthy=False), \
@@ -3955,7 +3955,7 @@ class TestExplicitModeClassifier:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
         assert snap["device"]["mode"] == "hotspot"
 
 
@@ -4516,7 +4516,7 @@ class TestDeadPhyEndToEnd:
             # persistent guard is now full -> still suppressed.
             watcher.STATE.conn_reboot_retry_after = 0.0
             for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
-                watcher._record_dead_phy_reboot_request(1_000_000.0, None)
+                watcher.wifi_recovery.record_dead_phy_reboot_request(watcher, 1_000_000.0, None)
             assert watcher.escalate_dead_adapter_recovery([usb], False) is False
             assert reboot.call_count == 1
 
@@ -4539,7 +4539,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher, "is_gateway_reachable", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
              patch("time.monotonic", return_value=now):
-            return watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+            return watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
 
     def test_healthy_usb_client_online(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
@@ -4555,7 +4555,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "is_gateway_reachable", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
         assert snap["schema_version"] == 1
         assert snap["device"]["state"] == "online"
         assert snap["device"]["primary_ifname"] == "wlan0"
@@ -4598,7 +4598,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
              patch("time.monotonic", return_value=1000.0):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "dead_phy"
         assert rec["health"]["checks"] == 4
@@ -4696,7 +4696,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["state"] == "degraded"
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ssid"] == ""
@@ -4732,7 +4732,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "is_gateway_reachable", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "usb_wifi"
         assert snap["device"]["primary_ifname"] == "wlan0"
         assert snap["device"]["primary_ssid"] == "MyHomeWiFi"
@@ -4756,7 +4756,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ifname"] == "eth0"
         assert snap["device"]["primary_ssid"] == ""
@@ -4782,7 +4782,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "is_gateway_reachable", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ifname"] == "eth0"
         get_ssid.assert_not_called()
@@ -4804,7 +4804,7 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([usb], wired_connected=True, wired_ok=True)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ifname"] == "eth0"
         assert snap["device"]["primary_ipv4_info"]["gateway"] == ""
@@ -4814,7 +4814,7 @@ class TestBuildNetworkStatusSnapshot:
         addrs = {"eth0": []}
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([], wired_connected=True, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=True, wired_ok=False)
         assert snap["device"]["state"] == "offline"
         assert snap["device"]["primary_kind"] == ""
         assert snap["device"]["primary_ifname"] == ""
@@ -4836,7 +4836,7 @@ class TestBuildNetworkStatusSnapshot:
                            "prefixlen": 24, "scope": "global"}]}
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([], wired_connected=True, wired_ok=True)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=True, wired_ok=True)
         assert snap["device"]["state"] == "setup_mode"
         assert snap["connectivity"]["active_path_ok"] is False
         assert snap["connectivity"]["no_active_path_age_seconds"] is None
@@ -4847,7 +4847,7 @@ class TestBuildNetworkStatusSnapshot:
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
              patch("time.monotonic", return_value=1030.0):
-            snap = watcher.build_network_status_snapshot([], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=False, wired_ok=False)
         assert snap["connectivity"]["last_active_path_seen_monotonic"] == 1000.0
         assert snap["connectivity"]["no_active_path_age_seconds"] == 30.0
         assert snap["connectivity"]["no_active_path_reboot_after_seconds"] == watcher.NO_ACTIVE_PATH_REBOOT_AFTER
@@ -4856,7 +4856,7 @@ class TestBuildNetworkStatusSnapshot:
     def test_logging_block_present(self, watcher):
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=False, wired_ok=False)
         assert snap["logging"]["effective_level"] == "info"
         assert snap["logging"]["default_level"] == "info"
         assert snap["logging"]["temporary_level_expires_at"] is None
@@ -5088,5 +5088,5 @@ class TestModuleSplit:
     def test_snapshot_delegates(self, watcher):
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.build_network_status_snapshot([], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=False, wired_ok=False)
         assert snap["schema_version"] == 1
