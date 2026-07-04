@@ -221,6 +221,12 @@ RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts (e
 # saved SSID's return.  Bounds the cheap scan independently of the loop tick so a
 # recovery hotspot does not churn the radio/CPU on the Pi Zero every pass.
 RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery scans
+# Runtime USB-adoption scan cadence (IF-6): how often the idle-time adoption gate
+# rescans a USB candidate that could not see the committed SSID.  Adoption is an
+# optimisation on a device already healthy on the built-in, so re-scan latency
+# costs nothing; the first scan for a newly stable candidate always runs
+# immediately (last is None -> due), and this interval only throttles *re*-scans.
+ADOPTION_SCAN_INTERVAL = 5 * 60         # seconds between saved-SSID adoption scans
 REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
 # Multi-adapter failure/adoption tuning (WP5).
@@ -461,6 +467,9 @@ class NetworkMonitorState:
     last_reconnect_attempt: Optional[float] = None
     # Last time a recovery hotspot scanned for the saved SSID (WP6 scan gate).
     last_recovery_scan: Optional[float] = None
+    # Last time runtime USB adoption scanned the candidate for the committed SSID
+    # (IF-6 scan gate).
+    last_adoption_scan: Optional[float] = None
     # Reboot-request throttle: monotonic time before which another reboot request is
     # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
     # issued); any other value = retry permitted after that time.
@@ -3188,6 +3197,31 @@ def _saved_ssid_visible(hotspot_adapter) -> bool:
     return scan is not None and ssid in scan
 
 
+def _rate_gated_saved_ssid_scan(adapter, last_scan_attr: str,
+                                interval: float, now: float) -> Optional[bool]:
+    """Rate-bounded "is the committed SSID visible on *adapter*" probe.
+
+    Shared by every idle-time saved-SSID scan site (the recovery hotspot exit
+    edge and runtime USB adoption; refactor WP-6 becomes a third consumer) so
+    the check-stamp-scan mechanics live in one place.  *last_scan_attr* names the
+    per-site STATE timestamp field.
+
+    Returns None when a scan is not yet due (`last is not None and now - last <
+    interval`) — the caller must treat this as "no information, do nothing".
+    Otherwise stamps the timestamp under `state_lock` and returns
+    `_saved_ssid_visible(adapter)` (which already treats a failed scan as not
+    visible — the conservative default every consumer wants).  It calls
+    `_saved_ssid_visible` by module-global name so test patches still intercept.
+    """
+    with state_lock:
+        last = getattr(STATE, last_scan_attr)
+    if last is not None and now - last < interval:
+        return None
+    with state_lock:
+        setattr(STATE, last_scan_attr, now)
+    return _saved_ssid_visible(adapter)
+
+
 def _attempt_recovery_reconnect(facts: "Facts") -> None:
     """Scan-gated recovery reconnect from within a recovery hotspot (WP6, §2.8).
 
@@ -3223,16 +3257,13 @@ def _attempt_recovery_reconnect(facts: "Facts") -> None:
         hotspot = resolve_hotspot_adapter(facts.adapters)
         if hotspot is None:
             return
-        with state_lock:
-            last_scan = STATE.last_recovery_scan
-        scan_due = last_scan is None or (now - last_scan) >= RECOVERY_SCAN_INTERVAL
-        if not scan_due:
-            return
-        with state_lock:
-            STATE.last_recovery_scan = now
-        if not _saved_ssid_visible(hotspot):
-            logger.debug("Recovery scan: saved SSID not visible on %s; AP retained",
-                         hotspot.ifname)
+        visible = _rate_gated_saved_ssid_scan(
+            hotspot, "last_recovery_scan", RECOVERY_SCAN_INTERVAL, now)
+        if not visible:
+            # None (scan not due) or False (not visible / scan failed): keep the AP.
+            if visible is False:
+                logger.debug("Recovery scan: saved SSID not visible on %s; AP retained",
+                             hotspot.ifname)
             return
 
     if not join_due:
@@ -3305,6 +3336,28 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
         log_on_change("usb_adopt_deferred_playing", True,
                       "USB adoption deferred because playback is active")
         return False
+
+    # Scan-gate the handover (IF-6): the committed profile is usually active on
+    # the built-in too, and `nmcli connection up ... ifname <usb>` *moves* an
+    # already-active connection — it deactivates the built-in as part of trying
+    # the USB.  A USB that cannot even see the SSID would fail that move and take
+    # the whole device offline (04-Jul field outage), so proceed only once the
+    # candidate's own scan shows the committed SSID.  A not-due (None) or
+    # not-visible/failed (False) scan is a non-destructive skip: the candidate
+    # stays pending and the no-IP ledger is untouched (the dongle never got the
+    # chance to fail DHCP).
+    visible = _rate_gated_saved_ssid_scan(
+        candidate, "last_adoption_scan", ADOPTION_SCAN_INTERVAL, now)
+    if visible is None:
+        return False
+    if visible is False:
+        log_on_change("usb_adopt_skipped_ssid_not_visible", True,
+                      "USB adoption skipped: committed SSID not visible on %s"
+                      % candidate.ifname)
+        return False
+    # Attempted (visible) pass: reset the skip key so a future not-visible
+    # episode logs again, without emitting a spurious transition line.
+    _last_logged_values.pop("usb_adopt_skipped_ssid_not_visible", None)
 
     # Transactional handover: validate USB before deactivating built-in.
     logger.info("Runtime USB adoption starting on %s", candidate.ifname)

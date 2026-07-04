@@ -1784,6 +1784,7 @@ class TestRuntimeUsbAdoption:
         with patch.object(watcher, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "query_playing_status", return_value=False), \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher, "_activate_committed_on", return_value=True), \
              patch.object(watcher, "verify_avahi_after_handover"), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
@@ -1813,6 +1814,7 @@ class TestRuntimeUsbAdoption:
         with patch.object(watcher, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "query_playing_status", side_effect=lambda: playing.pop(0)), \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher, "_activate_committed_on", return_value=True), \
              patch.object(watcher, "verify_avahi_after_handover"), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
@@ -1856,6 +1858,7 @@ class TestRuntimeUsbAdoption:
         with patch.object(watcher, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "query_playing_status", return_value=False), \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher, "_activate_committed_on", return_value=False):
             watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
             r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
@@ -1866,6 +1869,113 @@ class TestRuntimeUsbAdoption:
         assert watcher.wifi_recovery.noip_retry_suppressed(
             watcher, usb.permanent_mac, 0.0) is True
         assert watcher.STATE.using_builtin_fallback is False
+
+
+class TestIf6AdoptionScanGate:
+    """IF-6: runtime USB adoption scans the candidate for the committed SSID
+    before moving the shared profile, so a dongle that cannot see the network
+    never takes the healthy built-in offline (04-Jul field outage)."""
+
+    def _builtin_and_usb(self, watcher):
+        return (
+            _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:10", is_usb=True),
+        )
+
+    def _prime_to_gate(self, watcher, candidate):
+        """Arm STATE so the *next* adoption call reaches the scan gate (two-pass
+        stability already satisfied)."""
+        watcher.STATE.pending_usb_adoption_mac = candidate.permanent_mac
+        watcher.STATE.pending_usb_adoption_checks = 1
+
+    @contextlib.contextmanager
+    def _gate_ctx(self, watcher, builtin, *, scan):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(watcher, "resolve_active_client", return_value=builtin))
+            stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=True))
+            stack.enter_context(patch.object(watcher, "query_playing_status", return_value=False))
+            stack.enter_context(patch.object(watcher, "_saved_network_ssid", return_value="MyHomeWiFi"))
+            scan_mock = stack.enter_context(
+                patch.object(watcher.wifi_net, "scan_adapter", return_value=scan))
+            act = stack.enter_context(patch.object(watcher, "_activate_committed_on", return_value=True))
+            stack.enter_context(patch.object(watcher, "verify_avahi_after_handover"))
+            stack.enter_context(patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)))
+            yield scan_mock, act
+
+    def test_not_visible_skips_without_activation_or_ledger(self, watcher):
+        # (a)+(b): SSID absent from the scan -> no activation, pending state and
+        # the no-IP ledger both survive the skip.
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        with self._gate_ctx(watcher, builtin, scan={"Other": -50}) as (scan_mock, act):
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is False
+        act.assert_not_called()
+        scan_mock.assert_called_once()
+        # Pending candidate survives so a later due scan can proceed.
+        assert watcher.STATE.pending_usb_adoption_mac == usb.permanent_mac
+        assert watcher.STATE.pending_usb_adoption_checks == 2
+        # No no-IP failure recorded — the dongle never got to fail DHCP.
+        assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) == 0
+
+    def test_rate_bounded_second_pass_does_not_scan(self, watcher):
+        # (c): a second not-visible pass inside ADOPTION_SCAN_INTERVAL performs
+        # no scan and still returns False.
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        with self._gate_ctx(watcher, builtin, scan={"Other": -50}) as (scan_mock, act):
+            r1 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r2 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert (r1, r2) == (False, False)
+        act.assert_not_called()
+        scan_mock.assert_called_once()  # second pass: not due -> no scan
+
+    def test_failed_scan_treated_as_not_visible(self, watcher):
+        # (e): scan_adapter -> None is conservatively treated as not visible.
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        with self._gate_ctx(watcher, builtin, scan=None) as (scan_mock, act):
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is False
+        act.assert_not_called()
+        scan_mock.assert_called_once()
+        assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) == 0
+
+    def test_visible_ssid_proceeds_as_today(self, watcher):
+        # (d): committed SSID visible -> activation runs and the success tail
+        # applies exactly as before the gate existed.
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        with self._gate_ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock, act):
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is True
+        act.assert_called_once_with("wlan1")
+        scan_mock.assert_called_once()
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        # Success clears the pending candidate.
+        assert watcher.STATE.pending_usb_adoption_mac is None
+
+    def test_visible_then_activation_fails_records_noip(self, watcher):
+        # (d), failure tail: SSID visible but the USB activation fails -> the
+        # no-IP ledger ticks exactly as it did before the gate.
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(watcher, "resolve_active_client", return_value=builtin))
+            stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=True))
+            stack.enter_context(patch.object(watcher, "query_playing_status", return_value=False))
+            stack.enter_context(patch.object(watcher, "_saved_network_ssid", return_value="MyHomeWiFi"))
+            stack.enter_context(patch.object(watcher.wifi_net, "scan_adapter",
+                                             return_value={"MyHomeWiFi": -50}))
+            stack.enter_context(patch.object(watcher, "_activate_committed_on", return_value=False))
+            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        assert r is False
+        assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) >= 1
 
 
 # ---------------------------------------------------------------------------
