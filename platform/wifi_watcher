@@ -449,6 +449,15 @@ class NetworkMonitorState:
     # lifetime is the rate limit.
     setup_mode: bool = False
     hotspot: "Optional[HotspotSession]" = None
+    # Rejoin prompt (per hotspot session): set when the saved SSID becomes visible
+    # during a session with a client associated to the AP, so the setup page can
+    # offer "rejoin or keep reconfiguring" instead of the watcher silently yanking
+    # the AP.  ``rejoin_dismissed`` records the user choosing to keep
+    # reconfiguring, which suppresses the probe/modal for the rest of the session.
+    # All three reset on session entry/exit.
+    saved_ssid_visible: bool = False
+    saved_ssid_name: str = ""
+    rejoin_dismissed: bool = False
     # Authoritative connectivity mode, applied by the loop each pass from the
     # pure next_mode() classifier and published as device.mode.
     mode: "Mode" = field(default_factory=lambda: Mode.BOOT)
@@ -631,6 +640,28 @@ def resolve_recovery_ifname() -> Optional[str]:
 # Resolved once at startup; None disables avahi mDNS hostname monitoring.
 _DBUS_SEND: Optional[str] = shutil.which("dbus-send")
 
+# Resolved once at startup; None -> AP station count is unknown, and the rejoin
+# probe treats unknown as "stations associated" (never yank the AP on missing
+# information).
+_IW: Optional[str] = shutil.which("iw")
+
+
+def hotspot_station_count(ifname: str) -> Optional[int]:
+    """Number of stations associated to the AP on *ifname*, or None if unknown.
+
+    Uses ``iw dev <ifname> station dump`` and counts the ``Station`` records.
+    Returns None when the iw binary is unavailable or the command fails; callers
+    treat unknown as "assume a client is on the portal" so the AP is never torn
+    down on missing information.  Bounded like every other subprocess.
+    """
+    if not ifname or _IW is None:
+        return None
+    r = run_cmd([_IW, "dev", ifname, "station", "dump"], timeout=NMCLI_QUICK_TIMEOUT)
+    if r.returncode != 0:
+        return None
+    return sum(1 for line in r.stdout.splitlines()
+               if line.strip().lower().startswith("station "))
+
 # Build the Flask app via the wifi_web factory (HTTP-extraction plan).  All
 # routes (captive-portal/setup and the loopback control/auth surface) live in
 # wifi_web; keeping wifi_watcher.app importable here preserves the Flask-test-
@@ -736,6 +767,10 @@ def enter_setup_mode(purpose: "HotspotPurpose", reason: str = "",
         STATE.hotspot = HotspotSession(
             purpose=purpose, entered_at=time.monotonic(), rollback=rollback,
         )
+        # Fresh session: clear any rejoin-prompt / dismissal state.
+        STATE.saved_ssid_visible = False
+        STATE.saved_ssid_name = ""
+        STATE.rejoin_dismissed = False
 
     logger.info("Entering SetupMode (%s). Reason: %s", purpose.value, reason)
     start_ap_mode()
@@ -755,6 +790,10 @@ def leave_setup_mode(reason: str = "") -> None:
         STATE.setup_mode = False
         STATE.hotspot = None
         STATE.last_active_path_seen = now
+        # Session over: clear the rejoin-prompt / dismissal state.
+        STATE.saved_ssid_visible = False
+        STATE.saved_ssid_name = ""
+        STATE.rejoin_dismissed = False
 
     logger.info("Leaving SetupMode. Reason: %s", reason)
     # Tear down the AP before removing the flag so nginx does not route traffic
@@ -3365,6 +3404,13 @@ def _attempt_recovery_reconnect(facts: "Facts") -> None:
     that cheaply confirms the saved network is back before tearing the AP down.
     """
     now = facts.taken_at
+
+    # The user chose "keep reconfiguring" this session: stop probing/offering the
+    # rejoin entirely until the session ends.
+    with state_lock:
+        if STATE.rejoin_dismissed:
+            return
+
     raction = next_recovery_action(STATE, gather_recovery_facts(facts))
     if raction.kind not in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD):
         # HOLD / ENTER_HOTSPOT: the active path is fine, Ethernet is up, or a
@@ -3377,8 +3423,8 @@ def _attempt_recovery_reconnect(facts: "Facts") -> None:
                 or (now - last_reconnect) >= RECONNECT_ATTEMPT_INTERVAL)
 
     # A drop-AP rejoin on the AP-hosting radio is expensive and tears the hotspot
-    # down; gate it behind the cheap saved-SSID scan (single-radio exit edge,
-    # §2.8) so the AP is dropped only once the network is actually visible again.
+    # down; gate it behind the cheap saved-SSID scan (single-radio exit edge) so
+    # the AP is dropped only once the network is actually visible again.
     if raction.drop_hotspot:
         hotspot = resolve_hotspot_adapter(facts.adapters)
         if hotspot is None:
@@ -3391,6 +3437,21 @@ def _attempt_recovery_reconnect(facts: "Facts") -> None:
                 logger.debug("Recovery scan: saved SSID not visible on %s; AP retained",
                              hotspot.ifname)
             return
+        # Saved SSID is back.  Dropping the AP would disconnect anyone using the
+        # portal, so when a station is associated (or the count is unknown) do not
+        # rejoin automatically — surface the choice on the setup page instead.
+        # With zero stations nobody is on the portal, so proceed as before.
+        stations = hotspot_station_count(hotspot.ifname)
+        if stations is None or stations > 0:
+            with state_lock:
+                STATE.saved_ssid_visible = True
+                STATE.saved_ssid_name = _saved_network_ssid()
+            log_on_change("saved_ssid_visible_prompt", True,
+                          "Saved network visible with a client on the setup AP; "
+                          "offering rejoin instead of yanking the hotspot")
+            return
+        with state_lock:
+            STATE.saved_ssid_visible = False
 
     if not join_due:
         return

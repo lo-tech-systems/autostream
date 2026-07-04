@@ -430,10 +430,16 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         device_state = "offline"
 
     hotspot_reason = ""
+    hotspot_clients = None
+    with w.state_lock:
+        saved_ssid_visible = bool(w.STATE.saved_ssid_visible)
+        saved_ssid = w.STATE.saved_ssid_name
     if in_setup:
         with w.state_lock:
             session = w.STATE.hotspot
         hotspot_reason = session.purpose.value if session else ""
+        if hotspot_ifname:
+            hotspot_clients = w.hotspot_station_count(hotspot_ifname)
 
     if in_setup or last_active_path_seen is None:
         no_active_age = None
@@ -469,6 +475,9 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             "active": bool(hotspot_ifname),
             "ifname": hotspot_ifname,
             "reason": hotspot_reason,
+            "clients": hotspot_clients,
+            "saved_ssid_visible": saved_ssid_visible,
+            "saved_ssid": saved_ssid,
         },
         "connectivity": {
             "active_path_ok": active_path_ok,

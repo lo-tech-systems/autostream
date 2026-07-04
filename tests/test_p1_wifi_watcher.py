@@ -825,6 +825,31 @@ class TestStatusRoute:
         data = json.loads(rv.data)
         assert data["SetupMode"] is False
 
+    def test_status_exposes_saved_ssid_visible(self, flask_client):
+        client, mod = flask_client
+        mod.STATE.saved_ssid_visible = True
+        mod.STATE.saved_ssid_name = "MyHomeWiFi"
+        data = json.loads(client.get("/status").data)
+        assert data["saved_ssid_visible"] is True
+        assert data["saved_ssid"] == "MyHomeWiFi"
+
+    def test_dismiss_rejoin_sets_session_flag(self, flask_client):
+        client, mod = flask_client
+        mod.STATE.saved_ssid_visible = True
+        mod.STATE.rejoin_dismissed = False
+        rv = client.post("/dismiss_rejoin")
+        assert rv.status_code == 200
+        assert json.loads(rv.data)["ok"] is True
+        assert mod.STATE.rejoin_dismissed is True
+        assert mod.STATE.saved_ssid_visible is False
+
+    def test_dismiss_rejoin_is_captive_accessible_no_token(self, flask_client):
+        # Reachable from an AP client with no control token (like /reconnect_saved).
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        rv = client.post("/dismiss_rejoin", environ_base={"REMOTE_ADDR": "10.0.0.9"})
+        assert rv.status_code == 200
+
     def test_request_ap_mode_rejected_from_non_localhost(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
@@ -1617,6 +1642,59 @@ class TestClientUpTail:
             watcher.client_up_tail(a, clear_pending_adoption=True, clear_dead_adapter=True)
         cpa.assert_called_once()
         cda.assert_called_once()
+
+
+class TestHotspotStationCount:
+    """WP-6 — the AP station-count primitive (iw dev <ifname> station dump)."""
+
+    _DUMP = (
+        "Station dc:62:79:91:4d:d6 (on wlan0)\n"
+        "\tinactive time:\t120 ms\n"
+        "\trx bytes:\t1234\n"
+        "Station aa:bb:cc:dd:ee:ff (on wlan0)\n"
+        "\tinactive time:\t50 ms\n"
+    )
+
+    def test_counts_associated_stations(self, watcher):
+        with patch.object(watcher, "_IW", "/usr/sbin/iw"), \
+             patch.object(watcher, "run_cmd",
+                          return_value=MagicMock(returncode=0, stdout=self._DUMP)) as rc:
+            n = watcher.hotspot_station_count("wlan0")
+        assert n == 2
+        assert rc.call_args.kwargs.get("timeout") is not None  # bounded
+
+    def test_zero_stations(self, watcher):
+        with patch.object(watcher, "_IW", "/usr/sbin/iw"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0, stdout="")):
+            assert watcher.hotspot_station_count("wlan0") == 0
+
+    def test_none_when_iw_absent(self, watcher):
+        with patch.object(watcher, "_IW", None), \
+             patch.object(watcher, "run_cmd") as rc:
+            assert watcher.hotspot_station_count("wlan0") is None
+        rc.assert_not_called()
+
+    def test_none_on_command_failure(self, watcher):
+        with patch.object(watcher, "_IW", "/usr/sbin/iw"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=1, stdout="")):
+            assert watcher.hotspot_station_count("wlan0") is None
+
+    def test_none_for_empty_ifname(self, watcher):
+        with patch.object(watcher, "_IW", "/usr/sbin/iw"), \
+             patch.object(watcher, "run_cmd") as rc:
+            assert watcher.hotspot_station_count("") is None
+        rc.assert_not_called()
+
+    def test_session_reset_clears_rejoin_state(self, watcher):
+        watcher.STATE.saved_ssid_visible = True
+        watcher.STATE.saved_ssid_name = "Old"
+        watcher.STATE.rejoin_dismissed = True
+        with patch.object(watcher, "start_ap_mode"), \
+             patch.object(watcher, "update_apmode_flag"):
+            watcher.enter_setup_mode(watcher.HotspotPurpose.MANUAL, "x")
+        assert watcher.STATE.saved_ssid_visible is False
+        assert watcher.STATE.saved_ssid_name == ""
+        assert watcher.STATE.rejoin_dismissed is False
 
 
 class TestFirstBootImport:
@@ -4449,6 +4527,7 @@ class TestRecoveryExitEdge:
                           side_effect=lambda ifn: ifn == "wlan1"), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "hotspot_station_count", return_value=0), \
              patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
@@ -4468,6 +4547,7 @@ class TestRecoveryExitEdge:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "hotspot_station_count", return_value=0), \
              patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
@@ -4573,10 +4653,12 @@ class TestFieldLogRecoveryRegression:
         with patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "hotspot_station_count", return_value=0), \
              patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             _run_monitor_once(watcher, now=120.0, wifi_cfg=True,
                               adapters=[builtin, usb], active_client=usb)
-        # The ladder selects the onboard drop-AP rejoin, not the dead USB probe.
+        # Headless recovery (zero stations on the AP): the ladder selects the
+        # onboard drop-AP rejoin, not the dead USB probe.
         apply.assert_called_once()
         action = apply.call_args[0][0]
         assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
@@ -4865,18 +4947,68 @@ class TestScanGatedRecovery:
         assert watcher.STATE.last_recovery_scan == 1000.0
 
     def test_single_radio_ssid_present_drops_ap_and_joins(self, watcher):
+        # Zero stations on the AP (headless recovery): auto-rejoin proceeds.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         self._in_hotspot(watcher)
         facts = _facts_for(watcher, [builtin], None, now=1000.0)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "hotspot_station_count", return_value=0), \
              patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][0]
         assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
         assert action.drop_hotspot is True
+        assert watcher.STATE.saved_ssid_visible is False
+
+    def test_single_radio_ssid_present_with_station_offers_modal(self, watcher):
+        # A client is on the setup AP: do NOT yank it; record the rejoin prompt.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._in_hotspot(watcher)
+        facts = _facts_for(watcher, [builtin], None, now=1000.0)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "_saved_network_ssid", return_value="MyHomeWiFi"), \
+             patch.object(watcher, "hotspot_station_count", return_value=1), \
+             patch.object(watcher, "_submit_client_activation") as apply:
+            watcher._attempt_recovery_reconnect(facts)
+        apply.assert_not_called()          # AP not dropped
+        assert watcher.STATE.saved_ssid_visible is True
+        assert watcher.STATE.saved_ssid_name == "MyHomeWiFi"
+
+    def test_single_radio_unknown_station_count_offers_modal(self, watcher):
+        # Unknown station count (iw absent): behave as if a client is associated.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._in_hotspot(watcher)
+        facts = _facts_for(watcher, [builtin], None, now=1000.0)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher, "_saved_network_ssid", return_value="MyHomeWiFi"), \
+             patch.object(watcher, "hotspot_station_count", return_value=None), \
+             patch.object(watcher, "_submit_client_activation") as apply:
+            watcher._attempt_recovery_reconnect(facts)
+        apply.assert_not_called()
+        assert watcher.STATE.saved_ssid_visible is True
+
+    def test_rejoin_dismissed_stops_probing(self, watcher):
+        # After the user chooses "continue setup", the probe short-circuits.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._in_hotspot(watcher)
+        watcher.STATE.rejoin_dismissed = True
+        facts = _facts_for(watcher, [builtin], None, now=1000.0)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "_saved_ssid_visible") as vis, \
+             patch.object(watcher, "hotspot_station_count") as stations, \
+             patch.object(watcher, "_submit_client_activation") as apply:
+            watcher._attempt_recovery_reconnect(facts)
+        vis.assert_not_called()
+        stations.assert_not_called()
+        apply.assert_not_called()
 
     def test_saved_ssid_visible_uses_scan(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)

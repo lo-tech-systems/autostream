@@ -163,6 +163,29 @@ def render_setup_page(error_code: str = "", show_reconnect: bool = False) -> str
             top: 1px;        /* nudges the eye icon down a bit */
             display: block;  /* removes baseline alignment quirks */
           }}
+          /* Rejoin prompt modal */
+          .modal-overlay {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            display: none;               /* toggled to flex by JS */
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            z-index: 1000;
+          }}
+          .modal-box {{
+            background: #fff;
+            color: #222;
+            border-radius: 12px;
+            padding: 1.25rem;
+            max-width: 22rem;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+          }}
+          .modal-box h2 {{ margin-top: 0; font-size: 1.1rem; }}
+          .modal-box button {{ margin-top: 0.5rem; }}
         </style>
         <script>
             let _didInitialFocus = false;
@@ -173,12 +196,45 @@ def render_setup_page(error_code: str = "", show_reconnect: bool = False) -> str
                     if (!resp.ok) return;
                     const data = await resp.json();
                     const el = document.getElementById('status');
-                    if (!el) return;
-                    el.textContent =
+                    if (el) el.textContent =
                         'WiFi: ' + data.wifistate + ', ' +
                         'Wired: ' + data.wiredstate + ', ' +
                         'Gateway reachable: ' + data.gateway_reachable + ', ' +
                         'SetupMode: ' + data.SetupMode;
+                    updateRejoinModal(data);
+                }} catch (e) {{}}
+            }}
+
+            // Once the user chooses "continue setup", stop showing the modal for
+            // this page even if a status poll races the server flag update.
+            let _rejoinDismissedLocal = false;
+
+            function updateRejoinModal(data) {{
+                const modal = document.getElementById('rejoin-modal');
+                if (!modal) return;
+                if (data && data.saved_ssid_visible && !_rejoinDismissedLocal) {{
+                    const nameEl = document.getElementById('rejoin-ssid');
+                    if (nameEl) nameEl.textContent = data.saved_ssid || 'your saved network';
+                    modal.style.display = 'flex';
+                }} else {{
+                    modal.style.display = 'none';
+                }}
+            }}
+
+            async function rejoinNow() {{
+                const modal = document.getElementById('rejoin-modal');
+                if (modal) modal.style.display = 'none';
+                try {{
+                    await fetch('/reconnect_saved', {{ method: 'POST', cache: 'no-store' }});
+                }} catch (e) {{}}
+            }}
+
+            async function dismissRejoin() {{
+                _rejoinDismissedLocal = true;
+                const modal = document.getElementById('rejoin-modal');
+                if (modal) modal.style.display = 'none';
+                try {{
+                    await fetch('/dismiss_rejoin', {{ method: 'POST', cache: 'no-store' }});
                 }} catch (e) {{}}
             }}
 
@@ -454,6 +510,17 @@ def render_setup_page(error_code: str = "", show_reconnect: bool = False) -> str
             <br>
             <div class="status" id="status">Status: unknown</div>
             {reconnect_html}
+        </div>
+
+        <div id="rejoin-modal" class="modal-overlay" role="dialog" aria-modal="true">
+          <div class="modal-box">
+            <h2>Your network is available again</h2>
+            <p>Your network <strong id="rejoin-ssid"></strong> is back in range.
+               Rejoin it, or continue setting up a different network?</p>
+            <button class="pill-btn" type="button" onclick="rejoinNow()">Rejoin</button>
+            <button class="pill-btn small" type="button"
+                    onclick="dismissRejoin()">Continue setup</button>
+          </div>
         </div>
         </body>
         </html>
@@ -768,6 +835,21 @@ def build_app(w) -> Flask:
         w.logger.info("Captive-page reconnect_saved queued")
         return jsonify({"ok": True, "queued": True})
 
+    @app.route("/dismiss_rejoin", methods=["POST"])
+    def dismiss_rejoin():
+        """Captive-page action: keep reconfiguring instead of rejoining the saved
+        network for the rest of this setup session.
+
+        Captive-accessible like /reconnect_saved (AP clients, no token) — it is
+        strictly less powerful, only *suppressing* the automatic rejoin for one
+        session; the flag resets when the session ends.
+        """
+        with w.state_lock:
+            w.STATE.rejoin_dismissed = True
+            w.STATE.saved_ssid_visible = False
+        w.logger.info("Captive-page rejoin dismissed for this session")
+        return jsonify({"ok": True})
+
     @app.route("/status", methods=["GET"])
     def status():
         """Return a simple JSON status including SetupMode and link states."""
@@ -779,6 +861,8 @@ def build_app(w) -> Flask:
             aip = w.STATE.apply_in_progress
             lar = w.STATE.last_apply_result
             lae = w.STATE.last_apply_error
+            saved_ssid_visible = bool(w.STATE.saved_ssid_visible)
+            saved_ssid = w.STATE.saved_ssid_name
 
         return jsonify(
             {
@@ -789,6 +873,10 @@ def build_app(w) -> Flask:
                 "apply_in_progress": aip,
                 "last_apply_result": lar,
                 "last_apply_error": lae,
+                # Rejoin prompt: the saved network is visible again while a client
+                # is on the setup AP; the page offers rejoin vs keep-reconfiguring.
+                "saved_ssid_visible": saved_ssid_visible,
+                "saved_ssid": saved_ssid,
             }
         )
 

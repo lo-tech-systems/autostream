@@ -65,6 +65,17 @@ A recovery hotspot probes cheaply for the saved SSID (a scan works in AP mode
 without dropping the AP). When the only client radio is the AP-hosting radio,
 rejoining tears the AP down — the single-radio exit edge.
 
+**Rejoin prompt (client-count aware).** Before a drop-AP rejoin, the watcher
+counts stations associated to the setup AP (`iw dev <ifname> station dump`,
+surfaced as `hotspot.clients`). With **zero** stations (nobody on the portal) the
+automatic rejoin proceeds as before. With a station associated — or when the
+count is unknown (`iw` missing) — the watcher does **not** yank the AP; it sets
+`saved_ssid_visible` on `/status`, and the setup page shows a modal offering
+"Rejoin" (POST `/reconnect_saved`) or "Continue setup" (POST `/dismiss_rejoin`,
+which suppresses the probe/modal for the rest of the session). The 15-minute
+probe grace for user-initiated sessions still applies before any probe or modal;
+headless recovery (no station) is unchanged.
+
 ## Recovery decision tree
 
 **Recovery ladder** (one pure classifier, used identically at boot-entry, on USB
@@ -115,8 +126,8 @@ cross-boot cap of **3 reboots per 24 h** plus an in-process throttle):
 ## API surfaces and logging
 
 **Captive / setup (AP clients, no token):** `GET /`, `GET|POST /setup`,
-`GET /networks`, `POST /reconnect_saved`, `GET /status`, plus the OS
-captive-portal probe endpoints (`/generate_204`, `/ncsi.txt`,
+`GET /networks`, `POST /reconnect_saved`, `POST /dismiss_rejoin`, `GET /status`,
+plus the OS captive-portal probe endpoints (`/generate_204`, `/ncsi.txt`,
 `/.well-known/captive-portal`, …).
 
 **Privileged loopback control (loopback source AND per-boot token):**
