@@ -860,6 +860,41 @@ class TestStatusRoute:
         # If AP exhausted or other condition, might return 409; accept that too.
         assert rv.status_code in (200, 409)
 
+    def test_request_ap_mode_queues_manual_ap_control_action(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        mod.STATE.pending_control_action = ""
+        mod.STATE.control_in_progress = False
+        rv = client.post(
+            "/request_ap_mode",
+            json={"reason": "test"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        assert rv.get_json()["action"] == "manual_ap"
+        # Queued on the shared control channel, not a legacy dedicated event.
+        assert mod.STATE.pending_control_action == "manual_ap"
+        assert mod.STATE.pending_control_params == {"reason": "test"}
+        assert mod.control_action_event.is_set()
+
+    def test_request_ap_mode_busy_returns_409(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        # Another control action already pending -> busy.
+        mod.STATE.pending_control_action = "reconnect_saved"
+        mod.STATE.control_in_progress = False
+        rv = client.post(
+            "/request_ap_mode",
+            json={"reason": "test"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 409
+        assert rv.get_json()["error"] == "busy"
+        # The in-flight action is untouched.
+        assert mod.STATE.pending_control_action == "reconnect_saved"
+
 
 class TestNetworkControlRoutes:
     """WP6: per-boot-token-protected control surface."""
@@ -4408,26 +4443,48 @@ class TestLoopHandlers:
             watcher.step_avahi_hostname(self._pre(watcher, now=99999.0, avahi_ok=False), ls)
         chk3.assert_not_called()
 
-    def test_step_manual_ap_request_enters_when_not_in_ap(self, watcher):
-        watcher.ap_request_event.clear()
-        watcher.STATE.ap_request_reason = "user"
-        watcher.ap_request_event.set()
+    def test_manual_ap_control_action_enters_when_not_in_ap(self, watcher):
+        # A manual_ap control action enters a MANUAL hotspot via the shared
+        # control channel (folded from the legacy ap_request_event path).
+        watcher.STATE.setup_mode = False
         with patch.object(watcher, "enter_setup_mode") as enter:
-            v = watcher.step_manual_ap_request(self._pre(watcher))
-        assert v is watcher.Verdict.OWN_PASS
+            watcher.process_control_action("manual_ap", {"reason": "user"})
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.HotspotPurpose.MANUAL
-        assert not watcher.ap_request_event.is_set()
+        assert watcher.STATE.last_control_result == "ok"
 
-    def test_step_manual_ap_request_continue_when_already_in_ap(self, watcher):
-        watcher.ap_request_event.clear()
+    def test_manual_ap_control_action_noop_when_already_in_ap(self, watcher):
         watcher.STATE.setup_mode = True
-        watcher.ap_request_event.set()
         with patch.object(watcher, "enter_setup_mode") as enter:
-            v = watcher.step_manual_ap_request(self._pre(watcher))
+            watcher.process_control_action("manual_ap", {"reason": "user"})
+        enter.assert_not_called()
+        assert watcher.STATE.last_control_result == "ok"
+
+    def test_manual_ap_control_action_is_disruptive(self, watcher):
+        # step_control_action treats manual_ap as disruptive: it owns the pass and
+        # is deferred (left queued) while an activation is in flight.
+        watcher.STATE.setup_mode = False
+        watcher.STATE.transitioning = False
+        watcher.STATE.pending_control_action = "manual_ap"
+        watcher.STATE.pending_control_params = {"reason": "user"}
+        watcher.control_action_event.set()
+        with patch.object(watcher, "enter_setup_mode"):
+            v = watcher.step_control_action(self._pre(watcher))
+        assert v is watcher.Verdict.OWN_PASS
+        assert not watcher.control_action_event.is_set()
+
+    def test_manual_ap_control_action_deferred_while_transitioning(self, watcher):
+        watcher.STATE.transitioning = True
+        watcher.STATE.pending_control_action = "manual_ap"
+        watcher.STATE.pending_control_params = {"reason": "user"}
+        watcher.control_action_event.set()
+        with patch.object(watcher, "enter_setup_mode") as enter:
+            v = watcher.step_control_action(self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         enter.assert_not_called()
-        assert not watcher.ap_request_event.is_set()  # event still consumed
+        # Left queued for a later pass (never dropped).
+        assert watcher.control_action_event.is_set()
+        assert watcher.STATE.pending_control_action == "manual_ap"
 
     # ---- Phase B-late USB-failure fallback (over the debounced verdict) ----
 

@@ -917,7 +917,9 @@ def build_app(w) -> Flask:
 
         Retained for compatibility but now requires both a loopback source and the
         per-boot control token, so no unauthenticated privileged loopback-only route
-        remains behind nginx.
+        remains behind nginx.  Queues a ``manual_ap`` control action on the shared
+        control channel — so it defers while a transition is in flight and adopts
+        the channel's busy semantics — instead of the legacy dedicated event.
         """
         if not _control_authorised():
             w.logger.warning("Rejected /request_ap_mode (unauthenticated/non-loopback)")
@@ -930,14 +932,18 @@ def build_app(w) -> Flask:
         if not reason:
             reason = (request.form.get("reason") or "").strip()
 
-        # There is no once-per-boot AP budget any more: a MANUAL
-        # hotspot is enterable whenever requested; the 30-minute session lifetime
-        # is the only rate limit.  Always queue the request.
+        # There is no once-per-boot AP budget: a MANUAL hotspot is enterable
+        # whenever requested; the 30-minute session lifetime is the only rate
+        # limit.  Reject with 409 only when another control action is already
+        # pending or in progress (the caller retries once the channel is free).
         with w.state_lock:
-            w.STATE.ap_request_reason = reason
-            w.ap_request_event.set()
+            if w.STATE.pending_control_action or w.STATE.control_in_progress:
+                return jsonify({"ok": False, "error": "busy"}), 409
+            w.STATE.pending_control_action = "manual_ap"
+            w.STATE.pending_control_params = {"reason": reason}
+            w.control_action_event.set()
 
         w.logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")
-        return jsonify({"ok": True, "queued": True})
+        return jsonify({"ok": True, "queued": True, "action": "manual_ap"})
 
     return app

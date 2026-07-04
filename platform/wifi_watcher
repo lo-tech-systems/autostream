@@ -471,9 +471,6 @@ class NetworkMonitorState:
     # short error code/message (e.g. nmcli-failed, no-local-ip)
     last_apply_error: str = ""
 
-    # ---- Manual AP-mode request (from WebUI via localhost) ----
-    ap_request_reason: str = ""
-
     # ---- Avahi mDNS hostname monitoring ----
     avahi_hostname: Optional[str] = None
     avahi_mismatch_start: Optional[float] = None
@@ -558,10 +555,8 @@ state_lock = threading.Lock()
 # Serialise AP start/stop transitions
 ap_mode_lock = threading.Lock()
 
-# Manual AP-mode request (from the normal WebUI via localhost)
-ap_request_event = threading.Event()
-
-# Queued local-control action consumed by the monitor loop.
+# Queued local-control action consumed by the monitor loop (manual AP requests,
+# start_setup, reconnect_saved, set_log_level).
 control_action_event = threading.Event()
 
 # The per-boot control token and the loopback control/auth surface
@@ -1332,6 +1327,17 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
         if action == "start_setup":
             start_explicit_setup()
             result = "ok"
+        elif action == "manual_ap":
+            # Enter a MANUAL hotspot on a WebUI request (overrides the boot-AP
+            # cutoff).  A MANUAL session is not torn down by Ethernet.  A no-op
+            # when a hotspot session is already active.
+            with state_lock:
+                already_in_ap = STATE.setup_mode
+            if not already_in_ap:
+                enter_setup_mode(
+                    HotspotPurpose.MANUAL,
+                    reason=f"manual_request: {params.get('reason') or 'UserRequest'}")
+            result = "ok"
         elif action == "reconnect_saved":
             result = "ok" if reconnect_saved_network() else "failed"
         elif action == "set_log_level":
@@ -1847,24 +1853,6 @@ def step_mdns_reannounce(pre: "PreFactsContext") -> "Verdict":
     return Verdict.CONTINUE
 
 
-def step_manual_ap_request(pre: "PreFactsContext") -> "Verdict":
-    """Enter a MANUAL hotspot on a WebUI request (overrides the boot-AP cutoff)."""
-    if ap_request_event.is_set():
-        with state_lock:
-            reason = STATE.ap_request_reason
-            # Clear stored reason once consumed (optional but keeps it tidy)
-            STATE.ap_request_reason = ""
-            ap_request_event.clear()
-            already_in_ap = STATE.setup_mode
-        # If we're not already in AP mode, enter a MANUAL hotspot now.  A MANUAL
-        # session is not torn down by Ethernet.
-        if not already_in_ap:
-            enter_setup_mode(HotspotPurpose.MANUAL,
-                             reason=f"manual_request: {reason or 'UserRequest'}")
-            return Verdict.OWN_PASS
-    return Verdict.CONTINUE
-
-
 def step_revert_log_level(pre: "PreFactsContext") -> "Verdict":
     """Revert a temporary runtime log level once its TTL expires."""
     revert_expired_log_level(pre.now)
@@ -2350,7 +2338,6 @@ def network_monitor_loop(run_once: bool = False):
         step_apply_activation_result,
         partial(step_avahi_hostname, loop_state=loop_state),
         step_mdns_reannounce,
-        step_manual_ap_request,
         step_revert_log_level,
         step_control_action,
         step_reconfigure_timeout,
