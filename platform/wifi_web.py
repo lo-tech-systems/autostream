@@ -3,7 +3,7 @@
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
-Flask HTTP surface for the Autostream Wi-Fi watcher (HTTP-extraction plan).
+Flask HTTP surface for the Autostream Wi-Fi watcher.
 This module owns:
 
   * presentation — the setup/captive-portal page rendering (render_setup_page,
@@ -38,7 +38,7 @@ from typing import Optional
 
 from flask import Flask, request, jsonify, redirect, url_for, make_response
 
-# Per-boot control token (Section 10.1).  Generated at startup; the normal Web
+# Per-boot control token.  Generated at startup; the normal Web
 # UI reads the token file and supplies it as an X-Autostream-Wifi-Control header
 # on direct-localhost requests.  Never sent to the browser or logged.  This is
 # the single source of truth for the loopback control surface (the watcher calls
@@ -570,7 +570,7 @@ CAPTIVE_LANDING = """<!doctype html>
 
 
 def _has_saved_network(w) -> bool:
-    """True if a committed or rollback connection exists (Section 11.5)."""
+    """True if a committed or rollback connection exists."""
     if w.get_configured_network_state().is_configured:
         return True
     with w.state_lock:
@@ -580,7 +580,7 @@ def _has_saved_network(w) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Local control / auth surface (loopback + per-boot token; Section 10.1)
+# Local control / auth surface (loopback + per-boot token)
 # ---------------------------------------------------------------------------
 
 def _atomic_write(path: str, data: str, mode: int = 0o644) -> None:
@@ -667,7 +667,7 @@ _VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved", "set_log_level"}
 
 
 def validate_log_level_request(w, level, ttl) -> tuple[str, Optional[int]]:
-    """Validate a set_log_level request (WP7).
+    """Validate a set_log_level request.
 
     Returns ``(error, clamped_ttl)``; *error* is "" when valid.  ``debug``
     requires a TTL; provided TTLs must be numeric and are clamped to
@@ -715,7 +715,7 @@ def build_app(w) -> Flask:
                 w.logger.warning("WiFi configuration POST received without SSID")
                 return _captive_response(render_setup_page())
 
-            # WS1-WP4: enqueue the apply on the shared activation worker instead of
+            # Enqueue the apply on the shared activation worker instead of
             # spawning a Flask thread, so it is serialised with the loop's
             # activations (no unmanaged second writer).  submit_apply_credentials
             # sets apply_in_progress + "applying" on accept.
@@ -732,7 +732,7 @@ def build_app(w) -> Flask:
         w.logger.info("User requested /setup (error: %s)", e)
 
         # Offer "Reconnect to saved network" only when a saved network exists —
-        # never during first-run unconfigured setup (Section 11.5).
+        # never during first-run unconfigured setup.
         show_reconnect = _has_saved_network(w)
         return _captive_response(render_setup_page(e, show_reconnect=show_reconnect))
 
@@ -740,7 +740,7 @@ def build_app(w) -> Flask:
     def networks():
         """Return merged, deduplicated networks seen by all detected adapters.
 
-        Response shape (Section 6.2):
+        Response shape:
             {"networks": [{ssid, signal, builtin_visible, usb_visible,
                            adapter_macs}, ...], "builtin_scan_known": bool}
         """
@@ -833,7 +833,7 @@ def build_app(w) -> Flask:
         resp.headers["Pragma"] = "no-cache"
         return resp
 
-    # ** LOCAL CONTROL API (WP6, Section 10.1) **
+    # ** LOCAL CONTROL API **
     # Privileged loopback surface: every route requires loopback AND the
     # per-boot token (_control_authorised); handlers only validate/authenticate
     # and queue/trigger — all policy consumption stays in the watcher.
@@ -882,7 +882,7 @@ def build_app(w) -> Flask:
         action = payload.get("action")
         keys = set(payload.keys())
 
-        # Per-action field validation (WP7).  start_setup/reconnect_saved accept
+        # Per-action field validation.  start_setup/reconnect_saved accept
         # only {"action"}; set_log_level accepts {"action","level","ttl_seconds?"}.
         params: dict = {}
         if action in ("start_setup", "reconnect_saved"):
@@ -930,7 +930,7 @@ def build_app(w) -> Flask:
         if not reason:
             reason = (request.form.get("reason") or "").strip()
 
-        # There is no once-per-boot AP budget any more (defect 2): a MANUAL
+        # There is no once-per-boot AP budget any more: a MANUAL
         # hotspot is enterable whenever requested; the 30-minute session lifetime
         # is the only rate limit.  Always queue the request.
         with w.state_lock:

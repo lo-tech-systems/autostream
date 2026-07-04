@@ -3,8 +3,7 @@
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
-Runtime network-status snapshot construction for the Autostream Wi-Fi watcher
-(dead-PHY recovery plan, WP8 split of platform/wifi_watcher).
+Runtime network-status snapshot construction for the Autostream Wi-Fi watcher.
 
 This module builds the nested ``schema_version: 1`` snapshot from facts plus the
 watcher's recovery state and publishes it atomically.  All derived meaning
@@ -101,7 +100,7 @@ def _primary_wired_ifname(addresses: dict) -> str:
 
 
 class AdapterHealthVerdict(NamedTuple):
-    """The single adapter-health presentation verdict (IF-7a).
+    """The single adapter-health presentation verdict.
 
     `_classify_adapter_health` is the one place that maps facts + recovery flags
     to what the status surface shows for an adapter — `state`/`severity` plus the
@@ -135,14 +134,14 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
         state = "healthy"
     elif noip_suppressed:
         # No-IP ledger spent (retries suppressed): the adapter has been *held
-        # back* / demoted out of service (C-WP3).  Distinct from a transient
+        # back* / demoted out of service.  Distinct from a transient
         # degraded_no_ip, and surfaced regardless of carrier so a demoted
         # carrier-down spare is no longer indistinguishable from a plain
         # link_down / "".
         state = "no_ip_held_back"
     elif is_no_ip:
         # Overlay verdict: associated/carrier-up but repeatedly could not get a
-        # usable IP/gateway (defect 3) — distinct from a transient `connecting`.
+        # usable IP/gateway — distinct from a transient `connecting`.
         state = "degraded_no_ip"
     elif is_link_down:
         state = "link_down"
@@ -165,7 +164,7 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
     elif budget_exhausted:
         warning = "reset_budget_exhausted"
     elif noip_suppressed:
-        # Retries suppressed: demoted/held back out of service (C-WP3).  A
+        # Retries suppressed: demoted/held back out of service.  A
         # distinct code from the transient "no_ip_address" so the web card can
         # say the adapter was taken out of service, not merely slow.
         warning = "no_ip_held_back"
@@ -177,7 +176,7 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
         warning = ""
 
     # health.checks / health.reason detail.  Held-back takes precedence over the
-    # transient no-IP reason, matching the state ladder's order (IF-7a): a
+    # transient no-IP reason, matching the state ladder's order: a
     # held-back adapter publishes its no-IP count even carrier-down, where the
     # old transient-only ternary published checks:0/reason:"".
     if is_dead:
@@ -205,7 +204,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
     Uses the watcher's facts and the dead-PHY recovery ledger.  All derived
     meaning is computed here (platform policy); core only supplies facts.  When
-    *addresses* is supplied (the per-tick Facts snapshot, WP1) it is reused
+    *addresses* is supplied (the per-tick Facts snapshot) it is reused
     rather than re-enumerated via ``ip``.
     """
     if adapters is None:
@@ -262,7 +261,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         budget_exhausted = rf.budget_exhausted
         v4, v6 = _adapter_ip_lists(addresses, a.ifname)
 
-        # Overlay no-IP verdict (defect 3): managed + carrier-up + not healthy +
+        # Overlay no-IP verdict: managed + carrier-up + not healthy +
         # repeated no-IP failures recorded in the overlay ledger.
         noip_count = rf.noip_count
         is_no_ip = rf.is_no_ip
@@ -283,7 +282,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             # Only an *attributed* problem degrades whole-device state: the active
             # client, a no-IP adapter, a dead-PHY adapter, or a quarantined one.
             # An idle unusable spare (merely unhealthy, no attribution) does not
-            # silently flip device.state to degraded (defect 3 tightening).
+            # silently flip device.state to degraded.
             any_unhealthy = True
 
         gw_ipv4 = wifi_net.default_gateway_ipv4(a.ifname)
@@ -354,10 +353,10 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 "resets_24h": recent_reset_count,
                 "reset_budget_24h": w.USB_MAX_RESETS_PER_WINDOW,
                 "warning": warning,
-                # Demoted/held back out of service after repeated no-IP failures
-                # (C-WP3): the no-IP retry budget is spent for this adapter.
+                # Demoted/held back out of service after repeated no-IP failures:
+                # the no-IP retry budget is spent for this adapter.
                 "held_back": bool(noip_suppressed),
-                # No-IP failure count (IF-7a): the meaningful number for a
+                # No-IP failure count: the meaningful number for a
                 # held-back / transient-no-IP adapter, which the dead-PHY reset
                 # ledger ("resets_24h") never ticks.  The web card renders this
                 # published field directly; schema-additive.
@@ -411,7 +410,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         primary_ssid = wifi_net.get_active_wifi_ssid(primary_ifname) or ""
         if not primary_ssid:
             # Hidden SSID (never in the scan list) or a stale scan cache: fall
-            # back to the *active* connection's configured SSID (IF-7c).  Cost is
+            # back to the *active* connection's configured SSID.  Cost is
             # two extra bounded nmcli calls per publish tick, incurred only when
             # the scan-based lookup came up empty.  Active (not committed)
             # profile keeps this truthful in the transient active != committed
@@ -456,7 +455,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             "state": device_state,
             "mode": mode_value,
             # True when the client is running on the built-in radio as a fallback
-            # because a configured USB path failed/was demoted (C-WP3): lets the
+            # because a configured USB path failed/was demoted: lets the
             # web card say "running on on-board WiFi".
             "using_builtin_fallback": bool(using_fallback),
             "primary_ifname": primary_ifname,

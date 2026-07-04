@@ -24,7 +24,7 @@ read from one five-row purpose table (PURPOSE_TABLE) rather than a soup of boole
         usable wired ethernet appears.  Nothing saved to probe for.
   - BOOT_RECOVERY (configured, offline at boot): runs for up to 30 minutes but probes for
         the saved network's return every pass and leaves as soon as it reconnects — so a
-        device whose router booted slower than the Pi recovers promptly (defect 1 fix).
+        device whose router booted slower than the Pi recovers promptly.
   - USB_LOSS_RECOVERY (configured, lost its client path at runtime): same 30-minute,
         probe-for-return policy.
   - EXPLICIT_RECONFIGURE / MANUAL (user-initiated): 30 minutes, not suppressed by ethernet.
@@ -34,7 +34,7 @@ read from one five-row purpose table (PURPOSE_TABLE) rather than a soup of boole
         the previous network at the 30-minute deadline if the user never completes setup.
 
 There is no once-per-boot AP budget: the 30-minute session lifetime is the only rate limit,
-so a recovery hotspot is available whenever the device is offline (defect 2 fix).  A failed
+so a recovery hotspot is available whenever the device is offline.  A failed
 WiFi configuration attempt simply re-enters the hotspot.
 
 If a wired ethernet path is usable (carrier plus a valid non-link-local IPv4 address),
@@ -55,7 +55,7 @@ than 5 minutes, the script trys to reconnect to the network periodically.
 
 When usable wired ethernet is present it wins regardless of subnet: the watcher disconnects the
 idle WiFi client and runs on ethernet to leave a single deterministic network path and mDNS
-address (Section 2.7). The only gate is playback — switching the active interface changes the
+address. The only gate is playback — switching the active interface changes the
 appliance IP and would break an in-flight stream, so the disconnect is deferred while playback
 is active or uncertain (and while apply/setup work is in progress). If ethernet later drops, the
 watcher attempts a prompt reconnect on entry to the offline-reconnecting state (no 5-minute wait).
@@ -73,7 +73,7 @@ Note that this script always serves the setup page. The associated NGINX configu
 controls which web server (this or autostream_webui.py) services requests via the presence
 (or not) of /tmp/apmode.
 
-== Module responsibility split (HTTP-extraction plan) ==
+== Module responsibility split ==
 
 This module owns recovery *policy/orchestration*: the state machine, timers,
 AP/setup transitions, apply/scan, fallback, dead-PHY recovery, and the runtime
@@ -86,37 +86,34 @@ lifecycle from __main__. Dead-PHY recovery lives in wifi_recovery.py and the
 status snapshot in wifi_status.py; both, like wifi_web, receive this module as
 ``w`` across the seam and never import wifi_watcher.
 
-== Explicit state-machine model (state-machine refactor) ==
+== Explicit state-machine model ==
 
 The operating mode is an explicit ``Mode`` (BOOT / ONLINE / OFFLINE_RECONNECTING
-/ HOTSPOT / REBOOT_PENDING), not an emergent property of a dozen booleans, and is
-published as ``device.mode``.  All hotspot entry/exit policy is one five-row
-``PURPOSE_TABLE`` keyed by ``HotspotPurpose``; the live session is a
-``HotspotSession`` on STATE.  The decision core is **pure** (constraint 10) and
-now lives in ``platform/wifi_policy.py``: ``next_mode(state, facts)``, the
+/ HOTSPOT / REBOOT_PENDING), published as ``device.mode``.  All hotspot
+entry/exit policy is one five-row ``PURPOSE_TABLE`` keyed by ``HotspotPurpose``;
+the live session is a ``HotspotSession`` on STATE.  The decision core is **pure**
+and lives in ``platform/wifi_policy.py``: ``next_mode(state, facts)``, the
 ``PURPOSE_TABLE`` lookups, and ``next_recovery_action`` take values in and return
 values out — no STATE mutation, no subprocess, no effects, no ``w`` seam.  The
 watcher re-exports those names and its loop *applies* the returned values each
 pass (setting ``STATE.mode``/``STATE.hotspot`` and invoking effects).  The
 adapter-remediation overlay (``wifi_recovery.diagnose_client_failure`` and the
 no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
-consumes them and applies the connectivity transition.  Off-thread slow
-transitions (the monitoring-blackout fix) are deliberately deferred to the
-follow-on async-activation workstream, which reintroduces a load-bearing
-in-flight-job flag alongside the worker.
+consumes them and applies the connectivity transition.  Slow transitions run
+off-thread on the activation worker, gated by a load-bearing in-flight-job flag
+so at most one effectful transition is in flight at a time.
 
 A second pure classifier, ``next_recovery_action(state, recovery_facts)``, owns the
 *recovery priority ladder* — Ethernet > preferred USB > onboard client >
 hotspot-as-last-resort — over a per-pass ``RecoveryFacts`` snapshot built from the
 shared per-adapter facts in ``wifi_recovery.adapter_recovery_facts`` (health,
 carrier, reset budget, quarantine, no-IP).  It is the single source of the
-client-path-vs-hotspot decision that was previously scattered across the
-boot-entry, USB-failure fallback, and recovery-hotspot probe sites; a wedged USB
-with no onboard alternative is left to the dead-PHY reset/quarantine/reboot
-mechanics in ``wifi_recovery``.  The fix it encodes: a broken USB dongle must
-never trap the device in a 30-minute hotspot on the only working radio — the
-onboard is tried as a client before hosting a recovery AP (boot entry) and is
-climbed back to from within a recovery hotspot (the exit edge).
+client-path-vs-hotspot decision.  A wedged USB with no onboard alternative is
+left to the dead-PHY reset/quarantine/reboot mechanics in ``wifi_recovery``.
+The invariant it encodes: a broken USB dongle must never trap the device in a
+30-minute hotspot on the only working radio — the onboard is tried as a client
+before hosting a recovery AP (boot entry) and is climbed back to from within a
+recovery hotspot (the exit edge).
 """
 
 import glob
@@ -144,15 +141,15 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-# Pure connectivity policy (enums, the hotspot purpose table, and — added in
-# later Phase-B work packages — the mode / recovery-ladder classifiers).  Lives
-# in a standalone effect-free module; re-exported below so existing
-# `wifi_watcher.<name>` references and the `w` seam keep working.
+# Pure connectivity policy: enums, the hotspot purpose table, and the mode /
+# recovery-ladder classifiers.  A standalone effect-free module; re-exported
+# below so existing `wifi_watcher.<name>` references and the `w` seam keep
+# working.
 import wifi_policy
 
 # Flask presentation/HTTP surface (page rendering, app factory, captive/setup
 # routes).  Deployed beside the watcher in /opt/autostream; it takes this module
-# across the seam and never imports wifi_watcher (HTTP-extraction plan).
+# across the seam and never imports wifi_watcher.
 import wifi_web
 
 
@@ -170,8 +167,7 @@ _DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
 WIFI_WATCHER_VERSION = "1.0.0"
 
 # Presentation (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS,
-# render_setup_page, render_wait_page) lives in wifi_web.py (HTTP-extraction
-# plan, WP1).
+# render_setup_page, render_wait_page) lives in wifi_web.py.
 
 # File locations
 LOG_FILE = "/var/log/autostream/autostream_wifi_watcher.log"
@@ -183,7 +179,7 @@ AP_MODE_FLAG_PATH = os.environ.get('APP_APMODE_FLAG', '/tmp/apmode')
 AP_PREFIX = os.environ.get('APP_AP_PREFIX', 'autostream')
 DNSMASQ_SERVICE = os.environ.get('APP_DNSMASQ_SERVICE', 'autostream_dnsmasq.service')
 
-# Runtime dnsmasq config binding (Section 7.2).  The product-specific template
+# Runtime dnsmasq config binding.  The product-specific template
 # is installed outside dnsmasq's automatic include dir; the watcher substitutes
 # the resolved recovery interface and writes a runtime file the service reads.
 DNSMASQ_TEMPLATE_PATH = os.environ.get(
@@ -217,11 +213,11 @@ NO_ACTIVE_PATH_REBOOT_AFTER = 12 * 60 * 60  # if no usable non-hotspot path for 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
 GW_DOWN_REBOOT_AFTER = 30 * 60          # gateway unreachable for this long -> reboot
 RECONNECT_ATTEMPT_INTERVAL = 2 * 60     # interval between reconnect attempts (expensive join lower bound)
-# Recovery-hotspot scan cadence (WP6): how often a recovery hotspot scans for the
+# Recovery-hotspot scan cadence: how often a recovery hotspot scans for the
 # saved SSID's return.  Bounds the cheap scan independently of the loop tick so a
 # recovery hotspot does not churn the radio/CPU on the Pi Zero every pass.
 RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery scans
-# Runtime USB-adoption scan cadence (IF-6): how often the idle-time adoption gate
+# Runtime USB-adoption scan cadence: how often the idle-time adoption gate
 # rescans a USB candidate that could not see the committed SSID.  Adoption is an
 # optimisation on a device already healthy on the built-in, so re-scan latency
 # costs nothing; the first scan for a newly stable candidate always runs
@@ -229,25 +225,21 @@ RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery sc
 ADOPTION_SCAN_INTERVAL = 5 * 60         # seconds between saved-SSID adoption scans
 REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
-# Multi-adapter failure/adoption tuning (WP5).
-# Source-level connectivity_ok hysteresis (C-WP1): a *soft* unhealthy signal must
+# Multi-adapter failure/adoption tuning.
+# Source-level connectivity_ok hysteresis: a *soft* unhealthy signal must
 # persist this many consecutive passes before the path is declared down.  A
 # healthy pass clears it immediately (slow to condemn, quick to forgive).  Soft
 # signals: client connected with carrier up but gateway/IPv4 not ready
-# (transient), and — since C2-WP3 folded the overlay's own USB debounce in here —
-# a recorded USB client NM-disconnected but still physically present.  HARD
-# signals (nothing configured, no client and no present USB to reconnect,
-# NO-CARRIER) bypass the debounce.  This N is the single 2-pass debounce that the
-# retired USB_UNHEALTHY_DEBOUNCE used to duplicate.
+# (transient), and a recorded USB client NM-disconnected but still physically
+# present.  HARD signals (nothing configured, no client and no present USB to
+# reconnect, NO-CARRIER) bypass the debounce.
 CONNECTIVITY_DOWN_DEBOUNCE = 2
 USB_ADOPTION_STABLE_PASSES = 2         # consecutive passes a USB candidate must be present
-# WS1-WP3: bound async onboard-client activation failures per offline episode so a
+# Bound async onboard-client activation failures per offline episode so a
 # present-but-failing onboard (which the no-IP ledger never suppresses) eventually
 # yields to the recovery hotspot.  Once this many onboard activations fail in an
 # episode, gather_recovery_facts stops offering the onboard as a client rung, so
-# the ladder returns ENTER_HOTSPOT.  Reset on any healthy pass.  (In the pre-WS1
-# synchronous path this was implicit: a site tried the onboard once, then entered
-# the hotspot in the same pass; the async model needs an explicit bound.)
+# the ladder returns ENTER_HOTSPOT.  Reset on any healthy pass.
 ONBOARD_ACTIVATION_MAX_FAILURES = 2
 PLAYING_STATUS_URL = os.environ.get(
     'APP_PLAYING_STATUS_URL', 'http://127.0.0.1:8080/api/playing-status'
@@ -261,7 +253,7 @@ PLAYING_STATUS_WARN_THROTTLE = 5 * 60   # throttle "playing status unavailable" 
 #   - wlan0 has a non-link-local RFC1918 IPv4 address (i.e., not 169.254/16)
 WAIT_FOR_CONNECTION_TIMEOUT = 45        # Seconds to wait for local IPv4 after config
 WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for local IPv4 checks
-# Enforceable per-command bounds for the worker-path nmcli subprocesses (WS1 §3.7):
+# Enforceable per-command bounds for the worker-path nmcli subprocesses:
 # run_cmd(timeout=…) SIGKILLs a hung child (rc 124), so the job's total bound is
 # the deterministic sum of these plus the wait_for_connection deadline — a thread
 # cannot self-interrupt in subprocess.run, so command-level timeouts are the bound.
@@ -286,7 +278,7 @@ AVAHI_MAX_RESTART_ATTEMPTS = -1         # max avahi restarts per boot (-1 = unli
 # interfaces only.
 AVAHI_REANNOUNCE_DEBOUNCE  = 5          # seconds the address set must be stable before re-announcing
 
-# Dead-PHY recovery (WP-dead-phy).  A wedged-but-present USB Wi-Fi adapter
+# Dead-PHY recovery.  A wedged-but-present USB Wi-Fi adapter
 # (NO-CARRIER / state DOWN) is detected, reset via sysfs, and — only when
 # genuinely offline — escalated to a guarded reboot.
 DEAD_ADAPTER_DEBOUNCE      = 2            # consecutive link-down+unhealthy passes before "dead"
@@ -301,21 +293,21 @@ DEAD_ADAPTER_REBOOT_STAMP  = "/var/lib/autostream/dead-phy-reboot.stamp"
 DEAD_ADAPTER_REBOOT_WINDOW = 24 * 60 * 60  # persistent reboot-guard window
 DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW = 3   # cross-boot dead-PHY reboot cap
 
-# Runtime log-level control (WP7).  Only these levels may be set at runtime via
+# Runtime log-level control.  Only these levels may be set at runtime via
 # the loopback/token-protected control surface; debug must carry a TTL.
 RUNTIME_LOG_LEVELS = {"warning": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG}
 LOG_LEVEL_TTL_MIN = 60
 LOG_LEVEL_TTL_MAX = 3600
 
 
-# ** EXPLICIT STATE MODEL (state-machine refactor) **
+# ** EXPLICIT STATE MODEL **
 #
-# These types are the permanent explicit model the watcher runs on.  They are
-# pure data + pure classifiers (constraint 10): no STATE mutation, no subprocess,
-# no effects, and no dependency on the `w` seam — and now live in the standalone
-# platform/wifi_policy.py module (re-exported below).  next_mode() is the
-# permanent pure forward classifier; the loop applies its result by setting
-# STATE.mode each pass, and the mode is published as device.mode.
+# These types are the explicit model the watcher runs on: pure data + pure
+# classifiers (no STATE mutation, no subprocess, no effects, no dependency on the
+# `w` seam), living in the standalone platform/wifi_policy.py module (re-exported
+# below).  next_mode() is the pure forward classifier; the loop applies its
+# result by setting STATE.mode each pass, and the mode is published as
+# device.mode.
 
 
 # Connectivity mode, hotspot purpose, the purpose-policy row shape, and the
@@ -399,7 +391,7 @@ def _setup_logging() -> None:
     level = _LEVEL_MAP.get(env_level, logging.INFO)
 
     # Record the startup/default runtime level name for the status snapshot and
-    # for reverting temporary levels (WP7).  Only the runtime-settable names are
+    # for reverting temporary levels.  Only the runtime-settable names are
     # carried verbatim; anything else (fatal/log/spam) reports as "info".
     STATE.default_log_level_name = env_level if env_level in RUNTIME_LOG_LEVELS else "info"
 
@@ -437,21 +429,18 @@ class NetworkMonitorState:
     wifistate: str = "unknown"        # "configured" / "unconfigured" / "unknown"
     wiredstate: str = "unknown"       # "connected" / "disconnected" / "unknown"
     connectivity_ok: bool = False     # "healthy" using the same validation logic as initial wifi checks
-    # Consecutive *soft* unhealthy passes for the connectivity_ok down-debounce
-    # (C-WP1); reset to 0 on any healthy pass or a hard failure.
+    # Consecutive *soft* unhealthy passes for the connectivity_ok down-debounce;
+    # reset to 0 on any healthy pass or a hard failure.
     conn_unhealthy_checks: int = 0
-    # True once the device has been ONLINE at least once this boot (C-WP2).  A
+    # True once the device has been ONLINE at least once this boot.  A
     # runtime connectivity loss after this must be handled by the debounced
     # runtime paths, never by re-entering the boot-recovery rung.
     been_online_this_boot: bool = False
 
-    # Setup / AP state.  ``setup_mode`` stays the "a hotspot session is active"
+    # Setup / AP state.  ``setup_mode`` is the "a hotspot session is active"
     # boolean read across the modules and tests; ``hotspot`` is the authoritative
-    # HotspotSession that subsumes the old setup_purpose / reconfigure_* /
-    # rollback_* / manual_ap_active / ap_enter_time flags (state-machine refactor,
-    # WP3).  There is no once-per-boot AP budget: the 30-minute session lifetime
-    # is the rate limit (defect 2 fix), so ap_exhausted / force_setup_mode /
-    # ap_closed_time are gone.
+    # HotspotSession.  There is no once-per-boot AP budget: the 30-minute session
+    # lifetime is the rate limit.
     setup_mode: bool = False
     hotspot: "Optional[HotspotSession]" = None
     # Authoritative connectivity mode, applied by the loop each pass from the
@@ -465,10 +454,10 @@ class NetworkMonitorState:
     # Degradation tracking for "healthy connectivity"
     conn_down_start: Optional[float] = None
     last_reconnect_attempt: Optional[float] = None
-    # Last time a recovery hotspot scanned for the saved SSID (WP6 scan gate).
+    # Last time a recovery hotspot scanned for the saved SSID (scan gate).
     last_recovery_scan: Optional[float] = None
     # Last time runtime USB adoption scanned the candidate for the committed SSID
-    # (IF-6 scan gate).
+    # (scan gate).
     last_adoption_scan: Optional[float] = None
     # Reboot-request throttle: monotonic time before which another reboot request is
     # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
@@ -500,45 +489,41 @@ class NetworkMonitorState:
     # Explicit re-announce nudge from an orchestrated handover.
     mdns_reannounce_pending: bool = False
 
-    # ---- Off-thread activation worker (WS1) ----
+    # ---- Off-thread activation worker ----
     # Set when an activation job is in flight on the worker and cleared when its
     # result is applied at pass top.  While set, handlers that would start a
     # conflicting connectivity/AP transition hold off (one effectful transition at
     # a time); monitoring, status publishing and non-disruptive control actions
-    # keep running.  Load-bearing (unlike the inert flag A-WP1 removed).
+    # keep running.
     transitioning: bool = False
-    # WS1-WP3: async onboard-activation failures this offline episode (reset on a
-    # healthy pass).  When it reaches ONBOARD_ACTIVATION_MAX_FAILURES the onboard
-    # is no longer offered as a client rung, so the ladder falls to the hotspot.
+    # Async onboard-activation failures this offline episode (reset on a healthy
+    # pass).  When it reaches ONBOARD_ACTIVATION_MAX_FAILURES the onboard is no
+    # longer offered as a client rung, so the ladder falls to the hotspot.
     onboard_activation_failures: int = 0
 
-    # ---- Multi-adapter failure / adoption (WP5, Section 8.1) ----
-    # (C2-WP3 retired active_usb_unhealthy_checks: the single conn_unhealthy_checks
-    #  hysteresis counter now debounces the active-USB failure case as well.)
+    # ---- Multi-adapter failure / adoption ----
     using_builtin_fallback: bool = False
     active_client_ifname: str = ""
     active_client_mac: str = ""
     pending_usb_adoption_mac: Optional[str] = None
     pending_usb_adoption_checks: int = 0
-    # Per-stable-id "associated but no IP" / adoption-failure ledger (WP5b).
+    # Per-stable-id "associated but no IP" / adoption-failure ledger.
     # stable_id -> {"count": int, "retry_after": float}.  Drives the
     # DEGRADED_NO_IP status taxonomy and the escalating adoption back-off.
     adapter_noip_ledgers: dict = field(default_factory=dict)
     last_detected_adapter_macs: Optional[frozenset] = None
-    # (WS2-WP4 retired last_playing_status_warn: the "playing status unavailable"
-    #  warning now uses the shared log_throttled time-window helper.)
 
-    # Explicit reconfiguration, rollback snapshot, and AP-session timing now live
-    # on the HotspotSession (STATE.hotspot); see the purpose table (Section 2.3).
+    # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
+    # the HotspotSession (STATE.hotspot).
 
-    # ---- Local control API (WP6, Section 10.1) ----
+    # ---- Local control API ----
     pending_control_action: str = ""
     control_in_progress: bool = False
     last_control_action: str = ""
     last_control_result: str = ""
     last_control_error: str = ""
 
-    # ---- Dead-PHY recovery (WP-dead-phy) ----
+    # ---- Dead-PHY recovery ----
     dead_adapter_ifname: str = ""               # interface currently classed dead ("" = none)
     dead_adapter_checks: int = 0                # debounce counter
     dead_adapter_since: Optional[float] = None  # monotonic; when first declared dead
@@ -554,7 +539,7 @@ class NetworkMonitorState:
     dead_adapter_stable_id: str = ""
     dead_adapter_healthy_since: Optional[float] = None  # monotonic; sustained-health start
 
-    # ---- Runtime log-level control (WP7) ----
+    # ---- Runtime log-level control ----
     pending_control_params: dict = field(default_factory=dict)
     temporary_log_level: str = ""
     temporary_log_level_until: Optional[float] = None
@@ -576,12 +561,12 @@ ap_mode_lock = threading.Lock()
 # Manual AP-mode request (from the normal WebUI via localhost)
 ap_request_event = threading.Event()
 
-# Queued local-control action consumed by the monitor loop (WP6).
+# Queued local-control action consumed by the monitor loop.
 control_action_event = threading.Event()
 
 # The per-boot control token and the loopback control/auth surface
 # (init_control_token/remove_control_token, _control_authorised, the control
-# routes) live in wifi_web.py (HTTP-extraction plan, WP3).
+# routes) live in wifi_web.py.
 
 # AP / host configuration.
 # AP_IFNAME remains the compatibility default for interface-aware helper calls;
@@ -657,7 +642,7 @@ _last_logged_values: dict[str, object] = {}
 _last_throttled_log: dict[str, float] = {}
 
 
-# Log de-duplication — three complementary mechanisms, one job each (WS2-WP4).
+# Log de-duplication — three complementary mechanisms, one job each.
 # New code should pick the one matching intent:
 #   * DeduplicateFilter — transport-level; drops any record identical to one seen
 #     in the last 60 s.  A blanket backstop; do not rely on it for semantics.
@@ -729,7 +714,7 @@ def _hotspot_blocks_eth(session) -> bool:
     """True when a user-initiated (non eth-suppressible) hotspot is active.
 
     EXPLICIT_RECONFIGURE / MANUAL hotspots are AP-to-connect-a-new-network and
-    must not be torn down just because usable Ethernet appears (Section 2.3).
+    must not be torn down just because usable Ethernet appears.
     """
     return session is not None and not PURPOSE_TABLE[session.purpose].eth_suppressible
 
@@ -738,10 +723,10 @@ def enter_setup_mode(purpose: "HotspotPurpose", reason: str = "",
                      rollback: "Optional[RollbackSnapshot]" = None) -> None:
     """Transition into SetupMode and start the hotspot for *purpose*.
 
-    The session lifetime/exit policy is driven entirely by PURPOSE_TABLE[purpose]
-    (Section 2.3): FIRST_RUN runs indefinitely; every other purpose runs for
-    AP_MAX_DURATION (30 min).  There is no once-per-boot budget — the recovery
-    hotspot is enterable whenever the device is offline (defect 2 fix).
+    The session lifetime/exit policy is driven entirely by PURPOSE_TABLE[purpose]:
+    FIRST_RUN runs indefinitely; every other purpose runs for AP_MAX_DURATION
+    (30 min).  There is no once-per-boot budget — the recovery hotspot is
+    enterable whenever the device is offline.
     """
     with state_lock:
         if STATE.setup_mode:
@@ -951,7 +936,7 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
 def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     """Create, activate and validate a candidate profile on one adapter.
 
-    Implements the rollback-safe candidate sequence (Section 6.5). The PSK never
+    Implements the rollback-safe candidate sequence. The PSK never
     appears in logs. On success the new connection is committed (name+UUID) and
     the legacy mirror is updated; on failure only the candidate profile is
     deleted by UUID, leaving the previous committed profile untouched.
@@ -1015,8 +1000,8 @@ def attempt_on_targets(targets: list, attempt_fn) -> "Optional[object]":
     """Try client activation on target adapters with per-target AP handling.
 
     Returns the target adapter that came up (so the caller applies the session
-    success tail in its own context), or None when every target failed.  IF-2:
-    the success tail (set-active / leave-setup / verify-avahi) is NOT applied
+    success tail in its own context), or None when every target failed.
+    The success tail (set-active / leave-setup / verify-avahi) is NOT applied
     here — this function has two calling contexts, one of which is the worker
     thread (the apply_credentials job), and the worker must never apply a
     session success tail.  The per-target AP stop-before-attempt and
@@ -1055,8 +1040,8 @@ def _apply_client_up_tail(target) -> None:
     """Apply the client-up session success tail (loop thread only).
 
     Set the active client, leave setup mode, and re-announce mDNS after the
-    handover.  Extracted from attempt_on_targets (IF-2) so the synchronous
-    loop-thread callers apply it inline; the apply_credentials job applies the
+    handover.  The synchronous loop-thread callers apply it inline; the
+    apply_credentials job applies the
     equivalent tail through apply_activation_result.
     """
     _set_active_client(target)
@@ -1069,14 +1054,14 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> "Optional[object]":
 
     Does NOT use ``nmcli device wifi connect`` (which would reuse/modify an
     existing profile and undermine rollback). A uniquely named candidate profile
-    is created, validated, and only committed on success (Section 6.5).
+    is created, validated, and only committed on success.
 
-    Adapter order follows Section 6.4: USB adapters that saw the SSID first, then
-    built-in, then best-effort. If a USB attempt fails and built-in saw the SSID,
-    built-in is attempted once before giving up.
+    Adapter order: USB adapters that saw the SSID first, then built-in, then
+    best-effort. If a USB attempt fails and built-in saw the SSID, built-in is
+    attempted once before giving up.
 
     Returns the adapter the credentials came up on (for the loop to apply the
-    session success tail — IF-2), or None when no adapter succeeded.  Runs on
+    session success tail), or None when no adapter succeeded.  Runs on
     the worker thread (the apply_credentials job), so it applies no session
     tail itself.
     """
@@ -1233,7 +1218,7 @@ def scan_all_networks() -> tuple[list[dict], bool]:
     """Live-scan every detected, managed Wi-Fi adapter and merge by exact SSID.
 
     Returns ``(networks, builtin_scan_known)`` where each network record carries
-    ssid/signal/builtin_visible/usb_visible/adapter_macs (Section 6.1).  No
+    ssid/signal/builtin_visible/usb_visible/adapter_macs.  No
     caching is performed; an individual adapter scan failure marks that
     adapter's visibility unknown for this response only.
     """
@@ -1255,7 +1240,7 @@ def scan_all_networks() -> tuple[list[dict], bool]:
 
 
 def submit_apply_credentials(ssid: str, pw: str) -> bool:
-    """Enqueue a credential-apply job on the shared worker (WS1-WP4).
+    """Enqueue a credential-apply job on the shared worker.
 
     Replaces the Flask-spawned apply thread: the /setup route calls this instead of
     starting its own thread, so the credential apply is serialised with the loop's
@@ -1268,8 +1253,8 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
     with state_lock:
         if STATE.apply_in_progress:
             return False
-    # IF-2: the session success tail (set-active / leave-setup / avahi) is
-    # applied by apply_activation_result on the loop thread — exactly as the
+    # The session success tail (set-active / leave-setup / avahi) is applied by
+    # apply_activation_result on the loop thread — exactly as the
     # other job kinds — so carry the leave-setup flags the shared tail reads.
     job = ActivationJob(epoch=_next_activation_epoch(), kind="apply_credentials",
                         ifname="", ssid=ssid, password=pw,
@@ -1283,7 +1268,7 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
         STATE.last_apply_error = ""
     return True
 
-# ** TRANSACTIONAL CHANGE-WI-FI FLOW (WP6) **
+# ** TRANSACTIONAL CHANGE-WI-FI FLOW **
 
 def _snapshot_rollback() -> "RollbackSnapshot":
     """Return the current committed profile + active adapter as a rollback target."""
@@ -1322,7 +1307,7 @@ def apply_log_level(level: str, ttl_seconds: Optional[int]) -> None:
 
 
 def revert_expired_log_level(now: Optional[float] = None) -> None:
-    """Revert a temporary runtime log level once its TTL expires (WP7)."""
+    """Revert a temporary runtime log level once its TTL expires."""
     if now is None:
         now = time.monotonic()
     with state_lock:
@@ -1337,7 +1322,7 @@ def revert_expired_log_level(now: Optional[float] = None) -> None:
 
 
 def process_control_action(action: str, params: Optional[dict] = None) -> None:
-    """Consume one queued control action in the monitor loop (Section 10.1)."""
+    """Consume one queued control action in the monitor loop."""
     params = params or {}
     with state_lock:
         STATE.control_in_progress = True
@@ -1365,12 +1350,12 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
 
 
 def start_explicit_setup() -> None:
-    """Begin an explicit Change-Wi-Fi reconfiguration session (Section 11.1).
+    """Begin an explicit Change-Wi-Fi reconfiguration session.
 
     Snapshots the current profile/adapter, disconnects the current client
     session (without deleting its profile), and enters an EXPLICIT_RECONFIGURE
     hotspot.  The 30-minute deadline, no-eth-suppression, and rollback policy all
-    come from PURPOSE_TABLE[EXPLICIT_RECONFIGURE] (Section 2.3).
+    come from PURPOSE_TABLE[EXPLICIT_RECONFIGURE].
     """
     rollback = _snapshot_rollback()
     # Disconnect the current client session without deleting its profile.
@@ -1420,17 +1405,16 @@ def reconnect_saved_network() -> bool:
     def _attempt(target) -> bool:
         # Route the per-target activate+validate through the shared core so this
         # path gains UUID resolution, cross-adapter restriction clearing and the
-        # net-absent short-circuit for free (A-WP4, inconsistency 1 — previously
-        # a "network could not be found" on each target burnt the full IPv4
-        # wait).  attempt_on_targets owns the per-hotspot-target AP rebuild; the
-        # success tail is applied inline below on this (loop) thread (IF-2).
+        # net-absent short-circuit for free (without it a "network could not be
+        # found" on each target would burn the full IPv4 wait).
+        # attempt_on_targets owns the per-hotspot-target AP rebuild; the success
+        # tail is applied inline below on this (loop) thread.
         return _activate_profile_on(target.ifname, committed)
 
     target = attempt_on_targets(targets, _attempt)
     if target is not None:
-        # Loop-thread synchronous caller: apply the client-up success tail here
-        # now that attempt_on_targets no longer does (IF-2).  Behaviour is
-        # unchanged — only the location of the tail moved.
+        # Loop-thread synchronous caller: apply the client-up success tail here,
+        # since attempt_on_targets does not.
         _apply_client_up_tail(target)
         return True
 
@@ -1439,7 +1423,7 @@ def reconnect_saved_network() -> bool:
 
 
 def handle_reconfigure_timeout() -> None:
-    """30-minute explicit-reconfiguration timeout rollback (Section 11.4)."""
+    """30-minute explicit-reconfiguration timeout rollback."""
     logger.info("Explicit network setup timed out after %ds; restoring previous", AP_MAX_DURATION)
     if reconnect_saved_network():
         return
@@ -1480,7 +1464,7 @@ def _make_health_memo():
 
 @dataclass(frozen=True)
 class Facts:
-    """One immutable per-tick snapshot of network facts (Section 2.5).
+    """One immutable per-tick snapshot of network facts.
 
     Gathered once at the top of each monitor pass via gather_facts() so every
     in-pass decision reads the same view of the world (no within-tick
@@ -1489,7 +1473,7 @@ class Facts:
     decision site.  Playback is intentionally NOT a field here: it is resolved
     lazily via a per-pass memoised callable (see _make_playing_status_memo)
     because it is comparatively expensive and not always needed.  ``health_memo``
-    is the per-pass client-health memo (C-WP0): the in-pass consumers share it so
+    is the per-pass client-health memo: the in-pass consumers share it so
     is_wifi_client_healthy is sampled at most once per (pass, ifname).
     """
     wifi_configured: bool
@@ -1566,9 +1550,9 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
 
     # The onboard is only offered as a client rung when it is actually usable
     # (managed, not quarantined, not no-IP-suppressed) — mirroring preferred_usb.
-    # This is what lets the single decider (C2-WP1) skip a demoted/quarantined
-    # onboard on a USB failure instead of blindly engaging it.  WS1-WP3 adds the
-    # async onboard-failure bound: once onboard activations have failed
+    # This is what lets the single decider skip a demoted/quarantined onboard on
+    # a USB failure instead of blindly engaging it.  The async onboard-failure
+    # bound: once onboard activations have failed
     # ONBOARD_ACTIVATION_MAX_FAILURES times this episode, stop offering it so the
     # ladder falls to the recovery hotspot instead of retrying onboard forever.
     onboard_ifname = ""
@@ -1623,10 +1607,10 @@ def _sleep_or_finish_monitor_pass(run_once: bool) -> bool:
 
 
 def request_guarded_reboot(now: float, reason: str, *, domain: str, target=None) -> bool:
-    """Single guarded NetworkDown reboot entry point for every reboot domain (C2-WP5).
+    """Single guarded NetworkDown reboot entry point for every reboot domain.
 
-    Applies BOTH the persistent cross-boot guard (previously dead-PHY only) and the
-    shared in-process throttle to every request, so the gateway-down and 12-hour
+    Applies BOTH the persistent cross-boot guard and the shared in-process
+    throttle to every request, so the gateway-down and 12-hour
     catch-all domains are now counted in the same 24h reboot window as dead-PHY.
     A reboot happens only when the persistent guard permits AND the in-process
     throttle allows; an accepted reboot stamps both.  Returns True only when a
@@ -1662,18 +1646,17 @@ def request_guarded_reboot(now: float, reason: str, *, domain: str, target=None)
 def _request_network_down_reboot(now: float, reason: str) -> None:
     """Request a guarded NetworkDown reboot (gateway-down / 12-hour catch-all).
 
-    Thin wrapper over request_guarded_reboot (C2-WP5) so these domains share the
+    Thin wrapper over request_guarded_reboot so these domains share the
     persistent cross-boot guard and the in-process throttle with dead-PHY.
     """
     request_guarded_reboot(now, reason, domain="network_down")
 
 
-# ** MONITOR-LOOP HANDLER DECOMPOSITION (loop-handlers plan) **
+# ** MONITOR-LOOP HANDLER DECOMPOSITION **
 #
 # The monitor loop is an ordered set of handlers, each returning a Verdict over
 # one of three per-pass context types (strictly more info per stage), plus a small
-# driver-owned LoopState for the one value that must persist across passes.  The
-# handlers are extracted in place first; the run_steps driver lands last.
+# driver-owned LoopState for the one value that must persist across passes.
 
 
 class Verdict(Enum):
@@ -1721,7 +1704,7 @@ class HealthContext:
     Produced by finalize_active_client_and_health().  ``prev_active_mac`` /
     ``prev_active_ifname`` carry the active-client identity recorded *before* this
     pass's _set_active_client, so the Phase B-late USB-failure handler can still
-    attribute a just-vanished adapter (C2-WP3).
+    attribute a just-vanished adapter.
     """
     fctx: FactsContext
     health_ifname: str
@@ -1767,8 +1750,7 @@ def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
 
     # Capture the identity recorded *before* this pass's _set_active_client so the
     # Phase B-late USB-failure handler can attribute a just-vanished adapter, and
-    # so the soft-fail hysteresis can recognise an NM-disconnected-but-present USB
-    # (C2-WP3).
+    # so the soft-fail hysteresis can recognise an NM-disconnected-but-present USB.
     with state_lock:
         prev_active_mac = STATE.active_client_mac
         prev_active_ifname = STATE.active_client_ifname
@@ -1782,7 +1764,7 @@ def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
         if wifi_cfg
         else False
     )
-    # Apply source-level hysteresis (C-WP1): one stable connectivity verdict that
+    # Apply source-level hysteresis: one stable connectivity verdict that
     # every downstream consumer (next_mode, boot-entry, reconnect, the USB-failure
     # overlay) reads, so a single soft blip on the active path no longer flips
     # Mode or triggers a failover.  active_path_ok tracks the same debounced
@@ -1804,11 +1786,10 @@ def _connectivity_failure_is_hard(facts: "Facts", active_client, prev_mac: str) 
     Hard: nothing configured; the active client reports NO-CARRIER (link down); or
     there is no client this pass and no recorded USB left to reconnect to.  Soft
     (debounced): the client is connected with carrier up but gateway/IPv4 is not
-    ready (the transient-prone case the field log identified), OR — folded in by
-    C2-WP3 — there is no active client this pass but the recorded USB is still
-    physically present (NM merely disconnected it, may reassociate).  Softening the
-    NM-disconnected case gives it the same 2-pass debounce the retired overlay
-    counter used to provide.
+    ready (the transient-prone case), OR there is no active client this pass but
+    the recorded USB is still physically present (NM merely disconnected it, may
+    reassociate) — softening the NM-disconnected case gives it the same 2-pass
+    debounce.
     """
     if not facts.wifi_configured:
         return True
@@ -1824,14 +1805,14 @@ def _connectivity_failure_is_hard(facts: "Facts", active_client, prev_mac: str) 
 
 def _debounced_connectivity(facts: "Facts", active_client, client_ok: bool,
                             prev_mac: str = "") -> bool:
-    """Stable connectivity_ok with soft-fail hysteresis (C-WP1, field log 01-Jul).
+    """Stable connectivity_ok with soft-fail hysteresis.
 
     Healthy (wired or client) -> True immediately and the counter resets.  A hard
     unhealthy signal condemns the path at once.  A soft unhealthy signal only
     condemns after CONNECTIVITY_DOWN_DEBOUNCE consecutive passes; until then the
     prior verdict is held (slow to condemn, quick to forgive).  ``prev_mac`` is the
     pre-_set_active_client recorded MAC, used to keep an NM-disconnected-but-
-    present USB in the soft (debounced) class (C2-WP3).
+    present USB in the soft (debounced) class.
     """
     if facts.wired_ok or client_ok:
         with state_lock:
@@ -1876,7 +1857,7 @@ def step_manual_ap_request(pre: "PreFactsContext") -> "Verdict":
             ap_request_event.clear()
             already_in_ap = STATE.setup_mode
         # If we're not already in AP mode, enter a MANUAL hotspot now.  A MANUAL
-        # session is not torn down by Ethernet (Section 2.3).
+        # session is not torn down by Ethernet.
         if not already_in_ap:
             enter_setup_mode(HotspotPurpose.MANUAL,
                              reason=f"manual_request: {reason or 'UserRequest'}")
@@ -1885,13 +1866,13 @@ def step_manual_ap_request(pre: "PreFactsContext") -> "Verdict":
 
 
 def step_revert_log_level(pre: "PreFactsContext") -> "Verdict":
-    """Revert a temporary runtime log level once its TTL expires (WP7)."""
+    """Revert a temporary runtime log level once its TTL expires."""
     revert_expired_log_level(pre.now)
     return Verdict.CONTINUE
 
 
 def step_control_action(pre: "PreFactsContext") -> "Verdict":
-    """Consume a queued local-control action (peek-then-consume, WS1 §3.6).
+    """Consume a queued local-control action (peek-then-consume).
 
     Disruptive actions own the pass; the non-disruptive set_log_level is applied
     and the pass continues normally.  While a worker activation is in flight
@@ -1923,7 +1904,7 @@ def step_control_action(pre: "PreFactsContext") -> "Verdict":
 
 
 def step_reconfigure_timeout(pre: "PreFactsContext") -> "Verdict":
-    """Enforce the explicit-reconfiguration 30-minute timeout (Section 11.4)."""
+    """Enforce the explicit-reconfiguration 30-minute timeout."""
     with state_lock:
         session = STATE.hotspot
     if (session is not None
@@ -1944,12 +1925,11 @@ def step_update_known_adapters(fctx: "FactsContext") -> "Verdict":
 
 
 def step_boot_client_bringup(fctx: "FactsContext") -> "Verdict":
-    """BOOT-window client bring-up via the recovery ladder (§4.3, C2-WP4).
+    """BOOT-window client bring-up via the recovery ladder.
 
     While BOOT_AP_GRACE is open and the device is offline, run the single recovery
-    ladder each pass to bring up a client (preferred USB first, else onboard) —
-    replacing the retired pre-loop startup_connect_usb_first() one-shot and its
-    new-USB re-probe.  The ladder ranks the same USB-before-onboard priority, so a
+    ladder each pass to bring up a client (preferred USB first, else onboard).
+    The ladder ranks the same USB-before-onboard priority, so a
     USB adapter that finishes enumerating after boot is engaged on the pass it
     appears; a healthy client makes the ladder HOLD (no thrash).  Only ACTIVATE_*
     acts here — hotspot entry stays with step_boot_ap_entry after the grace window.
@@ -1962,7 +1942,7 @@ def step_boot_client_bringup(fctx: "FactsContext") -> "Verdict":
             and facts.wifi_configured
             and not facts.wired_ok
             and not STATE.setup_mode
-            and not transitioning):        # WS1-WP3: hold off while a job is in flight
+            and not transitioning):        # hold off while a job is in flight
         return Verdict.CONTINUE
     raction = next_recovery_action(STATE, gather_recovery_facts(facts))
     if raction.kind in (RecoveryKind.ACTIVATE_USB, RecoveryKind.ACTIVATE_ONBOARD) \
@@ -1974,16 +1954,16 @@ def step_boot_client_bringup(fctx: "FactsContext") -> "Verdict":
 def step_usb_failure_fallback(hctx: "HealthContext") -> "Verdict":
     """Active-USB failure fallback — over the debounced verdict, never playback-gated.
 
-    C2-WP3 moved this from Phase B-early to the front of Phase B-late so it can
-    read the finalized connectivity hysteresis verdict (hctx.conn_ok): the overlay
-    no longer keeps its own debounce.  The pre-_set_active_client identity it needs
+    Runs at the front of Phase B-late so it can read the finalized connectivity
+    hysteresis verdict (hctx.conn_ok); the overlay keeps no debounce of its own.
+    The pre-_set_active_client identity it needs
     to attribute a vanished adapter is carried on the HealthContext
     (prev_active_mac / prev_active_ifname).
     """
     facts = hctx.facts
     with state_lock:
         transitioning = STATE.transitioning
-    # WS1-WP3: defer the failure fallback while an activation is in flight (§2.3).
+    # Defer the failure fallback while an activation is in flight.
     if transitioning:
         return Verdict.CONTINUE
     if facts.wifi_configured and not facts.wired_ok and not STATE.setup_mode:
@@ -1996,11 +1976,11 @@ def step_usb_failure_fallback(hctx: "HealthContext") -> "Verdict":
 
 
 def step_runtime_usb_adoption(hctx: "HealthContext") -> "Verdict":
-    """Optional idle-time adoption of a newly available USB adapter (Section 8.2).
+    """Optional idle-time adoption of a newly available USB adapter.
 
-    WS1-WP3: this transactional idle-time optimisation stays synchronous (it
-    validates the USB before dropping the healthy built-in), but is deferred while
-    an activation is in flight so it never overlaps a worker transition (§2.3).
+    This transactional idle-time optimisation stays synchronous (it validates the
+    USB before dropping the healthy built-in), but is deferred while an activation
+    is in flight so it never overlaps a worker transition.
     """
     facts = hctx.facts
     with state_lock:
@@ -2018,15 +1998,15 @@ def step_dead_phy_recovery(hctx: "HealthContext") -> "Verdict":
 
     Runs before the ethernet-wins short-circuit so a genuinely dead Wi-Fi PHY is
     reset even while ethernet is attached.  But when wired Ethernet wins and the
-    Wi-Fi client has already been dropped (wired-wins, Section 2.7), the idle radio
-    is administratively down by design — leave it down rather than spending reset
+    Wi-Fi client has already been dropped (wired-wins), the idle radio is
+    administratively down by design — leave it down rather than spending reset
     budget on it.
     """
     facts = hctx.facts
     with state_lock:
         transitioning = STATE.transitioning
-    # WS1-WP3 (§2.3/§3.3): the dead-PHY reset is a second blocking effect; defer it
-    # while an activation is in flight so at most one effectful transition runs.
+    # The dead-PHY reset is a second blocking effect; defer it while an activation
+    # is in flight so at most one effectful transition runs.
     if transitioning:
         return Verdict.CONTINUE
     if facts.wifi_configured and not (facts.wired_ok and facts.active_client is None):
@@ -2045,7 +2025,7 @@ def step_publish_state(hctx: "HealthContext") -> "Verdict":
         if hctx.conn_ok:
             STATE.been_online_this_boot = True
             # A healthy pass ends the offline episode: reset the onboard-failure
-            # bound so a later failure gets a fresh set of attempts (WS1-WP3).
+            # bound so a later failure gets a fresh set of attempts.
             STATE.onboard_activation_failures = 0
         if hctx.active_path_ok and not STATE.setup_mode:
             STATE.last_active_path_seen = hctx.now
@@ -2065,7 +2045,7 @@ def step_publish_state(hctx: "HealthContext") -> "Verdict":
 
 
 def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
-    """Usable wired Ethernet wins regardless of subnet (Section 2.7).
+    """Usable wired Ethernet wins regardless of subnet.
 
     Owns the pass whenever the ``ethernet_wins`` predicate holds — independent of
     whether it actually leaves AP mode or disconnects Wi-Fi (matching the current
@@ -2085,7 +2065,7 @@ def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
             STATE.last_reconnect_attempt = None
 
     if ethernet_wins and transitioning:
-        # WS1-WP3 (§3.5): Ethernet is observed (timers cleared above, snapshot
+        # Ethernet is observed (timers cleared above, snapshot
         # already published) but its *enforcement* — the AP leave / Wi-Fi client
         # drop — is deferred until the in-flight transition completes, so at most
         # one effectful transition is ever in flight.  Fires on the next pass.
@@ -2131,7 +2111,7 @@ def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
 def step_hotspot_policy(hctx: "HealthContext") -> "Verdict":
     """Enforce the active hotspot's purpose-driven policy from PURPOSE_TABLE.
 
-    WS1-WP3 (§2.3 / §3.5): while an activation is in flight the deadline is still
+    While an activation is in flight the deadline is still
     *observed* (measured, published) but its *enforcement* (the probe that could
     start a rejoin, and the deadline leave_setup_mode) is deferred to the pass
     after the job completes, so at most one effectful transition is in flight.
@@ -2171,11 +2151,11 @@ def step_hotspot_policy(hctx: "HealthContext") -> "Verdict":
 def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
     """Enter a recovery hotspot during the boot window — client path tried first.
 
-    No once-per-boot budget (defect 2); the boot window only gates this initial
-    auto-entry so NM/firmware get a chance to come up first.  Before committing a
-    radio to a hotspot, the recovery ladder tries the highest-priority client path
-    (preferred USB, else onboard); only an ACTIVATE_* that comes up healthy
-    short-circuits the hotspot (field log 30-Jun-2026).
+    No once-per-boot budget; the boot window only gates this initial auto-entry so
+    NM/firmware get a chance to come up first.  Before committing a radio to a
+    hotspot, the recovery ladder tries the highest-priority client path (preferred
+    USB, else onboard); only an ACTIVATE_* that comes up healthy short-circuits the
+    hotspot.
     """
     facts = hctx.facts
     with state_lock:
@@ -2183,16 +2163,16 @@ def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
         transitioning = STATE.transitioning
     if in_setup:
         return Verdict.CONTINUE
-    # WS1-WP3: an activation is in flight — hold off starting a conflicting AP
-    # transition; the result is applied at the next pass top (§2.3).
+    # An activation is in flight — hold off starting a conflicting AP transition;
+    # the result is applied at the next pass top.
     if transitioning:
         return Verdict.CONTINUE
 
     boot_age = hctx.now - hctx.boot_time
-    # Consume the *debounced* connectivity verdict (C-WP1): a single soft blur on
-    # the active path in the boot window must not trip boot-entry into a failover
-    # (field log 01-Jul-2026).  wifi_connected stays as a fast hard-disconnect
-    # signal; conn_ok replaces the raw per-pass client_ok.
+    # Consume the *debounced* connectivity verdict: a single soft blur on the
+    # active path in the boot window must not trip boot-entry into a failover.
+    # wifi_connected stays as a fast hard-disconnect signal; conn_ok replaces the
+    # raw per-pass client_ok.
     offline = (not facts.wifi_configured) or (not hctx.wifi_connected) or (not hctx.conn_ok)
     should_enter_ap = (
         boot_age >= BOOT_AP_GRACE
@@ -2214,8 +2194,8 @@ def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
         )
 
     if should_enter_ap:
-        # C-WP2: once the device has been ONLINE this boot, a runtime loss must
-        # not re-enter the boot-recovery rung; the debounced runtime paths
+        # Once the device has been ONLINE this boot, a runtime loss must not
+        # re-enter the boot-recovery rung; the debounced runtime paths
         # (reconnect, USB-failure fallback, dead-PHY) own it.  The unconfigured
         # first-run path is unaffected (it can never have been online on Wi-Fi).
         with state_lock:
@@ -2259,7 +2239,7 @@ def step_connection_reliability(hctx: "HealthContext") -> "Verdict":
     if not hctx.conn_ok:
         first_entry = down_start is None
         if first_entry:
-            # Entering OFFLINE_RECONNECTING (Section 2.7): one prompt reconnect
+            # Entering OFFLINE_RECONNECTING: one prompt reconnect
             # immediately rather than waiting for the 5-minute threshold.
             with state_lock:
                 STATE.conn_down_start = now
@@ -2402,7 +2382,7 @@ def network_monitor_loop(run_once: bool = False):
                 return
             continue
 
-        # Single immutable per-tick snapshot (Section 2.5): one discover_adapters /
+        # Single immutable per-tick snapshot: one discover_adapters /
         # wired probe / address enumeration per pass; playback via the per-pass memo.
         fctx = FactsContext(pre, gather_facts(), _make_playing_status_memo())
         if run_steps(phase_b_early, fctx) is Verdict.OWN_PASS:
@@ -2438,14 +2418,12 @@ def connect_to_configured_wifi() -> bool:
         logger.debug("Configured WiFi '%s' already healthy; no action needed", connection_name)
         return True
 
-    # A-WP6 (inconsistency 4): resolve the UUID and clear cross-adapter
-    # restrictions before (re)activating, so a legacy profile pinned to another
-    # adapter can reconnect on this steady-state path exactly as it would at
-    # every other join site.  This is fire-and-forget — no blocking IPv4 wait is
-    # added to the monitor loop (the loop validates on a later pass) — and no
-    # ifname is pinned, so NM's adapter selection is unchanged.  The former
-    # `nmcli device disconnect/connect` bounce remains gone (superseded by the
-    # dead-PHY USB reset ladder).
+    # Resolve the UUID and clear cross-adapter restrictions before (re)activating,
+    # so a legacy profile pinned to another adapter can reconnect on this
+    # steady-state path exactly as it would at every other join site.  This is
+    # fire-and-forget — no blocking IPv4 wait is added to the monitor loop (the
+    # loop validates on a later pass) — and no ifname is pinned, so NM's adapter
+    # selection is unchanged.
     uuid = _resolve_committed_uuid(state)
     if uuid:
         run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS),
@@ -2462,10 +2440,10 @@ def connect_to_configured_wifi() -> bool:
 
 
 def migrate_client_profiles_autoconnect_no() -> int:
-    """D-WP2: idempotently disable NM autoconnect on every managed non-AP Wi-Fi
+    """Idempotently disable NM autoconnect on every managed non-AP Wi-Fi
     client profile at boot (self-healing).
 
-    D-WP1 creates newly-committed profiles with autoconnect=no, but a profile may
+    Newly-committed profiles are created with autoconnect=no, but a profile may
     pre-exist the install (OS/user-created, or imported by the installer with
     autoconnect=yes).  Running this every boot ensures no client profile can race
     the watcher's single-decider path onto a stale radio.  AP (hotspot) profiles
@@ -2530,19 +2508,14 @@ def _resolve_committed_uuid(state: "wifi_net.NetworkState") -> str:
     return resolved
 
 
-# (C2-WP4 retired startup_connect_usb_first: the pre-loop USB-first-then-onboard
-#  bring-up is now the BOOT-window ladder rung step_boot_client_bringup, so a
-#  single decider ranks the client paths at boot exactly as it does at runtime.)
-
-
-# ** MULTI-ADAPTER FAILURE, FALLBACK, AND RUNTIME USB ADOPTION (WP5) **
+# ** MULTI-ADAPTER FAILURE, FALLBACK, AND RUNTIME USB ADOPTION **
 #
 # All fallback/adoption *policy* lives here in the watcher.  The helper only
 # reports facts (discovery, health, scans) and performs bounded primitives.
 
 
 def query_playing_status() -> Optional[bool]:
-    """Return True/False playback state, or None when uncertain (Section 8.3).
+    """Return True/False playback state, or None when uncertain.
 
     In Dial mode there is no local player, so playback is always treated as
     idle.  On the main appliance the watcher performs a read-only loopback GET
@@ -2570,11 +2543,7 @@ def query_playing_status() -> Optional[bool]:
 
 
 def _warn_playing_status_unavailable() -> None:
-    """Throttled WARNING when playback status is unavailable during pending adoption.
-
-    WS2-WP4: the bespoke STATE.last_playing_status_warn throttle was folded onto
-    the shared log_throttled time-window helper.
-    """
+    """Throttled WARNING when playback status is unavailable during pending adoption."""
     with state_lock:
         pending = STATE.pending_usb_adoption_mac is not None
     if pending:
@@ -2591,8 +2560,7 @@ def _activation_network_absent(result) -> bool:
     A hard "network could not be found" activation failure means waiting the full
     WAIT_FOR_CONNECTION_TIMEOUT for an IPv4 lease is pointless — the join never
     started — so the recovery ladder should fail this rung immediately and climb
-    to the next one (e.g. the onboard) far sooner.  Field log 30-Jun-2026: 45s was
-    wasted after every "could not be found" probe of a wedged USB.
+    to the next one (e.g. the onboard) far sooner.
     """
     if result is None or getattr(result, "returncode", 0) == 0:
         return False
@@ -2676,8 +2644,8 @@ def verify_avahi_after_handover() -> None:
 def _set_active_client(adapter) -> None:
     with state_lock:
         if adapter is None and STATE.conn_unhealthy_checks > 0:
-            # Soft debounce in progress (C2-WP3: the single connectivity
-            # hysteresis counter): clear ifname so the loop knows there is no
+            # Soft debounce in progress (the single connectivity hysteresis
+            # counter): clear ifname so the loop knows there is no
             # active client, but keep active_client_mac so the next pass can still
             # match the recorded USB adapter (NM-disconnected-but-present case).
             STATE.active_client_ifname = ""
@@ -2689,14 +2657,14 @@ def _set_active_client(adapter) -> None:
         logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
 
 
-# ---- Off-thread activation worker (WS1) — job/result types + the two halves ----
+# ---- Off-thread activation worker — job/result types + the two halves ----
 #
-# WS1 splits the blocking activation into a worker half (_run_activation_job:
-# slow, bounded effects — AP drop for the attempt, the nmcli core, and symmetric
-# AP rebuild on its own failure) and a loop half (apply_activation_result: the
-# success/failure connectivity tail).  The synchronous activate_client is retained
-# and simply composes the two halves inline (single source of truth); WS1-WP3/WP4
-# move the worker half onto the worker thread while the loop applies the tail.
+# Activation is split into a worker half (_run_activation_job: slow, bounded
+# effects — AP drop for the attempt, the nmcli core, and symmetric AP rebuild on
+# its own failure) and a loop half (apply_activation_result: the success/failure
+# connectivity tail).  The synchronous activate_client composes the two halves
+# inline (single source of truth); loop-initiated call sites submit the worker
+# half onto the worker thread while the loop applies the tail.
 
 
 @dataclass(frozen=True)
@@ -2714,7 +2682,7 @@ class ActivationJob:
     leave_reason: str = ""
     records_noip: bool = False
     noip_at: "Optional[float]" = None
-    records_onboard_failure: bool = False   # WS1-WP3: count onboard failures toward the hotspot bound
+    records_onboard_failure: bool = False   # count onboard failures toward the hotspot bound
     sets_builtin_fallback: "Optional[bool]" = None
     clears_down_timers: bool = False
     deactivates_builtin: bool = False
@@ -2749,12 +2717,12 @@ def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
     Optional AP drop for the attempt, the shared activation core, and — symmetric
     self-undo — rebuild the AP if this attempt dropped it and then failed.  Takes
     ``state_lock`` only for the brief flag reads/writes, never across the blocking
-    nmcli/wait calls (§3.2).  Returns the outcome; the loop applies the tail.
+    nmcli/wait calls.  Returns the outcome; the loop applies the tail.
     """
     if job.kind == "apply_credentials":
-        # WS1-WP4: the credential-apply transaction runs the rollback-safe candidate
+        # The credential-apply transaction runs the rollback-safe candidate
         # sequence itself (scan -> ordered targets -> commit-on-success); the loop
-        # applies the wait-page status tail AND (IF-2) the session success tail.
+        # applies the wait-page status tail AND the session success tail.
         # configure_wifi_with_nmcli returns the adapter it came up on; carry that
         # ifname on the result so apply_activation_result can set the active
         # client and leave setup on the loop thread.
@@ -2805,7 +2773,7 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
     job = result.job
 
     if job.kind == "apply_credentials":
-        # WS1-WP4: the wait-page status tail (applying -> ok/failed), clearing
+        # The wait-page status tail (applying -> ok/failed), clearing
         # apply_in_progress and, on failure, returning to setup mode.
         if not result.ok:
             with state_lock:
@@ -2824,10 +2792,10 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
             STATE.last_apply_error = ""
             STATE.apply_in_progress = False
         logger.info("WiFi configuration and connectivity verified")
-        # IF-2: fall through to the shared success tail below (set active client
-        # by result.ifname, leave setup, verify avahi) — the same tail the other
-        # job kinds use — so the credential apply's session tail runs on the loop
-        # thread instead of on the worker (inside the old attempt_on_targets).
+        # Fall through to the shared success tail below (set active client by
+        # result.ifname, leave setup, verify avahi) — the same tail the other job
+        # kinds use — so the credential apply's session tail runs on the loop
+        # thread rather than on the worker.
 
     if result.ok and not job.wait_for_validation:
         # Fire-and-forget: activation issued, loop validates on a later pass.
@@ -2861,7 +2829,7 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
                 STATE.conn_down_start = None
                 STATE.last_reconnect_attempt = None
             # A client came up: the offline episode is over — reset the onboard
-            # failure bound (WS1-WP3).
+            # failure bound.
             STATE.onboard_activation_failures = 0
         if job.on_success_leaves_setup:
             leave_setup_mode(job.leave_reason)
@@ -2870,8 +2838,8 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
 
     # Failure tail (the worker already rebuilt any AP it dropped).
     if job.records_onboard_failure:
-        # WS1-WP3: count this onboard failure toward the recovery-hotspot bound so
-        # a present-but-failing onboard eventually yields to the hotspot.
+        # Count this onboard failure toward the recovery-hotspot bound so a
+        # present-but-failing onboard eventually yields to the hotspot.
         with state_lock:
             STATE.onboard_activation_failures += 1
     if job.records_noip:
@@ -2898,10 +2866,10 @@ def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" =
                     wait_for_validation: bool = True) -> bool:
     """The single parameterised "bring up a client on *ifname*" operation (Phase A).
 
-    Synchronous facade retained behind the same interface (WS1): it composes the
-    worker half (_run_activation_job) and the loop half (apply_activation_result)
-    inline on the calling thread, so its behaviour is identical to the pre-WS1
-    monolith.  WS1-WP3 migrates the loop-initiated call sites onto the worker.
+    Synchronous facade behind the same interface: it composes the worker half
+    (_run_activation_job) and the loop half (apply_activation_result) inline on the
+    calling thread.  Loop-initiated call sites submit the worker half to the
+    worker instead of calling this facade.
 
     Flags:
       - ``profile``: activate this NetworkState instead of the configured
@@ -2941,14 +2909,13 @@ def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" =
     return apply_activation_result(result, adapter=adapter)
 
 
-# ---- Worker thread: single-slot job queue + result slot (WS1-WP2) ----
+# ---- Worker thread: single-slot job queue + result slot ----
 #
 # There is never more than one in-flight activation — the STATE.transitioning gate
 # enforces it — so the queue and result slot are single-slot.  The loop submits a
 # job (setting transitioning) and keeps ticking; the worker runs the one slow job
 # and posts a result; step_apply_activation_result drains and applies it at pass
-# top and clears transitioning.  No call sites submit yet (WS1-WP3/WP4); the
-# skeleton is exercised directly by tests.
+# top and clears transitioning.
 
 _activation_job_queue: "queue.Queue" = queue.Queue(maxsize=1)
 _activation_result_slot: "Optional[ActivationResult]" = None
@@ -3023,7 +2990,7 @@ def start_activation_worker() -> "threading.Thread":
 
 def step_apply_activation_result(pre: "PreFactsContext") -> "Verdict":
     """Phase A: drain a completed worker result at pass top, apply its tail, and
-    clear the transitioning gate (WS1-WP2).
+    clear the transitioning gate.
 
     A result whose epoch is not the in-flight one is discarded (defensive — the
     single-slot gate makes it unreachable in normal operation) but still clears the
@@ -3056,10 +3023,10 @@ def resolve_active_client(adapters: list) -> Optional[object]:
 
 
 def handle_usb_failure_fallback(hctx: "HealthContext") -> bool:
-    """Active-USB failure handling via the adapter-remediation overlay (WP5a).
+    """Active-USB failure handling via the adapter-remediation overlay.
 
     The overlay (wifi_recovery.diagnose_client_failure) classifies the condemned
-    active path over the debounced verdict (C2-WP3) and returns a ClientFailed
+    active path over the debounced verdict and returns a ClientFailed
     event; this loop site applies the connectivity transition.  Returns True when
     a transition was performed on this pass; the caller then skips its ordinary
     reconnect/reboot logic for this pass.  Never gated by playback.
@@ -3076,25 +3043,23 @@ def handle_usb_failure_fallback(hctx: "HealthContext") -> bool:
 def apply_client_failed(event, facts: "Facts") -> bool:
     """Apply an overlay ClientFailed event through the single recovery decider.
 
-    C2-WP1: the USB-failure fallback ranks client paths via next_recovery_action
-    (the one priority ladder) and engages one via activate_client (through
-    _apply_client_activation), instead of a private builtin-else-hotspot rule.
-    Behaviour delta: a quarantined / no-IP-suppressed onboard is no longer
-    blindly engaged — the ladder / gather_recovery_facts gate onboard usability,
-    so a demoted onboard is skipped and we go to the recovery hotspot instead.
+    The USB-failure fallback ranks client paths via next_recovery_action (the one
+    priority ladder) and engages one via activate_client.  A quarantined /
+    no-IP-suppressed onboard is not blindly engaged — the ladder /
+    gather_recovery_facts gate onboard usability, so a demoted onboard is skipped
+    and we go to the recovery hotspot instead.
 
-    The pre-C2 behaviour "a diagnosed USB failure always tries the built-in
-    before the hotspot" is preserved via an explicit onboard fallback: the
+    A diagnosed USB failure always tries a usable built-in before the hotspot: the
     overlay fires a ClientFailed once the connectivity hysteresis has condemned
-    the path (C2-WP3: the single 2-pass debounce), but the ladder returns
-    HOLD("usb_active_no_ip") for an active USB that still has carrier (it wants
-    the no-IP ledger to govern in steady state), and it may also pick
-    ACTIVATE_USB (re-activate) for an NM-dropped-but-present USB.  In either case
-    — a HOLD, or the ladder offering no client path — we still try a *usable*
-    onboard (one the gate did not exclude) before the USB_LOSS_RECOVERY hotspot.
+    the path, but the ladder returns HOLD("usb_active_no_ip") for an active USB
+    that still has carrier (it wants the no-IP ledger to govern in steady state),
+    and it may also pick ACTIVATE_USB (re-activate) for an NM-dropped-but-present
+    USB.  In either case — a HOLD, or the ladder offering no client path — we
+    still try a *usable* onboard (one the gate did not exclude) before the
+    USB_LOSS_RECOVERY hotspot.
 
-    WS1-WP3: the chosen activation is *submitted* to the worker (non-blocking) and
-    owns the pass; its result is applied at the next pass top, and the ladder
+    The chosen activation is *submitted* to the worker (non-blocking) and owns the
+    pass; its result is applied at the next pass top, and the ladder
     re-evaluates.  A failing USB is no-IP-suppressed after its budget, and a
     failing onboard is bounded (ONBOARD_ACTIVATION_MAX_FAILURES) so onboard stops
     being offered and this handler falls to the hotspot instead of retrying forever.
@@ -3132,10 +3097,9 @@ _known_usb_macs: set[str] = set()
 
 
 def _submit_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
-    """Submit an ACTIVATE_USB / ACTIVATE_ONBOARD recovery action to the worker (WS1-WP3).
+    """Submit an ACTIVATE_USB / ACTIVATE_ONBOARD recovery action to the worker.
 
-    Builds an ActivationJob with exactly the tail flags the pre-WS1 synchronous
-    _apply_client_activation passed to activate_client, and submits it
+    Builds an ActivationJob with the tail flags the activation needs and submits it
     (non-blocking).  Returns True when the job was accepted (the loop owns the pass
     and apply_activation_result runs the tail at the next pass top); False if a job
     is already in flight (transitioning) or the action has no target.
@@ -3188,7 +3152,7 @@ def _saved_ssid_visible(hotspot_adapter) -> bool:
 
     Scanning works in AP mode on the onboard radio without dropping the AP, so a
     single-radio recovery hotspot can cheaply check for the network's return
-    before committing to the expensive tear-down→join (Section 2.8).
+    before committing to the expensive tear-down→join.
     """
     ssid = _saved_network_ssid()
     if not ssid:
@@ -3202,8 +3166,8 @@ def _rate_gated_saved_ssid_scan(adapter, last_scan_attr: str,
     """Rate-bounded "is the committed SSID visible on *adapter*" probe.
 
     Shared by every idle-time saved-SSID scan site (the recovery hotspot exit
-    edge and runtime USB adoption; refactor WP-6 becomes a third consumer) so
-    the check-stamp-scan mechanics live in one place.  *last_scan_attr* names the
+    edge and runtime USB adoption) so the check-stamp-scan mechanics live in one
+    place.  *last_scan_attr* names the
     per-site STATE timestamp field.
 
     Returns None when a scan is not yet due (`last is not None and now - last <
@@ -3223,10 +3187,10 @@ def _rate_gated_saved_ssid_scan(adapter, last_scan_attr: str,
 
 
 def _attempt_recovery_reconnect(facts: "Facts") -> None:
-    """Scan-gated recovery reconnect from within a recovery hotspot (WP6, §2.8).
+    """Scan-gated recovery reconnect from within a recovery hotspot.
 
-    Routes the client-path-vs-hotspot choice through the single recovery ladder
-    (C2-WP2): next_recovery_action ranks the usable radios exactly as it does at
+    Routes the client-path-vs-hotspot choice through the single recovery ladder:
+    next_recovery_action ranks the usable radios exactly as it does at
     boot-entry and on USB failure, so the in-hotspot probe can no longer diverge
     from those sites.  A second (non-hotspot) radio the ladder still rates usable
     is (re)activated without dropping the AP; when the only client path is the
@@ -3275,7 +3239,7 @@ def _attempt_recovery_reconnect(facts: "Facts") -> None:
 
 def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
                                 playing_fn=None) -> bool:
-    """Optional idle-time adoption of a newly available USB adapter (Section 8.2).
+    """Optional idle-time adoption of a newly available USB adapter.
 
     Adopts USB only when: Ethernet is not active; built-in carries a healthy
     Wi-Fi client (or built-in fallback is active); no USB is already the active
@@ -3299,7 +3263,7 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
         return False
     candidate = usb[0]
 
-    # Escalating no-IP back-off (WP5b): a dongle that repeatedly associates but
+    # Escalating no-IP back-off: a dongle that repeatedly associates but
     # cannot get an IP is held back (and eventually stopped) instead of thrashing
     # adoption every cycle.
     if wifi_recovery.noip_retry_suppressed(_self_module(), candidate.stable_id, now):
@@ -3337,11 +3301,11 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
                       "USB adoption deferred because playback is active")
         return False
 
-    # Scan-gate the handover (IF-6): the committed profile is usually active on
-    # the built-in too, and `nmcli connection up ... ifname <usb>` *moves* an
+    # Scan-gate the handover: the committed profile is usually active on the
+    # built-in too, and `nmcli connection up ... ifname <usb>` *moves* an
     # already-active connection — it deactivates the built-in as part of trying
     # the USB.  A USB that cannot even see the SSID would fail that move and take
-    # the whole device offline (04-Jul field outage), so proceed only once the
+    # the whole device offline, so proceed only once the
     # candidate's own scan shows the committed SSID.  A not-due (None) or
     # not-visible/failed (False) scan is a non-destructive skip: the candidate
     # stays pending and the no-IP ledger is untouched (the dongle never got the
@@ -3374,8 +3338,8 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
         return True
 
     logger.warning("Runtime USB adoption failed on %s; retaining built-in", candidate.ifname)
-    # Record the no-IP failure to escalate the back-off (replaces the fixed
-    # usb_adoption_retry_after interval) and surface the DEGRADED_NO_IP status.
+    # Record the no-IP failure to escalate the back-off and surface the
+    # DEGRADED_NO_IP status.
     wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, now)
     _clear_pending_adoption()
     return False
@@ -3399,7 +3363,7 @@ def update_known_adapters(adapters: list) -> None:
     if prev is not None and prev != macs:
         logger.info("Detected Wi-Fi adapter set changed: %s", sorted(macs))
     # Drop no-IP ledgers for adapters that are no longer present so a replaced
-    # or removed dongle starts fresh (the back-off ceiling releases, WP5b).  The
+    # or removed dongle starts fresh (the back-off ceiling releases).  The
     # ledger is keyed by stable_id (permanent MAC, else ifname), so prune by the
     # present stable_ids — not just permanent MACs — or a MAC-less adapter's
     # ledger would be dropped every pass.
@@ -3407,7 +3371,7 @@ def update_known_adapters(adapters: list) -> None:
     wifi_recovery.prune_noip_ledgers(_self_module(), present_stable_ids)
 
 
-# ** DEAD-PHY RECOVERY (WP2/WP3; extracted to wifi_recovery.py in WP8) **
+# ** DEAD-PHY RECOVERY **
 #
 # Detection, reset budgets, the persistent reboot guard, and the recovery
 # ladder live in platform/wifi_recovery.py.  These thin wrappers pass this
@@ -3418,18 +3382,17 @@ import wifi_recovery
 
 TargetAdapter = wifi_recovery.TargetAdapter
 INTERFACE_REAPPEAR_TIMEOUT = wifi_recovery.INTERFACE_REAPPEAR_TIMEOUT
-# Adapter-remediation overlay event contract (Section 3.1a), re-exported so the
-# loop and tests can reference the event shapes without importing wifi_recovery.
+# Adapter-remediation overlay event contract, re-exported so the loop and tests
+# can reference the event shapes without importing wifi_recovery.
 OverlayEvent = wifi_recovery.OverlayEvent
 ClientFailed = wifi_recovery.ClientFailed
 NeedReboot = wifi_recovery.NeedReboot
 
 
-# WS2-WP3: the test-only dead-PHY passthrough wrappers were retired; their tests
-# now call wifi_recovery.<name>(<module>, ...) directly.  Only wrappers with a
-# genuine production caller remain: _adapter_recovery_facts (gather_recovery_facts
-# + wifi_status), wait_for_interface_reappears and escalate_dead_adapter_recovery
-# (the dead-PHY reset ladder / step_dead_phy_recovery).
+# Only wrappers with a genuine production caller remain: _adapter_recovery_facts
+# (gather_recovery_facts + wifi_status), wait_for_interface_reappears and
+# escalate_dead_adapter_recovery (the dead-PHY reset ladder /
+# step_dead_phy_recovery).
 
 
 def _adapter_recovery_facts(adapter, now, health_fn=None):
@@ -3444,7 +3407,7 @@ def escalate_dead_adapter_recovery(adapters, wired_connected):
     return wifi_recovery.escalate_dead_adapter_recovery(_self_module(), adapters, wired_connected)
 
 
-# ** RUNTIME NETWORK-STATUS SNAPSHOT (WP6; extracted to wifi_status.py in WP8) **
+# ** RUNTIME NETWORK-STATUS SNAPSHOT **
 #
 # Snapshot construction/publishing lives in platform/wifi_status.py.  These
 # thin wrappers pass this module so the status builder can read STATE, fact
@@ -3452,8 +3415,6 @@ def escalate_dead_adapter_recovery(adapters, wired_connected):
 
 import wifi_status
 
-# WS2-WP3: the test-only build_network_status_snapshot wrapper was retired (its
-# tests call wifi_status.build_network_status_snapshot(<module>, ...) directly).
 # publish_network_status is kept — step_publish_state calls it every pass.
 
 
@@ -3469,7 +3430,7 @@ def publish_network_status(adapters: Optional[list] = None,
 # ** AVAHI mDNS HOSTNAME MONITORING **
 #
 # The avahi/mDNS block (hostname-drift repair + address-set re-announce debounce)
-# lives in platform/wifi_mdns.py (WS2-WP1).  These thin wrappers pass this module
+# lives in platform/wifi_mdns.py.  These thin wrappers pass this module
 # so the extracted helpers can read STATE, constants, run_cmd/logger and the
 # sibling mDNS helpers without a circular import; internal cross-calls go through
 # ``w.<name>`` so existing per-function test patches keep intercepting them.
@@ -3527,16 +3488,16 @@ if __name__ == "__main__":
     run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME], timeout=NMCLI_QUICK_TIMEOUT)
     # an any associated hotspot request markers
     clear_apmode_flag()
-    # D-WP2: idempotently disable NM autoconnect on every managed non-AP client
-    # profile (self-healing for pre-existing/installer-imported autoconnect=yes
-    # profiles), so the watcher is the sole agent that brings a client up.
+    # Idempotently disable NM autoconnect on every managed non-AP client profile
+    # (self-healing for pre-existing/installer-imported autoconnect=yes profiles),
+    # so the watcher is the sole agent that brings a client up.
     try:
         migrate_client_profiles_autoconnect_no()
     except Exception as e:
         logger.warning("autoconnect=no startup migration failed: %s", e)
-    # C2-WP4: initial USB-first client bring-up is no longer a pre-loop one-shot;
-    # the monitor loop's BOOT-window ladder rung (step_boot_client_bringup) does it
-    # from the first pass, so a single decider ranks the client paths at boot.
+    # Initial client bring-up is done by the monitor loop's BOOT-window ladder rung
+    # (step_boot_client_bringup) from the first pass, so a single decider ranks the
+    # client paths at boot.
 
     logger.info(
         "Initial state: wifi_configured=%s, wired=%s",
@@ -3546,7 +3507,7 @@ if __name__ == "__main__":
     # Generate the per-boot control token before accepting any control request.
     wifi_web.init_control_token(_self_module())
 
-    # Start the off-thread activation worker (WS1); idle until a job is submitted.
+    # Start the off-thread activation worker; idle until a job is submitted.
     start_activation_worker()
 
     # Start the network monitor in a background thread

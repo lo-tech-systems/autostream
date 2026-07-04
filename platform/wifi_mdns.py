@@ -4,7 +4,7 @@
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
 Avahi / mDNS hostname monitoring and host-record re-announcement for the
-Autostream Wi-Fi watcher (follow-on plan, WS2-WP1 split of platform/wifi_watcher).
+Autostream Wi-Fi watcher.
 
 This module owns the two mDNS concerns the watcher previously carried inline:
   * hostname-drift repair (avahi renames itself on an mDNS conflict; we detect the

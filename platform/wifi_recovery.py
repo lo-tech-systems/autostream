@@ -3,13 +3,12 @@
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
-Dead-PHY recovery policy for the Autostream Wi-Fi watcher (dead-PHY recovery
-plan, WP8 split of platform/wifi_watcher).
+Dead-PHY recovery policy for the Autostream Wi-Fi watcher.
 
 This module owns adapter health classification for the dead-PHY case, the reset
 budget / quarantine ledger, the persistent cross-boot reboot guard, and the
 recovery-action ladder.  The bounded sysfs primitives live in
-``core/autostream_wifi_network`` (WP1).
+``core/autostream_wifi_network``.
 
 To keep the extraction mechanical and behaviour-preserving, every public/helper
 function takes the watcher module ``w`` as its first argument and reads its
@@ -31,15 +30,14 @@ import autostream_wifi_network as wifi_net
 INTERFACE_REAPPEAR_TIMEOUT = 15  # seconds to wait for a netdev after a USB reset
 
 
-# ---- Adapter-remediation overlay event contract (Section 3.1a) ----
+# ---- Adapter-remediation overlay event contract ----
 #
 # The overlay *diagnoses* the active client adapter and emits events; the
-# connectivity loop *consumes* them and applies the transition (constraint 10 —
-# pure classify, watcher applies; no generic Action engine).  ClientFailed is
-# produced here by diagnose_client_failure (the USB-failure path); NeedReboot is
-# the dead-PHY ladder's offline-too-long escalation (the LINK_DOWN branch below,
-# which both diagnoses and — to keep the verified dead-PHY behaviour bit-for-bit
-# in WP5a — applies its own reboot in-module).
+# connectivity loop *consumes* them and applies the transition (pure classify,
+# watcher applies; no generic Action engine).  ClientFailed is produced here by
+# diagnose_client_failure (the USB-failure path); NeedReboot is the dead-PHY
+# ladder's offline-too-long escalation (the LINK_DOWN branch below, which both
+# diagnoses and applies its own reboot in-module).
 
 
 class OverlayEvent(Enum):
@@ -63,7 +61,7 @@ class NeedReboot:
     reason: str              # e.g. "dead_phy_only_path_offline_30min"
 
 
-# ---- "Associated but no IP" / adoption-failure ledger (WP5b, defect 3) ----
+# ---- "Associated but no IP" / adoption-failure ledger ----
 #
 # Separate from the dead-PHY reset ledger: this counts how many times a managed
 # adapter associated (or was adopted/reconnected) but failed to obtain a usable
@@ -149,7 +147,7 @@ def is_degraded_no_ip(w, *, managed: bool, carrier: bool, healthy: bool,
                       stable_id: str) -> bool:
     """Overlay verdict: managed + carrier-up + not healthy + repeated no-IP failure.
 
-    This is the DEGRADED_NO_IP determination (Section 2.4 / defect 3) — distinct
+    This is the DEGRADED_NO_IP determination — distinct
     from the transient ``connecting`` that wifi_status reports for a freshly
     associating adapter.  It requires an accumulated no-IP failure count so a
     single in-flight DHCP attempt is not misreported.
@@ -161,16 +159,13 @@ def diagnose_client_failure(w, adapters: list, active_client, conn_ok: bool,
                             prev_mac: str, prev_ifname: str) -> Optional[ClientFailed]:
     """Classify an active-USB client failure over the debounced verdict; event/None.
 
-    C2-WP3 retired the overlay's own per-client debounce
-    (``active_usb_unhealthy_checks`` / ``USB_UNHEALTHY_DEBOUNCE``) in favour of the
-    single C-WP1 connectivity hysteresis.  This is now a *pure classifier*: it
-    fires only once the loop's debounced verdict has already condemned the active
-    path (``conn_ok is False``), and only when that condemnation is attributable
-    to the recorded USB client.  The hysteresis provides the debounce
-    (NM-disconnected and carrier-up-no-IP are both *soft* — condemned after
-    CONNECTIVITY_DOWN_DEBOUNCE passes; a vanished adapter is *hard* — condemned at
-    once), so the previous 2-pass USB behaviour is preserved without a second
-    counter.  ``prev_mac``/``prev_ifname`` are the identity recorded *before* this
+    A *pure classifier* over the loop's single connectivity hysteresis: it fires
+    only once the debounced verdict has already condemned the active path
+    (``conn_ok is False``), and only when that condemnation is attributable to the
+    recorded USB client.  The hysteresis provides the debounce (NM-disconnected and
+    carrier-up-no-IP are both *soft* — condemned after CONNECTIVITY_DOWN_DEBOUNCE
+    passes; a vanished adapter is *hard* — condemned at once).
+    ``prev_mac``/``prev_ifname`` are the identity recorded *before* this
     pass's _set_active_client (captured by finalize), so an adapter that has just
     disappeared is still attributable.  No STATE mutation, no effects — the loop
     applies the transition.
@@ -199,7 +194,7 @@ def diagnose_client_failure(w, adapters: list, active_client, conn_ok: bool,
 
 @dataclass(frozen=True)
 class TargetAdapter:
-    """The client adapter the dead-PHY ladder operates on this pass (Section 5.1)."""
+    """The client adapter the dead-PHY ladder operates on this pass."""
     ifname: str
     stable_id: str             # active_client_mac/MAC when known, else sysfs/ifname fallback
     kind: str                  # "usb_wifi" | "builtin_wifi"
@@ -241,7 +236,7 @@ def build_target_adapter(w, ifname: str, adapters: list) -> TargetAdapter:
 
 
 def resolve_target_client(w, adapters: list) -> Optional[TargetAdapter]:
-    """Resolve the dead-PHY target client adapter for this pass (Section 5.1).
+    """Resolve the dead-PHY target client adapter for this pass.
 
     Resolution order, most-specific first:
       1. STATE.active_client_mac mapped to a current NM device or sysfs netdev.
@@ -518,7 +513,7 @@ def adapter_recovery_facts(w, a, now_monotonic: float, health_fn=None) -> Adapte
     status snapshot agree exactly.  Pure w.r.t. STATE (reads ledgers, does not
     mutate); performs the same fact reads (health, link state) the snapshot did.
 
-    ``health_fn`` is the optional per-pass health memo (C-WP0): when supplied it
+    ``health_fn`` is the optional per-pass health memo: when supplied it
     samples ``is_wifi_client_healthy`` at most once per (pass, ifname), so the
     recovery classifier and the status snapshot see the *same* health verdict in
     a pass.  When absent (ad-hoc calls) it falls back to a fresh sample.
@@ -569,7 +564,7 @@ def adapter_recovery_facts(w, a, now_monotonic: float, health_fn=None) -> Adapte
     )
 
 
-# ---- Persistent dead-PHY reboot guard (cross-boot loop prevention, Section 4) ----
+# ---- Persistent dead-PHY reboot guard (cross-boot loop prevention) ----
 
 def _empty_reboot_guard(now_wall: float) -> dict:
     return {"schema_version": 1, "window_started_at": now_wall, "requests": []}
@@ -695,18 +690,16 @@ def _perform_reset_step(w, target: TargetAdapter, now: float) -> bool:
     Always returns True: the reset attempt owns the monitor pass regardless of
     outcome.
 
-    WS1-WP5 (deferred, owner-approved — design note §3.3): this dead-PHY USB
-    rebind/re-enumerate plus wait_for_interface_reappears (up to
+    This dead-PHY USB rebind/re-enumerate plus wait_for_interface_reappears (up to
     INTERFACE_REAPPEAR_TIMEOUT ~15 s) is a *second* thing that blocks the monitor
-    loop, distinct from the activate_client join that WS1 moved to the worker.  It
-    is deliberately left synchronous for WS1: it is a different effect family (USB
+    loop, distinct from the activate_client join that runs on the worker.  It is
+    deliberately left synchronous: it is a different effect family (USB
     rebind/reenumerate) with its own budget/quarantine/reboot ladder, and folding
     it onto the worker widens the blast radius for little gain (a wedged reset is
     already backstopped by the loop's guarded reboot ladder, which keeps running
     because the loop never blocks on the worker).  step_dead_phy_recovery is gated
-    on STATE.transitioning (WS1-WP3), so a reset never overlaps a worker activation
-    — only one blocking effect runs at a time.  Moving the reset off-thread is a
-    later workstream if the ~15 s dead-PHY blackout proves to matter in the field.
+    on STATE.transitioning, so a reset never overlaps a worker activation — only
+    one blocking effect runs at a time.
     """
     with w.state_lock:
         method = "B" if w.STATE.last_reset_method == "A" else "A"
@@ -754,8 +747,8 @@ def _maybe_request_dead_phy_reboot(w, target: TargetAdapter, now: float) -> bool
     Returns True only when a reboot was accepted (owns the pass).  When the
     persistent guard or in-process rate limit suppresses the reboot, returns
     False so the monitor loop's no-active-path catch-all can still apply.  The
-    guard/throttle/stamp mechanics live in the shared request_guarded_reboot
-    (C2-WP5); this function owns only the dead-for threshold and the target.
+    guard/throttle/stamp mechanics live in the shared request_guarded_reboot;
+    this function owns only the dead-for threshold and the target.
     """
     with w.state_lock:
         first_failure = w.STATE.dead_adapter_first_failure
@@ -770,7 +763,7 @@ def _maybe_request_dead_phy_reboot(w, target: TargetAdapter, now: float) -> bool
 
 
 def escalate_dead_adapter_recovery(w, adapters: list, wired_connected: bool) -> bool:
-    """Run one step of the dead-PHY recovery ladder (Section 3).
+    """Run one step of the dead-PHY recovery ladder.
 
     Resolves the target client, advances dead detection, and — when the adapter
     is dead — steps the ladder: built-in fallback -> USB reset (Method A/B) ->

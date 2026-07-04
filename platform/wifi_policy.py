@@ -1,10 +1,9 @@
 """Pure Wi-Fi connectivity policy for the watcher.
 
-This module holds the *effect-free* decision core the watcher settles on: the
-connectivity ``Mode`` enum, the hotspot ``HotspotPurpose`` enum and its
-``PURPOSE_TABLE`` policy rows, and (added in later work packages) the pure
-forward-mode and recovery-ladder classifiers plus their plain policy input
-types.
+This module holds the watcher's *effect-free* decision core: the connectivity
+``Mode`` enum, the hotspot ``HotspotPurpose`` enum and its ``PURPOSE_TABLE``
+policy rows, and the pure forward-mode and recovery-ladder classifiers plus
+their plain policy input types.
 
 Nothing here reads ``STATE``, runs a subprocess, performs an effect, or depends
 on the watcher's ``w`` seam or on live ``autostream_wifi_network`` adapter
@@ -30,7 +29,7 @@ BOOT_AP_GRACE = 60                      # still offline after this many seconds 
 
 
 class Mode(Enum):
-    """The watcher's explicit connectivity operating mode (Section 2.2)."""
+    """The watcher's explicit connectivity operating mode."""
     BOOT = "boot"
     ONLINE = "online"
     OFFLINE_RECONNECTING = "offline_reconnecting"
@@ -39,7 +38,7 @@ class Mode(Enum):
 
 
 class HotspotPurpose(Enum):
-    """Why the setup hotspot is up — the single key into PURPOSE_TABLE (Section 2.3)."""
+    """Why the setup hotspot is up — the single key into PURPOSE_TABLE."""
     FIRST_RUN = "first_run"
     BOOT_RECOVERY = "boot_recovery"
     USB_LOSS_RECOVERY = "usb_loss_recovery"
@@ -49,7 +48,7 @@ class HotspotPurpose(Enum):
 
 @dataclass(frozen=True)
 class PurposePolicy:
-    """One row of PURPOSE_TABLE (Section 2.3) — pure data, no behaviour."""
+    """One row of PURPOSE_TABLE — pure data, no behaviour."""
     deadline_s: Optional[float]   # None = indefinite (FIRST_RUN)
     eth_suppressible: bool
     probes_return: bool
@@ -70,14 +69,14 @@ PURPOSE_TABLE: "dict[HotspotPurpose, PurposePolicy]" = {
 
 
 def next_mode(state, facts) -> "Mode":
-    """The permanent pure forward mode classifier: state + facts -> Mode (constraint 10).
+    """The pure forward mode classifier: state + facts -> Mode.
 
     Pure: reads *state* fields and *facts* (needs only ``facts.wired_ok`` and
     ``facts.taken_at``) plus this module's constants; it does not mutate STATE,
     call subprocesses, run effects, or depend on the ``w`` seam.  The watcher's
     loop *applies* the returned value by setting ``STATE.mode`` each pass, and it
     is published as ``device.mode``.  Together with PURPOSE_TABLE it is the
-    explicit-model decision core the refactor settles on.
+    explicit-model decision core.
 
     Precedence mirrors the live loop: hotspot wins, then an accepted reboot, then
     a usable path means ONLINE, then the boot grace window means BOOT, otherwise
