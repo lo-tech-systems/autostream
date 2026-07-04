@@ -2739,6 +2739,34 @@ class TestClientProfileAutoconnectMigration:
             count = watcher.migrate_client_profiles_autoconnect_no()
         assert count == 1   # uuid-1 failed, uuid-2 succeeded, sweep continued
 
+    def test_sweep_converts_by_setting_autoconnect_no(self, watcher):
+        # IF-4 (b): the conversion is the point — the sweep must issue a modify
+        # that sets connection.autoconnect=no on a client profile (idempotent, so
+        # it converts a would-be autoconnect=yes profile), while skipping AP
+        # profiles.  The other D-WP2 tests capture the target uuid; this one pins
+        # the actual value the command sets.
+        profiles = [("uuid-yes", "Home"), ("uuid-ap", "autostream-Hotspot")]
+        modes = {"uuid-yes": "infrastructure", "uuid-ap": "ap"}
+        issued = []
+
+        def fake_modify(cmd, *a, **k):
+            issued.append(cmd)
+            return self._res()
+
+        with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=profiles), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode",
+                          side_effect=lambda ident: modes[ident]), \
+             patch.object(watcher, "run_cmd", side_effect=fake_modify):
+            count = watcher.migrate_client_profiles_autoconnect_no()
+
+        assert count == 1
+        assert len(issued) == 1                       # AP profile issued no modify
+        cmd = issued[0]
+        assert cmd[:3] == ["nmcli", "connection", "modify"]
+        assert "uuid-yes" in cmd                       # targets the client profile
+        assert cmd[cmd.index("connection.autoconnect") + 1] == "no"
+
 
 class TestBootClientBringup:
     """C2-WP4 — the BOOT-window client bring-up is a loop rung that runs the single
