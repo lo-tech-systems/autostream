@@ -2581,7 +2581,7 @@ def migrate_client_profiles_autoconnect_no() -> int:
     for uuid, name in wifi_net.list_wifi_connection_profiles():
         if wifi_net.wifi_profile_mode(uuid or name) == "ap":
             continue
-        r = run_cmd(wifi_net.set_autoconnect_no_cmd(uuid, name), timeout=NMCLI_QUICK_TIMEOUT)
+        r = nm.set_autoconnect_no(uuid, name)
         if r.returncode == 0:
             modified += 1
         else:
@@ -2677,8 +2677,7 @@ def import_first_boot_wifi_profile() -> None:
 
         # Disable autoconnect on the retained profile immediately (do not wait for
         # the next boot's autoconnect=no sweep).
-        r = run_cmd(wifi_net.set_autoconnect_no_cmd(retain_uuid, retain_name),
-                    timeout=NMCLI_QUICK_TIMEOUT)
+        r = nm.set_autoconnect_no(retain_uuid, retain_name)
         if r.returncode != 0:
             logger.warning(
                 "First-boot Wi-Fi import: could not disable autoconnect on retained "
@@ -2706,9 +2705,7 @@ def _delete_other_wifi_profiles(retain_uuid: str, retain_name: str) -> int:
             continue
         if wifi_net.wifi_profile_mode(uuid or name) == "ap":
             continue
-        cmd = (wifi_net.delete_connection_cmd(uuid) if uuid
-               else ["nmcli", "connection", "delete", "id", name])
-        r = run_cmd(cmd, timeout=NMCLI_QUICK_TIMEOUT)
+        r = nm.delete_by_uuid(uuid) if uuid else nm.delete_connection(name)
         if r.returncode == 0:
             deleted += 1
             logger.info("First-boot Wi-Fi import: deleted saved profile '%s'", name or uuid)

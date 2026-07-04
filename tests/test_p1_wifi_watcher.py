@@ -1704,9 +1704,10 @@ class TestFirstBootImport:
         a.ifname = ifname
         return a
 
-    def _deleted_cmds(self, run_cmd_mock):
-        return [" ".join(c.args[0]) for c in run_cmd_mock.call_args_list
-                if "delete" in c.args[0]]
+    def _deleted_idents(self, by_uuid, by_name):
+        # Every saved profile deleted, whether by uuid or bare name.
+        return ([c.args[0] for c in by_uuid.call_args_list]
+                + [c.args[0] for c in by_name.call_args_list])
 
     def test_single_active_retained_others_deleted(self, watcher, tmp_path):
         marker = str(tmp_path / "first-boot-import.done")
@@ -1720,14 +1721,15 @@ class TestFirstBootImport:
                           return_value=[("uuid-home", "HomeNet"), ("uuid-old", "OldNet"),
                                         ("uuid-dev", "DevNet")]), \
              patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
-             patch.object(watcher, "run_cmd",
-                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+             patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
+             patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
             watcher.import_first_boot_wifi_profile()
         commit.assert_called_once_with("HomeNet", "uuid-home")
-        deleted = self._deleted_cmds(rc)
-        assert any("uuid-old" in d for d in deleted)
-        assert any("uuid-dev" in d for d in deleted)
-        assert not any("uuid-home" in d for d in deleted)   # retained, never deleted
+        deleted = self._deleted_idents(del_uuid, del_name)
+        assert "uuid-old" in deleted
+        assert "uuid-dev" in deleted
+        assert "uuid-home" not in deleted   # retained, never deleted
         assert os.path.exists(marker)
 
     def test_multi_active_retains_default_route_carrier(self, watcher, tmp_path):
@@ -1746,14 +1748,15 @@ class TestFirstBootImport:
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-NetA", "NetA"), ("uuid-NetB", "NetB")]), \
              patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
-             patch.object(watcher, "run_cmd",
-                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+             patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
+             patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
             watcher.import_first_boot_wifi_profile()
         # NetB carries the default route -> retained; NetA deleted.
         commit.assert_called_once_with("NetB", "uuid-NetB")
-        deleted = self._deleted_cmds(rc)
-        assert any("uuid-NetA" in d for d in deleted)
-        assert not any("uuid-NetB" in d for d in deleted)
+        deleted = self._deleted_idents(del_uuid, del_name)
+        assert "uuid-NetA" in deleted
+        assert "uuid-NetB" not in deleted
 
     def test_no_active_profile_deletes_nothing(self, watcher, tmp_path):
         marker = str(tmp_path / "first-boot-import.done")
@@ -1782,11 +1785,12 @@ class TestFirstBootImport:
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-m", "Managed")]), \
              patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
-             patch.object(watcher, "run_cmd",
-                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+             patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
+             patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
             watcher.import_first_boot_wifi_profile()
         commit.assert_called_once_with("Managed", "uuid-m")
-        assert self._deleted_cmds(rc) == []   # nothing else to delete
+        assert self._deleted_idents(del_uuid, del_name) == []   # nothing else to delete
         assert os.path.exists(marker)
 
     def test_ap_hotspot_profile_never_deleted(self, watcher, tmp_path):
@@ -1805,21 +1809,21 @@ class TestFirstBootImport:
                           side_effect=lambda ident: modes.get("Hotspot" if "hs" in ident else
                                                               ("OldNet" if "old" in ident else "HomeNet"),
                                                               "infrastructure")), \
-             patch.object(watcher, "run_cmd",
-                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+             patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
+             patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
             watcher.import_first_boot_wifi_profile()
-        deleted = self._deleted_cmds(rc)
-        assert any("uuid-old" in d for d in deleted)
-        assert not any("uuid-hs" in d for d in deleted)   # AP profile never deleted
+        deleted = self._deleted_idents(del_uuid, del_name)
+        assert "uuid-old" in deleted
+        assert "uuid-hs" not in deleted   # AP profile never deleted
 
     def test_delete_failure_logged_and_continues(self, watcher, tmp_path):
         marker = str(tmp_path / "first-boot-import.done")
         a = self._adapter("wlan0")
 
-        def _run(cmd, **kw):
-            if "delete" in cmd and "uuid-old" in cmd:
-                return MagicMock(returncode=1, stderr="boom")
-            return MagicMock(returncode=0, stderr="")
+        def _del(uuid):
+            return (MagicMock(returncode=1, stderr="boom") if uuid == "uuid-old"
+                    else MagicMock(returncode=0, stderr=""))
 
         with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
@@ -1830,12 +1834,14 @@ class TestFirstBootImport:
                           return_value=[("uuid-home", "HomeNet"), ("uuid-old", "OldNet"),
                                         ("uuid-dev", "DevNet")]), \
              patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
-             patch.object(watcher, "run_cmd", side_effect=_run) as rc:
+             patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.nm, "delete_by_uuid", side_effect=_del) as del_uuid, \
+             patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
             watcher.import_first_boot_wifi_profile()   # must not raise
-        deleted = self._deleted_cmds(rc)
+        deleted = self._deleted_idents(del_uuid, del_name)
         # Both deletions attempted despite the first failing.
-        assert any("uuid-old" in d for d in deleted)
-        assert any("uuid-dev" in d for d in deleted)
+        assert "uuid-old" in deleted
+        assert "uuid-dev" in deleted
         assert os.path.exists(marker)
 
     def test_skips_when_marker_present(self, watcher, tmp_path):
@@ -3181,16 +3187,15 @@ class TestClientProfileAutoconnectMigration:
         modes = {"uuid-1": "infrastructure", "uuid-ap": "ap", "uuid-2": ""}
         modified = []
 
-        def fake_modify(cmd, *a, **k):
-            # cmd == set_autoconnect_no_cmd(...); capture the uuid it targets.
-            modified.append(cmd[cmd.index("uuid") + 1])
+        def fake_modify(uuid, name=""):
+            modified.append(uuid)
             return self._res()
 
         with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=profiles), \
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           side_effect=lambda ident: modes[ident]), \
-             patch.object(watcher, "run_cmd", side_effect=fake_modify):
+             patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
             count = watcher.migrate_client_profiles_autoconnect_no()
 
         assert count == 2
@@ -3207,45 +3212,41 @@ class TestClientProfileAutoconnectMigration:
     def test_per_profile_failure_does_not_abort_sweep(self, watcher):
         profiles = [("uuid-1", "Home"), ("uuid-2", "Guest")]
 
-        def fake_modify(cmd, *a, **k):
-            uuid = cmd[cmd.index("uuid") + 1]
+        def fake_modify(uuid, name=""):
             return self._res(rc=1, stderr="boom") if uuid == "uuid-1" else self._res()
 
         with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=profiles), \
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           return_value="infrastructure"), \
-             patch.object(watcher, "run_cmd", side_effect=fake_modify):
+             patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
             count = watcher.migrate_client_profiles_autoconnect_no()
         assert count == 1   # uuid-1 failed, uuid-2 succeeded, sweep continued
 
     def test_sweep_converts_by_setting_autoconnect_no(self, watcher):
-        # IF-4 (b): the conversion is the point — the sweep must issue a modify
-        # that sets connection.autoconnect=no on a client profile (idempotent, so
-        # it converts a would-be autoconnect=yes profile), while skipping AP
-        # profiles.  The other D-WP2 tests capture the target uuid; this one pins
-        # the actual value the command sets.
+        # IF-4 (b): the conversion is the point — the sweep must set
+        # connection.autoconnect=no on a client profile (idempotent, so it
+        # converts a would-be autoconnect=yes profile), while skipping AP
+        # profiles.  The command shape (modify … connection.autoconnect no) is
+        # pinned by the NMClient unit test; here we pin that the client profile is
+        # targeted and the AP profile is skipped.
         profiles = [("uuid-yes", "Home"), ("uuid-ap", "autostream-Hotspot")]
         modes = {"uuid-yes": "infrastructure", "uuid-ap": "ap"}
         issued = []
 
-        def fake_modify(cmd, *a, **k):
-            issued.append(cmd)
+        def fake_modify(uuid, name=""):
+            issued.append((uuid, name))
             return self._res()
 
         with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=profiles), \
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           side_effect=lambda ident: modes[ident]), \
-             patch.object(watcher, "run_cmd", side_effect=fake_modify):
+             patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
             count = watcher.migrate_client_profiles_autoconnect_no()
 
         assert count == 1
-        assert len(issued) == 1                       # AP profile issued no modify
-        cmd = issued[0]
-        assert cmd[:3] == ["nmcli", "connection", "modify"]
-        assert "uuid-yes" in cmd                       # targets the client profile
-        assert cmd[cmd.index("connection.autoconnect") + 1] == "no"
+        assert issued == [("uuid-yes", "Home")]        # client only; AP skipped
 
 
 class TestBootClientBringup:
