@@ -1002,8 +1002,18 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     return True
 
 
-def attempt_on_targets(targets: list, attempt_fn) -> bool:
-    """Try client activation on target adapters with per-target AP handling."""
+def attempt_on_targets(targets: list, attempt_fn) -> "Optional[object]":
+    """Try client activation on target adapters with per-target AP handling.
+
+    Returns the target adapter that came up (so the caller applies the session
+    success tail in its own context), or None when every target failed.  IF-2:
+    the success tail (set-active / leave-setup / verify-avahi) is NOT applied
+    here — this function has two calling contexts, one of which is the worker
+    thread (the apply_credentials job), and the worker must never apply a
+    session success tail.  The per-target AP stop-before-attempt and
+    rebuild-on-failure mechanics are the sanctioned worker-side AP writes and
+    stay here unchanged.
+    """
     hotspot_adapter = resolve_hotspot_adapter(wifi_net.discover_adapters())
     for target in targets:
         with state_lock:
@@ -1015,10 +1025,7 @@ def attempt_on_targets(targets: list, attempt_fn) -> bool:
             ap_stopped_for_hotspot = True
 
         if attempt_fn(target):
-            _set_active_client(target)
-            leave_setup_mode("WiFi client connection succeeded")
-            verify_avahi_after_handover()
-            return True
+            return target
 
         if ap_stopped_for_hotspot:
             logger.warning(
@@ -1032,10 +1039,23 @@ def attempt_on_targets(targets: list, attempt_fn) -> bool:
             start_ap_mode()
             update_apmode_flag(True)
 
-    return False
+    return None
 
 
-def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
+def _apply_client_up_tail(target) -> None:
+    """Apply the client-up session success tail (loop thread only).
+
+    Set the active client, leave setup mode, and re-announce mDNS after the
+    handover.  Extracted from attempt_on_targets (IF-2) so the synchronous
+    loop-thread callers apply it inline; the apply_credentials job applies the
+    equivalent tail through apply_activation_result.
+    """
+    _set_active_client(target)
+    leave_setup_mode("WiFi client connection succeeded")
+    verify_avahi_after_handover()
+
+
+def configure_wifi_with_nmcli(ssid: str, password: str) -> "Optional[object]":
     """Apply submitted credentials using the rollback-safe candidate sequence.
 
     Does NOT use ``nmcli device wifi connect`` (which would reuse/modify an
@@ -1045,13 +1065,18 @@ def configure_wifi_with_nmcli(ssid: str, password: str) -> bool:
     Adapter order follows Section 6.4: USB adapters that saw the SSID first, then
     built-in, then best-effort. If a USB attempt fails and built-in saw the SSID,
     built-in is attempted once before giving up.
+
+    Returns the adapter the credentials came up on (for the loop to apply the
+    session success tail — IF-2), or None when no adapter succeeded.  Runs on
+    the worker thread (the apply_credentials job), so it applies no session
+    tail itself.
     """
     merged, builtin_scan_known = scan_all_networks()
     adapters = wifi_net.discover_adapters()
     order = wifi_net.connection_target_order(ssid, adapters, merged, builtin_scan_known)
     if not order:
         logger.warning("No usable Wi-Fi adapter to apply credentials for '%s'", ssid)
-        return False
+        return None
 
     return attempt_on_targets(
         order,
@@ -1234,8 +1259,13 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
     with state_lock:
         if STATE.apply_in_progress:
             return False
+    # IF-2: the session success tail (set-active / leave-setup / avahi) is
+    # applied by apply_activation_result on the loop thread — exactly as the
+    # other job kinds — so carry the leave-setup flags the shared tail reads.
     job = ActivationJob(epoch=_next_activation_epoch(), kind="apply_credentials",
-                        ifname="", ssid=ssid, password=pw)
+                        ifname="", ssid=ssid, password=pw,
+                        on_success_leaves_setup=True,
+                        leave_reason="WiFi client connection succeeded")
     if not submit_activation_job(job):
         return False
     with state_lock:
@@ -1383,11 +1413,16 @@ def reconnect_saved_network() -> bool:
         # path gains UUID resolution, cross-adapter restriction clearing and the
         # net-absent short-circuit for free (A-WP4, inconsistency 1 — previously
         # a "network could not be found" on each target burnt the full IPv4
-        # wait).  attempt_on_targets owns the success tail (set_active /
-        # leave_setup / avahi) and the per-hotspot-target AP rebuild.
+        # wait).  attempt_on_targets owns the per-hotspot-target AP rebuild; the
+        # success tail is applied inline below on this (loop) thread (IF-2).
         return _activate_profile_on(target.ifname, committed)
 
-    if attempt_on_targets(targets, _attempt):
+    target = attempt_on_targets(targets, _attempt)
+    if target is not None:
+        # Loop-thread synchronous caller: apply the client-up success tail here
+        # now that attempt_on_targets no longer does (IF-2).  Behaviour is
+        # unchanged — only the location of the tail moved.
+        _apply_client_up_tail(target)
         return True
 
     logger.warning("Reconnect to saved network failed; retaining hotspot")
@@ -2710,10 +2745,15 @@ def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
     if job.kind == "apply_credentials":
         # WS1-WP4: the credential-apply transaction runs the rollback-safe candidate
         # sequence itself (scan -> ordered targets -> commit-on-success); the loop
-        # applies the wait-page status tail.
+        # applies the wait-page status tail AND (IF-2) the session success tail.
+        # configure_wifi_with_nmcli returns the adapter it came up on; carry that
+        # ifname on the result so apply_activation_result can set the active
+        # client and leave setup on the loop thread.
         logger.info("Async apply starting for SSID '%s'", job.ssid)
-        ok = configure_wifi_with_nmcli(job.ssid, job.password)
-        return ActivationResult(job.epoch, ok, "", job, error="" if ok else "nmcli-failed")
+        target = configure_wifi_with_nmcli(job.ssid, job.password)
+        ok = target is not None
+        ifname = target.ifname if target is not None else ""
+        return ActivationResult(job.epoch, ok, ifname, job, error="" if ok else "nmcli-failed")
 
     if not job.ifname:
         return ActivationResult(job.epoch, False, "", job, error="no_ifname")
@@ -2758,24 +2798,27 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
     if job.kind == "apply_credentials":
         # WS1-WP4: the wait-page status tail (applying -> ok/failed), clearing
         # apply_in_progress and, on failure, returning to setup mode.
-        if result.ok:
+        if not result.ok:
             with state_lock:
-                STATE.last_apply_result = "ok"
-                STATE.last_apply_error = ""
+                STATE.last_apply_result = "failed"
+                STATE.last_apply_error = "nmcli-failed"
                 STATE.apply_in_progress = False
-            logger.info("WiFi configuration and connectivity verified")
-            return True
+                # Re-enter with whatever purpose the interrupted session held
+                # (configure_wifi_with_nmcli keeps setup_mode set on failure, so
+                # this is normally a no-op); fall back to FIRST_RUN.
+                purpose = STATE.hotspot.purpose if STATE.hotspot else HotspotPurpose.FIRST_RUN
+            logger.warning("WiFi configuration failed; returning to SetupMode")
+            enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
+            return False
         with state_lock:
-            STATE.last_apply_result = "failed"
-            STATE.last_apply_error = "nmcli-failed"
+            STATE.last_apply_result = "ok"
+            STATE.last_apply_error = ""
             STATE.apply_in_progress = False
-            # Re-enter with whatever purpose the interrupted session held
-            # (configure_wifi_with_nmcli keeps setup_mode set on failure, so this is
-            # normally a no-op); fall back to FIRST_RUN.
-            purpose = STATE.hotspot.purpose if STATE.hotspot else HotspotPurpose.FIRST_RUN
-        logger.warning("WiFi configuration failed; returning to SetupMode")
-        enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
-        return False
+        logger.info("WiFi configuration and connectivity verified")
+        # IF-2: fall through to the shared success tail below (set active client
+        # by result.ifname, leave setup, verify avahi) — the same tail the other
+        # job kinds use — so the credential apply's session tail runs on the loop
+        # thread instead of on the worker (inside the old attempt_on_targets).
 
     if result.ok and not job.wait_for_validation:
         # Fire-and-forget: activation issued, loop validates on a later pass.
@@ -2942,9 +2985,11 @@ def drain_activation_result() -> "Optional[ActivationResult]":
 def _activation_worker_loop() -> None:
     """Worker thread body: run one job at a time, posting each result.
 
-    A ``None`` job is the stop sentinel (used by tests).  The worker never mutates
-    connectivity/session state — it only runs _run_activation_job (slow bounded
-    effects) and posts the outcome for the loop to apply.
+    A ``None`` job is the stop sentinel (used by tests).  The worker never applies
+    session/connectivity success tails; its only sanctioned session-state writes
+    are the AP drop/rebuild flags around its own attempt.  It runs
+    _run_activation_job (slow bounded effects) and posts the outcome for the loop
+    to apply.
     """
     while True:
         job = _activation_job_queue.get()

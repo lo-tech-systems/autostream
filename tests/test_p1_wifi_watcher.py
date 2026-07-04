@@ -1943,6 +1943,29 @@ class TestReconnectSavedNetwork:
         assert ok is True
         leave.assert_called_once()
 
+    def test_applies_full_client_up_tail_inline(self, watcher):
+        # IF-2 regression: attempt_on_targets no longer applies the success tail,
+        # so reconnect_saved_network must apply it inline on the loop thread —
+        # set the active client, leave setup, and verify avahi.
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
+             patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin]), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
+             patch.object(watcher, "_activate_profile_on", return_value=True), \
+             patch.object(watcher, "stop_ap_mode"), \
+             patch.object(watcher, "_set_active_client") as set_active, \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover") as avahi:
+            ok = watcher.reconnect_saved_network()
+        assert ok is True
+        set_active.assert_called_once_with(builtin)
+        leave.assert_called_once_with("WiFi client connection succeeded")
+        avahi.assert_called_once()
+
     def test_failure_retains_hotspot(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
@@ -2284,7 +2307,9 @@ class TestConnectToConfiguredWifiUuid:
 
 
 class TestAttemptOnTargets:
-    def test_non_hotspot_target_keeps_ap_up_and_success_leaves_setup(self, watcher):
+    def test_non_hotspot_target_returns_target_without_applying_tail(self, watcher):
+        # IF-2: attempt_on_targets returns the successful adapter and applies NO
+        # session tail itself (it can run on the worker thread); the caller does.
         hotspot = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         target = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
         watcher.STATE.setup_mode = True
@@ -2293,15 +2318,18 @@ class TestAttemptOnTargets:
              patch.object(watcher, "resolve_hotspot_adapter", return_value=hotspot), \
              patch.object(watcher, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "start_ap_mode") as start_ap, \
+             patch.object(watcher, "_set_active_client") as set_active, \
              patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "verify_avahi_after_handover"):
-            ok = watcher.attempt_on_targets([target], lambda adapter: adapter.ifname == "wlan1")
+             patch.object(watcher, "verify_avahi_after_handover") as avahi:
+            result = watcher.attempt_on_targets([target], lambda adapter: adapter.ifname == "wlan1")
 
-        assert ok is True
+        assert result is target
         stop_ap.assert_not_called()
         start_ap.assert_not_called()
-        leave.assert_called_once()
-        assert watcher.STATE.active_client_ifname == "wlan1"
+        # The success tail is the caller's responsibility now.
+        set_active.assert_not_called()
+        leave.assert_not_called()
+        avahi.assert_not_called()
 
     def test_hotspot_target_failure_rebuilds_ap(self, watcher):
         hotspot = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -2313,9 +2341,9 @@ class TestAttemptOnTargets:
              patch.object(watcher, "start_ap_mode") as start_ap, \
              patch.object(watcher, "update_apmode_flag") as apflag, \
              patch.object(watcher, "leave_setup_mode") as leave:
-            ok = watcher.attempt_on_targets([hotspot], lambda adapter: False)
+            result = watcher.attempt_on_targets([hotspot], lambda adapter: False)
 
-        assert ok is False
+        assert result is None
         stop_ap.assert_called_once()
         start_ap.assert_called_once()
         apflag.assert_called_once_with(True)
@@ -2331,9 +2359,9 @@ class TestAttemptOnTargets:
              patch.object(watcher, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "start_ap_mode") as start_ap, \
              patch.object(watcher, "update_apmode_flag") as apflag:
-            ok = watcher.attempt_on_targets([usb], lambda adapter: False)
+            result = watcher.attempt_on_targets([usb], lambda adapter: False)
 
-        assert ok is False
+        assert result is None
         stop_ap.assert_called_once()
         start_ap.assert_called_once()
         apflag.assert_called_once_with(True)
@@ -2360,30 +2388,141 @@ class TestApplyCredentialsWorker:
         submit.assert_not_called()
 
     def test_success_result_sets_ok_and_clears_flag(self, watcher):
+        # IF-2: configure_wifi_with_nmcli returns the adapter it came up on; the
+        # worker carries that ifname on the result, and apply_activation_result
+        # applies the session success tail (set-active / leave-setup / avahi) on
+        # the loop thread.
+        target = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
         job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
-                                    kind="apply_credentials", ifname="", ssid="Home", password="x")
+                                    kind="apply_credentials", ifname="", ssid="Home", password="x",
+                                    on_success_leaves_setup=True,
+                                    leave_reason="WiFi client connection succeeded")
         watcher.STATE.apply_in_progress = True
-        with patch.object(watcher, "configure_wifi_with_nmcli", return_value=True):
+        with patch.object(watcher, "configure_wifi_with_nmcli", return_value=target), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[target]), \
+             patch.object(watcher, "_set_active_client") as set_active, \
+             patch.object(watcher, "leave_setup_mode") as leave, \
+             patch.object(watcher, "verify_avahi_after_handover") as avahi:
             result = watcher._run_activation_job(job)
             watcher.apply_activation_result(result)
         assert result.ok is True
+        assert result.ifname == "wlan1"
         assert watcher.STATE.last_apply_result == "ok"
         assert watcher.STATE.apply_in_progress is False
+        # The success tail ran on the loop-thread apply, not on the worker.
+        set_active.assert_called_once_with(target)
+        leave.assert_called_once_with("WiFi client connection succeeded")
+        avahi.assert_called_once()
 
     def test_failure_retains_setup_and_returns_to_setup_mode(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.apply_in_progress = True
         job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
-                                    kind="apply_credentials", ifname="", ssid="Home", password="bad")
-        with patch.object(watcher, "configure_wifi_with_nmcli", return_value=False), \
+                                    kind="apply_credentials", ifname="", ssid="Home", password="bad",
+                                    on_success_leaves_setup=True,
+                                    leave_reason="WiFi client connection succeeded")
+        with patch.object(watcher, "configure_wifi_with_nmcli", return_value=None), \
              patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher, "enter_setup_mode") as enter:
             result = watcher._run_activation_job(job)
             watcher.apply_activation_result(result)
+        assert result.ok is False
         leave.assert_not_called()
         enter.assert_called_once()
         assert watcher.STATE.last_apply_result == "failed"
         assert watcher.STATE.apply_in_progress is False
+
+
+class TestIf2WorkerSessionContract:
+    """IF-2 — the worker never applies a session success tail.  The credential
+    apply's tail (set-active / leave-setup / avahi) runs only on the loop thread;
+    ethernet enforcement stays deferred until the worker result is applied."""
+
+    def _eth_hctx(self, watcher, now):
+        facts = _facts_for(watcher, [], None, wired_ok=True, now=now)
+        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.FactsContext(pre, facts, lambda: False)
+        return watcher.HealthContext(
+            fctx, health_ifname="wlan0", wifi_connected=False, client_ok=False,
+            conn_ok=True, active_path_ok=True)
+
+    def test_apply_tail_on_loop_thread_and_eth_defers_until_applied(self, watcher):
+        loop_ident = threading.get_ident()
+        tail_calls: list = []  # (name, thread_ident) recorded by the setter shims
+
+        target = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_configure(ssid, pw):
+            # Worker thread: announce we are in flight, then block so the test can
+            # observe a mid-job ethernet-appears pass that must defer enforcement.
+            started.set()
+            assert release.wait(3.0)
+            return target
+
+        def rec_set_active(adapter):
+            tail_calls.append(("set_active", threading.get_ident()))
+            watcher.STATE.active_client_ifname = adapter.ifname if adapter else ""
+            watcher.STATE.active_client_mac = adapter.permanent_mac if adapter else ""
+
+        def rec_leave(reason=""):
+            tail_calls.append(("leave", threading.get_ident()))
+            watcher.STATE.setup_mode = False
+            watcher.STATE.hotspot = None
+
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
+
+        with patch.object(watcher, "configure_wifi_with_nmcli", side_effect=blocking_configure), \
+             patch.object(watcher, "_set_active_client", side_effect=rec_set_active), \
+             patch.object(watcher, "leave_setup_mode", side_effect=rec_leave), \
+             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[target]):
+            worker = watcher.start_activation_worker()
+            try:
+                assert watcher.submit_apply_credentials("Home", "s3cr3t") is True
+                assert started.wait(3.0)                 # worker picked up the job
+                assert watcher.STATE.transitioning is True
+
+                # Mid-job ethernet-appears pass: step_ethernet_wins observes it but
+                # DEFERS enforcement (owns the pass; no leave, no disconnect).
+                with patch.object(watcher, "run_cmd") as run_defer:
+                    v = watcher.step_ethernet_wins(self._eth_hctx(watcher, now=1000.0))
+                assert v is watcher.Verdict.OWN_PASS
+                run_defer.assert_not_called()
+                assert tail_calls == []                  # no success tail yet
+                assert watcher.STATE.setup_mode is True
+
+                # Release the worker and wait for it to post the result.
+                release.set()
+                assert watcher.activation_result_event.wait(3.0)
+
+                # Apply the result at pass top (loop thread): the success tail runs
+                # here and transitioning is cleared.
+                pre = watcher.PreFactsContext(now=1001.0, boot_time=0.0, avahi_ok=True)
+                watcher.step_apply_activation_result(pre)
+                assert watcher.STATE.transitioning is False
+                assert watcher.STATE.last_apply_result == "ok"
+                assert ("set_active", loop_ident) in tail_calls
+                assert ("leave", loop_ident) in tail_calls
+
+                # The pass AFTER the result is applied now enforces ethernet: the
+                # idle Wi-Fi client is disconnected (no longer deferred).
+                with patch.object(watcher, "run_cmd") as run_enforce:
+                    v2 = watcher.step_ethernet_wins(self._eth_hctx(watcher, now=1002.0))
+                assert v2 is watcher.Verdict.OWN_PASS
+                assert any("disconnect" in str(c) and "wlan1" in str(c)
+                           for c in run_enforce.call_args_list)
+            finally:
+                watcher._activation_job_queue.put(None)  # stop the worker thread
+                worker.join(3.0)
+
+        # Thread-identity invariant: every session-tail setter ran on the loop
+        # thread, never on the worker thread.
+        assert tail_calls, "the success tail must have run"
+        assert all(ident == loop_ident for _, ident in tail_calls)
 
 
 class TestReconfigureTimeout:
