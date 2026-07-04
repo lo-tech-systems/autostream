@@ -4030,6 +4030,29 @@ class TestDeadPhyRebootThreshold:
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == 30 * 60
 
 
+class TestNmcliGoesThroughNMClient:
+    """WP-7: the watcher orchestration module issues no direct nmcli itself — every
+    nmcli invocation goes through the bounded NMClient (wifi_nm.py).
+
+    Scoped to platform/wifi_watcher (the WP's target): wifi_net keeps its
+    facts/query helpers and the pure command builders/parsers NMClient calls, so
+    this guard covers the imperative watcher code, not the core facts layer.
+    """
+
+    def test_watcher_issues_no_raw_nmcli(self):
+        import re
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+        # No literal run_cmd(["nmcli", ...]) (single- or multi-line).
+        assert not re.search(r'run_cmd\(\s*\[\s*"nmcli"', src), (
+            "watcher must not issue a raw run_cmd(['nmcli', ...]); use the nm client"
+        )
+        # No run_cmd(wifi_net.<...>_cmd(...)) builder-based nmcli execution either.
+        assert not re.search(r'run_cmd\(\s*wifi_net\.\w+_cmd\(', src), (
+            "watcher must not run wifi_net nmcli command builders directly; use the nm client"
+        )
+
+
 class TestSubprocessTimeoutBounds:
     """IF-1: every nmcli/systemctl execution site on the loop and worker paths is
     timeout-bounded, so a wedged NetworkManager returns rc 124 instead of hanging
