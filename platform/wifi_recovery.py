@@ -800,11 +800,13 @@ def escalate_dead_adapter_recovery(w, adapters: list, wired_connected: bool) -> 
         if w._activate_committed_on(builtin.ifname):
             w.logger.info("Dead-PHY: built-in fallback selected and connected on %s",
                           builtin.ifname)
-            with w.state_lock:
-                w.STATE.using_builtin_fallback = True
-            w._set_active_client(builtin)
-            clear_dead_adapter_state(w)
-            w.verify_avahi_after_handover()
+            # Shared handover tail: set the built-in active, mark the
+            # builtin-fallback flag, clear dead-PHY recovery state, verify avahi.
+            w.client_up_tail(
+                builtin,
+                set_builtin_fallback=True,
+                clear_dead_adapter=True,
+            )
             return True
 
     other_path = _other_network_path_available(w, adapters, target, wired_connected)
