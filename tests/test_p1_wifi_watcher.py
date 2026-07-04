@@ -1526,6 +1526,99 @@ class TestUsbFailureFallback:
         ap.assert_called_once()
 
 
+class TestClientUpTail:
+    """WP-3 — the single shared 'a client came up' choreography (client_up_tail)."""
+
+    def _adapter(self, ifname="wlan1", mac="AA:BB:CC:DD:EE:01", stable_id="usb0"):
+        a = MagicMock()
+        a.ifname = ifname
+        a.permanent_mac = mac
+        a.stable_id = stable_id
+        a.kind = "usb_wifi"
+        return a
+
+    def test_sets_active_and_verifies_avahi(self, watcher):
+        a = self._adapter()
+        with patch.object(watcher, "verify_avahi_after_handover") as avahi:
+            watcher.client_up_tail(a)
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        avahi.assert_called_once()
+
+    def test_none_adapter_skips_set_active(self, watcher):
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = "prev"
+        with patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "_set_active_client") as sac:
+            watcher.client_up_tail(None)
+        sac.assert_not_called()
+
+    def test_disconnect_builtin_runs_nmcli(self, watcher):
+        a = self._adapter()
+        with patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as rc:
+            watcher.client_up_tail(a, disconnect_builtin_ifname="wlan0")
+        assert any("disconnect" in " ".join(c.args[0]) and "wlan0" in c.args[0]
+                   for c in rc.call_args_list)
+
+    def test_empty_disconnect_ifname_skips_nmcli(self, watcher):
+        a = self._adapter()
+        with patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as rc:
+            watcher.client_up_tail(a, disconnect_builtin_ifname="")
+        rc.assert_not_called()
+
+    def test_set_builtin_fallback_flags(self, watcher):
+        a = self._adapter()
+        with patch.object(watcher, "verify_avahi_after_handover"):
+            watcher.STATE.using_builtin_fallback = True
+            watcher.client_up_tail(a, set_builtin_fallback=None)   # None -> untouched
+            assert watcher.STATE.using_builtin_fallback is True
+            watcher.client_up_tail(a, set_builtin_fallback=False)
+            assert watcher.STATE.using_builtin_fallback is False
+            watcher.client_up_tail(a, set_builtin_fallback=True)
+            assert watcher.STATE.using_builtin_fallback is True
+
+    def test_clears_timers_and_onboard_bound(self, watcher):
+        a = self._adapter()
+        watcher.STATE.conn_down_start = 5.0
+        watcher.STATE.last_reconnect_attempt = 5.0
+        watcher.STATE.onboard_activation_failures = 2
+        with patch.object(watcher, "verify_avahi_after_handover"):
+            watcher.client_up_tail(a, clear_down_timers=True, reset_onboard_bound=True)
+        assert watcher.STATE.conn_down_start is None
+        assert watcher.STATE.last_reconnect_attempt is None
+        assert watcher.STATE.onboard_activation_failures == 0
+
+    def test_clears_noip_ledger_when_stable_id_given(self, watcher):
+        a = self._adapter()
+        with patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.wifi_recovery, "clear_noip_failures") as clr:
+            watcher.client_up_tail(a, clear_noip_stable_id="usb0")
+            clr.assert_called_once()
+            clr.reset_mock()
+            watcher.client_up_tail(a, clear_noip_stable_id=None)
+            clr.assert_not_called()
+
+    def test_leave_setup_reason_forwarded(self, watcher):
+        a = self._adapter()
+        with patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "leave_setup_mode") as leave:
+            watcher.client_up_tail(a, leave_setup_reason="done")
+            leave.assert_called_once_with("done")
+            leave.reset_mock()
+            watcher.client_up_tail(a, leave_setup_reason=None)
+            leave.assert_not_called()
+
+    def test_clear_dead_adapter_and_pending_adoption(self, watcher):
+        a = self._adapter()
+        with patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher, "_clear_pending_adoption") as cpa, \
+             patch.object(watcher.wifi_recovery, "clear_dead_adapter_state") as cda:
+            watcher.client_up_tail(a, clear_pending_adoption=True, clear_dead_adapter=True)
+        cpa.assert_called_once()
+        cda.assert_called_once()
+
+
 class TestActivationWorker:
     """WS1-WP2 — the off-thread activation worker skeleton: job/result split,
     single-slot queue + transitioning gate, result application at pass top, and

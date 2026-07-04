@@ -2750,6 +2750,55 @@ def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
                             error="" if ok else "activation_failed")
 
 
+def client_up_tail(adapter, *, set_builtin_fallback=None,
+                   clear_noip_stable_id=None, disconnect_builtin_ifname="",
+                   leave_setup_reason=None, clear_down_timers=False,
+                   reset_onboard_bound=False, clear_pending_adoption=False,
+                   clear_dead_adapter=False) -> None:
+    """The shared "a client came up" choreography (loop thread only).
+
+    One place applies the standardised handover effects; each caller passes only
+    the deltas it needs and does its own adapter discovery/logging first.  The
+    individual effects touch disjoint STATE fields (or independent nmcli/ledger
+    calls), so their order is not load-bearing.
+
+    - ``adapter``: the resolved client adapter to record active (None = skip).
+    - ``disconnect_builtin_ifname``: disconnect this still-connected built-in
+      client after the handover (""/None = skip).
+    - ``clear_noip_stable_id``: clear the no-IP ledger for this stable id.
+    - ``set_builtin_fallback``: assign STATE.using_builtin_fallback when not None.
+    - ``clear_down_timers``: reset the connectivity-down / reconnect timers.
+    - ``reset_onboard_bound``: reset the per-episode onboard-failure bound.
+    - ``clear_pending_adoption`` / ``clear_dead_adapter``: clear the pending USB
+      adoption and dead-PHY recovery state respectively.
+    - ``leave_setup_reason``: leave setup mode with this reason (None = skip;
+      leave_setup_mode is itself a no-op when not in setup).
+    """
+    if adapter is not None:
+        _set_active_client(adapter)
+    if disconnect_builtin_ifname:
+        logger.info("Disconnecting built-in client on %s", disconnect_builtin_ifname)
+        run_cmd(["nmcli", "device", "disconnect", disconnect_builtin_ifname],
+                timeout=NMCLI_QUICK_TIMEOUT)
+    if clear_noip_stable_id:
+        wifi_recovery.clear_noip_failures(_self_module(), clear_noip_stable_id)
+    with state_lock:
+        if set_builtin_fallback is not None:
+            STATE.using_builtin_fallback = set_builtin_fallback
+        if clear_down_timers:
+            STATE.conn_down_start = None
+            STATE.last_reconnect_attempt = None
+        if reset_onboard_bound:
+            STATE.onboard_activation_failures = 0
+    if clear_pending_adoption:
+        _clear_pending_adoption()
+    if clear_dead_adapter:
+        wifi_recovery.clear_dead_adapter_state(_self_module())
+    if leave_setup_reason is not None:
+        leave_setup_mode(leave_setup_reason)
+    verify_avahi_after_handover()
+
+
 def apply_activation_result(result: "ActivationResult", adapter: "Optional[object]" = None) -> bool:
     """Loop half: apply the success/failure connectivity tail (loop thread only).
 
@@ -2794,33 +2843,28 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
         if resolved is None:
             adapters = wifi_net.discover_adapters()
             resolved = wifi_net.find_adapter_by_ifname(adapters, result.ifname)
-        if resolved is not None:
-            _set_active_client(resolved)
+        disconnect_ifname = ""
         if job.deactivates_builtin:
             if adapters is None:
                 adapters = wifi_net.discover_adapters()
             builtin = wifi_net.resolve_builtin(adapters)
             if (builtin is not None and builtin.ifname != result.ifname
                     and wifi_net.is_wifi_connected(builtin.ifname)):
-                logger.info("activate_client: disconnecting built-in client on %s", builtin.ifname)
-                run_cmd(["nmcli", "device", "disconnect", builtin.ifname],
-                        timeout=NMCLI_QUICK_TIMEOUT)
+                disconnect_ifname = builtin.ifname
         clear_id = job.stable_id if job.stable_id is not None else (
             resolved.stable_id if resolved is not None else "")
-        if clear_id:
-            wifi_recovery.clear_noip_failures(_self_module(), clear_id)
-        with state_lock:
-            if job.sets_builtin_fallback is not None:
-                STATE.using_builtin_fallback = job.sets_builtin_fallback
-            if job.clears_down_timers:
-                STATE.conn_down_start = None
-                STATE.last_reconnect_attempt = None
-            # A client came up: the offline episode is over — reset the onboard
-            # failure bound.
-            STATE.onboard_activation_failures = 0
-        if job.on_success_leaves_setup:
-            leave_setup_mode(job.leave_reason)
-        verify_avahi_after_handover()
+        # A client came up: apply the shared handover tail (set active, optional
+        # built-in disconnect, clear the no-IP ledger, fallback/timer flags, reset
+        # the onboard-failure bound, leave setup, verify avahi).
+        client_up_tail(
+            resolved,
+            set_builtin_fallback=job.sets_builtin_fallback,
+            clear_noip_stable_id=(clear_id or None),
+            disconnect_builtin_ifname=disconnect_ifname,
+            leave_setup_reason=(job.leave_reason if job.on_success_leaves_setup else None),
+            clear_down_timers=job.clears_down_timers,
+            reset_onboard_bound=True,
+        )
         return True
 
     # Failure tail (the worker already rebuilt any AP it dropped).
