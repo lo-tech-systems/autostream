@@ -1580,17 +1580,16 @@ class TestClientUpTail:
     def test_disconnect_builtin_runs_nmcli(self, watcher):
         a = self._adapter()
         with patch.object(watcher, "verify_avahi_after_handover"), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as rc:
+             patch.object(watcher.nm, "disconnect_device") as disc:
             watcher.client_up_tail(a, disconnect_builtin_ifname="wlan0")
-        assert any("disconnect" in " ".join(c.args[0]) and "wlan0" in c.args[0]
-                   for c in rc.call_args_list)
+        disc.assert_called_once_with("wlan0")
 
     def test_empty_disconnect_ifname_skips_nmcli(self, watcher):
         a = self._adapter()
         with patch.object(watcher, "verify_avahi_after_handover"), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as rc:
+             patch.object(watcher.nm, "disconnect_device") as disc:
             watcher.client_up_tail(a, disconnect_builtin_ifname="")
-        rc.assert_not_called()
+        disc.assert_not_called()
 
     def test_set_builtin_fallback_flags(self, watcher):
         a = self._adapter()
@@ -2012,6 +2011,7 @@ class TestActivateClient:
              patch.object(watcher, "start_ap_mode") as start_ap, \
              patch.object(watcher, "update_apmode_flag") as apflag, \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as run_cmd, \
+             patch.object(watcher.nm, "disconnect_device") as nm_disconnect, \
              patch.object(watcher.wifi_recovery, "clear_noip_failures") as clear_noip, \
              patch.object(watcher.wifi_recovery, "record_noip_failure") as record_noip, \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[tgt]), \
@@ -2022,6 +2022,7 @@ class TestActivateClient:
                 "core": core, "core2": core2, "set_active": set_active,
                 "leave": leave, "avahi": avahi, "stop_ap": stop_ap,
                 "start_ap": start_ap, "apflag": apflag, "run_cmd": run_cmd,
+                "nm_disconnect": nm_disconnect,
                 "clear_noip": clear_noip, "record_noip": record_noip, "target": tgt,
             }
 
@@ -2099,9 +2100,7 @@ class TestActivateClient:
             with patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
                  patch.object(watcher.wifi_net, "is_wifi_connected", return_value=True):
                 watcher.activate_client("wlan1", deactivates_builtin=True)
-            disconnect = [c for c in h["run_cmd"].call_args_list
-                          if "disconnect" in str(c) and "wlan0" in str(c)]
-            assert disconnect, "expected nmcli device disconnect wlan0"
+            h["nm_disconnect"].assert_called_once_with("wlan0")
 
     def test_wait_for_validation_false_is_fire_and_forget(self, watcher):
         with self._harness(watcher) as h:
@@ -2382,13 +2381,12 @@ class TestStartExplicitSetup:
 
     def test_disconnects_active_client_session(self, watcher):
         watcher.STATE.active_client_ifname = "wlan1"
-        calls = []
         with patch.object(watcher, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
-             patch.object(watcher, "run_cmd", side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)), \
+             patch.object(watcher.nm, "disconnect_device") as disc, \
              patch.object(watcher, "enter_setup_mode"):
             watcher.start_explicit_setup()
-        assert any("disconnect" in c and "wlan1" in c for c in calls)
+        disc.assert_called_once_with("wlan1")
 
 
 class TestReconnectSavedEpisode:
@@ -2967,10 +2965,10 @@ class TestIf2WorkerSessionContract:
 
                 # Mid-job ethernet-appears pass: step_ethernet_wins observes it but
                 # DEFERS enforcement (owns the pass; no leave, no disconnect).
-                with patch.object(watcher, "run_cmd") as run_defer:
+                with patch.object(watcher.nm, "disconnect_device") as disc_defer:
                     v = watcher.step_ethernet_wins(self._eth_hctx(watcher, now=1000.0))
                 assert v is watcher.Verdict.OWN_PASS
-                run_defer.assert_not_called()
+                disc_defer.assert_not_called()
                 assert tail_calls == []                  # no success tail yet
                 assert watcher.STATE.setup_mode is True
 
@@ -2989,11 +2987,10 @@ class TestIf2WorkerSessionContract:
 
                 # The pass AFTER the result is applied now enforces ethernet: the
                 # idle Wi-Fi client is disconnected (no longer deferred).
-                with patch.object(watcher, "run_cmd") as run_enforce:
+                with patch.object(watcher.nm, "disconnect_device") as disc_enforce:
                     v2 = watcher.step_ethernet_wins(self._eth_hctx(watcher, now=1002.0))
                 assert v2 is watcher.Verdict.OWN_PASS
-                assert any("disconnect" in str(c) and "wlan1" in str(c)
-                           for c in run_enforce.call_args_list)
+                disc_enforce.assert_called_once_with("wlan1")
             finally:
                 watcher._activation_job_queue.put(None)  # stop the worker thread
                 worker.join(3.0)
@@ -4083,6 +4080,7 @@ class TestSubprocessTimeoutBounds:
         cfg = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u")
         with patch.object(watcher, "run_cmd", side_effect=fake), \
              patch.object(watcher.wifi_net, "run_cmd", side_effect=fake), \
+             patch.object(watcher.wifi_nm, "run_cmd", side_effect=fake), \
              patch.object(watcher, "is_wifi_configured", return_value=True), \
              patch.object(watcher, "get_configured_network_state", return_value=cfg):
             watcher.STATE.boot_time = None  # the loop stamps it; boot_age starts at 0
@@ -4104,6 +4102,7 @@ class TestSubprocessTimeoutBounds:
         cfg = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u")
         with patch.object(watcher, "run_cmd", side_effect=fake), \
              patch.object(watcher.wifi_net, "run_cmd", side_effect=fake), \
+             patch.object(watcher.wifi_nm, "run_cmd", side_effect=fake), \
              patch.object(watcher, "resolve_recovery_ifname", return_value="wlan0"), \
              patch.object(watcher, "_write_dnsmasq_runtime", return_value=True), \
              patch.object(watcher.wifi_net, "remove_dnsmasq_runtime_config"), \
@@ -5392,7 +5391,7 @@ class TestEthernetWinsWifiDisconnectPolicy:
         wifi = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
         watcher.STATE.setup_mode = setup
         with patch.object(watcher, "query_playing_status", return_value=playing), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as run:
+             patch.object(watcher.nm, "disconnect_device") as run:
             _run_monitor_once(
                 watcher,
                 now=now,
@@ -5409,8 +5408,7 @@ class TestEthernetWinsWifiDisconnectPolicy:
     def test_wired_up_idle_disconnects_wifi_once(self, watcher):
         # Regardless of subnet: usable Ethernet present + idle → drop Wi-Fi once.
         run = self._run_with_active_wifi(watcher, playing=False)
-        run.assert_called_once_with(["nmcli", "device", "disconnect", "wlan1"],
-                                    timeout=watcher.NMCLI_QUICK_TIMEOUT)
+        run.assert_called_once_with("wlan1")
         assert watcher.STATE.active_client_ifname == ""
         assert watcher.STATE.active_client_mac == ""
 

@@ -1439,7 +1439,7 @@ def start_explicit_setup() -> None:
     with state_lock:
         active_ifname = STATE.active_client_ifname
     if active_ifname:
-        run_cmd(["nmcli", "device", "disconnect", active_ifname], timeout=NMCLI_QUICK_TIMEOUT)
+        nm.disconnect_device(active_ifname)
     logger.info("Explicit network setup starting (explicit_reconfigure)")
     enter_setup_mode(HotspotPurpose.EXPLICIT_RECONFIGURE,
                      reason="explicit_reconfigure", rollback=rollback)
@@ -2239,8 +2239,7 @@ def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
                     "Usable wired Ethernet present; disconnecting idle WiFi client %s",
                     active_wifi_ifname,
                 )
-                run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname],
-                        timeout=NMCLI_QUICK_TIMEOUT)
+                nm.disconnect_device(active_wifi_ifname)
                 _set_active_client(None)
         return Verdict.OWN_PASS
 
@@ -3063,8 +3062,7 @@ def client_up_tail(adapter, *, set_builtin_fallback=None,
         _set_active_client(adapter)
     if disconnect_builtin_ifname:
         logger.info("Disconnecting built-in client on %s", disconnect_builtin_ifname)
-        run_cmd(["nmcli", "device", "disconnect", disconnect_builtin_ifname],
-                timeout=NMCLI_QUICK_TIMEOUT)
+        nm.disconnect_device(disconnect_builtin_ifname)
     if clear_noip_stable_id:
         wifi_recovery.clear_noip_failures(_self_module(), clear_noip_stable_id)
     with state_lock:
