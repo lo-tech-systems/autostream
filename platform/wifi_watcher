@@ -1035,13 +1035,11 @@ def _apply_client_up_tail(target) -> None:
     """Apply the client-up session success tail (loop thread only).
 
     Set the active client, leave setup mode, and re-announce mDNS after the
-    handover.  The synchronous loop-thread callers apply it inline; the
-    apply_credentials job applies the
-    equivalent tail through apply_activation_result.
+    handover, via the shared client_up_tail.  The synchronous loop-thread callers
+    apply it inline; the apply_credentials job applies the equivalent tail through
+    apply_activation_result.
     """
-    _set_active_client(target)
-    leave_setup_mode("WiFi client connection succeeded")
-    verify_avahi_after_handover()
+    client_up_tail(target, leave_setup_reason="WiFi client connection succeeded")
 
 
 def configure_wifi_with_nmcli(ssid: str, password: str) -> "Optional[object]":
