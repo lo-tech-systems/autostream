@@ -3355,15 +3355,17 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
     # Transactional handover: validate USB before deactivating built-in.
     logger.info("Runtime USB adoption starting on %s", candidate.ifname)
     if _activate_committed_on(candidate.ifname):
-        # Deactivate the previous built-in client connection.
-        run_cmd(["nmcli", "device", "disconnect", builtin.ifname], timeout=NMCLI_QUICK_TIMEOUT)
-        with state_lock:
-            STATE.using_builtin_fallback = False
-        _set_active_client(candidate)
-        _clear_pending_adoption()
-        wifi_recovery.clear_noip_failures(_self_module(), candidate.stable_id)
         logger.info("Runtime USB adoption succeeded on %s", candidate.ifname)
-        verify_avahi_after_handover()
+        # Shared handover tail: set the candidate active, deactivate the previous
+        # built-in client, clear the fallback flag / no-IP ledger / pending
+        # adoption, and re-announce mDNS.
+        client_up_tail(
+            candidate,
+            set_builtin_fallback=False,
+            clear_noip_stable_id=candidate.stable_id,
+            disconnect_builtin_ifname=builtin.ifname,
+            clear_pending_adoption=True,
+        )
         return True
 
     logger.warning("Runtime USB adoption failed on %s; retaining built-in", candidate.ifname)
