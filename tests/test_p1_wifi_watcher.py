@@ -2541,29 +2541,25 @@ class TestReconnectSavedEpisode:
     # ---- the per-target join mechanics preserved on _activate_profile_on ----
 
     def test_activate_profile_on_clears_restrictions_before_activation(self, watcher):
-        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        calls = []
+        order = []
         with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state"), \
-             patch.object(watcher, "run_cmd",
-                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.nm, "clear_restrictions",
+                          side_effect=lambda *a, **k: order.append("clear")), \
+             patch.object(watcher.nm, "activate",
+                          side_effect=lambda *a, **k: order.append("activate") or MagicMock(returncode=0, stderr="")), \
              patch.object(watcher, "wait_for_connection", return_value=True), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True):
             watcher._activate_profile_on("wlan0", watcher.wifi_net.NetworkState("Home", ""))
-        str_calls = [str(c) for c in calls]
-        modify_before_up = next(
-            (i for i, c in enumerate(str_calls) if "modify" in c and "resolved-uuid" in c), None)
-        up_call = next(
-            (i for i, c in enumerate(str_calls) if "connection" in c and "up" in c), None)
-        assert modify_before_up is not None and up_call is not None
-        assert modify_before_up < up_call   # restrictions cleared BEFORE activation
+        assert order == ["clear", "activate"]   # restrictions cleared BEFORE activation
 
     def test_activate_profile_on_netabsent_skips_ipv4_wait(self, watcher):
         absent = MagicMock(
             returncode=10,
             stderr="Error: Connection activation failed: The Wi-Fi network could not be found")
-        with patch.object(watcher, "run_cmd", return_value=absent), \
+        with patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "activate", return_value=absent), \
              patch.object(watcher, "wait_for_connection") as wait:
             ok = watcher._activate_profile_on(
                 "wlan0", watcher.wifi_net.NetworkState("Home", "uuid-1"))
@@ -2577,27 +2573,22 @@ class TestCandidateValidateTail:
 
     def test_candidate_netabsent_skips_ipv4_wait_and_deletes(self, watcher):
         target = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:aa", is_usb=True)
-
-        def fake_run(cmd, **kw):
-            s = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
-            if "connection" in s and "up" in s.split():
-                return MagicMock(
-                    returncode=10,
-                    stderr="Error: activation failed: The Wi-Fi network could not be found",
-                )
-            return MagicMock(returncode=0, stderr="")
-
+        absent = MagicMock(
+            returncode=10,
+            stderr="Error: activation failed: The Wi-Fi network could not be found")
         with patch.object(watcher.wifi_net, "configure_candidate_cmds",
                           return_value=([["nmcli", "connection", "add"]], ["nmcli connection add"])), \
              patch.object(watcher.wifi_net, "get_profile_uuid", return_value="cand-uuid"), \
-             patch.object(watcher, "run_cmd", side_effect=fake_run) as run_cmd, \
+             patch.object(watcher.nm, "run_candidate_setup", return_value=MagicMock(returncode=0)), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "activate", return_value=absent), \
+             patch.object(watcher.nm, "delete_by_uuid") as delete_uuid, \
              patch.object(watcher, "wait_for_connection") as wait:
             ok = watcher._try_candidate_on_adapter("SSID", "pw", target)
 
         assert ok is False
         wait.assert_not_called()   # net-absent short-circuit reached the candidate path
-        assert any("delete" in " ".join(c.args[0]) for c in run_cmd.call_args_list
-                   if isinstance(c.args[0], (list, tuple))), "failed candidate must be deleted"
+        delete_uuid.assert_called_once_with("cand-uuid")   # failed candidate deleted by uuid
 
 
 class TestWifiPolicyModule:
@@ -2747,27 +2738,22 @@ class TestConnectToConfiguredWifiUuid:
     cross-adapter restrictions (inconsistency 4), fire-and-forget (no wait)."""
 
     def test_reconnect_carries_uuid_and_clears_restrictions_no_wait(self, watcher):
-        calls = []
         with patch.object(watcher, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("Home", "")), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state"), \
-             patch.object(watcher, "run_cmd",
-                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.nm, "clear_restrictions") as clear, \
+             patch.object(watcher.nm, "activate_ident",
+                          return_value=MagicMock(returncode=0, stderr="")) as activate, \
              patch.object(watcher, "wait_for_connection") as wait:
             ok = watcher.connect_to_configured_wifi()
         assert ok is True
         wait.assert_not_called()  # fire-and-forget: no blocking IPv4 wait in the loop
-        str_calls = [str(c) for c in calls]
-        assert any("modify" in c and "resolved-uuid" in c for c in str_calls), (
-            "reconnect must clear cross-adapter restrictions with the resolved UUID"
-        )
-        up = next((c for c in calls if isinstance(c, list) and "up" in c), None)
-        assert up is not None and "resolved-uuid" in up, (
-            "the activation command must carry the resolved UUID"
-        )
+        # restrictions cleared with the resolved UUID, and the activation carries it.
+        clear.assert_called_once_with("resolved-uuid", watcher.wifi_net.CROSS_ADAPTER_RESTRICTIONS)
+        assert activate.call_args[0][0] == ["uuid", "resolved-uuid"]
 
     def test_healthy_returns_early_without_activation(self, watcher):
         calls = []
@@ -3166,7 +3152,8 @@ class TestResolveCommittedUuid:
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state"), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as rc, \
+             patch.object(watcher.nm, "clear_restrictions") as clear, \
+             patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=0)), \
              patch.object(watcher, "wait_for_connection", return_value=True), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True):
             gcns.return_value = watcher.wifi_net.NetworkState(
@@ -3174,10 +3161,7 @@ class TestResolveCommittedUuid:
             )
             watcher._activate_committed_on("wlan1")
 
-        calls = [str(c) for c in rc.call_args_list]
-        assert any("resolved-uuid" in c and "modify" in c for c in calls), (
-            "_activate_committed_on must call clear_restrictions_cmd with the resolved UUID"
-        )
+        clear.assert_called_once_with("resolved-uuid", watcher.wifi_net.CROSS_ADAPTER_RESTRICTIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -4641,7 +4625,8 @@ class TestProbePatience:
                            stderr="Error: The Wi-Fi network could not be found")
         with patch.object(watcher, "get_configured_network_state", return_value=state), \
              patch.object(watcher, "_resolve_committed_uuid", return_value="u1"), \
-             patch.object(watcher, "run_cmd", return_value=absent), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "activate", return_value=absent), \
              patch.object(watcher, "wait_for_connection") as waiter:
             result = watcher._activate_committed_on("wlan1")
         assert result is False

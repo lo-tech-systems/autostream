@@ -1024,18 +1024,18 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     # 1-2) create + configure the uniquely named candidate.
     cmds, log_cmds = wifi_net.configure_candidate_cmds(con_name, ifname, ssid, password)
     for cmd, log_cmd in zip(cmds, log_cmds):
-        r = run_cmd(cmd, log_cmd=log_cmd, timeout=NMCLI_QUICK_TIMEOUT)
+        r = nm.run_candidate_setup(cmd, log_cmd=log_cmd)
         if r.returncode != 0:
             logger.warning("Candidate profile setup step failed on %s", ifname)
             # Best-effort cleanup of a partially created profile by name.
-            run_cmd(["nmcli", "connection", "delete", con_name], timeout=NMCLI_QUICK_TIMEOUT)
+            nm.delete_connection(con_name)
             return False
 
     # 3) obtain its UUID.
     uuid = wifi_net.get_profile_uuid(con_name)
     if not uuid:
         logger.warning("Could not resolve candidate UUID for '%s'", con_name)
-        run_cmd(["nmcli", "connection", "delete", con_name], timeout=NMCLI_QUICK_TIMEOUT)
+        nm.delete_connection(con_name)
         return False
 
     # 4) clear cross-adapter restrictions EXCEPT connection.interface-name,
@@ -1044,11 +1044,10 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
         k for k in wifi_net.CROSS_ADAPTER_RESTRICTIONS
         if k != "connection.interface-name"
     )
-    run_cmd(wifi_net.clear_restrictions_cmd(uuid, pre_keys), timeout=NMCLI_QUICK_TIMEOUT)
+    nm.clear_restrictions(uuid, pre_keys)
 
     # 5) activate explicitly on the target interface.
-    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, con_name, ifname),
-                   timeout=NMCLI_ACTIVATE_TIMEOUT)
+    r_up = nm.activate(uuid, con_name, ifname)
     if r_up.returncode != 0:
         logger.warning("Candidate activation failed on %s (rc=%d)", ifname, r_up.returncode)
 
@@ -1060,12 +1059,11 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
     if not ok:
         # 9) on failure delete only the candidate; keep the previous committed profile.
         logger.warning("Candidate validation failed on %s; deleting candidate", ifname)
-        run_cmd(wifi_net.delete_connection_cmd(uuid), timeout=NMCLI_QUICK_TIMEOUT)
+        nm.delete_by_uuid(uuid)
         return False
 
     # 7) clear connection.interface-name so the committed profile is portable.
-    run_cmd(wifi_net.clear_restrictions_cmd(uuid, ("connection.interface-name",)),
-            timeout=NMCLI_QUICK_TIMEOUT)
+    nm.clear_restrictions(uuid, ("connection.interface-name",))
 
     # 8) commit name/UUID + legacy mirror.
     _commit_network_state(con_name, uuid)
@@ -2555,11 +2553,10 @@ def connect_to_configured_wifi() -> bool:
     # selection is unchanged.
     uuid = _resolve_committed_uuid(state)
     if uuid:
-        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS),
-                timeout=NMCLI_QUICK_TIMEOUT)
+        nm.clear_restrictions(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS)
     logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
     ident = ["uuid", uuid] if uuid else ["id", connection_name]
-    r_up = run_cmd(["nmcli", "connection", "up", *ident], timeout=NMCLI_ACTIVATE_TIMEOUT)
+    r_up = nm.activate_ident(ident)
     if _activation_network_absent(r_up):
         logger.info("Configured network '%s' not visible; reconnect deferred", connection_name)
     elif r_up.returncode != 0:
@@ -2840,10 +2837,8 @@ def _activate_profile_on(ifname: str, state: "wifi_net.NetworkState",
         return False
     uuid = _resolve_committed_uuid(state)
     if uuid:
-        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS),
-                timeout=NMCLI_QUICK_TIMEOUT)
-    r_up = run_cmd(wifi_net.activate_connection_cmd(uuid, state.connection_name, ifname),
-                   timeout=NMCLI_ACTIVATE_TIMEOUT)
+        nm.clear_restrictions(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS)
+    r_up = nm.activate(uuid, state.connection_name, ifname)
     return _validate_activation(ifname, r_up, wait_for_validation=wait_for_validation)
 
 

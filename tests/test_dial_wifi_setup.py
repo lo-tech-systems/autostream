@@ -149,14 +149,14 @@ class TestConfigureWifiCandidateTransaction:
     def test_deletes_only_candidate_by_uuid_on_failure(self):
         src = _watcher_src()
         fn_body = _fn_body(src, "_try_candidate_on_adapter", "configure_wifi_with_nmcli")
-        assert "delete_connection_cmd" in fn_body, (
+        assert "nm.delete_by_uuid" in fn_body, (
             "candidate failure must delete only the candidate by UUID"
         )
 
     def test_clears_cross_adapter_restrictions(self):
         src = _watcher_src()
         fn_body = _fn_body(src, "_try_candidate_on_adapter", "configure_wifi_with_nmcli")
-        assert "clear_restrictions_cmd" in fn_body, (
+        assert "nm.clear_restrictions" in fn_body, (
             "candidate success must clear cross-adapter restrictions"
         )
 
@@ -202,18 +202,19 @@ class TestConnectToConfiguredWifiHealthCheck:
         src = _watcher_src()
         fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
         health_pos = fn_body.index("is_wifi_client_healthy")
-        # After the health check there must be an early return True before connection up
+        # After the health check there must be an early return True before the
+        # activation call (now nm.activate_ident on the unhealthy reconnect path).
         after_health = fn_body[health_pos:]
         early_return_pos = after_health.find("return True")
-        up_pos = after_health.find('"up"')
+        up_pos = after_health.find("activate_ident")
         assert early_return_pos != -1, (
             "connect_to_configured_wifi must return True early on the healthy path"
         )
         assert up_pos != -1, (
-            "nmcli connection up must still appear in the unhealthy reconnect path"
+            "the activation call must still appear in the unhealthy reconnect path"
         )
         assert early_return_pos < up_pos, (
-            "The early 'return True' must appear before nmcli connection up, "
+            "The early 'return True' must appear before the activation call, "
             "so healthy connections are not disturbed by an unnecessary activation call"
         )
 
