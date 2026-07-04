@@ -152,6 +152,10 @@ import wifi_policy
 # across the seam and never imports wifi_watcher.
 import wifi_web
 
+# The single bounded nmcli client (instantiated below once the timeout constants
+# exist).  Deployed beside the watcher; every nmcli invocation goes through it.
+import wifi_nm
+
 
 def _self_module():
     """Return this watcher module object for the split-module seam.
@@ -259,6 +263,10 @@ WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for local IPv4 checks
 # cannot self-interrupt in subprocess.run, so command-level timeouts are the bound.
 NMCLI_ACTIVATE_TIMEOUT = WAIT_FOR_CONNECTION_TIMEOUT  # `nmcli connection up`
 NMCLI_QUICK_TIMEOUT = 15                # modify / add / delete / device disconnect
+
+# The single bounded nmcli client: every nmcli invocation passes one of the two
+# timeouts above, so there is no unbounded NetworkManager code path.
+nm = wifi_nm.NMClient(NMCLI_ACTIVATE_TIMEOUT, NMCLI_QUICK_TIMEOUT)
 
 # Avahi mDNS hostname monitoring
 AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname checks
