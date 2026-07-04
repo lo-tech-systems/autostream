@@ -2243,7 +2243,18 @@ def _network_interface_lines(status: dict) -> list[str]:
 
     for _sort_kind, _ifname, _idx, label, adapter in sorted(wifi_rows):
         ip_text = _network_adapter_ipv4_text(adapter, device)
-        lines.append(f"{label}: {ip_text or 'Disconnected'}")
+        if not ip_text:
+            lines.append(f"{label}: Disconnected")
+            continue
+
+        ssid_text = ""
+        if str(adapter.get("ifname") or "").strip() == str(device.get("primary_ifname") or "").strip():
+            ssid_text = str(device.get("primary_ssid") or "").strip()
+
+        if ssid_text:
+            lines.append(f"{label}: {ssid_text} - {ip_text}")
+        else:
+            lines.append(f"{label}: {ip_text}")
     return lines
 
 

@@ -153,7 +153,7 @@ class TestBuildNetworkCardPresentation:
         result = build_network_card_presentation(s)
         assert result["interface_lines"] == [
             "On-board WiFi: Disconnected",
-            "USB WiFi: 192.168.1.38/24",
+            "USB WiFi: MyNetwork - 192.168.1.38/24",
         ]
 
     def test_usb_wifi_with_ssid(self):
