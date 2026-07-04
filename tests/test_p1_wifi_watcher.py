@@ -5530,6 +5530,161 @@ class TestBuildNetworkStatusSnapshot:
         assert watcher.STATE.network_status_updated_at == watcher.STATE.network_status_snapshot["updated_at"]
 
 
+class TestIf7StatusTruthfulness:
+    """IF-7(a)+(c): the held-back no-IP count/reason reach the snapshot, and the
+    primary SSID falls back to the active connection's configured SSID for
+    hidden / scan-stale networks."""
+
+    MAC = "dc:62:79:91:4d:d6"
+
+    # ---- (a) held-back no-IP count and reason ----
+
+    def _classify_snapshot(self, watcher, usb, *, link_down, now=1000.0):
+        addrs = {}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=link_down), \
+             patch.object(watcher.wifi_net, "read_operstate",
+                          return_value=("down" if link_down else "up")), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
+             patch("time.monotonic", return_value=now):
+            snap = watcher.wifi_status.build_network_status_snapshot(
+                watcher, [usb], wired_connected=False, wired_ok=False)
+        return snap["adapters"][0]
+
+    def test_held_back_carrier_down_publishes_count_and_reason(self, watcher):
+        # The 04-Jul field case: an idle spare held back after 5 no-IP failures,
+        # now carrier-down.  The dead-PHY reset ledger never ticked, so the
+        # meaningful number is the no-IP count — publish it in checks/reason and
+        # policy.noip_failures.
+        usb = _adapter(watcher, "wlan1", self.MAC, is_usb=True)
+        watcher.STATE.adapter_noip_ledgers[self.MAC] = {"count": 5, "retry_after": float("inf")}
+        rec = self._classify_snapshot(watcher, usb, link_down=True)
+        assert rec["health"]["state"] == "no_ip_held_back"
+        assert rec["health"]["checks"] == 5
+        assert rec["health"]["reason"] == "no_ip_held_back"
+        assert rec["policy"]["warning"] == "no_ip_held_back"
+        assert rec["policy"]["held_back"] is True
+        assert rec["policy"]["noip_failures"] == 5
+
+    def test_transient_no_ip_still_reports_associated_no_ip(self, watcher):
+        # Carrier-up, not yet suppressed: the transient degraded_no_ip verdict is
+        # unchanged (regression on the reason ladder).
+        usb = _adapter(watcher, "wlan1", self.MAC, is_usb=True)
+        watcher.STATE.adapter_noip_ledgers[self.MAC] = {"count": 2, "retry_after": 0.0}
+        rec = self._classify_snapshot(watcher, usb, link_down=False)
+        assert rec["health"]["state"] == "degraded_no_ip"
+        assert rec["health"]["checks"] == 2
+        assert rec["health"]["reason"] == "associated_no_ip"
+        assert rec["policy"]["warning"] == "no_ip_address"
+        assert rec["policy"]["noip_failures"] == 2
+
+    def test_dead_adapter_still_reports_link_down_unhealthy(self, watcher):
+        # A dead-PHY adapter keeps dead_checks / "link_down_unhealthy" — the
+        # held-back branch must not shadow it (regression).
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.STATE.dead_adapter_since = 5.0
+        watcher.STATE.dead_adapter_checks = 4
+        rec = self._classify_snapshot(watcher, usb, link_down=True)
+        assert rec["health"]["state"] == "dead_phy"
+        assert rec["health"]["checks"] == 4
+        assert rec["health"]["reason"] == "link_down_unhealthy"
+        assert rec["policy"]["warning"] == "resetting"
+
+    def test_healthy_adapter_has_empty_reason_and_zero_checks(self, watcher):
+        # Regression: a plain healthy adapter publishes checks 0 / reason "".
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        addrs = {"wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                            "prefixlen": 24, "scope": "global"}]}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid", return_value="MyHomeWiFi"), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(
+                watcher, [usb], wired_connected=False, wired_ok=False)
+        rec = snap["adapters"][0]
+        assert rec["health"]["state"] == "healthy"
+        assert rec["health"]["checks"] == 0
+        assert rec["health"]["reason"] == ""
+        assert rec["policy"]["noip_failures"] == 0
+
+    # ---- (c) primary_ssid fallback for hidden / scan-stale networks ----
+
+    def _ssid_snapshot(self, watcher, usb, *, scan_ssid, conn_name, conn_ssid):
+        watcher.STATE.active_client_ifname = "wlan0"
+        watcher.STATE.active_client_mac = self.MAC
+        addrs = {"wlan0": [{"family": "ipv4", "address": "192.168.1.42",
+                            "prefixlen": 24, "scope": "global"}]}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid", return_value=scan_ssid) as get_ssid, \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name",
+                          return_value=conn_name) as get_conn, \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value=conn_ssid) as get_conn_ssid, \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(
+                watcher, [usb], wired_connected=False, wired_ok=False)
+        return snap, get_ssid, get_conn, get_conn_ssid
+
+    def test_hidden_ssid_falls_back_to_profile_ssid(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        snap, get_ssid, get_conn, get_conn_ssid = self._ssid_snapshot(
+            watcher, usb, scan_ssid="", conn_name="netplan-wlan0-IoT", conn_ssid="IoT-Hidden")
+        assert snap["device"]["primary_ssid"] == "IoT-Hidden"
+        get_ssid.assert_called_once()
+        get_conn.assert_called_once()
+        get_conn_ssid.assert_called_once_with("netplan-wlan0-IoT")
+
+    def test_scan_hit_wins_without_extra_nmcli_calls(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        snap, get_ssid, get_conn, get_conn_ssid = self._ssid_snapshot(
+            watcher, usb, scan_ssid="MyHomeWiFi", conn_name="x", conn_ssid="y")
+        assert snap["device"]["primary_ssid"] == "MyHomeWiFi"
+        get_ssid.assert_called_once()
+        get_conn.assert_not_called()
+        get_conn_ssid.assert_not_called()
+
+    def test_no_active_connection_name_yields_empty_ssid(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        snap, get_ssid, get_conn, get_conn_ssid = self._ssid_snapshot(
+            watcher, usb, scan_ssid="", conn_name="", conn_ssid="unused")
+        assert snap["device"]["primary_ssid"] == ""
+        get_conn.assert_called_once()
+        get_conn_ssid.assert_not_called()
+
+    def test_non_wifi_primary_skips_ssid_lookup(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.STATE.dead_adapter_ifname = "wlan0"
+        addrs = {"eth0": [{"family": "ipv4", "address": "10.0.0.5",
+                           "prefixlen": 24, "scope": "global"}]}
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="10.0.0.1"), \
+             patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name") as get_conn, \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(
+                watcher, [usb], wired_connected=True, wired_ok=True)
+        assert snap["device"]["primary_kind"] == "ethernet"
+        assert snap["device"]["primary_ssid"] == ""
+        get_ssid.assert_not_called()
+        get_conn.assert_not_called()
+
+
 class TestNetworkStatusRoute:
     def test_forbidden_without_auth(self, flask_client):
         client, mod = flask_client

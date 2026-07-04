@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import ipaddress
 import time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import autostream_wifi_network as wifi_net
 
@@ -100,10 +100,27 @@ def _primary_wired_ifname(addresses: dict) -> str:
     return ""
 
 
+class AdapterHealthVerdict(NamedTuple):
+    """The single adapter-health presentation verdict (IF-7a).
+
+    `_classify_adapter_health` is the one place that maps facts + recovery flags
+    to what the status surface shows for an adapter — `state`/`severity` plus the
+    web-card `warning` code and the `health.checks`/`health.reason` detail — so
+    those parallel ladders can no longer disagree on precedence order.
+    """
+    state: str
+    severity: str
+    warning: str
+    checks: int
+    reason: str
+
+
 def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
                              is_dead, is_link_down, quarantined, is_hotspot,
-                             is_no_ip=False, noip_suppressed=False):
-    """Map facts + recovery flags to a defined adapter health state/severity."""
+                             is_no_ip=False, noip_suppressed=False,
+                             budget_exhausted=False, recent_reset_count=0,
+                             dead_checks=0, noip_count=0):
+    """Map facts + recovery flags to the adapter health presentation verdict."""
     if not present:
         state = "absent"
     elif is_hotspot:
@@ -139,7 +156,44 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
 
     ok_states = {"healthy", "idle", "connecting", "hotspot_active"}
     severity = "ok" if state in ok_states else "degraded"
-    return state, severity
+
+    # Web-card warning code — same precedence as the state ladder above.
+    if quarantined:
+        warning = "quarantined"
+    elif is_dead:
+        warning = "resetting"
+    elif budget_exhausted:
+        warning = "reset_budget_exhausted"
+    elif noip_suppressed:
+        # Retries suppressed: demoted/held back out of service (C-WP3).  A
+        # distinct code from the transient "no_ip_address" so the web card can
+        # say the adapter was taken out of service, not merely slow.
+        warning = "no_ip_held_back"
+    elif is_no_ip:
+        warning = "no_ip_address"
+    elif recent_reset_count:
+        warning = "recent_resets"
+    else:
+        warning = ""
+
+    # health.checks / health.reason detail.  Held-back takes precedence over the
+    # transient no-IP reason, matching the state ladder's order (IF-7a): a
+    # held-back adapter publishes its no-IP count even carrier-down, where the
+    # old transient-only ternary published checks:0/reason:"".
+    if is_dead:
+        checks = dead_checks
+        reason = "link_down_unhealthy"
+    elif noip_suppressed:
+        checks = noip_count
+        reason = "no_ip_held_back"
+    elif is_no_ip:
+        checks = noip_count
+        reason = "associated_no_ip"
+    else:
+        checks = 0
+        reason = ""
+
+    return AdapterHealthVerdict(state, severity, warning, checks, reason)
 
 
 def build_network_status_snapshot(w, adapters: Optional[list] = None,
@@ -236,12 +290,17 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         adapter_default_gateways[a.ifname] = gw_ipv4
         gw_reachable = w.is_gateway_reachable(a.ifname) if gw_ipv4 else False
 
-        state, severity = _classify_adapter_health(
+        verdict = _classify_adapter_health(
             present=True, managed=a.managed, carrier=carrier, healthy=healthy,
             nm_state=a.state, is_dead=is_dead, is_link_down=(link_down is True),
             quarantined=quarantined, is_hotspot=is_hotspot, is_no_ip=is_no_ip,
-            noip_suppressed=noip_suppressed,
+            noip_suppressed=noip_suppressed, budget_exhausted=budget_exhausted,
+            recent_reset_count=recent_reset_count, dead_checks=dead_checks,
+            noip_count=noip_count,
         )
+        state = verdict.state
+        severity = verdict.severity
+        warning = verdict.warning
 
         if quarantined:
             action = "quarantined"
@@ -257,24 +316,6 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             f"usb_reset_method_{last_reset_method.lower()}"
             if (is_dead and last_reset_method) else ""
         )
-        if quarantined:
-            warning = "quarantined"
-        elif is_dead:
-            warning = "resetting"
-        elif budget_exhausted:
-            warning = "reset_budget_exhausted"
-        elif noip_suppressed:
-            # Retries suppressed: demoted/held back out of service (C-WP3).  A
-            # distinct code from the transient "no_ip_address" so the web card
-            # can say the adapter was taken out of service, not merely slow.
-            warning = "no_ip_held_back"
-        elif is_no_ip:
-            warning = "no_ip_address"
-        elif recent_reset_count:
-            warning = "recent_resets"
-        else:
-            warning = ""
-
         adapter_records.append({
             "ifname": a.ifname,
             "stable_id": a.stable_id,
@@ -300,9 +341,8 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 "state": state,
                 "severity": severity,
                 "since": dead_since if is_dead else None,
-                "checks": dead_checks if is_dead else (noip_count if is_no_ip else 0),
-                "reason": ("link_down_unhealthy" if is_dead
-                           else ("associated_no_ip" if is_no_ip else "")),
+                "checks": verdict.checks,
+                "reason": verdict.reason,
             },
             "policy": {
                 "eligible": a.managed,
@@ -317,6 +357,11 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 # Demoted/held back out of service after repeated no-IP failures
                 # (C-WP3): the no-IP retry budget is spent for this adapter.
                 "held_back": bool(noip_suppressed),
+                # No-IP failure count (IF-7a): the meaningful number for a
+                # held-back / transient-no-IP adapter, which the dead-PHY reset
+                # ledger ("resets_24h") never ticks.  The web card renders this
+                # published field directly; schema-additive.
+                "noip_failures": noip_count,
             },
         })
 
@@ -364,6 +409,15 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     primary_ssid = ""
     if primary_kind in ("builtin_wifi", "usb_wifi"):
         primary_ssid = wifi_net.get_active_wifi_ssid(primary_ifname) or ""
+        if not primary_ssid:
+            # Hidden SSID (never in the scan list) or a stale scan cache: fall
+            # back to the *active* connection's configured SSID (IF-7c).  Cost is
+            # two extra bounded nmcli calls per publish tick, incurred only when
+            # the scan-based lookup came up empty.  Active (not committed)
+            # profile keeps this truthful in the transient active != committed
+            # window.
+            conn = wifi_net.get_active_wifi_connection_name(primary_ifname)
+            primary_ssid = wifi_net.get_connection_ssid(conn) if conn else ""
 
     if in_setup:
         device_state = "setup_mode"
