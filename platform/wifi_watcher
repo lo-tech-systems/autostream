@@ -345,6 +345,30 @@ class HotspotSession:
     rollback: Optional[RollbackSnapshot] = None   # only EXPLICIT_RECONFIGURE
 
 
+@dataclass
+class ReconnectEpisode:
+    """A reconnect-saved episode: restore a saved/rollback profile across passes.
+
+    Instead of one synchronous multi-target join, the watcher submits one
+    single-target activation job per pass and advances this episode on the result,
+    so monitoring never blacks out.  ``target_ifnames`` is the ordered list of
+    interfaces to try; ``index`` is the next one; the profile to activate is
+    ``profile_name``/``profile_uuid`` (the committed profile, or the rollback
+    profile for EXPLICIT_RECONFIGURE).  ``hotspot_ifname`` selects which target
+    needs the job's drop-hotspot mechanics.  ``failure_tail`` picks what runs when
+    every target fails: "retain_hotspot" (the reconnect_saved caller) or
+    "reconfigure_timeout" (convert the session to USB_LOSS_RECOVERY).
+    ``inflight_epoch`` is the epoch of the currently submitted job, else None.
+    """
+    target_ifnames: list
+    profile_name: str
+    profile_uuid: str
+    hotspot_ifname: str
+    failure_tail: str
+    index: int = 0
+    inflight_epoch: Optional[int] = None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -458,6 +482,8 @@ class NetworkMonitorState:
     saved_ssid_visible: bool = False
     saved_ssid_name: str = ""
     rejoin_dismissed: bool = False
+    # Active reconnect-saved episode (single-target-per-pass restore), or None.
+    reconnect_episode: "Optional[ReconnectEpisode]" = None
     # Authoritative connectivity mode, applied by the loop each pass from the
     # pure next_mode() classifier and published as device.mode.
     mode: "Mode" = field(default_factory=lambda: Mode.BOOT)
@@ -790,10 +816,13 @@ def leave_setup_mode(reason: str = "") -> None:
         STATE.setup_mode = False
         STATE.hotspot = None
         STATE.last_active_path_seen = now
-        # Session over: clear the rejoin-prompt / dismissal state.
+        # Session over: clear the rejoin-prompt / dismissal state and any
+        # in-progress reconnect-saved episode (the session it was restoring is
+        # gone).
         STATE.saved_ssid_visible = False
         STATE.saved_ssid_name = ""
         STATE.rejoin_dismissed = False
+        STATE.reconnect_episode = None
 
     logger.info("Leaving SetupMode. Reason: %s", reason)
     # Tear down the AP before removing the flag so nginx does not route traffic
@@ -1074,17 +1103,6 @@ def attempt_on_targets(targets: list, attempt_fn) -> "Optional[object]":
             update_apmode_flag(True)
 
     return None
-
-
-def _apply_client_up_tail(target) -> None:
-    """Apply the client-up session success tail (loop thread only).
-
-    Set the active client, leave setup mode, and re-announce mDNS after the
-    handover, via the shared client_up_tail.  The synchronous loop-thread callers
-    apply it inline; the apply_credentials job applies the equivalent tail through
-    apply_activation_result.
-    """
-    client_up_tail(target, leave_setup_reason="WiFi client connection succeeded")
 
 
 def configure_wifi_with_nmcli(ssid: str, password: str) -> "Optional[object]":
@@ -1382,7 +1400,9 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
                     reason=f"manual_request: {params.get('reason') or 'UserRequest'}")
             result = "ok"
         elif action == "reconnect_saved":
-            result = "ok" if reconnect_saved_network() else "failed"
+            # Start an async episode (single-target restore per pass); "ok" here
+            # means the episode was accepted, not that the join has completed.
+            result = "ok" if start_reconnect_saved_episode("retain_hotspot") else "failed"
         elif action == "set_log_level":
             apply_log_level(params.get("level"), params.get("ttl_seconds"))
             result = "ok"
@@ -1417,13 +1437,19 @@ def start_explicit_setup() -> None:
                      reason="explicit_reconfigure", rollback=rollback)
 
 
-def reconnect_saved_network() -> bool:
-    """Reconnect to the saved/rollback network and exit hotspot mode on success.
+def start_reconnect_saved_episode(failure_tail: str = "retain_hotspot") -> bool:
+    """Begin a reconnect-saved episode and submit its first target's job.
 
-    During explicit reconfiguration the snapshotted rollback profile is restored
-    on its previous adapter first; otherwise USB-first deterministic order then
-    built-in is used.  On success leave_setup_mode() is called and session state
-    cleared; on failure the hotspot is retained.
+    Builds the same target list and profile the old synchronous
+    reconnect_saved_network built (for EXPLICIT_RECONFIGURE the rollback adapter
+    first, then ``client_candidate_order``, restoring the rollback profile;
+    otherwise ``client_candidate_order`` restoring the committed profile), records
+    the episode on STATE, and submits the first single-target activation job.
+    Returns True when an episode was started (a job was submitted or targets
+    remain to try); False when there is nothing configured to restore.  The
+    episode is then advanced one target per pass by step_reconnect_episode /
+    step_apply_activation_result.  ``failure_tail`` selects the exhaustion tail:
+    "retain_hotspot" (reconnect_saved) or "reconfigure_timeout".
     """
     with state_lock:
         session = STATE.hotspot
@@ -1451,38 +1477,111 @@ def reconnect_saved_network() -> bool:
     if not committed.is_configured:
         return False
 
-    def _attempt(target) -> bool:
-        # Route the per-target activate+validate through the shared core so this
-        # path gains UUID resolution, cross-adapter restriction clearing and the
-        # net-absent short-circuit for free (without it a "network could not be
-        # found" on each target would burn the full IPv4 wait).
-        # attempt_on_targets owns the per-hotspot-target AP rebuild; the success
-        # tail is applied inline below on this (loop) thread.
-        return _activate_profile_on(target.ifname, committed)
+    hotspot = resolve_hotspot_adapter(adapters)
+    episode = ReconnectEpisode(
+        target_ifnames=[t.ifname for t in targets],
+        profile_name=committed.connection_name,
+        profile_uuid=committed.connection_uuid,
+        hotspot_ifname=hotspot.ifname if hotspot is not None else "",
+        failure_tail=failure_tail,
+    )
+    with state_lock:
+        STATE.reconnect_episode = episode
+    _submit_next_reconnect_target()
+    return True
 
-    target = attempt_on_targets(targets, _attempt)
-    if target is not None:
-        # Loop-thread synchronous caller: apply the client-up success tail here,
-        # since attempt_on_targets does not.
-        _apply_client_up_tail(target)
-        return True
 
-    logger.warning("Reconnect to saved network failed; retaining hotspot")
-    return False
+def _submit_next_reconnect_target() -> bool:
+    """Submit the episode's next single-target job, or run its failure tail when
+    the targets are exhausted.  Returns True when a job was submitted."""
+    with state_lock:
+        ep = STATE.reconnect_episode
+    if ep is None:
+        return False
+    if ep.index >= len(ep.target_ifnames):
+        _finish_reconnect_episode_failure()
+        return False
+    ifname = ep.target_ifnames[ep.index]
+    # Activate the episode's saved/rollback profile on this target; drop the AP
+    # first (worker-half) only when the target is the AP-hosting radio.
+    profile = wifi_net.NetworkState(connection_name=ep.profile_name,
+                                    connection_uuid=ep.profile_uuid)
+    job = ActivationJob(
+        epoch=_next_activation_epoch(), kind="activate_profile", ifname=ifname,
+        profile=profile, drop_hotspot=(ifname == ep.hotspot_ifname),
+        on_success_leaves_setup=True, leave_reason="WiFi client connection succeeded",
+        wait_for_validation=True,
+    )
+    if not submit_activation_job(job):
+        return False   # busy; retried on a later pass
+    with state_lock:
+        ep.inflight_epoch = job.epoch
+    logger.info("Reconnect episode: submitted restore on %s (target %d/%d)",
+                ifname, ep.index + 1, len(ep.target_ifnames))
+    return True
+
+
+def _advance_reconnect_episode(result: "ActivationResult") -> None:
+    """Advance the episode from an applied activation result (loop thread).
+
+    On success the loop-half tail already left setup, so the episode ends; on
+    failure the index advances so step_reconnect_episode submits the next target
+    on a later pass.  Ignores results that do not belong to the episode's
+    in-flight job.
+    """
+    with state_lock:
+        ep = STATE.reconnect_episode
+        if ep is None or result.epoch != ep.inflight_epoch:
+            return
+        if result.ok:
+            STATE.reconnect_episode = None
+            return
+        ep.index += 1
+        ep.inflight_epoch = None
+
+
+def _finish_reconnect_episode_failure() -> None:
+    """Run the episode's exhaustion tail and clear it."""
+    with state_lock:
+        ep = STATE.reconnect_episode
+        STATE.reconnect_episode = None
+    if ep is None:
+        return
+    if ep.failure_tail == "reconfigure_timeout":
+        # Restoration failed: retain the hotspot but convert it to an automatic
+        # USB-loss recovery session (probes for return, eth-suppressible, no
+        # rollback).
+        with state_lock:
+            if STATE.hotspot is not None:
+                STATE.hotspot.purpose = HotspotPurpose.USB_LOSS_RECOVERY
+                STATE.hotspot.rollback = None
+        logger.warning("Timeout restore failed; remaining in recovery hotspot")
+    else:
+        logger.warning("Reconnect to saved network failed; retaining hotspot")
+
+
+def step_reconnect_episode(pre: "PreFactsContext") -> "Verdict":
+    """Drive a reconnect-saved episode: submit its next target when none is in
+    flight and no other transition is running.  Placed before
+    step_apply_activation_result so the result of one target is applied (and the
+    index advanced) before the next target is submitted on a subsequent pass."""
+    with state_lock:
+        ep = STATE.reconnect_episode
+        transitioning = STATE.transitioning
+    if ep is None:
+        return Verdict.CONTINUE
+    if ep.inflight_epoch is not None or transitioning:
+        # A job is still in flight (this episode's, or another transition): wait.
+        return Verdict.CONTINUE
+    if _submit_next_reconnect_target():
+        return Verdict.OWN_PASS
+    return Verdict.CONTINUE
 
 
 def handle_reconfigure_timeout() -> None:
-    """30-minute explicit-reconfiguration timeout rollback."""
+    """30-minute explicit-reconfiguration timeout rollback (starts an episode)."""
     logger.info("Explicit network setup timed out after %ds; restoring previous", AP_MAX_DURATION)
-    if reconnect_saved_network():
-        return
-    # Restoration failed: retain the hotspot but convert it to an automatic
-    # USB-loss recovery session (probes for return, eth-suppressible, no rollback).
-    with state_lock:
-        if STATE.hotspot is not None:
-            STATE.hotspot.purpose = HotspotPurpose.USB_LOSS_RECOVERY
-            STATE.hotspot.rollback = None
-    logger.warning("Timeout restore failed; remaining in recovery hotspot")
+    start_reconnect_saved_episode(failure_tail="reconfigure_timeout")
 
 
 
@@ -1907,11 +2006,12 @@ def step_control_action(pre: "PreFactsContext") -> "Verdict":
 
     Disruptive actions own the pass; the non-disruptive set_log_level is applied
     and the pass continues normally.  While a worker activation is in flight
-    (STATE.transitioning), a *disruptive* action (start_setup / reconnect_saved)
-    is peeked but NOT consumed — it is left queued and applied on the first pass
-    after the transition completes, so it is deferred, never dropped.  A
-    non-disruptive set_log_level is always consumed and applied immediately (it
-    touches no connectivity/AP state).
+    (STATE.transitioning) OR a reconnect-saved episode is still running
+    (STATE.reconnect_episode), a *disruptive* action (start_setup /
+    reconnect_saved) is peeked but NOT consumed — it is left queued and applied on
+    the first pass after the transition/episode completes, so it is deferred,
+    never dropped.  A non-disruptive set_log_level is always consumed and applied
+    immediately (it touches no connectivity/AP state).
     """
     if not control_action_event.is_set():
         return Verdict.CONTINUE
@@ -1919,7 +2019,7 @@ def step_control_action(pre: "PreFactsContext") -> "Verdict":
         action = STATE.pending_control_action
         params = dict(STATE.pending_control_params)
         disruptive = bool(action) and action != "set_log_level"
-        defer = disruptive and STATE.transitioning
+        defer = disruptive and (STATE.transitioning or STATE.reconnect_episode is not None)
         if not defer:
             STATE.pending_control_action = ""
             STATE.pending_control_params = {}
@@ -1935,10 +2035,16 @@ def step_control_action(pre: "PreFactsContext") -> "Verdict":
 
 
 def step_reconfigure_timeout(pre: "PreFactsContext") -> "Verdict":
-    """Enforce the explicit-reconfiguration 30-minute timeout."""
+    """Enforce the explicit-reconfiguration 30-minute timeout.
+
+    Starts the rollback episode once; while that episode is still running the
+    guard below keeps it from being restarted every pass.
+    """
     with state_lock:
         session = STATE.hotspot
+        episode_active = STATE.reconnect_episode is not None
     if (session is not None
+            and not episode_active
             and session.purpose == HotspotPurpose.EXPLICIT_RECONFIGURE
             and (pre.now - session.entered_at) >= AP_MAX_DURATION):
         handle_reconfigure_timeout()
@@ -2378,6 +2484,7 @@ def network_monitor_loop(run_once: bool = False):
     # cross-pass loop_state; it is bound with functools.partial so run_steps keeps
     # a single uniform step(ctx) calling convention (§4.4).
     phase_a = [
+        step_reconnect_episode,
         step_apply_activation_result,
         partial(step_avahi_hostname, loop_state=loop_state),
         step_mdns_reannounce,
@@ -3208,6 +3315,9 @@ def step_apply_activation_result(pre: "PreFactsContext") -> "Verdict":
                            result.epoch, _inflight_activation_epoch)
         else:
             apply_activation_result(result)
+            # Advance any reconnect-saved episode this job belonged to (success
+            # ends it; failure moves to the next target on a later pass).
+            _advance_reconnect_episode(result)
     finally:
         _inflight_activation_epoch = None
         with state_lock:

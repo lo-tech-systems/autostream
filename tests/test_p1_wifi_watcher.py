@@ -2391,29 +2391,20 @@ class TestStartExplicitSetup:
         assert any("disconnect" in c and "wlan1" in c for c in calls)
 
 
-class TestReconnectSavedNetwork:
-    def test_success_clears_state_and_leaves_setup(self, watcher):
-        watcher.STATE.setup_mode = True
-        watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
-            entered_at=0.0,
-            rollback=watcher.RollbackSnapshot("Home", "uuid-1", "aa:bb:cc:00:00:01"),
-        )
-        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
-             patch.object(watcher, "wait_for_connection", return_value=True), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "verify_avahi_after_handover"):
-            ok = watcher.reconnect_saved_network()
-        assert ok is True
-        leave.assert_called_once()
+class TestReconnectSavedEpisode:
+    """WP-4 — reconnect-saved is a single-target-per-pass async episode.
 
-    def test_applies_full_client_up_tail_inline(self, watcher):
-        # IF-2 regression: attempt_on_targets no longer applies the success tail,
-        # so reconnect_saved_network must apply it inline on the loop thread —
-        # set the active client, leave setup, and verify avahi.
+    The old synchronous multi-target join is gone; the per-target join mechanics
+    (AP drop/rebuild, restriction clearing, net-absent short-circuit) now run on
+    the worker via _run_activation_job / _activate_profile_on and are covered by
+    TestActivationWorker and the _activate_profile_on tests below.  These pin the
+    episode bookkeeping and the flags on each submitted job.
+    """
+
+    def _pre(self, watcher, now=0.0):
+        return watcher.PreFactsContext(now=now, boot_time=0.0, avahi_ok=False)
+
+    def test_starts_episode_and_submits_first_target(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
             purpose=watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
@@ -2422,143 +2413,164 @@ class TestReconnectSavedNetwork:
              patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin]), \
              patch.object(watcher, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
-             patch.object(watcher, "_activate_profile_on", return_value=True), \
-             patch.object(watcher, "stop_ap_mode"), \
-             patch.object(watcher, "_set_active_client") as set_active, \
-             patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "verify_avahi_after_handover") as avahi:
-            ok = watcher.reconnect_saved_network()
-        assert ok is True
-        set_active.assert_called_once_with(builtin)
-        leave.assert_called_once_with("WiFi client connection succeeded")
-        avahi.assert_called_once()
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=builtin), \
+             patch.object(watcher, "submit_activation_job", return_value=True) as submit:
+            started = watcher.start_reconnect_saved_episode("retain_hotspot")
+        assert started is True
+        ep = watcher.STATE.reconnect_episode
+        assert ep is not None
+        assert ep.target_ifnames == ["wlan0"]
+        assert ep.profile_name == "Home" and ep.profile_uuid == "uuid-1"
+        assert ep.hotspot_ifname == "wlan0"
+        submit.assert_called_once()
+        job = submit.call_args[0][0]
+        assert job.ifname == "wlan0"
+        assert job.profile.connection_name == "Home"
+        assert job.drop_hotspot is True          # target IS the AP-hosting radio
+        assert job.on_success_leaves_setup is True
+        assert job.leave_reason == "WiFi client connection succeeded"
+        assert ep.inflight_epoch == job.epoch
 
-    def test_failure_retains_hotspot(self, watcher):
+    def test_not_configured_starts_no_episode(self, watcher):
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_net, "client_candidate_order", return_value=[]), \
+             patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("", "")), \
+             patch.object(watcher, "submit_activation_job") as submit:
+            started = watcher.start_reconnect_saved_episode()
+        assert started is False
+        assert watcher.STATE.reconnect_episode is None
+        submit.assert_not_called()
+
+    def test_explicit_reconfigure_prefers_rollback_adapter_and_profile(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
-            entered_at=0.0,
-            rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""),
-        )
+            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=0.0,
+            rollback=watcher.RollbackSnapshot("Prev", "uuid-prev", "aa:bb:cc:00:00:09"))
+        prev = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:09", is_usb=True)
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
-             patch.object(watcher, "wait_for_connection", return_value=False), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "leave_setup_mode") as leave:
-            ok = watcher.reconnect_saved_network()
-        assert ok is False
-        leave.assert_not_called()
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, prev]), \
+             patch.object(watcher.wifi_net, "find_adapter_by_mac", return_value=prev), \
+             patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin, prev]), \
+             patch.object(watcher, "resolve_hotspot_adapter", return_value=builtin), \
+             patch.object(watcher, "submit_activation_job", return_value=True):
+            watcher.start_reconnect_saved_episode()
+        ep = watcher.STATE.reconnect_episode
+        # rollback adapter (wlan1) first, then client_candidate_order; rollback
+        # profile restored (not the committed one).
+        assert ep.target_ifnames[0] == "wlan1"
+        assert ep.profile_name == "Prev" and ep.profile_uuid == "uuid-prev"
 
-    def test_usb_only_client_fails_restores_hotspot(self, watcher):
-        """Pi 2 (no built-in radio): the sole USB adapter hosts the hotspot.
-        When a client attempt on that adapter fails, the hotspot must be
-        recreated so the setup portal remains reachable.
+    def test_failure_advances_to_next_target(self, watcher):
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan1", "wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=0, inflight_epoch=7)
+        job = watcher.ActivationJob(epoch=7, kind="activate_profile", ifname="wlan1")
+        watcher._advance_reconnect_episode(watcher.ActivationResult(7, False, "wlan1", job))
+        ep = watcher.STATE.reconnect_episode
+        assert ep.index == 1 and ep.inflight_epoch is None
+        # A subsequent pass submits the next target and owns the pass.
+        with patch.object(watcher, "submit_activation_job", return_value=True) as submit:
+            v = watcher.step_reconnect_episode(self._pre(watcher))
+        assert v is watcher.Verdict.OWN_PASS
+        assert submit.call_args[0][0].ifname == "wlan0"
 
-        Transition: USB hotspot active → client attempt → hotspot stops →
-        connection fails → hotspot recreated → returns False.
-        """
-        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+    def test_success_ends_episode(self, watcher):
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=0, inflight_epoch=3)
+        job = watcher.ActivationJob(epoch=3, kind="activate_profile", ifname="wlan0")
+        watcher._advance_reconnect_episode(watcher.ActivationResult(3, True, "wlan0", job))
+        assert watcher.STATE.reconnect_episode is None
+
+    def test_foreign_result_does_not_advance(self, watcher):
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=0, inflight_epoch=5)
+        job = watcher.ActivationJob(epoch=99, kind="activate_committed", ifname="wlan0")
+        watcher._advance_reconnect_episode(watcher.ActivationResult(99, False, "wlan0", job))
+        # A result from a different job (epoch mismatch) leaves the episode intact.
+        assert watcher.STATE.reconnect_episode.index == 0
+
+    def test_exhaustion_retain_hotspot_tail(self, watcher):
         watcher.STATE.setup_mode = True
-        watcher.STATE.setup_purpose = "automatic_recovery"
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=1)
+        assert watcher._submit_next_reconnect_target() is False
+        assert watcher.STATE.reconnect_episode is None
+        # Hotspot retained, purpose unchanged.
+        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
 
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
-             patch.object(watcher, "get_configured_network_state",
-                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
-             patch.object(watcher, "wait_for_connection", return_value=False), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "stop_ap_mode") as stop_ap, \
-             patch.object(watcher, "start_ap_mode") as start_ap, \
-             patch.object(watcher, "update_apmode_flag") as apflag, \
-             patch.object(watcher, "leave_setup_mode") as leave:
-            ok = watcher.reconnect_saved_network()
-
-        assert ok is False
-        stop_ap.assert_called_once()     # hotspot torn down before the client attempt
-        start_ap.assert_called_once()    # hotspot recreated after the failed attempt
-        apflag.assert_called_with(True)  # flag reflects hotspot-active state
-        leave.assert_not_called()        # setup mode never exited
-        assert watcher.STATE.setup_mode is True
-
-    def test_usb_only_client_succeeds_leaves_setup(self, watcher):
-        """Pi 2 (no built-in radio): when the client attempt on the sole USB
-        adapter succeeds, setup mode is exited and the hotspot is not recreated.
-        """
-        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
+    def test_exhaustion_reconfigure_timeout_converts_to_usb_loss(self, watcher):
         watcher.STATE.setup_mode = True
-        watcher.STATE.setup_purpose = "automatic_recovery"
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=0.0,
+            rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""))
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="wlan0", failure_tail="reconfigure_timeout", index=1)
+        watcher._submit_next_reconnect_target()
+        assert watcher.STATE.reconnect_episode is None
+        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert watcher.STATE.hotspot.rollback is None
 
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
-             patch.object(watcher, "get_configured_network_state",
-                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)), \
-             patch.object(watcher, "wait_for_connection", return_value=True), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "stop_ap_mode") as stop_ap, \
-             patch.object(watcher, "start_ap_mode") as start_ap, \
-             patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "verify_avahi_after_handover"):
-            ok = watcher.reconnect_saved_network()
+    def test_episode_deferred_while_transitioning(self, watcher):
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="", failure_tail="retain_hotspot")
+        watcher.STATE.transitioning = True
+        with patch.object(watcher, "submit_activation_job") as submit:
+            v = watcher.step_reconnect_episode(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE
+        submit.assert_not_called()
 
-        assert ok is True
-        stop_ap.assert_called_once()  # hotspot torn down before the client attempt
-        start_ap.assert_not_called()  # hotspot not recreated on success
-        leave.assert_called_once()
+    def test_disruptive_control_action_deferred_during_episode(self, watcher):
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="", failure_tail="retain_hotspot")
+        watcher.STATE.transitioning = False
+        watcher.STATE.pending_control_action = "start_setup"
+        watcher.control_action_event.set()
+        with patch.object(watcher, "process_control_action") as pca:
+            v = watcher.step_control_action(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE
+        pca.assert_not_called()
+        assert watcher.control_action_event.is_set()   # left queued until episode ends
 
-    def test_netabsent_skips_ipv4_wait(self, watcher):
-        """A-WP4 inconsistency 1: reconnect_saved_network must short-circuit the
-        IPv4 wait when nmcli reports the saved network is not visible."""
-        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        absent = MagicMock(
-            returncode=10,
-            stderr="Error: Connection activation failed: The Wi-Fi network could not be found",
-        )
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
-             patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin]), \
-             patch.object(watcher, "get_configured_network_state",
-                          return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
-             patch.object(watcher, "run_cmd", return_value=absent), \
-             patch.object(watcher, "wait_for_connection") as wait, \
-             patch.object(watcher, "leave_setup_mode"):
-            ok = watcher.reconnect_saved_network()
-        assert ok is False
-        wait.assert_not_called()
+    # ---- the per-target join mechanics preserved on _activate_profile_on ----
 
-    def test_clears_restrictions_before_activation_with_empty_uuid(self, watcher):
-        """reconnect_saved_network must resolve and clear cross-adapter restrictions
-        before the first activation attempt, even when the stored UUID is empty."""
+    def test_activate_profile_on_clears_restrictions_before_activation(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         calls = []
-        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
-             patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin]), \
-             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state"), \
-             patch.object(watcher, "get_configured_network_state",
-                          return_value=watcher.wifi_net.NetworkState("Home", "")), \
              patch.object(watcher, "run_cmd",
-                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)), \
+                          side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0, stderr="")), \
              patch.object(watcher, "wait_for_connection", return_value=True), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "leave_setup_mode"), \
-             patch.object(watcher, "verify_avahi_after_handover"):
-            watcher.reconnect_saved_network()
-
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+            watcher._activate_profile_on("wlan0", watcher.wifi_net.NetworkState("Home", ""))
         str_calls = [str(c) for c in calls]
         modify_before_up = next(
-            (i for i, c in enumerate(str_calls) if "modify" in c and "resolved-uuid" in c), None
-        )
+            (i for i, c in enumerate(str_calls) if "modify" in c and "resolved-uuid" in c), None)
         up_call = next(
-            (i for i, c in enumerate(str_calls) if "connection" in c and "up" in c), None
-        )
-        assert modify_before_up is not None, (
-            "reconnect_saved_network must issue clear_restrictions_cmd with resolved UUID"
-        )
-        assert up_call is not None, "reconnect_saved_network must issue an activation command"
-        assert modify_before_up < up_call, (
-            "cross-adapter restrictions must be cleared BEFORE activation"
-        )
+            (i for i, c in enumerate(str_calls) if "connection" in c and "up" in c), None)
+        assert modify_before_up is not None and up_call is not None
+        assert modify_before_up < up_call   # restrictions cleared BEFORE activation
+
+    def test_activate_profile_on_netabsent_skips_ipv4_wait(self, watcher):
+        absent = MagicMock(
+            returncode=10,
+            stderr="Error: Connection activation failed: The Wi-Fi network could not be found")
+        with patch.object(watcher, "run_cmd", return_value=absent), \
+             patch.object(watcher, "wait_for_connection") as wait:
+            ok = watcher._activate_profile_on(
+                "wlan0", watcher.wifi_net.NetworkState("Home", "uuid-1"))
+        assert ok is False
+        wait.assert_not_called()
 
 
 class TestCandidateValidateTail:
@@ -2993,23 +3005,43 @@ class TestIf2WorkerSessionContract:
 
 
 class TestReconfigureTimeout:
-    def test_timeout_restores_previous(self, watcher):
-        with patch.object(watcher, "reconnect_saved_network", return_value=True) as rc:
+    def test_timeout_starts_reconfigure_episode(self, watcher):
+        # The timeout now starts a reconnect episode tagged reconfigure_timeout.
+        with patch.object(watcher, "start_reconnect_saved_episode", return_value=True) as start:
             watcher.handle_reconfigure_timeout()
-        rc.assert_called_once()
+        start.assert_called_once_with(failure_tail="reconfigure_timeout")
 
-    def test_timeout_restore_failure_enters_recovery(self, watcher):
+    def test_timeout_episode_failure_enters_recovery(self, watcher):
+        # When the reconfigure-timeout episode exhausts its targets, its failure
+        # tail downgrades the session to an automatic recovery hotspot.
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
             purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
             entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""),
         )
-        with patch.object(watcher, "reconnect_saved_network", return_value=False):
-            watcher.handle_reconfigure_timeout()
-        # Failed restore downgrades the session to an automatic recovery hotspot.
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="wlan0", failure_tail="reconfigure_timeout", index=1)
+        watcher._submit_next_reconnect_target()   # index past end -> failure tail
         assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
         assert watcher.STATE.hotspot.rollback is None
+
+    def test_timeout_not_restarted_while_episode_active(self, watcher):
+        # step_reconfigure_timeout must not restart the episode every pass while
+        # one is already running.
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            entered_at=0.0, rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""))
+        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+            target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
+            hotspot_ifname="wlan0", failure_tail="reconfigure_timeout")
+        pre = watcher.PreFactsContext(now=watcher.AP_MAX_DURATION + 10, boot_time=0.0, avahi_ok=False)
+        with patch.object(watcher, "handle_reconfigure_timeout") as h:
+            v = watcher.step_reconfigure_timeout(pre)
+        h.assert_not_called()
+        assert v is watcher.Verdict.CONTINUE
 
 
 class TestSavedNetworkGating:
