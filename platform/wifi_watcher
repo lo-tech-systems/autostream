@@ -1139,7 +1139,8 @@ def start_ap_mode() -> None:
         ssid = get_ap_ssid(recovery_ifname)
 
         # Delete any existing connection with the same name (also takes it down).
-        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME],
+                timeout=NMCLI_QUICK_TIMEOUT)
 
         # Create the connection on the hotspot interface.
         logger.info(
@@ -1158,7 +1159,7 @@ def start_ap_mode() -> None:
             "ipv4.addresses", "192.168.4.1/24",
             "ipv4.never-default", "yes",
             "ipv6.method", "ignore",
-        ])
+        ], timeout=NMCLI_QUICK_TIMEOUT)
 
         # Generate the runtime dnsmasq config bound to the validated recovery
         # interface, then start the dedicated dnsmasq service that reads it.
@@ -1167,9 +1168,10 @@ def start_ap_mode() -> None:
         dnsmasq_ready = _write_dnsmasq_runtime(recovery_ifname)
 
         # Bring up the AP connection
-        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME, "ifname", recovery_ifname])
+        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME, "ifname", recovery_ifname],
+                timeout=NMCLI_ACTIVATE_TIMEOUT)
         if dnsmasq_ready:
-            run_cmd(["systemctl", "start", DNSMASQ_SERVICE])
+            run_cmd(["systemctl", "start", DNSMASQ_SERVICE], timeout=NMCLI_QUICK_TIMEOUT)
         else:
             logger.warning("dnsmasq not started because runtime config write failed")
 
@@ -1187,9 +1189,10 @@ def stop_ap_mode() -> None:
         logger.info("Disabling AP mode after leaving SetupMode")
         # Stop the dedicated dnsmasq service before removing its runtime config
         # so the service never observes a half-deleted file.
-        run_cmd(["systemctl", "stop", DNSMASQ_SERVICE])
+        run_cmd(["systemctl", "stop", DNSMASQ_SERVICE], timeout=NMCLI_QUICK_TIMEOUT)
         wifi_net.remove_dnsmasq_runtime_config(DNSMASQ_RUNTIME_PATH)
-        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME],
+                timeout=NMCLI_QUICK_TIMEOUT)
 
 
 def scan_all_networks() -> tuple[list[dict], bool]:
@@ -1335,7 +1338,7 @@ def start_explicit_setup() -> None:
     with state_lock:
         active_ifname = STATE.active_client_ifname
     if active_ifname:
-        run_cmd(["nmcli", "device", "disconnect", active_ifname])
+        run_cmd(["nmcli", "device", "disconnect", active_ifname], timeout=NMCLI_QUICK_TIMEOUT)
     logger.info("Explicit network setup starting (explicit_reconfigure)")
     enter_setup_mode(HotspotPurpose.EXPLICIT_RECONFIGURE,
                      reason="explicit_reconfigure", rollback=rollback)
@@ -2067,7 +2070,8 @@ def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
                     "Usable wired Ethernet present; disconnecting idle WiFi client %s",
                     active_wifi_ifname,
                 )
-                run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname])
+                run_cmd(["nmcli", "device", "disconnect", active_wifi_ifname],
+                        timeout=NMCLI_QUICK_TIMEOUT)
                 _set_active_client(None)
         return Verdict.OWN_PASS
 
@@ -2400,10 +2404,11 @@ def connect_to_configured_wifi() -> bool:
     # dead-PHY USB reset ladder).
     uuid = _resolve_committed_uuid(state)
     if uuid:
-        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS))
+        run_cmd(wifi_net.clear_restrictions_cmd(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS),
+                timeout=NMCLI_QUICK_TIMEOUT)
     logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
     ident = ["uuid", uuid] if uuid else ["id", connection_name]
-    r_up = run_cmd(["nmcli", "connection", "up", *ident])
+    r_up = run_cmd(["nmcli", "connection", "up", *ident], timeout=NMCLI_ACTIVATE_TIMEOUT)
     if _activation_network_absent(r_up):
         logger.info("Configured network '%s' not visible; reconnect deferred", connection_name)
     elif r_up.returncode != 0:
@@ -2428,7 +2433,7 @@ def migrate_client_profiles_autoconnect_no() -> int:
     for uuid, name in wifi_net.list_wifi_connection_profiles():
         if wifi_net.wifi_profile_mode(uuid or name) == "ap":
             continue
-        r = run_cmd(wifi_net.set_autoconnect_no_cmd(uuid, name))
+        r = run_cmd(wifi_net.set_autoconnect_no_cmd(uuid, name), timeout=NMCLI_QUICK_TIMEOUT)
         if r.returncode == 0:
             modified += 1
         else:
@@ -3260,7 +3265,7 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
     logger.info("Runtime USB adoption starting on %s", candidate.ifname)
     if _activate_committed_on(candidate.ifname):
         # Deactivate the previous built-in client connection.
-        run_cmd(["nmcli", "device", "disconnect", builtin.ifname])
+        run_cmd(["nmcli", "device", "disconnect", builtin.ifname], timeout=NMCLI_QUICK_TIMEOUT)
         with state_lock:
             STATE.using_builtin_fallback = False
         _set_active_client(candidate)
@@ -3421,7 +3426,7 @@ if __name__ == "__main__":
     # First, remove any lingering Hotspot connections configured that would otherwise
     # force the Pi to setup mode even though the WiFi is probably OK, and connect to
     # whatever network is configured (if it is configured).
-    run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME])
+    run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME], timeout=NMCLI_QUICK_TIMEOUT)
     # an any associated hotspot request markers
     clear_apmode_flag()
     # D-WP2: idempotently disable NM autoconnect on every managed non-AP client

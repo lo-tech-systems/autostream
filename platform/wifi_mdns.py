@@ -68,7 +68,8 @@ def get_avahi_registered_hostname(w) -> Optional[str]:
 
 def restart_avahi_daemon(w, reason: str) -> bool:
     """Restart avahi-daemon to force mDNS host/service re-announcement."""
-    result = w.run_cmd(["systemctl", "restart", "avahi-daemon.service"])
+    result = w.run_cmd(["systemctl", "restart", "avahi-daemon.service"],
+                       timeout=w.NMCLI_QUICK_TIMEOUT)
     if result.returncode != 0:
         w.logger.error(
             "avahi-daemon restart failed (%s, rc=%d): %s",

@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import threading
+import time
 from contextlib import ExitStack
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -3381,6 +3382,85 @@ class TestDeadPhyRebootThreshold:
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == 30 * 60
 
 
+class TestSubprocessTimeoutBounds:
+    """IF-1: every nmcli/systemctl execution site on the loop and worker paths is
+    timeout-bounded, so a wedged NetworkManager returns rc 124 instead of hanging
+    the monitor loop.  This is the permanent guard the immediate-fix requires: a
+    fake nmcli that never completes within its bound.  A call made with no
+    ``timeout=`` would hang the loop forever on real hardware, so the fake fails
+    the test if it ever sees one.
+    """
+
+    @staticmethod
+    def _wedged_run_cmd(calls, sleep_s: float = 0.0):
+        """A run_cmd stub modelling a wedged NM/systemctl/ip child.
+
+        It records ``(cmd, timeout)`` for every call, asserts a timeout was
+        supplied (an unbounded site would hang forever), and returns rc 124 —
+        exactly what the real run_cmd hands back after SIGKILLing a hung child.
+        """
+        def fake(cmd, *a, timeout=None, log_cmd=None, warn_on_failure=True, **k):
+            calls.append((tuple(cmd), timeout))
+            assert timeout is not None, f"unbounded subprocess call: {list(cmd)}"
+            if sleep_s:
+                time.sleep(sleep_s)
+            return SimpleNamespace(returncode=124, stdout="",
+                                   stderr=f"timeout after {timeout}s")
+        return fake
+
+    def test_wedged_nmcli_keeps_monitor_pass_bounded(self, watcher):
+        # A monitor pass against a fully wedged NetworkManager: every nmcli/ip
+        # query returns rc 124 (the fact helpers degrade gracefully to "offline")
+        # and the pass completes promptly instead of blocking on a hung child.
+        calls: list = []
+        fake = self._wedged_run_cmd(calls, sleep_s=0.002)
+        cfg = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u")
+        with patch.object(watcher, "run_cmd", side_effect=fake), \
+             patch.object(watcher.wifi_net, "run_cmd", side_effect=fake), \
+             patch.object(watcher, "is_wifi_configured", return_value=True), \
+             patch.object(watcher, "get_configured_network_state", return_value=cfg):
+            watcher.STATE.boot_time = None  # the loop stamps it; boot_age starts at 0
+            start = time.monotonic()
+            watcher.network_monitor_loop(run_once=True)
+            elapsed = time.monotonic() - start
+        assert calls, "wedged pass should still exercise nmcli/ip subprocesses"
+        assert all(t is not None for _, t in calls)
+        # The fake sleeps only milliseconds per call, so a bounded pass returns
+        # far faster than any single command timeout (the smallest is 2 s).
+        assert elapsed < 5.0
+
+    def test_effectful_transition_sites_are_bounded(self, watcher):
+        # The AP-mode lifecycle and the other loop-thread transitions reach nmcli
+        # sites that a wedged-discovery pass cannot (they need a resolvable
+        # adapter).  Drive them directly and confirm each carries a timeout.
+        calls: list = []
+        fake = self._wedged_run_cmd(calls)
+        cfg = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u")
+        with patch.object(watcher, "run_cmd", side_effect=fake), \
+             patch.object(watcher.wifi_net, "run_cmd", side_effect=fake), \
+             patch.object(watcher, "resolve_recovery_ifname", return_value="wlan0"), \
+             patch.object(watcher, "_write_dnsmasq_runtime", return_value=True), \
+             patch.object(watcher.wifi_net, "remove_dnsmasq_runtime_config"), \
+             patch.object(watcher, "get_configured_network_state", return_value=cfg), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=[("uuid-1", "Home")]), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"):
+            watcher.STATE.setup_mode = True
+            watcher.start_ap_mode()                        # delete / add / up / systemctl start
+            watcher.stop_ap_mode()                         # systemctl stop / delete
+            watcher.connect_to_configured_wifi()           # clear-restrictions / connection up
+            watcher.migrate_client_profiles_autoconnect_no()  # autoconnect-no modify
+            watcher.STATE.active_client_ifname = "wlan0"
+            with patch.object(watcher, "enter_setup_mode"):
+                watcher.start_explicit_setup()             # device disconnect
+
+        assert any("connection" in c and "up" in c for c, _ in calls)
+        assert any("device" in c and "disconnect" in c for c, _ in calls)
+        assert any(c and c[0] == "systemctl" for c, _ in calls)
+        assert all(t is not None for _, t in calls)
+
+
 def _run_monitor_once(
     watcher,
     *,
@@ -4466,7 +4546,8 @@ class TestAvahiHandoverReannounce:
              patch.object(watcher, "run_cmd", return_value=self._ok_result()) as run:
             watcher.check_and_repair_avahi_hostname()
 
-        run.assert_called_once_with(["systemctl", "restart", "avahi-daemon.service"])
+        run.assert_called_once_with(["systemctl", "restart", "avahi-daemon.service"],
+                                    timeout=watcher.NMCLI_QUICK_TIMEOUT)
         assert watcher.STATE.avahi_restart_count == 1
         assert watcher.STATE.last_avahi_restart == watcher.AVAHI_MISMATCH_GRACE + 1.0
         assert watcher.STATE.last_avahi_handover_restart is None
@@ -4586,7 +4667,8 @@ class TestEthernetWinsWifiDisconnectPolicy:
     def test_wired_up_idle_disconnects_wifi_once(self, watcher):
         # Regardless of subnet: usable Ethernet present + idle → drop Wi-Fi once.
         run = self._run_with_active_wifi(watcher, playing=False)
-        run.assert_called_once_with(["nmcli", "device", "disconnect", "wlan1"])
+        run.assert_called_once_with(["nmcli", "device", "disconnect", "wlan1"],
+                                    timeout=watcher.NMCLI_QUICK_TIMEOUT)
         assert watcher.STATE.active_client_ifname == ""
         assert watcher.STATE.active_client_mac == ""
 

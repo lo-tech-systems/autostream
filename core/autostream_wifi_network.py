@@ -38,6 +38,15 @@ from autostream_sysutils import run_cmd
 
 logger = logging.getLogger(__name__)
 
+# Bound every nmcli query/probe so a wedged NetworkManager cannot hang the
+# caller.  These helpers run on the watcher's monitor loop every pass, so an
+# unbounded nmcli that never returns would silence health checks, status
+# publishing and the reboot ladders (immediate-fix IF-1).  Kept local to this
+# module — it must not import the watcher's timeout constants.  A live scan can
+# legitimately be slower than a plain query, so it gets a wider bound.
+NMCLI_TIMEOUT = 15        # seconds; plain nmcli query/list/show probes
+NMCLI_SCAN_TIMEOUT = 30   # seconds; `device wifi rescan` + `device wifi list`
+
 # Final compatibility fallback when hardware classification is inconclusive.
 BUILTIN_FALLBACK_IFNAME = "wlan0"
 
@@ -269,7 +278,8 @@ def resolve_connection_uuid_for_name(name: str) -> str:
     """
     if not name:
         return ""
-    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"])
+    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode != 0:
         return ""
     matches: list[str] = []
@@ -413,7 +423,7 @@ def _nmcli_wifi_devices() -> list[dict]:
     """
     r = run_cmd([
         "nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status",
-    ])
+    ], timeout=NMCLI_TIMEOUT)
     devs: list[dict] = []
     if r.returncode != 0:
         return devs
@@ -444,7 +454,8 @@ def _nmcli_device_detail(ifname: str) -> dict:
         "GENERAL.VENDOR",
     ]
     out: dict[str, str] = {}
-    r = run_cmd(["nmcli", "-t", "-f", ",".join(base_fields), "device", "show", ifname])
+    r = run_cmd(["nmcli", "-t", "-f", ",".join(base_fields), "device", "show", ifname],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode == 0:
         for line in r.stdout.splitlines():
             if not line:
@@ -459,6 +470,7 @@ def _nmcli_device_detail(ifname: str) -> dict:
         ["nmcli", "-t", "-f", "WIFI-PROPERTIES.PERM-HW-ADDRESS",
          "device", "show", ifname],
         warn_on_failure=False,
+        timeout=NMCLI_TIMEOUT,
     )
     if r2.returncode == 0:
         for line in r2.stdout.splitlines():
@@ -780,7 +792,8 @@ def _nmcli_dev_show_fields(ifname: str, fields: list[str]) -> dict[str, list[str
     Maps each base field name to a list of values (nmcli can emit indexed keys
     like IP4.ADDRESS[1], IP4.ADDRESS[2]).
     """
-    r = run_cmd(["nmcli", "-t", "-f", ",".join(fields), "device", "show", ifname])
+    r = run_cmd(["nmcli", "-t", "-f", ",".join(fields), "device", "show", ifname],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode != 0:
         return {}
     out: dict[str, list[str]] = {}
@@ -906,7 +919,8 @@ def is_gateway_reachable(ifname: str, prime_fn=None) -> bool:
 
 def get_active_wifi_connection_name(ifname: str) -> str:
     """Active connection profile name on *ifname*, or "" if unknown."""
-    r = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
+    r = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode != 0:
         return ""
     for line in r.stdout.splitlines():
@@ -929,7 +943,7 @@ def get_active_wifi_ssid(ifname: str = "") -> str:
     cmd = ["nmcli", "-t", "-f", "IN-USE,SSID", "device", "wifi", "list"]
     if ifname:
         cmd += ["ifname", ifname]
-    r = run_cmd(cmd)
+    r = run_cmd(cmd, timeout=NMCLI_SCAN_TIMEOUT)
     if r.returncode != 0:
         return ""
     for line in r.stdout.splitlines():
@@ -950,7 +964,8 @@ def get_connection_ssid(name_or_uuid: str) -> str:
     """
     if not name_or_uuid:
         return ""
-    r = run_cmd(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", name_or_uuid])
+    r = run_cmd(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", name_or_uuid],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode != 0:
         return ""
     return r.stdout.strip()
@@ -958,7 +973,8 @@ def get_connection_ssid(name_or_uuid: str) -> str:
 
 def is_wifi_connected(ifname: str) -> bool:
     """True if *ifname* is connected to a non-AP Wi-Fi network."""
-    result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
+    result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
+                     timeout=NMCLI_TIMEOUT)
     if result.returncode != 0:
         logger.warning("Error while checking WiFi connection state: %s", result.stderr.strip())
         return False
@@ -973,7 +989,8 @@ def is_wifi_connected(ifname: str) -> bool:
             continue
         if state not in ("connected", "activated") or not conn:
             return False
-        mode_result = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", conn])
+        mode_result = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", conn],
+                              timeout=NMCLI_TIMEOUT)
         if mode_result.returncode != 0:
             logger.warning("Error checking mode for connection '%s': %s", conn, mode_result.stderr.strip())
             return False
@@ -1079,11 +1096,11 @@ def scan_adapter(adapter: "WifiAdapter") -> Optional[dict[str, int]]:
     caller can mark that adapter's visibility *unknown* for this response).
     """
     # A rescan request is best-effort; the list call returns cached+fresh APs.
-    run_cmd(rescan_cmd(adapter.ifname))
+    run_cmd(rescan_cmd(adapter.ifname), timeout=NMCLI_SCAN_TIMEOUT)
     r = run_cmd([
         "nmcli", "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list",
         "ifname", adapter.ifname,
-    ])
+    ], timeout=NMCLI_SCAN_TIMEOUT)
     if r.returncode != 0:
         logger.debug("Scan failed on %s: %s", adapter.ifname, r.stderr.strip())
         return None
@@ -1229,7 +1246,8 @@ def list_wifi_connection_profiles() -> list[tuple[str, str]]:
     Facts-only primitive for the D-WP2 startup migration; the caller filters out
     AP-mode profiles via wifi_profile_mode().  Returns [] on any nmcli failure.
     """
-    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"])
+    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode != 0:
         return []
     out: list[tuple[str, str]] = []
@@ -1255,7 +1273,8 @@ def wifi_profile_mode(name_or_uuid: str) -> str:
     """
     if not name_or_uuid:
         return ""
-    r = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", name_or_uuid])
+    r = run_cmd(["nmcli", "-t", "-f", "802-11-wireless.mode", "connection", "show", name_or_uuid],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode != 0:
         return ""
     _, _, mode = r.stdout.strip().partition(":")
@@ -1273,7 +1292,8 @@ def set_autoconnect_no_cmd(uuid: str, name: str = "") -> list[str]:
 
 def get_profile_uuid(con_name: str) -> str:
     """Return the UUID of a profile by exact name, or "" if not found/ambiguous."""
-    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"])
+    r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"],
+                timeout=NMCLI_TIMEOUT)
     if r.returncode != 0:
         return ""
     matches = []
