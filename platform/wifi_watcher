@@ -293,6 +293,12 @@ DEAD_ADAPTER_REBOOT_STAMP  = "/var/lib/autostream/dead-phy-reboot.stamp"
 DEAD_ADAPTER_REBOOT_WINDOW = 24 * 60 * 60  # persistent reboot-guard window
 DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW = 3   # cross-boot dead-PHY reboot cap
 
+# First-boot Wi-Fi profile import: a persisted marker so the one destructive
+# import (retain the active profile, delete the other saved client profiles)
+# runs at most once per adopted machine.  Removed by the uninstaller/factory
+# reset so a re-adopted device imports afresh.
+FIRST_BOOT_IMPORT_MARKER = "/var/lib/autostream/first-boot-import.done"
+
 # Runtime log-level control.  Only these levels may be set at runtime via
 # the loopback/token-protected control surface; debug must carry a TTL.
 RUNTIME_LOG_LEVELS = {"warning": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG}
@@ -2451,6 +2457,133 @@ def migrate_client_profiles_autoconnect_no() -> int:
     return modified
 
 
+def _write_first_boot_import_marker() -> None:
+    """Atomically write the first-boot import marker (best-effort)."""
+    try:
+        directory = os.path.dirname(FIRST_BOOT_IMPORT_MARKER) or "."
+        os.makedirs(directory, exist_ok=True)
+        wifi_net._atomic_write(
+            FIRST_BOOT_IMPORT_MARKER,
+            "first-boot Wi-Fi import completed\n",
+            mode=0o644,
+        )
+    except OSError as e:
+        logger.warning("Could not persist first-boot import marker: %s", e)
+
+
+def _active_wifi_connections(adapters: list) -> "list[tuple[str, str]]":
+    """Return ``(ifname, connection_name)`` for each Wi-Fi adapter carrying an
+    active (connected) client connection."""
+    active = []
+    for a in adapters:
+        name = wifi_net.get_active_wifi_connection_name(a.ifname)
+        if name:
+            active.append((a.ifname, name))
+    return active
+
+
+def import_first_boot_wifi_profile() -> None:
+    """First-boot: adopt the machine's Wi-Fi state as the single managed profile.
+
+    AutoStream owns the whole machine, so on the first boot after adoption the
+    currently connected Wi-Fi profile is imported as the one managed profile and
+    every other saved (non-AP) Wi-Fi profile is deleted, so NetworkManager cannot
+    race the watcher onto a stale OS/user/installer profile.  Guarded by a
+    persisted marker so it runs at most once; the destructive delete only ever
+    bites when a genuinely first-adopted machine carries pre-existing profiles.
+
+    Flow: skip if the marker exists; query active Wi-Fi connections (exactly one
+    -> retain it, more than one -> retain the default-route carrier); commit the
+    retained profile to network.json (+ legacy mirror), disable its autoconnect
+    immediately, delete every other saved non-AP Wi-Fi profile (per-profile
+    failure logged and tolerated), and write the marker.  With no active Wi-Fi
+    profile nothing is deleted — the saved profiles stay autoconnect-disabled and
+    the normal first-run hotspot owns setup — but the marker is still written so
+    the check is idempotent.  Every retained/deleted profile is logged at INFO.
+    """
+    if os.path.exists(FIRST_BOOT_IMPORT_MARKER):
+        logger.debug("First-boot Wi-Fi import already done; skipping")
+        return
+    try:
+        adapters = wifi_net.discover_adapters()
+        active = _active_wifi_connections(adapters)
+
+        if not active:
+            # No active Wi-Fi profile: delete nothing, leave saved profiles
+            # autoconnect-disabled, and let the first-run hotspot own setup.
+            logger.info(
+                "First-boot Wi-Fi import: no active Wi-Fi profile; leaving saved "
+                "profiles untouched (autoconnect already disabled)")
+            _write_first_boot_import_marker()
+            return
+
+        if len(active) == 1:
+            retain_ifname, retain_name = active[0]
+        else:
+            # Multiple active Wi-Fi profiles: retain the one carrying the current
+            # default route; fall back to the first when none advertises one.
+            retain_ifname, retain_name = active[0]
+            for ifname, name in active:
+                if wifi_net.default_gateway_ipv4(ifname):
+                    retain_ifname, retain_name = ifname, name
+                    break
+
+        retain_uuid = ""
+        try:
+            retain_uuid = wifi_net.resolve_connection_uuid_for_name(retain_name) or ""
+        except Exception:
+            retain_uuid = ""
+        logger.info(
+            "First-boot Wi-Fi import: retaining active profile '%s' (uuid=%s, ifname=%s)",
+            retain_name, retain_uuid or "unresolved", retain_ifname)
+
+        # Commit the retained profile as the single managed network.
+        _commit_network_state(retain_name, retain_uuid)
+
+        # Disable autoconnect on the retained profile immediately (do not wait for
+        # the next boot's autoconnect=no sweep).
+        r = run_cmd(wifi_net.set_autoconnect_no_cmd(retain_uuid, retain_name),
+                    timeout=NMCLI_QUICK_TIMEOUT)
+        if r.returncode != 0:
+            logger.warning(
+                "First-boot Wi-Fi import: could not disable autoconnect on retained "
+                "'%s' (rc=%d): %s", retain_name, r.returncode, r.stderr.strip())
+
+        # Delete every other saved non-AP Wi-Fi profile.
+        _delete_other_wifi_profiles(retain_uuid, retain_name)
+
+        _write_first_boot_import_marker()
+    except Exception as e:
+        # Never let import failure block the monitor from starting; the marker is
+        # not written, so a later boot retries.
+        logger.warning("First-boot Wi-Fi import failed: %s", e)
+
+
+def _delete_other_wifi_profiles(retain_uuid: str, retain_name: str) -> int:
+    """Delete every saved non-AP Wi-Fi profile except the retained one.
+
+    Per-profile failures are logged and tolerated (the sweep continues).  AP
+    (hotspot) profiles are never deleted.  Returns the count deleted.
+    """
+    deleted = 0
+    for uuid, name in wifi_net.list_wifi_connection_profiles():
+        if (retain_uuid and uuid == retain_uuid) or (retain_name and name == retain_name):
+            continue
+        if wifi_net.wifi_profile_mode(uuid or name) == "ap":
+            continue
+        cmd = (wifi_net.delete_connection_cmd(uuid) if uuid
+               else ["nmcli", "connection", "delete", "id", name])
+        r = run_cmd(cmd, timeout=NMCLI_QUICK_TIMEOUT)
+        if r.returncode == 0:
+            deleted += 1
+            logger.info("First-boot Wi-Fi import: deleted saved profile '%s'", name or uuid)
+        else:
+            logger.warning(
+                "First-boot Wi-Fi import: could not delete '%s' (rc=%d): %s; continuing",
+                name or uuid, r.returncode, r.stderr.strip())
+    return deleted
+
+
 def _resolve_committed_uuid(state: "wifi_net.NetworkState") -> str:
     """Return the UUID for the committed profile, resolving and persisting if absent.
 
@@ -3519,6 +3652,11 @@ if __name__ == "__main__":
     run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME], timeout=NMCLI_QUICK_TIMEOUT)
     # an any associated hotspot request markers
     clear_apmode_flag()
+    # First-boot adoption: import the currently connected Wi-Fi profile as the
+    # single managed profile and delete other saved client profiles (marker-gated,
+    # runs at most once).  Before the autoconnect sweep so it can query the active
+    # connections while they are untouched.
+    import_first_boot_wifi_profile()
     # Idempotently disable NM autoconnect on every managed non-AP client profile
     # (self-healing for pre-existing/installer-imported autoconnect=yes profiles),
     # so the watcher is the sole agent that brings a client up.

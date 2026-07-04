@@ -1619,6 +1619,157 @@ class TestClientUpTail:
         cda.assert_called_once()
 
 
+class TestFirstBootImport:
+    """WP-5 — first-boot Wi-Fi profile import (the one destructive step)."""
+
+    def _adapter(self, ifname):
+        a = MagicMock()
+        a.ifname = ifname
+        return a
+
+    def _deleted_cmds(self, run_cmd_mock):
+        return [" ".join(c.args[0]) for c in run_cmd_mock.call_args_list
+                if "delete" in c.args[0]]
+
+    def test_single_active_retained_others_deleted(self, watcher, tmp_path):
+        marker = str(tmp_path / "first-boot-import.done")
+        a = self._adapter("wlan0")
+        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="HomeNet"), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-home"), \
+             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=[("uuid-home", "HomeNet"), ("uuid-old", "OldNet"),
+                                        ("uuid-dev", "DevNet")]), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
+             patch.object(watcher, "run_cmd",
+                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+            watcher.import_first_boot_wifi_profile()
+        commit.assert_called_once_with("HomeNet", "uuid-home")
+        deleted = self._deleted_cmds(rc)
+        assert any("uuid-old" in d for d in deleted)
+        assert any("uuid-dev" in d for d in deleted)
+        assert not any("uuid-home" in d for d in deleted)   # retained, never deleted
+        assert os.path.exists(marker)
+
+    def test_multi_active_retains_default_route_carrier(self, watcher, tmp_path):
+        marker = str(tmp_path / "first-boot-import.done")
+        a0, a1 = self._adapter("wlan0"), self._adapter("wlan1")
+        names = {"wlan0": "NetA", "wlan1": "NetB"}
+        gw = {"wlan0": "", "wlan1": "192.168.1.1"}
+        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[a0, a1]), \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name",
+                          side_effect=lambda i: names[i]), \
+             patch.object(watcher.wifi_net, "default_gateway_ipv4", side_effect=lambda i: gw[i]), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
+                          side_effect=lambda n: "uuid-" + n), \
+             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=[("uuid-NetA", "NetA"), ("uuid-NetB", "NetB")]), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
+             patch.object(watcher, "run_cmd",
+                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+            watcher.import_first_boot_wifi_profile()
+        # NetB carries the default route -> retained; NetA deleted.
+        commit.assert_called_once_with("NetB", "uuid-NetB")
+        deleted = self._deleted_cmds(rc)
+        assert any("uuid-NetA" in d for d in deleted)
+        assert not any("uuid-NetB" in d for d in deleted)
+
+    def test_no_active_profile_deletes_nothing(self, watcher, tmp_path):
+        marker = str(tmp_path / "first-boot-import.done")
+        a = self._adapter("wlan0")
+        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value=""), \
+             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.wifi_net, "list_wifi_connection_profiles") as lst, \
+             patch.object(watcher, "run_cmd") as rc:
+            watcher.import_first_boot_wifi_profile()
+        commit.assert_not_called()
+        lst.assert_not_called()
+        rc.assert_not_called()
+        assert os.path.exists(marker)   # marker still written (idempotent skip next boot)
+
+    def test_already_managed_upgrade_deletes_nothing(self, watcher, tmp_path):
+        # An already-managed device: exactly one profile, committed and active.
+        marker = str(tmp_path / "first-boot-import.done")
+        a = self._adapter("wlan0")
+        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="Managed"), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-m"), \
+             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=[("uuid-m", "Managed")]), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
+             patch.object(watcher, "run_cmd",
+                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+            watcher.import_first_boot_wifi_profile()
+        commit.assert_called_once_with("Managed", "uuid-m")
+        assert self._deleted_cmds(rc) == []   # nothing else to delete
+        assert os.path.exists(marker)
+
+    def test_ap_hotspot_profile_never_deleted(self, watcher, tmp_path):
+        marker = str(tmp_path / "first-boot-import.done")
+        a = self._adapter("wlan0")
+        modes = {"Hotspot": "ap", "HomeNet": "infrastructure", "OldNet": "infrastructure"}
+        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="HomeNet"), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-home"), \
+             patch.object(watcher, "_commit_network_state"), \
+             patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=[("uuid-home", "HomeNet"), ("uuid-hs", "Hotspot"),
+                                        ("uuid-old", "OldNet")]), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode",
+                          side_effect=lambda ident: modes.get("Hotspot" if "hs" in ident else
+                                                              ("OldNet" if "old" in ident else "HomeNet"),
+                                                              "infrastructure")), \
+             patch.object(watcher, "run_cmd",
+                          return_value=MagicMock(returncode=0, stderr="")) as rc:
+            watcher.import_first_boot_wifi_profile()
+        deleted = self._deleted_cmds(rc)
+        assert any("uuid-old" in d for d in deleted)
+        assert not any("uuid-hs" in d for d in deleted)   # AP profile never deleted
+
+    def test_delete_failure_logged_and_continues(self, watcher, tmp_path):
+        marker = str(tmp_path / "first-boot-import.done")
+        a = self._adapter("wlan0")
+
+        def _run(cmd, **kw):
+            if "delete" in cmd and "uuid-old" in cmd:
+                return MagicMock(returncode=1, stderr="boom")
+            return MagicMock(returncode=0, stderr="")
+
+        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
+             patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="HomeNet"), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-home"), \
+             patch.object(watcher, "_commit_network_state"), \
+             patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=[("uuid-home", "HomeNet"), ("uuid-old", "OldNet"),
+                                        ("uuid-dev", "DevNet")]), \
+             patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
+             patch.object(watcher, "run_cmd", side_effect=_run) as rc:
+            watcher.import_first_boot_wifi_profile()   # must not raise
+        deleted = self._deleted_cmds(rc)
+        # Both deletions attempted despite the first failing.
+        assert any("uuid-old" in d for d in deleted)
+        assert any("uuid-dev" in d for d in deleted)
+        assert os.path.exists(marker)
+
+    def test_skips_when_marker_present(self, watcher, tmp_path):
+        marker = tmp_path / "first-boot-import.done"
+        marker.write_text("done")
+        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", str(marker)), \
+             patch.object(watcher.wifi_net, "discover_adapters") as disc:
+            watcher.import_first_boot_wifi_profile()
+        disc.assert_not_called()   # marker present -> no work at all
+
+
 class TestActivationWorker:
     """WS1-WP2 — the off-thread activation worker skeleton: job/result split,
     single-slot queue + transitioning gate, result application at pass top, and

@@ -25,6 +25,21 @@ NM-disconnected-but-still-present USB) must persist **2 passes** before the path
 is declared down; *hard* failures (nothing configured, NO-CARRIER, no client and
 no present USB) condemn immediately. Slow to condemn, quick to forgive.
 
+## First-boot profile import
+
+AutoStream owns the whole machine, so on the first boot after adoption the
+watcher normalises saved Wi-Fi state (once, guarded by
+`/var/lib/autostream/first-boot-import.done`): it imports the currently connected
+Wi-Fi profile as the single managed profile, disables its autoconnect, and
+**deletes every other saved non-AP Wi-Fi profile** so NetworkManager cannot race
+the watcher onto a stale OS/user/installer profile. With more than one active
+Wi-Fi connection it keeps the one carrying the default route; with none it
+deletes nothing and lets the first-run hotspot own setup. AP/hotspot profiles are
+never deleted, per-profile delete failures are tolerated, and every retained or
+deleted profile is logged at INFO. The marker is removed by a factory reset
+(uninstaller), so a re-adopted device imports afresh. On an already-managed
+device the step is a no-op (zero or one saved profile, nothing to delete).
+
 ## Operating modes
 
 `device.mode` is one of: **BOOT**, **ONLINE**, **OFFLINE_RECONNECTING**,
