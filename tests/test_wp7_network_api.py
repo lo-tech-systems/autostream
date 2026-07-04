@@ -81,7 +81,8 @@ def _with_device(status: dict, **fields) -> dict:
 
 def _usb_adapter(*, warning: str = "", quarantined: bool = False,
                  resets: int = 0, budget: int = 2, role: str = "client",
-                 ifname: str = "wlan1", ipv4: list | None = None) -> dict:
+                 ifname: str = "wlan1", ipv4: list | None = None,
+                 noip_failures: int = 0) -> dict:
     return {
         "kind": "usb_wifi",
         "ifname": ifname,
@@ -93,6 +94,7 @@ def _usb_adapter(*, warning: str = "", quarantined: bool = False,
             "quarantined": quarantined,
             "resets_24h": resets,
             "reset_budget_24h": budget,
+            "noip_failures": noip_failures,
         },
     }
 
@@ -278,6 +280,51 @@ class TestBuildNetworkCardPresentation:
                          primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
         result = build_network_card_presentation(s)
         assert result["support_detail"] == "Adapter: wlan1 | Reset attempts: 26 in 24h (normal budget: 2)"
+
+    # IF-7b: the no-IP family (rank 1 held-back, rank 3 no-IP) shows the
+    # published failed-connection count, not the reset line.  The webui renders
+    # the published policy.noip_failures field only — it never recomputes it.
+
+    def test_held_back_detail_shows_failed_connection_attempts(self):
+        # Rank 1 (held-back): the 04-Jul field case — reset ledger reads 0 but
+        # the no-IP ledger hit 5, so the card must show the failure count.
+        adapter = _usb_adapter(warning="no_ip_held_back", role="spare", ifname="wlan1",
+                               resets=0, noip_failures=5)
+        adapter["policy"]["held_back"] = True
+        s = _ok_status({"adapters": [adapter]})
+        result = build_network_card_presentation(s)
+        assert result["support_detail"] == "Adapter: wlan1 | Failed connection attempts: 5"
+
+    def test_no_ip_address_detail_shows_failed_connection_attempts(self):
+        # Rank 3 (transient no-IP) also uses the failure count.
+        s = _with_device(
+            _ok_status({"adapters": [_usb_adapter(warning="no_ip_address", role="client",
+                                                  ifname="wlan1", noip_failures=2)]}),
+            primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyHomeWiFi")
+        result = build_network_card_presentation(s)
+        assert result["support_detail"] == "Adapter: wlan1 | Failed connection attempts: 2"
+
+    def test_reset_family_ranks_keep_reset_line(self):
+        # Ranks 0, 2, 4, 5 (the reset family) keep the reset-attempt detail line
+        # even when a noip_failures field is present — it must not leak in.
+        cases = [
+            (_usb_adapter(warning="quarantined", quarantined=True, resets=2,
+                          role="spare", ifname="wlan1", noip_failures=9), 2),   # rank 0
+            (_usb_adapter(warning="reset_budget_exhausted", resets=2,
+                          ifname="wlan1", noip_failures=9), 2),                 # rank 2
+            (_usb_adapter(warning="resetting", resets=1, role="spare",
+                          ifname="wlan1", noip_failures=9), 1),                 # rank 4
+            (_usb_adapter(warning="recent_resets", resets=1,
+                          ifname="wlan1", noip_failures=9), 1),                 # rank 5
+        ]
+        for adapter, resets in cases:
+            s = _with_device(_ok_status({"adapters": [adapter]}),
+                             primary_kind="usb_wifi", primary_ifname="wlan1",
+                             primary_ssid="MyHomeWiFi")
+            result = build_network_card_presentation(s)
+            assert result["support_detail"] == (
+                f"Adapter: wlan1 | Reset attempts: {resets} in 24h (normal budget: 2)"
+            )
 
 
 # ---------------------------------------------------------------------------

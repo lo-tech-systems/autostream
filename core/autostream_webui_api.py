@@ -2272,6 +2272,10 @@ def _network_warning_fields(adapter: dict) -> dict:
     rank = _network_warning_rank(adapter)
     resets = int(policy.get("resets_24h") or 0)
     budget = int(policy.get("reset_budget_24h") or 0)
+    # IF-7b: the no-IP failure count published by the watcher (never recomputed
+    # here) — the meaningful number for the held-back / no-IP ranks, which the
+    # dead-PHY reset ledger ("resets_24h") never ticks.
+    noip = int(policy.get("noip_failures") or 0)
     ifname = str(adapter.get("ifname") or "").strip() or "Unknown"
 
     role = str(adapter.get("role") or "").strip()
@@ -2306,13 +2310,21 @@ def _network_warning_fields(adapter: dict) -> dict:
     else:
         return {}
 
+    # The no-IP family (rank 1 held-back, rank 3 no-IP) is tracked by the no-IP
+    # ledger, not the reset ledger, so show the failed-connection count; the
+    # reset-family ranks (0, 2, 4, 5) keep the reset-attempt line (IF-7b).
+    if rank in (1, 3):
+        support_detail = f"Adapter: {ifname} | Failed connection attempts: {noip}"
+    else:
+        support_detail = (
+            f"Adapter: {ifname} | Reset attempts: {resets} in 24h "
+            f"(normal budget: {budget})"
+        )
+
     return {
         "warning": warning,
         "warning_severity": severity,
-        "support_detail": (
-            f"Adapter: {ifname} | Reset attempts: {resets} in 24h "
-            f"(normal budget: {budget})"
-        ),
+        "support_detail": support_detail,
     }
 
 
