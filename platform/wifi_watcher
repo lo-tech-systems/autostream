@@ -1222,27 +1222,14 @@ def start_ap_mode() -> None:
         ssid = get_ap_ssid(recovery_ifname)
 
         # Delete any existing connection with the same name (also takes it down).
-        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME],
-                timeout=NMCLI_QUICK_TIMEOUT)
+        nm.delete_connection(AP_CONNECTION_NAME)
 
         # Create the connection on the hotspot interface.
         logger.info(
             "Creating AP connection '%s' with SSID '%s' on %s",
             AP_CONNECTION_NAME, ssid, recovery_ifname,
         )
-        run_cmd([
-            "nmcli", "connection", "add",
-            "type", "wifi",
-            "ifname", recovery_ifname,
-            "con-name", AP_CONNECTION_NAME,
-            "autoconnect", "no",
-            "ssid", ssid,
-            "802-11-wireless.mode", "ap",
-            "ipv4.method", "manual",
-            "ipv4.addresses", "192.168.4.1/24",
-            "ipv4.never-default", "yes",
-            "ipv6.method", "ignore",
-        ], timeout=NMCLI_QUICK_TIMEOUT)
+        nm.add_ap_connection(recovery_ifname, ssid, AP_CONNECTION_NAME)
 
         # Generate the runtime dnsmasq config bound to the validated recovery
         # interface, then start the dedicated dnsmasq service that reads it.
@@ -1251,8 +1238,7 @@ def start_ap_mode() -> None:
         dnsmasq_ready = _write_dnsmasq_runtime(recovery_ifname)
 
         # Bring up the AP connection
-        run_cmd(["nmcli", "connection", "up", AP_CONNECTION_NAME, "ifname", recovery_ifname],
-                timeout=NMCLI_ACTIVATE_TIMEOUT)
+        nm.activate_ap(AP_CONNECTION_NAME, recovery_ifname)
         if dnsmasq_ready:
             run_cmd(["systemctl", "start", DNSMASQ_SERVICE], timeout=NMCLI_QUICK_TIMEOUT)
         else:
@@ -1274,8 +1260,7 @@ def stop_ap_mode() -> None:
         # so the service never observes a half-deleted file.
         run_cmd(["systemctl", "stop", DNSMASQ_SERVICE], timeout=NMCLI_QUICK_TIMEOUT)
         wifi_net.remove_dnsmasq_runtime_config(DNSMASQ_RUNTIME_PATH)
-        run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME],
-                timeout=NMCLI_QUICK_TIMEOUT)
+        nm.delete_connection(AP_CONNECTION_NAME)
 
 
 def scan_all_networks() -> tuple[list[dict], bool]:
@@ -3826,7 +3811,7 @@ if __name__ == "__main__":
     # First, remove any lingering Hotspot connections configured that would otherwise
     # force the Pi to setup mode even though the WiFi is probably OK, and connect to
     # whatever network is configured (if it is configured).
-    run_cmd(["nmcli", "connection", "delete", AP_CONNECTION_NAME], timeout=NMCLI_QUICK_TIMEOUT)
+    nm.delete_connection(AP_CONNECTION_NAME)
     # an any associated hotspot request markers
     clear_apmode_flag()
     # First-boot adoption: import the currently connected Wi-Fi profile as the
