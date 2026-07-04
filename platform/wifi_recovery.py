@@ -729,15 +729,15 @@ def _perform_reset_step(w, target: TargetAdapter, now: float) -> bool:
         w.logger.info("USB reset (method %s) recovered %s", method, new_ifname)
         adapters = wifi_net.discover_adapters()
         recovered = wifi_net.find_adapter_by_ifname(adapters, new_ifname)
-        if recovered is not None:
-            w._set_active_client(recovered)
-        with w.state_lock:
-            w.STATE.using_builtin_fallback = False
-            in_setup = w.STATE.setup_mode
-        clear_dead_adapter_state(w)
-        if in_setup:
-            w.leave_setup_mode("dead-PHY recovered via USB reset")
-        w.verify_avahi_after_handover()
+        # Shared handover tail: set the recovered adapter active, clear the
+        # builtin-fallback flag and dead-PHY recovery state, leave setup if it was
+        # up (leave_setup_mode no-ops otherwise), and re-announce mDNS.
+        w.client_up_tail(
+            recovered,
+            set_builtin_fallback=False,
+            clear_dead_adapter=True,
+            leave_setup_reason="dead-PHY recovered via USB reset",
+        )
     return True
 
 
