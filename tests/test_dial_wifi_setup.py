@@ -23,6 +23,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
+WIFI_CONFIG_PATH = REPO_ROOT / "platform" / "wifi_config.py"
 WIFI_WEB_PATH = REPO_ROOT / "platform" / "wifi_web.py"
 DIAL_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_dial_wifi_watcher.service"
 
@@ -100,6 +101,10 @@ def _watcher_src() -> str:
     return WIFI_WATCHER_PATH.read_text(encoding="utf-8")
 
 
+def _config_src() -> str:
+    return WIFI_CONFIG_PATH.read_text(encoding="utf-8")
+
+
 def _fn_body(src: str, fn_name: str, end_marker: str) -> str:
     """Extract source from 'def fn_name(' up to end_marker.
 
@@ -168,8 +173,8 @@ class TestConfigureWifiCandidateTransaction:
 class TestConnectToConfiguredWifiHealthCheck:
     def test_health_check_present_in_function(self):
         """connect_to_configured_wifi must check is_wifi_client_healthy before bouncing."""
-        src = _watcher_src()
-        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        src = _config_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "migrate_client_profiles_autoconnect_no")
         assert "is_wifi_client_healthy" in fn_body, (
             "connect_to_configured_wifi must call is_wifi_client_healthy() "
             "to avoid bouncing a healthy connection"
@@ -183,9 +188,9 @@ class TestConnectToConfiguredWifiHealthCheck:
         must no longer issue `nmcli device connect`/`disconnect` on the
         unhealthy reconnect path (dead-phy recovery plan, WP3).
         """
-        src = _watcher_src()
-        # Scope to connect_to_configured_wifi itself (ends at _resolve_committed_uuid).
-        fn_body = _fn_body(src, "connect_to_configured_wifi", "_resolve_committed_uuid")
+        src = _config_src()
+        # Scope to connect_to_configured_wifi itself (ends at migrate_client_profiles_autoconnect_no).
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "migrate_client_profiles_autoconnect_no")
         assert '"disconnect"' not in fn_body, (
             "connect_to_configured_wifi must not issue an nmcli device disconnect bounce"
         )
@@ -199,8 +204,8 @@ class TestConnectToConfiguredWifiHealthCheck:
         When the configured WiFi is already healthy, do not disturb it — skip both
         the device bounce and the connection up call and return True immediately.
         """
-        src = _watcher_src()
-        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        src = _config_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "migrate_client_profiles_autoconnect_no")
         health_pos = fn_body.index("is_wifi_client_healthy")
         # After the health check there must be an early return True before the
         # activation call (now nm.activate_ident on the unhealthy reconnect path).
@@ -224,8 +229,8 @@ class TestConnectToConfiguredWifiHealthCheck:
         Sending 'connection up' to an already-active profile is unnecessary and
         can cause a brief re-authentication event on some APs.
         """
-        src = _watcher_src()
-        fn_body = _fn_body(src, "connect_to_configured_wifi", "check_and_repair_avahi_hostname")
+        src = _config_src()
+        fn_body = _fn_body(src, "connect_to_configured_wifi", "migrate_client_profiles_autoconnect_no")
         # Isolate the healthy branch: from health check to the first 'return True'
         health_pos = fn_body.index("is_wifi_client_healthy")
         after_health = fn_body[health_pos:]

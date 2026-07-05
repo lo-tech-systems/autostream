@@ -1820,11 +1820,11 @@ class TestFirstBootImport:
     def test_single_active_retained_others_deleted(self, watcher, tmp_path):
         marker = str(tmp_path / "first-boot-import.done")
         a = self._adapter("wlan0")
-        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+        with patch.object(watcher.CONFIG_CTX, "FIRST_BOOT_IMPORT_MARKER", marker), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="HomeNet"), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-home"), \
-             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.CONFIG_CTX, "_commit_network_state") as commit, \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-home", "HomeNet"), ("uuid-old", "OldNet"),
                                         ("uuid-dev", "DevNet")]), \
@@ -1845,14 +1845,14 @@ class TestFirstBootImport:
         a0, a1 = self._adapter("wlan0"), self._adapter("wlan1")
         names = {"wlan0": "NetA", "wlan1": "NetB"}
         gw = {"wlan0": "", "wlan1": "192.168.1.1"}
-        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+        with patch.object(watcher.CONFIG_CTX, "FIRST_BOOT_IMPORT_MARKER", marker), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[a0, a1]), \
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name",
                           side_effect=lambda i: names[i]), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", side_effect=lambda i: gw[i]), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           side_effect=lambda n: "uuid-" + n), \
-             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.CONFIG_CTX, "_commit_network_state") as commit, \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-NetA", "NetA"), ("uuid-NetB", "NetB")]), \
              patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
@@ -1869,10 +1869,10 @@ class TestFirstBootImport:
     def test_no_active_profile_deletes_nothing(self, watcher, tmp_path):
         marker = str(tmp_path / "first-boot-import.done")
         a = self._adapter("wlan0")
-        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+        with patch.object(watcher.CONFIG_CTX, "FIRST_BOOT_IMPORT_MARKER", marker), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value=""), \
-             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.CONFIG_CTX, "_commit_network_state") as commit, \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles") as lst, \
              patch.object(watcher, "run_cmd") as rc:
             watcher.import_first_boot_wifi_profile()
@@ -1885,11 +1885,11 @@ class TestFirstBootImport:
         # An already-managed device: exactly one profile, committed and active.
         marker = str(tmp_path / "first-boot-import.done")
         a = self._adapter("wlan0")
-        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+        with patch.object(watcher.CONFIG_CTX, "FIRST_BOOT_IMPORT_MARKER", marker), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="Managed"), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-m"), \
-             patch.object(watcher, "_commit_network_state") as commit, \
+             patch.object(watcher.CONFIG_CTX, "_commit_network_state") as commit, \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-m", "Managed")]), \
              patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"), \
@@ -1905,11 +1905,11 @@ class TestFirstBootImport:
         marker = str(tmp_path / "first-boot-import.done")
         a = self._adapter("wlan0")
         modes = {"Hotspot": "ap", "HomeNet": "infrastructure", "OldNet": "infrastructure"}
-        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+        with patch.object(watcher.CONFIG_CTX, "FIRST_BOOT_IMPORT_MARKER", marker), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="HomeNet"), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-home"), \
-             patch.object(watcher, "_commit_network_state"), \
+             patch.object(watcher.CONFIG_CTX, "_commit_network_state"), \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-home", "HomeNet"), ("uuid-hs", "Hotspot"),
                                         ("uuid-old", "OldNet")]), \
@@ -1933,11 +1933,11 @@ class TestFirstBootImport:
             return (MagicMock(returncode=1, stderr="boom") if uuid == "uuid-old"
                     else MagicMock(returncode=0, stderr=""))
 
-        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", marker), \
+        with patch.object(watcher.CONFIG_CTX, "FIRST_BOOT_IMPORT_MARKER", marker), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[a]), \
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name", return_value="HomeNet"), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-home"), \
-             patch.object(watcher, "_commit_network_state"), \
+             patch.object(watcher.CONFIG_CTX, "_commit_network_state"), \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-home", "HomeNet"), ("uuid-old", "OldNet"),
                                         ("uuid-dev", "DevNet")]), \
@@ -2872,9 +2872,9 @@ class TestConnectToConfiguredWifiUuid:
     cross-adapter restrictions (inconsistency 4), fire-and-forget (no wait)."""
 
     def test_reconnect_carries_uuid_and_clears_restrictions_no_wait(self, watcher):
-        with patch.object(watcher, "get_configured_network_state",
+        with patch.object(watcher.CONFIG_CTX, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("Home", "")), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.CONFIG_CTX, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state"), \
@@ -2891,9 +2891,9 @@ class TestConnectToConfiguredWifiUuid:
 
     def test_healthy_returns_early_without_activation(self, watcher):
         calls = []
-        with patch.object(watcher, "get_configured_network_state",
+        with patch.object(watcher.CONFIG_CTX, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.CONFIG_CTX, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "run_cmd",
                           side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)):
             ok = watcher.connect_to_configured_wifi()
