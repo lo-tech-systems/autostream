@@ -326,6 +326,12 @@ RUNTIME_LOG_LEVELS = {"warning": logging.WARNING, "info": logging.INFO, "debug":
 LOG_LEVEL_TTL_MIN = 60
 LOG_LEVEL_TTL_MAX = 3600
 
+# Control actions that touch no connectivity/AP state, so they are consumed and
+# applied immediately (never deferred while transitioning, never own the pass).
+_NON_DISRUPTIVE_ACTIONS = {
+    "set_log_level", "clear_adapter", "disable_adapter", "enable_adapter",
+}
+
 
 # ** EXPLICIT STATE MODEL **
 #
@@ -571,6 +577,10 @@ class NetworkMonitorState:
     # DEGRADED_NO_IP status taxonomy and the escalating adoption back-off.
     adapter_noip_ledgers: dict = field(default_factory=dict)
     last_detected_adapter_macs: Optional[frozenset] = None
+    # Stable-ids an operator has manually disabled via the control API; a disabled
+    # adapter is never offered as a client rung, adopted, or reset until it is
+    # re-enabled.  Persisted with the fault ledgers so it survives a restart.
+    disabled_adapters: set = field(default_factory=set)
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
     # the HotspotSession (STATE.hotspot).
@@ -1402,6 +1412,15 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
         elif action == "set_log_level":
             apply_log_level(params.get("level"), params.get("ttl_seconds"))
             result = "ok"
+        elif action == "clear_adapter":
+            wifi_recovery.clear_adapter_fault_state(_self_module(), params.get("adapter", ""))
+            result = "ok"
+        elif action == "disable_adapter":
+            wifi_recovery.disable_adapter(_self_module(), params.get("adapter", ""))
+            result = "ok"
+        elif action == "enable_adapter":
+            wifi_recovery.enable_adapter(_self_module(), params.get("adapter", ""))
+            result = "ok"
         else:
             result = "failed"
     except Exception as e:
@@ -1688,7 +1707,8 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     preferred_usb = ""
     for a in usb:
         rf = by_ifname.get(a.ifname)
-        if rf is not None and rf.managed and not rf.quarantined and not rf.noip_suppressed:
+        if (rf is not None and rf.managed and not rf.quarantined
+                and not rf.noip_suppressed and not rf.disabled):
             preferred_usb = a.ifname
             break
 
@@ -1702,7 +1722,8 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     onboard_ifname = ""
     if builtin is not None and not onboard_budget_spent:
         brf = by_ifname.get(builtin.ifname)
-        if brf is not None and brf.managed and not brf.quarantined and not brf.noip_suppressed:
+        if (brf is not None and brf.managed and not brf.quarantined
+                and not brf.noip_suppressed and not brf.disabled):
             onboard_ifname = builtin.ifname
 
     return RecoveryFacts(
@@ -2014,7 +2035,10 @@ def step_control_action(pre: "PreFactsContext") -> "Verdict":
     with state_lock:
         action = STATE.pending_control_action
         params = dict(STATE.pending_control_params)
-        disruptive = bool(action) and action != "set_log_level"
+        # Non-disruptive actions touch no connectivity/AP state, so they are never
+        # deferred and never own the pass: log-level and the manual adapter
+        # enable/disable/clear-fault actions.
+        disruptive = bool(action) and action not in _NON_DISRUPTIVE_ACTIONS
         defer = disruptive and (STATE.transitioning or STATE.reconnect_episode is not None)
         if not defer:
             STATE.pending_control_action = ""
@@ -2025,7 +2049,7 @@ def step_control_action(pre: "PreFactsContext") -> "Verdict":
         return Verdict.CONTINUE
     if action:
         process_control_action(action, params)
-        if action != "set_log_level":
+        if disruptive:
             return Verdict.OWN_PASS
     return Verdict.CONTINUE
 
@@ -3592,6 +3616,11 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
         _clear_pending_adoption()
         return False
     candidate = usb[0]
+
+    # An operator-disabled adapter is never adopted.
+    if wifi_recovery.adapter_disabled(_self_module(), candidate.stable_id):
+        _clear_pending_adoption()
+        return False
 
     # Escalating no-IP back-off: a dongle that repeatedly associates but
     # cannot get an IP is held back (and eventually stopped) instead of thrashing

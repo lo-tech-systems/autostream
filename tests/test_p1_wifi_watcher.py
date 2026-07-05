@@ -1080,6 +1080,45 @@ class TestNetworkControlRoutes:
         mod.STATE.pending_control_action = ""
         mod.control_action_event.clear()
 
+    def test_network_control_queues_disable_adapter(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        mod.STATE.pending_control_action = ""
+        mod.STATE.control_in_progress = False
+        rv = client.post(
+            "/network_control",
+            json={"action": "disable_adapter", "adapter": "usb-abc"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        assert mod.STATE.pending_control_action == "disable_adapter"
+        assert mod.STATE.pending_control_params == {"adapter": "usb-abc"}
+        mod.STATE.pending_control_action = ""
+        mod.control_action_event.clear()
+
+    def test_network_control_adapter_action_requires_adapter(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "clear_adapter"},   # missing "adapter"
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_network_control_adapter_action_rejects_empty_adapter(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "enable_adapter", "adapter": "   "},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
     def test_second_conflicting_action_rejected(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
@@ -4176,6 +4215,99 @@ class TestAdapterFaultStatePersistence:
         watcher.STATE.adapter_noip_ledgers = {}
         watcher.wifi_recovery.load_adapter_fault_state(watcher)
         assert watcher.STATE.adapter_noip_ledgers == {}
+
+
+class TestManualAdapterControl:
+    """WP-9 item 2 — manual clear / disable / enable adapter control actions."""
+
+    def _pre(self, watcher):
+        return watcher.PreFactsContext(now=0.0, boot_time=0.0, avahi_ok=False)
+
+    def test_disable_and_enable_round_trip(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.disable_adapter(watcher, "usb-X")
+        assert "usb-X" in watcher.STATE.disabled_adapters
+        assert wr.adapter_disabled(watcher, "usb-X") is True
+        wr.enable_adapter(watcher, "usb-X")
+        assert "usb-X" not in watcher.STATE.disabled_adapters
+
+    def test_disabled_adapters_persist(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.disable_adapter(watcher, "usb-Y")
+        watcher.STATE.disabled_adapters = set()
+        wr.load_adapter_fault_state(watcher)
+        assert "usb-Y" in watcher.STATE.disabled_adapters
+
+    def test_clear_adapter_clears_both_ledgers(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_noip_failure(watcher, "usb-Z", now=100.0)
+        watcher.STATE.adapter_reset_ledgers["usb-Z"] = {
+            "recent_resets": [1.0], "total_resets": 3, "quarantined_until": None}
+        wr.clear_adapter_fault_state(watcher, "usb-Z")
+        assert "usb-Z" not in watcher.STATE.adapter_noip_ledgers
+        assert "usb-Z" not in watcher.STATE.adapter_reset_ledgers
+
+    def test_disabled_usb_not_offered_as_client(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.wifi_recovery.disable_adapter(watcher, usb.stable_id)
+        facts = _facts_for(watcher, [builtin, usb], None)
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False):
+            rf = watcher.gather_recovery_facts(facts)
+        assert rf.preferred_usb_ifname == ""   # disabled USB is skipped
+
+    def test_disabled_candidate_not_adopted(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        watcher.wifi_recovery.disable_adapter(watcher, usb.stable_id)
+        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
+            r = watcher.handle_runtime_usb_adoption([builtin, usb], wired_connected=False)
+        assert r is False
+        act.assert_not_called()
+
+    def _builtin_and_usb(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        return builtin, usb
+
+    def test_disabled_target_not_reset(self, watcher):
+        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.wifi_recovery.disable_adapter(watcher, usb.stable_id)
+        with patch.object(watcher.wifi_recovery, "resolve_target_client",
+                          return_value=watcher.wifi_recovery.TargetAdapter(
+                              ifname="wlan0", stable_id=usb.stable_id, kind="usb_wifi",
+                              is_usb=True, is_builtin=False, present_in_nm=True,
+                              present_in_sysfs=True, resettable_usb=True)), \
+             patch.object(watcher.wifi_recovery, "update_dead_adapter_detection", return_value=True), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            handled = watcher.escalate_dead_adapter_recovery([usb], False)
+        assert handled is False
+        reset.assert_not_called()
+
+    def test_process_control_action_disable(self, watcher):
+        watcher.process_control_action("disable_adapter", {"adapter": "usb-Q"})
+        assert "usb-Q" in watcher.STATE.disabled_adapters
+        assert watcher.STATE.last_control_result == "ok"
+
+    def test_process_control_action_clear(self, watcher):
+        watcher.STATE.adapter_noip_ledgers["usb-R"] = {"count": 2, "retry_after": 0.0}
+        watcher.process_control_action("clear_adapter", {"adapter": "usb-R"})
+        assert "usb-R" not in watcher.STATE.adapter_noip_ledgers
+        assert watcher.STATE.last_control_result == "ok"
+
+    def test_adapter_actions_are_non_disruptive(self, watcher):
+        # A disable action while an activation is in flight is applied immediately
+        # (not deferred) and does not own the pass.
+        watcher.STATE.transitioning = True
+        watcher.STATE.pending_control_action = "disable_adapter"
+        watcher.STATE.pending_control_params = {"adapter": "usb-N"}
+        watcher.control_action_event.set()
+        v = watcher.step_control_action(self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE          # never owns the pass
+        assert "usb-N" in watcher.STATE.disabled_adapters   # applied, not deferred
+        assert not watcher.control_action_event.is_set()
 
 
 class TestNmcliGoesThroughNMClient:

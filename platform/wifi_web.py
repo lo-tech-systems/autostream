@@ -971,7 +971,8 @@ def build_app(w) -> Flask:
         keys = set(payload.keys())
 
         # Per-action field validation.  start_setup/reconnect_saved accept
-        # only {"action"}; set_log_level accepts {"action","level","ttl_seconds?"}.
+        # only {"action"}; set_log_level accepts {"action","level","ttl_seconds?"};
+        # the adapter actions accept {"action","adapter"} (a non-empty stable-id).
         params: dict = {}
         if action in ("start_setup", "reconnect_saved"):
             if keys != {"action"}:
@@ -986,6 +987,13 @@ def build_app(w) -> Flask:
                 w.logger.warning("Rejected set_log_level request: %s", error)
                 return jsonify({"ok": False, "error": error}), 400
             params = {"level": level, "ttl_seconds": clamped}
+        elif action in ("clear_adapter", "disable_adapter", "enable_adapter"):
+            if keys != {"action", "adapter"}:
+                return jsonify({"ok": False, "error": "invalid_action"}), 400
+            adapter = payload.get("adapter")
+            if not isinstance(adapter, str) or not adapter.strip():
+                return jsonify({"ok": False, "error": "invalid_adapter"}), 400
+            params = {"adapter": adapter.strip()}
         else:
             return jsonify({"ok": False, "error": "invalid_action"}), 400
 

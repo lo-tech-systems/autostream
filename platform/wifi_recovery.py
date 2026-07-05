@@ -146,6 +146,52 @@ def prune_noip_ledgers(w, present_stable_ids: set) -> None:
                 w.STATE.adapter_noip_ledgers.pop(sid, None)
 
 
+# ---- Manual adapter enable/disable + fault clearing (control API) ----
+
+def adapter_disabled(w, stable_id: str) -> bool:
+    """True when *stable_id* has been manually disabled by an operator."""
+    if not stable_id:
+        return False
+    return stable_id in w.STATE.disabled_adapters
+
+
+def disable_adapter(w, stable_id: str) -> None:
+    """Manually disable an adapter until re-enabled (persists across restarts)."""
+    if not stable_id:
+        return
+    with w.state_lock:
+        added = stable_id not in w.STATE.disabled_adapters
+        w.STATE.disabled_adapters.add(stable_id)
+    if added:
+        w.logger.info("Adapter %s manually disabled", stable_id)
+        persist_adapter_fault_state(w)
+
+
+def enable_adapter(w, stable_id: str) -> None:
+    """Re-enable a previously disabled adapter."""
+    if not stable_id:
+        return
+    with w.state_lock:
+        removed = stable_id in w.STATE.disabled_adapters
+        w.STATE.disabled_adapters.discard(stable_id)
+    if removed:
+        w.logger.info("Adapter %s manually re-enabled", stable_id)
+        persist_adapter_fault_state(w)
+
+
+def clear_adapter_fault_state(w, stable_id: str) -> None:
+    """Clear an adapter's quarantine / reset / no-IP ledgers (after replacement or
+    troubleshooting) so it starts fresh; does not change its enabled state."""
+    if not stable_id:
+        return
+    with w.state_lock:
+        had = (w.STATE.adapter_noip_ledgers.pop(stable_id, None) is not None)
+        had = (w.STATE.adapter_reset_ledgers.pop(stable_id, None) is not None) or had
+    if had:
+        w.logger.info("Cleared fault ledgers for adapter %s", stable_id)
+    persist_adapter_fault_state(w)
+
+
 def is_degraded_no_ip(w, *, managed: bool, carrier: bool, healthy: bool,
                       stable_id: str) -> bool:
     """Overlay verdict: managed + carrier-up + not healthy + repeated no-IP failure.
@@ -508,6 +554,7 @@ class AdapterRecoveryFacts:
     noip_count: int
     noip_suppressed: bool
     is_no_ip: bool
+    disabled: bool
 
 
 def adapter_recovery_facts(w, a, now_monotonic: float, health_fn=None) -> AdapterRecoveryFacts:
@@ -565,6 +612,7 @@ def adapter_recovery_facts(w, a, now_monotonic: float, health_fn=None) -> Adapte
             w, managed=a.managed, carrier=carrier, healthy=healthy,
             stable_id=a.stable_id,
         ),
+        disabled=adapter_disabled(w, a.stable_id),
     )
 
 
@@ -699,11 +747,14 @@ def persist_adapter_fault_state(w) -> None:
                 "total_resets": int(led.get("total_resets", 0) or 0),
                 "quarantined_until": _mono_to_wall(led.get("quarantined_until"), now_mono, now_wall),
             }
+    with w.state_lock:
+        disabled = sorted(str(s) for s in w.STATE.disabled_adapters)
     data = {
         "schema_version": ADAPTER_FAULT_STATE_SCHEMA,
         "saved_at": now_wall,
         "noip_ledgers": noip,
         "reset_ledgers": reset,
+        "disabled_adapters": disabled,
     }
     try:
         directory = os.path.dirname(w.ADAPTER_FAULT_STATE_PATH) or "."
@@ -767,12 +818,16 @@ def load_adapter_fault_state(w) -> None:
                     "quarantined_until": q,
                 }
 
+    disabled_in = data.get("disabled_adapters")
+    disabled_out = set(str(s) for s in disabled_in) if isinstance(disabled_in, list) else set()
+
     with w.state_lock:
         w.STATE.adapter_noip_ledgers = noip_out
         w.STATE.adapter_reset_ledgers = reset_out
+        w.STATE.disabled_adapters = disabled_out
     w.logger.info(
-        "Loaded persisted adapter fault state: %d no-IP, %d reset ledger(s)",
-        len(noip_out), len(reset_out))
+        "Loaded persisted adapter fault state: %d no-IP, %d reset ledger(s), %d disabled",
+        len(noip_out), len(reset_out), len(disabled_out))
 
 
 # ---- Dead-PHY recovery ladder ----
@@ -911,6 +966,12 @@ def escalate_dead_adapter_recovery(w, adapters: list, wired_connected: bool) -> 
     target = resolve_target_client(w, adapters)
     dead = update_dead_adapter_detection(w, adapters, target)
     if not dead or target is None:
+        return False
+
+    # An operator-disabled adapter is never reset — leave it down until re-enabled.
+    if adapter_disabled(w, target.stable_id):
+        w.logger.debug("Dead-PHY: %s is manually disabled; skipping reset ladder",
+                       target.ifname)
         return False
 
     # (1) Setup-mode: defer only to a working AP on a *different* adapter.  On
