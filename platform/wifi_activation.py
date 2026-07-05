@@ -507,6 +507,11 @@ def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None
       adoption and dead-PHY recovery state respectively.
     - ``leave_setup_reason``: leave setup mode with this reason (None = skip;
       leave_setup_mode is itself a no-op when not in setup).
+
+    Every call here is a successful client activation, so this is also the
+    other half of the BSSID roam holdoff (the roam submission stamps the same
+    field): it stops the survey step from roaming again right after we just
+    fought to get connected.
     """
     if adapter is not None:
         _set_active_client(ctx, adapter)
@@ -516,6 +521,7 @@ def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None
     if clear_noip_stable_id:
         ctx.clear_noip_failures(clear_noip_stable_id)
     with ctx.state_lock:
+        ctx.STATE.last_roam_or_activation = time.monotonic()
         if set_builtin_fallback is not None:
             ctx.STATE.using_builtin_fallback = set_builtin_fallback
         if clear_down_timers:

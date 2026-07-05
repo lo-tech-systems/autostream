@@ -1756,6 +1756,35 @@ class TestClientUpTail:
         cpa.assert_called_once()
         cda.assert_called_once()
 
+    def test_stamps_roam_holdoff_on_every_successful_activation(self, watcher):
+        # UP-2's roam holdoff is documented as gating on "the last roam or
+        # successful activation"; client_up_tail is the single success tail
+        # every activation path (bring-up, reconnect, adoption, dead-PHY
+        # recovery) funnels through, so it must stamp the same field the roam
+        # submission does.
+        a = self._adapter()
+        watcher.STATE.last_roam_or_activation = None
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
+            watcher.client_up_tail(a)
+        assert watcher.STATE.last_roam_or_activation is not None
+
+    def test_fresh_activation_defers_next_roam(self, watcher):
+        # End-to-end: a successful activation must hold off the very next
+        # survey pass's roam, not just a prior roam submission.
+        a = self._adapter()
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
+            watcher.client_up_tail(a)
+        now = watcher.STATE.last_roam_or_activation + 1.0  # well under ROAM_HOLDOFF_SECS
+        table = {
+            "AA:BB:CC:DD:EE:01": {"ssid": "Home", "signal": 50, "last_seen": now,
+                                  "fail_count": 0, "quarantined_until": None},
+            "AA:BB:CC:DD:EE:02": {"ssid": "Home", "signal": 90, "last_seen": now,
+                                  "fail_count": 0, "quarantined_until": None},
+        }
+        target = watcher.wifi_policy.next_roam_target(
+            table, "AA:BB:CC:DD:EE:01", now, False, watcher.STATE.last_roam_or_activation)
+        assert target == ""
+
 
 class TestHotspotStationCount:
     """WP-6 — the AP station-count primitive (iw dev <ifname> station dump)."""
