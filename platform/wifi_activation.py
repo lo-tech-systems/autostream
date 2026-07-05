@@ -8,13 +8,13 @@ of the activation engine.
 
 Every effectful join (committed-profile reconnect, candidate-profile
 activation, credential apply) runs off-thread so the monitor loop is never
-blocked on a slow nmcli call.  This module owns the worker half: the shared
-activation core (``_activate_profile_on`` / ``_validate_activation``), the
-job/result types, the single-slot job queue and the worker thread body
-(``_run_activation_job`` / ``_activation_worker_loop``).  The loop-thread tail
-that applies a completed job's connectivity/session effects
-(``apply_activation_result``) stays a separate concern; this module only
-produces the result and hands it off.
+blocked on a slow nmcli call.  This module owns both halves of the engine:
+the worker half — the shared activation core (``_activate_profile_on`` /
+``_validate_activation``), the job/result types, the single-slot job queue
+and the worker thread body (``_run_activation_job`` / ``_activation_worker_loop``)
+— and the loop-thread tail that applies a completed job's connectivity/session
+effects (``apply_activation_result`` / ``client_up_tail``), drained and applied
+at pass top by ``step_apply_activation_result``.
 
 Every function takes an :class:`ActivationContext` as its first argument — a
 narrow view of the watcher exposing only the STATE, constants and callables
@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -36,13 +37,13 @@ import autostream_wifi_network as wifi_net
 
 @dataclass
 class ActivationContext:
-    """Narrow view of the watcher that the activation worker depends on.
+    """Narrow view of the watcher that the activation engine depends on.
 
     Constructed once by the watcher and passed to every function here.  It
     carries the shared STATE object and its lock, the NM client singleton, the
     hotspot controller, the timeout constants, and the small set of watcher
-    callables the worker invokes — nothing else of the watcher is reachable
-    from this module.
+    callables the worker and the loop-thread tail invoke — nothing else of
+    the watcher is reachable from this module.
     """
 
     STATE: object
@@ -50,6 +51,8 @@ class ActivationContext:
     nm: object
     hotspot_controller: object
     logger: logging.Logger
+    HotspotPurpose: object
+    Verdict: object
     WAIT_FOR_CONNECTION_TIMEOUT: float
     WAIT_FOR_CONNECTION_INTERVAL: float
     configure_wifi_with_nmcli: Callable
@@ -58,7 +61,14 @@ class ActivationContext:
     is_wifi_client_healthy: Callable
     wait_for_connection: Callable
     _resolve_committed_uuid: Callable
-    _activate_committed_on: Callable
+    enter_setup_mode: Callable
+    leave_setup_mode: Callable
+    verify_avahi_after_handover: Callable
+    clear_noip_failures: Callable
+    clear_dead_adapter_state: Callable
+    record_noip_failure: Callable
+    clear_pending_adoption: Callable
+    advance_reconnect_episode: Callable
 
 
 def _activation_network_absent(result) -> bool:
@@ -211,7 +221,7 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     if job.profile is None and job.wait_for_validation:
         # Common case: route through the named _activate_committed_on seam so
         # existing per-caller test patches continue to intercept the core.
-        ok = ctx._activate_committed_on(job.ifname)
+        ok = _activate_committed_on(ctx, job.ifname)
     else:
         state = job.profile if job.profile is not None else ctx.get_configured_network_state()
         ok = _activate_profile_on(ctx, job.ifname, state, wait_for_validation=job.wait_for_validation)
@@ -313,3 +323,209 @@ def start_activation_worker(ctx: ActivationContext) -> "threading.Thread":
                          name="activation-worker")
     t.start()
     return t
+
+
+def _activate_committed_on(ctx: ActivationContext, ifname: str) -> bool:
+    """Activate the configured committed profile on *ifname* and validate health.
+
+    Thin wrapper over ``_activate_profile_on`` for the common case (the
+    committed profile from network.json, blocking validation).  Kept as a named
+    seam because several recovery sites and their tests reference it directly.
+    """
+    return _activate_profile_on(ctx, ifname, ctx.get_configured_network_state())
+
+
+# ---- Loop-thread tail: apply a completed job's connectivity/session effects ----
+#
+# The worker never applies session/connectivity success tails; its only
+# sanctioned session-state writes are the AP drop/rebuild flags around its own
+# attempt.  apply_activation_result (and the client_up_tail choreography it
+# calls on success) run on the loop thread only, once step_apply_activation_result
+# drains the worker's result at pass top.
+
+
+def _set_active_client(ctx: ActivationContext, adapter) -> None:
+    with ctx.state_lock:
+        if adapter is None and ctx.STATE.conn_unhealthy_checks > 0:
+            # Soft debounce in progress (the single connectivity hysteresis
+            # counter): clear ifname so the loop knows there is no
+            # active client, but keep active_client_mac so the next pass can still
+            # match the recorded USB adapter (NM-disconnected-but-present case).
+            ctx.STATE.active_client_ifname = ""
+            return
+        changed = ctx.STATE.active_client_ifname != (adapter.ifname if adapter else "")
+        ctx.STATE.active_client_ifname = adapter.ifname if adapter else ""
+        ctx.STATE.active_client_mac = adapter.permanent_mac if adapter else ""
+        # This adapter is now the healthy active client: end its no-IP hold-back
+        # episode so a future hold-back may spend a fresh reset.
+        if adapter is not None:
+            sid = getattr(adapter, "stable_id", "")
+            if sid:
+                ctx.STATE.noip_holdback_reset_done.discard(sid)
+    if changed and adapter:
+        ctx.logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
+
+
+def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None,
+                   clear_noip_stable_id=None, disconnect_builtin_ifname="",
+                   leave_setup_reason=None, clear_down_timers=False,
+                   reset_onboard_bound=False, clear_pending_adoption=False,
+                   clear_dead_adapter=False) -> None:
+    """The shared "a client came up" choreography (loop thread only).
+
+    One place applies the standardised handover effects; each caller passes only
+    the deltas it needs and does its own adapter discovery/logging first.  The
+    individual effects touch disjoint STATE fields (or independent nmcli/ledger
+    calls), so their order is not load-bearing.
+
+    - ``adapter``: the resolved client adapter to record active (None = skip).
+    - ``disconnect_builtin_ifname``: disconnect this still-connected built-in
+      client after the handover (""/None = skip).
+    - ``clear_noip_stable_id``: clear the no-IP ledger for this stable id.
+    - ``set_builtin_fallback``: assign STATE.using_builtin_fallback when not None.
+    - ``clear_down_timers``: reset the connectivity-down / reconnect timers.
+    - ``reset_onboard_bound``: reset the per-episode onboard-failure bound.
+    - ``clear_pending_adoption`` / ``clear_dead_adapter``: clear the pending USB
+      adoption and dead-PHY recovery state respectively.
+    - ``leave_setup_reason``: leave setup mode with this reason (None = skip;
+      leave_setup_mode is itself a no-op when not in setup).
+    """
+    if adapter is not None:
+        _set_active_client(ctx, adapter)
+    if disconnect_builtin_ifname:
+        ctx.logger.info("Disconnecting built-in client on %s", disconnect_builtin_ifname)
+        ctx.nm.disconnect_device(disconnect_builtin_ifname)
+    if clear_noip_stable_id:
+        ctx.clear_noip_failures(clear_noip_stable_id)
+    with ctx.state_lock:
+        if set_builtin_fallback is not None:
+            ctx.STATE.using_builtin_fallback = set_builtin_fallback
+        if clear_down_timers:
+            ctx.STATE.conn_down_start = None
+            ctx.STATE.last_reconnect_attempt = None
+        if reset_onboard_bound:
+            ctx.STATE.onboard_activation_failures = 0
+    if clear_pending_adoption:
+        ctx.clear_pending_adoption()
+    if clear_dead_adapter:
+        ctx.clear_dead_adapter_state()
+    if leave_setup_reason is not None:
+        ctx.leave_setup_mode(leave_setup_reason)
+    ctx.verify_avahi_after_handover()
+
+
+def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
+                            adapter: "Optional[object]" = None) -> bool:
+    """Loop half: apply the success/failure connectivity tail (loop thread only).
+
+    The loop re-resolves the adapter by ``result.ifname`` from a fresh discover
+    (the worker result carries only the ifname); ``adapter`` optionally supplies an
+    already-resolved object.
+    """
+    job = result.job
+
+    if job.kind == "apply_credentials":
+        # The wait-page status tail (applying -> ok/failed), clearing
+        # apply_in_progress and, on failure, returning to setup mode.
+        if not result.ok:
+            with ctx.state_lock:
+                ctx.STATE.last_apply_result = "failed"
+                ctx.STATE.last_apply_error = "nmcli-failed"
+                ctx.STATE.apply_in_progress = False
+                # Re-enter with whatever purpose the interrupted session held
+                # (configure_wifi_with_nmcli keeps setup_mode set on failure, so
+                # this is normally a no-op); fall back to FIRST_RUN.
+                purpose = ctx.STATE.hotspot.purpose if ctx.STATE.hotspot else ctx.HotspotPurpose.FIRST_RUN
+            ctx.logger.warning("WiFi configuration failed; returning to SetupMode")
+            ctx.enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
+            return False
+        with ctx.state_lock:
+            ctx.STATE.last_apply_result = "ok"
+            ctx.STATE.last_apply_error = ""
+            ctx.STATE.apply_in_progress = False
+        ctx.logger.info("WiFi configuration and connectivity verified")
+        # Fall through to the shared success tail below (set active client by
+        # result.ifname, leave setup, verify avahi) — the same tail the other job
+        # kinds use — so the credential apply's session tail runs on the loop
+        # thread rather than on the worker.
+
+    if result.ok and not job.wait_for_validation:
+        # Fire-and-forget: activation issued, loop validates on a later pass.
+        return True
+
+    if result.ok:
+        resolved = adapter
+        if resolved is None:
+            resolved = wifi_net.find_adapter_by_ifname(
+                wifi_net.discover_adapters(), result.ifname)
+        # Disconnect a previously-active client whose ifname the job carries (the
+        # runtime-adoption transactional handover: the USB validated by the worker
+        # replaces the healthy built-in only now, on the success tail).
+        disconnect_ifname = job.disconnects_previous_ifname
+        if disconnect_ifname == result.ifname:
+            disconnect_ifname = ""
+        clear_id = job.stable_id if job.stable_id is not None else (
+            resolved.stable_id if resolved is not None else "")
+        # A client came up: apply the shared handover tail (set active, optional
+        # previous-client disconnect, clear the no-IP ledger, fallback/timer flags,
+        # reset the onboard-failure bound, leave setup, clear pending adoption,
+        # verify avahi).
+        client_up_tail(
+            ctx, resolved,
+            set_builtin_fallback=job.sets_builtin_fallback,
+            clear_noip_stable_id=(clear_id or None),
+            disconnect_builtin_ifname=disconnect_ifname,
+            leave_setup_reason=(job.leave_reason if job.on_success_leaves_setup else None),
+            clear_down_timers=job.clears_down_timers,
+            reset_onboard_bound=True,
+            clear_pending_adoption=job.clears_pending_adoption,
+        )
+        return True
+
+    # Failure tail (the worker already rebuilt any AP it dropped).
+    if job.clears_pending_adoption:
+        ctx.clear_pending_adoption()
+    if job.records_onboard_failure:
+        # Count this onboard failure toward the recovery-hotspot bound so a
+        # present-but-failing onboard eventually yields to the hotspot.
+        with ctx.state_lock:
+            ctx.STATE.onboard_activation_failures += 1
+    if job.records_noip:
+        record_id = job.stable_id
+        if record_id is None:
+            record_id = adapter.stable_id if adapter is not None else None
+        if record_id is None:
+            found = wifi_net.find_adapter_by_ifname(wifi_net.discover_adapters(), result.ifname)
+            record_id = found.stable_id if found is not None else result.ifname
+        ctx.record_noip_failure(
+            record_id, job.noip_at if job.noip_at is not None else time.monotonic())
+    return False
+
+
+def step_apply_activation_result(ctx: ActivationContext, pre: "PreFactsContext") -> "Verdict":
+    """Phase A: drain a completed worker result at pass top, apply its tail, and
+    clear the transitioning gate.
+
+    A result whose epoch is not the in-flight one is discarded (defensive — the
+    single-slot gate makes it unreachable in normal operation) but still clears the
+    gate so the loop can never wedge.  Never owns the pass.
+    """
+    result = drain_activation_result()
+    if result is None:
+        return ctx.Verdict.CONTINUE
+    inflight_epoch = get_inflight_activation_epoch()
+    stale = result.epoch != inflight_epoch
+    try:
+        if stale:
+            ctx.logger.warning("activation result epoch %s != in-flight %s; discarding",
+                               result.epoch, inflight_epoch)
+        else:
+            apply_activation_result(ctx, result)
+            # Advance any reconnect-saved episode this job belonged to (success
+            # ends it; failure moves to the next target on a later pass).
+            ctx.advance_reconnect_episode(result)
+    finally:
+        clear_inflight_activation_epoch()
+        with ctx.state_lock:
+            ctx.STATE.transitioning = False
+    return ctx.Verdict.CONTINUE

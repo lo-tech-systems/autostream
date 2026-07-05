@@ -1593,11 +1593,11 @@ class TestAdapterOverlayEvents:
         action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher, "gather_recovery_facts"), \
              patch.object(watcher, "next_recovery_action", return_value=action), \
-             patch.object(watcher.ACTIVATION_CTX, "_activate_committed_on", return_value=True), \
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin, usb]), \
              patch.object(watcher.wifi_net, "find_adapter_by_ifname", return_value=builtin), \
-             patch.object(watcher, "leave_setup_mode"), \
-             patch.object(watcher, "verify_avahi_after_handover"):
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             acted = watcher.apply_client_failed(event, facts)     # submits the job
             assert acted is True
             assert watcher.STATE.transitioning is True
@@ -1672,7 +1672,7 @@ class TestClientUpTail:
 
     def test_sets_active_and_verifies_avahi(self, watcher):
         a = self._adapter()
-        with patch.object(watcher, "verify_avahi_after_handover") as avahi:
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi:
             watcher.client_up_tail(a)
         assert watcher.STATE.active_client_ifname == "wlan1"
         avahi.assert_called_once()
@@ -1680,28 +1680,28 @@ class TestClientUpTail:
     def test_none_adapter_skips_set_active(self, watcher):
         watcher.STATE.active_client_ifname = "wlan0"
         watcher.STATE.active_client_mac = "prev"
-        with patch.object(watcher, "verify_avahi_after_handover"), \
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "_set_active_client") as sac:
             watcher.client_up_tail(None)
         sac.assert_not_called()
 
     def test_disconnect_builtin_runs_nmcli(self, watcher):
         a = self._adapter()
-        with patch.object(watcher, "verify_avahi_after_handover"), \
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.nm, "disconnect_device") as disc:
             watcher.client_up_tail(a, disconnect_builtin_ifname="wlan0")
         disc.assert_called_once_with("wlan0")
 
     def test_empty_disconnect_ifname_skips_nmcli(self, watcher):
         a = self._adapter()
-        with patch.object(watcher, "verify_avahi_after_handover"), \
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.nm, "disconnect_device") as disc:
             watcher.client_up_tail(a, disconnect_builtin_ifname="")
         disc.assert_not_called()
 
     def test_set_builtin_fallback_flags(self, watcher):
         a = self._adapter()
-        with patch.object(watcher, "verify_avahi_after_handover"):
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.STATE.using_builtin_fallback = True
             watcher.client_up_tail(a, set_builtin_fallback=None)   # None -> untouched
             assert watcher.STATE.using_builtin_fallback is True
@@ -1715,7 +1715,7 @@ class TestClientUpTail:
         watcher.STATE.conn_down_start = 5.0
         watcher.STATE.last_reconnect_attempt = 5.0
         watcher.STATE.onboard_activation_failures = 2
-        with patch.object(watcher, "verify_avahi_after_handover"):
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.client_up_tail(a, clear_down_timers=True, reset_onboard_bound=True)
         assert watcher.STATE.conn_down_start is None
         assert watcher.STATE.last_reconnect_attempt is None
@@ -1723,7 +1723,7 @@ class TestClientUpTail:
 
     def test_clears_noip_ledger_when_stable_id_given(self, watcher):
         a = self._adapter()
-        with patch.object(watcher, "verify_avahi_after_handover"), \
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.wifi_recovery, "clear_noip_failures") as clr:
             watcher.client_up_tail(a, clear_noip_stable_id="usb0")
             clr.assert_called_once()
@@ -1733,8 +1733,8 @@ class TestClientUpTail:
 
     def test_leave_setup_reason_forwarded(self, watcher):
         a = self._adapter()
-        with patch.object(watcher, "verify_avahi_after_handover"), \
-             patch.object(watcher, "leave_setup_mode") as leave:
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave:
             watcher.client_up_tail(a, leave_setup_reason="done")
             leave.assert_called_once_with("done")
             leave.reset_mock()
@@ -1743,7 +1743,7 @@ class TestClientUpTail:
 
     def test_clear_dead_adapter_and_pending_adoption(self, watcher):
         a = self._adapter()
-        with patch.object(watcher, "verify_avahi_after_handover"), \
+        with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "_clear_pending_adoption") as cpa, \
              patch.object(watcher.wifi_recovery, "clear_dead_adapter_state") as cda:
             watcher.client_up_tail(a, clear_pending_adoption=True, clear_dead_adapter=True)
@@ -1982,7 +1982,7 @@ class TestActivationWorker:
 
     def test_run_job_success_carries_job_and_epoch(self, watcher):
         job = self._job(watcher)
-        with patch.object(watcher.ACTIVATION_CTX, "_activate_committed_on", return_value=True):
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True):
             r = watcher._run_activation_job(job)
         assert r.ok is True and r.ifname == "wlan1" and r.job is job and r.epoch == job.epoch
 
@@ -1990,7 +1990,7 @@ class TestActivationWorker:
         # Worker owns symmetric AP drop-for-attempt + rebuild-on-own-failure.
         watcher.STATE.setup_mode = True
         job = self._job(watcher, drop_hotspot=True)
-        with patch.object(watcher.ACTIVATION_CTX, "_activate_committed_on", return_value=False), \
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "start_ap_mode") as start_ap, \
              patch.object(watcher, "update_apmode_flag") as apflag:
@@ -2024,7 +2024,7 @@ class TestActivationWorker:
 
     def test_worker_thread_processes_job_and_posts_result(self, watcher):
         job = self._job(watcher)
-        with patch.object(watcher.ACTIVATION_CTX, "_activate_committed_on", return_value=True):
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True):
             watcher.submit_activation_job(job)
             t = watcher.start_activation_worker()
             try:
@@ -2041,7 +2041,7 @@ class TestActivationWorker:
         watcher._activation_job_queue.get_nowait()  # (don't run the real worker)
         watcher._post_activation_result(
             watcher.ActivationResult(job.epoch, True, "wlan1", job))
-        with patch.object(watcher, "apply_activation_result", return_value=True) as apply:
+        with patch.object(watcher.wifi_activation, "apply_activation_result", return_value=True) as apply:
             v = watcher.step_apply_activation_result(self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         apply.assert_called_once()
@@ -2049,7 +2049,7 @@ class TestActivationWorker:
         assert watcher.wifi_activation.get_inflight_activation_epoch() is None
 
     def test_step_apply_no_result_is_noop(self, watcher):
-        with patch.object(watcher, "apply_activation_result") as apply:
+        with patch.object(watcher.wifi_activation, "apply_activation_result") as apply:
             v = watcher.step_apply_activation_result(self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
@@ -2061,7 +2061,7 @@ class TestActivationWorker:
         # Post a result with a mismatched epoch (defensive path).
         watcher._post_activation_result(
             watcher.ActivationResult(job.epoch + 999, True, "wlan1", job))
-        with patch.object(watcher, "apply_activation_result") as apply:
+        with patch.object(watcher.wifi_activation, "apply_activation_result") as apply:
             watcher.step_apply_activation_result(self._pre(watcher))
         apply.assert_not_called()                  # stale -> discarded
         assert watcher.STATE.transitioning is False  # but the gate is cleared
@@ -2129,11 +2129,11 @@ class TestActivateClient:
         return ``core_ok``; discovery resolves ``target`` for the ifname.
         """
         tgt = target if target is not None else _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:aa", is_usb=True)
-        with patch.object(watcher.ACTIVATION_CTX, "_activate_committed_on", return_value=core_ok) as core, \
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=core_ok) as core, \
              patch.object(watcher.wifi_activation, "_activate_profile_on", return_value=core_ok) as core2, \
-             patch.object(watcher, "_set_active_client") as set_active, \
-             patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "verify_avahi_after_handover") as avahi, \
+             patch.object(watcher.wifi_activation, "_set_active_client") as set_active, \
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi, \
              patch.object(watcher.ACTIVATION_CTX, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "start_ap_mode") as start_ap, \
              patch.object(watcher, "update_apmode_flag") as apflag, \
@@ -2157,7 +2157,7 @@ class TestActivateClient:
         with self._harness(watcher) as h:
             ok = self._run(watcher, "wlan1")
         assert ok is True
-        h["set_active"].assert_called_once_with(h["target"])
+        h["set_active"].assert_called_once_with(watcher.ACTIVATION_CTX, h["target"])
         h["clear_noip"].assert_called_once()
         h["avahi"].assert_called_once()
         h["leave"].assert_not_called()          # no on_success_leaves_setup
@@ -2303,7 +2303,7 @@ class TestRuntimeUsbAdoption:
              patch.object(watcher, "query_playing_status", side_effect=lambda: playing.pop(0)), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher, "_activate_committed_on", return_value=True), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
             r1 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
             r2 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
@@ -2384,7 +2384,7 @@ class TestIf6AdoptionScanGate:
             scan_mock = stack.enter_context(
                 patch.object(watcher.wifi_net, "scan_adapter", return_value=scan))
             act = stack.enter_context(patch.object(watcher, "_activate_committed_on", return_value=True))
-            stack.enter_context(patch.object(watcher, "verify_avahi_after_handover"))
+            stack.enter_context(patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"))
             stack.enter_context(patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)))
             yield scan_mock, act
 
@@ -2916,8 +2916,8 @@ class TestAttemptOnTargets:
              patch.object(watcher, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "start_ap_mode") as start_ap, \
              patch.object(watcher, "_set_active_client") as set_active, \
-             patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "verify_avahi_after_handover") as avahi:
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi:
             result = watcher.attempt_on_targets([target], lambda adapter: adapter.ifname == "wlan1")
 
         assert result is target
@@ -2937,7 +2937,7 @@ class TestAttemptOnTargets:
              patch.object(watcher, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "start_ap_mode") as start_ap, \
              patch.object(watcher, "update_apmode_flag") as apflag, \
-             patch.object(watcher, "leave_setup_mode") as leave:
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave:
             result = watcher.attempt_on_targets([hotspot], lambda adapter: False)
 
         assert result is None
@@ -2997,9 +2997,9 @@ class TestApplyCredentialsWorker:
         watcher.STATE.apply_in_progress = True
         with patch.object(watcher.ACTIVATION_CTX, "configure_wifi_with_nmcli", return_value=target), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[target]), \
-             patch.object(watcher, "_set_active_client") as set_active, \
-             patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "verify_avahi_after_handover") as avahi:
+             patch.object(watcher.wifi_activation, "_set_active_client") as set_active, \
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi:
             result = watcher._run_activation_job(job)
             watcher.apply_activation_result(result)
         assert result.ok is True
@@ -3007,7 +3007,7 @@ class TestApplyCredentialsWorker:
         assert watcher.STATE.last_apply_result == "ok"
         assert watcher.STATE.apply_in_progress is False
         # The success tail ran on the loop-thread apply, not on the worker.
-        set_active.assert_called_once_with(target)
+        set_active.assert_called_once_with(watcher.ACTIVATION_CTX, target)
         leave.assert_called_once_with("WiFi client connection succeeded")
         avahi.assert_called_once()
 
@@ -3019,8 +3019,8 @@ class TestApplyCredentialsWorker:
                                     on_success_leaves_setup=True,
                                     leave_reason="WiFi client connection succeeded")
         with patch.object(watcher.ACTIVATION_CTX, "configure_wifi_with_nmcli", return_value=None), \
-             patch.object(watcher, "leave_setup_mode") as leave, \
-             patch.object(watcher, "enter_setup_mode") as enter:
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
+             patch.object(watcher.ACTIVATION_CTX, "enter_setup_mode") as enter:
             result = watcher._run_activation_job(job)
             watcher.apply_activation_result(result)
         assert result.ok is False
@@ -3058,7 +3058,7 @@ class TestIf2WorkerSessionContract:
             assert release.wait(3.0)
             return target
 
-        def rec_set_active(adapter):
+        def rec_set_active(ctx, adapter):
             tail_calls.append(("set_active", threading.get_ident()))
             watcher.STATE.active_client_ifname = adapter.ifname if adapter else ""
             watcher.STATE.active_client_mac = adapter.permanent_mac if adapter else ""
@@ -3073,9 +3073,9 @@ class TestIf2WorkerSessionContract:
             purpose=watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
 
         with patch.object(watcher.ACTIVATION_CTX, "configure_wifi_with_nmcli", side_effect=blocking_configure), \
-             patch.object(watcher, "_set_active_client", side_effect=rec_set_active), \
-             patch.object(watcher, "leave_setup_mode", side_effect=rec_leave), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.wifi_activation, "_set_active_client", side_effect=rec_set_active), \
+             patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode", side_effect=rec_leave), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[target]):
             worker = watcher.start_activation_worker()
             try:
@@ -3282,14 +3282,14 @@ class TestResolveCommittedUuid:
     def test_activate_committed_on_resolves_uuid_before_restriction_clear(self, watcher):
         """When the committed state has an empty UUID, _activate_committed_on
         must resolve it and clear restrictions before activating."""
-        with patch.object(watcher, "get_configured_network_state") as gcns, \
+        with patch.object(watcher.ACTIVATION_CTX, "get_configured_network_state") as gcns, \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state"), \
              patch.object(watcher.nm, "clear_restrictions") as clear, \
              patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=0)), \
-             patch.object(watcher, "wait_for_connection", return_value=True), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=True), \
+             patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=True):
             gcns.return_value = watcher.wifi_net.NetworkState(
                 connection_name="HomeNetwork", connection_uuid=""
             )
@@ -3905,7 +3905,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"):
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             handled = watcher.escalate_dead_adapter_recovery([usb], False)
         assert handled is True
         ra.assert_called_once_with("wlan0")
@@ -3925,7 +3925,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch("time.monotonic", return_value=10_000.0):
             watcher.escalate_dead_adapter_recovery([usb], False)
         rb.assert_called_once_with("wlan0")
@@ -3943,7 +3943,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
              patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
-             patch.object(watcher, "verify_avahi_after_handover"):
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.escalate_dead_adapter_recovery([usb], False)
         assert watcher.STATE.dead_adapter_ifname == ""
 
@@ -3958,7 +3958,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True) as act, \
              patch.object(watcher, "_set_active_client"), \
-             patch.object(watcher, "verify_avahi_after_handover"):
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             handled = watcher.escalate_dead_adapter_recovery([usb, builtin], False)
         assert handled is True
         act.assert_called_once_with("wlan1")
@@ -3975,7 +3975,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot:
             # wired_connected=True -> reset still attempted, reboot never.
             watcher.escalate_dead_adapter_recovery([usb], True)
@@ -4053,7 +4053,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch("time.monotonic", return_value=emergency_now):
             # No other path (wired False, no healthy adapter) -> emergency reset.
             handled = watcher.escalate_dead_adapter_recovery([usb], False)
@@ -4086,7 +4086,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"):
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             handled = watcher.escalate_dead_adapter_recovery([usb], False)
         # Sole dead radio is reset rather than left as a dead hotspot.
         assert handled is True
@@ -5908,7 +5908,7 @@ class TestDeadPhyEndToEnd:
                           side_effect=lambda i: order.append("B") or True), \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot, \
              patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
             # Debounce: first wedged pass does not reset.
@@ -5938,7 +5938,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
              patch.object(watcher, "_set_active_client"), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot, \
              patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
             watcher.escalate_dead_adapter_recovery([usb], True)   # debounce
@@ -5961,7 +5961,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot, \
              patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
             # Before the emergency backoff elapses: no reset.
@@ -5985,7 +5985,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
              patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch("time.monotonic", clock):
             watcher.escalate_dead_adapter_recovery([usb], True)
             watcher.escalate_dead_adapter_recovery([usb], True)
@@ -6002,7 +6002,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb2, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher, "_activate_committed_on", return_value=False), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch("time.monotonic", clock):
             assert watcher.escalate_dead_adapter_recovery([usb], True) is True
         assert ra.call_count == 1
