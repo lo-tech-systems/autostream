@@ -3768,36 +3768,53 @@ def publish_network_status(adapters: Optional[list] = None,
 # ** AVAHI mDNS HOSTNAME MONITORING **
 #
 # The avahi/mDNS block (hostname-drift repair + address-set re-announce debounce)
-# lives in platform/wifi_mdns.py.  These thin wrappers pass this module
-# so the extracted helpers can read STATE, constants, run_cmd/logger and the
-# sibling mDNS helpers without a circular import; internal cross-calls go through
-# ``w.<name>`` so existing per-function test patches keep intercepting them.
+# lives in platform/wifi_mdns.py.  It no longer receives the whole watcher module:
+# the seam is narrowed (WP-11) to an ``MdnsContext`` exposing only the STATE, the
+# constants and the callables it uses.  The context is built once here; these thin
+# wrappers pass it and remain the loop's entry points (so the monitor loop keeps
+# calling ``check_and_repair_avahi_hostname()`` / ``maybe_reannounce_mdns()`` etc.).
 
 import wifi_mdns
 
+MDNS_CTX = wifi_mdns.MdnsContext(
+    STATE=STATE,
+    state_lock=state_lock,
+    NMCLI_QUICK_TIMEOUT=NMCLI_QUICK_TIMEOUT,
+    AVAHI_MISMATCH_GRACE=AVAHI_MISMATCH_GRACE,
+    AVAHI_RESTART_MIN_INTERVAL=AVAHI_RESTART_MIN_INTERVAL,
+    AVAHI_HANDOVER_RESTART_MIN_INTERVAL=AVAHI_HANDOVER_RESTART_MIN_INTERVAL,
+    AVAHI_MAX_RESTART_ATTEMPTS=AVAHI_MAX_RESTART_ATTEMPTS,
+    AVAHI_REANNOUNCE_DEBOUNCE=AVAHI_REANNOUNCE_DEBOUNCE,
+    _DBUS_SEND=_DBUS_SEND,
+    run_cmd=run_cmd,
+    logger=logger,
+    log_on_change=log_on_change,
+    get_system_hostname=get_system_hostname,
+)
+
 
 def get_avahi_registered_hostname() -> Optional[str]:
-    return wifi_mdns.get_avahi_registered_hostname(_self_module())
+    return wifi_mdns.get_avahi_registered_hostname(MDNS_CTX)
 
 
 def restart_avahi_daemon(reason: str) -> bool:
-    return wifi_mdns.restart_avahi_daemon(_self_module(), reason)
+    return wifi_mdns.restart_avahi_daemon(MDNS_CTX, reason)
 
 
 def mark_mdns_reannounce_pending(reason: str) -> None:
-    wifi_mdns.mark_mdns_reannounce_pending(_self_module(), reason)
+    wifi_mdns.mark_mdns_reannounce_pending(MDNS_CTX, reason)
 
 
 def _current_mdns_address_set() -> frozenset:
-    return wifi_mdns._current_mdns_address_set(_self_module())
+    return wifi_mdns._current_mdns_address_set(MDNS_CTX)
 
 
 def maybe_reannounce_mdns(now: float) -> None:
-    wifi_mdns.maybe_reannounce_mdns(_self_module(), now)
+    wifi_mdns.maybe_reannounce_mdns(MDNS_CTX, now)
 
 
 def check_and_repair_avahi_hostname() -> None:
-    wifi_mdns.check_and_repair_avahi_hostname(_self_module())
+    wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)
 
 
 if __name__ == "__main__":

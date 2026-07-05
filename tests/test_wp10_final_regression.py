@@ -237,7 +237,7 @@ class TestStateMachineInvariants:
         for fn in ("check_and_repair_avahi_hostname", "maybe_reannounce_mdns",
                    "get_avahi_registered_hostname", "restart_avahi_daemon",
                    "_current_mdns_address_set", "mark_mdns_reannounce_pending"):
-            assert f"def {fn}(w" in self.MDNS_SRC, f"{fn} not extracted to wifi_mdns"
+            assert f"def {fn}(ctx" in self.MDNS_SRC, f"{fn} not extracted to wifi_mdns"
         # The watcher imports the module and re-exports the loop entry points.
         assert "import wifi_mdns" in WIFI_WATCHER_SRC
         assert "wifi_mdns.check_and_repair_avahi_hostname(" in WIFI_WATCHER_SRC
