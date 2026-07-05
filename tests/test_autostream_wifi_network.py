@@ -455,6 +455,64 @@ class TestCommandConstruction:
 
 
 # ---------------------------------------------------------------------------
+# BSSID-aware scan and pin primitives
+# ---------------------------------------------------------------------------
+
+class TestBssidScanCommand:
+    def test_rescan_yes(self):
+        cmd = wifi_net.bssid_scan_cmd("wlan1", rescan=True)
+        assert cmd == [
+            "nmcli", "-t", "-f", "IN-USE,BSSID,SSID,SIGNAL", "device", "wifi", "list",
+            "ifname", "wlan1", "--rescan", "yes",
+        ]
+
+    def test_rescan_no(self):
+        cmd = wifi_net.bssid_scan_cmd("wlan1", rescan=False)
+        assert cmd[-2:] == ["--rescan", "no"]
+
+
+class TestParseBssidScanOutput:
+    def test_parses_rows(self):
+        out = (
+            r"*:AA\:BB\:CC\:DD\:EE\:FF:Home:70" + "\n"
+            + r":11\:22\:33\:44\:55\:66:Home:40" + "\n"
+        )
+        rows = wifi_net.parse_bssid_scan_output(out)
+        assert rows == [
+            {"in_use": True, "bssid": "AA:BB:CC:DD:EE:FF", "ssid": "Home", "signal": 70},
+            {"in_use": False, "bssid": "11:22:33:44:55:66", "ssid": "Home", "signal": 40},
+        ]
+
+    def test_drops_empty_ssid_or_bssid(self):
+        out = (
+            r":AA\:BB\:CC\:DD\:EE\:FF::70" + "\n"
+            + ":::70\n"
+        )
+        assert wifi_net.parse_bssid_scan_output(out) == []
+
+    def test_drops_unparsable_signal(self):
+        out = r":AA\:BB\:CC\:DD\:EE\:FF:Home:notnum" + "\n"
+        assert wifi_net.parse_bssid_scan_output(out) == []
+
+    def test_bssid_uppercased(self):
+        out = r":aa\:bb\:cc\:dd\:ee\:ff:Home:70" + "\n"
+        rows = wifi_net.parse_bssid_scan_output(out)
+        assert rows[0]["bssid"] == "AA:BB:CC:DD:EE:FF"
+
+
+class TestSetBssidCommand:
+    def test_pins_bssid(self):
+        cmd = wifi_net.set_bssid_cmd("uuid-1", "AA:BB:CC:DD:EE:FF")
+        assert cmd == ["nmcli", "connection", "modify", "uuid", "uuid-1",
+                       "802-11-wireless.bssid", "AA:BB:CC:DD:EE:FF"]
+
+    def test_empty_bssid_clears(self):
+        cmd = wifi_net.set_bssid_cmd("uuid-1", "")
+        assert cmd == ["nmcli", "connection", "modify", "uuid", "uuid-1",
+                       "802-11-wireless.bssid", ""]
+
+
+# ---------------------------------------------------------------------------
 # WP3 — scan parsing and exact-SSID merging
 # ---------------------------------------------------------------------------
 

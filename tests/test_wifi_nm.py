@@ -130,3 +130,47 @@ class TestNMClientBounds:
         assert rc.call_count == 10
         for call in rc.call_args_list:
             assert call.kwargs.get("timeout") is not None
+
+
+class TestNMClientBssidPin:
+    def test_set_bssid_uses_quick_timeout(self, nm):
+        with patch.object(wifi_nm, "run_cmd", return_value=MagicMock(returncode=0)) as rc:
+            nm.set_bssid("uuid-1", "AA:BB:CC:DD:EE:FF")
+        cmd, kw = _last(rc)
+        assert cmd == ["nmcli", "connection", "modify", "uuid", "uuid-1",
+                       "802-11-wireless.bssid", "AA:BB:CC:DD:EE:FF"]
+        assert kw["timeout"] == QUICK_TIMEOUT
+
+    def test_wifi_bssid_scan_rescan_true_primes_then_lists(self, nm):
+        with patch.object(wifi_nm, "run_cmd",
+                          return_value=MagicMock(returncode=0, stdout="")) as rc:
+            nm.wifi_bssid_scan("wlan1", rescan=True)
+        assert rc.call_count == 2
+        rescan_cmd, rescan_kw = rc.call_args_list[0].args[0], rc.call_args_list[0].kwargs
+        list_cmd, list_kw = rc.call_args_list[1].args[0], rc.call_args_list[1].kwargs
+        assert rescan_cmd == ["nmcli", "device", "wifi", "rescan", "ifname", "wlan1"]
+        assert list_cmd[-2:] == ["--rescan", "yes"]
+        assert rescan_kw["timeout"] == 15
+        assert list_kw["timeout"] == 15
+
+    def test_wifi_bssid_scan_rescan_false_skips_priming(self, nm):
+        with patch.object(wifi_nm, "run_cmd",
+                          return_value=MagicMock(returncode=0, stdout="")) as rc:
+            nm.wifi_bssid_scan("wlan1", rescan=False)
+        assert rc.call_count == 1
+        list_cmd = rc.call_args_list[0].args[0]
+        assert list_cmd[-2:] == ["--rescan", "no"]
+
+    def test_wifi_bssid_scan_returns_parsed_rows(self, nm):
+        stdout = r"*:AA\:BB\:CC\:DD\:EE\:FF:Home:70" + "\n"
+        with patch.object(wifi_nm, "run_cmd",
+                          return_value=MagicMock(returncode=0, stdout=stdout)):
+            rows = nm.wifi_bssid_scan("wlan1", rescan=False)
+        assert rows == [
+            {"in_use": True, "bssid": "AA:BB:CC:DD:EE:FF", "ssid": "Home", "signal": 70}
+        ]
+
+    def test_wifi_bssid_scan_returns_none_on_failure(self, nm):
+        with patch.object(wifi_nm, "run_cmd",
+                          return_value=MagicMock(returncode=1, stdout="")):
+            assert nm.wifi_bssid_scan("wlan1", rescan=False) is None

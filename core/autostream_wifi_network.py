@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 # legitimately be slower than a plain query, so it gets a wider bound.
 NMCLI_TIMEOUT = 15        # seconds; plain nmcli query/list/show probes
 NMCLI_SCAN_TIMEOUT = 30   # seconds; `device wifi rescan` + `device wifi list`
+NMCLI_BSSID_SCAN_TIMEOUT = 15  # seconds; per-call bound on BSSID pin/survey scans
 
 # Final compatibility fallback when hardware classification is inconclusive.
 BUILTIN_FALLBACK_IFNAME = "wlan0"
@@ -1047,6 +1048,47 @@ def clear_restrictions_cmd(connection_uuid: str, keys: tuple[str, ...]) -> list[
     for k in keys:
         cmd.extend([k, ""])
     return cmd
+
+
+def bssid_scan_cmd(ifname: str, rescan: bool) -> list[str]:
+    return [
+        "nmcli", "-t", "-f", "IN-USE,BSSID,SSID,SIGNAL", "device", "wifi", "list",
+        "ifname", ifname, "--rescan", "yes" if rescan else "no",
+    ]
+
+
+def parse_bssid_scan_output(stdout: str) -> list[dict]:
+    """Parse ``nmcli -t -f IN-USE,BSSID,SSID,SIGNAL device wifi list`` output.
+
+    Rows with an empty SSID/BSSID or an unparsable signal are dropped.
+    """
+    rows: list[dict] = []
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        parts = split_nmcli_terse(line, maxsplit=3)
+        if len(parts) != 4:
+            continue
+        in_use, bssid, ssid, signal = parts
+        if not bssid or not ssid:
+            continue
+        try:
+            signal_i = int(signal)
+        except ValueError:
+            continue
+        rows.append({
+            "in_use": in_use.strip() == "*",
+            "bssid": bssid.upper(),
+            "ssid": ssid,
+            "signal": signal_i,
+        })
+    return rows
+
+
+def set_bssid_cmd(connection_uuid: str, bssid: str) -> list[str]:
+    """Build an ``nmcli connection modify`` pinning (or clearing) the profile BSSID."""
+    return ["nmcli", "connection", "modify", "uuid", connection_uuid,
+            "802-11-wireless.bssid", bssid]
 
 
 def delete_connection_cmd(connection_uuid: str) -> list[str]:

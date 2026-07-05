@@ -57,6 +57,23 @@ class NMClient:
         return run_cmd(wifi_net.clear_restrictions_cmd(uuid, keys),
                        timeout=self._quick_timeout)
 
+    # ---- BSSID pin ----
+
+    def wifi_bssid_scan(self, ifname: str, rescan: bool) -> Optional[list]:
+        """Bounded BSSID-level scan of *ifname*; parsed rows, or None on failure."""
+        if rescan:
+            run_cmd(wifi_net.rescan_cmd(ifname), timeout=wifi_net.NMCLI_BSSID_SCAN_TIMEOUT)
+        r = run_cmd(wifi_net.bssid_scan_cmd(ifname, rescan),
+                    timeout=wifi_net.NMCLI_BSSID_SCAN_TIMEOUT)
+        if r.returncode != 0:
+            return None
+        return wifi_net.parse_bssid_scan_output(r.stdout)
+
+    def set_bssid(self, uuid: str, bssid: str):
+        """Pin (or, with an empty *bssid*, clear) a profile's BSSID property."""
+        return run_cmd(wifi_net.set_bssid_cmd(uuid, bssid),
+                       timeout=self._quick_timeout)
+
     # ---- deletion ----
 
     def delete_connection(self, ident: str):
