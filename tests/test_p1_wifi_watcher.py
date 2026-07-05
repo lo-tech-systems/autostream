@@ -2082,7 +2082,7 @@ class TestActivationWorker:
         watcher.STATE.pending_control_action = "start_setup"
         watcher.STATE.pending_control_params = {}
         watcher.control_action_event.set()
-        with patch.object(watcher, "process_control_action") as proc:
+        with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
             v = watcher.step_control_action(self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         proc.assert_not_called()                       # not consumed
@@ -2091,7 +2091,7 @@ class TestActivationWorker:
 
         # Once the transition completes, the queued action is applied exactly once.
         watcher.STATE.transitioning = False
-        with patch.object(watcher, "process_control_action") as proc:
+        with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
             v = watcher.step_control_action(self._pre(watcher))
         assert v is watcher.Verdict.OWN_PASS
         proc.assert_called_once()
@@ -2102,7 +2102,7 @@ class TestActivationWorker:
         watcher.STATE.pending_control_action = "set_log_level"
         watcher.STATE.pending_control_params = {"level": "debug"}
         watcher.control_action_event.set()
-        with patch.object(watcher, "process_control_action") as proc:
+        with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
             v = watcher.step_control_action(self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE           # non-disruptive: pass continues
         proc.assert_called_once()                      # applied immediately
@@ -2672,7 +2672,7 @@ class TestReconnectSavedEpisode:
         watcher.STATE.transitioning = False
         watcher.STATE.pending_control_action = "start_setup"
         watcher.control_action_event.set()
-        with patch.object(watcher, "process_control_action") as pca:
+        with patch.object(watcher.LOOP_CTX, "process_control_action") as pca:
             v = watcher.step_control_action(self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         pca.assert_not_called()
@@ -3406,7 +3406,7 @@ class TestBootClientBringup:
         fctx = self._fctx(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
+             patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.OWN_PASS
         apply.assert_called_once()
@@ -3420,7 +3420,7 @@ class TestBootClientBringup:
         fctx = self._fctx(watcher, [builtin], None)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "_submit_client_activation", return_value=True) as apply:
+             patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.OWN_PASS
         action = apply.call_args[0][0]
@@ -4542,28 +4542,28 @@ def _run_monitor_once(
     adapters = adapters if adapters is not None else []
     with ExitStack() as stack:
         stack.enter_context(patch("time.monotonic", return_value=now))
-        stack.enter_context(patch.object(watcher, "check_and_repair_avahi_hostname"))
-        stack.enter_context(patch.object(watcher, "maybe_reannounce_mdns"))
-        stack.enter_context(patch.object(watcher, "revert_expired_log_level"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "maybe_reannounce_mdns"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "revert_expired_log_level"))
         stack.enter_context(patch.object(watcher, "is_wifi_configured", return_value=wifi_cfg))
         stack.enter_context(patch.object(watcher, "is_wired_connected", return_value=wired_connected))
         stack.enter_context(patch.object(watcher, "any_wired_path_healthy", return_value=wired_ok))
         stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters))
         stack.enter_context(patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}))
-        stack.enter_context(patch.object(watcher, "update_known_adapters"))
-        stack.enter_context(patch.object(watcher, "resolve_active_client", return_value=active_client))
-        stack.enter_context(patch.object(watcher, "handle_usb_failure_fallback", return_value=False))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "update_known_adapters"))
+        stack.enter_context(patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=active_client))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=False))
         stack.enter_context(patch.object(watcher.wifi_net, "is_wifi_connected", return_value=wifi_connected))
         stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=client_ok))
-        stack.enter_context(patch.object(watcher, "handle_runtime_usb_adoption", return_value=False))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "handle_runtime_usb_adoption", return_value=False))
         if dead_recovery is None:
             dead_recovery = MagicMock(return_value=False)
-        stack.enter_context(patch.object(watcher, "escalate_dead_adapter_recovery", dead_recovery))
-        stack.enter_context(patch.object(watcher, "publish_network_status"))
-        stack.enter_context(patch.object(watcher, "log_on_change"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "escalate_dead_adapter_recovery", dead_recovery))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "publish_network_status"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "log_on_change"))
         stack.enter_context(patch.object(watcher, "step_boot_client_bringup",
                                           return_value=watcher.Verdict.CONTINUE))
-        connect = stack.enter_context(patch.object(watcher, "connect_to_configured_wifi"))
+        connect = stack.enter_context(patch.object(watcher.LOOP_CTX, "connect_to_configured_wifi"))
         watcher.network_monitor_loop(run_once=True)
         return connect
 
@@ -4583,7 +4583,7 @@ class TestHotspotPurposeMachine:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
         self._session(watcher, watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=100.0)
-        with patch.object(watcher, "_attempt_recovery_reconnect") as probe:
+        with patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect") as probe:
             _run_monitor_once(watcher, now=120.0, wifi_cfg=True, adapters=[builtin, usb])
         probe.assert_called_once()
 
@@ -4608,7 +4608,7 @@ class TestHotspotPurposeMachine:
     def test_recovery_purpose_expires_at_deadline(self, watcher):
         self._session(watcher, watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
         now = watcher.AP_MAX_DURATION + 60.0
-        with patch.object(watcher, "leave_setup_mode") as leave, \
+        with patch.object(watcher.LOOP_CTX, "leave_setup_mode") as leave, \
              patch.object(watcher, "_attempt_recovery_reconnect"):
             _run_monitor_once(watcher, now=now, wifi_cfg=True)
         leave.assert_called_once()
@@ -4637,7 +4637,7 @@ class TestHotspotPurposeMachine:
         # probing for the saved network (idle-user recovery before the deadline).
         self._session(watcher, watcher.HotspotPurpose.MANUAL, entered_at=0.0)
         after = watcher.HOTSPOT_PROBE_GRACE + 30.0
-        with patch.object(watcher, "_attempt_recovery_reconnect") as probe:
+        with patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect") as probe:
             _run_monitor_once(watcher, now=after, wifi_cfg=True)
         probe.assert_called_once()
 
@@ -4645,7 +4645,7 @@ class TestHotspotPurposeMachine:
         # Automatic recovery purposes have probe_grace_s == 0: they lost the path
         # involuntarily and must probe from the first pass.
         self._session(watcher, watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=100.0)
-        with patch.object(watcher, "_attempt_recovery_reconnect") as probe:
+        with patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect") as probe:
             _run_monitor_once(watcher, now=101.0, wifi_cfg=True)
         probe.assert_called_once()
 
@@ -4780,8 +4780,8 @@ class TestBootEntryOnboardFirst:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.STATE.boot_time = 300.0  # now=1000 -> boot_age 700s, inside window
-        with patch.object(watcher, "_submit_client_activation", return_value=True) as submit, \
-             patch.object(watcher, "enter_setup_mode") as enter, \
+        with patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as submit, \
+             patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter, \
              patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"):
             _run_monitor_once(
@@ -4802,8 +4802,8 @@ class TestBootEntryOnboardFirst:
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.STATE.boot_time = 300.0
         watcher.STATE.onboard_activation_failures = watcher.ONBOARD_ACTIVATION_MAX_FAILURES
-        with patch.object(watcher, "_submit_client_activation") as submit, \
-             patch.object(watcher, "enter_setup_mode") as enter, \
+        with patch.object(watcher.LOOP_CTX, "submit_client_activation") as submit, \
+             patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter, \
              patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"):
             _run_monitor_once(
@@ -5062,8 +5062,8 @@ class TestFieldLogRecoveryRegression:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.STATE.boot_time = 300.0  # boot_age 700s at now=1000 (inside window)
-        with patch.object(watcher, "_submit_client_activation", return_value=True) as submit, \
-             patch.object(watcher, "enter_setup_mode") as enter, \
+        with patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as submit, \
+             patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter, \
              patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"):
             _run_monitor_once(
@@ -5174,9 +5174,9 @@ class TestLoopHandlers:
         hctx = self._hctx(watcher, facts, wifi_connected=True, client_ok=False, conn_ok=False)
         action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
                                         purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
-        with patch.object(watcher, "gather_recovery_facts"), \
-             patch.object(watcher, "next_recovery_action", return_value=action) as nra, \
-             patch.object(watcher, "enter_setup_mode") as enter:
+        with patch.object(watcher.LOOP_CTX, "gather_recovery_facts"), \
+             patch.object(watcher.LOOP_CTX, "next_recovery_action", return_value=action) as nra, \
+             patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter:
             v = watcher.step_boot_ap_entry(hctx)
         assert v is watcher.Verdict.OWN_PASS
         nra.assert_called_once()
@@ -5186,17 +5186,17 @@ class TestLoopHandlers:
 
     def test_step_avahi_hostname_gated_and_rate_limited(self, watcher):
         ls = watcher.LoopState()
-        with patch.object(watcher, "check_and_repair_avahi_hostname") as chk:
+        with patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname") as chk:
             v = watcher.step_avahi_hostname(self._pre(watcher, now=1000.0), ls)
         assert v is watcher.Verdict.CONTINUE
         chk.assert_called_once()
         assert ls.last_avahi_check == 1000.0
         # Within AVAHI_CHECK_INTERVAL -> not called again.
-        with patch.object(watcher, "check_and_repair_avahi_hostname") as chk2:
+        with patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname") as chk2:
             watcher.step_avahi_hostname(self._pre(watcher, now=1005.0), ls)
         chk2.assert_not_called()
         # avahi_ok False -> skipped regardless of interval.
-        with patch.object(watcher, "check_and_repair_avahi_hostname") as chk3:
+        with patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname") as chk3:
             watcher.step_avahi_hostname(self._pre(watcher, now=99999.0, avahi_ok=False), ls)
         chk3.assert_not_called()
 
@@ -5252,7 +5252,7 @@ class TestLoopHandlers:
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
         hctx = self._hctx(watcher, facts, conn_ok=False)
-        with patch.object(watcher, "handle_usb_failure_fallback", return_value=True) as h:
+        with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=True) as h:
             v = watcher.step_usb_failure_fallback(hctx)
         assert v is watcher.Verdict.OWN_PASS
         h.assert_called_once_with(hctx)
@@ -5261,7 +5261,7 @@ class TestLoopHandlers:
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
         hctx = self._hctx(watcher, facts, conn_ok=True)
-        with patch.object(watcher, "handle_usb_failure_fallback", return_value=False) as h:
+        with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=False) as h:
             v = watcher.step_usb_failure_fallback(hctx)
         assert v is watcher.Verdict.CONTINUE
         h.assert_called_once_with(hctx)
@@ -5296,7 +5296,7 @@ class TestLoopHandlers:
     def test_step_connection_reliability_always_continue(self, watcher):
         facts = self._facts(watcher, wifi_cfg=True, wired_ok=False)
         hctx = self._hctx(watcher, facts, conn_ok=False)
-        with patch.object(watcher, "connect_to_configured_wifi") as conn:
+        with patch.object(watcher.LOOP_CTX, "connect_to_configured_wifi") as conn:
             v = watcher.step_connection_reliability(hctx)
         assert v is watcher.Verdict.CONTINUE   # never owns, even when it reconnects
         conn.assert_called_once()              # prompt reconnect on first entry
@@ -5306,7 +5306,7 @@ class TestLoopHandlers:
         watcher.STATE.last_active_path_seen = 0.0
         facts = self._facts(watcher, now=watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0)
         hctx = self._hctx(watcher, facts)
-        with patch.object(watcher, "_request_network_down_reboot") as reboot:
+        with patch.object(watcher.LOOP_CTX, "request_network_down_reboot") as reboot:
             v = watcher.step_catchall_reboot(hctx)
         assert v is watcher.Verdict.CONTINUE
         reboot.assert_called_once()
@@ -5504,23 +5504,23 @@ class TestPerTickFactsSnapshot:
 
         with ExitStack() as stack:
             stack.enter_context(patch("time.monotonic", return_value=100.0))
-            stack.enter_context(patch.object(watcher, "check_and_repair_avahi_hostname"))
-            stack.enter_context(patch.object(watcher, "maybe_reannounce_mdns"))
-            stack.enter_context(patch.object(watcher, "revert_expired_log_level"))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname"))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "maybe_reannounce_mdns"))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "revert_expired_log_level"))
             stack.enter_context(patch.object(watcher, "is_wifi_configured", return_value=True))
             stack.enter_context(patch.object(watcher, "is_wired_connected", wired_conn))
             stack.enter_context(patch.object(watcher, "any_wired_path_healthy", wired_ok))
             stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", discover))
             stack.enter_context(patch.object(watcher.wifi_net, "list_interface_addresses", addrs))
-            stack.enter_context(patch.object(watcher, "update_known_adapters"))
-            stack.enter_context(patch.object(watcher, "resolve_active_client", resolve_active))
-            stack.enter_context(patch.object(watcher, "handle_usb_failure_fallback", return_value=False))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "update_known_adapters"))
+            stack.enter_context(patch.object(watcher.wifi_adoption, "resolve_active_client", resolve_active))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=False))
             stack.enter_context(patch.object(watcher.wifi_net, "is_wifi_connected", return_value=True))
             stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=True))
-            stack.enter_context(patch.object(watcher, "handle_runtime_usb_adoption", return_value=False))
-            stack.enter_context(patch.object(watcher, "escalate_dead_adapter_recovery", _record_dead))
-            stack.enter_context(patch.object(watcher, "publish_network_status", _record_publish))
-            stack.enter_context(patch.object(watcher, "log_on_change"))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "handle_runtime_usb_adoption", return_value=False))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "escalate_dead_adapter_recovery", _record_dead))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "publish_network_status", _record_publish))
+            stack.enter_context(patch.object(watcher.LOOP_CTX, "log_on_change"))
             watcher.network_monitor_loop(run_once=True)
 
         return {
@@ -5727,7 +5727,7 @@ class TestNetworkMonitorCatchAll:
         watcher.STATE.last_active_path_seen = 0.0
         watcher.STATE.setup_mode = True
         watcher.STATE.ap_enter_time = now - 10.0
-        with patch.object(watcher, "leave_setup_mode") as leave, \
+        with patch.object(watcher.LOOP_CTX, "leave_setup_mode") as leave, \
              patch.object(watcher, "reboot_system", return_value=True) as reboot:
             _run_monitor_once(
                 watcher,

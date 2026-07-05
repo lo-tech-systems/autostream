@@ -185,6 +185,9 @@ class TestStateMachineInvariants:
     # The pure decision core moved to platform/wifi_policy.py (Phase B); the
     # watcher re-exports the names and its loop applies the results.
     POLICY_SRC = (REPO_ROOT / "platform" / "wifi_policy.py").read_text(encoding="utf-8")
+    # step_publish_state (which applies next_mode) moved to platform/wifi_loop.py
+    # (hub-shrink HS-4).
+    LOOP_SRC = (REPO_ROOT / "platform" / "wifi_loop.py").read_text(encoding="utf-8")
 
     def test_explicit_mode_and_purpose_table_present(self):
         """The operating mode and hotspot policy are explicit, not emergent."""
@@ -200,7 +203,7 @@ class TestStateMachineInvariants:
         assert "def next_mode(" in self.POLICY_SRC
         assert "def derive_mode(" not in WIFI_WATCHER_SRC
         assert "def derive_mode(" not in self.POLICY_SRC
-        assert "STATE.mode = next_mode(" in WIFI_WATCHER_SRC
+        assert "STATE.mode = ctx.next_mode(" in self.LOOP_SRC
 
     def test_retired_flags_are_gone_from_state(self):
         """The flags subsumed by HotspotSession / PURPOSE_TABLE are no longer
