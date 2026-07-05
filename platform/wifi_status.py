@@ -11,17 +11,20 @@ watcher's recovery state and publishes it atomically.  All derived meaning
 stale/unknown interpretation) is platform policy and lives here — never in
 ``core/autostream_wifi_network.py``.
 
-To keep the extraction mechanical and behaviour-preserving, the public builders
-take the watcher module ``w`` as their first argument and read its STATE,
-constants, and fact helpers through it.  ``autostream_wifi_network`` is imported
-directly because it is a shared module object (patching it affects both modules).
+The public builders take a :class:`StatusContext` as their first argument — a
+narrow view of the watcher exposing only the STATE, constants and fact helpers
+the snapshot builder uses (the ``w`` seam narrowed, WP-11).  The watcher
+constructs it once and passes it where the whole module used to go.
+``autostream_wifi_network`` is imported directly because it is a shared module
+object (patching it affects both modules).
 """
 from __future__ import annotations
 
 import logging
 import ipaddress
 import time
-from typing import NamedTuple, Optional
+from dataclasses import dataclass
+from typing import Callable, NamedTuple, Optional
 
 import autostream_wifi_network as wifi_net
 
@@ -31,11 +34,36 @@ logger = logging.getLogger(__name__)
 _status_schema_logged = False
 
 
-def _effective_log_level_name(w) -> str:
+@dataclass
+class StatusContext:
+    """Narrow view of the watcher that the status builder depends on.
+
+    Constructed once by the watcher and passed to the snapshot builders.  It
+    carries the shared STATE object and its lock, the three recovery constants the
+    snapshot surfaces, and the fact helpers it calls — nothing else of the watcher
+    is reachable from this module.
+    """
+
+    STATE: object
+    state_lock: object
+    # Constants
+    NO_ACTIVE_PATH_REBOOT_AFTER: float
+    USB_MAX_RESETS_PER_WINDOW: int
+    RESET_ATTEMPT_INTERVAL: float
+    # Fact helpers
+    is_wired_connected: Callable
+    any_wired_path_healthy: Callable
+    is_gateway_reachable: Callable
+    resolve_hotspot_adapter: Callable
+    hotspot_station_count: Callable
+    _adapter_recovery_facts: Callable
+
+
+def _effective_log_level_name(ctx) -> str:
     """Return the effective runtime log level name (warning/info/debug)."""
-    with w.state_lock:
-        temp = w.STATE.temporary_log_level
-        default = w.STATE.default_log_level_name
+    with ctx.state_lock:
+        temp = ctx.STATE.temporary_log_level
+        default = ctx.STATE.default_log_level_name
     if temp:
         return temp
     return default or "info"
@@ -195,7 +223,7 @@ def _classify_adapter_health(*, present, managed, carrier, healthy, nm_state,
     return AdapterHealthVerdict(state, severity, warning, checks, reason)
 
 
-def build_network_status_snapshot(w, adapters: Optional[list] = None,
+def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
                                   wired_connected: Optional[bool] = None,
                                   wired_ok: Optional[bool] = None,
                                   addresses: Optional[dict] = None,
@@ -213,31 +241,31 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         except Exception:
             adapters = []
     if wired_connected is None:
-        wired_connected = w.is_wired_connected()
+        wired_connected = ctx.is_wired_connected()
     if wired_ok is None:
-        wired_ok = w.any_wired_path_healthy()
+        wired_ok = ctx.any_wired_path_healthy()
 
     if addresses is None:
         addresses = wifi_net.list_interface_addresses()
     now_wall = time.time()
     now_monotonic = time.monotonic()
 
-    with w.state_lock:
-        active_ifname = w.STATE.active_client_ifname
-        active_mac = w.STATE.active_client_mac
-        using_fallback = w.STATE.using_builtin_fallback
-        in_setup = w.STATE.setup_mode
-        dead_ifname = w.STATE.dead_adapter_ifname
-        dead_since = w.STATE.dead_adapter_since
-        dead_checks = w.STATE.dead_adapter_checks
-        last_reset_method = w.STATE.last_reset_method
-        last_reset_attempt = w.STATE.last_reset_attempt
-        reboot_retry_after = w.STATE.conn_reboot_retry_after
-        temp_expires = w.STATE.temporary_log_level_until
-        default_level = w.STATE.default_log_level_name
-        last_active_path_seen = w.STATE.last_active_path_seen
+    with ctx.state_lock:
+        active_ifname = ctx.STATE.active_client_ifname
+        active_mac = ctx.STATE.active_client_mac
+        using_fallback = ctx.STATE.using_builtin_fallback
+        in_setup = ctx.STATE.setup_mode
+        dead_ifname = ctx.STATE.dead_adapter_ifname
+        dead_since = ctx.STATE.dead_adapter_since
+        dead_checks = ctx.STATE.dead_adapter_checks
+        last_reset_method = ctx.STATE.last_reset_method
+        last_reset_attempt = ctx.STATE.last_reset_attempt
+        reboot_retry_after = ctx.STATE.conn_reboot_retry_after
+        temp_expires = ctx.STATE.temporary_log_level_until
+        default_level = ctx.STATE.default_log_level_name
+        last_active_path_seen = ctx.STATE.last_active_path_seen
 
-    hotspot_adapter = w.resolve_hotspot_adapter(adapters)
+    hotspot_adapter = ctx.resolve_hotspot_adapter(adapters)
     hotspot_ifname = hotspot_adapter.ifname if (in_setup and hotspot_adapter) else ""
 
     adapter_records = []
@@ -247,7 +275,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     for a in adapters:
         # Shared per-adapter recovery facts (single source of truth with the
         # recovery-ladder classifier); presentation-only fields stay here.
-        rf = w._adapter_recovery_facts(a, now_monotonic, health_fn)
+        rf = ctx._adapter_recovery_facts(a, now_monotonic, health_fn)
         healthy = rf.healthy
         link_down = rf.link_down
         operstate = wifi_net.read_operstate(a.ifname)
@@ -287,7 +315,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
         gw_ipv4 = wifi_net.default_gateway_ipv4(a.ifname)
         adapter_default_gateways[a.ifname] = gw_ipv4
-        gw_reachable = w.is_gateway_reachable(a.ifname) if gw_ipv4 else False
+        gw_reachable = ctx.is_gateway_reachable(a.ifname) if gw_ipv4 else False
 
         verdict = _classify_adapter_health(
             present=True, managed=a.managed, carrier=carrier, healthy=healthy,
@@ -307,7 +335,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
         elif is_dead:
             action = "reset_backoff"
             base = last_reset_attempt if last_reset_attempt is not None else None
-            next_after = (base + w.RESET_ATTEMPT_INTERVAL) if base is not None else None
+            next_after = (base + ctx.RESET_ATTEMPT_INTERVAL) if base is not None else None
         else:
             action = "none"
             next_after = None
@@ -351,7 +379,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
                 "last_action": last_action,
                 "next_action_after": next_after,
                 "resets_24h": recent_reset_count,
-                "reset_budget_24h": w.USB_MAX_RESETS_PER_WINDOW,
+                "reset_budget_24h": ctx.USB_MAX_RESETS_PER_WINDOW,
                 "warning": warning,
                 # Demoted/held back out of service after repeated no-IP failures:
                 # the no-IP retry budget is spent for this adapter.
@@ -431,28 +459,28 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
 
     hotspot_reason = ""
     hotspot_clients = None
-    with w.state_lock:
-        saved_ssid_visible = bool(w.STATE.saved_ssid_visible)
-        saved_ssid = w.STATE.saved_ssid_name
+    with ctx.state_lock:
+        saved_ssid_visible = bool(ctx.STATE.saved_ssid_visible)
+        saved_ssid = ctx.STATE.saved_ssid_name
     if in_setup:
-        with w.state_lock:
-            session = w.STATE.hotspot
+        with ctx.state_lock:
+            session = ctx.STATE.hotspot
         hotspot_reason = session.purpose.value if session else ""
         if hotspot_ifname:
-            hotspot_clients = w.hotspot_station_count(hotspot_ifname)
+            hotspot_clients = ctx.hotspot_station_count(hotspot_ifname)
 
     if in_setup or last_active_path_seen is None:
         no_active_age = None
         no_active_remaining = None
     else:
         no_active_age = max(0.0, now_monotonic - last_active_path_seen)
-        no_active_remaining = max(0.0, w.NO_ACTIVE_PATH_REBOOT_AFTER - no_active_age)
+        no_active_remaining = max(0.0, ctx.NO_ACTIVE_PATH_REBOOT_AFTER - no_active_age)
 
     # Publish the authoritative STATE.mode the loop applies from the pure
     # next_mode() classifier each pass (set just before publish).  Standalone
     # diagnostic/test builds reflect the current STATE.mode.
-    with w.state_lock:
-        mode_value = w.STATE.mode.value
+    with ctx.state_lock:
+        mode_value = ctx.STATE.mode.value
 
     return {
         "schema_version": wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
@@ -486,11 +514,11 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
             "wired_ok": bool(wired_ok),
             "last_active_path_seen_monotonic": last_active_path_seen,
             "no_active_path_age_seconds": no_active_age,
-            "no_active_path_reboot_after_seconds": w.NO_ACTIVE_PATH_REBOOT_AFTER,
+            "no_active_path_reboot_after_seconds": ctx.NO_ACTIVE_PATH_REBOOT_AFTER,
             "no_active_path_reboot_remaining_seconds": no_active_remaining,
         },
         "logging": {
-            "effective_level": _effective_log_level_name(w),
+            "effective_level": _effective_log_level_name(ctx),
             "default_level": default_level or "info",
             "temporary_level_expires_at": temp_expires,
         },
@@ -498,7 +526,7 @@ def build_network_status_snapshot(w, adapters: Optional[list] = None,
     }
 
 
-def publish_network_status(w, adapters: Optional[list] = None,
+def publish_network_status(ctx, adapters: Optional[list] = None,
                            wired_connected: Optional[bool] = None,
                            wired_ok: Optional[bool] = None,
                            addresses: Optional[dict] = None,
@@ -507,11 +535,11 @@ def publish_network_status(w, adapters: Optional[list] = None,
     global _status_schema_logged
     try:
         snapshot = build_network_status_snapshot(
-            w, adapters, wired_connected, wired_ok, addresses, health_fn)
+            ctx, adapters, wired_connected, wired_ok, addresses, health_fn)
         snapshot["ok"] = True
-        with w.state_lock:
-            w.STATE.network_status_snapshot = snapshot
-            w.STATE.network_status_updated_at = snapshot.get("updated_at")
+        with ctx.state_lock:
+            ctx.STATE.network_status_snapshot = snapshot
+            ctx.STATE.network_status_updated_at = snapshot.get("updated_at")
         if not _status_schema_logged:
             _status_schema_logged = True
             logger.info("Network status snapshot schema v%d initialised in memory",

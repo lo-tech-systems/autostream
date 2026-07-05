@@ -3747,13 +3747,28 @@ def escalate_dead_adapter_recovery(adapters, wired_connected):
 
 # ** RUNTIME NETWORK-STATUS SNAPSHOT **
 #
-# Snapshot construction/publishing lives in platform/wifi_status.py.  These
-# thin wrappers pass this module so the status builder can read STATE, fact
-# helpers, and constants without a circular import.
+# Snapshot construction/publishing lives in platform/wifi_status.py.  It no
+# longer receives the whole watcher module: the seam is narrowed (WP-11) to a
+# StatusContext exposing only the STATE, the three recovery constants and the
+# fact helpers the snapshot surfaces.  The context is built once here; this thin
+# wrapper passes it and remains the loop's entry point (step_publish_state calls
+# it every pass).
 
 import wifi_status
 
-# publish_network_status is kept — step_publish_state calls it every pass.
+STATUS_CTX = wifi_status.StatusContext(
+    STATE=STATE,
+    state_lock=state_lock,
+    NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
+    USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
+    RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,
+    is_wired_connected=is_wired_connected,
+    any_wired_path_healthy=any_wired_path_healthy,
+    is_gateway_reachable=is_gateway_reachable,
+    resolve_hotspot_adapter=resolve_hotspot_adapter,
+    hotspot_station_count=hotspot_station_count,
+    _adapter_recovery_facts=_adapter_recovery_facts,
+)
 
 
 def publish_network_status(adapters: Optional[list] = None,
@@ -3762,7 +3777,7 @@ def publish_network_status(adapters: Optional[list] = None,
                            addresses: Optional[dict] = None,
                            health_fn=None) -> None:
     wifi_status.publish_network_status(
-        _self_module(), adapters, wired_connected, wired_ok, addresses, health_fn)
+        STATUS_CTX, adapters, wired_connected, wired_ok, addresses, health_fn)
 
 
 # ** AVAHI mDNS HOSTNAME MONITORING **

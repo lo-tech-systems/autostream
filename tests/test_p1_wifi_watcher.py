@@ -6373,8 +6373,10 @@ class TestBuildNetworkStatusSnapshot:
         assert snap["device"]["state"] == "offline"
 
     def test_publish_stores_latest_snapshot_in_memory(self, watcher):
+        # publish_network_status goes through the real wrapper, which passes the
+        # narrowed STATUS_CTX (WP-11) — patch the fact helper on the context.
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
             watcher.publish_network_status([], wired_connected=False, wired_ok=False)
         assert watcher.STATE.network_status_snapshot["ok"] is True
         assert watcher.STATE.network_status_snapshot["device"]["state"] == "offline"
