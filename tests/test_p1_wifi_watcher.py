@@ -777,6 +777,94 @@ class TestHotspotController:
         rebuild.assert_called_once()
 
 
+class TestStartApModeNmcliFailure:
+    """A failed nmcli add/activate must not leave setup_mode set (and so must
+    not leave HotspotController.start's flag check believing the AP came up)."""
+
+    def _patch_common(self, watcher):
+        return [
+            patch.object(watcher, "resolve_recovery_ifname", return_value="wlan0"),
+            patch.object(watcher, "get_ap_ssid", return_value="autostream_0000"),
+        ]
+
+    def test_add_ap_connection_failure_clears_setup_mode(self, watcher):
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+        with ExitStack() as stack:
+            for p in self._patch_common(watcher):
+                stack.enter_context(p)
+            stack.enter_context(patch.object(watcher.nm, "delete_connection"))
+            stack.enter_context(patch.object(
+                watcher.nm, "add_ap_connection",
+                return_value=MagicMock(returncode=1, stderr="failed")))
+            activate = stack.enter_context(patch.object(watcher.nm, "activate_ap"))
+            dnsmasq_write = stack.enter_context(
+                patch.object(watcher, "_write_dnsmasq_runtime"))
+            watcher.start_ap_mode()
+        assert watcher.STATE.setup_mode is False
+        assert watcher.STATE.hotspot is None
+        activate.assert_not_called()
+        dnsmasq_write.assert_not_called()
+
+    def test_activate_ap_failure_clears_setup_mode(self, watcher):
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+        with ExitStack() as stack:
+            for p in self._patch_common(watcher):
+                stack.enter_context(p)
+            stack.enter_context(patch.object(watcher.nm, "delete_connection"))
+            stack.enter_context(patch.object(
+                watcher.nm, "add_ap_connection", return_value=MagicMock(returncode=0)))
+            stack.enter_context(patch.object(watcher, "_write_dnsmasq_runtime", return_value=True))
+            stack.enter_context(patch.object(
+                watcher.nm, "activate_ap",
+                return_value=MagicMock(returncode=1, stderr="failed")))
+            systemctl = stack.enter_context(patch.object(watcher, "run_cmd"))
+            watcher.start_ap_mode()
+        assert watcher.STATE.setup_mode is False
+        assert watcher.STATE.hotspot is None
+        systemctl.assert_not_called()   # dnsmasq never started for an AP that never came up
+
+    def test_success_leaves_setup_mode_and_starts_dnsmasq(self, watcher):
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+        with ExitStack() as stack:
+            for p in self._patch_common(watcher):
+                stack.enter_context(p)
+            stack.enter_context(patch.object(watcher.nm, "delete_connection"))
+            stack.enter_context(patch.object(
+                watcher.nm, "add_ap_connection", return_value=MagicMock(returncode=0)))
+            stack.enter_context(patch.object(watcher, "_write_dnsmasq_runtime", return_value=True))
+            stack.enter_context(patch.object(
+                watcher.nm, "activate_ap", return_value=MagicMock(returncode=0)))
+            systemctl = stack.enter_context(patch.object(watcher, "run_cmd"))
+            watcher.start_ap_mode()
+        assert watcher.STATE.setup_mode is True
+        assert watcher.STATE.hotspot is not None
+        systemctl.assert_called_once()
+
+    def test_hotspot_controller_flag_not_set_on_nmcli_failure(self, watcher):
+        # End-to-end with the real start_ap_mode: HotspotController.start's
+        # existing "flag only if still in setup" check now actually reflects
+        # nmcli's verdict, not just the pre-existing abort paths.
+        watcher.STATE.setup_mode = True
+        watcher.STATE.hotspot = watcher.HotspotSession(
+            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+        with ExitStack() as stack:
+            for p in self._patch_common(watcher):
+                stack.enter_context(p)
+            stack.enter_context(patch.object(watcher.nm, "delete_connection"))
+            stack.enter_context(patch.object(
+                watcher.nm, "add_ap_connection",
+                return_value=MagicMock(returncode=1, stderr="failed")))
+            flag = stack.enter_context(patch.object(watcher, "update_apmode_flag"))
+            watcher.hotspot_controller.start()
+        flag.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # get_configured_wifi_connection_name — file-based
 # ---------------------------------------------------------------------------
@@ -3438,6 +3526,30 @@ class TestApplyCredentialsWorker:
             assert watcher.submit_apply_credentials("Home", "x") is False
         submit.assert_not_called()
 
+    def test_applying_state_set_before_job_submission(self, watcher):
+        # The "applying" marking must be visible before the job can possibly be
+        # picked up and completed by the worker/loop, so a fast result can never
+        # be applied and then clobbered back to "applying" by this call.
+        seen = {}
+
+        def _check(job):
+            seen["apply_in_progress"] = watcher.STATE.apply_in_progress
+            seen["last_apply_result"] = watcher.STATE.last_apply_result
+            return True
+
+        with patch.object(watcher, "submit_activation_job", side_effect=_check):
+            assert watcher.submit_apply_credentials("Home", "x") is True
+        assert seen == {"apply_in_progress": True, "last_apply_result": "applying"}
+
+    def test_submit_rolls_back_applying_state_when_job_submission_fails(self, watcher):
+        watcher.STATE.last_apply_result = "ok"
+        watcher.STATE.last_apply_error = ""
+        with patch.object(watcher, "submit_activation_job", return_value=False):
+            assert watcher.submit_apply_credentials("Home", "x") is False
+        assert watcher.STATE.apply_in_progress is False
+        assert watcher.STATE.last_apply_result == "ok"
+        assert watcher.STATE.last_apply_error == ""
+
     def test_success_result_sets_ok_and_clears_flag(self, watcher):
         # IF-2: configure_wifi_with_nmcli returns the adapter it came up on; the
         # worker carries that ifname on the result, and apply_activation_result
@@ -4954,12 +5066,13 @@ class TestSubprocessTimeoutBounds:
              patch.object(watcher, "_write_dnsmasq_runtime", return_value=True), \
              patch.object(watcher.wifi_net, "remove_dnsmasq_runtime_config"), \
              patch.object(watcher, "get_configured_network_state", return_value=cfg), \
+             patch.object(watcher.CONFIG_CTX, "get_configured_network_state", return_value=cfg), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[("uuid-1", "Home")]), \
              patch.object(watcher.wifi_net, "wifi_profile_mode", return_value="infrastructure"):
             watcher.STATE.setup_mode = True
-            watcher.start_ap_mode()                        # delete / add / up / systemctl start
+            watcher.start_ap_mode()                        # delete / add (fails fast: rc=124)
             watcher.stop_ap_mode()                         # systemctl stop / delete
             watcher.connect_to_configured_wifi()           # clear-restrictions / connection up
             watcher.migrate_client_profiles_autoconnect_no()  # autoconnect-no modify

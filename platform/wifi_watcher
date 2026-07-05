@@ -1224,7 +1224,16 @@ def start_ap_mode() -> None:
             "Creating AP connection '%s' with SSID '%s' on %s",
             AP_CONNECTION_NAME, ssid, recovery_ifname,
         )
-        nm.add_ap_connection(recovery_ifname, ssid, AP_CONNECTION_NAME)
+        r_add = nm.add_ap_connection(recovery_ifname, ssid, AP_CONNECTION_NAME)
+        if r_add.returncode != 0:
+            logger.error(
+                "Failed to create AP connection '%s' on %s (rc=%d): %s",
+                AP_CONNECTION_NAME, recovery_ifname, r_add.returncode, r_add.stderr.strip(),
+            )
+            with state_lock:
+                STATE.setup_mode = False
+                STATE.hotspot = None
+            return
 
         # Generate the runtime dnsmasq config bound to the validated recovery
         # interface, then start the dedicated dnsmasq service that reads it.
@@ -1232,8 +1241,21 @@ def start_ap_mode() -> None:
         # starting it against a stale or missing config would serve wrong data.
         dnsmasq_ready = _write_dnsmasq_runtime(recovery_ifname)
 
-        # Bring up the AP connection
-        nm.activate_ap(AP_CONNECTION_NAME, recovery_ifname)
+        # Bring up the AP connection.  Checked before dnsmasq/the nginx flag are
+        # touched: HotspotController.start only sets the flag while setup_mode is
+        # still true, so clearing it here (mirroring the abort paths above) is
+        # what keeps nginx from routing to a portal that never actually started.
+        r_up = nm.activate_ap(AP_CONNECTION_NAME, recovery_ifname)
+        if r_up.returncode != 0:
+            logger.error(
+                "Failed to activate AP connection '%s' on %s (rc=%d): %s",
+                AP_CONNECTION_NAME, recovery_ifname, r_up.returncode, r_up.stderr.strip(),
+            )
+            with state_lock:
+                STATE.setup_mode = False
+                STATE.hotspot = None
+            return
+
         if dnsmasq_ready:
             run_cmd(["systemctl", "start", DNSMASQ_SERVICE], timeout=NMCLI_QUICK_TIMEOUT)
         else:
@@ -1289,14 +1311,22 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
     Replaces the Flask-spawned apply thread: the /setup route calls this instead of
     starting its own thread, so the credential apply is serialised with the loop's
     activations by the transitioning gate (one effectful transition at a time — the
-    unmanaged second writer is gone).  On accept, sets the wait-page "applying"
-    status; the worker runs configure_wifi_with_nmcli and the loop applies the
-    ok/failed tail (apply_activation_result).  Returns False when the worker is busy
-    with another in-flight transition (the caller keeps the user on setup to retry).
+    unmanaged second writer is gone).  The wait-page "applying" status is set
+    BEFORE the job is enqueued (not after) so a very fast worker/loop result can
+    never be applied and then clobbered back to "applying" by this call; the
+    worker runs configure_wifi_with_nmcli and the loop applies the ok/failed tail
+    (apply_activation_result).  Returns False when the worker is busy with
+    another in-flight transition (the caller keeps the user on setup to retry),
+    rolling the "applying" marking back first.
     """
     with state_lock:
         if STATE.apply_in_progress:
             return False
+        prev_result = STATE.last_apply_result
+        prev_error = STATE.last_apply_error
+        STATE.apply_in_progress = True
+        STATE.last_apply_result = "applying"
+        STATE.last_apply_error = ""
     # The session success tail (set-active / leave-setup / avahi) is applied by
     # apply_activation_result on the loop thread — exactly as the
     # other job kinds — so carry the leave-setup flags the shared tail reads.
@@ -1305,11 +1335,11 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
                         on_success_leaves_setup=True,
                         leave_reason="WiFi client connection succeeded")
     if not submit_activation_job(job):
+        with state_lock:
+            STATE.apply_in_progress = False
+            STATE.last_apply_result = prev_result
+            STATE.last_apply_error = prev_error
         return False
-    with state_lock:
-        STATE.apply_in_progress = True
-        STATE.last_apply_result = "applying"
-        STATE.last_apply_error = ""
     return True
 
 # ** TRANSACTIONAL CHANGE-WI-FI FLOW **

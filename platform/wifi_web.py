@@ -730,9 +730,6 @@ def _control_authorised() -> bool:
     return hmac.compare_digest(supplied, _control_token)
 
 
-_VALID_CONTROL_ACTIONS = {"start_setup", "reconnect_saved", "set_log_level"}
-
-
 def validate_log_level_request(w, level, ttl) -> tuple[str, Optional[int]]:
     """Validate a set_log_level request.
 
