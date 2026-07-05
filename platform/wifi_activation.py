@@ -34,6 +34,9 @@ from typing import Callable, Optional
 
 import autostream_wifi_network as wifi_net
 import wifi_policy
+import wifi_recovery
+
+PIN_IMPLICATE_SIGNAL = 50  # scan signal at/above which a failed pinned activation implicates the adapter
 
 
 @dataclass
@@ -50,6 +53,7 @@ class ActivationContext:
     STATE: object
     state_lock: object
     RECOVERY_STATE: object
+    RECOVERY_CTX: object
     nm: object
     hotspot_controller: object
     logger: logging.Logger
@@ -87,13 +91,15 @@ def _activation_network_absent(result) -> bool:
     return "could not be found" in stderr or "no network with ssid" in stderr
 
 
-def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str) -> str:
+def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str, exclude: str = "") -> str:
     """Pin the best BSSID for a USB target before activation; "" leaves it unpinned.
 
     Non-USB targets, and USB targets whose scan fails or yields no selectable
     candidate, are explicitly unpinned (the scan must never become a new way
     for activation to fail).  Records the pin (or its absence) on
-    ``STATE.last_bssid_pin`` for the reset/retry gate.
+    ``STATE.last_bssid_pin`` for the reset/retry gate.  ``exclude`` skips a
+    BSSID (the one a just-failed pinned attempt used) so a retry selects a
+    different candidate.
     """
     if wifi_net.usb_sysfs_paths(ifname) is None:
         ctx.nm.set_bssid(uuid, "")
@@ -108,7 +114,7 @@ def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str) -> str:
         now = time.monotonic()
         with ctx.state_lock:
             wifi_policy.update_bssid_table(ctx.STATE.bssid_table, rows, ssid, now)
-            bssid = wifi_policy.select_bssid(ctx.STATE.bssid_table, now)
+            bssid = wifi_policy.select_bssid(ctx.STATE.bssid_table, now, exclude=exclude)
             if bssid:
                 signal = ctx.STATE.bssid_table[bssid]["signal"]
 
@@ -127,14 +133,15 @@ def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str) -> str:
 
 
 def _activate_profile_on(ctx: ActivationContext, ifname: str, state: "wifi_net.NetworkState",
-                         *, wait_for_validation: bool = True) -> bool:
+                         *, wait_for_validation: bool = True, exclude_bssid: str = "") -> bool:
     """Shared activation core: resolve UUID, clear restrictions, pin, activate, validate.
 
     Clears cross-adapter NM restrictions (interface-name, MAC, band, channel)
     BEFORE activating so a legacy profile bound to one adapter can be moved to
     another.  A USB target additionally gets its BSSID pinned (or explicitly
-    cleared) by ``_pin_usb_bssid``, with per-BSSID success/failure accounting
-    after the activation verdict.  A "network could not be found" activation
+    cleared) by ``_pin_usb_bssid`` (``exclude_bssid`` skips a just-failed
+    candidate on a retry), with per-BSSID success/failure accounting after the
+    activation verdict.  A "network could not be found" activation
     short-circuits the IPv4 wait (the join never started).  With
     ``wait_for_validation`` the interface must become a healthy, non-AP client
     to return True; without it the call is fire-and-forget and returns True as
@@ -146,7 +153,7 @@ def _activate_profile_on(ctx: ActivationContext, ifname: str, state: "wifi_net.N
     uuid = ctx._resolve_committed_uuid(state)
     if uuid:
         ctx.nm.clear_restrictions(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS)
-    pinned_bssid = _pin_usb_bssid(ctx, ifname, uuid) if uuid else ""
+    pinned_bssid = _pin_usb_bssid(ctx, ifname, uuid, exclude=exclude_bssid) if uuid else ""
     r_up = ctx.nm.activate(uuid, state.connection_name, ifname)
     ok = _validate_activation(ctx, ifname, r_up, wait_for_validation=wait_for_validation)
     if pinned_bssid:
@@ -238,13 +245,66 @@ def _next_activation_epoch(ctx: ActivationContext) -> int:
         return _activation_epoch_counter
 
 
+def _pin_implicates_adapter(ctx: ActivationContext, ifname: str) -> bool:
+    """True when the last BSSID pin on *ifname* saw a joinable AP.
+
+    An absent/weak network never implicates the adapter — only a failed
+    activation whose scan found a strong candidate does.
+    """
+    with ctx.state_lock:
+        pin = dict(ctx.STATE.last_bssid_pin)
+    return (pin.get("ifname") == ifname and bool(pin.get("bssid"))
+            and pin.get("signal", 0) >= PIN_IMPLICATE_SIGNAL)
+
+
+def _retry_after_implicated_failure(ctx: ActivationContext, job: "ActivationJob"):
+    """One budgeted USB reset + a single retry, excluding the failed BSSID.
+
+    Returns ``(ok, ifname)`` for the retried attempt, or ``None`` when the
+    retry does not apply (not implicated, or the reset budget is spent) — the
+    caller keeps the original failed outcome in that case.
+    """
+    if not _pin_implicates_adapter(ctx, job.ifname):
+        return None
+
+    with ctx.state_lock:
+        failed_bssid = ctx.STATE.last_bssid_pin.get("bssid", "")
+
+    adapters = wifi_net.discover_adapters()
+    target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, job.ifname, adapters)
+    if not target.resettable_usb:
+        return None
+    now = time.monotonic()
+    if wifi_recovery.adapter_reset_budget_exhausted(ctx.RECOVERY_CTX, target, now):
+        return None
+
+    ctx.logger.info(
+        "Pinned activation on %s failed with a joinable scan (implicated adapter); "
+        "spending one budgeted USB reset and retrying", job.ifname)
+    wifi_recovery.record_adapter_reset(ctx.RECOVERY_CTX, target, now)
+    wifi_net.reset_usb_adapter_rebind(job.ifname)
+    new_ifname = wifi_recovery.wait_for_interface_reappears(ctx.RECOVERY_CTX, target)
+    if not new_ifname:
+        ctx.logger.warning("USB reset: %s did not reappear; retry failed", job.ifname)
+        return (False, job.ifname)
+
+    state = job.profile if job.profile is not None else ctx.get_configured_network_state()
+    ok = _activate_profile_on(ctx, new_ifname, state,
+                              wait_for_validation=job.wait_for_validation,
+                              exclude_bssid=failed_bssid)
+    return (ok, new_ifname)
+
+
 def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "ActivationResult":
     """Worker half: the slow, bounded effects only (no connectivity/session tail).
 
     Optional AP drop for the attempt, the shared activation core, and — symmetric
-    self-undo — rebuild the AP if this attempt dropped it and then failed.  Takes
-    ``state_lock`` only for the brief flag reads/writes, never across the blocking
-    nmcli/wait calls.  Returns the outcome; the loop applies the tail.
+    self-undo — rebuild the AP it dropped if this attempt then failed.  A failed
+    activate_committed/activate_profile on an implicated USB target gets exactly
+    one budgeted reset + retry (see ``_retry_after_implicated_failure``) before
+    the outcome is final.  Takes ``state_lock`` only for the brief flag reads/
+    writes, never across the blocking nmcli/wait calls.  Returns the outcome;
+    the loop applies the tail.
     """
     if job.kind == "apply_credentials":
         # The credential-apply transaction runs the rollback-safe candidate
@@ -278,12 +338,18 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
         state = job.profile if job.profile is not None else ctx.get_configured_network_state()
         ok = _activate_profile_on(ctx, job.ifname, state, wait_for_validation=job.wait_for_validation)
 
+    result_ifname = job.ifname
+    if not ok and job.kind in ("activate_committed", "activate_profile"):
+        retried = _retry_after_implicated_failure(ctx, job)
+        if retried is not None:
+            ok, result_ifname = retried
+
     # Worker self-undo: rebuild the AP it tore down so the portal stays up.  On
     # success the AP teardown (leave_setup_mode) is a loop-applied tail instead.
     if not ok and dropped_ap:
         ctx.hotspot_controller.rebuild()
 
-    return ActivationResult(job.epoch, ok, job.ifname, job,
+    return ActivationResult(job.epoch, ok, result_ifname, job,
                             error="" if ok else "activation_failed")
 
 

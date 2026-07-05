@@ -2110,6 +2110,119 @@ class TestActivationWorker:
         assert not watcher.control_action_event.is_set()
 
 
+class TestBudgetedResetRetry:
+    """UP-4: one budgeted USB reset + retry when a pinned activation's scan
+    implicated the adapter."""
+
+    def _job(self, watcher, **kw):
+        defaults = dict(epoch=watcher._next_activation_epoch(), kind="activate_committed",
+                        ifname="wlan1")
+        defaults.update(kw)
+        return watcher.ActivationJob(**defaults)
+
+    def _set_pin(self, watcher, ifname="wlan1", bssid="AA:BB:CC:DD:EE:FF", signal=70):
+        watcher.STATE.last_bssid_pin = {"ifname": ifname, "bssid": bssid, "signal": signal, "at": 0.0}
+
+    def _target(self, watcher, resettable=True):
+        return watcher.wifi_recovery.TargetAdapter(
+            ifname="wlan1", stable_id="m1", kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=resettable)
+
+    def test_weak_scan_failure_no_retry(self, watcher):
+        # An absent/weak network (signal below the implicate floor) never resets.
+        self._set_pin(watcher, signal=watcher.wifi_activation.PIN_IMPLICATE_SIGNAL - 1)
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = watcher._run_activation_job(job)
+        assert r.ok is False
+        reset.assert_not_called()
+
+    def test_no_pin_no_retry(self, watcher):
+        # No pin recorded at all (e.g. onboard target, or unpinned fallback).
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = watcher._run_activation_job(job)
+        assert r.ok is False
+        reset.assert_not_called()
+
+    def test_budget_exhausted_no_retry(self, watcher):
+        self._set_pin(watcher)
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher)), \
+             patch.object(watcher.wifi_recovery, "adapter_reset_budget_exhausted", return_value=True), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = watcher._run_activation_job(job)
+        assert r.ok is False
+        reset.assert_not_called()
+
+    def test_non_resettable_target_no_retry(self, watcher):
+        self._set_pin(watcher)
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher, resettable=False)), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = watcher._run_activation_job(job)
+        assert r.ok is False
+        reset.assert_not_called()
+
+    def test_reset_accounted_in_ledger(self, watcher):
+        self._set_pin(watcher)
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher)), \
+             patch.object(watcher.wifi_recovery, "adapter_reset_budget_exhausted", return_value=False), \
+             patch.object(watcher.wifi_recovery, "record_adapter_reset") as record, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True), \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears", return_value=""):
+            watcher._run_activation_job(job)
+        record.assert_called_once()
+
+    def test_disappeared_after_reset_is_failure(self, watcher):
+        self._set_pin(watcher)
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher)), \
+             patch.object(watcher.wifi_recovery, "adapter_reset_budget_exhausted", return_value=False), \
+             patch.object(watcher.wifi_recovery, "record_adapter_reset"), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True), \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears", return_value=""):
+            r = watcher._run_activation_job(job)
+        assert r.ok is False
+        assert r.ifname == "wlan1"
+
+    def test_exactly_one_retry_and_excludes_failed_bssid(self, watcher):
+        self._set_pin(watcher, bssid="AA:BB:CC:DD:EE:FF")
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher)), \
+             patch.object(watcher.wifi_recovery, "adapter_reset_budget_exhausted", return_value=False), \
+             patch.object(watcher.wifi_recovery, "record_adapter_reset"), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True), \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears", return_value="wlan1"), \
+             patch.object(watcher.wifi_activation, "_activate_profile_on",
+                          return_value=True) as retry_activate:
+            r = watcher._run_activation_job(job)
+        retry_activate.assert_called_once()
+        _, kwargs = retry_activate.call_args
+        assert kwargs.get("exclude_bssid") == "AA:BB:CC:DD:EE:FF"
+        assert r.ok is True
+        assert r.ifname == "wlan1"
+
+
 class TestActivateClient:
     """Flag-matrix unit tests for the worker-half + loop-half tail composition.
 

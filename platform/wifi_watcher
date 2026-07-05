@@ -2057,6 +2057,7 @@ ACTIVATION_CTX = wifi_activation.ActivationContext(
     STATE=STATE,
     state_lock=state_lock,
     RECOVERY_STATE=RECOVERY_STATE,
+    RECOVERY_CTX=None,  # set below once RECOVERY_CTX exists (forward reference)
     nm=nm,
     hotspot_controller=hotspot_controller,
     logger=logger,
@@ -2269,6 +2270,9 @@ RECOVERY_CTX = wifi_recovery.RecoveryContext(
     request_guarded_reboot=request_guarded_reboot,
     _known_usb_macs=_known_usb_macs,
 )
+# ACTIVATION_CTX was built before RECOVERY_CTX existed (the reset/retry rung
+# needs both budget-ledger access and the loop-tail callables); wire it in now.
+ACTIVATION_CTX.RECOVERY_CTX = RECOVERY_CTX
 
 
 # The narrowed adoption seam.  Built once from the symbols defined above; the
