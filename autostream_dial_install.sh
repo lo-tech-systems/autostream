@@ -105,6 +105,8 @@ install -m 0644 -o root -g root "$DEPLOY/platform/wifi_config.py" \
     /opt/autostream/wifi_config.py
 install -m 0644 -o root -g root "$DEPLOY/platform/wifi_activation.py" \
     /opt/autostream/wifi_activation.py
+install -m 0644 -o root -g root "$DEPLOY/platform/wifi_adoption.py" \
+    /opt/autostream/wifi_adoption.py
 install -m 0644 -o root -g root "$DEPLOY/platform/wifi_web.py" \
     /opt/autostream/wifi_web.py
 cp -a "$DEPLOY/dial/."     /opt/autostream/
