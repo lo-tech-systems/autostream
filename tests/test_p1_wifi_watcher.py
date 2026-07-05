@@ -169,8 +169,15 @@ def _isolate_reboot_guard(tmp_path):
     mod = _get_watcher()
     stamp = str(tmp_path / "reboot-guard.json")
     fault = str(tmp_path / "adapter-fault-state.json")
+    # The recovery seam is narrowed (WP-11): production paths read these through
+    # RECOVERY_CTX, which froze the real /var paths at construction.  Patch both
+    # the module attrs (for tests that pass the watcher module as ctx) and the
+    # context fields (for tests that reach recovery via a production RECOVERY_CTX
+    # path) so neither escapes to real /var.
     with patch.object(mod, "DEAD_ADAPTER_REBOOT_STAMP", stamp), \
-         patch.object(mod, "ADAPTER_FAULT_STATE_PATH", fault):
+         patch.object(mod, "ADAPTER_FAULT_STATE_PATH", fault), \
+         patch.object(mod.RECOVERY_CTX, "DEAD_ADAPTER_REBOOT_STAMP", stamp), \
+         patch.object(mod.RECOVERY_CTX, "ADAPTER_FAULT_STATE_PATH", fault):
         yield
 
 
@@ -3575,7 +3582,8 @@ def _patch_dead_phy_facts(watcher, *, sysfs_names=(), usb_paths_ifaces=(),
          patch.object(watcher.wifi_net, "read_link_down", return_value=link_down), \
          patch.object(watcher.wifi_net, "find_sysfs_netdev_by_mac", side_effect=_find_by_mac), \
          patch.object(watcher.wifi_net, "_sys_read_mac", return_value=sysfs_mac), \
-         patch.object(watcher, "is_wifi_client_healthy", return_value=healthy):
+         patch.object(watcher, "is_wifi_client_healthy", return_value=healthy), \
+         patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=healthy):
         yield
 
 
@@ -3933,8 +3941,8 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
-             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
              patch.object(watcher, "verify_avahi_after_handover"):
             watcher.escalate_dead_adapter_recovery([usb], False)
         assert watcher.STATE.dead_adapter_ifname == ""
@@ -3948,7 +3956,7 @@ class TestEscalateDeadAdapterRecovery:
                                    link_down=True, healthy=False), \
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
-             patch.object(watcher, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True) as act, \
              patch.object(watcher, "_set_active_client"), \
              patch.object(watcher, "verify_avahi_after_handover"):
             handled = watcher.escalate_dead_adapter_recovery([usb, builtin], False)
@@ -3999,7 +4007,8 @@ class TestEscalateDeadAdapterRecovery:
         self._mark_dead(watcher)
         now = watcher.DEAD_ADAPTER_REBOOT_AFTER + 100.0
         guard = tmp_guard()
-        with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)):
+        with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)), \
+             patch.object(watcher.RECOVERY_CTX, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)):
             # Fill the guard to the cap.
             for _ in range(watcher.DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW):
                 watcher.wifi_recovery.record_dead_phy_reboot_request(watcher, 1_000_000.0, None)
@@ -5926,8 +5935,8 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
-             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
              patch.object(watcher, "_set_active_client"), \
              patch.object(watcher, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot, \
@@ -5974,8 +5983,8 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
-             patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=True), \
+             patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
              patch.object(watcher, "verify_avahi_after_handover"), \
              patch("time.monotonic", clock):
             watcher.escalate_dead_adapter_recovery([usb], True)
@@ -6010,6 +6019,7 @@ class TestDeadPhyEndToEnd:
         clock.t = watcher.DEAD_ADAPTER_REBOOT_AFTER + 1000.0
         guard = tmp_guard()
         with patch.object(watcher, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)), \
+             patch.object(watcher.RECOVERY_CTX, "DEAD_ADAPTER_REBOOT_STAMP", str(guard)), \
              _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=[],  # non-resettable -> reboot rung
                                    link_down=True, healthy=False), \

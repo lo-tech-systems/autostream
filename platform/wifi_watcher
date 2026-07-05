@@ -1418,13 +1418,13 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
             apply_log_level(params.get("level"), params.get("ttl_seconds"))
             result = "ok"
         elif action == "clear_adapter":
-            wifi_recovery.clear_adapter_fault_state(_self_module(), params.get("adapter", ""))
+            wifi_recovery.clear_adapter_fault_state(RECOVERY_CTX, params.get("adapter", ""))
             result = "ok"
         elif action == "disable_adapter":
-            wifi_recovery.disable_adapter(_self_module(), params.get("adapter", ""))
+            wifi_recovery.disable_adapter(RECOVERY_CTX, params.get("adapter", ""))
             result = "ok"
         elif action == "enable_adapter":
-            wifi_recovery.enable_adapter(_self_module(), params.get("adapter", ""))
+            wifi_recovery.enable_adapter(RECOVERY_CTX, params.get("adapter", ""))
             result = "ok"
         else:
             result = "failed"
@@ -1790,7 +1790,7 @@ def request_guarded_reboot(now: float, reason: str, *, domain: str, target=None)
     is recorded in the guard entry when present, else the entry carries no adapter.
     """
     now_wall = time.time()
-    if not wifi_recovery.dead_phy_reboot_guard_permits(_self_module(), now_wall):
+    if not wifi_recovery.dead_phy_reboot_guard_permits(RECOVERY_CTX, now_wall):
         logger.warning("Persistent reboot guard suppresses %s reboot (%s)", domain, reason)
         return False
     with state_lock:
@@ -1808,7 +1808,7 @@ def request_guarded_reboot(now: float, reason: str, *, domain: str, target=None)
             float('inf') if accepted else now + REBOOT_RATE_LIMIT_RETRY
         )
     if accepted:
-        wifi_recovery.record_dead_phy_reboot_request(_self_module(), now_wall, target)
+        wifi_recovery.record_dead_phy_reboot_request(RECOVERY_CTX, now_wall, target)
         return True
     return False
 
@@ -2169,7 +2169,7 @@ def step_noip_holdback_reset(hctx: "HealthContext") -> "Verdict":
     if transitioning:
         return Verdict.CONTINUE
     if facts.wifi_configured and hctx.conn_ok and not STATE.setup_mode:
-        if wifi_recovery.maybe_reset_noip_held_usb(_self_module(), facts.adapters, facts.taken_at):
+        if wifi_recovery.maybe_reset_noip_held_usb(RECOVERY_CTX, facts.adapters, facts.taken_at):
             return Verdict.OWN_PASS
     return Verdict.CONTINUE
 
@@ -3114,7 +3114,7 @@ def client_up_tail(adapter, *, set_builtin_fallback=None,
         logger.info("Disconnecting built-in client on %s", disconnect_builtin_ifname)
         nm.disconnect_device(disconnect_builtin_ifname)
     if clear_noip_stable_id:
-        wifi_recovery.clear_noip_failures(_self_module(), clear_noip_stable_id)
+        wifi_recovery.clear_noip_failures(RECOVERY_CTX, clear_noip_stable_id)
     with state_lock:
         if set_builtin_fallback is not None:
             STATE.using_builtin_fallback = set_builtin_fallback
@@ -3126,7 +3126,7 @@ def client_up_tail(adapter, *, set_builtin_fallback=None,
     if clear_pending_adoption:
         _clear_pending_adoption()
     if clear_dead_adapter:
-        wifi_recovery.clear_dead_adapter_state(_self_module())
+        wifi_recovery.clear_dead_adapter_state(RECOVERY_CTX)
     if leave_setup_reason is not None:
         leave_setup_mode(leave_setup_reason)
     verify_avahi_after_handover()
@@ -3602,14 +3602,14 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
     candidate = usb[0]
 
     # An operator-disabled adapter is never adopted.
-    if wifi_recovery.adapter_disabled(_self_module(), candidate.stable_id):
+    if wifi_recovery.adapter_disabled(RECOVERY_CTX, candidate.stable_id):
         _clear_pending_adoption()
         return False
 
     # Escalating no-IP back-off: a dongle that repeatedly associates but
     # cannot get an IP is held back (and eventually stopped) instead of thrashing
     # adoption every cycle.
-    if wifi_recovery.noip_retry_suppressed(_self_module(), candidate.stable_id, now):
+    if wifi_recovery.noip_retry_suppressed(RECOVERY_CTX, candidate.stable_id, now):
         return False
 
     active_client = resolve_active_client(adapters)
@@ -3706,15 +3706,17 @@ def update_known_adapters(adapters: list) -> None:
     # present stable_ids — not just permanent MACs — or a MAC-less adapter's
     # ledger would be dropped every pass.
     present_stable_ids = {a.stable_id for a in adapters if a.stable_id}
-    wifi_recovery.prune_noip_ledgers(_self_module(), present_stable_ids)
+    wifi_recovery.prune_noip_ledgers(RECOVERY_CTX, present_stable_ids)
 
 
 # ** DEAD-PHY RECOVERY **
 #
 # Detection, reset budgets, the persistent reboot guard, and the recovery
-# ladder live in platform/wifi_recovery.py.  These thin wrappers pass this
-# module so the policy code can read STATE, constants, and fact helpers without
-# a circular import.  TargetAdapter is re-exported for callers/tests.
+# ladder live in platform/wifi_recovery.py.  It no longer receives the whole
+# watcher module: the seam is narrowed (WP-11) to a RecoveryContext (RECOVERY_CTX,
+# built below) exposing only the STATE, the reset/quarantine/reboot constants and
+# the policy helpers the ladder invokes.  TargetAdapter is re-exported for
+# callers/tests.
 
 import wifi_recovery
 
@@ -3734,15 +3736,50 @@ NeedReboot = wifi_recovery.NeedReboot
 
 
 def _adapter_recovery_facts(adapter, now, health_fn=None):
-    return wifi_recovery.adapter_recovery_facts(_self_module(), adapter, now, health_fn)
+    # Inject the live health check (late-bound module global) so it stays patchable
+    # at the watcher boundary even though RECOVERY_CTX froze its callables.
+    if health_fn is None:
+        health_fn = is_wifi_client_healthy
+    return wifi_recovery.adapter_recovery_facts(RECOVERY_CTX, adapter, now, health_fn)
 
 
 def wait_for_interface_reappears(target, timeout=INTERFACE_REAPPEAR_TIMEOUT):
-    return wifi_recovery.wait_for_interface_reappears(_self_module(), target, timeout)
+    return wifi_recovery.wait_for_interface_reappears(RECOVERY_CTX, target, timeout)
 
 
 def escalate_dead_adapter_recovery(adapters, wired_connected):
-    return wifi_recovery.escalate_dead_adapter_recovery(_self_module(), adapters, wired_connected)
+    return wifi_recovery.escalate_dead_adapter_recovery(RECOVERY_CTX, adapters, wired_connected)
+
+
+# The narrowed recovery seam.  Built once from the symbols defined above; the
+# recovery helpers thread this ctx instead of the whole module.  wait_for_-
+# interface_reappears is the watcher wrapper (which re-enters wifi_recovery).
+RECOVERY_CTX = wifi_recovery.RecoveryContext(
+    STATE=STATE,
+    state_lock=state_lock,
+    logger=logger,
+    AP_IFNAME=AP_IFNAME,
+    USB_RESET_WINDOW=USB_RESET_WINDOW,
+    USB_MAX_RESETS_TOTAL=USB_MAX_RESETS_TOTAL,
+    USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
+    USB_EMERGENCY_BACKOFF=USB_EMERGENCY_BACKOFF,
+    RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,
+    RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
+    DEAD_ADAPTER_DEBOUNCE=DEAD_ADAPTER_DEBOUNCE,
+    DEAD_ADAPTER_REBOOT_AFTER=DEAD_ADAPTER_REBOOT_AFTER,
+    DEAD_ADAPTER_REBOOT_WINDOW=DEAD_ADAPTER_REBOOT_WINDOW,
+    DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW=DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW,
+    DEAD_ADAPTER_HEALTHY_DECAY=DEAD_ADAPTER_HEALTHY_DECAY,
+    DEAD_ADAPTER_REBOOT_STAMP=DEAD_ADAPTER_REBOOT_STAMP,
+    ADAPTER_FAULT_STATE_PATH=ADAPTER_FAULT_STATE_PATH,
+    is_wifi_client_healthy=is_wifi_client_healthy,
+    client_up_tail=client_up_tail,
+    _activate_committed_on=_activate_committed_on,
+    wait_for_interface_reappears=wait_for_interface_reappears,
+    resolve_hotspot_adapter=resolve_hotspot_adapter,
+    request_guarded_reboot=request_guarded_reboot,
+    _known_usb_macs=_known_usb_macs,
+)
 
 
 # ** RUNTIME NETWORK-STATUS SNAPSHOT **
@@ -3875,7 +3912,7 @@ if __name__ == "__main__":
     # Restore the persisted per-adapter fault ledgers (no-IP + reset/quarantine)
     # so a restart does not hand a chronically bad dongle a fresh budget.
     try:
-        wifi_recovery.load_adapter_fault_state(_self_module())
+        wifi_recovery.load_adapter_fault_state(RECOVERY_CTX)
     except Exception as e:
         logger.warning("Could not load persisted adapter fault state: %s", e)
 
