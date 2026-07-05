@@ -80,6 +80,9 @@ def connect_to_configured_wifi(ctx: ConfigContext) -> bool:
     uuid = _resolve_committed_uuid(ctx, state)
     if uuid:
         ctx.nm.clear_restrictions(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS)
+        # No ifname is pinned here, so NM chooses the adapter; it must not inherit
+        # a BSSID pinned for a specific USB adapter.
+        ctx.nm.set_bssid(uuid, "")
     ctx.logger.info("Attempting to connect to configured WiFi connection '%s'", connection_name)
     ident = ["uuid", uuid] if uuid else ["id", connection_name]
     r_up = ctx.nm.activate_ident(ident)

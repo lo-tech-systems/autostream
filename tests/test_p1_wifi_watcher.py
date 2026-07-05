@@ -2685,8 +2685,10 @@ class TestReconnectSavedEpisode:
         with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state"), \
+             patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value=None), \
              patch.object(watcher.nm, "clear_restrictions",
                           side_effect=lambda *a, **k: order.append("clear")), \
+             patch.object(watcher.nm, "set_bssid"), \
              patch.object(watcher.nm, "activate",
                           side_effect=lambda *a, **k: order.append("activate") or MagicMock(returncode=0, stderr="")), \
              patch.object(watcher, "wait_for_connection", return_value=True), \
@@ -2698,13 +2700,99 @@ class TestReconnectSavedEpisode:
         absent = MagicMock(
             returncode=10,
             stderr="Error: Connection activation failed: The Wi-Fi network could not be found")
-        with patch.object(watcher.nm, "clear_restrictions"), \
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value=None), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "set_bssid"), \
              patch.object(watcher.nm, "activate", return_value=absent), \
              patch.object(watcher, "wait_for_connection") as wait:
             ok = watcher._activate_profile_on(
                 "wlan0", watcher.wifi_net.NetworkState("Home", "uuid-1"))
         assert ok is False
         wait.assert_not_called()
+
+
+class TestPinUsbBssid:
+    """UP-3: the USB BSSID pin seam inside _activate_profile_on."""
+
+    def _rows(self, bssid="AA:BB:CC:DD:EE:FF", ssid="Home", signal=70, in_use=False):
+        return [{"in_use": in_use, "bssid": bssid, "ssid": ssid, "signal": signal}]
+
+    def test_non_usb_target_clears_bssid(self, watcher):
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value=None), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid, \
+             patch.object(watcher.nm, "wifi_bssid_scan") as scan:
+            result = watcher._pin_usb_bssid("wlan0", "uuid-1")
+        assert result == ""
+        set_bssid.assert_called_once_with("uuid-1", "")
+        scan.assert_not_called()
+        assert watcher.STATE.last_bssid_pin == {}
+
+    def test_usb_target_pins_from_scan(self, watcher):
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows()), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            result = watcher._pin_usb_bssid("wlan1", "uuid-1")
+        assert result == "AA:BB:CC:DD:EE:FF"
+        set_bssid.assert_called_once_with("uuid-1", "AA:BB:CC:DD:EE:FF")
+        assert watcher.STATE.last_bssid_pin["ifname"] == "wlan1"
+        assert watcher.STATE.last_bssid_pin["bssid"] == "AA:BB:CC:DD:EE:FF"
+        assert watcher.STATE.last_bssid_pin["signal"] == 70
+        assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["ssid"] == "Home"
+
+    def test_scan_failure_falls_back_to_unpinned(self, watcher):
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=None), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            result = watcher._pin_usb_bssid("wlan1", "uuid-1")
+        assert result == ""
+        set_bssid.assert_called_once_with("uuid-1", "")
+        assert watcher.STATE.last_bssid_pin == {}
+
+    def test_no_candidate_falls_back_to_unpinned(self, watcher):
+        # Scan succeeds but yields no row for the committed SSID.
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            result = watcher._pin_usb_bssid("wlan1", "uuid-1")
+        assert result == ""
+        set_bssid.assert_called_once_with("uuid-1", "")
+
+    def test_success_accounting_reaches_table(self, watcher):
+        watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"] = {
+            "ssid": "Home", "signal": 70, "last_seen": 100.0,
+            "fail_count": 2, "quarantined_until": None,
+        }
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-1"), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows()), \
+             patch.object(watcher.nm, "set_bssid"), \
+             patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=True), \
+             patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=True):
+            ok = watcher._activate_profile_on(
+                "wlan1", watcher.wifi_net.NetworkState("Home", ""))
+        assert ok is True
+        assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
+
+    def test_failure_accounting_reaches_table(self, watcher):
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-1"), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows()), \
+             patch.object(watcher.nm, "set_bssid"), \
+             patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=1, stderr="failed")), \
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=False), \
+             patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=False):
+            ok = watcher._activate_profile_on(
+                "wlan1", watcher.wifi_net.NetworkState("Home", ""))
+        assert ok is False
+        assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 1
 
 
 class TestCandidateValidateTail:

@@ -436,9 +436,10 @@ class TestCommandConstruction:
     def test_clear_restrictions_lists_all_keys(self):
         cmd = wifi_net.clear_restrictions_cmd("uuid-1", wifi_net.CROSS_ADAPTER_RESTRICTIONS)
         for key in ("connection.interface-name", "802-11-wireless.mac-address",
-                    "802-11-wireless.bssid", "802-11-wireless.band",
-                    "802-11-wireless.channel"):
+                    "802-11-wireless.band", "802-11-wireless.channel"):
             assert key in cmd
+        # BSSID is owned by the USB pin seam, not the cross-adapter clear.
+        assert "802-11-wireless.bssid" not in cmd
         # SSID and security must never be cleared here.
         assert "802-11-wireless.ssid" not in cmd
         assert "802-11-wireless-security.key-mgmt" not in cmd

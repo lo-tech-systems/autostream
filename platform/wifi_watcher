@@ -565,6 +565,7 @@ class NetworkMonitorState:
     # ---- USB BSSID ownership (roaming) ----
     bssid_table: dict = field(default_factory=dict)
     last_roam_or_activation: Optional[float] = None
+    last_bssid_pin: dict = field(default_factory=dict)
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
     # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-
@@ -996,6 +997,9 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
         )
     except Exception as e:
         logger.error("Could not persist network state for '%s': %s", conn_name, e)
+    # A new committed SSID invalidates any BSSID table entries from the previous one.
+    with state_lock:
+        wifi_policy.clear_bssid_table(STATE.bssid_table)
 
 
 def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
@@ -1987,6 +1991,10 @@ def import_first_boot_wifi_profile() -> None:
 
 def _resolve_committed_uuid(state: "wifi_net.NetworkState") -> str:
     return wifi_config._resolve_committed_uuid(CONFIG_CTX, state)
+
+
+def _pin_usb_bssid(ifname: str, uuid: str) -> str:
+    return wifi_activation._pin_usb_bssid(ACTIVATION_CTX, ifname, uuid)
 
 
 def _activate_profile_on(ifname: str, state: "wifi_net.NetworkState",

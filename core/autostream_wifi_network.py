@@ -1029,10 +1029,11 @@ def add_wifi_profile_cmd(con_name: str, ifname: str, ssid: str) -> list[str]:
 
 
 # Profile settings that would prevent cross-adapter fallback (plan section 5.2).
+# 802-11-wireless.bssid is deliberately absent: the USB BSSID pin owns that
+# property and clears/sets it itself at every activation.
 CROSS_ADAPTER_RESTRICTIONS = (
     "connection.interface-name",
     "802-11-wireless.mac-address",
-    "802-11-wireless.bssid",
     "802-11-wireless.band",
     "802-11-wireless.channel",
 )

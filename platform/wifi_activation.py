@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import autostream_wifi_network as wifi_net
+import wifi_policy
 
 
 @dataclass
@@ -86,25 +87,75 @@ def _activation_network_absent(result) -> bool:
     return "could not be found" in stderr or "no network with ssid" in stderr
 
 
+def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str) -> str:
+    """Pin the best BSSID for a USB target before activation; "" leaves it unpinned.
+
+    Non-USB targets, and USB targets whose scan fails or yields no selectable
+    candidate, are explicitly unpinned (the scan must never become a new way
+    for activation to fail).  Records the pin (or its absence) on
+    ``STATE.last_bssid_pin`` for the reset/retry gate.
+    """
+    if wifi_net.usb_sysfs_paths(ifname) is None:
+        ctx.nm.set_bssid(uuid, "")
+        with ctx.state_lock:
+            ctx.STATE.last_bssid_pin = {}
+        return ""
+
+    rows = ctx.nm.wifi_bssid_scan(ifname, rescan=True)
+    bssid, signal = "", 0
+    if rows is not None:
+        ssid = wifi_net.get_connection_ssid(uuid)
+        now = time.monotonic()
+        with ctx.state_lock:
+            wifi_policy.update_bssid_table(ctx.STATE.bssid_table, rows, ssid, now)
+            bssid = wifi_policy.select_bssid(ctx.STATE.bssid_table, now)
+            if bssid:
+                signal = ctx.STATE.bssid_table[bssid]["signal"]
+
+    if not bssid:
+        ctx.nm.set_bssid(uuid, "")
+        with ctx.state_lock:
+            ctx.STATE.last_bssid_pin = {}
+        return ""
+
+    ctx.nm.set_bssid(uuid, bssid)
+    with ctx.state_lock:
+        ctx.STATE.last_bssid_pin = {
+            "ifname": ifname, "bssid": bssid, "signal": signal, "at": time.monotonic(),
+        }
+    return bssid
+
+
 def _activate_profile_on(ctx: ActivationContext, ifname: str, state: "wifi_net.NetworkState",
                          *, wait_for_validation: bool = True) -> bool:
-    """Shared activation core: resolve UUID, clear restrictions, activate, validate.
+    """Shared activation core: resolve UUID, clear restrictions, pin, activate, validate.
 
-    Clears cross-adapter NM restrictions (interface-name, MAC, BSSID, band,
-    channel) BEFORE activating so a legacy profile bound to one adapter can be
-    moved to another.  A "network could not be found" activation short-circuits
-    the IPv4 wait (the join never started).  With ``wait_for_validation`` the
-    interface must become a healthy, non-AP client to return True; without it
-    the call is fire-and-forget and returns True as soon as the activation
-    command succeeds (the monitor loop validates on a later pass).
+    Clears cross-adapter NM restrictions (interface-name, MAC, band, channel)
+    BEFORE activating so a legacy profile bound to one adapter can be moved to
+    another.  A USB target additionally gets its BSSID pinned (or explicitly
+    cleared) by ``_pin_usb_bssid``, with per-BSSID success/failure accounting
+    after the activation verdict.  A "network could not be found" activation
+    short-circuits the IPv4 wait (the join never started).  With
+    ``wait_for_validation`` the interface must become a healthy, non-AP client
+    to return True; without it the call is fire-and-forget and returns True as
+    soon as the activation command succeeds (the monitor loop validates on a
+    later pass).
     """
     if not state.is_configured:
         return False
     uuid = ctx._resolve_committed_uuid(state)
     if uuid:
         ctx.nm.clear_restrictions(uuid, wifi_net.CROSS_ADAPTER_RESTRICTIONS)
+    pinned_bssid = _pin_usb_bssid(ctx, ifname, uuid) if uuid else ""
     r_up = ctx.nm.activate(uuid, state.connection_name, ifname)
-    return _validate_activation(ctx, ifname, r_up, wait_for_validation=wait_for_validation)
+    ok = _validate_activation(ctx, ifname, r_up, wait_for_validation=wait_for_validation)
+    if pinned_bssid:
+        with ctx.state_lock:
+            if ok:
+                wifi_policy.record_bssid_success(ctx.STATE.bssid_table, pinned_bssid, time.monotonic())
+            else:
+                wifi_policy.record_bssid_failure(ctx.STATE.bssid_table, pinned_bssid)
+    return ok
 
 
 def _validate_activation(ctx: ActivationContext, ifname: str, activation_result,
