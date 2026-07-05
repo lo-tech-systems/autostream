@@ -97,6 +97,25 @@ overlaps a worker activation, and is left synchronous by design.
 is validated *before* the healthy built-in is dropped (transactional handover),
 gated by playback and by a saved-SSID scan.
 
+**Persistent fault state**: the per-adapter no-IP and reset/quarantine ledgers are
+persisted to `/var/lib/autostream/adapter-fault-state.json` (wall-clock
+timestamps, translated back to the monotonic clock and pruned by the rolling
+windows on load), so a restart — including the 12-hour catch-all reboot — does not
+hand a chronically bad dongle a fresh budget.
+
+**No-IP hold-back reset**: an idle USB spare that repeatedly associates but never
+gets an IP is normally held back by the no-IP ledger. Because the dead-PHY reset
+ladder only targets the *active* client, such a spare would never be reset; so
+when it reaches the final hold-back the watcher spends **one** budgeted USB reset
+(accounted against the normal reset budget) and clears its suppression for a fresh
+adoption attempt. If that still fails, the hold-back proceeds — one reset per
+hold-back episode.
+
+**Manual adapter control** (loopback+token, via `/network_control`):
+`disable_adapter` (a disabled adapter is never offered as a client, adopted, or
+reset until re-enabled — persisted across restarts), `enable_adapter`, and
+`clear_adapter` (clear an adapter's fault ledgers after replacement).
+
 **Guarded reboot domains** — every request passes one shared guard (a persistent
 cross-boot cap of **3 reboots per 24 h** plus an in-process throttle):
 - **Gateway-down**: connected client but gateway unreachable for **30 min**.
@@ -132,7 +151,8 @@ plus the OS captive-portal probe endpoints (`/generate_204`, `/ncsi.txt`,
 
 **Privileged loopback control (loopback source AND per-boot token):**
 `GET /version`, `GET /network_status`, `POST /network_control`
-(actions: `start_setup`, `reconnect_saved`, `set_log_level`), `POST /request_ap_mode`.
+(actions: `start_setup`, `reconnect_saved`, `set_log_level`, `disable_adapter`,
+`enable_adapter`, `clear_adapter`), `POST /request_ap_mode`.
 
 **Log levels:** `fatal`, `log`, `warning`, `info` (default), `debug`, `spam`.
 Only `warning` / `info` / `debug` are settable at runtime via `set_log_level`;

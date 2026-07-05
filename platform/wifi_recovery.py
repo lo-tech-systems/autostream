@@ -144,6 +144,10 @@ def prune_noip_ledgers(w, present_stable_ids: set) -> None:
         for sid in list(w.STATE.adapter_noip_ledgers):
             if sid not in present_stable_ids:
                 w.STATE.adapter_noip_ledgers.pop(sid, None)
+        # A removed adapter starts a fresh hold-back episode if it returns.
+        for sid in list(w.STATE.noip_holdback_reset_done):
+            if sid not in present_stable_ids:
+                w.STATE.noip_holdback_reset_done.discard(sid)
 
 
 # ---- Manual adapter enable/disable + fault clearing (control API) ----
@@ -523,6 +527,56 @@ def record_adapter_reset(w, target: Optional[TargetAdapter], now: float) -> None
         target.ifname if target else "?", recent, total,
     )
     persist_adapter_fault_state(w)
+
+
+def maybe_reset_noip_held_usb(w, adapters: list, now: float) -> bool:
+    """Spend one budgeted USB reset on an idle no-IP-held spare before the
+    hold-back becomes final.
+
+    The dead-PHY reset ladder only ever targets the *active* client, so an idle
+    USB spare that repeatedly associates but cannot get an IP is held back by the
+    no-IP ledger without the watcher ever attempting the one cheap hardware
+    remediation it has (the field unit showed "held back … Reset attempts: 0").
+    When such a spare is at the final hold-back (no-IP count >= NOIP_STOP_AFTER),
+    resettable, still has reset budget, and has not already spent its one
+    hold-back reset this episode, perform one reset (accounted against the normal
+    reset budget/quarantine ledger) and clear its no-IP suppression so the normal
+    adoption path gets a fresh attempt.  If the reset does not bring it to a
+    joinable state it re-accumulates and the hold-back proceeds — the
+    holdback-reset-done flag prevents a second reset.  Returns True when a reset
+    was spent (the caller owns the pass; this is a blocking effect like the
+    dead-PHY reset).  The caller must gate on a healthy device (conn_ok) so only
+    idle spares — never the active path — are reset here.
+    """
+    for a in adapters:
+        if not getattr(a, "is_usb", False) or not a.stable_id:
+            continue
+        if adapter_disabled(w, a.stable_id):
+            continue
+        if noip_failure_count(w, a.stable_id) < NOIP_STOP_AFTER:
+            continue
+        with w.state_lock:
+            already = a.stable_id in w.STATE.noip_holdback_reset_done
+        if already:
+            continue
+        target = build_target_adapter(w, a.ifname, adapters)
+        if not target.resettable_usb:
+            continue
+        if adapter_reset_budget_exhausted(w, target, now):
+            continue
+        w.logger.info(
+            "No-IP hold-back on idle USB %s: spending one budgeted reset before "
+            "finalising the hold-back", a.ifname)
+        record_adapter_reset(w, target, now)
+        wifi_net.reset_usb_adapter_rebind(a.ifname)
+        with w.state_lock:
+            w.STATE.noip_holdback_reset_done.add(a.stable_id)
+        # Fresh adoption chance: clear the no-IP suppression (the reset may have
+        # fixed the hardware).  A renewed failure re-accumulates and re-suppresses,
+        # but the holdback-reset-done flag blocks a second reset this episode.
+        clear_noip_failures(w, a.stable_id)
+        return True
+    return False
 
 
 # ---- Shared per-adapter recovery facts (recovery-ladder unification) ----

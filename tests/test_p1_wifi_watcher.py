@@ -4310,6 +4310,82 @@ class TestManualAdapterControl:
         assert not watcher.control_action_event.is_set()
 
 
+class TestNoIpHoldbackReset:
+    """WP-9 item 3 — one budgeted USB reset when an idle no-IP-held spare reaches
+    the final hold-back (the dead-PHY ladder only ever resets the active client)."""
+
+    def _held_usb(self, watcher, ifname="wlan1", mac="dc:62:79:91:4d:d6"):
+        usb = _adapter(watcher, ifname, mac, is_usb=True)
+        wr = watcher.wifi_recovery
+        for _ in range(wr.NOIP_STOP_AFTER):
+            wr.record_noip_failure(watcher, usb.stable_id, now=100.0)
+        return usb
+
+    def _target(self, watcher, usb, resettable=True):
+        return watcher.wifi_recovery.TargetAdapter(
+            ifname=usb.ifname, stable_id=usb.stable_id, kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=resettable)
+
+    def test_spends_one_reset_and_clears_suppression(self, watcher):
+        wr = watcher.wifi_recovery
+        usb = self._held_usb(watcher)
+        with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
+        assert r is True
+        reset.assert_called_once_with(usb.ifname)
+        assert usb.stable_id in watcher.STATE.noip_holdback_reset_done
+        assert usb.stable_id not in watcher.STATE.adapter_noip_ledgers   # suppression cleared
+        assert watcher.STATE.adapter_reset_ledgers[usb.stable_id]["total_resets"] == 1
+
+    def test_only_one_reset_per_episode(self, watcher):
+        wr = watcher.wifi_recovery
+        usb = self._held_usb(watcher)
+        watcher.STATE.noip_holdback_reset_done.add(usb.stable_id)
+        with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
+        assert r is False
+        reset.assert_not_called()
+
+    def test_no_reset_before_final_holdback(self, watcher):
+        wr = watcher.wifi_recovery
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        wr.record_noip_failure(watcher, usb.stable_id, now=100.0)  # count 1 < NOIP_STOP_AFTER
+        with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
+        assert r is False
+        reset.assert_not_called()
+
+    def test_no_reset_when_budget_exhausted(self, watcher):
+        wr = watcher.wifi_recovery
+        usb = self._held_usb(watcher)
+        with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
+             patch.object(wr, "adapter_reset_budget_exhausted", return_value=True), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
+        assert r is False
+        reset.assert_not_called()
+
+    def test_disabled_adapter_not_reset(self, watcher):
+        wr = watcher.wifi_recovery
+        usb = self._held_usb(watcher)
+        wr.disable_adapter(watcher, usb.stable_id)
+        with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
+            r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
+        assert r is False
+        reset.assert_not_called()
+
+    def test_success_clears_holdback_flag(self, watcher):
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.STATE.noip_holdback_reset_done.add(usb.stable_id)
+        watcher._set_active_client(usb)
+        assert usb.stable_id not in watcher.STATE.noip_holdback_reset_done
+
+
 class TestNmcliGoesThroughNMClient:
     """WP-7: the watcher orchestration module issues no direct nmcli itself — every
     nmcli invocation goes through the bounded NMClient (wifi_nm.py).

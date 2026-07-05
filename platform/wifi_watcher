@@ -581,6 +581,11 @@ class NetworkMonitorState:
     # adapter is never offered as a client rung, adopted, or reset until it is
     # re-enabled.  Persisted with the fault ledgers so it survives a restart.
     disabled_adapters: set = field(default_factory=set)
+    # Stable-ids that already spent their one budgeted USB reset at the no-IP
+    # hold-back this suppression episode; cleared when the adapter becomes the
+    # healthy active client (success) or disappears, so a fresh hold-back may
+    # reset again.
+    noip_holdback_reset_done: set = field(default_factory=set)
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
     # the HotspotSession (STATE.hotspot).
@@ -2150,6 +2155,25 @@ def step_runtime_usb_adoption(hctx: "HealthContext") -> "Verdict":
     return Verdict.CONTINUE
 
 
+def step_noip_holdback_reset(hctx: "HealthContext") -> "Verdict":
+    """Spend one budgeted USB reset on an idle no-IP-held spare before its
+    hold-back is final.
+
+    Gated on a healthy device (conn_ok) so only idle spares — never the active
+    path — are reset here, and deferred while an activation is in flight (the
+    reset is a synchronous blocking effect, like the dead-PHY reset).
+    """
+    facts = hctx.facts
+    with state_lock:
+        transitioning = STATE.transitioning
+    if transitioning:
+        return Verdict.CONTINUE
+    if facts.wifi_configured and hctx.conn_ok and not STATE.setup_mode:
+        if wifi_recovery.maybe_reset_noip_held_usb(_self_module(), facts.adapters, facts.taken_at):
+            return Verdict.OWN_PASS
+    return Verdict.CONTINUE
+
+
 def step_dead_phy_recovery(hctx: "HealthContext") -> "Verdict":
     """Detect a wedged-but-present client adapter and run the reset ladder.
 
@@ -2530,6 +2554,7 @@ def network_monitor_loop(run_once: bool = False):
     phase_b_late = [
         step_usb_failure_fallback,
         step_runtime_usb_adoption,
+        step_noip_holdback_reset,
         step_dead_phy_recovery,
         step_publish_state,
         step_ethernet_wins,
@@ -2942,6 +2967,12 @@ def _set_active_client(adapter) -> None:
         changed = STATE.active_client_ifname != (adapter.ifname if adapter else "")
         STATE.active_client_ifname = adapter.ifname if adapter else ""
         STATE.active_client_mac = adapter.permanent_mac if adapter else ""
+        # This adapter is now the healthy active client: end its no-IP hold-back
+        # episode so a future hold-back may spend a fresh reset.
+        if adapter is not None:
+            sid = getattr(adapter, "stable_id", "")
+            if sid:
+                STATE.noip_holdback_reset_done.discard(sid)
     if changed and adapter:
         logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
 
