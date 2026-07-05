@@ -309,6 +309,10 @@ DEAD_ADAPTER_HEALTHY_DECAY = 24 * 60 * 60  # decay reset history after sustained
 DEAD_ADAPTER_REBOOT_STAMP  = "/var/lib/autostream/dead-phy-reboot.stamp"
 DEAD_ADAPTER_REBOOT_WINDOW = 24 * 60 * 60  # persistent reboot-guard window
 DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW = 3   # cross-boot dead-PHY reboot cap
+# Persistent per-stable-id fault state (no-IP + reset/quarantine ledgers) so a
+# restart — including the 12-hour catch-all reboot — does not hand a chronically
+# bad dongle a fresh budget.  Wall-clock timestamps, tolerant parsing.
+ADAPTER_FAULT_STATE_PATH   = "/var/lib/autostream/adapter-fault-state.json"
 
 # First-boot Wi-Fi profile import: a persisted marker so the one destructive
 # import (retain the active profile, delete the other saved client profiles)
@@ -3829,6 +3833,13 @@ if __name__ == "__main__":
     # Initial client bring-up is done by the monitor loop's BOOT-window ladder rung
     # (step_boot_client_bringup) from the first pass, so a single decider ranks the
     # client paths at boot.
+
+    # Restore the persisted per-adapter fault ledgers (no-IP + reset/quarantine)
+    # so a restart does not hand a chronically bad dongle a fresh budget.
+    try:
+        wifi_recovery.load_adapter_fault_state(_self_module())
+    except Exception as e:
+        logger.warning("Could not load persisted adapter fault state: %s", e)
 
     logger.info(
         "Initial state: wifi_configured=%s, wired=%s",

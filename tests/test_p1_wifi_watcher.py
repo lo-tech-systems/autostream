@@ -168,7 +168,9 @@ def _isolate_reboot_guard(tmp_path):
     """
     mod = _get_watcher()
     stamp = str(tmp_path / "reboot-guard.json")
-    with patch.object(mod, "DEAD_ADAPTER_REBOOT_STAMP", stamp):
+    fault = str(tmp_path / "adapter-fault-state.json")
+    with patch.object(mod, "DEAD_ADAPTER_REBOOT_STAMP", stamp), \
+         patch.object(mod, "ADAPTER_FAULT_STATE_PATH", fault):
         yield
 
 
@@ -4088,6 +4090,92 @@ class TestDeadPhyRebootThreshold:
     def test_threshold_is_30_min(self, watcher):
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == watcher.GW_DOWN_REBOOT_AFTER
         assert watcher.DEAD_ADAPTER_REBOOT_AFTER == 30 * 60
+
+
+class TestAdapterFaultStatePersistence:
+    """WP-9 item 1 — the no-IP + reset/quarantine ledgers survive a restart, with
+    wall-clock timestamps translated back onto the monotonic clock and pruned by
+    the rolling windows."""
+
+    def _target(self, watcher, stable_id="usb-C"):
+        return watcher.wifi_recovery.TargetAdapter(
+            ifname="wlan1", stable_id=stable_id, kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=True)
+
+    def test_record_writes_the_file(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_noip_failure(watcher, "usb-A", now=100.0)
+        assert os.path.exists(watcher.ADAPTER_FAULT_STATE_PATH)
+
+    def test_noip_suppression_survives_restart(self, watcher):
+        wr = watcher.wifi_recovery
+        for _ in range(wr.NOIP_STOP_AFTER):
+            wr.record_noip_failure(watcher, "usb-A", now=100.0)
+        # Simulate a restart: drop in-memory state, reload from disk.
+        watcher.STATE.adapter_noip_ledgers = {}
+        watcher.STATE.adapter_reset_ledgers = {}
+        wr.load_adapter_fault_state(watcher)
+        led = watcher.STATE.adapter_noip_ledgers.get("usb-A")
+        assert led is not None
+        assert led["count"] == wr.NOIP_STOP_AFTER
+        assert led["retry_after"] == float("inf")   # still suppressed after restart
+
+    def test_finite_backoff_elapsed_during_downtime_not_suppressed(self, watcher):
+        wr = watcher.wifi_recovery
+        # One failure: finite backoff.  Persist happens with monotonic=1000 / wall=5000.
+        with patch("time.monotonic", return_value=1000.0), \
+             patch("time.time", return_value=5000.0):
+            wr.record_noip_failure(watcher, "usb-B", now=1000.0)
+        watcher.STATE.adapter_noip_ledgers = {}
+        # Reload far in the future (wall advanced well past the short backoff).
+        with patch("time.monotonic", return_value=50.0), \
+             patch("time.time", return_value=99999.0):
+            wr.load_adapter_fault_state(watcher)
+        led = watcher.STATE.adapter_noip_ledgers.get("usb-B")
+        assert led is not None and led["count"] == 1
+        assert led["retry_after"] <= 50.0    # deadline is in the past -> not suppressed
+
+    def test_reset_ledger_round_trips_and_prunes_by_window(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher, "usb-C")
+        with patch("time.monotonic", return_value=1000.0), \
+             patch("time.time", return_value=5000.0):
+            wr.record_adapter_reset(watcher, target, now=1000.0)
+        assert watcher.STATE.adapter_reset_ledgers["usb-C"]["total_resets"] == 1
+
+        # Reload 1 hour later (wall): the reset is inside the 24h window -> kept.
+        watcher.STATE.adapter_reset_ledgers = {}
+        with patch("time.monotonic", return_value=100.0), \
+             patch("time.time", return_value=5000.0 + 3600):
+            wr.load_adapter_fault_state(watcher)
+        led = watcher.STATE.adapter_reset_ledgers.get("usb-C")
+        assert led is not None and led["total_resets"] == 1
+        assert len(led["recent_resets"]) == 1
+
+        # Reload 25 hours later (wall): the reset ages out of the rolling window,
+        # but the total (quarantine accounting) survives.
+        watcher.STATE.adapter_reset_ledgers = {}
+        with patch("time.monotonic", return_value=100.0), \
+             patch("time.time", return_value=5000.0 + 25 * 3600):
+            wr.load_adapter_fault_state(watcher)
+        led = watcher.STATE.adapter_reset_ledgers.get("usb-C")
+        assert led is not None and led["total_resets"] == 1
+        assert led["recent_resets"] == []
+
+    def test_malformed_file_is_a_noop(self, watcher):
+        with open(watcher.ADAPTER_FAULT_STATE_PATH, "w", encoding="utf-8") as f:
+            f.write("{ not json")
+        watcher.STATE.adapter_noip_ledgers = {"pre": {"count": 3, "retry_after": 0.0}}
+        watcher.wifi_recovery.load_adapter_fault_state(watcher)
+        # Untouched: a malformed file must not wipe or corrupt live state.
+        assert watcher.STATE.adapter_noip_ledgers == {"pre": {"count": 3, "retry_after": 0.0}}
+
+    def test_absent_file_is_a_noop(self, watcher):
+        # Fresh temp path (never written).
+        watcher.STATE.adapter_noip_ledgers = {}
+        watcher.wifi_recovery.load_adapter_fault_state(watcher)
+        assert watcher.STATE.adapter_noip_ledgers == {}
 
 
 class TestNmcliGoesThroughNMClient:

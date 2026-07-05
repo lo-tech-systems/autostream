@@ -106,6 +106,7 @@ def record_noip_failure(w, stable_id: str, now: float) -> int:
     w.logger.info(
         "No-IP failure #%d recorded for adapter %s; backing off adoption", n, stable_id
     )
+    persist_adapter_fault_state(w)
     return n
 
 
@@ -132,7 +133,9 @@ def clear_noip_failures(w, stable_id: str) -> None:
     if not stable_id:
         return
     with w.state_lock:
-        w.STATE.adapter_noip_ledgers.pop(stable_id, None)
+        existed = w.STATE.adapter_noip_ledgers.pop(stable_id, None) is not None
+    if existed:
+        persist_adapter_fault_state(w)
 
 
 def prune_noip_ledgers(w, present_stable_ids: set) -> None:
@@ -473,6 +476,7 @@ def record_adapter_reset(w, target: Optional[TargetAdapter], now: float) -> None
         "Recorded USB reset for %s: recent=%d total=%d",
         target.ifname if target else "?", recent, total,
     )
+    persist_adapter_fault_state(w)
 
 
 # ---- Shared per-adapter recovery facts (recovery-ladder unification) ----
@@ -636,6 +640,139 @@ def record_dead_phy_reboot_request(w, now_wall: float, target: Optional[TargetAd
         )
     except OSError as e:
         w.logger.warning("Could not persist dead-PHY reboot guard: %s", e)
+
+
+# ---- Persistent per-stable-id fault state (no-IP + reset/quarantine ledgers) ----
+#
+# The two in-memory ledgers use *monotonic* deadlines, which reset on reboot; to
+# persist them across a restart we store each timestamp as wall-clock and, on
+# load, translate it back onto the current monotonic clock accounting for real
+# elapsed time (including downtime), then prune by the same rolling windows.
+# Tolerant parsing throughout: any malformed/absent file loads as "no state".
+
+ADAPTER_FAULT_STATE_SCHEMA = 1
+_INF_SENTINEL = "inf"
+
+
+def _mono_to_wall(t, now_mono: float, now_wall: float):
+    """Translate a monotonic timestamp to wall-clock (None / inf pass through)."""
+    if t is None:
+        return None
+    if t == float("inf"):
+        return _INF_SENTINEL
+    if not isinstance(t, (int, float)) or isinstance(t, bool):
+        return None
+    return now_wall - (now_mono - t)
+
+
+def _wall_to_mono(w_ts, now_mono: float, now_wall: float):
+    """Translate a persisted wall-clock timestamp back onto the monotonic clock."""
+    if w_ts is None:
+        return None
+    if w_ts == _INF_SENTINEL:
+        return float("inf")
+    try:
+        return now_mono - (now_wall - float(w_ts))
+    except (TypeError, ValueError):
+        return None
+
+
+def persist_adapter_fault_state(w) -> None:
+    """Atomically write the no-IP + reset ledgers with wall-clock timestamps."""
+    now_mono = time.monotonic()
+    now_wall = time.time()
+    with w.state_lock:
+        noip = {
+            sid: {
+                "count": int(led.get("count", 0) or 0),
+                "retry_after": _mono_to_wall(led.get("retry_after"), now_mono, now_wall),
+            }
+            for sid, led in w.STATE.adapter_noip_ledgers.items()
+        }
+        reset = {}
+        for sid, led in w.STATE.adapter_reset_ledgers.items():
+            reset[sid] = {
+                "recent_resets": [
+                    _mono_to_wall(t, now_mono, now_wall)
+                    for t in led.get("recent_resets", []) or []
+                ],
+                "total_resets": int(led.get("total_resets", 0) or 0),
+                "quarantined_until": _mono_to_wall(led.get("quarantined_until"), now_mono, now_wall),
+            }
+    data = {
+        "schema_version": ADAPTER_FAULT_STATE_SCHEMA,
+        "saved_at": now_wall,
+        "noip_ledgers": noip,
+        "reset_ledgers": reset,
+    }
+    try:
+        directory = os.path.dirname(w.ADAPTER_FAULT_STATE_PATH) or "."
+        os.makedirs(directory, exist_ok=True)
+        wifi_net._atomic_write(
+            w.ADAPTER_FAULT_STATE_PATH, json.dumps(data, indent=2) + "\n", mode=0o644)
+    except OSError as e:
+        w.logger.warning("Could not persist adapter fault state: %s", e)
+
+
+def load_adapter_fault_state(w) -> None:
+    """Load the persisted ledgers, translating wall-clock -> monotonic and pruning
+    by the rolling windows.  Any malformed/absent file is a no-op."""
+    try:
+        with open(w.ADAPTER_FAULT_STATE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict) or data.get("schema_version") != ADAPTER_FAULT_STATE_SCHEMA:
+        return
+    now_mono = time.monotonic()
+    now_wall = time.time()
+
+    noip_out: dict = {}
+    noip_in = data.get("noip_ledgers")
+    if isinstance(noip_in, dict):
+        for sid, led in noip_in.items():
+            if not isinstance(led, dict):
+                continue
+            count = int(led.get("count", 0) or 0)
+            if count <= 0:
+                continue
+            # retry_after is derivable from count for the suppressed case; a
+            # finite deadline that already elapsed during downtime is not carried.
+            if count >= NOIP_STOP_AFTER:
+                retry_after = float("inf")
+            else:
+                m = _wall_to_mono(led.get("retry_after"), now_mono, now_wall)
+                retry_after = m if (isinstance(m, float) and m > now_mono) else 0.0
+            noip_out[sid] = {"count": count, "retry_after": retry_after}
+
+    reset_out: dict = {}
+    reset_in = data.get("reset_ledgers")
+    if isinstance(reset_in, dict):
+        for sid, led in reset_in.items():
+            if not isinstance(led, dict):
+                continue
+            recent = []
+            for wt in led.get("recent_resets", []) or []:
+                m = _wall_to_mono(wt, now_mono, now_wall)
+                if m is not None and m != float("inf") and (now_mono - m) <= w.USB_RESET_WINDOW:
+                    recent.append(m)
+            total = int(led.get("total_resets", 0) or 0)
+            q = _wall_to_mono(led.get("quarantined_until"), now_mono, now_wall)
+            if q is not None and q != float("inf") and now_mono >= q:
+                q = None
+            if recent or total or q is not None:
+                reset_out[sid] = {
+                    "recent_resets": recent,
+                    "total_resets": total,
+                    "quarantined_until": q,
+                }
+
+    with w.state_lock:
+        w.STATE.adapter_noip_ledgers = noip_out
+        w.STATE.adapter_reset_ledgers = reset_out
+    w.logger.info(
+        "Loaded persisted adapter fault state: %d no-IP, %d reset ledger(s)",
+        len(noip_out), len(reset_out))
 
 
 # ---- Dead-PHY recovery ladder ----
