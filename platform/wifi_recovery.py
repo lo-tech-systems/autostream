@@ -938,7 +938,7 @@ def _perform_reset_step(w, target: TargetAdapter, now: float) -> bool:
 
     This dead-PHY USB rebind/re-enumerate plus wait_for_interface_reappears (up to
     INTERFACE_REAPPEAR_TIMEOUT ~15 s) is a *second* thing that blocks the monitor
-    loop, distinct from the activate_client join that runs on the worker.  It is
+    loop, distinct from the worker activation join.  It is
     deliberately left synchronous: it is a different effect family (USB
     rebind/reenumerate) with its own budget/quarantine/reboot ladder, and folding
     it onto the worker widens the blast radius for little gain (a wedged reset is

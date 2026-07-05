@@ -2098,7 +2098,20 @@ class TestActivationWorker:
 
 
 class TestActivateClient:
-    """Flag-matrix unit tests for the consolidated activate_client() (Phase A A-WP2)."""
+    """Flag-matrix unit tests for the worker-half + loop-half tail composition.
+
+    WP-10 retired the synchronous activate_client facade; these drive the same
+    composition directly (_run_activation_job then apply_activation_result), which
+    is exactly what the facade did, so the tail-flag matrix stays covered."""
+
+    def _run(self, watcher, ifname="wlan1", *, profile=None, **flags):
+        wait = flags.get("wait_for_validation", True)
+        kind = "activate_committed" if (profile is None and wait) else "activate_profile"
+        job = watcher.ActivationJob(
+            epoch=watcher._next_activation_epoch(), kind=kind, ifname=ifname,
+            profile=profile, **flags)
+        result = watcher._run_activation_job(job)
+        return watcher.apply_activation_result(result)
 
     @contextlib.contextmanager
     def _harness(self, watcher, *, core_ok=True, target=None):
@@ -2135,7 +2148,7 @@ class TestActivateClient:
 
     def test_success_minimal_tail(self, watcher):
         with self._harness(watcher) as h:
-            ok = watcher.activate_client("wlan1")
+            ok = self._run(watcher, "wlan1")
         assert ok is True
         h["set_active"].assert_called_once_with(h["target"])
         h["clear_noip"].assert_called_once()
@@ -2147,7 +2160,7 @@ class TestActivateClient:
         watcher.STATE.using_builtin_fallback = True
         watcher.STATE.conn_down_start = 123.0
         with self._harness(watcher):
-            watcher.activate_client("wlan1")
+            self._run(watcher, "wlan1")
         assert watcher.STATE.using_builtin_fallback is True   # untouched (flag None)
         assert watcher.STATE.conn_down_start == 123.0         # untouched
 
@@ -2155,7 +2168,7 @@ class TestActivateClient:
         watcher.STATE.conn_down_start = 5.0
         watcher.STATE.last_reconnect_attempt = 6.0
         with self._harness(watcher):
-            watcher.activate_client("wlan1", sets_builtin_fallback=True,
+            self._run(watcher, "wlan1", sets_builtin_fallback=True,
                                     clears_down_timers=True)
         assert watcher.STATE.using_builtin_fallback is True
         assert watcher.STATE.conn_down_start is None
@@ -2163,21 +2176,21 @@ class TestActivateClient:
 
     def test_on_success_leaves_setup(self, watcher):
         with self._harness(watcher) as h:
-            watcher.activate_client("wlan1", on_success_leaves_setup=True,
+            self._run(watcher, "wlan1", on_success_leaves_setup=True,
                                     leave_reason="done")
         h["leave"].assert_called_once_with("done")
 
     def test_drop_hotspot_when_in_setup_then_success_no_rebuild(self, watcher):
         watcher.STATE.setup_mode = True
         with self._harness(watcher) as h:
-            watcher.activate_client("wlan1", drop_hotspot=True)
+            self._run(watcher, "wlan1", drop_hotspot=True)
         h["stop_ap"].assert_called_once()
         h["start_ap"].assert_not_called()       # success -> no rebuild
 
     def test_drop_hotspot_rebuilds_on_failure(self, watcher):
         watcher.STATE.setup_mode = True
         with self._harness(watcher, core_ok=False) as h:
-            ok = watcher.activate_client("wlan1", drop_hotspot=True)
+            ok = self._run(watcher, "wlan1", drop_hotspot=True)
         assert ok is False
         h["stop_ap"].assert_called_once()
         h["start_ap"].assert_called_once()
@@ -2187,12 +2200,12 @@ class TestActivateClient:
     def test_drop_hotspot_skipped_when_not_in_setup(self, watcher):
         watcher.STATE.setup_mode = False
         with self._harness(watcher) as h:
-            watcher.activate_client("wlan1", drop_hotspot=True)
+            self._run(watcher, "wlan1", drop_hotspot=True)
         h["stop_ap"].assert_not_called()
 
     def test_records_noip_on_failure(self, watcher):
         with self._harness(watcher, core_ok=False) as h:
-            ok = watcher.activate_client("wlan1", records_noip=True,
+            ok = self._run(watcher, "wlan1", records_noip=True,
                                          stable_id="sid-1", noip_at=42.0)
         assert ok is False
         h["record_noip"].assert_called_once()
@@ -2201,17 +2214,16 @@ class TestActivateClient:
         h["set_active"].assert_not_called()      # no success tail on failure
         h["avahi"].assert_not_called()
 
-    def test_deactivates_builtin_when_connected(self, watcher):
-        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+    def test_disconnects_previous_ifname_on_success(self, watcher):
+        # The runtime-adoption handover carries the previous client's ifname; the
+        # success tail disconnects it (transactional: only after the new one is up).
         with self._harness(watcher) as h:
-            with patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
-                 patch.object(watcher.wifi_net, "is_wifi_connected", return_value=True):
-                watcher.activate_client("wlan1", deactivates_builtin=True)
-            h["nm_disconnect"].assert_called_once_with("wlan0")
+            self._run(watcher, "wlan1", disconnects_previous_ifname="wlan0")
+        h["nm_disconnect"].assert_called_once_with("wlan0")
 
     def test_wait_for_validation_false_is_fire_and_forget(self, watcher):
         with self._harness(watcher) as h:
-            ok = watcher.activate_client("wlan1", wait_for_validation=False)
+            ok = self._run(watcher, "wlan1", wait_for_validation=False)
         assert ok is True
         h["core2"].assert_called_once()          # routed through _activate_profile_on
         h["core"].assert_not_called()
@@ -2223,14 +2235,14 @@ class TestActivateClient:
         rollback = watcher.wifi_net.NetworkState(
             connection_name="Old", connection_uuid="old-uuid")
         with self._harness(watcher) as h:
-            watcher.activate_client("wlan1", profile=rollback)
+            self._run(watcher, "wlan1", profile=rollback)
         h["core2"].assert_called_once()
         assert h["core2"].call_args[0][1] is rollback
         h["core"].assert_not_called()
 
     def test_empty_ifname_returns_false(self, watcher):
         with self._harness(watcher) as h:
-            assert watcher.activate_client("") is False
+            assert self._run(watcher, "") is False
         h["core"].assert_not_called()
 
 
@@ -2241,21 +2253,26 @@ class TestRuntimeUsbAdoption:
             _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:10", is_usb=True),
         )
 
-    def test_adopts_after_two_passes_when_idle(self, watcher):
+    def test_adopts_after_two_passes_submits_transactional_job(self, watcher):
+        # WP-10: adoption now submits an off-thread job; the built-in disconnect /
+        # set-active happens on the loop-half tail a pass later.
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
         with patch.object(watcher, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "query_playing_status", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
-             patch.object(watcher, "_activate_committed_on", return_value=True), \
-             patch.object(watcher, "verify_avahi_after_handover"), \
-             patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
+             patch.object(watcher, "submit_activation_job", return_value=True) as submit:
             first = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
             second = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
         assert first is False   # first pass only records the candidate
-        assert second is True   # adopted on the second stable pass
-        assert watcher.STATE.active_client_ifname == "wlan1"
+        assert second is True   # second stable pass submits the adoption job
+        job = submit.call_args[0][0]
+        assert job.ifname == "wlan1"
+        assert job.disconnects_previous_ifname == "wlan0"   # transactional handover
+        assert job.sets_builtin_fallback is False
+        assert job.clears_pending_adoption is True
+        assert job.records_noip is True and job.stable_id == usb.stable_id
 
     def test_deferred_while_playing(self, watcher):
         builtin, usb = self._builtin_and_usb(watcher)
@@ -2315,23 +2332,22 @@ class TestRuntimeUsbAdoption:
         assert r is False
         act.assert_not_called()
 
-    def test_failed_adoption_sets_retry_suppression(self, watcher):
+    def test_adoption_job_carries_noip_recording(self, watcher):
+        # The submitted job carries records_noip so the loop-half failure tail
+        # records the no-IP failure (the tail behaviour is covered by
+        # TestActivateClient.test_records_noip_on_failure).
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
         with patch.object(watcher, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "query_playing_status", return_value=False), \
              patch.object(watcher, "_saved_ssid_visible", return_value=True), \
-             patch.object(watcher, "_activate_committed_on", return_value=False):
+             patch.object(watcher, "submit_activation_job", return_value=True) as submit:
             watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
             r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-        assert r is False
-        # The failed adoption records a no-IP failure and arms the escalating
-        # back-off (replacing the fixed usb_adoption_retry_after).
-        assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) >= 1
-        assert watcher.wifi_recovery.noip_retry_suppressed(
-            watcher, usb.permanent_mac, 0.0) is True
-        assert watcher.STATE.using_builtin_fallback is False
+        assert r is True
+        job = submit.call_args[0][0]
+        assert job.records_noip is True and job.stable_id == usb.stable_id
 
 
 class TestIf6AdoptionScanGate:
@@ -2407,24 +2423,26 @@ class TestIf6AdoptionScanGate:
         scan_mock.assert_called_once()
         assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) == 0
 
-    def test_visible_ssid_proceeds_as_today(self, watcher):
-        # (d): committed SSID visible -> activation runs and the success tail
-        # applies exactly as before the gate existed.
+    def test_visible_ssid_submits_transactional_job(self, watcher):
+        # (d): committed SSID visible -> the adoption job is submitted (validated
+        # off-thread; the built-in disconnect is the loop-half success tail).
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
         self._prime_to_gate(watcher, usb)
-        with self._gate_ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock, act):
+        with self._gate_ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock, _act), \
+             patch.object(watcher, "submit_activation_job", return_value=True) as submit:
             r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
         assert r is True
-        act.assert_called_once_with("wlan1")
         scan_mock.assert_called_once()
-        assert watcher.STATE.active_client_ifname == "wlan1"
-        # Success clears the pending candidate.
-        assert watcher.STATE.pending_usb_adoption_mac is None
+        submit.assert_called_once()
+        job = submit.call_args[0][0]
+        assert job.ifname == "wlan1"
+        assert job.disconnects_previous_ifname == "wlan0"
+        assert job.records_noip is True
 
-    def test_visible_then_activation_fails_records_noip(self, watcher):
-        # (d), failure tail: SSID visible but the USB activation fails -> the
-        # no-IP ledger ticks exactly as it did before the gate.
+    def test_visible_then_submits_job_with_noip_recording(self, watcher):
+        # (d), failure tail: SSID visible -> the submitted job carries records_noip
+        # so a failed activation ticks the no-IP ledger on the loop-half tail.
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
         self._prime_to_gate(watcher, usb)
@@ -2435,10 +2453,12 @@ class TestIf6AdoptionScanGate:
             stack.enter_context(patch.object(watcher, "_saved_network_ssid", return_value="MyHomeWiFi"))
             stack.enter_context(patch.object(watcher.wifi_net, "scan_adapter",
                                              return_value={"MyHomeWiFi": -50}))
-            stack.enter_context(patch.object(watcher, "_activate_committed_on", return_value=False))
+            submit = stack.enter_context(
+                patch.object(watcher, "submit_activation_job", return_value=True))
             r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-        assert r is False
-        assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) >= 1
+        assert r is True
+        job = submit.call_args[0][0]
+        assert job.records_noip is True and job.stable_id == usb.stable_id
 
 
 # ---------------------------------------------------------------------------

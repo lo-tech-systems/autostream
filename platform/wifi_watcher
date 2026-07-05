@@ -2982,15 +2982,16 @@ def _set_active_client(adapter) -> None:
 # Activation is split into a worker half (_run_activation_job: slow, bounded
 # effects — AP drop for the attempt, the nmcli core, and symmetric AP rebuild on
 # its own failure) and a loop half (apply_activation_result: the success/failure
-# connectivity tail).  The synchronous activate_client composes the two halves
-# inline (single source of truth); loop-initiated call sites submit the worker
-# half onto the worker thread while the loop applies the tail.
+# connectivity tail).  Every effectful join goes off-thread: loop-initiated call
+# sites submit the worker half and the loop applies the tail at the next pass top.
+# The only remaining synchronous join core is _activate_committed_on, used by
+# wifi_recovery's two transitioning-gated dead-PHY rungs.
 
 
 @dataclass(frozen=True)
 class ActivationJob:
-    """One activation request (worker input).  Carries the loop-applied tail flags
-    unchanged so apply_activation_result reproduces activate_client's tail."""
+    """One activation request (worker input).  Carries the tail-selection flags the
+    loop half (apply_activation_result) reads to reproduce the per-site tail."""
     epoch: int
     kind: str                          # "activate_committed" | "activate_profile" | "apply_credentials"
     ifname: str
@@ -3005,7 +3006,10 @@ class ActivationJob:
     records_onboard_failure: bool = False   # count onboard failures toward the hotspot bound
     sets_builtin_fallback: "Optional[bool]" = None
     clears_down_timers: bool = False
-    deactivates_builtin: bool = False
+    # Runtime-adoption transactional handover: disconnect this previously-active
+    # client on the success tail (only after the worker validated the new one).
+    disconnects_previous_ifname: str = ""
+    clears_pending_adoption: bool = False   # clear STATE.pending_usb_adoption on done
     stable_id: "Optional[str]" = None
     wait_for_validation: bool = True
 
@@ -3131,9 +3135,9 @@ def client_up_tail(adapter, *, set_builtin_fallback=None,
 def apply_activation_result(result: "ActivationResult", adapter: "Optional[object]" = None) -> bool:
     """Loop half: apply the success/failure connectivity tail (loop thread only).
 
-    Exactly activate_client's tail today.  ``adapter`` lets the synchronous path
-    reuse an already-resolved adapter object; the async path passes None and the
-    loop re-resolves by ``result.ifname`` from a fresh discover (§Result identity).
+    The loop re-resolves the adapter by ``result.ifname`` from a fresh discover
+    (the worker result carries only the ifname); ``adapter`` optionally supplies an
+    already-resolved object.
     """
     job = result.job
 
@@ -3168,23 +3172,21 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
 
     if result.ok:
         resolved = adapter
-        adapters = None
         if resolved is None:
-            adapters = wifi_net.discover_adapters()
-            resolved = wifi_net.find_adapter_by_ifname(adapters, result.ifname)
-        disconnect_ifname = ""
-        if job.deactivates_builtin:
-            if adapters is None:
-                adapters = wifi_net.discover_adapters()
-            builtin = wifi_net.resolve_builtin(adapters)
-            if (builtin is not None and builtin.ifname != result.ifname
-                    and wifi_net.is_wifi_connected(builtin.ifname)):
-                disconnect_ifname = builtin.ifname
+            resolved = wifi_net.find_adapter_by_ifname(
+                wifi_net.discover_adapters(), result.ifname)
+        # Disconnect a previously-active client whose ifname the job carries (the
+        # runtime-adoption transactional handover: the USB validated by the worker
+        # replaces the healthy built-in only now, on the success tail).
+        disconnect_ifname = job.disconnects_previous_ifname
+        if disconnect_ifname == result.ifname:
+            disconnect_ifname = ""
         clear_id = job.stable_id if job.stable_id is not None else (
             resolved.stable_id if resolved is not None else "")
         # A client came up: apply the shared handover tail (set active, optional
-        # built-in disconnect, clear the no-IP ledger, fallback/timer flags, reset
-        # the onboard-failure bound, leave setup, verify avahi).
+        # previous-client disconnect, clear the no-IP ledger, fallback/timer flags,
+        # reset the onboard-failure bound, leave setup, clear pending adoption,
+        # verify avahi).
         client_up_tail(
             resolved,
             set_builtin_fallback=job.sets_builtin_fallback,
@@ -3193,10 +3195,13 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
             leave_setup_reason=(job.leave_reason if job.on_success_leaves_setup else None),
             clear_down_timers=job.clears_down_timers,
             reset_onboard_bound=True,
+            clear_pending_adoption=job.clears_pending_adoption,
         )
         return True
 
     # Failure tail (the worker already rebuilt any AP it dropped).
+    if job.clears_pending_adoption:
+        _clear_pending_adoption()
     if job.records_onboard_failure:
         # Count this onboard failure toward the recovery-hotspot bound so a
         # present-but-failing onboard eventually yields to the hotspot.
@@ -3215,58 +3220,6 @@ def apply_activation_result(result: "ActivationResult", adapter: "Optional[objec
     return False
 
 
-def activate_client(ifname: str, *, profile: "Optional[wifi_net.NetworkState]" = None,
-                    adapter: "Optional[object]" = None,
-                    drop_hotspot: bool = False, on_success_leaves_setup: bool = False,
-                    leave_reason: str = "", records_noip: bool = False,
-                    noip_at: "Optional[float]" = None,
-                    sets_builtin_fallback: "Optional[bool]" = None,
-                    clears_down_timers: bool = False, deactivates_builtin: bool = False,
-                    stable_id: "Optional[str]" = None,
-                    wait_for_validation: bool = True) -> bool:
-    """The single parameterised "bring up a client on *ifname*" operation (Phase A).
-
-    Synchronous facade behind the same interface: it composes the worker half
-    (_run_activation_job) and the loop half (apply_activation_result) inline on the
-    calling thread.  Loop-initiated call sites submit the worker half to the
-    worker instead of calling this facade.
-
-    Flags:
-      - ``profile``: activate this NetworkState instead of the configured
-        committed profile (used by the rollback-restore path).
-      - ``adapter``: use this already-resolved adapter object for the success
-        tail instead of re-discovering by ifname.
-      - ``drop_hotspot``: if a hotspot session is active, tear down the AP on
-        this radio before activating and rebuild it on failure.
-      - ``on_success_leaves_setup`` / ``leave_reason``: leave setup mode on
-        success.
-      - ``records_noip`` / ``noip_at``: record a no-IP ledger failure for
-        ``stable_id`` on failure.
-      - ``sets_builtin_fallback``: when not None, assign
-        ``STATE.using_builtin_fallback`` on success.
-      - ``clears_down_timers``: reset the connectivity-down / reconnect timers
-        on success.
-      - ``deactivates_builtin``: disconnect a still-connected built-in client
-        after a non-built-in adapter comes up.
-      - ``stable_id``: ledger identity for clear/record; defaults to the
-        resolved adapter's stable_id.
-      - ``wait_for_validation``: when False the call is fire-and-forget (no
-        blocking IPv4/health wait and no success tail); the loop validates on a
-        later pass.
-    """
-    if not ifname:
-        return False
-    kind = "activate_committed" if (profile is None and wait_for_validation) else "activate_profile"
-    job = ActivationJob(
-        epoch=_next_activation_epoch(), kind=kind, ifname=ifname, profile=profile,
-        drop_hotspot=drop_hotspot, on_success_leaves_setup=on_success_leaves_setup,
-        leave_reason=leave_reason, records_noip=records_noip, noip_at=noip_at,
-        sets_builtin_fallback=sets_builtin_fallback, clears_down_timers=clears_down_timers,
-        deactivates_builtin=deactivates_builtin, stable_id=stable_id,
-        wait_for_validation=wait_for_validation,
-    )
-    result = _run_activation_job(job)
-    return apply_activation_result(result, adapter=adapter)
 
 
 # ---- Worker thread: single-slot job queue + result slot ----
@@ -3407,8 +3360,8 @@ def apply_client_failed(event, facts: "Facts") -> bool:
     """Apply an overlay ClientFailed event through the single recovery decider.
 
     The USB-failure fallback ranks client paths via next_recovery_action (the one
-    priority ladder) and engages one via activate_client.  A quarantined /
-    no-IP-suppressed onboard is not blindly engaged — the ladder /
+    priority ladder) and engages one via a submitted activation job.  A
+    quarantined / no-IP-suppressed onboard is not blindly engaged — the ladder /
     gather_recovery_facts gate onboard usability, so a demoted onboard is skipped
     and we go to the recovery hotspot instead.
 
@@ -3713,28 +3666,21 @@ def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
     # episode logs again, without emitting a spurious transition line.
     _last_logged_values.pop("usb_adopt_skipped_ssid_not_visible", None)
 
-    # Transactional handover: validate USB before deactivating built-in.
+    # Transactional handover, off-thread: submit a worker job that validates the
+    # USB (activate committed + IPv4/health wait); only the loop-half success tail
+    # then disconnects the healthy built-in, clears the fallback flag / no-IP
+    # ledger / pending adoption, sets the active client, and re-announces mDNS —
+    # so the built-in is dropped one pass later, after the USB is validated.  On
+    # failure the tail records the no-IP failure and clears the pending adoption.
     logger.info("Runtime USB adoption starting on %s", candidate.ifname)
-    if _activate_committed_on(candidate.ifname):
-        logger.info("Runtime USB adoption succeeded on %s", candidate.ifname)
-        # Shared handover tail: set the candidate active, deactivate the previous
-        # built-in client, clear the fallback flag / no-IP ledger / pending
-        # adoption, and re-announce mDNS.
-        client_up_tail(
-            candidate,
-            set_builtin_fallback=False,
-            clear_noip_stable_id=candidate.stable_id,
-            disconnect_builtin_ifname=builtin.ifname,
-            clear_pending_adoption=True,
-        )
-        return True
-
-    logger.warning("Runtime USB adoption failed on %s; retaining built-in", candidate.ifname)
-    # Record the no-IP failure to escalate the back-off and surface the
-    # DEGRADED_NO_IP status.
-    wifi_recovery.record_noip_failure(_self_module(), candidate.stable_id, now)
-    _clear_pending_adoption()
-    return False
+    job = ActivationJob(
+        epoch=_next_activation_epoch(), kind="activate_committed", ifname=candidate.ifname,
+        disconnects_previous_ifname=builtin.ifname,
+        sets_builtin_fallback=False,
+        clears_pending_adoption=True,
+        records_noip=True, noip_at=now, stable_id=candidate.stable_id,
+    )
+    return submit_activation_job(job)
 
 
 def _clear_pending_adoption() -> None:
