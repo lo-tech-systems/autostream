@@ -5,10 +5,46 @@ continuously as root on the **system** Python (not the app venv, so setup and
 recovery survive a broken venv) and owns network **policy**: NetworkManager does
 the mechanics; the watcher decides which interface should carry the client, when
 to host a setup hotspot, when to reset a wedged adapter, and when a reboot is the
-last resort. Autoconnect is disabled on every managed Wi-Fi profile so the
+last resort. Autoconnect is disabled on every managed non-AP Wi-Fi profile so the
 watcher is the sole agent that brings a client up. It always serves the setup
 page; the NGINX config routes browser traffic to the watcher or to the main
 web UI by the presence of `/tmp/apmode`.
+
+## Implementation map
+
+The installed recovery component is a star topology centered on
+`platform/wifi_watcher`. The watcher owns global `STATE`, `RECOVERY_STATE`,
+locks, constants, startup, and thin compatibility wrappers. Split modules are
+deployed beside it and receive narrow context objects or the watcher module:
+
+| Module | Responsibility |
+|---|---|
+| `platform/wifi_watcher` | Startup, constants, shared state, fact gathering, setup/AP primitives, reboot guard, loop wiring, compatibility wrappers. |
+| `platform/wifi_policy.py` | Pure decision core: `Mode`, `HotspotPurpose`, `PURPOSE_TABLE`, `next_mode`, recovery ladder, BSSID roam selection. |
+| `platform/wifi_loop.py` | Ordered monitor-loop phases and `step_*` handlers. |
+| `platform/wifi_activation.py` | Single-slot activation worker, activation jobs/results, loop-thread success/failure tails. |
+| `platform/wifi_adoption.py` | USB failure fallback, runtime USB adoption, recovery-hotspot rejoin, reconnect-saved episodes, BSSID survey/roam orchestration. |
+| `platform/wifi_recovery.py` | Dead-PHY detection, reset/quarantine/no-IP ledgers, guarded reboot persistence, per-adapter recovery facts. |
+| `platform/wifi_status.py` | In-memory `/network_status` schema v1 snapshot and adapter health presentation. |
+| `platform/wifi_web.py` | Flask setup page, captive-portal endpoints, loopback+token control API. |
+| `platform/wifi_config.py` | First-boot profile import, autoconnect migration, steady-state reconnect helper. |
+| `platform/wifi_mdns.py` | Avahi hostname repair and mDNS host-record re-announce debounce. |
+| `platform/wifi_nm.py` | The bounded `nmcli` client. |
+| `platform/wifi_hotspot.py` | AP start/stop/rebuild/clear-stale controller; start/stop own the `/tmp/apmode` flag sequencing around AP bring-up/teardown. |
+| `core/autostream_wifi_network.py` | Shared facts and command-construction primitives: network state, adapter discovery, `nmcli`/`ip` parsing, scans, dnsmasq config rendering. |
+
+## Persistent network state
+
+Credentials remain in NetworkManager profiles. The watcher persists only the
+committed connection identity:
+
+- `/etc/autostream-network.json`: authoritative schema v1 state with
+  `connection_name` and optional `connection_uuid`.
+- `/opt/autostream/ssid`: legacy compatibility mirror containing the connection
+  name only, despite the historical filename.
+
+Invalid or empty JSON falls back to the legacy mirror. The watcher lazily
+resolves and persists a UUID when a legacy name-only profile is used.
 
 ## Connectivity preference and the health model
 
@@ -17,13 +53,23 @@ Usable ethernet wins regardless of subnet — the idle Wi-Fi client is disconnec
 so there is one deterministic path and mDNS address (deferred only while playback
 is active or uncertain).
 
-A path is **healthy** when NetworkManager reports the interface connected/activated,
-it holds a non-link-local RFC1918 IPv4 address (not 169.254/16), and its
-interface-scoped default gateway is reachable. Health is scoped to the active
-client adapter. A *soft* failure (carrier up but gateway/IPv4 not yet ready, or an
+Wi-Fi client health means NetworkManager reports the interface
+connected/activated to a non-AP profile, the interface has a non-link-local
+RFC1918 IPv4 address, and its interface-scoped default gateway is reachable.
+Wired health is broader: carrier plus any usable non-link-local unicast IPv4
+address. A carrier-only cable is reported but does not count as a usable path.
+
+A *soft* Wi-Fi failure (carrier up but gateway/IPv4 not yet ready, or an
 NM-disconnected-but-still-present USB) must persist **2 passes** before the path
 is declared down; *hard* failures (nothing configured, NO-CARRIER, no client and
 no present USB) condemn immediately. Slow to condemn, quick to forgive.
+
+## Startup sequence
+
+On startup the watcher clears stale hotspot state, runs first-boot import if its
+marker is absent, enforces `connection.autoconnect no` on managed non-AP Wi-Fi
+profiles, loads persisted adapter fault state, generates the per-boot control
+token, starts the activation worker, and starts the monitor loop.
 
 ## First-boot profile import
 
@@ -45,6 +91,22 @@ device the step is a no-op (zero or one saved profile, nothing to delete).
 `device.mode` is one of: **BOOT**, **ONLINE**, **OFFLINE_RECONNECTING**,
 **HOTSPOT**, **REBOOT_PENDING**. The mode is computed by a pure classifier each
 pass and applied by the loop; it is not an emergent property of scattered flags.
+
+## Activation worker
+
+Effectful joins run through one shared activation worker instead of request
+threads or inline loop code. The queue is single-slot and guarded by
+`STATE.transitioning`, so the watcher has at most one activation in flight.
+
+The worker performs slow, bounded effects: dropping the AP for a single-radio
+attempt, running `nmcli`, validating IPv4/health, and rebuilding the AP on
+failure. The monitor loop applies the success/failure tail at the next pass:
+set active client, clear timers/ledgers, leave setup mode, disconnect a previous
+client when needed, and trigger Avahi verification.
+
+Reconnect-to-saved and explicit-reconfigure rollback use a reconnect episode:
+one target adapter is tried per monitor pass, and the episode advances only after
+the worker result is applied.
 
 ## Hotspot purpose table
 
@@ -80,10 +142,11 @@ headless recovery (no station) is unchanged.
 
 **Recovery ladder** (one pure classifier, used identically at boot-entry, on USB
 failure, and from within a recovery hotspot): ethernet > preferred USB > onboard
-client > hotspot as last resort. A quarantined / no-IP-suppressed / budget-spent
-onboard is not offered. The invariant: a broken USB dongle must never trap the
-device in a hotspot on the only working radio — the onboard is tried as a client
-before hosting a recovery AP, and climbed back to from within one.
+client > hotspot as last resort. Disabled, quarantined, no-IP-suppressed, or
+onboard-failure-bound adapters are not offered as client rungs. The invariant: a
+broken USB dongle must never trap the device in a hotspot on the only working
+radio — the onboard is tried as a client before hosting a recovery AP, and
+climbed back to from within one.
 
 **Dead-PHY reset ladder** (a wedged-but-present adapter, NO-CARRIER / DOWN, after a
 2-pass debounce): built-in fallback → USB reset (method A rebind, then B
@@ -96,6 +159,12 @@ overlaps a worker activation, and is left synchronous by design.
 **Runtime USB adoption**: a newly stable USB spare that can see the committed SSID
 is validated *before* the healthy built-in is dropped (transactional handover),
 gated by playback and by a saved-SSID scan.
+
+**USB BSSID ownership / roam**: active USB clients keep a BSSID table fresh with a
+cheap self-scan every 60 s, an opportunistic idle-onboard scan when available, and
+a full USB rescan every 15 min while playback is idle. A roam is submitted only
+when a fresh, unquarantined candidate clears the signal margin and the 15-minute
+roam/activation holdoff has elapsed.
 
 **Persistent fault state**: the per-adapter no-IP and reset/quarantine ledgers are
 persisted to `/var/lib/autostream/adapter-fault-state.json` (wall-clock
@@ -137,6 +206,9 @@ cross-boot cap of **3 reboots per 24 h** plus an in-process throttle):
 | Reconnect attempt interval | 2 min |
 | Recovery-hotspot saved-SSID scan | 30 s |
 | Runtime USB-adoption scan | 5 min |
+| BSSID cheap survey | 60 s |
+| BSSID full USB survey | 15 min |
+| BSSID roam/activation holdoff | 15 min |
 | Gateway-down / dead-PHY → reboot | 30 min |
 | No usable path → catch-all reboot | 12 h |
 | USB reset budget window | 24 h (2 preferred / 5 total) |
@@ -153,6 +225,7 @@ plus the OS captive-portal probe endpoints (`/generate_204`, `/ncsi.txt`,
 `GET /version`, `GET /network_status`, `POST /network_control`
 (actions: `start_setup`, `reconnect_saved`, `set_log_level`, `disable_adapter`,
 `enable_adapter`, `clear_adapter`), `POST /request_ap_mode`.
+`POST /request_ap_mode` queues the compatibility `manual_ap` action internally.
 
 **Log levels:** `fatal`, `log`, `warning`, `info` (default), `debug`, `spam`.
 Only `warning` / `info` / `debug` are settable at runtime via `set_log_level`;
