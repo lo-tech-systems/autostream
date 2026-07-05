@@ -562,6 +562,10 @@ class NetworkMonitorState:
     pending_usb_adoption_checks: int = 0
     last_detected_adapter_macs: Optional[frozenset] = None
 
+    # ---- USB BSSID ownership (roaming) ----
+    bssid_table: dict = field(default_factory=dict)
+    last_roam_or_activation: Optional[float] = None
+
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
     # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-
     # disable ledgers live on RECOVERY_STATE (a wifi_recovery.RecoveryState),

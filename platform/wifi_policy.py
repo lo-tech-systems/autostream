@@ -207,3 +207,124 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
         return RecoveryAction(RecoveryKind.ENTER_HOTSPOT,
                               purpose=HotspotPurpose.BOOT_RECOVERY, reason="no_client_path")
     return RecoveryAction(RecoveryKind.HOLD, reason="hotspot_last_resort")
+
+
+# ---- USB BSSID ownership: table maintenance + selection/roam policy --------
+# Pure functions over a passed-in table dict (STATE.bssid_table) — no STATE, no
+# effects, consistent with this module's contract.  Units are nmcli SIGNAL
+# percent (0-100) throughout.
+
+BSSID_FRESH_SECS = 180          # max age for a selectable candidate
+BSSID_EVICT_SECS = 900          # unseen entries evicted from the table
+BSSID_QUARANTINE_FAILS = 3      # failures making an entry quarantinable
+BSSID_QUARANTINE_SECS = 3600    # quarantine duration
+ROAM_LOW_SIGNAL = 50            # "current link is weak" floor (approx -75 dBm)
+ROAM_MARGIN = 12                # required candidate advantage (approx 6 dB)
+ROAM_LOW_MARGIN = 6             # relaxed advantage when current <= low floor
+ROAM_HOLDOFF_SECS = 900         # min gap between roams / after activation
+
+
+def update_bssid_table(table: dict, rows: list, ssid: str, now: float) -> tuple:
+    """Upsert *rows* matching *ssid* into *table*, then evict stale entries.
+
+    Returns the in-use row's ``(bssid, signal)`` from *rows*, or ``("", 0)`` if
+    none of the matching rows is in-use.
+    """
+    in_use_bssid, in_use_signal = "", 0
+    for row in rows:
+        if row.get("ssid") != ssid:
+            continue
+        bssid = row["bssid"]
+        existing = table.get(bssid, {})
+        table[bssid] = {
+            "ssid": ssid,
+            "signal": row["signal"],
+            "last_seen": now,
+            "fail_count": existing.get("fail_count", 0),
+            "quarantined_until": existing.get("quarantined_until"),
+        }
+        if row.get("in_use"):
+            in_use_bssid, in_use_signal = bssid, row["signal"]
+
+    for bssid in [b for b, e in table.items() if now - e["last_seen"] > BSSID_EVICT_SECS]:
+        del table[bssid]
+
+    return in_use_bssid, in_use_signal
+
+
+def record_bssid_failure(table: dict, bssid: str) -> None:
+    """A pinned activation on *bssid* failed: count it toward quarantine."""
+    entry = table.get(bssid)
+    if entry is not None:
+        entry["fail_count"] += 1
+
+
+def record_bssid_success(table: dict, bssid: str, now: float) -> None:
+    """A pinned activation on *bssid* succeeded: clear its count and quarantine
+    other same-SSID entries that have accumulated enough failures.
+
+    No success -> no quarantine: a whole-network outage never locks out APs.
+    """
+    entry = table.get(bssid)
+    if entry is None:
+        return
+    entry["fail_count"] = 0
+    ssid = entry["ssid"]
+    for other_bssid, other in table.items():
+        if other_bssid == bssid or other["ssid"] != ssid:
+            continue
+        if other["fail_count"] >= BSSID_QUARANTINE_FAILS:
+            other["quarantined_until"] = now + BSSID_QUARANTINE_SECS
+
+
+def select_bssid(table: dict, now: float, exclude: str = "") -> str:
+    """Best selectable BSSID: fresh, not quarantined, not *exclude*.
+
+    Ordered by (fail_count asc, signal desc); returns "" if none qualify.
+    """
+    candidates = []
+    for bssid, entry in table.items():
+        if bssid == exclude:
+            continue
+        if now - entry["last_seen"] > BSSID_FRESH_SECS:
+            continue
+        quarantined_until = entry.get("quarantined_until")
+        if quarantined_until is not None and quarantined_until > now:
+            continue
+        candidates.append((entry["fail_count"], -entry["signal"], bssid))
+    if not candidates:
+        return ""
+    candidates.sort()
+    return candidates[0][2]
+
+
+def next_roam_target(table: dict, current_bssid: str, now: float, playing,
+                     last_roam_or_activation) -> str:
+    """Pure roam decision: "" means hold, otherwise the target BSSID.
+
+    Roams only when playback is exactly False (None defers), the holdoff has
+    elapsed since the last roam/activation, and the best fresh, unquarantined
+    candidate clears the signal margin over the current AP.
+    """
+    if playing is not False:
+        return ""
+    if last_roam_or_activation is not None and now - last_roam_or_activation < ROAM_HOLDOFF_SECS:
+        return ""
+
+    candidate = select_bssid(table, now, exclude=current_bssid)
+    if not candidate:
+        return ""
+
+    current_entry = table.get(current_bssid)
+    current_signal = current_entry["signal"] if current_entry else 0
+    candidate_signal = table[candidate]["signal"]
+
+    if candidate_signal >= current_signal + ROAM_MARGIN:
+        return candidate
+    if current_signal <= ROAM_LOW_SIGNAL and candidate_signal >= current_signal + ROAM_LOW_MARGIN:
+        return candidate
+    return ""
+
+
+def clear_bssid_table(table: dict) -> None:
+    table.clear()

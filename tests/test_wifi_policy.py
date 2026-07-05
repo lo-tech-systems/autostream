@@ -189,3 +189,223 @@ class TestNextRecoveryAction:
 
     def test_no_w_seam(self):
         assert "w" not in inspect.signature(wifi_policy.next_recovery_action).parameters
+
+
+# ---------------------------------------------------------------------------
+# USB BSSID ownership: table maintenance + selection/roam policy
+# ---------------------------------------------------------------------------
+
+def _row(bssid, ssid, signal, in_use=False):
+    return {"bssid": bssid, "ssid": ssid, "signal": signal, "in_use": in_use}
+
+
+class TestUpdateBssidTable:
+    def test_upserts_matching_ssid_rows_only(self):
+        table = {}
+        rows = [_row("AA", "Home", 70), _row("BB", "Other", 90)]
+        wifi_policy.update_bssid_table(table, rows, "Home", now=100.0)
+        assert set(table.keys()) == {"AA"}
+        assert table["AA"]["signal"] == 70
+        assert table["AA"]["last_seen"] == 100.0
+        assert table["AA"]["fail_count"] == 0
+        assert table["AA"]["quarantined_until"] is None
+
+    def test_returns_in_use_row(self):
+        table = {}
+        rows = [_row("AA", "Home", 70), _row("BB", "Home", 90, in_use=True)]
+        result = wifi_policy.update_bssid_table(table, rows, "Home", now=100.0)
+        assert result == ("BB", 90)
+
+    def test_returns_empty_when_no_in_use_row(self):
+        table = {}
+        rows = [_row("AA", "Home", 70)]
+        result = wifi_policy.update_bssid_table(table, rows, "Home", now=100.0)
+        assert result == ("", 0)
+
+    def test_upsert_preserves_fail_count_and_quarantine(self):
+        table = {"AA": {"ssid": "Home", "signal": 40, "last_seen": 50.0,
+                        "fail_count": 2, "quarantined_until": 999.0}}
+        rows = [_row("AA", "Home", 60)]
+        wifi_policy.update_bssid_table(table, rows, "Home", now=100.0)
+        assert table["AA"]["signal"] == 60
+        assert table["AA"]["fail_count"] == 2
+        assert table["AA"]["quarantined_until"] == 999.0
+
+    def test_evicts_stale_entries(self):
+        table = {"OLD": {"ssid": "Home", "signal": 50, "last_seen": 0.0,
+                         "fail_count": 0, "quarantined_until": None}}
+        rows = [_row("AA", "Home", 70)]
+        now = wifi_policy.BSSID_EVICT_SECS + 1
+        wifi_policy.update_bssid_table(table, rows, "Home", now=now)
+        assert "OLD" not in table
+        assert "AA" in table
+
+    def test_ssid_change_clears_table(self):
+        table = {"AA": {"ssid": "Home", "signal": 70, "last_seen": 100.0,
+                        "fail_count": 0, "quarantined_until": None}}
+        wifi_policy.clear_bssid_table(table)
+        assert table == {}
+
+
+class TestRecordBssidOutcome:
+    def _table(self):
+        return {
+            "AA": {"ssid": "Home", "signal": 70, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": None},
+            "BB": {"ssid": "Home", "signal": 60, "last_seen": 100.0,
+                  "fail_count": wifi_policy.BSSID_QUARANTINE_FAILS, "quarantined_until": None},
+            "CC": {"ssid": "Other", "signal": 80, "last_seen": 100.0,
+                  "fail_count": wifi_policy.BSSID_QUARANTINE_FAILS, "quarantined_until": None},
+        }
+
+    def test_failure_increments_count(self):
+        table = self._table()
+        wifi_policy.record_bssid_failure(table, "AA")
+        assert table["AA"]["fail_count"] == 1
+
+    def test_failure_on_unknown_bssid_is_noop(self):
+        table = self._table()
+        wifi_policy.record_bssid_failure(table, "ZZ")  # must not raise
+        assert "ZZ" not in table
+
+    def test_success_zeroes_own_count(self):
+        table = self._table()
+        table["AA"]["fail_count"] = 5
+        wifi_policy.record_bssid_success(table, "AA", now=200.0)
+        assert table["AA"]["fail_count"] == 0
+
+    def test_success_quarantines_other_failed_same_ssid_entries(self):
+        table = self._table()
+        wifi_policy.record_bssid_success(table, "AA", now=200.0)
+        assert table["BB"]["quarantined_until"] == 200.0 + wifi_policy.BSSID_QUARANTINE_SECS
+
+    def test_success_does_not_quarantine_other_ssid_entries(self):
+        table = self._table()
+        wifi_policy.record_bssid_success(table, "AA", now=200.0)
+        assert table["CC"]["quarantined_until"] is None
+
+    def test_no_success_no_quarantine(self):
+        table = self._table()
+        wifi_policy.record_bssid_failure(table, "AA")
+        assert table["BB"]["quarantined_until"] is None
+
+
+class TestSelectBssid:
+    def test_orders_by_fail_count_then_signal(self):
+        table = {
+            "AA": {"ssid": "Home", "signal": 60, "last_seen": 100.0,
+                  "fail_count": 1, "quarantined_until": None},
+            "BB": {"ssid": "Home", "signal": 90, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": None},
+            "CC": {"ssid": "Home", "signal": 50, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": None},
+        }
+        assert wifi_policy.select_bssid(table, now=100.0) == "BB"
+
+    def test_excludes_stale_entries(self):
+        table = {
+            "AA": {"ssid": "Home", "signal": 90, "last_seen": 0.0,
+                  "fail_count": 0, "quarantined_until": None},
+        }
+        now = wifi_policy.BSSID_FRESH_SECS + 1
+        assert wifi_policy.select_bssid(table, now=now) == ""
+
+    def test_excludes_quarantined_entries(self):
+        table = {
+            "AA": {"ssid": "Home", "signal": 90, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": 200.0},
+            "BB": {"ssid": "Home", "signal": 50, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": None},
+        }
+        assert wifi_policy.select_bssid(table, now=100.0) == "BB"
+
+    def test_quarantine_expired_is_selectable(self):
+        table = {
+            "AA": {"ssid": "Home", "signal": 90, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": 50.0},
+        }
+        assert wifi_policy.select_bssid(table, now=100.0) == "AA"
+
+    def test_excludes_given_bssid(self):
+        table = {
+            "AA": {"ssid": "Home", "signal": 90, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": None},
+            "BB": {"ssid": "Home", "signal": 50, "last_seen": 100.0,
+                  "fail_count": 0, "quarantined_until": None},
+        }
+        assert wifi_policy.select_bssid(table, now=100.0, exclude="AA") == "BB"
+
+    def test_empty_table_returns_empty(self):
+        assert wifi_policy.select_bssid({}, now=100.0) == ""
+
+
+class TestNextRoamTarget:
+    def _table(self, current_signal=50, candidate_signal=90):
+        return {
+            "CUR": {"ssid": "Home", "signal": current_signal, "last_seen": 100.0,
+                   "fail_count": 0, "quarantined_until": None},
+            "CAND": {"ssid": "Home", "signal": candidate_signal, "last_seen": 100.0,
+                    "fail_count": 0, "quarantined_until": None},
+        }
+
+    def test_playing_true_holds(self):
+        table = self._table()
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, True, None) == ""
+
+    def test_playing_none_defers(self):
+        table = self._table()
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, None, None) == ""
+
+    def test_holdoff_not_elapsed_holds(self):
+        table = self._table()
+        last = 100.0 - (wifi_policy.ROAM_HOLDOFF_SECS - 1)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, last) == ""
+
+    def test_holdoff_elapsed_allows_roam(self):
+        table = self._table(current_signal=50, candidate_signal=70)  # clears ROAM_MARGIN
+        last = 100.0 - (wifi_policy.ROAM_HOLDOFF_SECS + 1)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, last) == "CAND"
+
+    def test_no_last_roam_allows_roam(self):
+        table = self._table(current_signal=50, candidate_signal=70)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == "CAND"
+
+    def test_margin_arm_roams(self):
+        table = self._table(current_signal=60, candidate_signal=60 + wifi_policy.ROAM_MARGIN)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == "CAND"
+
+    def test_margin_arm_insufficient_holds(self):
+        table = self._table(current_signal=60, candidate_signal=60 + wifi_policy.ROAM_MARGIN - 1)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_low_signal_arm_roams_with_relaxed_margin(self):
+        table = self._table(current_signal=wifi_policy.ROAM_LOW_SIGNAL,
+                            candidate_signal=wifi_policy.ROAM_LOW_SIGNAL + wifi_policy.ROAM_LOW_MARGIN)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == "CAND"
+
+    def test_low_signal_arm_insufficient_holds(self):
+        table = self._table(current_signal=wifi_policy.ROAM_LOW_SIGNAL,
+                            candidate_signal=wifi_policy.ROAM_LOW_SIGNAL + wifi_policy.ROAM_LOW_MARGIN - 1)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_current_above_low_floor_needs_full_margin(self):
+        # current above ROAM_LOW_SIGNAL: the relaxed low-margin arm must not apply.
+        table = self._table(current_signal=wifi_policy.ROAM_LOW_SIGNAL + 1,
+                            candidate_signal=wifi_policy.ROAM_LOW_SIGNAL + 1 + wifi_policy.ROAM_LOW_MARGIN)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_quarantined_candidate_excluded(self):
+        table = self._table(current_signal=50, candidate_signal=90)
+        table["CAND"]["quarantined_until"] = 200.0
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_stale_candidate_excluded(self):
+        table = self._table(current_signal=50, candidate_signal=90)
+        table["CAND"]["last_seen"] = 0.0
+        now = wifi_policy.BSSID_FRESH_SECS + 1
+        assert wifi_policy.next_roam_target(table, "CUR", now, False, None) == ""
+
+    def test_no_candidate_holds(self):
+        table = {"CUR": {"ssid": "Home", "signal": 50, "last_seen": 100.0,
+                         "fail_count": 0, "quarantined_until": None}}
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
