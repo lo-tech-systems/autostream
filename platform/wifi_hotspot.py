@@ -61,13 +61,19 @@ class HotspotController:
         The single home for the "recreate the hotspot" resync that used to be
         duplicated in the credential-apply candidate walk and the activation
         worker's self-undo.  Re-asserts ``setup_mode`` (the session was never torn
-        down — only the nmcli AP was), brings the AP back, and re-sets the flag.
+        down — only the nmcli AP was), brings the AP back, and re-sets the flag —
+        but only when ``start_ap_mode`` actually succeeded; like ``start()``, a
+        failed nmcli add/up clears ``setup_mode`` again, and the flag must not be
+        recreated for an AP that never came back up.
         """
         w = self.w
         with w.state_lock:
             w.STATE.setup_mode = True
         w.start_ap_mode()
-        w.update_apmode_flag(True)
+        with w.state_lock:
+            still_in_setup = w.STATE.setup_mode
+        if still_in_setup:
+            w.update_apmode_flag(True)
 
     def clear_stale(self) -> None:
         """Startup cleanup: delete any lingering AP connection and stale flag."""

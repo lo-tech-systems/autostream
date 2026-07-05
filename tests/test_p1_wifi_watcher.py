@@ -756,6 +756,20 @@ class TestHotspotController:
         start.assert_called_once()
         flag.assert_called_once_with(True)
 
+    def test_rebuild_sets_no_flag_when_ap_fails_to_come_back(self, watcher):
+        # start_ap_mode's own nmcli failure handling clears setup_mode again;
+        # rebuild() must not recreate the flag for an AP that never came up.
+        def _nmcli_failure():
+            watcher.STATE.setup_mode = False
+            watcher.STATE.hotspot = None
+        watcher.STATE.setup_mode = False
+        with patch.object(watcher, "start_ap_mode", side_effect=_nmcli_failure) as start, \
+             patch.object(watcher, "update_apmode_flag") as flag:
+            watcher.hotspot_controller.rebuild()
+        start.assert_called_once()
+        flag.assert_not_called()
+        assert watcher.STATE.setup_mode is False
+
     def test_clear_stale_deletes_ap_and_clears_flag(self, watcher):
         with patch.object(watcher.nm, "delete_connection") as delete, \
              patch.object(watcher, "clear_apmode_flag") as clear:
