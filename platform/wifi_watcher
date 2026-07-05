@@ -156,6 +156,10 @@ import wifi_web
 # exist).  Deployed beside the watcher; every nmcli invocation goes through it.
 import wifi_nm
 
+# Hotspot mechanics (start/stop/rebuild/clear-stale sequencing + flag ordering).
+# Deployed beside the watcher; instantiated below once the seam is available.
+import wifi_hotspot
+
 
 def _self_module():
     """Return this watcher module object for the split-module seam.
@@ -267,6 +271,11 @@ NMCLI_QUICK_TIMEOUT = 15                # modify / add / delete / device disconn
 # The single bounded nmcli client: every nmcli invocation passes one of the two
 # timeouts above, so there is no unbounded NetworkManager code path.
 nm = wifi_nm.NMClient(NMCLI_ACTIVATE_TIMEOUT, NMCLI_QUICK_TIMEOUT)
+
+# The single source of hotspot mechanics.  Holds this module across the seam and
+# drives the AP primitives (start_ap_mode / stop_ap_mode / update_apmode_flag /
+# clear_apmode_flag / nm) at call time.
+hotspot_controller = wifi_hotspot.HotspotController(_self_module())
 
 # Avahi mDNS hostname monitoring
 AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname checks
@@ -807,13 +816,9 @@ def enter_setup_mode(purpose: "HotspotPurpose", reason: str = "",
         STATE.rejoin_dismissed = False
 
     logger.info("Entering SetupMode (%s). Reason: %s", purpose.value, reason)
-    start_ap_mode()
-    # start_ap_mode() may abort and clear setup_mode (e.g. no built-in adapter).
-    # Only set the nginx AP-mode flag when setup is still genuinely active.
-    with state_lock:
-        still_in_setup = STATE.setup_mode
-    if still_in_setup:
-        update_apmode_flag(True)
+    # The controller brings the AP up and sets the nginx flag only when it
+    # genuinely started (start_ap_mode may abort and clear setup_mode).
+    hotspot_controller.start()
 
 def leave_setup_mode(reason: str = "") -> None:
     """Transition out of SetupMode and stop AP mode, if currently active."""
@@ -833,10 +838,9 @@ def leave_setup_mode(reason: str = "") -> None:
         STATE.reconnect_episode = None
 
     logger.info("Leaving SetupMode. Reason: %s", reason)
-    # Tear down the AP before removing the flag so nginx does not route traffic
-    # to the main webui while the setup SSID is still broadcasting.
-    stop_ap_mode()
-    update_apmode_flag(False)
+    # The controller tears down the AP before removing the flag so nginx does not
+    # route traffic to the main webui while the setup SSID is still broadcasting.
+    hotspot_controller.stop()
 
 def get_configured_network_state() -> "wifi_net.NetworkState":
     """Return the resolved configured network state (helper-validated).
@@ -1102,11 +1106,8 @@ def attempt_on_targets(targets: list, attempt_fn) -> "Optional[object]":
                 target.ifname,
             )
             # The hotspot session is intact (stop_ap_mode tore down only the
-            # nmcli AP, not STATE.hotspot); just restart the radio side.
-            with state_lock:
-                STATE.setup_mode = True
-            start_ap_mode()
-            update_apmode_flag(True)
+            # nmcli AP, not STATE.hotspot); the controller restarts the radio side.
+            hotspot_controller.rebuild()
 
     return None
 
@@ -2158,6 +2159,18 @@ def step_publish_state(hctx: "HealthContext") -> "Verdict":
         if hctx.active_path_ok and not STATE.setup_mode:
             STATE.last_active_path_seen = hctx.now
             STATE.conn_reboot_retry_after = 0.0
+        # setup_mode migration canary: setup_mode must equal (hotspot is not None)
+        # now that every write goes through enter/leave/controller.  Log (not
+        # crash the supervisor) on any mismatch for one release before setup_mode
+        # is converted to a read-only property derived from hotspot.
+        if STATE.setup_mode != (STATE.hotspot is not None):
+            log_on_change(
+                "setup_mode_hotspot_mismatch", True,
+                f"setup_mode/hotspot invariant broken: setup_mode={STATE.setup_mode}, "
+                f"hotspot={'set' if STATE.hotspot else 'None'}",
+                logging.WARNING)
+        else:
+            log_on_change("setup_mode_hotspot_mismatch", False, "")
         # Apply the pure forward classifier: STATE.mode is authoritative.
         STATE.mode = next_mode(STATE, facts)
         log_on_change("device_mode", STATE.mode, f"Mode changed -> {STATE.mode.value}")
@@ -3002,10 +3015,7 @@ def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
     # Worker self-undo: rebuild the AP it tore down so the portal stays up.  On
     # success the AP teardown (leave_setup_mode) is a loop-applied tail instead.
     if not ok and dropped_ap:
-        with state_lock:
-            STATE.setup_mode = True
-        start_ap_mode()
-        update_apmode_flag(True)
+        hotspot_controller.rebuild()
 
     return ActivationResult(job.epoch, ok, job.ifname, job,
                             error="" if ok else "activation_failed")
@@ -3800,12 +3810,10 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning("Legacy network-state migration failed: %s", e)
 
-    # First, remove any lingering Hotspot connections configured that would otherwise
-    # force the Pi to setup mode even though the WiFi is probably OK, and connect to
-    # whatever network is configured (if it is configured).
-    nm.delete_connection(AP_CONNECTION_NAME)
-    # an any associated hotspot request markers
-    clear_apmode_flag()
+    # First, remove any lingering Hotspot connection and stale nginx flag that
+    # would otherwise force the Pi to setup mode even though the WiFi is probably
+    # OK, and connect to whatever network is configured (if it is configured).
+    hotspot_controller.clear_stale()
     # First-boot adoption: import the currently connected Wi-Fi profile as the
     # single managed profile and delete other saved client profiles (marker-gated,
     # runs at most once).  Before the autoconnect sweep so it can query the active

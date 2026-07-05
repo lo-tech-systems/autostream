@@ -702,6 +702,66 @@ class TestEnterLeaveSetupMode:
         assert order == ["stop_ap", "flag_False"], f"Wrong order: {order}"
 
 
+class TestHotspotController:
+    """WP-8 — HotspotController owns the start/stop/rebuild/clear-stale sequencing
+    and pins the flag-ordering invariants."""
+
+    def test_start_sets_flag_when_ap_started(self, watcher):
+        watcher.STATE.setup_mode = True   # start_ap_mode leaves it set (AP came up)
+        with patch.object(watcher, "start_ap_mode") as start, \
+             patch.object(watcher, "update_apmode_flag") as flag:
+            watcher.hotspot_controller.start()
+        start.assert_called_once()
+        flag.assert_called_once_with(True)
+
+    def test_start_sets_no_flag_on_abort(self, watcher):
+        # start_ap_mode aborted (no adapter) and cleared setup_mode -> no flag.
+        def _abort():
+            watcher.STATE.setup_mode = False
+        watcher.STATE.setup_mode = True
+        with patch.object(watcher, "start_ap_mode", side_effect=_abort), \
+             patch.object(watcher, "update_apmode_flag") as flag:
+            watcher.hotspot_controller.start()
+        flag.assert_not_called()
+
+    def test_stop_tears_down_ap_before_removing_flag(self, watcher):
+        order: list[str] = []
+        with patch.object(watcher, "stop_ap_mode", side_effect=lambda: order.append("stop_ap")), \
+             patch.object(watcher, "update_apmode_flag",
+                          side_effect=lambda v: order.append(f"flag_{v}")):
+            watcher.hotspot_controller.stop()
+        assert order == ["stop_ap", "flag_False"]
+
+    def test_rebuild_reasserts_setup_and_rebuilds(self, watcher):
+        watcher.STATE.setup_mode = False   # a racing leave cleared it mid-drop
+        with patch.object(watcher, "start_ap_mode") as start, \
+             patch.object(watcher, "update_apmode_flag") as flag:
+            watcher.hotspot_controller.rebuild()
+        assert watcher.STATE.setup_mode is True   # re-asserted
+        start.assert_called_once()
+        flag.assert_called_once_with(True)
+
+    def test_clear_stale_deletes_ap_and_clears_flag(self, watcher):
+        with patch.object(watcher.nm, "delete_connection") as delete, \
+             patch.object(watcher, "clear_apmode_flag") as clear:
+            watcher.hotspot_controller.clear_stale()
+        delete.assert_called_once_with(watcher.AP_CONNECTION_NAME)
+        clear.assert_called_once()
+
+    def test_worker_self_undo_uses_controller_rebuild(self, watcher):
+        # The activation worker's AP self-undo goes through rebuild() (no direct
+        # setup_mode write).
+        watcher.STATE.setup_mode = True
+        job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
+                                    kind="activate_committed", ifname="wlan1",
+                                    drop_hotspot=True)
+        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher, "stop_ap_mode"), \
+             patch.object(watcher.hotspot_controller, "rebuild") as rebuild:
+            watcher._run_activation_job(job)
+        rebuild.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # get_configured_wifi_connection_name — file-based
 # ---------------------------------------------------------------------------

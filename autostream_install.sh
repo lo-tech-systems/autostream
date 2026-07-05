@@ -706,6 +706,7 @@ deploy_phase() {
   cp    "${AUTOSTREAM_DIR}/platform/wifi_policy.py"   "${INSTALL_DIR}/"
   cp    "${AUTOSTREAM_DIR}/platform/wifi_mdns.py"     "${INSTALL_DIR}/"
   cp    "${AUTOSTREAM_DIR}/platform/wifi_nm.py"       "${INSTALL_DIR}/"
+  cp    "${AUTOSTREAM_DIR}/platform/wifi_hotspot.py"  "${INSTALL_DIR}/"
   # wifi_web.py owns the Flask presentation/HTTP surface; deploy it root-owned
   # 0644 so the recovery web server has a complete, missing-import-free module set.
   install -m 0644 -o root -g root \

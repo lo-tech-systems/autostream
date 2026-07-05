@@ -99,6 +99,8 @@ install -m 0644 -o root -g root "$DEPLOY/platform/wifi_mdns.py" \
     /opt/autostream/wifi_mdns.py
 install -m 0644 -o root -g root "$DEPLOY/platform/wifi_nm.py" \
     /opt/autostream/wifi_nm.py
+install -m 0644 -o root -g root "$DEPLOY/platform/wifi_hotspot.py" \
+    /opt/autostream/wifi_hotspot.py
 install -m 0644 -o root -g root "$DEPLOY/platform/wifi_web.py" \
     /opt/autostream/wifi_web.py
 cp -a "$DEPLOY/dial/."     /opt/autostream/
