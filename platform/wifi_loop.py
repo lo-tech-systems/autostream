@@ -72,6 +72,7 @@ class LoopContext:
     submit_client_activation: Callable
     handle_usb_failure_fallback: Callable
     handle_runtime_usb_adoption: Callable
+    bssid_survey_and_roam: Callable
     maybe_reset_noip_held_usb: Callable
     escalate_dead_adapter_recovery: Callable
     publish_network_status: Callable
@@ -492,6 +493,28 @@ def step_publish_state(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
     # per-tick addresses so the status builder does not re-enumerate.
     ctx.publish_network_status(facts.adapters, facts.wired_connected, facts.wired_ok,
                                facts.addresses, facts.health_memo)
+    return ctx.Verdict.CONTINUE
+
+
+def step_bssid_survey(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
+    """Periodic USB BSSID survey and gated roam (USB client adapters only).
+
+    Skips entirely outside the narrow window where a survey is meaningful:
+    setup mode and an in-flight activation both defer to their own ladders, and
+    an onboard or unhealthy active client is out of scope (the recovery ladder
+    owns an unhealthy client, never this survey).
+    """
+    facts = hctx.facts
+    active = facts.active_client
+    with ctx.state_lock:
+        in_setup = ctx.STATE.setup_mode
+        transitioning = ctx.STATE.transitioning
+    if in_setup or transitioning:
+        return ctx.Verdict.CONTINUE
+    if active is None or not active.is_usb or not hctx.client_ok:
+        return ctx.Verdict.CONTINUE
+    if ctx.bssid_survey_and_roam(hctx):
+        return ctx.Verdict.OWN_PASS
     return ctx.Verdict.CONTINUE
 
 

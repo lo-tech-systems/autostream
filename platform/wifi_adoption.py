@@ -81,6 +81,7 @@ class AdoptionContext:
     state_lock: object
     logger: object
     RECOVERY_CTX: object
+    nm: object
     HotspotPurpose: object
     Verdict: object
     _last_logged_values: dict
@@ -89,6 +90,8 @@ class AdoptionContext:
     RECONNECT_ATTEMPT_INTERVAL: float
     ADOPTION_SCAN_INTERVAL: float
     USB_ADOPTION_STABLE_PASSES: int
+    BSSID_SURVEY_INTERVAL: float
+    BSSID_USB_SURVEY_INTERVAL: float
     # Callables
     get_configured_network_state: Callable
     is_wifi_client_healthy: Callable
@@ -475,6 +478,128 @@ def update_known_adapters(ctx: AdoptionContext, adapters: list) -> None:
     # ledger would be dropped every pass.
     present_stable_ids = {a.stable_id for a in adapters if a.stable_id}
     wifi_recovery.prune_noip_ledgers(ctx.RECOVERY_CTX, present_stable_ids)
+
+
+# ---- USB BSSID survey + gated roam ----
+#
+# Keeps the BSSID table fresh for the active USB client (so a pinned reconnect
+# always has recent candidates) and, only when playback is idle, considers a
+# deliberate roam to a clearly-better AP.  Scans here run inline on the loop
+# thread bounded by NMCLI_BSSID_SCAN_TIMEOUT — the same precedent as the loop's
+# other bounded blocking effects (recovery/adoption scans above).
+
+
+def _survey_due(ctx: AdoptionContext, attr: str, interval: float, now: float) -> bool:
+    """Rate gate: True (and stamps *attr*) once *interval* has elapsed."""
+    with ctx.state_lock:
+        last = getattr(ctx.STATE, attr)
+        if last is not None and now - last < interval:
+            return False
+        setattr(ctx.STATE, attr, now)
+        return True
+
+
+def _idle_onboard_for_survey(ctx: AdoptionContext, facts: "Facts", usb_ifname: str):
+    """The onboard radio eligible for an opportunistic survey scan, else None.
+
+    Idle: managed, not the hotspot, not the active (USB) client, and not
+    manually disabled or reset-quarantined.
+    """
+    onboard = wifi_net.resolve_builtin(facts.adapters)
+    if onboard is None or onboard.ifname == usb_ifname or not onboard.managed:
+        return None
+    hotspot = ctx.resolve_hotspot_adapter(facts.adapters)
+    if hotspot is not None and hotspot.ifname == onboard.ifname:
+        return None
+    if wifi_recovery.adapter_disabled(ctx.RECOVERY_CTX, onboard.stable_id):
+        return None
+    target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, onboard.ifname, facts.adapters)
+    if wifi_recovery.adapter_quarantined_until(ctx.RECOVERY_CTX, target, time.monotonic()) is not None:
+        return None
+    return onboard
+
+
+def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
+    """Periodic BSSID survey for the active USB client, plus a gated roam.
+
+    Rate-gated per source: a cheap USB self-scan (rescan=False) every
+    BSSID_SURVEY_INTERVAL, with an opportunistic idle-onboard scan
+    (rescan=True) alongside it; and a full USB rescan every
+    BSSID_USB_SURVEY_INTERVAL, only while playback is exactly False.  The roam
+    decision uses the current BSSID/signal from whichever scan ran this pass
+    (the in-use row) — without a fresh scan this pass there is nothing to roam
+    from, so the roam is skipped.  Returns True when a roam job was submitted
+    (the caller owns the pass).
+    """
+    facts = hctx.facts
+    usb = facts.active_client
+    usb_ifname = usb.ifname
+    now = hctx.now
+    playing = hctx.playing()
+
+    ssid = _saved_network_ssid(ctx)
+    if not ssid:
+        return False
+
+    current_bssid, current_signal = "", 0
+    scanned = False
+
+    if _survey_due(ctx, "last_bssid_survey_at", ctx.BSSID_SURVEY_INTERVAL, now):
+        rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=False)
+        if rows is not None:
+            with ctx.state_lock:
+                current_bssid, current_signal = wifi_policy.update_bssid_table(
+                    ctx.STATE.bssid_table, rows, ssid, now)
+            scanned = True
+        onboard = _idle_onboard_for_survey(ctx, facts, usb_ifname)
+        if onboard is not None:
+            onboard_rows = ctx.nm.wifi_bssid_scan(onboard.ifname, rescan=True)
+            if onboard_rows is not None:
+                with ctx.state_lock:
+                    wifi_policy.update_bssid_table(ctx.STATE.bssid_table, onboard_rows, ssid, now)
+
+    if playing is False and _survey_due(
+            ctx, "last_bssid_usb_full_survey_at", ctx.BSSID_USB_SURVEY_INTERVAL, now):
+        rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=True)
+        if rows is not None:
+            with ctx.state_lock:
+                current_bssid, current_signal = wifi_policy.update_bssid_table(
+                    ctx.STATE.bssid_table, rows, ssid, now)
+            scanned = True
+
+    if not scanned or not current_bssid or playing is not False:
+        return False
+
+    with ctx.state_lock:
+        last_roam = ctx.STATE.last_roam_or_activation
+        target = wifi_policy.next_roam_target(
+            ctx.STATE.bssid_table, current_bssid, now, playing, last_roam)
+    if not target:
+        return False
+
+    # Confirm with one fresh scan before committing — the world may have moved
+    # in the time since the survey scan that first suggested a roam.
+    confirm_rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=True)
+    if confirm_rows is None:
+        return False
+    with ctx.state_lock:
+        confirm_bssid, confirm_signal = wifi_policy.update_bssid_table(
+            ctx.STATE.bssid_table, confirm_rows, ssid, now)
+        last_roam = ctx.STATE.last_roam_or_activation
+        confirmed_target = wifi_policy.next_roam_target(
+            ctx.STATE.bssid_table, confirm_bssid or current_bssid, now, playing, last_roam)
+        if not confirmed_target:
+            return False
+        target_signal = ctx.STATE.bssid_table.get(confirmed_target, {}).get("signal", 0)
+        ctx.STATE.last_roam_or_activation = now
+
+    ctx.logger.info(
+        "BSSID roam: SSID '%s' %s (signal %d) -> %s (signal %d)",
+        ssid, confirm_bssid or current_bssid, confirm_signal, confirmed_target, target_signal)
+
+    job = wifi_activation.ActivationJob(
+        epoch=ctx.next_activation_epoch(), kind="activate_committed", ifname=usb_ifname)
+    return ctx.submit_activation_job(job)
 
 
 # ---- Reconnect-saved episode machinery ----

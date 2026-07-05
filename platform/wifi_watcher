@@ -236,6 +236,12 @@ RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery sc
 # costs nothing; the first scan for a newly stable candidate always runs
 # immediately (last is None -> due), and this interval only throttles *re*-scans.
 ADOPTION_SCAN_INTERVAL = 5 * 60         # seconds between saved-SSID adoption scans
+# USB BSSID survey cadence: the cheap self-scan (+ opportunistic idle onboard
+# scan) runs every BSSID_SURVEY_INTERVAL; the more expensive full USB rescan
+# (covers bands an idle onboard radio cannot see) runs only every
+# BSSID_USB_SURVEY_INTERVAL, and only while playback is idle.
+BSSID_SURVEY_INTERVAL = 60
+BSSID_USB_SURVEY_INTERVAL = 15 * 60
 REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
 # Multi-adapter failure/adoption tuning.
@@ -566,6 +572,8 @@ class NetworkMonitorState:
     bssid_table: dict = field(default_factory=dict)
     last_roam_or_activation: Optional[float] = None
     last_bssid_pin: dict = field(default_factory=dict)
+    last_bssid_survey_at: Optional[float] = None
+    last_bssid_usb_full_survey_at: Optional[float] = None
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
     # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-
@@ -1761,6 +1769,10 @@ def step_publish_state(hctx: "HealthContext") -> "Verdict":
     return wifi_loop.step_publish_state(LOOP_CTX, hctx)
 
 
+def step_bssid_survey(hctx: "HealthContext") -> "Verdict":
+    return wifi_loop.step_bssid_survey(LOOP_CTX, hctx)
+
+
 def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
     return wifi_loop.step_ethernet_wins(LOOP_CTX, hctx)
 
@@ -1854,6 +1866,7 @@ def network_monitor_loop(run_once: bool = False):
         step_noip_holdback_reset,
         step_dead_phy_recovery,
         step_publish_state,
+        step_bssid_survey,
         step_ethernet_wins,
         step_hotspot_policy,
         step_boot_ap_entry,
@@ -2200,6 +2213,10 @@ def update_known_adapters(adapters: list) -> None:
     wifi_adoption.update_known_adapters(ADOPTION_CTX, adapters)
 
 
+def bssid_survey_and_roam(hctx: "HealthContext") -> bool:
+    return wifi_adoption.bssid_survey_and_roam(ADOPTION_CTX, hctx)
+
+
 # ** DEAD-PHY RECOVERY **
 #
 # Detection, reset budgets, the persistent reboot guard, and the recovery
@@ -2283,6 +2300,7 @@ ADOPTION_CTX = wifi_adoption.AdoptionContext(
     state_lock=state_lock,
     logger=logger,
     RECOVERY_CTX=RECOVERY_CTX,
+    nm=nm,
     HotspotPurpose=HotspotPurpose,
     Verdict=Verdict,
     _last_logged_values=_last_logged_values,
@@ -2290,6 +2308,8 @@ ADOPTION_CTX = wifi_adoption.AdoptionContext(
     RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
     ADOPTION_SCAN_INTERVAL=ADOPTION_SCAN_INTERVAL,
     USB_ADOPTION_STABLE_PASSES=USB_ADOPTION_STABLE_PASSES,
+    BSSID_SURVEY_INTERVAL=BSSID_SURVEY_INTERVAL,
+    BSSID_USB_SURVEY_INTERVAL=BSSID_USB_SURVEY_INTERVAL,
     get_configured_network_state=get_configured_network_state,
     is_wifi_client_healthy=is_wifi_client_healthy,
     resolve_hotspot_adapter=resolve_hotspot_adapter,
@@ -2428,6 +2448,7 @@ LOOP_CTX = wifi_loop.LoopContext(
     submit_client_activation=_submit_client_activation,
     handle_usb_failure_fallback=handle_usb_failure_fallback,
     handle_runtime_usb_adoption=handle_runtime_usb_adoption,
+    bssid_survey_and_roam=bssid_survey_and_roam,
     maybe_reset_noip_held_usb=_maybe_reset_noip_held_usb,
     escalate_dead_adapter_recovery=escalate_dead_adapter_recovery,
     publish_network_status=publish_network_status,

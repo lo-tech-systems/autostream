@@ -2476,6 +2476,224 @@ class TestRuntimeUsbAdoption:
         assert job.records_noip is True and job.stable_id == usb.stable_id
 
 
+class TestStepBssidSurvey:
+    """UP-5: step_bssid_survey's gating — before delegating to the survey/roam
+    implementation."""
+
+    def _usb(self, watcher, ifname="wlan1", mac="bb:bb:bb:bb:bb:01"):
+        return _adapter(watcher, ifname, mac, is_usb=True)
+
+    def _hctx(self, watcher, facts, *, client_ok=True, playing=False):
+        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.FactsContext(pre, facts, lambda: playing)
+        return watcher.HealthContext(
+            fctx, health_ifname="wlan1", wifi_connected=True, client_ok=client_ok,
+            conn_ok=client_ok, active_path_ok=client_ok)
+
+    def test_setup_mode_skips(self, watcher):
+        watcher.STATE.setup_mode = True
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
+            v = watcher.step_bssid_survey(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        survey.assert_not_called()
+
+    def test_transitioning_skips(self, watcher):
+        watcher.STATE.transitioning = True
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
+            v = watcher.step_bssid_survey(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        survey.assert_not_called()
+
+    def test_onboard_active_skips(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        hctx = self._hctx(watcher, _facts_for(watcher, [builtin], builtin))
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
+            v = watcher.step_bssid_survey(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        survey.assert_not_called()
+
+    def test_no_active_client_skips(self, watcher):
+        hctx = self._hctx(watcher, _facts_for(watcher, [], None))
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
+            v = watcher.step_bssid_survey(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        survey.assert_not_called()
+
+    def test_unhealthy_client_skips(self, watcher):
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb), client_ok=False)
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
+            v = watcher.step_bssid_survey(hctx)
+        assert v is watcher.Verdict.CONTINUE
+        survey.assert_not_called()
+
+    def test_healthy_usb_delegates_and_owns_pass_on_roam(self, watcher):
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam", return_value=True) as survey:
+            v = watcher.step_bssid_survey(hctx)
+        assert v is watcher.Verdict.OWN_PASS
+        survey.assert_called_once_with(hctx)
+
+    def test_healthy_usb_no_roam_continues(self, watcher):
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam", return_value=False):
+            v = watcher.step_bssid_survey(hctx)
+        assert v is watcher.Verdict.CONTINUE
+
+
+class TestBssidSurveyAndRoam:
+    """UP-5: wifi_adoption.bssid_survey_and_roam — source selection, cadence
+    gating, roam submission, and confirm-scan reversal."""
+
+    def _usb(self, watcher, ifname="wlan1", mac="bb:bb:bb:bb:bb:01"):
+        return _adapter(watcher, ifname, mac, is_usb=True)
+
+    def _facts(self, watcher, usb, extra_adapters=None, now=1000.0):
+        adapters = [usb] + (extra_adapters or [])
+        return _facts_for(watcher, adapters, usb, now=now)
+
+    def _hctx(self, watcher, facts, *, playing=False):
+        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.FactsContext(pre, facts, lambda: playing)
+        return watcher.HealthContext(
+            fctx, health_ifname=facts.active_client.ifname, wifi_connected=True,
+            client_ok=True, conn_ok=True, active_path_ok=True)
+
+    @contextlib.contextmanager
+    def _stub_ssid(self, watcher, ssid="Home"):
+        with patch.object(watcher.ADOPTION_CTX, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState(ssid, "uuid-1")), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value=ssid):
+            yield
+
+    def _row(self, bssid, ssid="Home", signal=70, in_use=False):
+        return {"in_use": in_use, "bssid": bssid, "ssid": ssid, "signal": signal}
+
+    def test_cheap_usb_scan_runs(self, watcher):
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, self._facts(watcher, usb))
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            watcher.bssid_survey_and_roam(hctx)
+        scan.assert_any_call("wlan1", rescan=False)
+
+    def test_cadence_gating_skips_until_interval_elapses(self, watcher):
+        usb = self._usb(watcher)
+        hctx1 = self._hctx(watcher, self._facts(watcher, usb, now=1000.0))
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            watcher.bssid_survey_and_roam(hctx1)
+            scan.reset_mock()
+            hctx2 = self._hctx(watcher, self._facts(watcher, usb, now=1000.0 + 1.0))
+            watcher.bssid_survey_and_roam(hctx2)
+        scan.assert_not_called()
+
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            hctx3 = self._hctx(
+                watcher, self._facts(watcher, usb, now=1000.0 + watcher.BSSID_SURVEY_INTERVAL))
+            watcher.bssid_survey_and_roam(hctx3)
+        scan.assert_any_call("wlan1", rescan=False)
+
+    def test_idle_onboard_scanned_alongside(self, watcher):
+        usb = self._usb(watcher)
+        onboard = _adapter(watcher, "wlan0", "aa:aa:aa:aa:aa:01", is_builtin=True)
+        hctx = self._hctx(watcher, self._facts(watcher, usb, extra_adapters=[onboard]))
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=False), \
+             patch.object(watcher.wifi_recovery, "adapter_quarantined_until", return_value=None), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            watcher.bssid_survey_and_roam(hctx)
+        scan.assert_any_call("wlan0", rescan=True)
+
+    def test_onboard_busy_as_hotspot_is_skipped(self, watcher):
+        usb = self._usb(watcher)
+        onboard = _adapter(watcher, "wlan0", "aa:aa:aa:aa:aa:01", is_builtin=True)
+        hctx = self._hctx(watcher, self._facts(watcher, usb, extra_adapters=[onboard]))
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=onboard), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            watcher.bssid_survey_and_roam(hctx)
+        assert all(c.args[0] != "wlan0" for c in scan.call_args_list)
+
+    def test_onboard_disabled_is_skipped(self, watcher):
+        usb = self._usb(watcher)
+        onboard = _adapter(watcher, "wlan0", "aa:aa:aa:aa:aa:01", is_builtin=True)
+        hctx = self._hctx(watcher, self._facts(watcher, usb, extra_adapters=[onboard]))
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=True), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            watcher.bssid_survey_and_roam(hctx)
+        assert all(c.args[0] != "wlan0" for c in scan.call_args_list)
+
+    def test_playing_skips_full_usb_rescan(self, watcher):
+        usb = self._usb(watcher)
+        # Elapse both cadences so only the playback gate can suppress the full scan.
+        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
+        hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=True)
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            watcher.bssid_survey_and_roam(hctx)
+        for c in scan.call_args_list:
+            assert not (c.args == ("wlan1",) and c.kwargs.get("rescan") is True)
+
+    def test_dial_mode_playback_false_full_scan_and_roam(self, watcher):
+        # playback False (dial mode / idle) is exactly the roam-eligible state.
+        usb = self._usb(watcher)
+        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
+        hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=False)
+        rows = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=90),
+        ]
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=rows), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            result = watcher.bssid_survey_and_roam(hctx)
+        assert result is True
+        job = submit.call_args[0][0]
+        assert job.kind == "activate_committed" and job.ifname == "wlan1"
+        assert watcher.STATE.last_roam_or_activation == now
+
+    def test_confirm_scan_reversal_no_submission(self, watcher):
+        usb = self._usb(watcher)
+        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
+        hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=False)
+        survey_rows = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=90),
+        ]
+        # The confirm scan reverses the picture: the candidate has faded back down.
+        confirm_rows = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=52),
+        ]
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", side_effect=[survey_rows, confirm_rows]), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
+            result = watcher.bssid_survey_and_roam(hctx)
+        assert result is False
+        submit.assert_not_called()
+
+    def test_no_ssid_returns_false(self, watcher):
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, self._facts(watcher, usb))
+        with patch.object(watcher.ADOPTION_CTX, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState("", "")), \
+             patch.object(watcher.nm, "wifi_bssid_scan") as scan:
+            result = watcher.bssid_survey_and_roam(hctx)
+        assert result is False
+        scan.assert_not_called()
+
+
 class TestIf6AdoptionScanGate:
     """IF-6: runtime USB adoption scans the candidate for the committed SSID
     before moving the shared profile, so a dongle that cannot see the network
