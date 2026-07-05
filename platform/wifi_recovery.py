@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
 
@@ -33,18 +33,58 @@ INTERFACE_REAPPEAR_TIMEOUT = 15  # seconds to wait for a netdev after a USB rese
 
 
 @dataclass
+class RecoveryState:
+    """Recovery-owned state: dead-PHY detection/reset ledgers, the no-IP
+    adoption-failure ledger, the manual per-adapter disable set, and the
+    hold-back reset marker.  The watcher holds a single instance and shares it
+    with wifi_status (read-only, for the status snapshot) via StatusContext.
+    """
+
+    # ---- "Associated but no IP" / adoption-failure ledger ----
+    # stable_id -> {"count": int, "retry_after": float}.
+    adapter_noip_ledgers: dict = field(default_factory=dict)
+    # Stable-ids an operator has manually disabled via the control API; a disabled
+    # adapter is never offered as a client rung, adopted, or reset until it is
+    # re-enabled.  Persisted with the fault ledgers so it survives a restart.
+    disabled_adapters: set = field(default_factory=set)
+    # Stable-ids that already spent their one budgeted USB reset at the no-IP
+    # hold-back this suppression episode; cleared when the adapter becomes the
+    # healthy active client (success) or disappears, so a fresh hold-back may
+    # reset again.
+    noip_holdback_reset_done: set = field(default_factory=set)
+
+    # ---- Dead-PHY recovery ----
+    dead_adapter_ifname: str = ""               # interface currently classed dead ("" = none)
+    dead_adapter_checks: int = 0                # debounce counter
+    dead_adapter_since: Optional[float] = None  # monotonic; when first declared dead
+    last_reset_attempt: Optional[float] = None  # monotonic; last Method A/B step
+    last_reset_method: str = ""                 # "" | "A" | "B"
+    # Survives brief healthy flaps in-process so flapping cannot starve the
+    # 30-minute reboot threshold; kept until the adapter is healthy for 24h.
+    dead_adapter_first_failure: Optional[float] = None
+    adapter_reset_ledgers: dict = field(default_factory=dict)  # stable_id -> reset accounting
+    # Recovery-ledger identity of the adapter being tracked (MAC/sysfs/ifname);
+    # used to reset the debounce when a *different* adapter is inserted.  Not a
+    # duplicate of active_client_mac — it is the dead-target identity.
+    dead_adapter_stable_id: str = ""
+    dead_adapter_healthy_since: Optional[float] = None  # monotonic; sustained-health start
+
+
+@dataclass
 class RecoveryContext:
     """Narrow view of the watcher that the dead-PHY recovery policy depends on.
 
     Constructed once by the watcher and threaded through the recovery helpers.  It
-    carries the shared STATE object and its lock, the reset/quarantine/reboot
-    constants and persistent-state paths, and the small set of watcher callables
-    the ladder invokes — nothing else of the watcher is reachable from here.
+    carries the shared STATE object and its lock, the recovery-owned ledger state,
+    the reset/quarantine/reboot constants and persistent-state paths, and the small
+    set of watcher callables the ladder invokes — nothing else of the watcher is
+    reachable from here.
     """
 
     STATE: object
     state_lock: object
     logger: object
+    RECOVERY_STATE: RecoveryState
     # Constants
     AP_IFNAME: str
     USB_RESET_WINDOW: float
@@ -116,10 +156,10 @@ NOIP_STOP_AFTER = 5            # failures before retries are suppressed until th
 def _noip_ledger_locked(ctx, stable_id: str, create: bool = True) -> Optional[dict]:
     if not stable_id:
         return None
-    led = ctx.STATE.adapter_noip_ledgers.get(stable_id)
+    led = ctx.RECOVERY_STATE.adapter_noip_ledgers.get(stable_id)
     if led is None and create:
         led = {"count": 0, "retry_after": 0.0}
-        ctx.STATE.adapter_noip_ledgers[stable_id] = led
+        ctx.RECOVERY_STATE.adapter_noip_ledgers[stable_id] = led
     return led
 
 
@@ -174,7 +214,7 @@ def clear_noip_failures(ctx, stable_id: str) -> None:
     if not stable_id:
         return
     with ctx.state_lock:
-        existed = ctx.STATE.adapter_noip_ledgers.pop(stable_id, None) is not None
+        existed = ctx.RECOVERY_STATE.adapter_noip_ledgers.pop(stable_id, None) is not None
     if existed:
         persist_adapter_fault_state(ctx)
 
@@ -182,13 +222,13 @@ def clear_noip_failures(ctx, stable_id: str) -> None:
 def prune_noip_ledgers(ctx, present_stable_ids: set) -> None:
     """Drop ledgers for adapters that are no longer present (MAC disappeared)."""
     with ctx.state_lock:
-        for sid in list(ctx.STATE.adapter_noip_ledgers):
+        for sid in list(ctx.RECOVERY_STATE.adapter_noip_ledgers):
             if sid not in present_stable_ids:
-                ctx.STATE.adapter_noip_ledgers.pop(sid, None)
+                ctx.RECOVERY_STATE.adapter_noip_ledgers.pop(sid, None)
         # A removed adapter starts a fresh hold-back episode if it returns.
-        for sid in list(ctx.STATE.noip_holdback_reset_done):
+        for sid in list(ctx.RECOVERY_STATE.noip_holdback_reset_done):
             if sid not in present_stable_ids:
-                ctx.STATE.noip_holdback_reset_done.discard(sid)
+                ctx.RECOVERY_STATE.noip_holdback_reset_done.discard(sid)
 
 
 # ---- Manual adapter enable/disable + fault clearing (control API) ----
@@ -197,7 +237,7 @@ def adapter_disabled(ctx, stable_id: str) -> bool:
     """True when *stable_id* has been manually disabled by an operator."""
     if not stable_id:
         return False
-    return stable_id in ctx.STATE.disabled_adapters
+    return stable_id in ctx.RECOVERY_STATE.disabled_adapters
 
 
 def disable_adapter(ctx, stable_id: str) -> None:
@@ -205,8 +245,8 @@ def disable_adapter(ctx, stable_id: str) -> None:
     if not stable_id:
         return
     with ctx.state_lock:
-        added = stable_id not in ctx.STATE.disabled_adapters
-        ctx.STATE.disabled_adapters.add(stable_id)
+        added = stable_id not in ctx.RECOVERY_STATE.disabled_adapters
+        ctx.RECOVERY_STATE.disabled_adapters.add(stable_id)
     if added:
         ctx.logger.info("Adapter %s manually disabled", stable_id)
         persist_adapter_fault_state(ctx)
@@ -217,8 +257,8 @@ def enable_adapter(ctx, stable_id: str) -> None:
     if not stable_id:
         return
     with ctx.state_lock:
-        removed = stable_id in ctx.STATE.disabled_adapters
-        ctx.STATE.disabled_adapters.discard(stable_id)
+        removed = stable_id in ctx.RECOVERY_STATE.disabled_adapters
+        ctx.RECOVERY_STATE.disabled_adapters.discard(stable_id)
     if removed:
         ctx.logger.info("Adapter %s manually re-enabled", stable_id)
         persist_adapter_fault_state(ctx)
@@ -230,8 +270,8 @@ def clear_adapter_fault_state(ctx, stable_id: str) -> None:
     if not stable_id:
         return
     with ctx.state_lock:
-        had = (ctx.STATE.adapter_noip_ledgers.pop(stable_id, None) is not None)
-        had = (ctx.STATE.adapter_reset_ledgers.pop(stable_id, None) is not None) or had
+        had = (ctx.RECOVERY_STATE.adapter_noip_ledgers.pop(stable_id, None) is not None)
+        had = (ctx.RECOVERY_STATE.adapter_reset_ledgers.pop(stable_id, None) is not None) or had
     if had:
         ctx.logger.info("Cleared fault ledgers for adapter %s", stable_id)
     persist_adapter_fault_state(ctx)
@@ -369,11 +409,11 @@ def resolve_target_client(ctx, adapters: list) -> Optional[TargetAdapter]:
 
 def _clear_dead_adapter_state_locked(ctx) -> None:
     """Clear the *active* dead/debounce/reset fields (assumes state_lock held)."""
-    ctx.STATE.dead_adapter_ifname = ""
-    ctx.STATE.dead_adapter_checks = 0
-    ctx.STATE.dead_adapter_since = None
-    ctx.STATE.last_reset_attempt = None
-    ctx.STATE.last_reset_method = ""
+    ctx.RECOVERY_STATE.dead_adapter_ifname = ""
+    ctx.RECOVERY_STATE.dead_adapter_checks = 0
+    ctx.RECOVERY_STATE.dead_adapter_since = None
+    ctx.RECOVERY_STATE.last_reset_attempt = None
+    ctx.RECOVERY_STATE.last_reset_method = ""
 
 
 def clear_dead_adapter_state(ctx) -> None:
@@ -385,8 +425,8 @@ def clear_dead_adapter_state(ctx) -> None:
 def _clear_active_dead_tracking_locked(ctx) -> None:
     """Clear active dead-PHY tracking state without touching accounting ledgers."""
     _clear_dead_adapter_state_locked(ctx)
-    ctx.STATE.dead_adapter_first_failure = None
-    ctx.STATE.dead_adapter_healthy_since = None
+    ctx.RECOVERY_STATE.dead_adapter_first_failure = None
+    ctx.RECOVERY_STATE.dead_adapter_healthy_since = None
 
 
 def _new_adapter_ledger() -> dict:
@@ -397,7 +437,7 @@ def _adapter_ledger_locked(ctx, target: Optional[TargetAdapter], create: bool = 
     """Return the reset-accounting ledger for *target* (assumes state_lock held)."""
     if target is None or not target.stable_id:
         return None
-    ledgers = ctx.STATE.adapter_reset_ledgers
+    ledgers = ctx.RECOVERY_STATE.adapter_reset_ledgers
     ledger = ledgers.get(target.stable_id)
     if ledger is None and create:
         ledger = _new_adapter_ledger()
@@ -409,7 +449,7 @@ def _prune_adapter_ledgers_locked(ctx, now: float) -> None:
     """Prune rolling reset windows and expired quarantine deadlines."""
     cutoff = now - ctx.USB_RESET_WINDOW
     expired = []
-    for stable_id, ledger in list(ctx.STATE.adapter_reset_ledgers.items()):
+    for stable_id, ledger in list(ctx.RECOVERY_STATE.adapter_reset_ledgers.items()):
         recent = ledger.get("recent_resets")
         if not isinstance(recent, list):
             recent = []
@@ -430,7 +470,7 @@ def _prune_adapter_ledgers_locked(ctx, now: float) -> None:
         if not ledger["recent_resets"] and ledger.get("quarantined_until") is None and total == 0:
             expired.append(stable_id)
     for stable_id in expired:
-        ctx.STATE.adapter_reset_ledgers.pop(stable_id, None)
+        ctx.RECOVERY_STATE.adapter_reset_ledgers.pop(stable_id, None)
 
 
 def adapter_reset_ledger_snapshot(ctx, target: Optional[TargetAdapter], now: float) -> dict:
@@ -484,37 +524,37 @@ def update_dead_adapter_detection(ctx, adapters: list, target: Optional[TargetAd
     declared_now = False
     checks = 0
     with ctx.state_lock:
-        prev_id = ctx.STATE.dead_adapter_stable_id
+        prev_id = ctx.RECOVERY_STATE.dead_adapter_stable_id
         if prev_id and prev_id != target.stable_id:
             ctx.logger.debug(
                 "Dead-PHY target identity changed (%s -> %s); resetting active state",
                 prev_id, target.stable_id,
             )
             _clear_active_dead_tracking_locked(ctx)
-        ctx.STATE.dead_adapter_stable_id = target.stable_id
+        ctx.RECOVERY_STATE.dead_adapter_stable_id = target.stable_id
 
         if not down_unhealthy:
             _clear_dead_adapter_state_locked(ctx)
             if healthy:
-                if ctx.STATE.dead_adapter_healthy_since is None:
-                    ctx.STATE.dead_adapter_healthy_since = now
-                elif (now - ctx.STATE.dead_adapter_healthy_since) >= ctx.DEAD_ADAPTER_HEALTHY_DECAY:
+                if ctx.RECOVERY_STATE.dead_adapter_healthy_since is None:
+                    ctx.RECOVERY_STATE.dead_adapter_healthy_since = now
+                elif (now - ctx.RECOVERY_STATE.dead_adapter_healthy_since) >= ctx.DEAD_ADAPTER_HEALTHY_DECAY:
                     _clear_active_dead_tracking_locked(ctx)
             else:
-                ctx.STATE.dead_adapter_healthy_since = None
+                ctx.RECOVERY_STATE.dead_adapter_healthy_since = None
             return False
 
-        ctx.STATE.dead_adapter_healthy_since = None
-        if ctx.STATE.dead_adapter_first_failure is None:
-            ctx.STATE.dead_adapter_first_failure = now
-        ctx.STATE.dead_adapter_checks += 1
-        checks = ctx.STATE.dead_adapter_checks
+        ctx.RECOVERY_STATE.dead_adapter_healthy_since = None
+        if ctx.RECOVERY_STATE.dead_adapter_first_failure is None:
+            ctx.RECOVERY_STATE.dead_adapter_first_failure = now
+        ctx.RECOVERY_STATE.dead_adapter_checks += 1
+        checks = ctx.RECOVERY_STATE.dead_adapter_checks
         if checks >= ctx.DEAD_ADAPTER_DEBOUNCE:
-            if not ctx.STATE.dead_adapter_ifname:
+            if not ctx.RECOVERY_STATE.dead_adapter_ifname:
                 declared_now = True
-            ctx.STATE.dead_adapter_ifname = target.ifname
-            if ctx.STATE.dead_adapter_since is None:
-                ctx.STATE.dead_adapter_since = now
+            ctx.RECOVERY_STATE.dead_adapter_ifname = target.ifname
+            if ctx.RECOVERY_STATE.dead_adapter_since is None:
+                ctx.RECOVERY_STATE.dead_adapter_since = now
             result = True
         else:
             result = False
@@ -597,7 +637,7 @@ def maybe_reset_noip_held_usb(ctx, adapters: list, now: float) -> bool:
         if noip_failure_count(ctx, a.stable_id) < NOIP_STOP_AFTER:
             continue
         with ctx.state_lock:
-            already = a.stable_id in ctx.STATE.noip_holdback_reset_done
+            already = a.stable_id in ctx.RECOVERY_STATE.noip_holdback_reset_done
         if already:
             continue
         target = build_target_adapter(ctx, a.ifname, adapters)
@@ -611,7 +651,7 @@ def maybe_reset_noip_held_usb(ctx, adapters: list, now: float) -> bool:
         record_adapter_reset(ctx, target, now)
         wifi_net.reset_usb_adapter_rebind(a.ifname)
         with ctx.state_lock:
-            ctx.STATE.noip_holdback_reset_done.add(a.stable_id)
+            ctx.RECOVERY_STATE.noip_holdback_reset_done.add(a.stable_id)
         # Fresh adoption chance: clear the no-IP suppression (the reset may have
         # fixed the hardware).  A renewed failure re-accumulates and re-suppresses,
         # but the holdback-reset-done flag blocks a second reset this episode.
@@ -830,10 +870,10 @@ def persist_adapter_fault_state(ctx) -> None:
                 "count": int(led.get("count", 0) or 0),
                 "retry_after": _mono_to_wall(led.get("retry_after"), now_mono, now_wall),
             }
-            for sid, led in ctx.STATE.adapter_noip_ledgers.items()
+            for sid, led in ctx.RECOVERY_STATE.adapter_noip_ledgers.items()
         }
         reset = {}
-        for sid, led in ctx.STATE.adapter_reset_ledgers.items():
+        for sid, led in ctx.RECOVERY_STATE.adapter_reset_ledgers.items():
             reset[sid] = {
                 "recent_resets": [
                     _mono_to_wall(t, now_mono, now_wall)
@@ -843,7 +883,7 @@ def persist_adapter_fault_state(ctx) -> None:
                 "quarantined_until": _mono_to_wall(led.get("quarantined_until"), now_mono, now_wall),
             }
     with ctx.state_lock:
-        disabled = sorted(str(s) for s in ctx.STATE.disabled_adapters)
+        disabled = sorted(str(s) for s in ctx.RECOVERY_STATE.disabled_adapters)
     data = {
         "schema_version": ADAPTER_FAULT_STATE_SCHEMA,
         "saved_at": now_wall,
@@ -917,9 +957,9 @@ def load_adapter_fault_state(ctx) -> None:
     disabled_out = set(str(s) for s in disabled_in) if isinstance(disabled_in, list) else set()
 
     with ctx.state_lock:
-        ctx.STATE.adapter_noip_ledgers = noip_out
-        ctx.STATE.adapter_reset_ledgers = reset_out
-        ctx.STATE.disabled_adapters = disabled_out
+        ctx.RECOVERY_STATE.adapter_noip_ledgers = noip_out
+        ctx.RECOVERY_STATE.adapter_reset_ledgers = reset_out
+        ctx.RECOVERY_STATE.disabled_adapters = disabled_out
     ctx.logger.info(
         "Loaded persisted adapter fault state: %d no-IP, %d reset ledger(s), %d disabled",
         len(noip_out), len(reset_out), len(disabled_out))
@@ -989,7 +1029,7 @@ def _perform_reset_step(ctx, target: TargetAdapter, now: float) -> bool:
     one blocking effect runs at a time.
     """
     with ctx.state_lock:
-        method = "B" if ctx.STATE.last_reset_method == "A" else "A"
+        method = "B" if ctx.RECOVERY_STATE.last_reset_method == "A" else "A"
 
     ctx.logger.info("USB reset (method %s) attempted on %s", method, target.ifname)
     if method == "A":
@@ -1000,8 +1040,8 @@ def _perform_reset_step(ctx, target: TargetAdapter, now: float) -> bool:
 
     record_adapter_reset(ctx, target, now)
     with ctx.state_lock:
-        ctx.STATE.last_reset_attempt = now
-        ctx.STATE.last_reset_method = method
+        ctx.RECOVERY_STATE.last_reset_attempt = now
+        ctx.RECOVERY_STATE.last_reset_method = method
 
     if not ok:
         ctx.logger.warning("USB reset (method %s) failed on %s; escalating", method, target.ifname)
@@ -1038,7 +1078,7 @@ def _maybe_request_dead_phy_reboot(ctx, target: TargetAdapter, now: float) -> bo
     this function owns only the dead-for threshold and the target.
     """
     with ctx.state_lock:
-        first_failure = ctx.STATE.dead_adapter_first_failure
+        first_failure = ctx.RECOVERY_STATE.dead_adapter_first_failure
     base = first_failure if first_failure is not None else now
     dead_for = now - base
     if dead_for < ctx.DEAD_ADAPTER_REBOOT_AFTER:
@@ -1132,7 +1172,7 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
         # (5) otherwise the normal reset cadence.
         interval = ctx.USB_EMERGENCY_BACKOFF if budget_spent else ctx.RESET_ATTEMPT_INTERVAL
         with ctx.state_lock:
-            last = ctx.STATE.last_reset_attempt
+            last = ctx.RECOVERY_STATE.last_reset_attempt
         due = last is None or (now - last) >= interval
         if due:
             if budget_spent:

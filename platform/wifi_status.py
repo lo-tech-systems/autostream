@@ -46,6 +46,7 @@ class StatusContext:
 
     STATE: object
     state_lock: object
+    RECOVERY_STATE: object
     # Constants
     NO_ACTIVE_PATH_REBOOT_AFTER: float
     USB_MAX_RESETS_PER_WINDOW: int
@@ -255,11 +256,11 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
         active_mac = ctx.STATE.active_client_mac
         using_fallback = ctx.STATE.using_builtin_fallback
         in_setup = ctx.STATE.setup_mode
-        dead_ifname = ctx.STATE.dead_adapter_ifname
-        dead_since = ctx.STATE.dead_adapter_since
-        dead_checks = ctx.STATE.dead_adapter_checks
-        last_reset_method = ctx.STATE.last_reset_method
-        last_reset_attempt = ctx.STATE.last_reset_attempt
+        dead_ifname = ctx.RECOVERY_STATE.dead_adapter_ifname
+        dead_since = ctx.RECOVERY_STATE.dead_adapter_since
+        dead_checks = ctx.RECOVERY_STATE.dead_adapter_checks
+        last_reset_method = ctx.RECOVERY_STATE.last_reset_method
+        last_reset_attempt = ctx.RECOVERY_STATE.last_reset_attempt
         reboot_retry_after = ctx.STATE.conn_reboot_retry_after
         temp_expires = ctx.STATE.temporary_log_level_until
         default_level = ctx.STATE.default_log_level_name

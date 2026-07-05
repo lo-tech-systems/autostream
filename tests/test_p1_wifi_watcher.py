@@ -187,14 +187,20 @@ def watcher():
     mod = _get_watcher()
     from dataclasses import fields
     defaults = mod.NetworkMonitorState()
-    for f in fields(defaults):
-        setattr(mod.STATE, f.name, getattr(defaults, f.name))
+    recovery_defaults = mod.wifi_recovery.RecoveryState()
+
+    def _reset():
+        for f in fields(defaults):
+            setattr(mod.STATE, f.name, getattr(defaults, f.name))
+        for f in fields(recovery_defaults):
+            setattr(mod.RECOVERY_STATE, f.name, getattr(recovery_defaults, f.name))
+
+    _reset()
     mod._last_logged_values.clear()
     mod._last_throttled_log.clear()
     yield mod
     # Reset again in case the test mutated STATE
-    for f in fields(defaults):
-        setattr(mod.STATE, f.name, getattr(defaults, f.name))
+    _reset()
 
 
 @pytest.fixture()
@@ -1312,12 +1318,12 @@ class TestNoIpLedgerAndDiagnosis:
         prev = 0.0
         for i in range(1, wr.NOIP_STOP_AFTER):
             wr.record_noip_failure(watcher, self.MAC, now=0.0)
-            led = watcher.STATE.adapter_noip_ledgers[self.MAC]
+            led = watcher.RECOVERY_STATE.adapter_noip_ledgers[self.MAC]
             assert led["count"] == i
             assert led["retry_after"] >= prev
             prev = led["retry_after"]
         wr.record_noip_failure(watcher, self.MAC, now=0.0)
-        assert watcher.STATE.adapter_noip_ledgers[self.MAC]["retry_after"] == float("inf")
+        assert watcher.RECOVERY_STATE.adapter_noip_ledgers[self.MAC]["retry_after"] == float("inf")
         assert wr.noip_retry_suppressed(watcher, self.MAC, now=1e12) is True
 
     def test_clear_resets_ledger(self, watcher):
@@ -1567,7 +1573,7 @@ class TestAdapterOverlayEvents:
         # gated out, so there is no usable onboard fallback -> hotspot.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:51", is_usb=True)
-        watcher.STATE.adapter_noip_ledgers[builtin.stable_id] = {
+        watcher.RECOVERY_STATE.adapter_noip_ledgers[builtin.stable_id] = {
             "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf")}
         facts = _facts_for(watcher, [builtin, usb], usb)
         event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:51",
@@ -3588,11 +3594,11 @@ def _patch_dead_phy_facts(watcher, *, sysfs_names=(), usb_paths_ifaces=(),
 
 
 def _ledger(watcher, stable_id):
-    return watcher.STATE.adapter_reset_ledgers[stable_id]
+    return watcher.RECOVERY_STATE.adapter_reset_ledgers[stable_id]
 
 
 def _spend_window_budget(watcher, stable_id, now=0.0):
-    watcher.STATE.adapter_reset_ledgers[stable_id] = {
+    watcher.RECOVERY_STATE.adapter_reset_ledgers[stable_id] = {
         "recent_resets": [now, now],
         "total_resets": 2,
         "quarantined_until": None,
@@ -3640,33 +3646,33 @@ class TestDeadAdapterDetection:
                                    link_down=True, healthy=False):
             target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
             assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is False
-            assert watcher.STATE.dead_adapter_checks == 1
-            assert watcher.STATE.dead_adapter_ifname == ""
+            assert watcher.RECOVERY_STATE.dead_adapter_checks == 1
+            assert watcher.RECOVERY_STATE.dead_adapter_ifname == ""
             assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is True
-        assert watcher.STATE.dead_adapter_ifname == "wlan0"
-        assert watcher.STATE.dead_adapter_since is not None
-        assert watcher.STATE.dead_adapter_first_failure is not None
+        assert watcher.RECOVERY_STATE.dead_adapter_ifname == "wlan0"
+        assert watcher.RECOVERY_STATE.dead_adapter_since is not None
+        assert watcher.RECOVERY_STATE.dead_adapter_first_failure is not None
 
     def test_healthy_pass_clears_active_fields(self, watcher):
         usb = self._usb(watcher)
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_checks = 3
-        watcher.STATE.dead_adapter_since = 100.0
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_checks = 3
+        watcher.RECOVERY_STATE.dead_adapter_since = 100.0
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=False, healthy=True):
             target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
             assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is False
-        assert watcher.STATE.dead_adapter_ifname == ""
-        assert watcher.STATE.dead_adapter_checks == 0
-        assert watcher.STATE.dead_adapter_since is None
+        assert watcher.RECOVERY_STATE.dead_adapter_ifname == ""
+        assert watcher.RECOVERY_STATE.dead_adapter_checks == 0
+        assert watcher.RECOVERY_STATE.dead_adapter_since is None
 
     def test_healthy_decay_does_not_erase_accounting_ledger(self, watcher):
         usb = self._usb(watcher)
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_checks = 3
-        watcher.STATE.dead_adapter_healthy_since = 100.0
-        watcher.STATE.adapter_reset_ledgers[usb.stable_id] = {
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_checks = 3
+        watcher.RECOVERY_STATE.dead_adapter_healthy_since = 100.0
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[usb.stable_id] = {
             "recent_resets": [100.0],
             "total_resets": 1,
             "quarantined_until": None,
@@ -3678,14 +3684,14 @@ class TestDeadAdapterDetection:
              patch("time.monotonic", return_value=now):
             target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
             assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target) is False
-        assert watcher.STATE.dead_adapter_ifname == ""
+        assert watcher.RECOVERY_STATE.dead_adapter_ifname == ""
         assert _ledger(watcher, usb.stable_id)["recent_resets"] == [100.0]
 
     def test_identity_change_resets_debounce(self, watcher):
         usb = self._usb(watcher)
-        watcher.STATE.dead_adapter_checks = 1
-        watcher.STATE.dead_adapter_stable_id = "old:identity:value:00:00:00"
-        watcher.STATE.adapter_reset_ledgers["old:identity:value:00:00:00"] = {
+        watcher.RECOVERY_STATE.dead_adapter_checks = 1
+        watcher.RECOVERY_STATE.dead_adapter_stable_id = "old:identity:value:00:00:00"
+        watcher.RECOVERY_STATE.adapter_reset_ledgers["old:identity:value:00:00:00"] = {
             "recent_resets": [10.0],
             "total_resets": 4,
             "quarantined_until": None,
@@ -3696,15 +3702,15 @@ class TestDeadAdapterDetection:
             target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
             watcher.wifi_recovery.update_dead_adapter_detection(watcher, [usb], target)
         # Active tracking resets on identity change, but the old ledger is isolated.
-        assert watcher.STATE.dead_adapter_checks == 1
+        assert watcher.RECOVERY_STATE.dead_adapter_checks == 1
         assert _ledger(watcher, "old:identity:value:00:00:00")["total_resets"] == 4
 
     def test_none_target_clears_state(self, watcher):
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_checks = 2
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_checks = 2
         assert watcher.wifi_recovery.update_dead_adapter_detection(watcher, [], None) is False
-        assert watcher.STATE.dead_adapter_ifname == ""
-        assert watcher.STATE.dead_adapter_checks == 0
+        assert watcher.RECOVERY_STATE.dead_adapter_ifname == ""
+        assert watcher.RECOVERY_STATE.dead_adapter_checks == 0
 
 
 class TestResetBudget:
@@ -3772,7 +3778,7 @@ class TestResetBudget:
         )
         watcher.wifi_recovery.record_adapter_reset(watcher, a, 100.0)
         watcher.wifi_recovery.record_adapter_reset(watcher, replacement, 200.0)
-        assert set(watcher.STATE.adapter_reset_ledgers) == {a.stable_id, replacement.stable_id}
+        assert set(watcher.RECOVERY_STATE.adapter_reset_ledgers) == {a.stable_id, replacement.stable_id}
         assert _ledger(watcher, a.stable_id)["recent_resets"] == [100.0]
         assert _ledger(watcher, replacement.stable_id)["recent_resets"] == [200.0]
 
@@ -3881,11 +3887,11 @@ class TestEscalateDeadAdapterRecovery:
 
     def _mark_dead(self, watcher):
         """Pre-mark the target as dead so the ladder acts immediately."""
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_since = 0.0
-        watcher.STATE.dead_adapter_first_failure = 0.0
-        watcher.STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
-        watcher.STATE.dead_adapter_stable_id = self.USB_MAC
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_since = 0.0
+        watcher.RECOVERY_STATE.dead_adapter_first_failure = 0.0
+        watcher.RECOVERY_STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
+        watcher.RECOVERY_STATE.dead_adapter_stable_id = self.USB_MAC
 
     def test_healthy_target_no_action(self, watcher):
         usb = self._usb(watcher)
@@ -3910,13 +3916,13 @@ class TestEscalateDeadAdapterRecovery:
         assert handled is True
         ra.assert_called_once_with("wlan0")
         rb.assert_not_called()
-        assert watcher.STATE.last_reset_method == "A"
+        assert watcher.RECOVERY_STATE.last_reset_method == "A"
 
     def test_method_b_after_a(self, watcher):
         usb = self._usb(watcher)
         self._mark_dead(watcher)
-        watcher.STATE.last_reset_method = "A"
-        watcher.STATE.last_reset_attempt = 0.0
+        watcher.RECOVERY_STATE.last_reset_method = "A"
+        watcher.RECOVERY_STATE.last_reset_attempt = 0.0
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=True, healthy=False), \
@@ -3930,7 +3936,7 @@ class TestEscalateDeadAdapterRecovery:
             watcher.escalate_dead_adapter_recovery([usb], False)
         rb.assert_called_once_with("wlan0")
         ra.assert_not_called()
-        assert watcher.STATE.last_reset_method == "B"
+        assert watcher.RECOVERY_STATE.last_reset_method == "B"
 
     def test_reset_success_clears_dead_state(self, watcher):
         usb = self._usb(watcher)
@@ -3945,7 +3951,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.escalate_dead_adapter_recovery([usb], False)
-        assert watcher.STATE.dead_adapter_ifname == ""
+        assert watcher.RECOVERY_STATE.dead_adapter_ifname == ""
 
     def test_builtin_fallback_preferred_over_reset(self, watcher):
         usb = self._usb(watcher)
@@ -3986,7 +3992,7 @@ class TestEscalateDeadAdapterRecovery:
         usb = self._usb(watcher)
         self._mark_dead(watcher)
         # Non-resettable target so the ladder falls through to reboot.
-        watcher.STATE.last_reset_attempt = 0.0
+        watcher.RECOVERY_STATE.last_reset_attempt = 0.0
         now = watcher.DEAD_ADAPTER_REBOOT_AFTER + 100.0
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=[],  # not resettable
@@ -4044,7 +4050,7 @@ class TestEscalateDeadAdapterRecovery:
         usb = self._usb(watcher)
         self._mark_dead(watcher)
         _spend_window_budget(watcher, self.USB_MAC, now=0.0)
-        watcher.STATE.last_reset_attempt = 0.0
+        watcher.RECOVERY_STATE.last_reset_attempt = 0.0
         emergency_now = watcher.USB_EMERGENCY_BACKOFF + 10.0
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
@@ -4072,7 +4078,7 @@ class TestEscalateDeadAdapterRecovery:
              patch("time.monotonic", return_value=1.0):
             watcher.escalate_dead_adapter_recovery([usb, other], True)
         assert _ledger(watcher, self.USB_MAC)["quarantined_until"] is not None
-        assert other.stable_id not in watcher.STATE.adapter_reset_ledgers
+        assert other.stable_id not in watcher.RECOVERY_STATE.adapter_reset_ledgers
 
     def test_single_radio_setup_mode_resets_not_deadlocks(self, watcher):
         usb = self._usb(watcher)
@@ -4123,12 +4129,12 @@ class TestDeadPhyRebootThreshold:
 
     def _wedged_offline(self, watcher, now):
         usb = _adapter(watcher, "wlan0", self.USB_MAC, is_usb=True)
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_since = 1.0
-        watcher.STATE.dead_adapter_first_failure = 1.0
-        watcher.STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
-        watcher.STATE.dead_adapter_stable_id = self.USB_MAC
-        watcher.STATE.last_reset_attempt = 1.0
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_since = 1.0
+        watcher.RECOVERY_STATE.dead_adapter_first_failure = 1.0
+        watcher.RECOVERY_STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
+        watcher.RECOVERY_STATE.dead_adapter_stable_id = self.USB_MAC
+        watcher.RECOVERY_STATE.last_reset_attempt = 1.0
         return usb
 
     def _run(self, watcher, now):
@@ -4181,10 +4187,10 @@ class TestAdapterFaultStatePersistence:
         for _ in range(wr.NOIP_STOP_AFTER):
             wr.record_noip_failure(watcher, "usb-A", now=100.0)
         # Simulate a restart: drop in-memory state, reload from disk.
-        watcher.STATE.adapter_noip_ledgers = {}
-        watcher.STATE.adapter_reset_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_noip_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_reset_ledgers = {}
         wr.load_adapter_fault_state(watcher)
-        led = watcher.STATE.adapter_noip_ledgers.get("usb-A")
+        led = watcher.RECOVERY_STATE.adapter_noip_ledgers.get("usb-A")
         assert led is not None
         assert led["count"] == wr.NOIP_STOP_AFTER
         assert led["retry_after"] == float("inf")   # still suppressed after restart
@@ -4195,12 +4201,12 @@ class TestAdapterFaultStatePersistence:
         with patch("time.monotonic", return_value=1000.0), \
              patch("time.time", return_value=5000.0):
             wr.record_noip_failure(watcher, "usb-B", now=1000.0)
-        watcher.STATE.adapter_noip_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_noip_ledgers = {}
         # Reload far in the future (wall advanced well past the short backoff).
         with patch("time.monotonic", return_value=50.0), \
              patch("time.time", return_value=99999.0):
             wr.load_adapter_fault_state(watcher)
-        led = watcher.STATE.adapter_noip_ledgers.get("usb-B")
+        led = watcher.RECOVERY_STATE.adapter_noip_ledgers.get("usb-B")
         assert led is not None and led["count"] == 1
         assert led["retry_after"] <= 50.0    # deadline is in the past -> not suppressed
 
@@ -4210,40 +4216,40 @@ class TestAdapterFaultStatePersistence:
         with patch("time.monotonic", return_value=1000.0), \
              patch("time.time", return_value=5000.0):
             wr.record_adapter_reset(watcher, target, now=1000.0)
-        assert watcher.STATE.adapter_reset_ledgers["usb-C"]["total_resets"] == 1
+        assert watcher.RECOVERY_STATE.adapter_reset_ledgers["usb-C"]["total_resets"] == 1
 
         # Reload 1 hour later (wall): the reset is inside the 24h window -> kept.
-        watcher.STATE.adapter_reset_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_reset_ledgers = {}
         with patch("time.monotonic", return_value=100.0), \
              patch("time.time", return_value=5000.0 + 3600):
             wr.load_adapter_fault_state(watcher)
-        led = watcher.STATE.adapter_reset_ledgers.get("usb-C")
+        led = watcher.RECOVERY_STATE.adapter_reset_ledgers.get("usb-C")
         assert led is not None and led["total_resets"] == 1
         assert len(led["recent_resets"]) == 1
 
         # Reload 25 hours later (wall): the reset ages out of the rolling window,
         # but the total (quarantine accounting) survives.
-        watcher.STATE.adapter_reset_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_reset_ledgers = {}
         with patch("time.monotonic", return_value=100.0), \
              patch("time.time", return_value=5000.0 + 25 * 3600):
             wr.load_adapter_fault_state(watcher)
-        led = watcher.STATE.adapter_reset_ledgers.get("usb-C")
+        led = watcher.RECOVERY_STATE.adapter_reset_ledgers.get("usb-C")
         assert led is not None and led["total_resets"] == 1
         assert led["recent_resets"] == []
 
     def test_malformed_file_is_a_noop(self, watcher):
         with open(watcher.ADAPTER_FAULT_STATE_PATH, "w", encoding="utf-8") as f:
             f.write("{ not json")
-        watcher.STATE.adapter_noip_ledgers = {"pre": {"count": 3, "retry_after": 0.0}}
+        watcher.RECOVERY_STATE.adapter_noip_ledgers = {"pre": {"count": 3, "retry_after": 0.0}}
         watcher.wifi_recovery.load_adapter_fault_state(watcher)
         # Untouched: a malformed file must not wipe or corrupt live state.
-        assert watcher.STATE.adapter_noip_ledgers == {"pre": {"count": 3, "retry_after": 0.0}}
+        assert watcher.RECOVERY_STATE.adapter_noip_ledgers == {"pre": {"count": 3, "retry_after": 0.0}}
 
     def test_absent_file_is_a_noop(self, watcher):
         # Fresh temp path (never written).
-        watcher.STATE.adapter_noip_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_noip_ledgers = {}
         watcher.wifi_recovery.load_adapter_fault_state(watcher)
-        assert watcher.STATE.adapter_noip_ledgers == {}
+        assert watcher.RECOVERY_STATE.adapter_noip_ledgers == {}
 
 
 class TestManualAdapterControl:
@@ -4255,26 +4261,26 @@ class TestManualAdapterControl:
     def test_disable_and_enable_round_trip(self, watcher):
         wr = watcher.wifi_recovery
         wr.disable_adapter(watcher, "usb-X")
-        assert "usb-X" in watcher.STATE.disabled_adapters
+        assert "usb-X" in watcher.RECOVERY_STATE.disabled_adapters
         assert wr.adapter_disabled(watcher, "usb-X") is True
         wr.enable_adapter(watcher, "usb-X")
-        assert "usb-X" not in watcher.STATE.disabled_adapters
+        assert "usb-X" not in watcher.RECOVERY_STATE.disabled_adapters
 
     def test_disabled_adapters_persist(self, watcher):
         wr = watcher.wifi_recovery
         wr.disable_adapter(watcher, "usb-Y")
-        watcher.STATE.disabled_adapters = set()
+        watcher.RECOVERY_STATE.disabled_adapters = set()
         wr.load_adapter_fault_state(watcher)
-        assert "usb-Y" in watcher.STATE.disabled_adapters
+        assert "usb-Y" in watcher.RECOVERY_STATE.disabled_adapters
 
     def test_clear_adapter_clears_both_ledgers(self, watcher):
         wr = watcher.wifi_recovery
         wr.record_noip_failure(watcher, "usb-Z", now=100.0)
-        watcher.STATE.adapter_reset_ledgers["usb-Z"] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers["usb-Z"] = {
             "recent_resets": [1.0], "total_resets": 3, "quarantined_until": None}
         wr.clear_adapter_fault_state(watcher, "usb-Z")
-        assert "usb-Z" not in watcher.STATE.adapter_noip_ledgers
-        assert "usb-Z" not in watcher.STATE.adapter_reset_ledgers
+        assert "usb-Z" not in watcher.RECOVERY_STATE.adapter_noip_ledgers
+        assert "usb-Z" not in watcher.RECOVERY_STATE.adapter_reset_ledgers
 
     def test_disabled_usb_not_offered_as_client(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -4317,13 +4323,13 @@ class TestManualAdapterControl:
 
     def test_process_control_action_disable(self, watcher):
         watcher.process_control_action("disable_adapter", {"adapter": "usb-Q"})
-        assert "usb-Q" in watcher.STATE.disabled_adapters
+        assert "usb-Q" in watcher.RECOVERY_STATE.disabled_adapters
         assert watcher.STATE.last_control_result == "ok"
 
     def test_process_control_action_clear(self, watcher):
-        watcher.STATE.adapter_noip_ledgers["usb-R"] = {"count": 2, "retry_after": 0.0}
+        watcher.RECOVERY_STATE.adapter_noip_ledgers["usb-R"] = {"count": 2, "retry_after": 0.0}
         watcher.process_control_action("clear_adapter", {"adapter": "usb-R"})
-        assert "usb-R" not in watcher.STATE.adapter_noip_ledgers
+        assert "usb-R" not in watcher.RECOVERY_STATE.adapter_noip_ledgers
         assert watcher.STATE.last_control_result == "ok"
 
     def test_adapter_actions_are_non_disruptive(self, watcher):
@@ -4335,7 +4341,7 @@ class TestManualAdapterControl:
         watcher.control_action_event.set()
         v = watcher.step_control_action(self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE          # never owns the pass
-        assert "usb-N" in watcher.STATE.disabled_adapters   # applied, not deferred
+        assert "usb-N" in watcher.RECOVERY_STATE.disabled_adapters   # applied, not deferred
         assert not watcher.control_action_event.is_set()
 
 
@@ -4364,14 +4370,14 @@ class TestNoIpHoldbackReset:
             r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
         assert r is True
         reset.assert_called_once_with(usb.ifname)
-        assert usb.stable_id in watcher.STATE.noip_holdback_reset_done
-        assert usb.stable_id not in watcher.STATE.adapter_noip_ledgers   # suppression cleared
-        assert watcher.STATE.adapter_reset_ledgers[usb.stable_id]["total_resets"] == 1
+        assert usb.stable_id in watcher.RECOVERY_STATE.noip_holdback_reset_done
+        assert usb.stable_id not in watcher.RECOVERY_STATE.adapter_noip_ledgers   # suppression cleared
+        assert watcher.RECOVERY_STATE.adapter_reset_ledgers[usb.stable_id]["total_resets"] == 1
 
     def test_only_one_reset_per_episode(self, watcher):
         wr = watcher.wifi_recovery
         usb = self._held_usb(watcher)
-        watcher.STATE.noip_holdback_reset_done.add(usb.stable_id)
+        watcher.RECOVERY_STATE.noip_holdback_reset_done.add(usb.stable_id)
         with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
             r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
@@ -4410,9 +4416,9 @@ class TestNoIpHoldbackReset:
 
     def test_success_clears_holdback_flag(self, watcher):
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
-        watcher.STATE.noip_holdback_reset_done.add(usb.stable_id)
+        watcher.RECOVERY_STATE.noip_holdback_reset_done.add(usb.stable_id)
         watcher._set_active_client(usb)
-        assert usb.stable_id not in watcher.STATE.noip_holdback_reset_done
+        assert usb.stable_id not in watcher.RECOVERY_STATE.noip_holdback_reset_done
 
 
 class TestNmcliGoesThroughNMClient:
@@ -4852,7 +4858,7 @@ class TestRecoveryFacts:
     def test_gather_excludes_quarantined_usb(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
-        watcher.STATE.adapter_reset_ledgers[usb.stable_id] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[usb.stable_id] = {
             "recent_resets": [], "total_resets": 5, "quarantined_until": 1000.0 + 3600,
         }
         facts = self._facts(watcher, [builtin, usb])
@@ -4866,7 +4872,7 @@ class TestRecoveryFacts:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         # Past the no-IP stop budget -> suppressed until MAC changes.
-        watcher.STATE.adapter_noip_ledgers[usb.stable_id] = {
+        watcher.RECOVERY_STATE.adapter_noip_ledgers[usb.stable_id] = {
             "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf"),
         }
         facts = self._facts(watcher, [builtin, usb])
@@ -4880,7 +4886,7 @@ class TestRecoveryFacts:
         # C2-WP1: a no-IP-suppressed onboard is not offered as a client rung, so
         # the single decider won't blindly engage it on a USB failure.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        watcher.STATE.adapter_noip_ledgers[builtin.stable_id] = {
+        watcher.RECOVERY_STATE.adapter_noip_ledgers[builtin.stable_id] = {
             "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf"),
         }
         facts = self._facts(watcher, [builtin])
@@ -4893,7 +4899,7 @@ class TestRecoveryFacts:
     def test_gather_excludes_quarantined_onboard(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         # Quarantine the onboard via the reset ledger.
-        watcher.STATE.adapter_reset_ledgers[builtin.stable_id] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[builtin.stable_id] = {
             "quarantined_until": 1e12, "recent_resets": [], "total_resets": 0,
         }
         facts = self._facts(watcher, [builtin])
@@ -4963,7 +4969,7 @@ class TestRecoveryExitEdge:
     def test_quarantined_second_radio_falls_through_to_onboard(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
-        watcher.STATE.adapter_reset_ledgers[usb.stable_id] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[usb.stable_id] = {
             "recent_resets": [], "total_resets": 5, "quarantined_until": 1000.0 + 3600,
         }
         self._in_hotspot(watcher)
@@ -5887,11 +5893,11 @@ class TestDeadPhyEndToEnd:
         return _adapter(watcher, "wlan0", self.MAC, is_usb=True)
 
     def _mark_dead(self, watcher, first_failure=1.0):
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_since = first_failure
-        watcher.STATE.dead_adapter_first_failure = first_failure
-        watcher.STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
-        watcher.STATE.dead_adapter_stable_id = self.MAC
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_since = first_failure
+        watcher.RECOVERY_STATE.dead_adapter_first_failure = first_failure
+        watcher.RECOVERY_STATE.dead_adapter_checks = watcher.DEAD_ADAPTER_DEBOUNCE
+        watcher.RECOVERY_STATE.dead_adapter_stable_id = self.MAC
 
     def test_sequence_wedge_debounce_reset_then_quarantine(self, watcher):
         """healthy->wedged->debounce->A->B->budget exhausted->quarantine (path up)."""
@@ -5944,7 +5950,7 @@ class TestDeadPhyEndToEnd:
             watcher.escalate_dead_adapter_recovery([usb], True)   # debounce
             watcher.escalate_dead_adapter_recovery([usb], True)   # Method A -> recover
         ra.assert_called_once()
-        assert watcher.STATE.dead_adapter_ifname == ""
+        assert watcher.RECOVERY_STATE.dead_adapter_ifname == ""
         reboot.assert_not_called()
 
     def test_sequence_usb_only_emergency_backoff(self, watcher):
@@ -5953,7 +5959,7 @@ class TestDeadPhyEndToEnd:
         clock = _Clock(1000.0)
         self._mark_dead(watcher, first_failure=clock.t)
         _spend_window_budget(watcher, self.MAC, now=clock.t)
-        watcher.STATE.last_reset_attempt = clock.t
+        watcher.RECOVERY_STATE.last_reset_attempt = clock.t
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=True, healthy=False), \
@@ -5989,8 +5995,8 @@ class TestDeadPhyEndToEnd:
              patch("time.monotonic", clock):
             watcher.escalate_dead_adapter_recovery([usb], True)
             watcher.escalate_dead_adapter_recovery([usb], True)
-        assert watcher.STATE.last_reset_attempt is None
-        assert watcher.STATE.last_reset_method == ""
+        assert watcher.RECOVERY_STATE.last_reset_attempt is None
+        assert watcher.RECOVERY_STATE.last_reset_method == ""
 
         clock.advance(1.0)
         self._mark_dead(watcher, first_failure=clock.t)
@@ -6009,7 +6015,7 @@ class TestDeadPhyEndToEnd:
         ra2.assert_called_once_with("wlan0")
         rb.assert_not_called()
         rb2.assert_not_called()
-        assert watcher.STATE.last_reset_method == "A"
+        assert watcher.RECOVERY_STATE.last_reset_method == "A"
 
     def test_sequence_reboot_then_inprocess_and_guard_suppression(self, watcher):
         """Offline + dead>=30min + resets failing: one reboot, then suppressed."""
@@ -6099,11 +6105,11 @@ class TestBuildNetworkStatusSnapshot:
 
     def test_dead_usb_adapter_reported(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_since = 5.0
-        watcher.STATE.dead_adapter_checks = 4
-        watcher.STATE.last_reset_method = "B"
-        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_since = 5.0
+        watcher.RECOVERY_STATE.dead_adapter_checks = 4
+        watcher.RECOVERY_STATE.last_reset_method = "B"
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[self.MAC] = {
             "recent_resets": [10.0],
             "total_resets": 1,
             "quarantined_until": None,
@@ -6131,7 +6137,7 @@ class TestBuildNetworkStatusSnapshot:
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
         watcher.STATE.active_client_ifname = "wlan0"
         watcher.STATE.active_client_mac = self.MAC
-        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[self.MAC] = {
             "recent_resets": [900.0, 950.0],
             "total_resets": 2,
             "quarantined_until": None,
@@ -6154,7 +6160,7 @@ class TestBuildNetworkStatusSnapshot:
 
     def test_quarantine_policy_uses_expiry_not_presence(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[self.MAC] = {
             "recent_resets": [],
             "total_resets": watcher.USB_MAX_RESETS_TOTAL,
             "quarantined_until": 900.0,
@@ -6167,7 +6173,7 @@ class TestBuildNetworkStatusSnapshot:
 
     def test_reconnected_quarantined_stable_id_stays_quarantined_until_deadline(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[self.MAC] = {
             "recent_resets": [900.0, 950.0],
             "total_resets": 2,
             "quarantined_until": 1100.0,
@@ -6181,7 +6187,7 @@ class TestBuildNetworkStatusSnapshot:
 
     def test_reconnected_stable_id_clears_quarantine_after_deadline(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[self.MAC] = {
             "recent_resets": [900.0],
             "total_resets": 1,
             "quarantined_until": 999.0,
@@ -6194,7 +6200,7 @@ class TestBuildNetworkStatusSnapshot:
 
     def test_old_reset_history_pruned_from_policy(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.adapter_reset_ledgers[self.MAC] = {
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[self.MAC] = {
             "recent_resets": [100.0],
             "total_resets": 1,
             "quarantined_until": None,
@@ -6206,7 +6212,7 @@ class TestBuildNetworkStatusSnapshot:
 
     def test_ethernet_degraded_when_wifi_dead(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
         addrs = {"eth0": [{"family": "ipv4", "address": "10.0.0.5",
                            "prefixlen": 24, "scope": "global"}]}
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
@@ -6422,7 +6428,7 @@ class TestIf7StatusTruthfulness:
         # meaningful number is the no-IP count — publish it in checks/reason and
         # policy.noip_failures.
         usb = _adapter(watcher, "wlan1", self.MAC, is_usb=True)
-        watcher.STATE.adapter_noip_ledgers[self.MAC] = {"count": 5, "retry_after": float("inf")}
+        watcher.RECOVERY_STATE.adapter_noip_ledgers[self.MAC] = {"count": 5, "retry_after": float("inf")}
         rec = self._classify_snapshot(watcher, usb, link_down=True)
         assert rec["health"]["state"] == "no_ip_held_back"
         assert rec["health"]["checks"] == 5
@@ -6435,7 +6441,7 @@ class TestIf7StatusTruthfulness:
         # Carrier-up, not yet suppressed: the transient degraded_no_ip verdict is
         # unchanged (regression on the reason ladder).
         usb = _adapter(watcher, "wlan1", self.MAC, is_usb=True)
-        watcher.STATE.adapter_noip_ledgers[self.MAC] = {"count": 2, "retry_after": 0.0}
+        watcher.RECOVERY_STATE.adapter_noip_ledgers[self.MAC] = {"count": 2, "retry_after": 0.0}
         rec = self._classify_snapshot(watcher, usb, link_down=False)
         assert rec["health"]["state"] == "degraded_no_ip"
         assert rec["health"]["checks"] == 2
@@ -6447,9 +6453,9 @@ class TestIf7StatusTruthfulness:
         # A dead-PHY adapter keeps dead_checks / "link_down_unhealthy" — the
         # held-back branch must not shadow it (regression).
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.dead_adapter_ifname = "wlan0"
-        watcher.STATE.dead_adapter_since = 5.0
-        watcher.STATE.dead_adapter_checks = 4
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_since = 5.0
+        watcher.RECOVERY_STATE.dead_adapter_checks = 4
         rec = self._classify_snapshot(watcher, usb, link_down=True)
         assert rec["health"]["state"] == "dead_phy"
         assert rec["health"]["checks"] == 4
@@ -6529,7 +6535,7 @@ class TestIf7StatusTruthfulness:
 
     def test_non_wifi_primary_skips_ssid_lookup(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
-        watcher.STATE.dead_adapter_ifname = "wlan0"
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan0"
         addrs = {"eth0": [{"family": "ipv4", "address": "10.0.0.5",
                            "prefixlen": 24, "scope": "global"}]}
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \

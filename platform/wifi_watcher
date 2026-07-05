@@ -571,23 +571,12 @@ class NetworkMonitorState:
     active_client_mac: str = ""
     pending_usb_adoption_mac: Optional[str] = None
     pending_usb_adoption_checks: int = 0
-    # Per-stable-id "associated but no IP" / adoption-failure ledger.
-    # stable_id -> {"count": int, "retry_after": float}.  Drives the
-    # DEGRADED_NO_IP status taxonomy and the escalating adoption back-off.
-    adapter_noip_ledgers: dict = field(default_factory=dict)
     last_detected_adapter_macs: Optional[frozenset] = None
-    # Stable-ids an operator has manually disabled via the control API; a disabled
-    # adapter is never offered as a client rung, adopted, or reset until it is
-    # re-enabled.  Persisted with the fault ledgers so it survives a restart.
-    disabled_adapters: set = field(default_factory=set)
-    # Stable-ids that already spent their one budgeted USB reset at the no-IP
-    # hold-back this suppression episode; cleared when the adapter becomes the
-    # healthy active client (success) or disappears, so a fresh hold-back may
-    # reset again.
-    noip_holdback_reset_done: set = field(default_factory=set)
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
-    # the HotspotSession (STATE.hotspot).
+    # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-
+    # disable ledgers live on RECOVERY_STATE (a wifi_recovery.RecoveryState),
+    # shared with wifi_status for the status snapshot.
 
     # ---- Local control API ----
     pending_control_action: str = ""
@@ -595,22 +584,6 @@ class NetworkMonitorState:
     last_control_action: str = ""
     last_control_result: str = ""
     last_control_error: str = ""
-
-    # ---- Dead-PHY recovery ----
-    dead_adapter_ifname: str = ""               # interface currently classed dead ("" = none)
-    dead_adapter_checks: int = 0                # debounce counter
-    dead_adapter_since: Optional[float] = None  # monotonic; when first declared dead
-    last_reset_attempt: Optional[float] = None  # monotonic; last Method A/B step
-    last_reset_method: str = ""                 # "" | "A" | "B"
-    # Survives brief healthy flaps in-process so flapping cannot starve the
-    # 30-minute reboot threshold; kept until the adapter is healthy for 24h.
-    dead_adapter_first_failure: Optional[float] = None
-    adapter_reset_ledgers: dict = field(default_factory=dict)  # stable_id -> reset accounting
-    # Recovery-ledger identity of the adapter being tracked (MAC/sysfs/ifname);
-    # used to reset the debounce when a *different* adapter is inserted.  Not a
-    # duplicate of active_client_mac — it is the dead-target identity.
-    dead_adapter_stable_id: str = ""
-    dead_adapter_healthy_since: Optional[float] = None  # monotonic; sustained-health start
 
     # ---- Runtime log-level control ----
     pending_control_params: dict = field(default_factory=dict)
@@ -2639,6 +2612,13 @@ def _warn_playing_status_unavailable() -> None:
 
 
 import wifi_activation
+import wifi_recovery
+
+# Owns the dead-PHY / reset / no-IP / manual-disable ledgers; shared with
+# wifi_status (read-only, for the status snapshot) via StatusContext.  Built
+# early (ahead of the recovery seam below) because the activation context also
+# needs it (client hand-over clears the no-IP hold-back marker).
+RECOVERY_STATE = wifi_recovery.RecoveryState()
 
 ActivationJob = wifi_activation.ActivationJob
 ActivationResult = wifi_activation.ActivationResult
@@ -2747,6 +2727,7 @@ def verify_avahi_after_handover() -> None:
 ACTIVATION_CTX = wifi_activation.ActivationContext(
     STATE=STATE,
     state_lock=state_lock,
+    RECOVERY_STATE=RECOVERY_STATE,
     nm=nm,
     hotspot_controller=hotspot_controller,
     logger=logger,
@@ -3223,8 +3204,6 @@ def update_known_adapters(adapters: list) -> None:
 # the policy helpers the ladder invokes.  TargetAdapter is re-exported for
 # callers/tests.
 
-import wifi_recovery
-
 TargetAdapter = wifi_recovery.TargetAdapter
 INTERFACE_REAPPEAR_TIMEOUT = wifi_recovery.INTERFACE_REAPPEAR_TIMEOUT
 # Adapter-remediation overlay event contract, re-exported so the loop and tests
@@ -3263,6 +3242,7 @@ RECOVERY_CTX = wifi_recovery.RecoveryContext(
     STATE=STATE,
     state_lock=state_lock,
     logger=logger,
+    RECOVERY_STATE=RECOVERY_STATE,
     AP_IFNAME=AP_IFNAME,
     USB_RESET_WINDOW=USB_RESET_WINDOW,
     USB_MAX_RESETS_TOTAL=USB_MAX_RESETS_TOTAL,
@@ -3301,6 +3281,7 @@ import wifi_status
 STATUS_CTX = wifi_status.StatusContext(
     STATE=STATE,
     state_lock=state_lock,
+    RECOVERY_STATE=RECOVERY_STATE,
     NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
     USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
     RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,

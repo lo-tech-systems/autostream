@@ -48,6 +48,7 @@ class ActivationContext:
 
     STATE: object
     state_lock: object
+    RECOVERY_STATE: object
     nm: object
     hotspot_controller: object
     logger: logging.Logger
@@ -361,7 +362,7 @@ def _set_active_client(ctx: ActivationContext, adapter) -> None:
         if adapter is not None:
             sid = getattr(adapter, "stable_id", "")
             if sid:
-                ctx.STATE.noip_holdback_reset_done.discard(sid)
+                ctx.RECOVERY_STATE.noip_holdback_reset_done.discard(sid)
     if changed and adapter:
         ctx.logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
 
