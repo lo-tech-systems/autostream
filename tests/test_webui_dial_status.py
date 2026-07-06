@@ -386,6 +386,21 @@ class TestDialProtocolDoc:
         assert "/api/dial/status" in text, \
             "DIAL_PROTOCOL.md does not document POST /api/dial/status"
 
+    def test_dial_protocol_documents_track_id_object(self):
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "track_id" in text
+        assert "artwork_url" in text
+        assert "provider artwork" in text.lower()
+
+    def test_dial_protocol_documents_screen_settings_endpoints(self):
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "GET /screen/settings" in text
+        assert "POST /screen/settings" in text
+        assert "invalid_screen_settings" in text
+        assert "restart_required" in text
+
 
 # ---------------------------------------------------------------------------
 # Router-level: non-object JSON must NOT trigger HTTP 400 for /api/dial/status

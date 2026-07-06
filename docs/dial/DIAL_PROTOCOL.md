@@ -137,7 +137,22 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 
 **Success response (200) — outputs selected:**
 ```json
-{"ok": true, "playing": true, "master_volume": 59, "selected_output_count": 2}
+{
+  "ok": true,
+  "playing": true,
+  "master_volume": 59,
+  "selected_output_count": 2,
+  "track_id": {
+    "enabled": true,
+    "state": "identified",
+    "title": "Song",
+    "artist": "Artist",
+    "album": "Album",
+    "artwork_url": "https://provider.example/artwork/3f8a91c2.jpg",
+    "updated_at": 1783170000.0,
+    "last_attempt_at": 1783169990.0
+  }
+}
 ```
 
 **Success response (200) — no outputs selected:**
@@ -150,9 +165,53 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 | `playing` | bool | `true` if any capture is currently active |
 | `master_volume` | int\|null | Rounded arithmetic mean of selected output volumes; `null` when none selected |
 | `selected_output_count` | int | Number of currently selected outputs |
+| `track_id` | object | Grouped now-playing/track-identification state for authorized dials (see below) |
 
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
 and `POST /api/dial/volume`.
+
+This `track_id` extension is part of the pre-public dial v1 contract — it is added to the
+existing `dial_status=v1` response without a new mDNS capability indicator, during the
+pre-release dial development phase.
+
+#### `track_id` object
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | bool | Whether track identification is enabled |
+| `state` | string | One of `disabled`, `waiting_for_audio`, `analysing`, `identified`, `not_found`, `error` |
+| `title` | string | Empty string when unavailable |
+| `artist` | string | Empty string when unavailable |
+| `album` | string | Empty string when unavailable |
+| `artwork_url` | string | Provider artwork URL; empty string when no artwork is available |
+| `updated_at` | number\|null | Unix timestamp of the last successful identification, or `null` |
+| `last_attempt_at` | number\|null | Unix timestamp of the last identification attempt, or `null` |
+
+`artwork_url` is empty unless `state` is `identified` and the matched track has a provider
+artwork URL. This includes the `disabled` example below, and `waiting_for_audio`,
+`analysing`, `not_found`, and `error` states, and identified results without artwork:
+
+```json
+{
+  "ok": true,
+  "playing": true,
+  "master_volume": 59,
+  "selected_output_count": 2,
+  "track_id": {
+    "enabled": false,
+    "state": "disabled",
+    "title": "",
+    "artist": "",
+    "album": "",
+    "artwork_url": "",
+    "updated_at": null,
+    "last_attempt_at": null
+  }
+}
+```
+
+The endpoint remains read-only: it never fetches remote artwork or mutates track
+identification state on the request path.
 
 **Application failure responses (200 body):**
 
@@ -267,6 +326,98 @@ Triggers a firmware update. Returns immediately:
 ```
 
 `state` is one of `"idle"`, `"running"`, `"complete"`, `"failed"`.
+
+---
+
+### `GET /screen/settings`
+
+Returns the dial-owned effective screen-fitted setting and current runtime status.
+Screen settings are owned and persisted by the dial; the main appliance never stores a
+copy and always reads current values from this endpoint.
+
+```json
+{
+  "ok": true,
+  "screen": {
+    "fitted": false
+  },
+  "runtime": {
+    "fitted": false,
+    "active": false,
+    "backend": "noop",
+    "backend_loaded": false,
+    "showing": "noop",
+    "last_error": "",
+    "last_error_at": null
+  }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `screen.fitted` | bool | Persisted screen-fitted setting |
+| `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
+| `runtime.active` | bool | `true` when a non-no-op display path is open |
+| `runtime.backend` | string | Selected backend name (e.g. `noop`, `adafruit_st7735s`) |
+| `runtime.backend_loaded` | bool | `true` once backend imports and hardware open succeeded |
+| `runtime.showing` | string | One of `logo`, `artwork`, or `noop` |
+| `runtime.last_error` | string | Last non-fatal display/fetch/render error identifier, or `""` |
+| `runtime.last_error_at` | number\|null | Unix timestamp for `last_error`, or `null` |
+
+Never returns secrets or provider artwork URLs.
+
+### `POST /screen/settings`
+
+Accepts the **complete** normalized screen settings object — this endpoint does not apply
+partial patches. PIN behavior follows existing `POST /configure` semantics: if a dial PIN
+is set, the request must include the current PIN in `current_pin`.
+
+```json
+{
+  "current_pin": "1234",
+  "screen": {
+    "fitted": true
+  }
+}
+```
+
+Successful response:
+
+```json
+{
+  "ok": true,
+  "screen": {
+    "fitted": true
+  },
+  "runtime": {
+    "fitted": true,
+    "active": false,
+    "backend": "noop",
+    "backend_loaded": false,
+    "showing": "noop",
+    "last_error": "",
+    "last_error_at": null
+  },
+  "restart_required": false
+}
+```
+
+`restart_required` is always `false`: the dial applies the fitted toggle live by starting
+or stopping the current display provider internally.
+
+**Validation:**
+
+- `fitted` must be a strict JSON boolean — `0`, `1`, `"true"`, and `"false"` are rejected.
+- A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
+  `screen` returns HTTP `400`:
+  ```json
+  {"ok": false, "error": "invalid_screen_settings"}
+  ```
+- A wrong or missing `current_pin` when a PIN is set follows existing `POST /configure`
+  PIN failure behavior (HTTP `403`/`429`).
+- Persistence failures return HTTP `500`.
+- A saved config whose runtime application fails may still return `ok: true` with
+  `runtime.last_error` populated, provided the display manager degraded to no-op.
 
 ---
 
