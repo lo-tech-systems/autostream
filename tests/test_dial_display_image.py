@@ -3,7 +3,7 @@
 Covers: MAX_IMAGE_PIXELS/DecompressionBombWarning wiring, artwork decode
 (format validation, pixel-count and expanded-footprint limits, malformed
 image handling, EXIF orientation, RGB conversion), panel transform
-(center-crop to 4:5 then resize to 128x160), and logo scale-to-fit
+(center-crop to 5:4 then resize to 160x128), and logo scale-to-fit
 letterboxing.
 """
 from __future__ import annotations

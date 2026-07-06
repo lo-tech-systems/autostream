@@ -23,8 +23,16 @@ warnings.simplefilter("error", Image.DecompressionBombWarning)
 MAX_ARTWORK_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_EXPANDED_ARTWORK_BYTES = 64 * 1024 * 1024
 
-PANEL_WIDTH = 128
-PANEL_HEIGHT = 160
+# The ST7735S glass is a 128x160 panel physically mounted in landscape, so the
+# usable image is 160 wide x 128 tall. Frames are rendered at this landscape
+# size covering the full panel (artwork is cropped to fill; the logo is
+# letterboxed onto a full-size background canvas) and the hardware backend
+# sends each one unrotated as a single whole-screen write — the controller's
+# MADCTL init already scans landscape (see dial_display_adafruit.py). Keeping
+# the panel dimensions here means the crop/letterbox policy already targets
+# the true visible orientation.
+PANEL_WIDTH = 160
+PANEL_HEIGHT = 128
 
 # Matches the web UI dark-theme --color-bg and the logo asset's own
 # background, so letterbox padding is seamless.
@@ -76,7 +84,7 @@ def decode_artwork(data: bytes) -> Image.Image | None:
 
 
 def transform_artwork_for_panel(img: Image.Image) -> Image.Image:
-    """Center-crop to the panel aspect ratio (4:5) and resize to 128x160."""
+    """Center-crop to the panel aspect ratio (5:4 landscape) and resize to 160x128."""
     src_w, src_h = img.size
     target_ratio = PANEL_WIDTH / PANEL_HEIGHT
 
@@ -96,13 +104,12 @@ def transform_artwork_for_panel(img: Image.Image) -> Image.Image:
 
 
 def load_logo(path: str) -> Image.Image | None:
-    """Load the fallback logo, scaled to fit and letterboxed to 128x160.
+    """Load the fallback logo, scaled to fit and letterboxed to 160x128.
 
-    The source asset is 983x575 landscape; center-cropping it to a portrait
-    panel would reduce the wordmark to an illegible vertical slice. Instead
-    scale to fit within the panel preserving aspect ratio, then pad with the
-    autostream dark-theme background colour. Returns None on any failure —
-    callers must leave the screen blank rather than crash.
+    The source asset is 983x575 landscape; scale to fit within the landscape
+    panel preserving aspect ratio, then pad with the autostream dark-theme
+    background colour. Returns None on any failure — callers must leave the
+    screen blank rather than crash.
     """
     try:
         img = Image.open(path)
