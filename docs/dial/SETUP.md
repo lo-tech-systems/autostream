@@ -342,6 +342,44 @@ There is no offset, colour, orientation, or artwork-fit configuration in this
 release — those use a fixed wiring and rendering profile chosen for the
 supported hardware.
 
+### Display behavior
+
+The display shows the autostream logo whenever:
+
+- no `_autostream-playing._tcp` appliance is currently visible;
+- track identification is disabled, not yet identified, or found no match;
+- the identified track has no provider artwork URL;
+- artwork fetch, decode, or render failed for any reason.
+
+Artwork is shown only when an authorized, playing appliance reports an
+`identified` track with a usable provider artwork URL. Rotary volume changes
+and the mute button do not affect what the display shows.
+
+### Artwork source selection across multiple appliances
+
+If more than one autostream appliance is playing at once, the dial only ever
+shows artwork from one of them. It polls appliances in order of how long each
+has been playing (oldest first) and shows the first one that has usable
+artwork; the others are not shown even if they also have artwork. This order
+can change if a longer-playing appliance stops.
+
+### Troubleshooting the display
+
+**Screen stays on the logo even though something is playing:**
+- Confirm track identification is enabled and has identified the track (check
+  the appliance's own home page — the same identification state feeds the
+  dial).
+- Confirm the matched track actually has provider artwork; some matches have
+  no artwork available.
+- If another appliance has been playing longer, the dial may be showing (or
+  attempting to show) artwork from that appliance instead.
+
+**Screen stays blank (no logo, no artwork):**
+- Confirm **Has Screen Fitted** is enabled for this dial.
+- Check `journalctl -u autostream_dial` for `backend_open_failed` or
+  `logo_unavailable` — both are non-fatal but mean the screen cannot render;
+  volume control is unaffected either way.
+
 ---
 
 ## Update Channels

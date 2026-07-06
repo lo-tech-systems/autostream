@@ -262,13 +262,25 @@ class DialDisplay:
             if self._config.fitted:
                 self._enable_locked()
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="dial-display")
-        self._thread.start()
+        try:
+            self._thread = threading.Thread(target=self._run, daemon=True, name="dial-display")
+            self._thread.start()
+        except Exception as e:
+            # Must never prevent the rest of dial_main.py's startup/shutdown
+            # sequence (volume control, mDNS, control socket) from running.
+            logging.warning("dial display: failed to start polling thread: %s", e)
+            self._thread = None
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=2)
+            try:
+                self._thread.join(timeout=2)
+            except RuntimeError:
+                # Thread.start() had not finished registering when stop() ran
+                # right behind it — the daemon thread still exits on its own
+                # once _stop_event is set.
+                pass
         with self._lock:
             self._disable_locked()
 

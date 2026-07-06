@@ -15,9 +15,16 @@ import time
 
 from dial_config import load_config
 from dial_control import DialControlServer
+from dial_display import create_dial_display
 from dial_http_server import ADMIN_CMD, VERSION, DialHTTPServer, _announce_self
 from dial_led import DialLED
-from dial_mdns import get_playing_targets, start_playing_browser, stop_playing_browser
+from dial_mdns import (
+    get_display_targets,
+    get_playing_targets,
+    mark_display_target_unauthorized,
+    start_playing_browser,
+    stop_playing_browser,
+)
 from dial_target_status import enrich_targets
 from dial_volume import enqueue_delta, enqueue_mute_toggle, start_volume_worker
 
@@ -92,13 +99,16 @@ def main() -> None:
 
     led = DialLED(cfg.led_gpio)
 
-    http_server = DialHTTPServer(cfg)
+    display = create_dial_display(cfg, get_display_targets, mark_display_target_unauthorized)
+
+    http_server = DialHTTPServer(cfg, display_status_provider=display)
     http_server.start()
 
     if cfg.pin:
         http_server.begin_recovery_window()
 
     start_playing_browser(shutdown_event=shutdown_event)
+    display.start()
     start_volume_worker(cfg, get_playing_targets, led)
 
     # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
@@ -162,6 +172,7 @@ def main() -> None:
             led.set_playing() if get_playing_targets() else led.set_idle()
     finally:
         stop_playing_browser()
+        display.stop()
         control_server.stop()
         http_server._server.shutdown()
 
