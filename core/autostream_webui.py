@@ -95,6 +95,8 @@ from autostream_webui_dials import (
     dispatch_dial_management_post,
     handle_dial_configure_get,
     handle_dial_pin_recovery_status,
+    handle_dial_screen_settings_get,
+    handle_dial_screen_settings_post,
     handle_dial_update_post,
     handle_dial_update_status,
 )
@@ -631,6 +633,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_dial_update_status(self, path.rsplit("/", 1)[-1])
+        elif path.startswith("/api/dial/screen/settings/"):
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            handle_dial_screen_settings_get(self, path.rsplit("/", 1)[-1])
         else:
             self.send_error(404, "Not found")
 
@@ -938,6 +944,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             handle_dial_update_post(self, path.rsplit("/", 1)[-1])
+
+        elif path == "/api/dial/screen/settings":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            handle_dial_screen_settings_post(self, json_obj if isinstance(json_obj, dict) else {})
 
         elif path == "/api/network/setup":
             if not AUTH.require_authenticated_if_pin_enabled(self):

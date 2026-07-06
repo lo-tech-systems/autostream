@@ -896,6 +896,45 @@ class TestDialCardHtmlStructure:
         # data-dial-action="revoke" must not appear in the config area
         assert 'data-dial-action="revoke"' not in result
 
+    # ── Screen settings (Has Screen Fitted toggle) ───────────────────────────
+
+    def test_screen_fitted_toggle_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert "dial-screen-fitted" in result
+        assert "Has Screen Fitted" in result
+
+    def test_screen_fitted_toggle_inside_locked_section(self):
+        """The screen toggle must live inside the existing locked settings card area."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        locked_idx = result.find("dial-locked-section")
+        screen_idx = result.find("dial-screen-fitted")
+        pin_btn_idx = result.find('data-dial-action="change-pin"')
+        assert locked_idx >= 0 and screen_idx >= 0 and pin_btn_idx >= 0
+        assert locked_idx < screen_idx < pin_btn_idx
+
+    def test_dial_load_screen_settings_function_present(self):
+        src = _setup_page_src()
+        assert "function dialLoadScreenSettings" in src
+        assert "/api/dial/screen/settings/" in src
+
+    def test_dial_save_screen_settings_function_present(self):
+        src = _setup_page_src()
+        assert "function dialSaveScreenSettings" in src
+        assert "/api/dial/screen/settings" in src
+
+    def test_screen_toggle_wired_to_save_action(self):
+        src = _setup_page_src()
+        assert "save-screen" in src
+        assert "dialSaveScreenSettings(card)" in src
+
+    def test_dial_onload_loads_screen_settings(self):
+        src = _setup_page_src()
+        assert "dialLoadScreenSettings" in src
+
     def test_revoke_button_absent_in_source(self):
         """The source must not define a Revoke button element."""
         src = _setup_page_src()

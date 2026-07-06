@@ -273,3 +273,20 @@ def handle_dial_update_post(handler, uuid: str) -> None:
 
 def handle_dial_update_status(handler, uuid: str) -> None:
     _proxy_get(handler, uuid, "/update/status")
+
+
+# ---------------------------------------------------------------------------
+# Screen settings (proxy to dial's /screen/settings endpoint)
+# ---------------------------------------------------------------------------
+
+def handle_dial_screen_settings_get(handler, uuid: str) -> None:
+    _proxy_get(handler, uuid, "/screen/settings")
+
+
+def handle_dial_screen_settings_post(handler, json_obj: dict) -> None:
+    uuid = json_obj.get("uuid", "")
+    if not isinstance(uuid, str) or not uuid:
+        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        return
+    body = {k: v for k, v in json_obj.items() if k != "uuid"}
+    _proxy_post(handler, uuid, "/screen/settings", body)

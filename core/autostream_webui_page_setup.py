@@ -280,6 +280,13 @@ def _dial_card_html(
                     </label>
                     <span>Pre-release updates</span>
                   </div>
+                  <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-screen-fitted" data-dial-action="save-screen" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Has Screen Fitted</span>
+                  </div>
                   <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
                           data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
@@ -938,7 +945,7 @@ def send_setup_page(
         )
     _dial_onload_js = (
         'document.querySelectorAll(\'.dial-card[data-authorized="true"]\').forEach(function(card) { '
-        "dialLoadConfig(card); });"
+        "dialLoadConfig(card); dialLoadScreenSettings(card); });"
     )
 
     form_content_html = f"""<div class="setup-slide-viewport">
@@ -2017,6 +2024,7 @@ def send_setup_page(
               if (result.ok) {{
                 setDialAuthorized(card, true);
                 dialLoadConfig(card);
+                dialLoadScreenSettings(card);
                 refreshDialsCardSub();
                 dialMsg(card, 'Authorized', true);
                 setTimeout(function() {{ dialMsg(card, '', true); }}, 2000);
@@ -2118,6 +2126,47 @@ def send_setup_page(
             card.dataset.pinSet = j.pin_set ? 'true' : 'false';
             _updateDialLockVisibility(card);
           }} catch(e) {{}}
+        }}
+
+        async function dialLoadScreenSettings(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          try {{
+            var r = await fetch('/api/dial/screen/settings/' + encodeURIComponent(uuid), {{
+              cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
+            }});
+            var loadResult = await _parseDialResponse(r);
+            if (!loadResult.ok) return;
+            var j = loadResult.body;
+            var fittedEl = card.querySelector('.dial-screen-fitted');
+            if (fittedEl && j.screen && j.screen.fitted != null) {{
+              fittedEl.checked = !!j.screen.fitted;
+            }}
+          }} catch(e) {{}}
+        }}
+
+        async function dialSaveScreenSettings(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var fittedEl = card.querySelector('.dial-screen-fitted');
+          if (!fittedEl) return;
+          var body = {{uuid: uuid, screen: {{fitted: fittedEl.checked}}}};
+          if (card.dataset.pinSet === 'true') {{
+            var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+            if (!unlockedPin) {{ dialMsg(card, 'Unlock settings first', false); return; }}
+            body.current_pin = unlockedPin;
+          }}
+          try {{
+            var result = await _dialPost('/api/dial/screen/settings', body);
+            if (result.ok) {{ dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000); }}
+            else {{
+              dialMsg(card, _dialErrorMessage(result.error), false);
+              fittedEl.checked = !fittedEl.checked;
+            }}
+          }} catch(e) {{
+            dialMsg(card, 'Network error', false);
+            fittedEl.checked = !fittedEl.checked;
+          }}
         }}
 
         async function dialUpdateFirmware(card) {{
@@ -2383,6 +2432,7 @@ def send_setup_page(
               pinResult = await _dialPost('/api/dial/configure', verifyBody);
               if (pinResult.ok) {{
                 _dialUnlockSection(card, currentPin);
+                dialLoadScreenSettings(card);
                 _closeDialPinModal();
               }} else {{
                 errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
@@ -2452,6 +2502,7 @@ def send_setup_page(
                 ev.target.classList.contains('dial-autoupdate') ||
                 ev.target.classList.contains('dial-channel')
               )) dialSaveConfig(card);
+              if (action === 'save-screen') dialSaveScreenSettings(card);
             }});
             card.addEventListener('focusout', function(ev) {{
               if (ev.target.dataset.dialAction === 'save-config'

@@ -320,6 +320,30 @@ Note: there is no Network card in the dial management UI in this release. Factor
 
 ---
 
+## Display Screen (if fitted)
+
+Dials that have an optional 1.8-inch TFT display module fitted can show album
+artwork for the currently playing, identified track, falling back to the
+autostream logo when nothing is playing or no artwork is available.
+
+The only setting exposed in this release is whether a screen is physically
+fitted:
+
+1. Open the main autostream Setup page and find the dial's card.
+2. Unlock the card's locked settings section (enter the PIN if one is set).
+3. Toggle **Has Screen Fitted**.
+
+The toggle is read from the dial itself every time the card's settings section
+is opened or unlocked — the main appliance does not store its own copy of this
+setting. If the dial is offline, the card still functions for other settings;
+the screen toggle simply reflects whatever was last read from the dial.
+
+There is no offset, colour, orientation, or artwork-fit configuration in this
+release — those use a fixed wiring and rendering profile chosen for the
+supported hardware.
+
+---
+
 ## Update Channels
 
 Each dial has its own update channel setting — it is independent of the main appliance and of any other dials on the network.
