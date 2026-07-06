@@ -142,6 +142,10 @@ def _reset_dial_mdns():
             with browser._lock:
                 browser._by_key.clear()
                 browser._by_identity.clear()
+        state_lock = getattr(m, "_state_lock", None)
+        if state_lock is not None:
+            with state_lock:
+                m._target_state.clear()
 
 
 @pytest.fixture(autouse=True)

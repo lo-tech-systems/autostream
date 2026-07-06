@@ -19,6 +19,7 @@ import logging
 import sys
 import os
 import threading
+import time
 
 # The dial deployment copies core modules into /opt/autostream/ at the same
 # level as the dial package, so autostream_mdns is importable directly there.
@@ -30,23 +31,34 @@ except ImportError:
     sys.path.insert(0, os.path.abspath(_core))
     from autostream_mdns import MdnsBrowser
 
+import dataclasses
 from dataclasses import dataclass
 
 
 @dataclass
 class PlayingTarget:
-    ip:           str
-    port:         int
-    name:         str
-    dial_api:     bool = False
-    audio_status: bool = False
-    dial_status:  bool = False
+    ip:                 str
+    port:               int
+    name:               str
+    dial_api:           bool  = False
+    audio_status:       bool  = False
+    dial_status:        bool  = False
+    service_name:       str   = ""
+    playing_since:      float = 0.0
+    display_authorized: bool  = True
 
 
 # Tracks whether we have ever seen a playing target — persists across
 # avahi-browse restarts so that restart-cycle re-resolutions do not
 # re-emit the 0→1 transition log.
 _had_targets: bool = False
+
+# Display-selection bookkeeping, keyed by mDNS service name. playing_since is
+# tied to the service identity and survives IP/port refreshes; display_authorized
+# is tied to the (service_name, ip, port) row and resets when the address/port
+# changes, since that may be a different appliance instance.
+_state_lock: threading.Lock = threading.Lock()
+_target_state: dict[str, dict] = {}
 
 
 def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
@@ -62,13 +74,36 @@ def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
     except (ValueError, IndexError):
         port = 80
     svc_name = parts[3]
+    ip = parts[7]
+
+    with _state_lock:
+        prior = _target_state.get(svc_name)
+        if prior is None:
+            playing_since = time.monotonic()
+            display_authorized = True
+        else:
+            playing_since = prior["playing_since"]
+            if prior["ip"] == ip and prior["port"] == port:
+                display_authorized = prior["display_authorized"]
+            else:
+                display_authorized = True
+        _target_state[svc_name] = {
+            "playing_since":      playing_since,
+            "ip":                 ip,
+            "port":               port,
+            "display_authorized": display_authorized,
+        }
+
     target = PlayingTarget(
-        ip=parts[7],
+        ip=ip,
         port=port,
         name=svc_name,
         dial_api=True,
         audio_status=(txt.get('audio_status') == 'v1'),
         dial_status=(txt.get('dial_status') == 'v1'),
+        service_name=svc_name,
+        playing_since=playing_since,
+        display_authorized=display_authorized,
     )
     return (svc_name, target)
 
@@ -81,6 +116,8 @@ def _on_target_add(svc_name: str, target: PlayingTarget) -> None:
 
 
 def _on_target_remove(svc_name: str, target: PlayingTarget | None) -> None:
+    with _state_lock:
+        _target_state.pop(svc_name, None)
     snap = _browser.get_snapshot()
     if not snap:
         global _had_targets
@@ -99,6 +136,46 @@ _browser: MdnsBrowser = MdnsBrowser(
 def get_playing_targets() -> list[PlayingTarget]:
     """Return one entry per mDNS service name — deduplicated across interfaces."""
     return list(_browser.get_snapshot().values())
+
+
+def get_display_targets() -> list[PlayingTarget]:
+    """Return currently visible playing targets, ordered for display-source selection.
+
+    Sorted by oldest playing_since first, with stable name/ip/port tie-breaks.
+    display_authorized reflects the latest mark_display_target_unauthorized()
+    call for each row, even between mDNS resolve cycles.
+    """
+    snapshot = _browser.get_snapshot()
+    targets: list[PlayingTarget] = []
+    with _state_lock:
+        for svc_name, target in snapshot.items():
+            state = _target_state.get(svc_name)
+            if state is None:
+                targets.append(target)
+                continue
+            targets.append(dataclasses.replace(
+                target,
+                playing_since=state["playing_since"],
+                display_authorized=state["display_authorized"],
+            ))
+    targets.sort(key=lambda t: (t.playing_since, t.name, t.ip, t.port))
+    return targets
+
+
+def mark_display_target_unauthorized(target: PlayingTarget) -> None:
+    """Mark the current (service_name, ip, port) row unauthorized for display polling.
+
+    Ignored if the row has since disappeared or its address/port has changed —
+    in that case a fresh instance may be a different appliance and deserves a
+    new status attempt.
+    """
+    with _state_lock:
+        state = _target_state.get(target.service_name)
+        if state is None:
+            return
+        if state["ip"] != target.ip or state["port"] != target.port:
+            return
+        state["display_authorized"] = False
 
 
 def start_playing_browser(

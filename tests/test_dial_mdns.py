@@ -11,6 +11,7 @@ tests via the autouse conftest fixture and explicit _clear() calls.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,6 +50,8 @@ def _clear():
     with dm._browser._lock:
         dm._browser._by_key.clear()
         dm._browser._by_identity.clear()
+    with dm._state_lock:
+        dm._target_state.clear()
     dm._had_targets = False
 
 
@@ -187,6 +190,116 @@ class TestHandleLineDeduplication:
     def test_too_few_fields_in_add_line_ignored(self):
         dm._browser._handle_line("=;eth0;IPv4;Service;_tcp;local")
         assert dm.get_playing_targets() == []
+
+
+# ---------------------------------------------------------------------------
+# WP-5: playing_since / display_authorized registry and get_display_targets()
+# ---------------------------------------------------------------------------
+
+class TestPlayingSinceRegistry:
+    def setup_method(self):
+        _clear()
+
+    def test_first_add_sets_playing_since(self):
+        dm._browser._handle_line(_av_add())
+        targets = dm.get_display_targets()
+        assert len(targets) == 1
+        assert targets[0].playing_since > 0
+
+    def test_repeated_resolve_preserves_playing_since(self):
+        dm._browser._handle_line(_av_add(iface="eth0"))
+        first = dm.get_display_targets()[0].playing_since
+        dm._browser._handle_line(_av_add(iface="eth0"))
+        second = dm.get_display_targets()[0].playing_since
+        assert first == second
+
+    def test_ip_change_preserves_playing_since(self):
+        """A re-resolve with a new address for the same service identity (no
+        intervening remove event) preserves playing_since."""
+        dm._browser._handle_line(_av_add(ip="10.0.0.1"))
+        first_since = dm.get_display_targets()[0].playing_since
+        dm._browser._handle_line(_av_add(ip="10.0.0.2"))
+        targets = dm.get_display_targets()
+        assert len(targets) == 1
+        assert targets[0].playing_since == first_since
+        assert targets[0].ip == "10.0.0.2"
+
+    def test_address_change_resets_display_authorized(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.1"))
+        target = dm.get_display_targets()[0]
+        dm.mark_display_target_unauthorized(target)
+        assert dm.get_display_targets()[0].display_authorized is False
+
+        dm._browser._handle_line(_av_add(ip="10.0.0.2"))
+        targets = dm.get_display_targets()
+        assert targets[0].display_authorized is True
+
+    def test_mark_unauthorized_suppresses_row(self):
+        dm._browser._handle_line(_av_add())
+        target = dm.get_display_targets()[0]
+        dm.mark_display_target_unauthorized(target)
+        assert dm.get_display_targets()[0].display_authorized is False
+
+    def test_mark_unauthorized_ignored_after_address_change(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.1"))
+        stale_target = dm.get_display_targets()[0]
+        dm._browser._handle_line(_av_add(ip="10.0.0.2"))
+        dm.mark_display_target_unauthorized(stale_target)
+        assert dm.get_display_targets()[0].display_authorized is True
+
+    def test_mark_unauthorized_ignored_after_removal(self):
+        dm._browser._handle_line(_av_add())
+        target = dm.get_display_targets()[0]
+        dm._browser._handle_line(_av_remove())
+        dm.mark_display_target_unauthorized(target)  # must not raise or resurrect state
+        assert dm.get_display_targets() == []
+        assert dm._target_state == {}
+
+    def test_removal_clears_target_state(self):
+        dm._browser._handle_line(_av_add())
+        dm._browser._handle_line(_av_remove())
+        assert dm._target_state == {}
+
+    def test_reappear_after_removal_starts_fresh(self):
+        dm._browser._handle_line(_av_add())
+        target = dm.get_display_targets()[0]
+        dm.mark_display_target_unauthorized(target)
+        first_since = target.playing_since
+        dm._browser._handle_line(_av_remove())
+        time.sleep(0.005)
+        dm._browser._handle_line(_av_add())
+        targets = dm.get_display_targets()
+        assert targets[0].playing_since > first_since
+        assert targets[0].display_authorized is True
+
+    def test_deterministic_sort_by_playing_since_then_name_ip_port(self):
+        dm._browser._handle_line(_av_add(name="Earlier", ip="10.0.0.2"))
+        dm._browser._handle_line(_av_add(name="Later", ip="10.0.0.1"))
+        targets = dm.get_display_targets()
+        assert [t.name for t in targets] == ["Earlier", "Later"]
+
+    def test_tie_break_by_name_ip_port_when_playing_since_equal(self):
+        dm._browser._handle_line(_av_add(name="Zeta", ip="10.0.0.9"))
+        dm._browser._handle_line(_av_add(name="Alpha", ip="10.0.0.1"))
+        # Force equal playing_since to isolate the name/ip/port tie-break.
+        with dm._state_lock:
+            for state in dm._target_state.values():
+                state["playing_since"] = 100.0
+        targets = dm.get_display_targets()
+        assert [t.name for t in targets] == ["Alpha", "Zeta"]
+
+    def test_service_name_field_matches_mdns_name(self):
+        dm._browser._handle_line(_av_add(name="Kitchen"))
+        target = dm.get_display_targets()[0]
+        assert target.service_name == "Kitchen"
+
+    def test_get_playing_targets_unaffected_by_display_authorized_marking(self):
+        """Volume fan-out via get_playing_targets() must be unaffected by display marking."""
+        dm._browser._handle_line(_av_add())
+        target = dm.get_display_targets()[0]
+        dm.mark_display_target_unauthorized(target)
+        vol_targets = dm.get_playing_targets()
+        assert len(vol_targets) == 1
 
 
 # ---------------------------------------------------------------------------
