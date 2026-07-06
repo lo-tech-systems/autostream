@@ -204,7 +204,9 @@ rm -f /etc/nginx/sites-enabled/default
 install -m 0644 "$DEPLOY/system/nginx/autostream-dial-nginx.conf" \
     /etc/nginx/sites-available/autostream-dial
 ln -sf /etc/nginx/sites-available/autostream-dial /etc/nginx/sites-enabled/autostream-dial
-nginx -t && nginx -s reload   # validate config before applying; abort on error
+nginx -t
+systemctl enable nginx
+systemctl restart nginx
 
 # ---- avahi service file -----------------------------------------------------
 # Read name from settings JSON on update; blank string on fresh install.

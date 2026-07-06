@@ -340,6 +340,24 @@ class TestRecoveryInfrastructureDeployment:
     def _installer_content(self):
         return DIAL_INSTALLER.read_text(encoding="utf-8")
 
+    def test_nginx_enabled_and_restarted_via_systemd(self):
+        """Dial installer must start nginx from a stopped fresh-install state."""
+        content = self._installer_content()
+        test_pos = content.find("nginx -t")
+        enable_pos = content.find("systemctl enable nginx")
+        restart_pos = content.find("systemctl restart nginx")
+
+        assert test_pos != -1, "nginx config validation not found"
+        assert enable_pos != -1, "systemctl enable nginx not found"
+        assert restart_pos != -1, "systemctl restart nginx not found"
+        assert test_pos < enable_pos < restart_pos, (
+            "dial installer must validate nginx before enabling and restarting it"
+        )
+        assert "nginx -s reload" not in content, (
+            "dial installer must not signal nginx directly; this fails when nginx "
+            "is installed but not running"
+        )
+
     def test_install_recovery_packages_called_unconditionally(self):
         """install_recovery_packages must be called outside any 'if ! $UPDATE' block.
 
