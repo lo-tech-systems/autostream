@@ -77,6 +77,31 @@ add_gpio_group() {
     usermod -aG gpio autostream 2>/dev/null || true
 }
 
+install_display_hardware_packages() {
+    # python3-spidev is apt-provided; the ST7735S backend needs SPI0 access.
+    # Called unconditionally on fresh install and --update so existing dials
+    # gain SPI support without requiring a re-image.
+    apt-get install -y --no-install-recommends python3-spidev
+}
+
+add_spi_group() {
+    # Some platforms/images do not define an spi group; that is non-fatal —
+    # display hardware simply cannot be used until one is provisioned.
+    usermod -aG spi autostream 2>/dev/null || true
+}
+
+enable_spi0() {
+    # Enables Raspberry Pi SPI0 for the ST7735S display backend. Non-fatal on
+    # non-Pi platforms or when raspi-config is unavailable; display-disabled
+    # installs must keep working regardless.
+    if command -v raspi-config >/dev/null 2>&1; then
+        raspi-config nonint do_spi 0 \
+            || echo "WARNING: raspi-config could not enable SPI0 — enable it manually if a screen is fitted" >&2
+    else
+        echo "WARNING: raspi-config not found — enable Raspberry Pi SPI0 manually if a screen is fitted" >&2
+    fi
+}
+
 disable_system_dnsmasq() {
     systemctl disable --now dnsmasq.service 2>/dev/null || true
     systemctl mask dnsmasq.service

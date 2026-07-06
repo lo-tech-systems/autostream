@@ -500,6 +500,101 @@ class TestDisplayImageProcessingDeployment:
         assert logo_path.exists(), f"Logo asset missing at {logo_path}"
 
 
+class TestDisplayHardwareDeployment:
+    def _installer_content(self):
+        return DIAL_INSTALLER.read_text(encoding="utf-8")
+
+    def _helpers_content(self):
+        return HELPERS_SH.read_text(encoding="utf-8")
+
+    def test_install_display_hardware_packages_defined(self):
+        content = self._helpers_content()
+        assert "install_display_hardware_packages()" in content
+
+    def test_install_display_hardware_packages_installs_spidev(self):
+        content = self._helpers_content()
+        idx = content.find("install_display_hardware_packages()")
+        assert idx != -1
+        fn_text = content[idx:idx + 400]
+        assert "python3-spidev" in fn_text
+
+    def test_add_spi_group_defined_and_tolerant(self):
+        content = self._helpers_content()
+        idx = content.find("add_spi_group()")
+        assert idx != -1
+        fn_text = content[idx:idx + 300]
+        assert "spi" in fn_text
+        # Must tolerate a missing spi group (non-fatal).
+        assert "|| true" in fn_text
+
+    def test_enable_spi0_uses_raspi_config_nonint(self):
+        content = self._helpers_content()
+        idx = content.find("enable_spi0()")
+        assert idx != -1
+        fn_text = content[idx:idx + 500]
+        assert "raspi-config" in fn_text
+        assert "do_spi 0" in fn_text
+
+    def test_enable_spi0_warns_when_raspi_config_missing(self):
+        content = self._helpers_content()
+        idx = content.find("enable_spi0()")
+        fn_text = content[idx:idx + 500]
+        assert "WARNING" in fn_text
+
+    def test_display_hardware_setup_called_unconditionally(self):
+        """install_display_hardware_packages/add_spi_group/enable_spi0 must run
+        on both fresh installs and --update — same guard-balance check as
+        install_recovery_packages()."""
+        content = self._installer_content()
+        for call in ("install_display_hardware_packages", "add_spi_group", "enable_spi0"):
+            call_pos = content.find(call)
+            assert call_pos != -1, f"{call} not called in autostream_dial_install.sh"
+            before = content[:call_pos]
+            open_update_guards = before.count("if ! $UPDATE")
+            fi_count = before.count("fi")
+            assert fi_count >= open_update_guards, (
+                f"{call}() is called inside 'if ! $UPDATE' — "
+                "it must be outside so it runs on --update too."
+            )
+
+    def test_gpio_group_membership_preserved(self):
+        """Existing add_gpio_group() call must remain — WP-7 adds spi group
+        alongside it, not instead of it."""
+        content = self._helpers_content()
+        assert "add_gpio_group()" in content
+        idx = content.find("add_gpio_group()")
+        fn_text = content[idx:idx + 200]
+        assert "gpio" in fn_text
+
+
+class TestDialVenvRequirements:
+    REQUIREMENTS_TXT = REPO_ROOT / "dial" / "requirements.txt"
+    REQUIREMENTS_LOCK = REPO_ROOT / "dial" / "requirements.lock"
+
+    def test_adafruit_rgb_display_pinned_in_requirements_txt(self):
+        content = self.REQUIREMENTS_TXT.read_text(encoding="utf-8")
+        assert "adafruit-circuitpython-rgb-display==3.14.6" in content
+
+    def test_adafruit_rgb_display_present_in_lock_with_hashes(self):
+        content = self.REQUIREMENTS_LOCK.read_text(encoding="utf-8")
+        assert "adafruit-circuitpython-rgb-display==3.14.6" in content
+        idx = content.find("adafruit-circuitpython-rgb-display==3.14.6")
+        entry = content[idx:idx + 400]
+        assert "--hash=sha256:" in entry
+
+    def test_transitive_adafruit_dependencies_locked(self):
+        """Regenerating the lock file must also pin the Adafruit/Blinka
+        transitive dependency chain, not just the top-level package."""
+        content = self.REQUIREMENTS_LOCK.read_text(encoding="utf-8")
+        for dep in ("adafruit-blinka", "adafruit-circuitpython-busdevice"):
+            assert dep in content, f"{dep} missing from requirements.lock"
+
+    def test_existing_gpiozero_still_locked(self):
+        """WP-7 must not drop the existing gpiozero/lgpio dependency chain."""
+        content = self.REQUIREMENTS_LOCK.read_text(encoding="utf-8")
+        assert "gpiozero==2.0.1" in content
+
+
 class TestSudoersWwwData:
     def _sudoers_content(self):
         return SUDOERS.read_text(encoding="utf-8")

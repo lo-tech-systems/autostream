@@ -1,9 +1,11 @@
 # dial/requirements.txt — pinned Python dependencies for the dial package.
 #
-# python3-lgpio is installed via apt (system package).
-# The venv is created with --system-site-packages so gpiozero can find lgpio.
+# python3-lgpio and python3-pil are installed via apt (system packages).
+# The venv is created with --system-site-packages so gpiozero, lgpio, and
+# Pillow are all visible inside it.
 #
 # Regenerate dial/requirements.lock via:
 #   pip-compile --generate-hashes dial/requirements.txt -o dial/requirements.lock
 #
 gpiozero==2.0.1
+adafruit-circuitpython-rgb-display==3.14.6

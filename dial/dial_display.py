@@ -522,12 +522,18 @@ class DialDisplay:
 def create_dial_display(cfg, get_display_targets, mark_display_target_unauthorized) -> DialDisplay:
     """Build the display manager for dial_main.py wiring.
 
-    Uses the no-op backend in this release; the real ST7735S backend is
-    selected here once it exists.
+    Always uses the real ST7735S backend factory; whether it is ever opened
+    is controlled by the fitted flag in DialDisplay.enable()/update_config(),
+    not by this factory choice. dial_display_adafruit imports hardware
+    modules only inside its open() method, so importing it here is safe even
+    when no screen is fitted or the Adafruit package is absent.
     """
+    from dial_display_adafruit import AdafruitST7735SBackend
+
     return DialDisplay(
         config=cfg.display,
         get_display_targets=get_display_targets,
         mark_display_target_unauthorized=mark_display_target_unauthorized,
         dial_id=cfg.uuid,
+        backend_factory=AdafruitST7735SBackend,
     )

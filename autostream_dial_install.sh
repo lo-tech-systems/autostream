@@ -133,6 +133,13 @@ install_recovery_packages
 # ---- Display image processing (fresh install and --update) ------------------
 install_image_packages
 
+# ---- Display hardware (fresh install and --update) ---------------------------
+# SPI enablement and group membership may require a reboot or service restart
+# before hardware access works.
+install_display_hardware_packages
+add_spi_group
+enable_spi0
+
 # ---- Deploy images ----------------------------------------------------------
 mkdir -p /opt/autostream/images
 install -m 0644 "$DEPLOY/images/autostream-dial-badge.png" /opt/autostream/images/

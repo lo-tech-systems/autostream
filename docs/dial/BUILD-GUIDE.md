@@ -50,6 +50,41 @@ install. The default values (CLK=17, DT=27, SW=22) match the wiring above.
 
 ---
 
+## Optional: 1.8" ST7735S Display Module
+
+An optional 1.8-inch 128x160 SPI TFT display (ST7735S controller) can show
+album artwork for the currently playing, identified track, falling back to
+the autostream logo otherwise. Only one fixed v1 wiring profile is supported;
+there is no software offset, colour-order, or GPIO remapping in this release.
+
+| Display pin | Pi Zero GPIO (BCM) | Physical pin |
+|-------------|--------------------|--------------|
+| SCLK        | GPIO 11 (SPI0 SCLK) | Pin 23      |
+| MOSI        | GPIO 10 (SPI0 MOSI) | Pin 19      |
+| CS          | GPIO 8 (SPI0 CE0)   | Pin 24      |
+| DC          | GPIO 25             | Pin 22      |
+| RESET       | GPIO 24             | Pin 18      |
+| BACKLIGHT   | GPIO 18             | Pin 12      |
+| VCC         | 3.3 V               | Pin 1       |
+| GND         | GND                 | Pin 6       |
+
+**GPIO 24 conflict with the optional status LED:** the display's RESET line
+and the optional activity LED (see above) both use GPIO 24. Do not wire both
+at once — if a screen is fitted, set `"led_gpio": null` in
+`/etc/autostream/autostream-dial.json` (the default).
+
+SPI0 must be enabled (the installer does this via `raspi-config nonint do_spi
+0` when available) and may require a reboot before the display becomes
+accessible. Enabling the screen is a software setting, separate from wiring:
+after connecting the panel, use the **Has Screen Fitted** toggle on the main
+autostream Setup → Dials page (see `docs/dial/SETUP.md`) to turn it on.
+
+SPI1 and alternate GPIO mapping are not supported in this release — SPI1's
+default pins collide with the encoder CLK line (GPIO 17) and the display
+backlight (GPIO 18).
+
+---
+
 ## Back-Box Assembly
 
 1. Feed the power cable through the cable entry at the back of the box.
