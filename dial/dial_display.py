@@ -21,6 +21,7 @@ import logging
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -131,6 +132,16 @@ def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
         try:
             resp = opener.open(req, timeout=timeout)
         except urllib.error.HTTPError as e:
+            # _NoRedirectHandler.redirect_request() returning None does not
+            # stop urllib from raising HTTPError for 3xx responses — it still
+            # surfaces as an exception here rather than a plain response, so
+            # redirects must be handled in this branch too.
+            if 300 <= e.code < 400:
+                location = e.headers.get("Location") if e.headers else None
+                if not location:
+                    return None, "redirect_no_location"
+                current_url = urllib.parse.urljoin(current_url, location)
+                continue
             return None, f"http_{e.code}"
         except Exception as e:
             return None, type(e).__name__
@@ -141,7 +152,7 @@ def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
                 location = resp.headers.get("Location")
                 if not location:
                     return None, "redirect_no_location"
-                current_url = location
+                current_url = urllib.parse.urljoin(current_url, location)
                 continue
 
             if status != 200:

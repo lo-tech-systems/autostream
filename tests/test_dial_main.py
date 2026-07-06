@@ -355,6 +355,47 @@ class TestDialFinalCleanup:
         assert display.get_status()["fitted"] is False
         assert display._thread is None or not display._thread.is_alive()
 
+    def test_display_stack_import_failure_degrades_to_noop(self):
+        """If dial_display (e.g. Pillow) is unavailable, main() must degrade to
+        NoOpDisplayStatusProvider rather than fail the whole service — volume
+        control must not depend on the display stack being importable."""
+        import builtins
+        import dial_main as dm
+        from dial_http_server import NoOpDisplayStatusProvider
+
+        cfg = _make_cfg()
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "dial_display" or name.startswith("dial_display."):
+                raise ImportError("simulated missing Pillow/display stack")
+            return real_import(name, *args, **kwargs)
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer"), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.DialControlServer", return_value=mock_control), \
+             patch("threading.Event", _QuickEvent), \
+             patch("builtins.__import__", side_effect=_fake_import):
+            dm.main()  # must not raise
+
+        _, kwargs = mock_http_cls.call_args
+        assert isinstance(kwargs["display_status_provider"], NoOpDisplayStatusProvider)
+
     def test_fatal_exception_propagates(self):
         """A non-shutdown exception from control_server.start() propagates out."""
         import dial_main as dm

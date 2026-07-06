@@ -15,8 +15,13 @@ import time
 
 from dial_config import load_config
 from dial_control import DialControlServer
-from dial_display import create_dial_display
-from dial_http_server import ADMIN_CMD, VERSION, DialHTTPServer, _announce_self
+from dial_http_server import (
+    ADMIN_CMD,
+    VERSION,
+    DialHTTPServer,
+    NoOpDisplayStatusProvider,
+    _announce_self,
+)
 from dial_led import DialLED
 from dial_mdns import (
     get_display_targets,
@@ -99,7 +104,15 @@ def main() -> None:
 
     led = DialLED(cfg.led_gpio)
 
-    display = create_dial_display(cfg, get_display_targets, mark_display_target_unauthorized)
+    # Imported lazily so a Pillow/display-stack import failure (e.g. an
+    # incomplete apt install) degrades to a no-op display rather than taking
+    # down the whole service — volume control must not depend on Pillow.
+    try:
+        from dial_display import create_dial_display
+        display = create_dial_display(cfg, get_display_targets, mark_display_target_unauthorized)
+    except ImportError as e:
+        logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
+        display = NoOpDisplayStatusProvider()
 
     http_server = DialHTTPServer(cfg, display_status_provider=display)
     http_server.start()

@@ -197,6 +197,12 @@ class NoOpDisplayStatusProvider:
         self._fitted = bool(config.fitted)
         return self.get_status()
 
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
 
 # ---- HTTP server ------------------------------------------------------------
 

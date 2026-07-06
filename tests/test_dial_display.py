@@ -426,6 +426,68 @@ class TestFetchArtwork:
         assert data is None
         assert err == "http_404"
 
+    def test_redirect_raised_as_http_error_is_followed(self):
+        """Regression: with the no-redirect handler, urllib raises HTTPError
+        for 3xx responses rather than returning them — this must still be
+        followed as a redirect, not treated as a terminal failure."""
+        redirect_exc = urllib.error.HTTPError(
+            "https://provider.example/start.jpg", 302, "Found",
+            {"Location": "https://provider.example/final.jpg"}, None,
+        )
+        final = _FakeResponse(200, {"Content-Type": "image/jpeg"}, b"final-data")
+        opener = _FakeOpener([redirect_exc, final])
+        with patch("dial_display.urllib.request.build_opener", return_value=opener):
+            data, err = _fetch_artwork("https://provider.example/start.jpg", 2.0)
+        assert err == ""
+        assert data == b"final-data"
+        assert opener.requested_urls == [
+            "https://provider.example/start.jpg",
+            "https://provider.example/final.jpg",
+        ]
+
+    def test_redirect_raised_as_http_error_rejects_ineligible_target(self):
+        redirect_exc = urllib.error.HTTPError(
+            "https://provider.example/start.jpg", 302, "Found",
+            {"Location": "http://provider.example/final.jpg"}, None,
+        )
+        opener = _FakeOpener([redirect_exc])
+        with patch("dial_display.urllib.request.build_opener", return_value=opener):
+            data, err = _fetch_artwork("https://provider.example/start.jpg", 2.0)
+        assert data is None
+        assert err == "ineligible_url"
+
+    def test_redirect_raised_as_http_error_without_location_is_failure(self):
+        redirect_exc = urllib.error.HTTPError(
+            "https://provider.example/start.jpg", 302, "Found", {}, None,
+        )
+        opener = _FakeOpener([redirect_exc])
+        with patch("dial_display.urllib.request.build_opener", return_value=opener):
+            data, err = _fetch_artwork("https://provider.example/start.jpg", 2.0)
+        assert data is None
+        assert err == "redirect_no_location"
+
+    def test_redirect_raised_as_http_error_chain_exceeds_max(self):
+        def _redirect_exc(n):
+            return urllib.error.HTTPError(
+                f"https://provider.example/hop{n - 1}.jpg", 302, "Found",
+                {"Location": f"https://provider.example/hop{n}.jpg"}, None,
+            )
+
+        opener = _FakeOpener([_redirect_exc(i) for i in range(3)])
+        with patch("dial_display.urllib.request.build_opener", return_value=opener):
+            data, err = _fetch_artwork("https://provider.example/start.jpg", 2.0)
+        assert data is None
+        assert err == "too_many_redirects"
+
+    def test_relative_redirect_location_resolved_against_current_url(self):
+        redirect = _FakeResponse(302, {"Location": "/final.jpg"})
+        final = _FakeResponse(200, {"Content-Type": "image/jpeg"}, b"data")
+        opener = _FakeOpener([redirect, final])
+        with patch("dial_display.urllib.request.build_opener", return_value=opener):
+            data, err = _fetch_artwork("https://provider.example/start.jpg", 2.0)
+        assert err == ""
+        assert opener.requested_urls[1] == "https://provider.example/final.jpg"
+
 
 # ---------------------------------------------------------------------------
 # End-to-end artwork rendering via DialDisplay
