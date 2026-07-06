@@ -1,7 +1,14 @@
 """dial_target_status.py — Concurrent target status enrichment.
 
 Queries POST /api/dial/status on each discovered playing target that advertises
-dial_status=v1, enriching target records with live playing state and master volume.
+dial_status=v1, enriching target records with live playing state, master volume,
+and (when present) grouped track_id now-playing state.
+
+fetch_target_status() is the single-target status protocol helper shared by
+enrich_targets() (concurrent, name-sorted list presentation) and the display
+manager (sequential, playing_since-ordered artwork source selection). Display
+source policy must not live here — this module only validates and normalizes
+one target's response.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -24,15 +31,67 @@ from dial_control_protocol import (
 if TYPE_CHECKING:
     from dial_mdns import PlayingTarget
 
+_VALID_TRACK_ID_STATES = frozenset({
+    "disabled", "waiting_for_audio", "analysing",
+    "identified", "not_found", "error",
+})
 
-def _fetch_target_status(
-    target: "PlayingTarget",
-    dial_id: str,
-    index: int,
-    result_queue: queue.Queue,
-) -> None:
-    """Fetch /api/dial/status for one target and put the enriched record on the queue."""
-    record: dict = {
+
+def _parse_track_id(data: dict) -> tuple[dict | None, bool]:
+    """Validate and normalize the optional grouped track_id object.
+
+    Returns (track_id_dict_or_None, ok). track_id absent is valid no-artwork:
+    returns (None, True). An invalid track_id object returns (None, False) —
+    the caller must treat the whole response as bad_response.
+    """
+    if "track_id" not in data:
+        return None, True
+    raw = data["track_id"]
+    if not isinstance(raw, dict):
+        return None, False
+
+    enabled = raw.get("enabled")
+    state = raw.get("state")
+    artwork_url = raw.get("artwork_url")
+    if not isinstance(enabled, bool):
+        return None, False
+    if not isinstance(state, str) or state not in _VALID_TRACK_ID_STATES:
+        return None, False
+    if not isinstance(artwork_url, str):
+        return None, False
+
+    result = {
+        "enabled": enabled,
+        "state": state,
+        "artwork_url": artwork_url,
+    }
+
+    for field in ("title", "artist", "album"):
+        if field not in raw:
+            result[field] = ""
+            continue
+        value = raw[field]
+        if not isinstance(value, str):
+            return None, False
+        result[field] = value
+
+    for field in ("updated_at", "last_attempt_at"):
+        if field not in raw:
+            result[field] = None
+            continue
+        value = raw[field]
+        if value is None:
+            result[field] = None
+        elif isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None, False
+        else:
+            result[field] = value
+
+    return result, True
+
+
+def _base_record(target: "PlayingTarget") -> dict:
+    return {
         "name": target.name,
         "ip": target.ip,
         "port": target.port,
@@ -42,18 +101,30 @@ def _fetch_target_status(
         "playing": None,
         "master_volume": None,
         "selected_output_count": None,
+        "track_id": None,
         "status_error": None,
     }
 
+
+def fetch_target_status(
+    target: "PlayingTarget",
+    dial_id: str,
+    timeout_seconds: float = TARGET_STATUS_TIMEOUT,
+) -> dict:
+    """Fetch and validate POST /api/dial/status for a single target.
+
+    Shared by enrich_targets() (list presentation) and the display manager
+    (artwork source selection). Never raises — failures are reported via the
+    record's status_error field.
+    """
+    record = _base_record(target)
+
     if not target.dial_status:
         record["status_error"] = "unsupported"
-        result_queue.put((index, record))
-        return
+        return record
 
     try:
-        conn = http.client.HTTPConnection(
-            target.ip, target.port, timeout=TARGET_STATUS_TIMEOUT
-        )
+        conn = http.client.HTTPConnection(target.ip, target.port, timeout=timeout_seconds)
         try:
             body = json.dumps({"dial_id": dial_id}).encode("utf-8")
             conn.request(
@@ -75,52 +146,44 @@ def _fetch_target_status(
             record["status_error"] = "timeout"
         else:
             record["status_error"] = "unreachable"
-        result_queue.put((index, record))
-        return
+        return record
     except Exception:
         record["status_error"] = "unreachable"
-        result_queue.put((index, record))
-        return
+        return record
 
     # Map HTTP 403 → unauthorized
     if http_status == 403:
         record["status_error"] = "unauthorized"
-        result_queue.put((index, record))
-        return
+        return record
 
     # Validate Content-Type: must be application/json (case-insensitive, ignoring params)
     ct_header = resp.getheader("Content-Type") or ""
     ct_base = ct_header.split(";")[0].strip().lower()
     if ct_base != "application/json":
         record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     # Oversized response
     if len(raw) > TARGET_STATUS_MAX_BYTES:
         record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     # Parse JSON
     try:
         data = json.loads(raw.decode("utf-8"))
     except Exception:
         record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     # Must be an object
     if not isinstance(data, dict):
         record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     # HTTP non-200 after the 403 check
     if http_status != 200:
         record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     # Success or application-level failure: ok must be an exact boolean.
     # Any other value (missing, null, integer, string) is a schema violation.
@@ -134,8 +197,7 @@ def _fetch_target_status(
             )
         else:
             record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     # Validate success response fields
     playing = data.get("playing")
@@ -144,8 +206,7 @@ def _fetch_target_status(
 
     if not isinstance(playing, bool):
         record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     if (
         isinstance(selected_output_count, bool)
@@ -153,14 +214,12 @@ def _fetch_target_status(
         or selected_output_count < 0
     ):
         record["status_error"] = "bad_response"
-        result_queue.put((index, record))
-        return
+        return record
 
     if selected_output_count == 0:
         if master_volume is not None:
             record["status_error"] = "bad_response"
-            result_queue.put((index, record))
-            return
+            return record
     else:
         if (
             isinstance(master_volume, bool)
@@ -168,12 +227,28 @@ def _fetch_target_status(
             or not (0 <= master_volume <= 100)
         ):
             record["status_error"] = "bad_response"
-            result_queue.put((index, record))
-            return
+            return record
+
+    track_id, track_id_ok = _parse_track_id(data)
+    if not track_id_ok:
+        record["status_error"] = "bad_response"
+        return record
 
     record["playing"] = playing
     record["master_volume"] = master_volume
     record["selected_output_count"] = selected_output_count
+    record["track_id"] = track_id
+    return record
+
+
+def _fetch_target_status(
+    target: "PlayingTarget",
+    dial_id: str,
+    index: int,
+    result_queue: queue.Queue,
+) -> None:
+    """Fetch /api/dial/status for one target and put the enriched record on the queue."""
+    record = fetch_target_status(target, dial_id, timeout_seconds=TARGET_STATUS_TIMEOUT)
     result_queue.put((index, record))
 
 
@@ -202,18 +277,8 @@ def enrich_targets(
     for i, target in enumerate(targets):
         if not target.dial_status:
             # Unsupported — place result immediately without a thread.
-            records[i] = {
-                "name": target.name,
-                "ip": target.ip,
-                "port": target.port,
-                "dial_api": target.dial_api,
-                "audio_status": target.audio_status,
-                "dial_status": target.dial_status,
-                "playing": None,
-                "master_volume": None,
-                "selected_output_count": None,
-                "status_error": "unsupported",
-            }
+            records[i] = _base_record(target)
+            records[i]["status_error"] = "unsupported"
         else:
             supported_indices.append(i)
             t = threading.Thread(
@@ -243,19 +308,8 @@ def enrich_targets(
     # Any supported target that didn't report becomes timeout
     for i in supported_indices:
         if records[i] is None:
-            target = targets[i]
-            records[i] = {
-                "name": target.name,
-                "ip": target.ip,
-                "port": target.port,
-                "dial_api": target.dial_api,
-                "audio_status": target.audio_status,
-                "dial_status": target.dial_status,
-                "playing": None,
-                "master_volume": None,
-                "selected_output_count": None,
-                "status_error": "timeout",
-            }
+            records[i] = _base_record(targets[i])
+            records[i]["status_error"] = "timeout"
 
     # Sort by (name lower, ip, port) and return fresh copies
     sorted_records = sorted(

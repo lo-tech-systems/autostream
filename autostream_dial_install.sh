@@ -130,12 +130,16 @@ setup_venv   # pip install gpiozero into /opt/autostream/venv
 # requiring a re-image.
 install_recovery_packages
 
+# ---- Display image processing (fresh install and --update) ------------------
+install_image_packages
+
 # ---- Deploy images ----------------------------------------------------------
 mkdir -p /opt/autostream/images
 install -m 0644 "$DEPLOY/images/autostream-dial-badge.png" /opt/autostream/images/
 install -m 0644 "$DEPLOY/images/favicon.ico"               /opt/autostream/images/
 install -m 0644 "$DEPLOY/images/favicon-16x16.png"         /opt/autostream/images/
 install -m 0644 "$DEPLOY/images/favicon-32x32.png"         /opt/autostream/images/
+install -m 0644 "$DEPLOY/images/autostream-logo-centred-dark.png" /opt/autostream/images/
 
 # ---- Deploy offline recovery pages ------------------------------------------
 mkdir -p /opt/autostream/nginx/offline

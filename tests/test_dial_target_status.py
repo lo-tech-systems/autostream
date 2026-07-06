@@ -52,7 +52,7 @@ for _p in (_DIAL, _CORE):
 
 import dial_mdns as dm
 from dial_mdns import PlayingTarget
-from dial_target_status import enrich_targets, _fetch_target_status
+from dial_target_status import enrich_targets, fetch_target_status, _fetch_target_status
 from dial_control_protocol import TARGET_STATUS_DEADLINE
 
 
@@ -485,6 +485,135 @@ class TestEnrichConcurrencyAndSorting:
                 result = enrich_targets([t], "dial-id")
 
         assert result[0]["status_error"] == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# track_id validation (shared by enrich_targets() and fetch_target_status())
+# ---------------------------------------------------------------------------
+
+def _identified_track_id(**overrides) -> dict:
+    base = {
+        "enabled": True,
+        "state": "identified",
+        "title": "Song",
+        "artist": "Artist",
+        "album": "Album",
+        "artwork_url": "https://provider.example/x.jpg",
+        "updated_at": 1783170000.0,
+        "last_attempt_at": 1783169990.0,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestTrackIdValidation:
+    def test_absent_track_id_is_valid_no_artwork(self):
+        t = _target()
+        with _mock_conn(_ok_response()):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] is None
+        assert result[0]["track_id"] is None
+
+    def test_valid_identified_track_id_parsed(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id()}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["track_id"] == _identified_track_id()
+
+    def test_disabled_track_id_optional_fields_default_empty(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": {
+            "enabled": False, "state": "disabled", "artwork_url": "",
+        }}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["track_id"] == {
+            "enabled": False, "state": "disabled",
+            "title": "", "artist": "", "album": "",
+            "artwork_url": "", "updated_at": None, "last_attempt_at": None,
+        }
+
+    def test_track_id_not_object_is_bad_response(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": "nope"}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "bad_response"
+
+    def test_missing_enabled_is_bad_response(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": {"state": "disabled", "artwork_url": ""}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "bad_response"
+
+    def test_invalid_state_is_bad_response(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id(state="playing")}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "bad_response"
+
+    def test_non_string_artwork_url_is_bad_response(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id(artwork_url=123)}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "bad_response"
+
+    def test_non_string_title_is_bad_response(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id(title=42)}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "bad_response"
+
+    def test_non_numeric_updated_at_is_bad_response(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id(updated_at="yesterday")}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "bad_response"
+
+    def test_null_updated_at_is_valid(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id(updated_at=None, last_attempt_at=None)}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["track_id"]["updated_at"] is None
+
+    def test_unknown_track_id_fields_ignored(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id(provider="acoustid", confidence=0.9)}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert "provider" not in record["track_id"]
+        assert "confidence" not in record["track_id"]
+
+    def test_non_identified_state_with_empty_artwork_is_valid(self):
+        t = _target()
+        body = {**_ok_response(), "track_id": {
+            "enabled": True, "state": "not_found", "artwork_url": "",
+        }}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["track_id"]["state"] == "not_found"
+
+    def test_fetch_target_status_and_enrich_targets_agree_on_parsing(self):
+        """enrich_targets() must reuse the same track_id parsing as fetch_target_status()."""
+        t = _target()
+        body = {**_ok_response(), "track_id": _identified_track_id()}
+        with _mock_conn(body):
+            direct = fetch_target_status(t, "dial-id")
+        with _mock_conn(body):
+            via_enrich = enrich_targets([t], "dial-id")[0]
+        assert direct["track_id"] == via_enrich["track_id"]
 
 
 # ---------------------------------------------------------------------------

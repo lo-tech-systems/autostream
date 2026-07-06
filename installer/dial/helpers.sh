@@ -26,6 +26,13 @@ install_os_packages() {
         python3-venv python3-flask python3-lgpio
 }
 
+install_image_packages() {
+    # python3-pil is apt-provided (not pip) so it is visible in the dial venv
+    # via --system-site-packages. Called unconditionally on fresh install and
+    # --update so existing installs gain it without requiring a re-image.
+    apt-get install -y --no-install-recommends python3-pil
+}
+
 install_recovery_packages() {
     # Install offline-recovery dependencies idempotently.
     # Called unconditionally (fresh install and --update) so that upgraded

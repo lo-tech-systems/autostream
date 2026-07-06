@@ -444,6 +444,62 @@ class TestRecoveryInfrastructureDeployment:
 # Sudoers: www-data offline-recovery verbs
 # ---------------------------------------------------------------------------
 
+class TestDisplayImageProcessingDeployment:
+    def _installer_content(self):
+        return DIAL_INSTALLER.read_text(encoding="utf-8")
+
+    def _helpers_content(self):
+        return HELPERS_SH.read_text(encoding="utf-8")
+
+    def test_install_image_packages_defined_in_helpers(self):
+        content = self._helpers_content()
+        assert "install_image_packages()" in content
+
+    def test_install_image_packages_installs_python3_pil(self):
+        content = self._helpers_content()
+        idx = content.find("install_image_packages()")
+        assert idx != -1
+        fn_text = content[idx:idx + 400]
+        assert "python3-pil" in fn_text
+
+    def test_install_os_packages_does_not_include_pil(self):
+        """python3-pil has its own install site; must not duplicate in install_os_packages."""
+        content = self._helpers_content()
+        idx = content.find("install_os_packages()")
+        end = content.find("\n}", idx)
+        fn_text = content[idx:end]
+        assert "python3-pil" not in fn_text
+
+    def test_install_image_packages_called_unconditionally(self):
+        """install_image_packages must run on both fresh installs and --update.
+
+        Same guard-balance check used for install_recovery_packages().
+        """
+        content = self._installer_content()
+        call_pos = content.find("install_image_packages")
+        assert call_pos != -1, (
+            "install_image_packages not called in autostream_dial_install.sh"
+        )
+        before = content[:call_pos]
+        open_update_guards = before.count("if ! $UPDATE")
+        fi_count = before.count("fi")
+        assert fi_count >= open_update_guards, (
+            "install_image_packages() is called inside 'if ! $UPDATE' — "
+            "it must be outside so it runs on --update too."
+        )
+
+    def test_logo_deployed_to_images_dir(self):
+        """autostream-logo-centred-dark.png must be installed to /opt/autostream/images/."""
+        content = self._installer_content()
+        assert "autostream-logo-centred-dark.png" in content, (
+            "autostream-logo-centred-dark.png deployment not found in installer"
+        )
+
+    def test_logo_source_asset_exists_in_repo(self):
+        logo_path = REPO_ROOT / "images" / "autostream-logo-centred-dark.png"
+        assert logo_path.exists(), f"Logo asset missing at {logo_path}"
+
+
 class TestSudoersWwwData:
     def _sudoers_content(self):
         return SUDOERS.read_text(encoding="utf-8")
