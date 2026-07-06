@@ -23,8 +23,8 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_http_server as dhs
-from dial_config import DialConfig
-from dial_http_server import RecoveryWindow
+from dial_config import DialConfig, DialDisplayConfig
+from dial_http_server import NoOpDisplayStatusProvider, RecoveryWindow
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,8 @@ class FakeDialServer:
     def __init__(self, cfg: DialConfig) -> None:
         self._cfg           = cfg
         self._cfg_lock      = threading.Lock()
+        self._display_status = NoOpDisplayStatusProvider()
+        self._display_status.update_config(cfg.display)
         self._recovery_window = MagicMock(spec=RecoveryWindow)
         self._recovery_window._active           = False
         self._recovery_window._volume_confirmed = False
@@ -735,6 +737,131 @@ class TestReconcileUpdateTimer:
             dial_main._reconcile_update_timer(True)
         flat = " ".join(run_cmds[0])
         assert "toggle-dial-update-timer" in flat
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /screen/settings
+# ---------------------------------------------------------------------------
+
+_RUNTIME_KEYS = {"fitted", "active", "backend", "backend_loaded", "showing",
+                  "last_error", "last_error_at"}
+
+
+class TestScreenSettingsGet:
+    def test_get_returns_effective_fitted_and_runtime_shape(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["status"] == 200
+        assert result["data"]["ok"] is True
+        assert result["data"]["screen"] == {"fitted": False}
+        assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
+        assert result["data"]["runtime"]["fitted"] is False
+        assert result["data"]["runtime"]["backend"] == "noop"
+        assert "artwork_url" not in json.dumps(result["data"])
+
+    def test_get_reflects_fitted_true(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"] == {"fitted": True}
+        assert result["data"]["runtime"]["fitted"] is True
+
+
+class TestScreenSettingsPost:
+    def setup_method(self):
+        dhs._pin_attempts.clear()
+
+    def test_post_complete_settings_replaces_config(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert r["data"]["screen"] == {"fitted": True}
+        assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
+        assert r["data"]["restart_required"] is False
+        assert r["save_calls"][0].display.fitted is True
+
+    def test_post_missing_fitted_returns_invalid_screen_settings(self):
+        r = _call_handler("/screen/settings", body={"screen": {}})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+
+    def test_post_non_bool_fitted_returns_invalid_screen_settings(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": 1}})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+
+    def test_post_unknown_field_returns_invalid_screen_settings(self):
+        r = _call_handler("/screen/settings",
+                          body={"screen": {"fitted": True, "rotation": 90}})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+
+    def test_post_missing_screen_object_returns_invalid_screen_settings(self):
+        r = _call_handler("/screen/settings", body={})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+
+    def test_post_requires_pin_when_set(self):
+        cfg = DialConfig(uuid="x", pin="9999")
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}}, cfg=cfg)
+        assert r["status"] == 403
+        assert r["data"]["error"] == "wrong_pin"
+
+    def test_post_correct_pin_allows_change(self):
+        cfg = DialConfig(uuid="x", pin="9999")
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True}, "current_pin": "9999"},
+            cfg=cfg,
+        )
+        assert r["status"] == 200
+
+    def test_post_save_failure_returns_500(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        result: dict = {}
+        handler_cls = server._make_handler()
+        body_bytes = json.dumps({"screen": {"fitted": True}}).encode()
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.rfile          = io.BytesIO(body_bytes)
+        h.client_address = ("127.0.0.1", 1)
+        h.headers        = {"Content-Length": str(len(body_bytes))}
+        h._send_json  = lambda s, d: result.update(status=s, data=d)
+        h.send_error  = lambda c, *_: result.update(status=c)
+        h._send_429   = lambda w: result.update(status=429)
+
+        with patch("dial_config.save_config", side_effect=OSError("disk full")):
+            h._handle_screen_settings()
+
+        assert result["status"] == 500
+        assert result["data"]["error"] == "save_failed"
+
+    def test_post_does_not_expose_secrets_or_artwork(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        dumped = json.dumps(r["data"])
+        assert "artwork_url" not in dumped
+        assert "pin" not in r["data"]["screen"]
+
+    def test_post_live_applies_to_display_status_provider(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
+        server = FakeDialServer(cfg)
+        r = _call_handler("/screen/settings",
+                          body={"screen": {"fitted": True}},
+                          setup_server=server)
+        assert r["status"] == 200
+        assert server._display_status.get_status()["fitted"] is True
 
 
 # ---------------------------------------------------------------------------

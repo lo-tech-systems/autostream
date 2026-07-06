@@ -12,7 +12,7 @@ import json
 import os
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
@@ -23,6 +23,11 @@ INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 def _normalise_dial_channel(value: object) -> str:
     """Return 'dev' only when *value* normalises to 'dev'; otherwise 'stable'."""
     return "dev" if str(value or "").strip().lower() == "dev" else "stable"
+
+
+@dataclass
+class DialDisplayConfig:
+    fitted: bool = False
 
 
 @dataclass
@@ -38,6 +43,31 @@ class DialConfig:
     pin:            str        = ''
     auto_update:    bool       = False
     update_channel: str        = 'stable'
+    display:        DialDisplayConfig = field(default_factory=DialDisplayConfig)
+
+
+class InvalidScreenSettings(ValueError):
+    """Raised by validate_screen_settings() for a malformed screen settings object."""
+
+
+def validate_screen_settings(obj: object) -> DialDisplayConfig:
+    """Validate a complete API-supplied `screen` settings object.
+
+    Strict: `fitted` must be a JSON boolean (not 0/1/"true"), the object must be
+    a dict containing exactly the known field, and no fields may be missing or
+    unrecognised. Raises InvalidScreenSettings on any violation.
+    """
+    if not isinstance(obj, dict):
+        raise InvalidScreenSettings("screen must be an object")
+    unknown = set(obj.keys()) - {"fitted"}
+    if unknown:
+        raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
+    if "fitted" not in obj:
+        raise InvalidScreenSettings("screen.fitted is required")
+    fitted = obj["fitted"]
+    if not isinstance(fitted, bool):
+        raise InvalidScreenSettings("screen.fitted must be a boolean")
+    return DialDisplayConfig(fitted=fitted)
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -75,6 +105,10 @@ def load_config() -> DialConfig:
     cfg.port      = hw.get('port', cfg.port)
     cfg.uuid      = hw.get('uuid', '')
 
+    hw_display = hw.get('display')
+    if isinstance(hw_display, dict):
+        cfg.display = DialDisplayConfig(fitted=bool(hw_display.get('fitted', False)))
+
     if SETTINGS_PATH.exists():
         s = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
         cfg.step_percent   = s.get('step_percent',   cfg.step_percent)
@@ -82,6 +116,9 @@ def load_config() -> DialConfig:
         cfg.pin            = s.get('pin',            cfg.pin)
         cfg.auto_update    = s.get('auto_update',    cfg.auto_update)
         cfg.update_channel = _normalise_dial_channel(s.get('update_channel', cfg.update_channel))
+        s_display = s.get('display')
+        if isinstance(s_display, dict):
+            cfg.display = DialDisplayConfig(fitted=bool(s_display.get('fitted', cfg.display.fitted)))
 
     if not cfg.uuid:
         state = _read_env_file(INSTALL_STATE_PATH)
@@ -110,6 +147,7 @@ def save_config(cfg: DialConfig) -> None:
         'pin':            cfg.pin,
         'auto_update':    cfg.auto_update,
         'update_channel': cfg.update_channel,
+        'display':        {'fitted': cfg.display.fitted},
     }
     with _save_lock:
         fd, tmp_path = tempfile.mkstemp(dir=SETTINGS_PATH.parent, suffix='.tmp')

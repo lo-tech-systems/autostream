@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from dial_config import _read_env_file
+from dial_config import InvalidScreenSettings, _read_env_file, validate_screen_settings
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
@@ -171,13 +171,42 @@ class RecoveryWindow:
             }
 
 
+# ---- Display status provider (placeholder until the real display manager) --
+
+class NoOpDisplayStatusProvider:
+    """Default screen-settings runtime status provider used before WP-6/WP-8
+    wire in the real DialDisplay manager. Tracks only the fitted flag it is
+    told about; every other runtime field stays at its no-op default.
+    """
+
+    def __init__(self) -> None:
+        self._fitted = False
+
+    def get_status(self) -> dict:
+        return {
+            "fitted":         self._fitted,
+            "active":         False,
+            "backend":        "noop",
+            "backend_loaded": False,
+            "showing":        "noop",
+            "last_error":     "",
+            "last_error_at":  None,
+        }
+
+    def update_config(self, config) -> dict:
+        self._fitted = bool(config.fitted)
+        return self.get_status()
+
+
 # ---- HTTP server ------------------------------------------------------------
 
 class DialHTTPServer:
-    def __init__(self, cfg) -> None:
+    def __init__(self, cfg, display_status_provider=None) -> None:
         self._cfg             = cfg
         self._cfg_lock        = threading.Lock()
         self._recovery_window = RecoveryWindow(self._on_announce)
+        self._display_status  = display_status_provider or NoOpDisplayStatusProvider()
+        self._display_status.update_config(cfg.display)
         self._server          = http.server.HTTPServer(
             ('', cfg.port), self._make_handler()
         )
@@ -299,6 +328,15 @@ class DialHTTPServer:
                 elif self.path == '/update/check':
                     self._handle_update_check()
 
+                elif self.path == '/screen/settings':
+                    with dial_server._cfg_lock:
+                        cfg = dial_server._cfg
+                    self._send_json(200, {
+                        'ok':      True,
+                        'screen':  {'fitted': cfg.display.fitted},
+                        'runtime': dial_server._display_status.get_status(),
+                    })
+
                 else:
                     self.send_error(404)
 
@@ -307,6 +345,8 @@ class DialHTTPServer:
                     self._handle_configure()
                 elif self.path == '/update':
                     self._handle_update()
+                elif self.path == '/screen/settings':
+                    self._handle_screen_settings()
                 else:
                     self.send_error(404)
 
@@ -456,6 +496,68 @@ class DialHTTPServer:
                     new_cfg.name, new_cfg.step_percent, new_cfg.auto_update, new_cfg.update_channel,
                 )
                 self._send_json(200, {'ok': True})
+
+            def _handle_screen_settings(self) -> None:
+                body = self._read_body()
+                if body is None:
+                    return
+                try:
+                    obj = json.loads(body)
+                except (ValueError, TypeError):
+                    self._send_json(400, {'ok': False, 'error': 'invalid_json'})
+                    return
+                if not isinstance(obj, dict):
+                    self._send_json(400, {'ok': False, 'error': 'body_must_be_object'})
+                    return
+
+                ip = self.client_address[0]
+                with dial_server._cfg_lock:
+                    cfg = dial_server._cfg
+
+                # PIN auth — screen settings follow POST /configure semantics.
+                if cfg.pin:
+                    blocked, wait_secs = _pin_check_rate_limit(ip)
+                    if blocked:
+                        self._send_429(wait_secs)
+                        return
+                    current_pin = obj.get('current_pin', '')
+                    if not isinstance(current_pin, str) or current_pin != cfg.pin:
+                        _pin_record_failure(ip)
+                        blocked, wait_secs = _pin_check_rate_limit(ip)
+                        if blocked:
+                            self._send_429(wait_secs)
+                        else:
+                            self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
+                        return
+                    _pin_clear_attempts(ip)
+
+                try:
+                    new_display = validate_screen_settings(obj.get('screen'))
+                except InvalidScreenSettings:
+                    self._send_json(400, {'ok': False, 'error': 'invalid_screen_settings'})
+                    return
+
+                new_cfg = copy.copy(cfg)
+                new_cfg.display = new_display
+
+                from dial_config import save_config
+                try:
+                    save_config(new_cfg)
+                except Exception as e:
+                    logging.warning("save_config failed: %s", e)
+                    self._send_json(500, {'ok': False, 'error': 'save_failed'})
+                    return
+
+                dial_server.update_cfg(new_cfg)
+                runtime = dial_server._display_status.update_config(new_cfg.display)
+
+                logging.info("screen settings updated: fitted=%s", new_display.fitted)
+                self._send_json(200, {
+                    'ok':               True,
+                    'screen':           {'fitted': new_cfg.display.fitted},
+                    'runtime':          runtime,
+                    'restart_required': False,
+                })
 
             def _handle_update_check(self) -> None:
                 try:

@@ -20,7 +20,14 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_config as dc
-from dial_config import DialConfig, load_config, save_config
+from dial_config import (
+    DialConfig,
+    DialDisplayConfig,
+    InvalidScreenSettings,
+    load_config,
+    save_config,
+    validate_screen_settings,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +207,7 @@ class TestSaveConfigMutableFieldsOnly:
         finally:
             dc.SETTINGS_PATH = orig
 
-        assert set(data.keys()) == {"step_percent", "name", "pin", "auto_update", "update_channel"}
+        assert set(data.keys()) == {"step_percent", "name", "pin", "auto_update", "update_channel", "display"}
         assert "uuid" not in data
         assert "clk_gpio" not in data
         assert "port" not in data
@@ -303,6 +310,80 @@ class TestSaveConfigFsync:
 # ---------------------------------------------------------------------------
 # save_config: atomic replace and temp cleanup
 # ---------------------------------------------------------------------------
+
+class TestDisplaySettings:
+    def test_missing_display_defaults_fitted_false(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.fitted is False
+
+    def test_hw_display_fitted_true_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.fitted is True
+
+    def test_explicit_disabled_display_in_hw(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": False})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.fitted is False
+
+    def test_mutable_settings_override_hw_display(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": False})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.fitted is True
+
+    def test_save_persists_display_fitted(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"] == {"fitted": True}
+
+
+class TestValidateScreenSettings:
+    def test_valid_true_accepted(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result == DialDisplayConfig(fitted=True)
+
+    def test_valid_false_accepted(self):
+        result = validate_screen_settings({"fitted": False})
+        assert result == DialDisplayConfig(fitted=False)
+
+    def test_missing_fitted_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({})
+
+    def test_non_object_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings("true")
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "rotation": 90})
+
+    def test_integer_fitted_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": 1})
+
+    def test_string_fitted_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": "true"})
+
 
 class TestSaveConfigAtomic:
     def test_settings_path_exists_after_save(self, tmp_path):
