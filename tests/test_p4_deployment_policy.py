@@ -264,6 +264,13 @@ class TestSystemdDependencyOrdering:
         after = _unit_field(unit, "Unit", "After")
         assert "NetworkManager.service" in after
 
+    def test_wifi_watcher_after_update_retry(self):
+        unit = SYSTEMD_DIR / "autostream_wifi_watcher.service"
+        after = _unit_field(unit, "Unit", "After")
+        assert "autostream_update_retry.service" in after, (
+            "autostream_wifi_watcher.service must wait for boot-time update recovery"
+        )
+
     def test_dial_wifi_watcher_after_network_manager(self):
         unit = SYSTEMD_DIR / "autostream_dial_wifi_watcher.service"
         after = _unit_field(unit, "Unit", "After")
@@ -854,6 +861,27 @@ class TestNetworkManagerConfig:
             "wifi-powersave.conf should reference wifi.powersave setting"
         )
         assert "2" in text, "wifi.powersave=2 (disable) must be set to prevent WiFi dropouts"
+
+    def test_installer_installs_networkmanager_files_root_owned(self):
+        text = INSTALL_SH.read_text(encoding="utf-8")
+        assert re.search(
+            r"install\s+-m\s+0755\s+-o\s+root\s+-g\s+root\s+\\\n"
+            r'\s+"\$\{AUTOSTREAM_DIR\}/system/NetworkManager/99-wlan-fix"\s+\\\n'
+            r"\s+/etc/NetworkManager/dispatcher\.d/99-wlan-fix",
+            text,
+        ), "99-wlan-fix must be installed root-owned and executable"
+        assert re.search(
+            r"install\s+-m\s+0644\s+-o\s+root\s+-g\s+root\s+\\\n"
+            r'\s+"\$\{AUTOSTREAM_DIR\}/system/NetworkManager/mdns\.conf"\s+\\\n'
+            r"\s+/etc/NetworkManager/conf\.d/mdns\.conf",
+            text,
+        ), "mdns.conf must be installed root-owned"
+        assert re.search(
+            r"install\s+-m\s+0644\s+-o\s+root\s+-g\s+root\s+\\\n"
+            r'\s+"\$\{AUTOSTREAM_DIR\}/system/NetworkManager/wifi-powersave\.conf"\s+\\\n'
+            r"\s+/etc/NetworkManager/conf\.d/wifi-powersave\.conf",
+            text,
+        ), "wifi-powersave.conf must be installed root-owned"
 
 
 # ---------------------------------------------------------------------------

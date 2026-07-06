@@ -6,7 +6,7 @@
 
 [Unit]
 Description=WiFi Setup State Machine (AP Mode + Captive Portal based WiFi Config)
-After=NetworkManager.service
+After=NetworkManager.service autostream_update_retry.service
 Wants=NetworkManager.service
 # D-WP0: with Phase D (client profiles autoconnect=no) the watcher process is the
 # sole Wi-Fi reconnection agent, so a crash or clean exit that stops it must never

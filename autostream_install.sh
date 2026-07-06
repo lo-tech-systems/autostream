@@ -832,9 +832,15 @@ configure_phase() {
   systemctl disable dnsmasq || true
 
   # NetworkManager
-  cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/99-wlan-fix"     /etc/NetworkManager/dispatcher.d/
-  cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/mdns.conf"       /etc/NetworkManager/conf.d/
-  cp -a "${AUTOSTREAM_DIR}/system/NetworkManager/wifi-powersave.conf" /etc/NetworkManager/conf.d/
+  install -m 0755 -o root -g root \
+      "${AUTOSTREAM_DIR}/system/NetworkManager/99-wlan-fix" \
+      /etc/NetworkManager/dispatcher.d/99-wlan-fix
+  install -m 0644 -o root -g root \
+      "${AUTOSTREAM_DIR}/system/NetworkManager/mdns.conf" \
+      /etc/NetworkManager/conf.d/mdns.conf
+  install -m 0644 -o root -g root \
+      "${AUTOSTREAM_DIR}/system/NetworkManager/wifi-powersave.conf" \
+      /etc/NetworkManager/conf.d/wifi-powersave.conf
 
   # cloud-init
   configure_cloud_init
