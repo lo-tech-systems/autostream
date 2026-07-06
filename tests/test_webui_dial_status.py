@@ -43,6 +43,12 @@ from autostream_webui_api import (
     send_dial_status_post_json,
 )
 from autostream_webui_state import WebUIState
+from track_id.models import (
+    TrackArtwork,
+    TrackIdentificationSnapshot,
+    disabled_snapshot,
+    waiting_snapshot,
+)
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -83,12 +89,15 @@ def _invoke(
     list_result: ListOutputsResult | None = None,
     config_error: bool = False,
     playing: bool = False,
+    track_id_snapshot: TrackIdentificationSnapshot | None = None,
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_status_post_json and return (status, body, update_mock)."""
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
     if list_result is None:
         list_result = _ok_list()
+    if track_id_snapshot is None:
+        track_id_snapshot = disabled_snapshot()
 
     update_mock = MagicMock()
 
@@ -106,6 +115,8 @@ def _invoke(
         patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_webui_api.update_output", update_mock),
         patch("autostream_webui_api.any_monitor_capturing", return_value=playing),
+        patch("autostream_core.get_active_track_identification_snapshot",
+              return_value=track_id_snapshot),
     ):
         send_dial_status_post_json(handler, state, json_obj)
 
@@ -212,6 +223,107 @@ class TestPlayingField:
             playing=True,
         )
         assert body["playing"] is True
+
+
+# ---------------------------------------------------------------------------
+# track_id grouped object
+# ---------------------------------------------------------------------------
+
+class TestTrackIdField:
+    def test_disabled_snapshot_yields_disabled_track_id(self):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=disabled_snapshot())
+        assert code == 200
+        assert body["track_id"] == {
+            "enabled": False,
+            "state": "disabled",
+            "title": "",
+            "artist": "",
+            "album": "",
+            "artwork_url": "",
+            "updated_at": None,
+            "last_attempt_at": None,
+        }
+
+    def test_waiting_snapshot_has_empty_artwork_url(self):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=waiting_snapshot())
+        assert body["track_id"]["state"] == "waiting_for_audio"
+        assert body["track_id"]["artwork_url"] == ""
+
+    def test_identified_with_artwork_passes_through(self):
+        snap = TrackIdentificationSnapshot(
+            enabled=True,
+            state="identified",
+            status_text="Track identified",
+            title="Song",
+            artist="Artist",
+            album="Album",
+            artwork_url="https://provider.example/artwork/3f8a91c2.jpg",
+            updated_at=1783170000.0,
+            last_attempt_at=1783169990.0,
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
+        assert body["track_id"] == {
+            "enabled": True,
+            "state": "identified",
+            "title": "Song",
+            "artist": "Artist",
+            "album": "Album",
+            "artwork_url": "https://provider.example/artwork/3f8a91c2.jpg",
+            "updated_at": 1783170000.0,
+            "last_attempt_at": 1783169990.0,
+        }
+
+    def test_identified_without_artwork_is_empty_string(self):
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state="identified", status_text="Track identified",
+            title="Song", artist="Artist", album="Album", artwork_url="",
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
+        assert body["track_id"]["artwork_url"] == ""
+
+    def test_not_found_state_has_empty_artwork_url(self):
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state="not_found", status_text="Listening",
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
+        assert body["track_id"]["state"] == "not_found"
+        assert body["track_id"]["artwork_url"] == ""
+
+    def test_error_state_has_empty_artwork_url(self):
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state="error", status_text="Identification unavailable",
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
+        assert body["track_id"]["state"] == "error"
+        assert body["track_id"]["artwork_url"] == ""
+
+    def test_non_identified_state_with_stray_artwork_url_is_scrubbed(self):
+        """Defense in depth: a non-identified snapshot must never leak artwork_url."""
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state="analysing", status_text="Analysing",
+            artwork_url="https://provider.example/should-not-leak.jpg",
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
+        assert body["track_id"]["artwork_url"] == ""
+
+    def test_non_http_artwork_url_scrubbed_even_if_identified(self):
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state="identified", status_text="Track identified",
+            artwork_url="ftp://provider.example/x.jpg",
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
+        assert body["track_id"]["artwork_url"] == ""
+
+    def test_endpoint_remains_read_only_no_remote_fetch(self):
+        """The handler must not touch urllib/network fetch machinery for artwork."""
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state="identified", status_text="Track identified",
+            artwork_url="https://provider.example/x.jpg",
+        )
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
+        mock_urlopen.assert_not_called()
+        assert body["track_id"]["artwork_url"] == "https://provider.example/x.jpg"
 
 
 # ---------------------------------------------------------------------------

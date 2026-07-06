@@ -726,10 +726,36 @@ def calculate_master_volume(outputs) -> tuple:
     return (round(sum(volumes) / len(volumes)), len(volumes))
 
 
+def _dial_track_id_dict() -> dict:
+    """Return the grouped track_id object for POST /api/dial/status.
+
+    artwork_url is exposed only for identified results with a validated
+    http(s) provider URL — every other state reports an empty string.
+    """
+    from autostream_core import get_active_track_identification_snapshot
+    from track_id.models import STATE_IDENTIFIED
+
+    snap = get_active_track_identification_snapshot()
+    artwork_url = snap.artwork_url or ""
+    if snap.state != STATE_IDENTIFIED or not artwork_url.startswith(("http://", "https://")):
+        artwork_url = ""
+    return {
+        "enabled": snap.enabled,
+        "state": snap.state,
+        "title": snap.title,
+        "artist": snap.artist,
+        "album": snap.album,
+        "artwork_url": artwork_url,
+        "updated_at": snap.updated_at,
+        "last_attempt_at": snap.last_attempt_at,
+    }
+
+
 def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/status — UUID-auth only (no session/CSRF required).
 
-    Returns fresh, side-effect-free playing state and master volume.
+    Returns fresh, side-effect-free playing state, master volume, and grouped
+    track_id now-playing state. Never fetches remote artwork on the request path.
     """
     dial_id = json_obj.get("dial_id", "")
     if not isinstance(dial_id, str) or not dial_id:
@@ -767,6 +793,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "playing": playing,
         "master_volume": master_volume,
         "selected_output_count": selected_output_count,
+        "track_id": _dial_track_id_dict(),
     })
 
 
