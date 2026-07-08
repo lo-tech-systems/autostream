@@ -111,6 +111,50 @@ class RecoveryContext:
     _known_usb_macs: set
 
 
+@dataclass(frozen=True)
+class TailSpec:
+    """The declarative handover effects ``wifi_activation.client_up_tail``
+    applies for one successful client activation.  Defined here (rather than
+    in ``wifi_activation``, which imports this module) so ``wifi_recovery``'s
+    own dead-PHY rungs can build one without a reverse import.
+
+    - ``set_builtin_fallback``: assign ADOPTION_STATE.using_builtin_fallback
+      when not None.
+    - ``clear_noip_stable_id``: clear the no-IP ledger for this stable id.
+    - ``disconnect_builtin_ifname``: disconnect this still-connected built-in
+      client after the handover (""/None = skip).
+    - ``leave_setup_reason``: leave setup mode with this reason (None = skip;
+      leave_setup_mode is itself a no-op when not in setup).
+    - ``clear_down_timers``: reset the connectivity-down / reconnect timers.
+    - ``reset_onboard_bound``: reset the per-episode onboard-failure bound.
+    - ``clear_pending_adoption`` / ``clear_dead_adapter``: clear the pending
+      USB adoption and dead-PHY recovery state respectively.
+    """
+    set_builtin_fallback: "Optional[bool]" = None
+    clear_noip_stable_id: "Optional[str]" = None
+    disconnect_builtin_ifname: str = ""
+    leave_setup_reason: "Optional[str]" = None
+    clear_down_timers: bool = False
+    reset_onboard_bound: bool = False
+    clear_pending_adoption: bool = False
+    clear_dead_adapter: bool = False
+
+
+def dead_phy_recovered_via_usb_reset(leave_setup_reason: str) -> TailSpec:
+    """Tail for a dead-PHY target that came back healthy after a USB reset:
+    clear the builtin-fallback flag and dead-PHY recovery state, leave setup
+    if it was up, and re-announce mDNS."""
+    return TailSpec(set_builtin_fallback=False, clear_dead_adapter=True,
+                     leave_setup_reason=leave_setup_reason)
+
+
+def dead_phy_recovered_via_builtin_fallback() -> TailSpec:
+    """Tail for falling back to a healthy built-in radio while the USB target
+    is dead: mark the builtin-fallback flag and clear dead-PHY recovery
+    state."""
+    return TailSpec(set_builtin_fallback=True, clear_dead_adapter=True)
+
+
 # ---- Adapter-remediation overlay event contract ----
 #
 # The overlay *diagnoses* the active client adapter and emits events; the
@@ -1061,9 +1105,7 @@ def _perform_reset_step(ctx, target: TargetAdapter, now: float) -> bool:
         # up (leave_setup_mode no-ops otherwise), and re-announce mDNS.
         ctx.client_up_tail(
             recovered,
-            set_builtin_fallback=False,
-            clear_dead_adapter=True,
-            leave_setup_reason="dead-PHY recovered via USB reset",
+            dead_phy_recovered_via_usb_reset("dead-PHY recovered via USB reset"),
         )
     return True
 
@@ -1135,11 +1177,7 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
                           builtin.ifname)
             # Shared handover tail: set the built-in active, mark the
             # builtin-fallback flag, clear dead-PHY recovery state, verify avahi.
-            ctx.client_up_tail(
-                builtin,
-                set_builtin_fallback=True,
-                clear_dead_adapter=True,
-            )
+            ctx.client_up_tail(builtin, dead_phy_recovered_via_builtin_fallback())
             return True
 
     other_path = _other_network_path_available(ctx, adapters, target, wired_connected)

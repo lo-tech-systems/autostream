@@ -222,7 +222,7 @@ class ActivationJob:
     # Runtime-adoption transactional handover: disconnect this previously-active
     # client on the success tail (only after the worker validated the new one).
     disconnects_previous_ifname: str = ""
-    clears_pending_adoption: bool = False   # clear STATE.pending_usb_adoption on done
+    clears_pending_adoption: bool = False   # clear ADOPTION_STATE.pending_usb_adoption on done
     stable_id: "Optional[str]" = None
     wait_for_validation: bool = True
 
@@ -487,29 +487,36 @@ def _set_active_client(ctx: ActivationContext, adapter) -> None:
         ctx.logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
 
 
-def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None,
-                   clear_noip_stable_id=None, disconnect_builtin_ifname="",
-                   leave_setup_reason=None, clear_down_timers=False,
-                   reset_onboard_bound=False, clear_pending_adoption=False,
-                   clear_dead_adapter=False) -> None:
+def activation_success_tail(*, set_builtin_fallback=None, clear_noip_stable_id=None,
+                            disconnect_builtin_ifname="", leave_setup_reason=None,
+                            clear_down_timers=False, clear_pending_adoption=False) -> "wifi_recovery.TailSpec":
+    """Tail for a client the activation worker just brought up successfully
+    (bring-up, adoption, reconnect episode, or credential apply) — every job
+    kind that runs through ``apply_activation_result`` funnels here.  Always
+    resets the onboard-failure bound; never touches dead-PHY recovery state
+    (that ladder has its own tail variants)."""
+    return wifi_recovery.TailSpec(
+        set_builtin_fallback=set_builtin_fallback,
+        clear_noip_stable_id=clear_noip_stable_id,
+        disconnect_builtin_ifname=disconnect_builtin_ifname,
+        leave_setup_reason=leave_setup_reason,
+        clear_down_timers=clear_down_timers,
+        reset_onboard_bound=True,
+        clear_pending_adoption=clear_pending_adoption,
+    )
+
+
+def client_up_tail(ctx: ActivationContext, adapter,
+                   spec: "wifi_recovery.TailSpec" = wifi_recovery.TailSpec()) -> None:
     """The shared "a client came up" choreography (loop thread only).
 
-    One place applies the standardised handover effects; each caller passes only
-    the deltas it needs and does its own adapter discovery/logging first.  The
-    individual effects touch disjoint STATE/ADOPTION_STATE fields (or
-    independent nmcli/ledger calls), so their order is not load-bearing.
+    One place applies the standardised handover effects; each caller passes a
+    :class:`wifi_recovery.TailSpec` describing only the deltas it needs and
+    does its own adapter discovery/logging first.  The individual effects
+    touch disjoint STATE/ADOPTION_STATE fields (or independent nmcli/ledger
+    calls), so their order is not load-bearing.
 
-    - ``adapter``: the resolved client adapter to record active (None = skip).
-    - ``disconnect_builtin_ifname``: disconnect this still-connected built-in
-      client after the handover (""/None = skip).
-    - ``clear_noip_stable_id``: clear the no-IP ledger for this stable id.
-    - ``set_builtin_fallback``: assign ADOPTION_STATE.using_builtin_fallback when not None.
-    - ``clear_down_timers``: reset the connectivity-down / reconnect timers.
-    - ``reset_onboard_bound``: reset the per-episode onboard-failure bound.
-    - ``clear_pending_adoption`` / ``clear_dead_adapter``: clear the pending USB
-      adoption and dead-PHY recovery state respectively.
-    - ``leave_setup_reason``: leave setup mode with this reason (None = skip;
-      leave_setup_mode is itself a no-op when not in setup).
+    ``adapter`` is the resolved client adapter to record active (None = skip).
 
     Every call here is a successful client activation, so this is also the
     other half of the BSSID roam holdoff (the roam submission stamps the same
@@ -518,26 +525,26 @@ def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None
     """
     if adapter is not None:
         _set_active_client(ctx, adapter)
-    if disconnect_builtin_ifname:
-        ctx.logger.info("Disconnecting built-in client on %s", disconnect_builtin_ifname)
-        ctx.nm.disconnect_device(disconnect_builtin_ifname)
-    if clear_noip_stable_id:
-        ctx.clear_noip_failures(clear_noip_stable_id)
+    if spec.disconnect_builtin_ifname:
+        ctx.logger.info("Disconnecting built-in client on %s", spec.disconnect_builtin_ifname)
+        ctx.nm.disconnect_device(spec.disconnect_builtin_ifname)
+    if spec.clear_noip_stable_id:
+        ctx.clear_noip_failures(spec.clear_noip_stable_id)
     with ctx.state_lock:
         ctx.ADOPTION_STATE.last_roam_or_activation = time.monotonic()
-        if set_builtin_fallback is not None:
-            ctx.ADOPTION_STATE.using_builtin_fallback = set_builtin_fallback
-        if clear_down_timers:
+        if spec.set_builtin_fallback is not None:
+            ctx.ADOPTION_STATE.using_builtin_fallback = spec.set_builtin_fallback
+        if spec.clear_down_timers:
             ctx.STATE.conn_down_start = None
             ctx.STATE.last_reconnect_attempt = None
-        if reset_onboard_bound:
+        if spec.reset_onboard_bound:
             ctx.STATE.onboard_activation_failures = 0
-    if clear_pending_adoption:
+    if spec.clear_pending_adoption:
         ctx.clear_pending_adoption()
-    if clear_dead_adapter:
+    if spec.clear_dead_adapter:
         ctx.clear_dead_adapter_state()
-    if leave_setup_reason is not None:
-        ctx.leave_setup_mode(leave_setup_reason)
+    if spec.leave_setup_reason is not None:
+        ctx.leave_setup_mode(spec.leave_setup_reason)
     ctx.verify_avahi_after_handover()
 
 
@@ -597,16 +604,14 @@ def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
         # previous-client disconnect, clear the no-IP ledger, fallback/timer flags,
         # reset the onboard-failure bound, leave setup, clear pending adoption,
         # verify avahi).
-        client_up_tail(
-            ctx, resolved,
+        client_up_tail(ctx, resolved, activation_success_tail(
             set_builtin_fallback=job.sets_builtin_fallback,
             clear_noip_stable_id=(clear_id or None),
             disconnect_builtin_ifname=disconnect_ifname,
             leave_setup_reason=(job.leave_reason if job.on_success_leaves_setup else None),
             clear_down_timers=job.clears_down_timers,
-            reset_onboard_bound=True,
             clear_pending_adoption=job.clears_pending_adoption,
-        )
+        ))
         return True
 
     # Failure tail (the worker already rebuilt any AP it dropped).

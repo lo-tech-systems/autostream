@@ -57,25 +57,35 @@ class TestClientUpTail:
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.nm, "disconnect_device") as disc:
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, disconnect_builtin_ifname="wlan0")
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(disconnect_builtin_ifname="wlan0"))
         disc.assert_called_once_with("wlan0")
 
     def test_empty_disconnect_ifname_skips_nmcli(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.nm, "disconnect_device") as disc:
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, disconnect_builtin_ifname="")
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(disconnect_builtin_ifname=""))
         disc.assert_not_called()
 
     def test_set_builtin_fallback_flags(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.ADOPTION_STATE.using_builtin_fallback = True
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=None)   # None -> untouched
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(set_builtin_fallback=None))   # None -> untouched
             assert watcher.ADOPTION_STATE.using_builtin_fallback is True
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=False)
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(set_builtin_fallback=False))
             assert watcher.ADOPTION_STATE.using_builtin_fallback is False
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=True)
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(set_builtin_fallback=True))
             assert watcher.ADOPTION_STATE.using_builtin_fallback is True
 
     def test_clears_timers_and_onboard_bound(self, watcher):
@@ -84,7 +94,9 @@ class TestClientUpTail:
         watcher.STATE.last_reconnect_attempt = 5.0
         watcher.STATE.onboard_activation_failures = 2
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_down_timers=True, reset_onboard_bound=True)
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(clear_down_timers=True, reset_onboard_bound=True))
         assert watcher.STATE.conn_down_start is None
         assert watcher.STATE.last_reconnect_attempt is None
         assert watcher.STATE.onboard_activation_failures == 0
@@ -93,20 +105,28 @@ class TestClientUpTail:
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.wifi_recovery, "clear_noip_failures") as clr:
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_noip_stable_id="usb0")
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(clear_noip_stable_id="usb0"))
             clr.assert_called_once()
             clr.reset_mock()
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_noip_stable_id=None)
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(clear_noip_stable_id=None))
             clr.assert_not_called()
 
     def test_leave_setup_reason_forwarded(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave:
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, leave_setup_reason="done")
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(leave_setup_reason="done"))
             leave.assert_called_once_with("done")
             leave.reset_mock()
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, leave_setup_reason=None)
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(leave_setup_reason=None))
             leave.assert_not_called()
 
     def test_clear_dead_adapter_and_pending_adoption(self, watcher):
@@ -114,7 +134,9 @@ class TestClientUpTail:
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.ACTIVATION_CTX, "clear_pending_adoption") as cpa, \
              patch.object(watcher.wifi_recovery, "clear_dead_adapter_state") as cda:
-            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_pending_adoption=True, clear_dead_adapter=True)
+            watcher.wifi_activation.client_up_tail(
+                watcher.ACTIVATION_CTX, a,
+                watcher.wifi_recovery.TailSpec(clear_pending_adoption=True, clear_dead_adapter=True))
         cpa.assert_called_once()
         cda.assert_called_once()
 
