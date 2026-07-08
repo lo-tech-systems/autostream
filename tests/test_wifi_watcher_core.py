@@ -899,26 +899,26 @@ class TestApplyAndRevertLogLevel:
     def test_apply_temporary_sets_state(self, watcher):
         with patch("time.monotonic", return_value=1000.0):
             watcher.apply_log_level("debug", 900)
-        assert watcher.STATE.temporary_log_level == "debug"
-        assert watcher.STATE.temporary_log_level_until == 1900.0
+        assert watcher.LOG_STATE.temporary_log_level == "debug"
+        assert watcher.LOG_STATE.temporary_log_level_until == 1900.0
         import logging
         assert logging.getLogger().level == logging.DEBUG
 
     def test_apply_permanent_updates_default(self, watcher):
         watcher.apply_log_level("warning", None)
-        assert watcher.STATE.temporary_log_level == ""
-        assert watcher.STATE.default_log_level_name == "warning"
+        assert watcher.LOG_STATE.temporary_log_level == ""
+        assert watcher.LOG_STATE.default_log_level_name == "warning"
 
     def test_revert_after_ttl(self, watcher):
-        watcher.STATE.default_log_level_name = "info"
+        watcher.LOG_STATE.default_log_level_name = "info"
         with patch("time.monotonic", return_value=1000.0):
             watcher.apply_log_level("debug", 900)
         # Before expiry: no revert.
         watcher.revert_expired_log_level(now=1500.0)
-        assert watcher.STATE.temporary_log_level == "debug"
+        assert watcher.LOG_STATE.temporary_log_level == "debug"
         # After expiry: reverts to default.
         watcher.revert_expired_log_level(now=2000.0)
-        assert watcher.STATE.temporary_log_level == ""
+        assert watcher.LOG_STATE.temporary_log_level == ""
         import logging
         assert logging.getLogger().level == logging.INFO
 
@@ -928,8 +928,8 @@ class TestProcessSetLogLevel:
         with patch("time.monotonic", return_value=1000.0):
             watcher.process_control_action("set_log_level",
                                            {"level": "debug", "ttl_seconds": 900})
-        assert watcher.STATE.temporary_log_level == "debug"
-        assert watcher.STATE.last_control_result == "ok"
+        assert watcher.LOG_STATE.temporary_log_level == "debug"
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
 
 
 class TestModuleSplit:

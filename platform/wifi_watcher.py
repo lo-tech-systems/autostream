@@ -19,16 +19,18 @@ constants, the logger, AP start/stop primitives, the credential-apply
 candidate sequence, per-pass fact gathering, the monitor-loop driver, and
 ``__main__``. Every other concern lives in a deploy-together sibling module
 that takes a narrow context exposing only the STATE/constants/callables it
-needs — none of them import this module: ``wifi_policy`` (pure decision
-core), ``wifi_loop`` (ordered step_* handlers), ``wifi_activation``
-(off-thread worker), ``wifi_recovery`` (dead-PHY/reset/reboot-guard ledgers),
-``wifi_adoption`` (USB fallback/adoption/BSSID roam), ``wifi_config``
-(configured-network reconnect, first-boot import), ``wifi_status`` (status
-snapshot), ``wifi_mdns`` (avahi repair/re-announce), ``wifi_hotspot`` (AP
-controller), ``wifi_nm`` (bounded nmcli client), ``wifi_web`` (Flask
-surface). ``build_contexts()``, called once at import time, constructs every
-context in dependency order and binds it to a module global of the same name
-(``LOOP_CTX``, ``ACTIVATION_CTX``, ...).
+needs — none of them import this module: ``wifi_state`` (data-only leaf:
+``NetworkMonitorState``/``state_lock`` and the per-concern state fragments),
+``wifi_policy`` (pure decision core), ``wifi_loop`` (ordered step_*
+handlers), ``wifi_activation`` (off-thread worker), ``wifi_recovery``
+(dead-PHY/reset/reboot-guard ledgers), ``wifi_adoption`` (USB
+fallback/adoption/BSSID roam), ``wifi_config`` (configured-network reconnect,
+first-boot import), ``wifi_status`` (status snapshot), ``wifi_mdns`` (avahi
+repair/re-announce), ``wifi_hotspot`` (AP controller), ``wifi_nm`` (bounded
+nmcli client), ``wifi_web`` (Flask surface). ``build_contexts()``, called
+once at import time, constructs every context in dependency order and binds
+it to a module global of the same name (``LOOP_CTX``, ``ACTIVATION_CTX``,
+...).
 
 == State machine ==
 
@@ -62,6 +64,14 @@ from dataclasses import dataclass, field
 
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
 import autostream_wifi_network as wifi_net
+
+# Data-only leaf: NetworkMonitorState/state_lock, the per-concern state
+# fragments (ApplyState/ControlState/LogLevelState), and the plain rollback/
+# hotspot-session types.  Imports nothing else in this tree.
+from wifi_state import (
+    NetworkMonitorState, RollbackSnapshot, HotspotSession,
+    ApplyState, ControlState, LogLevelState, state_lock,
+)
 
 # The watcher is deployed beside its split sibling modules (wifi_status.py,
 # wifi_recovery.py) in /opt/autostream.  Ensure that directory is importable
@@ -287,28 +297,8 @@ _NON_DISRUPTIVE_ACTIONS = {
 # dependency on any watcher seam) living in platform/wifi_policy.py.
 # wifi_policy.next_mode() is the pure forward classifier; the loop applies its
 # result by setting STATE.mode each pass, and the mode is published as
-# device.mode.
-
-
-@dataclass(frozen=True)
-class RollbackSnapshot:
-    """Rollback target for an EXPLICIT_RECONFIGURE session (mirrors rollback_* fields)."""
-    connection_name: str
-    connection_uuid: str
-    adapter_mac: str
-
-
-@dataclass
-class HotspotSession:
-    """The live hotspot session: purpose + entry time (+ rollback for reconfigure).
-
-    deadline / eth_suppressible / probes_return are not stored here — they are
-    looked up in wifi_policy.PURPOSE_TABLE[purpose] so policy lives in exactly
-    one place.
-    """
-    purpose: "wifi_policy.HotspotPurpose"
-    entered_at: float
-    rollback: Optional[RollbackSnapshot] = None   # only EXPLICIT_RECONFIGURE
+# device.mode.  RollbackSnapshot and HotspotSession (STATE.hotspot) are
+# plain data types defined in wifi_state.py.
 
 
 logger = logging.getLogger(__name__)
@@ -365,7 +355,7 @@ def _setup_logging() -> None:
     # Record the startup/default runtime level name for the status snapshot and
     # for reverting temporary levels.  Only the runtime-settable names are
     # carried verbatim; anything else (fatal/log/spam) reports as "info".
-    STATE.default_log_level_name = env_level if env_level in RUNTIME_LOG_LEVELS else "info"
+    LOG_STATE.default_log_level_name = env_level if env_level in RUNTIME_LOG_LEVELS else "info"
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -395,134 +385,15 @@ def _setup_logging() -> None:
             "Failed to initialise file logging (%s); continuing with stdout only.", e
         )
 
-@dataclass
-class NetworkMonitorState:
-    # Link state (reported via /status and UI)
-    wifistate: str = "unknown"        # "configured" / "unconfigured" / "unknown"
-    wiredstate: str = "unknown"       # "connected" / "disconnected" / "unknown"
-    connectivity_ok: bool = False     # "healthy" using the same validation logic as initial wifi checks
-    # Consecutive *soft* unhealthy passes for the connectivity_ok down-debounce;
-    # reset to 0 on any healthy pass or a hard failure.
-    conn_unhealthy_checks: int = 0
-    # True once the device has been ONLINE at least once this boot.  A
-    # runtime connectivity loss after this must be handled by the debounced
-    # runtime paths, never by re-entering the boot-recovery rung.
-    been_online_this_boot: bool = False
-
-    # Setup / AP state.  ``setup_mode`` is the "a hotspot session is active"
-    # boolean read across the modules and tests; ``hotspot`` is the authoritative
-    # HotspotSession.  There is no once-per-boot AP budget: the 30-minute session
-    # lifetime is the rate limit.
-    setup_mode: bool = False
-    hotspot: "Optional[HotspotSession]" = None
-    # Rejoin prompt (per hotspot session): set when the saved SSID becomes visible
-    # during a session with a client associated to the AP, so the setup page can
-    # offer "rejoin or keep reconfiguring" instead of the watcher silently yanking
-    # the AP.  ``rejoin_dismissed`` records the user choosing to keep
-    # reconfiguring, which suppresses the probe/modal for the rest of the session.
-    # All three reset on session entry/exit.
-    saved_ssid_visible: bool = False
-    saved_ssid_name: str = ""
-    rejoin_dismissed: bool = False
-    # Active reconnect-saved episode (single-target-per-pass restore), or None.
-    reconnect_episode: "Optional[wifi_adoption.ReconnectEpisode]" = None
-    # Authoritative connectivity mode, applied by the loop each pass from the
-    # pure wifi_policy.next_mode() classifier and published as device.mode.
-    mode: "wifi_policy.Mode" = field(default_factory=lambda: wifi_policy.Mode.BOOT)
-
-    # Timers (monotonic seconds)
-    boot_time: Optional[float] = None
-    last_active_path_seen: Optional[float] = None
-
-    # Degradation tracking for "healthy connectivity"
-    conn_down_start: Optional[float] = None
-    last_reconnect_attempt: Optional[float] = None
-    # Last time a recovery hotspot scanned for the saved SSID (scan gate).
-    last_recovery_scan: Optional[float] = None
-    # Last time runtime USB adoption scanned the candidate for the committed SSID
-    # (scan gate).
-    last_adoption_scan: Optional[float] = None
-    # Reboot-request throttle: monotonic time before which another reboot request is
-    # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
-    # issued); any other value = retry permitted after that time.
-    conn_reboot_retry_after: float = 0.0
-
-    # ---- WiFi apply workflow / wait-page status ----
-    apply_in_progress: bool = False
-    # idle | applying | ok | failed
-    last_apply_result: str = "idle"
-    # short error code/message (e.g. nmcli-failed, no-local-ip)
-    last_apply_error: str = ""
-
-    # ---- Avahi mDNS hostname monitoring ----
-    avahi_hostname: Optional[str] = None
-    avahi_mismatch_start: Optional[float] = None
-    last_avahi_restart: Optional[float] = None
-    last_avahi_handover_restart: Optional[float] = None
-    avahi_restart_count: int = 0
-
-    # ---- mDNS host-record re-announce on address-set changes ----
-    # Set of (ifname, ipv4) the host currently publishes; None until first observed.
-    mdns_address_set: Optional[frozenset] = None
-    # Monotonic time the published address set last changed (debounce anchor).
-    mdns_address_changed_at: Optional[float] = None
-    # Explicit re-announce nudge from an orchestrated handover.
-    mdns_reannounce_pending: bool = False
-
-    # ---- Off-thread activation worker ----
-    # Set when an activation job is in flight on the worker and cleared when its
-    # result is applied at pass top.  While set, handlers that would start a
-    # conflicting connectivity/AP transition hold off (one effectful transition at
-    # a time); monitoring, status publishing and non-disruptive control actions
-    # keep running.
-    transitioning: bool = False
-    # Async onboard-activation failures this offline episode (reset on a healthy
-    # pass).  When it reaches ONBOARD_ACTIVATION_MAX_FAILURES the onboard is no
-    # longer offered as a client rung, so the ladder falls to the hotspot.
-    onboard_activation_failures: int = 0
-
-    # ---- Multi-adapter failure / adoption ----
-    using_builtin_fallback: bool = False
-    active_client_ifname: str = ""
-    active_client_mac: str = ""
-    pending_usb_adoption_mac: Optional[str] = None
-    pending_usb_adoption_checks: int = 0
-    last_detected_adapter_macs: Optional[frozenset] = None
-
-    # ---- USB BSSID ownership (roaming) ----
-    bssid_table: dict = field(default_factory=dict)
-    last_roam_or_activation: Optional[float] = None
-    last_bssid_pin: dict = field(default_factory=dict)
-    last_bssid_survey_at: Optional[float] = None
-    last_bssid_usb_full_survey_at: Optional[float] = None
-
-    # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
-    # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-
-    # disable ledgers live on RECOVERY_STATE (a wifi_recovery.RecoveryState),
-    # shared with wifi_status for the status snapshot.
-
-    # ---- Local control API ----
-    pending_control_action: str = ""
-    control_in_progress: bool = False
-    last_control_action: str = ""
-    last_control_result: str = ""
-    last_control_error: str = ""
-
-    # ---- Runtime log-level control ----
-    pending_control_params: dict = field(default_factory=dict)
-    temporary_log_level: str = ""
-    temporary_log_level_until: Optional[float] = None
-    default_log_level_name: str = "info"
-
-    # ---- Runtime network-status snapshot ----
-    network_status_snapshot: Optional[dict] = None
-    network_status_updated_at: Optional[float] = None
-
-
-STATE = NetworkMonitorState()
-
-# Synchronisation primitive for shared state
-state_lock = threading.Lock()
+# The shared connectivity-core state (wifi_state.NetworkMonitorState) plus the
+# per-concern fragments split out of it.  All four objects are guarded by the
+# single wifi_state.state_lock; build_contexts() threads each fragment only to
+# the contexts that read or write it.  The mode default is supplied here (not
+# in wifi_state, which does not import wifi_policy).
+STATE = NetworkMonitorState(mode=wifi_policy.Mode.BOOT)
+APPLY_STATE = ApplyState()
+CONTROL_STATE = ControlState()
+LOG_STATE = LogLevelState()
 
 # Serialise AP start/stop transitions
 ap_mode_lock = threading.Lock()
@@ -1240,13 +1111,13 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
     rolling the "applying" marking back first.
     """
     with state_lock:
-        if STATE.apply_in_progress:
+        if APPLY_STATE.apply_in_progress:
             return False
-        prev_result = STATE.last_apply_result
-        prev_error = STATE.last_apply_error
-        STATE.apply_in_progress = True
-        STATE.last_apply_result = "applying"
-        STATE.last_apply_error = ""
+        prev_result = APPLY_STATE.last_apply_result
+        prev_error = APPLY_STATE.last_apply_error
+        APPLY_STATE.apply_in_progress = True
+        APPLY_STATE.last_apply_result = "applying"
+        APPLY_STATE.last_apply_error = ""
     # The session success tail (set-active / leave-setup / avahi) is applied by
     # apply_activation_result on the loop thread — exactly as the
     # other job kinds — so carry the leave-setup flags the shared tail reads.
@@ -1257,9 +1128,9 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
         leave_reason="WiFi client connection succeeded")
     if not wifi_activation.submit_activation_job(ACTIVATION_CTX, job):
         with state_lock:
-            STATE.apply_in_progress = False
-            STATE.last_apply_result = prev_result
-            STATE.last_apply_error = prev_error
+            APPLY_STATE.apply_in_progress = False
+            APPLY_STATE.last_apply_result = prev_result
+            APPLY_STATE.last_apply_error = prev_error
         return False
     return True
 
@@ -1289,12 +1160,12 @@ def apply_log_level(level: str, ttl_seconds: Optional[int]) -> None:
     now = time.monotonic()
     with state_lock:
         if ttl_seconds:
-            STATE.temporary_log_level = level
-            STATE.temporary_log_level_until = now + ttl_seconds
+            LOG_STATE.temporary_log_level = level
+            LOG_STATE.temporary_log_level_until = now + ttl_seconds
         else:
-            STATE.temporary_log_level = ""
-            STATE.temporary_log_level_until = None
-            STATE.default_log_level_name = level
+            LOG_STATE.temporary_log_level = ""
+            LOG_STATE.temporary_log_level_until = None
+            LOG_STATE.default_log_level_name = level
     if ttl_seconds:
         logger.info("Runtime log level changed to %s for %ds", level, ttl_seconds)
     else:
@@ -1306,12 +1177,12 @@ def revert_expired_log_level(now: Optional[float] = None) -> None:
     if now is None:
         now = time.monotonic()
     with state_lock:
-        until = STATE.temporary_log_level_until
+        until = LOG_STATE.temporary_log_level_until
         if until is None or now < until:
             return
-        default = STATE.default_log_level_name or "info"
-        STATE.temporary_log_level = ""
-        STATE.temporary_log_level_until = None
+        default = LOG_STATE.default_log_level_name or "info"
+        LOG_STATE.temporary_log_level = ""
+        LOG_STATE.temporary_log_level_until = None
     logging.getLogger().setLevel(RUNTIME_LOG_LEVELS.get(default, logging.INFO))
     logger.info("Runtime log level reverted to %s", default)
 
@@ -1320,9 +1191,9 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
     """Consume one queued control action in the monitor loop."""
     params = params or {}
     with state_lock:
-        STATE.control_in_progress = True
-        STATE.last_control_action = action
-        STATE.last_control_error = ""
+        CONTROL_STATE.control_in_progress = True
+        CONTROL_STATE.last_control_action = action
+        CONTROL_STATE.last_control_error = ""
     try:
         if action == "start_setup":
             start_explicit_setup()
@@ -1361,10 +1232,10 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
         logger.warning("Control action '%s' raised: %s", action, e)
         result = "failed"
         with state_lock:
-            STATE.last_control_error = str(e)
+            CONTROL_STATE.last_control_error = str(e)
     with state_lock:
-        STATE.control_in_progress = False
-        STATE.last_control_result = result
+        CONTROL_STATE.control_in_progress = False
+        CONTROL_STATE.last_control_result = result
 
 
 def start_explicit_setup() -> None:
@@ -1712,7 +1583,7 @@ def network_monitor_loop(run_once: bool = False):
         now = time.monotonic()
         with state_lock:
             boot_time = STATE.boot_time or now
-            avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
+            avahi_ok = not STATE.setup_mode and not APPLY_STATE.apply_in_progress
         pre = wifi_loop.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=avahi_ok)
         if run_steps(phase_a, pre) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
@@ -1952,6 +1823,7 @@ def build_contexts() -> None:
     # this ctx instead of the whole module.
     ACTIVATION_CTX = wifi_activation.ActivationContext(
         STATE=STATE,
+        APPLY_STATE=APPLY_STATE,
         state_lock=state_lock,
         RECOVERY_STATE=RECOVERY_STATE,
         RECOVERY_CTX=RECOVERY_CTX,
@@ -2012,6 +1884,7 @@ def build_contexts() -> None:
     # constants and the fact helpers the snapshot surfaces.
     STATUS_CTX = wifi_status.StatusContext(
         STATE=STATE,
+        LOG_STATE=LOG_STATE,
         state_lock=state_lock,
         RECOVERY_STATE=RECOVERY_STATE,
         NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
@@ -2053,6 +1926,8 @@ def build_contexts() -> None:
     WEB_CTX = wifi_web.WebContext(
         app_name=__name__,
         STATE=STATE,
+        APPLY_STATE=APPLY_STATE,
+        CONTROL_STATE=CONTROL_STATE,
         state_lock=state_lock,
         logger=logger,
         control_action_event=control_action_event,
@@ -2074,6 +1949,8 @@ def build_contexts() -> None:
     # with functools.partial when building the ordered phase lists.
     LOOP_CTX = wifi_loop.LoopContext(
         STATE=STATE,
+        APPLY_STATE=APPLY_STATE,
+        CONTROL_STATE=CONTROL_STATE,
         state_lock=state_lock,
         logger=logger,
         Verdict=Verdict,

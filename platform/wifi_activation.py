@@ -51,6 +51,7 @@ class ActivationContext:
     """
 
     STATE: object
+    APPLY_STATE: object
     state_lock: object
     RECOVERY_STATE: object
     RECOVERY_CTX: object
@@ -553,9 +554,9 @@ def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
         # apply_in_progress and, on failure, returning to setup mode.
         if not result.ok:
             with ctx.state_lock:
-                ctx.STATE.last_apply_result = "failed"
-                ctx.STATE.last_apply_error = "nmcli-failed"
-                ctx.STATE.apply_in_progress = False
+                ctx.APPLY_STATE.last_apply_result = "failed"
+                ctx.APPLY_STATE.last_apply_error = "nmcli-failed"
+                ctx.APPLY_STATE.apply_in_progress = False
                 # Re-enter with whatever purpose the interrupted session held
                 # (configure_wifi_with_nmcli keeps setup_mode set on failure, so
                 # this is normally a no-op); fall back to FIRST_RUN.
@@ -564,9 +565,9 @@ def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
             ctx.enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
             return False
         with ctx.state_lock:
-            ctx.STATE.last_apply_result = "ok"
-            ctx.STATE.last_apply_error = ""
-            ctx.STATE.apply_in_progress = False
+            ctx.APPLY_STATE.last_apply_result = "ok"
+            ctx.APPLY_STATE.last_apply_error = ""
+            ctx.APPLY_STATE.apply_in_progress = False
         ctx.logger.info("WiFi configuration and connectivity verified")
         # Fall through to the shared success tail below (set active client by
         # result.ifname, leave setup, verify avahi) — the same tail the other job

@@ -42,6 +42,8 @@ class LoopContext:
     """
 
     STATE: object
+    APPLY_STATE: object
+    CONTROL_STATE: object
     state_lock: object
     logger: logging.Logger
     Verdict: object
@@ -292,16 +294,16 @@ def step_control_action(ctx: LoopContext, pre: "PreFactsContext") -> "Verdict":
     if not ctx.control_action_event.is_set():
         return ctx.Verdict.CONTINUE
     with ctx.state_lock:
-        action = ctx.STATE.pending_control_action
-        params = dict(ctx.STATE.pending_control_params)
+        action = ctx.CONTROL_STATE.pending_control_action
+        params = dict(ctx.CONTROL_STATE.pending_control_params)
         # Non-disruptive actions touch no connectivity/AP state, so they are never
         # deferred and never own the pass: log-level and the manual adapter
         # enable/disable/clear-fault actions.
         disruptive = bool(action) and action not in ctx._NON_DISRUPTIVE_ACTIONS
         defer = disruptive and (ctx.STATE.transitioning or ctx.STATE.reconnect_episode is not None)
         if not defer:
-            ctx.STATE.pending_control_action = ""
-            ctx.STATE.pending_control_params = {}
+            ctx.CONTROL_STATE.pending_control_action = ""
+            ctx.CONTROL_STATE.pending_control_params = {}
             ctx.control_action_event.clear()
     if defer:
         # Leave the disruptive action queued (event stays set) for a later pass.
@@ -556,7 +558,7 @@ def step_ethernet_wins(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
         with ctx.state_lock:
             active_wifi_ifname = ctx.STATE.active_client_ifname
             skip_disconnect = (
-                ctx.STATE.apply_in_progress or ctx.STATE.setup_mode or in_ap_for_eth
+                ctx.APPLY_STATE.apply_in_progress or ctx.STATE.setup_mode or in_ap_for_eth
             )
         # Drop the redundant Wi-Fi client so there is one deterministic path and
         # one mDNS address.  Deferred while streaming or while playback is

@@ -260,14 +260,14 @@ class TestActivationWorker:
 
     def test_disruptive_control_action_deferred_while_transitioning(self, watcher):
         watcher.STATE.transitioning = True
-        watcher.STATE.pending_control_action = "start_setup"
-        watcher.STATE.pending_control_params = {}
+        watcher.CONTROL_STATE.pending_control_action = "start_setup"
+        watcher.CONTROL_STATE.pending_control_params = {}
         watcher.control_action_event.set()
         with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
             v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         proc.assert_not_called()                       # not consumed
-        assert watcher.STATE.pending_control_action == "start_setup"  # left queued
+        assert watcher.CONTROL_STATE.pending_control_action == "start_setup"  # left queued
         assert watcher.control_action_event.is_set()
 
         # Once the transition completes, the queued action is applied exactly once.
@@ -276,18 +276,18 @@ class TestActivationWorker:
             v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.OWN_PASS
         proc.assert_called_once()
-        assert watcher.STATE.pending_control_action == ""
+        assert watcher.CONTROL_STATE.pending_control_action == ""
 
     def test_set_log_level_applied_even_while_transitioning(self, watcher):
         watcher.STATE.transitioning = True
-        watcher.STATE.pending_control_action = "set_log_level"
-        watcher.STATE.pending_control_params = {"level": "debug"}
+        watcher.CONTROL_STATE.pending_control_action = "set_log_level"
+        watcher.CONTROL_STATE.pending_control_params = {"level": "debug"}
         watcher.control_action_event.set()
         with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
             v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE           # non-disruptive: pass continues
         proc.assert_called_once()                      # applied immediately
-        assert watcher.STATE.pending_control_action == ""  # consumed
+        assert watcher.CONTROL_STATE.pending_control_action == ""  # consumed
         assert not watcher.control_action_event.is_set()
 
 
@@ -534,14 +534,14 @@ class TestApplyCredentialsWorker:
         with patch.object(watcher.wifi_activation, "submit_activation_job",
                          wraps=watcher.wifi_activation.submit_activation_job):
             assert watcher.submit_apply_credentials("Home", "s3cr3t") is True
-        assert watcher.STATE.apply_in_progress is True
-        assert watcher.STATE.last_apply_result == "applying"
+        assert watcher.APPLY_STATE.apply_in_progress is True
+        assert watcher.APPLY_STATE.last_apply_result == "applying"
         job = watcher.wifi_activation._activation_job_queue.get_nowait()
         assert job.kind == "apply_credentials"
         assert job.ssid == "Home" and job.password == "s3cr3t"
 
     def test_submit_refused_when_apply_already_in_progress(self, watcher):
-        watcher.STATE.apply_in_progress = True
+        watcher.APPLY_STATE.apply_in_progress = True
         with patch.object(watcher.wifi_activation, "submit_activation_job") as submit:
             assert watcher.submit_apply_credentials("Home", "x") is False
         submit.assert_not_called()
@@ -553,8 +553,8 @@ class TestApplyCredentialsWorker:
         seen = {}
 
         def _check(ctx, job):
-            seen["apply_in_progress"] = watcher.STATE.apply_in_progress
-            seen["last_apply_result"] = watcher.STATE.last_apply_result
+            seen["apply_in_progress"] = watcher.APPLY_STATE.apply_in_progress
+            seen["last_apply_result"] = watcher.APPLY_STATE.last_apply_result
             return True
 
         with patch.object(watcher.wifi_activation, "submit_activation_job", side_effect=_check):
@@ -562,13 +562,13 @@ class TestApplyCredentialsWorker:
         assert seen == {"apply_in_progress": True, "last_apply_result": "applying"}
 
     def test_submit_rolls_back_applying_state_when_job_submission_fails(self, watcher):
-        watcher.STATE.last_apply_result = "ok"
-        watcher.STATE.last_apply_error = ""
+        watcher.APPLY_STATE.last_apply_result = "ok"
+        watcher.APPLY_STATE.last_apply_error = ""
         with patch.object(watcher.wifi_activation, "submit_activation_job", return_value=False):
             assert watcher.submit_apply_credentials("Home", "x") is False
-        assert watcher.STATE.apply_in_progress is False
-        assert watcher.STATE.last_apply_result == "ok"
-        assert watcher.STATE.last_apply_error == ""
+        assert watcher.APPLY_STATE.apply_in_progress is False
+        assert watcher.APPLY_STATE.last_apply_result == "ok"
+        assert watcher.APPLY_STATE.last_apply_error == ""
 
     def test_success_result_sets_ok_and_clears_flag(self, watcher):
         # IF-2: configure_wifi_with_nmcli returns the adapter it came up on; the
@@ -580,7 +580,7 @@ class TestApplyCredentialsWorker:
                                     kind="apply_credentials", ifname="", ssid="Home", password="x",
                                     on_success_leaves_setup=True,
                                     leave_reason="WiFi client connection succeeded")
-        watcher.STATE.apply_in_progress = True
+        watcher.APPLY_STATE.apply_in_progress = True
         with patch.object(watcher.ACTIVATION_CTX, "configure_wifi_with_nmcli", return_value=target), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[target]), \
              patch.object(watcher.wifi_activation, "_set_active_client") as set_active, \
@@ -590,8 +590,8 @@ class TestApplyCredentialsWorker:
             watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
         assert result.ok is True
         assert result.ifname == "wlan1"
-        assert watcher.STATE.last_apply_result == "ok"
-        assert watcher.STATE.apply_in_progress is False
+        assert watcher.APPLY_STATE.last_apply_result == "ok"
+        assert watcher.APPLY_STATE.apply_in_progress is False
         # The success tail ran on the loop-thread apply, not on the worker.
         set_active.assert_called_once_with(watcher.ACTIVATION_CTX, target)
         leave.assert_called_once_with("WiFi client connection succeeded")
@@ -599,7 +599,7 @@ class TestApplyCredentialsWorker:
 
     def test_failure_retains_setup_and_returns_to_setup_mode(self, watcher):
         watcher.STATE.setup_mode = True
-        watcher.STATE.apply_in_progress = True
+        watcher.APPLY_STATE.apply_in_progress = True
         job = watcher.wifi_activation.ActivationJob(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
                                     kind="apply_credentials", ifname="", ssid="Home", password="bad",
                                     on_success_leaves_setup=True,
@@ -612,8 +612,8 @@ class TestApplyCredentialsWorker:
         assert result.ok is False
         leave.assert_not_called()
         enter.assert_called_once()
-        assert watcher.STATE.last_apply_result == "failed"
-        assert watcher.STATE.apply_in_progress is False
+        assert watcher.APPLY_STATE.last_apply_result == "failed"
+        assert watcher.APPLY_STATE.apply_in_progress is False
 
 
 class TestIf2WorkerSessionContract:
@@ -687,7 +687,7 @@ class TestIf2WorkerSessionContract:
                 pre = watcher.wifi_loop.PreFactsContext(now=1001.0, boot_time=0.0, avahi_ok=True)
                 watcher.wifi_activation.step_apply_activation_result(watcher.ACTIVATION_CTX, pre)
                 assert watcher.STATE.transitioning is False
-                assert watcher.STATE.last_apply_result == "ok"
+                assert watcher.APPLY_STATE.last_apply_result == "ok"
                 assert ("set_active", loop_ident) in tail_calls
                 assert ("leave", loop_ident) in tail_calls
 

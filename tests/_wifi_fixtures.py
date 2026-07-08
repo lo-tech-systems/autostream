@@ -180,21 +180,27 @@ def _isolate_reboot_guard(tmp_path):
 
 @pytest.fixture()
 def watcher():
-    """Return the loaded wifi_watcher module and reset STATE before each test."""
+    """Return the loaded wifi_watcher module and reset its state before each test."""
     mod = _get_watcher()
-    defaults = mod.NetworkMonitorState()
-    recovery_defaults = mod.wifi_recovery.RecoveryState()
+    # The mode default is supplied by the hub, not by NetworkMonitorState
+    # (wifi_state does not import wifi_policy), so mirror it here.
+    reset_pairs = [
+        (mod.STATE, mod.NetworkMonitorState(mode=mod.wifi_policy.Mode.BOOT)),
+        (mod.APPLY_STATE, mod.ApplyState()),
+        (mod.CONTROL_STATE, mod.ControlState()),
+        (mod.LOG_STATE, mod.LogLevelState()),
+        (mod.RECOVERY_STATE, mod.wifi_recovery.RecoveryState()),
+    ]
 
     def _reset():
-        # STATE and RECOVERY_STATE must be reset in place, field by field,
-        # rather than rebound (mod.STATE = ...): the module contexts
-        # (RECOVERY_CTX, ACTIVATION_CTX, ...) captured the STATE object
-        # reference when they were built, so replacing the object here would
-        # silently desync them from the state the module driver mutates.
-        for f in fields(defaults):
-            setattr(mod.STATE, f.name, getattr(defaults, f.name))
-        for f in fields(recovery_defaults):
-            setattr(mod.RECOVERY_STATE, f.name, getattr(recovery_defaults, f.name))
+        # Every state object must be reset in place, field by field, rather
+        # than rebound (mod.STATE = ...): the module contexts (RECOVERY_CTX,
+        # ACTIVATION_CTX, ...) captured the object references when they were
+        # built, so replacing an object here would silently desync them from
+        # the state the module driver mutates.
+        for live, defaults in reset_pairs:
+            for f in fields(defaults):
+                setattr(live, f.name, getattr(defaults, f.name))
 
     _reset()
     mod._last_logged_values.clear()

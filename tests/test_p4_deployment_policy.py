@@ -296,10 +296,14 @@ class TestSystemdDependencyOrdering:
         import re
         watcher = (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
         siblings = sorted({
-            m for m in re.findall(r"^\s*import (wifi_\w+)", watcher, re.MULTILINE)
-            if (REPO_ROOT / "platform" / f"{m}.py").exists()
+            m1 or m2
+            for m1, m2 in re.findall(
+                r"^\s*(?:import (wifi_\w+)|from (wifi_\w+) import)",
+                watcher, re.MULTILINE)
+            if (REPO_ROOT / "platform" / f"{m1 or m2}.py").exists()
         })
         assert "wifi_mdns" in siblings and "wifi_policy" in siblings, siblings
+        assert "wifi_state" in siblings, siblings
         appliance = INSTALL_SH.read_text(encoding="utf-8")
         dial = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")
         for mod in siblings:

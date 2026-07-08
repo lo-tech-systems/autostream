@@ -24,8 +24,8 @@ on the system Python, not the app venv.  It imports only the standard library
 and ``flask``; it never imports an Autostream application module.  Functions
 that need watcher state receive a :class:`WebContext` as their first argument
 and read its constants/helpers through it — a narrow view of the watcher
-exposing only STATE, state_lock, the logger, and the constants/callables the
-routes use.
+exposing only the state objects (STATE plus the apply/control fragments),
+state_lock, the logger, and the constants/callables the routes use.
 """
 from __future__ import annotations
 
@@ -53,6 +53,8 @@ class WebContext:
 
     app_name: str
     STATE: object
+    APPLY_STATE: object
+    CONTROL_STATE: object
     state_lock: object
     logger: logging.Logger
     control_action_event: object
@@ -820,8 +822,8 @@ def build_app(ctx) -> Flask:
         # GET: show the setup form (include last failure, if any)
         with ctx.state_lock:
             e = (request.args.get("e") or "").strip()
-            if not e and ctx.STATE.last_apply_result == "failed":
-                e = ctx.STATE.last_apply_error or "failed"
+            if not e and ctx.APPLY_STATE.last_apply_result == "failed":
+                e = ctx.APPLY_STATE.last_apply_error or "failed"
 
         ctx.logger.info("User requested /setup (error: %s)", e)
 
@@ -853,11 +855,11 @@ def build_app(ctx) -> Flask:
         if not _has_saved_network(ctx):
             return jsonify({"ok": False, "error": "no_saved_network"}), 409
         with ctx.state_lock:
-            if ctx.STATE.apply_in_progress:
+            if ctx.APPLY_STATE.apply_in_progress:
                 return jsonify({"ok": False, "error": "apply_in_progress"}), 409
-            if ctx.STATE.pending_control_action or ctx.STATE.control_in_progress:
+            if ctx.CONTROL_STATE.pending_control_action or ctx.CONTROL_STATE.control_in_progress:
                 return jsonify({"ok": False, "error": "busy"}), 409
-            ctx.STATE.pending_control_action = "reconnect_saved"
+            ctx.CONTROL_STATE.pending_control_action = "reconnect_saved"
             ctx.control_action_event.set()
         ctx.logger.info("Captive-page reconnect_saved queued")
         return jsonify({"ok": True, "queued": True})
@@ -885,9 +887,9 @@ def build_app(ctx) -> Flask:
             wiredstate = ctx.STATE.wiredstate
             gateway_reachable = ctx.STATE.connectivity_ok
             SetupMode = ctx.STATE.setup_mode
-            aip = ctx.STATE.apply_in_progress
-            lar = ctx.STATE.last_apply_result
-            lae = ctx.STATE.last_apply_error
+            aip = ctx.APPLY_STATE.apply_in_progress
+            lar = ctx.APPLY_STATE.last_apply_result
+            lae = ctx.APPLY_STATE.last_apply_error
             saved_ssid_visible = bool(ctx.STATE.saved_ssid_visible)
             saved_ssid = ctx.STATE.saved_ssid_name
 
@@ -1025,10 +1027,10 @@ def build_app(ctx) -> Flask:
             return jsonify({"ok": False, "error": "invalid_action"}), 400
 
         with ctx.state_lock:
-            if ctx.STATE.pending_control_action or ctx.STATE.control_in_progress:
+            if ctx.CONTROL_STATE.pending_control_action or ctx.CONTROL_STATE.control_in_progress:
                 return jsonify({"ok": False, "error": "busy"}), 409
-            ctx.STATE.pending_control_action = action
-            ctx.STATE.pending_control_params = params
+            ctx.CONTROL_STATE.pending_control_action = action
+            ctx.CONTROL_STATE.pending_control_params = params
             ctx.control_action_event.set()
 
         ctx.logger.info("Queued network control action: %s", action)
@@ -1060,10 +1062,10 @@ def build_app(ctx) -> Flask:
         # limit.  Reject with 409 only when another control action is already
         # pending or in progress (the caller retries once the channel is free).
         with ctx.state_lock:
-            if ctx.STATE.pending_control_action or ctx.STATE.control_in_progress:
+            if ctx.CONTROL_STATE.pending_control_action or ctx.CONTROL_STATE.control_in_progress:
                 return jsonify({"ok": False, "error": "busy"}), 409
-            ctx.STATE.pending_control_action = "manual_ap"
-            ctx.STATE.pending_control_params = {"reason": reason}
+            ctx.CONTROL_STATE.pending_control_action = "manual_ap"
+            ctx.CONTROL_STATE.pending_control_params = {"reason": reason}
             ctx.control_action_event.set()
 
         ctx.logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")

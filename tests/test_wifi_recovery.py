@@ -689,20 +689,20 @@ class TestManualAdapterControl:
     def test_process_control_action_disable(self, watcher):
         watcher.process_control_action("disable_adapter", {"adapter": "usb-Q"})
         assert "usb-Q" in watcher.RECOVERY_STATE.disabled_adapters
-        assert watcher.STATE.last_control_result == "ok"
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
 
     def test_process_control_action_clear(self, watcher):
         watcher.RECOVERY_STATE.adapter_noip_ledgers["usb-R"] = {"count": 2, "retry_after": 0.0}
         watcher.process_control_action("clear_adapter", {"adapter": "usb-R"})
         assert "usb-R" not in watcher.RECOVERY_STATE.adapter_noip_ledgers
-        assert watcher.STATE.last_control_result == "ok"
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
 
     def test_adapter_actions_are_non_disruptive(self, watcher):
         # A disable action while an activation is in flight is applied immediately
         # (not deferred) and does not own the pass.
         watcher.STATE.transitioning = True
-        watcher.STATE.pending_control_action = "disable_adapter"
-        watcher.STATE.pending_control_params = {"adapter": "usb-N"}
+        watcher.CONTROL_STATE.pending_control_action = "disable_adapter"
+        watcher.CONTROL_STATE.pending_control_params = {"adapter": "usb-N"}
         watcher.control_action_event.set()
         v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE          # never owns the pass

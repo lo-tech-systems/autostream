@@ -652,7 +652,7 @@ class TestReconnectSavedEpisode:
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="", failure_tail="retain_hotspot")
         watcher.STATE.transitioning = False
-        watcher.STATE.pending_control_action = "start_setup"
+        watcher.CONTROL_STATE.pending_control_action = "start_setup"
         watcher.control_action_event.set()
         with patch.object(watcher.LOOP_CTX, "process_control_action") as pca:
             v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))

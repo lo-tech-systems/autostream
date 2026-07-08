@@ -607,22 +607,22 @@ class TestLoopHandlers:
             watcher.process_control_action("manual_ap", {"reason": "user"})
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.MANUAL
-        assert watcher.STATE.last_control_result == "ok"
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
 
     def test_manual_ap_control_action_noop_when_already_in_ap(self, watcher):
         watcher.STATE.setup_mode = True
         with patch.object(watcher, "enter_setup_mode") as enter:
             watcher.process_control_action("manual_ap", {"reason": "user"})
         enter.assert_not_called()
-        assert watcher.STATE.last_control_result == "ok"
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
 
     def test_manual_ap_control_action_is_disruptive(self, watcher):
         # step_control_action treats manual_ap as disruptive: it owns the pass and
         # is deferred (left queued) while an activation is in flight.
         watcher.STATE.setup_mode = False
         watcher.STATE.transitioning = False
-        watcher.STATE.pending_control_action = "manual_ap"
-        watcher.STATE.pending_control_params = {"reason": "user"}
+        watcher.CONTROL_STATE.pending_control_action = "manual_ap"
+        watcher.CONTROL_STATE.pending_control_params = {"reason": "user"}
         watcher.control_action_event.set()
         with patch.object(watcher, "enter_setup_mode"):
             v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
@@ -631,8 +631,8 @@ class TestLoopHandlers:
 
     def test_manual_ap_control_action_deferred_while_transitioning(self, watcher):
         watcher.STATE.transitioning = True
-        watcher.STATE.pending_control_action = "manual_ap"
-        watcher.STATE.pending_control_params = {"reason": "user"}
+        watcher.CONTROL_STATE.pending_control_action = "manual_ap"
+        watcher.CONTROL_STATE.pending_control_params = {"reason": "user"}
         watcher.control_action_event.set()
         with patch.object(watcher, "enter_setup_mode") as enter:
             v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
@@ -640,7 +640,7 @@ class TestLoopHandlers:
         enter.assert_not_called()
         # Left queued for a later pass (never dropped).
         assert watcher.control_action_event.is_set()
-        assert watcher.STATE.pending_control_action == "manual_ap"
+        assert watcher.CONTROL_STATE.pending_control_action == "manual_ap"
 
     # ---- Phase B-late USB-failure fallback (over the debounced verdict) ----
 
@@ -975,7 +975,7 @@ class TestEthernetWinsWifiDisconnectPolicy:
         assert watcher.STATE.active_client_ifname == "wlan1"
 
     def test_apply_in_progress_skips_disconnect(self, watcher):
-        watcher.STATE.apply_in_progress = True
+        watcher.APPLY_STATE.apply_in_progress = True
         run = self._run_with_active_wifi(watcher, playing=False)
         run.assert_not_called()
         assert watcher.STATE.active_client_ifname == "wlan1"

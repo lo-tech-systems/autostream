@@ -45,6 +45,7 @@ class StatusContext:
     """
 
     STATE: object
+    LOG_STATE: object
     state_lock: object
     RECOVERY_STATE: object
     # Constants
@@ -63,8 +64,8 @@ class StatusContext:
 def _effective_log_level_name(ctx) -> str:
     """Return the effective runtime log level name (warning/info/debug)."""
     with ctx.state_lock:
-        temp = ctx.STATE.temporary_log_level
-        default = ctx.STATE.default_log_level_name
+        temp = ctx.LOG_STATE.temporary_log_level
+        default = ctx.LOG_STATE.default_log_level_name
     if temp:
         return temp
     return default or "info"
@@ -262,8 +263,8 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
         last_reset_method = ctx.RECOVERY_STATE.last_reset_method
         last_reset_attempt = ctx.RECOVERY_STATE.last_reset_attempt
         reboot_retry_after = ctx.STATE.conn_reboot_retry_after
-        temp_expires = ctx.STATE.temporary_log_level_until
-        default_level = ctx.STATE.default_log_level_name
+        temp_expires = ctx.LOG_STATE.temporary_log_level_until
+        default_level = ctx.LOG_STATE.default_log_level_name
         last_active_path_seen = ctx.STATE.last_active_path_seen
 
     hotspot_adapter = ctx.resolve_hotspot_adapter(adapters)

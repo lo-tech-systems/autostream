@@ -701,6 +701,7 @@ deploy_phase() {
       "${AUTOSTREAM_DIR}/platform/wifi_watcher.py" "${INSTALL_DIR}/autostream_wifi_watcher"
   sed -i 's/\r$//' "${INSTALL_DIR}/autostream_wifi_watcher"
   # wifi_watcher's split sibling modules (imported beside it from /opt/autostream).
+  cp    "${AUTOSTREAM_DIR}/platform/wifi_state.py"    "${INSTALL_DIR}/"
   cp    "${AUTOSTREAM_DIR}/platform/wifi_status.py"   "${INSTALL_DIR}/"
   cp    "${AUTOSTREAM_DIR}/platform/wifi_recovery.py" "${INSTALL_DIR}/"
   cp    "${AUTOSTREAM_DIR}/platform/wifi_policy.py"   "${INSTALL_DIR}/"

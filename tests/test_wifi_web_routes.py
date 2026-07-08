@@ -186,8 +186,8 @@ class TestStatusRoute:
     def test_request_ap_mode_queues_manual_ap_control_action(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = ""
-        mod.STATE.control_in_progress = False
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.control_in_progress = False
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
@@ -197,16 +197,16 @@ class TestStatusRoute:
         assert rv.status_code == 200
         assert rv.get_json()["action"] == "manual_ap"
         # Queued on the shared control channel, not a legacy dedicated event.
-        assert mod.STATE.pending_control_action == "manual_ap"
-        assert mod.STATE.pending_control_params == {"reason": "test"}
+        assert mod.CONTROL_STATE.pending_control_action == "manual_ap"
+        assert mod.CONTROL_STATE.pending_control_params == {"reason": "test"}
         assert mod.control_action_event.is_set()
 
     def test_request_ap_mode_busy_returns_409(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
         # Another control action already pending -> busy.
-        mod.STATE.pending_control_action = "reconnect_saved"
-        mod.STATE.control_in_progress = False
+        mod.CONTROL_STATE.pending_control_action = "reconnect_saved"
+        mod.CONTROL_STATE.control_in_progress = False
         rv = client.post(
             "/request_ap_mode",
             json={"reason": "test"},
@@ -216,7 +216,7 @@ class TestStatusRoute:
         assert rv.status_code == 409
         assert rv.get_json()["error"] == "busy"
         # The in-flight action is untouched.
-        assert mod.STATE.pending_control_action == "reconnect_saved"
+        assert mod.CONTROL_STATE.pending_control_action == "reconnect_saved"
 
 
 class TestNetworkControlRoutes:
@@ -301,8 +301,8 @@ class TestNetworkControlRoutes:
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
         # Reset pending state.
-        mod.STATE.pending_control_action = ""
-        mod.STATE.control_in_progress = False
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.control_in_progress = False
         rv = client.post(
             "/network_control",
             json={"action": "start_setup"},
@@ -311,16 +311,16 @@ class TestNetworkControlRoutes:
         )
         assert rv.status_code == 200
         assert json.loads(rv.data).get("queued") is True
-        assert mod.STATE.pending_control_action == "start_setup"
+        assert mod.CONTROL_STATE.pending_control_action == "start_setup"
         # Clean up the queued action so other tests are unaffected.
-        mod.STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_action = ""
         mod.control_action_event.clear()
 
     def test_network_control_queues_disable_adapter(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = ""
-        mod.STATE.control_in_progress = False
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.control_in_progress = False
         rv = client.post(
             "/network_control",
             json={"action": "disable_adapter", "adapter": "usb-abc"},
@@ -328,9 +328,9 @@ class TestNetworkControlRoutes:
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 200
-        assert mod.STATE.pending_control_action == "disable_adapter"
-        assert mod.STATE.pending_control_params == {"adapter": "usb-abc"}
-        mod.STATE.pending_control_action = ""
+        assert mod.CONTROL_STATE.pending_control_action == "disable_adapter"
+        assert mod.CONTROL_STATE.pending_control_params == {"adapter": "usb-abc"}
+        mod.CONTROL_STATE.pending_control_action = ""
         mod.control_action_event.clear()
 
     def test_network_control_adapter_action_requires_adapter(self, flask_client):
@@ -358,7 +358,7 @@ class TestNetworkControlRoutes:
     def test_second_conflicting_action_rejected(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = "start_setup"
+        mod.CONTROL_STATE.pending_control_action = "start_setup"
         rv = client.post(
             "/network_control",
             json={"action": "reconnect_saved"},
@@ -366,7 +366,7 @@ class TestNetworkControlRoutes:
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 409
-        mod.STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_action = ""
         mod.control_action_event.clear()
 
 
@@ -446,9 +446,9 @@ class TestControlAuthLogic:
         with patch.object(watcher, "start_explicit_setup") as ss:
             watcher.process_control_action("start_setup")
         ss.assert_called_once()
-        assert watcher.STATE.last_control_action == "start_setup"
-        assert watcher.STATE.last_control_result == "ok"
-        assert watcher.STATE.control_in_progress is False
+        assert watcher.CONTROL_STATE.last_control_action == "start_setup"
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
+        assert watcher.CONTROL_STATE.control_in_progress is False
 
 
 class TestNetworkStatusRoute:
@@ -494,8 +494,8 @@ class TestSetLogLevelControlRoute:
     def test_accepts_debug_with_ttl(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = ""
-        mod.STATE.control_in_progress = False
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.control_in_progress = False
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "debug", "ttl_seconds": 900},
@@ -503,16 +503,16 @@ class TestSetLogLevelControlRoute:
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 200
-        assert mod.STATE.pending_control_action == "set_log_level"
-        assert mod.STATE.pending_control_params == {"level": "debug", "ttl_seconds": 900}
-        mod.STATE.pending_control_action = ""
-        mod.STATE.pending_control_params = {}
+        assert mod.CONTROL_STATE.pending_control_action == "set_log_level"
+        assert mod.CONTROL_STATE.pending_control_params == {"level": "debug", "ttl_seconds": 900}
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_params = {}
         mod.control_action_event.clear()
 
     def test_rejects_invalid_level(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "trace"},
@@ -524,7 +524,7 @@ class TestSetLogLevelControlRoute:
     def test_rejects_debug_without_ttl(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "debug"},
@@ -536,7 +536,7 @@ class TestSetLogLevelControlRoute:
     def test_rejects_unknown_field(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "set_log_level", "level": "info", "evil": 1},
@@ -559,7 +559,7 @@ class TestSetLogLevelControlRoute:
     def test_start_setup_still_only_action(self, flask_client):
         client, mod = flask_client
         mod.wifi_web._control_token = "tok"
-        mod.STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_action = ""
         rv = client.post(
             "/network_control",
             json={"action": "start_setup", "ttl_seconds": 900},
