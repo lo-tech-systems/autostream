@@ -17,237 +17,27 @@ These tests cover the Wi-Fi watcher state machine and captive-portal integration
 from __future__ import annotations
 
 import contextlib
-import importlib
-import importlib.util
 import json
 import os
 import sys
 import threading
 import time
 from contextlib import ExitStack
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, call
 import ipaddress
 
 import pytest
 
-REPO_ROOT = Path(__file__).parent.parent
-WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher.py"
-
-# The watcher imports its sibling helper `autostream_wifi_network` (deployed
-# alongside it in /opt/autostream). Make core/ importable so the load succeeds.
-_CORE = str(REPO_ROOT / "core")
-if _CORE not in sys.path:
-    sys.path.insert(0, _CORE)
-
-
-# ---------------------------------------------------------------------------
-# Module loader — stubs Flask and autostream_sysutils so import works offline
-# ---------------------------------------------------------------------------
-
-_watcher_mod: ModuleType | None = None
-_watcher_lock = threading.Lock()
-
-
-def _get_watcher() -> ModuleType:
-    """Load wifi_watcher once per session with Flask and sysutils stubbed."""
-    global _watcher_mod
-    with _watcher_lock:
-        if _watcher_mod is not None:
-            return _watcher_mod
-
-        alias = "wifi_watcher_p1_test"
-        loader = SourceFileLoader(alias, str(WIFI_WATCHER_PATH))
-        spec = importlib.util.spec_from_loader(alias, loader)
-        mod = importlib.util.module_from_spec(spec)
-        # Register before exec so the module can reference itself for the
-        # split-module seam (wifi_status/wifi_recovery take the watcher module).
-        sys.modules[alias] = mod
-
-        # Stub dependencies before exec so module-level code doesn't fail.
-        from unittest.mock import MagicMock as MM
-        _saved: dict[str, object] = {}
-
-        for stub_name in ("flask", "autostream_sysutils"):
-            if stub_name not in sys.modules:
-                sys.modules[stub_name] = MM()
-                _saved[stub_name] = None
-            else:
-                _saved[stub_name] = sys.modules[stub_name]
-
-        # Flask needs specific objects at module level.
-        # Save original attrs so we can restore the real flask module afterwards
-        # (when flask IS installed, mutating its attributes would corrupt the
-        # flask_client fixture's fresh watcher load).
-        _FLASK_ATTRS = ("Flask", "request", "jsonify", "redirect", "url_for", "make_response")
-        flask_stub = sys.modules["flask"]
-        _flask_saved_attrs = {a: getattr(flask_stub, a, None) for a in _FLASK_ATTRS}
-        flask_stub.Flask = lambda *a, **kw: MM()
-        flask_stub.request = MM()
-        flask_stub.jsonify = lambda d: MM()
-        flask_stub.redirect = lambda u: MM()
-        flask_stub.url_for = lambda *a, **kw: "/"
-        flask_stub.make_response = lambda h, s: MM()
-
-        sysutils = sys.modules["autostream_sysutils"]
-        # Save and restore original attrs to avoid permanently mutating the
-        # real autostream_sysutils module when it's already imported.
-        _sysutils_saved_attrs: dict[str, object] = {}
-        for attr in ("run_cmd", "prime_gateway", "reboot_system", "get_system_hostname"):
-            if hasattr(sysutils, attr):
-                _sysutils_saved_attrs[attr] = getattr(sysutils, attr)
-        sysutils.run_cmd = MM()
-        sysutils.prime_gateway = MM()
-        sysutils.reboot_system = MM()
-        sysutils.get_system_hostname = MM(return_value="autostream")
-
-        # wifi_web is a sibling that binds Flask symbols at import; drop any
-        # cached copy so the watcher's `import wifi_web` re-binds against the
-        # flask currently in sys.modules (stubbed here). The watcher keeps its
-        # own reference as `mod.wifi_web`.
-        sys.modules.pop("wifi_web", None)
-
-        try:
-            loader.exec_module(mod)
-        finally:
-            for name, orig in _saved.items():
-                if orig is None:
-                    sys.modules.pop(name, None)
-            # Restore flask attrs on the real module (no-op if flask was not
-            # installed and we injected a fresh MagicMock).
-            if _saved.get("flask") is not None:
-                for attr, orig_val in _flask_saved_attrs.items():
-                    if orig_val is not None:
-                        setattr(flask_stub, attr, orig_val)
-            # Restore the real sysutils attributes if we mutated the real module.
-            if "autostream_sysutils" not in _saved or _saved.get("autostream_sysutils") is not None:
-                for attr, orig_val in _sysutils_saved_attrs.items():
-                    setattr(sysutils, attr, orig_val)
-
-        # Store the real function pointers for later patching
-        _watcher_mod = mod
-        return mod
-
-
-@pytest.fixture(autouse=True)
-def _restore_root_log_level():
-    """Save/restore the root logger level so log-level tests don't leak (WP7)."""
-    import logging as _logging
-    saved = _logging.getLogger().level
-    yield
-    _logging.getLogger().setLevel(saved)
-
-
-@pytest.fixture(autouse=True)
-def _reset_activation_worker():
-    """Reset the module-level activation-worker slots between tests (WS1)."""
-    mod = _get_watcher()
-    yield
-    try:
-        while True:
-            mod._activation_job_queue.get_nowait()
-    except Exception:
-        pass
-    mod.wifi_activation._activation_result_slot = None
-    mod.activation_result_event.clear()
-    mod.wifi_activation.clear_inflight_activation_epoch()
-
-
-@pytest.fixture(autouse=True)
-def _isolate_reboot_guard(tmp_path):
-    """Point the persistent reboot-guard stamp at a per-test temp file.
-
-    C2-WP5 routes every reboot domain (gateway-down, 12-hour catch-all, dead-PHY)
-    through request_guarded_reboot, which consults/writes the persistent guard, so
-    any reboot-exercising test now touches the stamp.  Isolating it per test keeps
-    the guard off the real /var path and prevents cross-test accumulation.  Tests
-    that need their own stamp path still patch DEAD_ADAPTER_REBOOT_STAMP locally
-    (the inner patch wins).
-    """
-    mod = _get_watcher()
-    stamp = str(tmp_path / "reboot-guard.json")
-    fault = str(tmp_path / "adapter-fault-state.json")
-    # The recovery seam is narrowed (WP-11): production paths read these through
-    # RECOVERY_CTX, which froze the real /var paths at construction.  Patch both
-    # the module attrs (for tests that pass the watcher module as ctx) and the
-    # context fields (for tests that reach recovery via a production RECOVERY_CTX
-    # path) so neither escapes to real /var.
-    with patch.object(mod, "DEAD_ADAPTER_REBOOT_STAMP", stamp), \
-         patch.object(mod, "ADAPTER_FAULT_STATE_PATH", fault), \
-         patch.object(mod.RECOVERY_CTX, "DEAD_ADAPTER_REBOOT_STAMP", stamp), \
-         patch.object(mod.RECOVERY_CTX, "ADAPTER_FAULT_STATE_PATH", fault):
-        yield
-
-
-@pytest.fixture()
-def watcher():
-    """Return the loaded wifi_watcher module and reset STATE before each test."""
-    mod = _get_watcher()
-    from dataclasses import fields
-    defaults = mod.NetworkMonitorState()
-    recovery_defaults = mod.wifi_recovery.RecoveryState()
-
-    def _reset():
-        for f in fields(defaults):
-            setattr(mod.STATE, f.name, getattr(defaults, f.name))
-        for f in fields(recovery_defaults):
-            setattr(mod.RECOVERY_STATE, f.name, getattr(recovery_defaults, f.name))
-
-    _reset()
-    mod._last_logged_values.clear()
-    mod._last_throttled_log.clear()
-    yield mod
-    # Reset again in case the test mutated STATE
-    _reset()
-
-
-@pytest.fixture()
-def flask_client(watcher):
-    """Return a Flask test client for the wifi_watcher app.
-
-    wifi_watcher creates a module-level `app` via Flask(). Since we stub Flask
-    at import time the real test client comes from loading a second fresh copy
-    with real Flask (if available). If Flask is not installed the tests are
-    skipped.
-    """
-    try:
-        from flask import Flask
-    except ImportError:
-        pytest.skip("Flask not installed — captive portal route tests skipped")
-
-    # Re-load the module with real Flask so the test client works.
-    alias = "wifi_watcher_flask_test"
-    loader = SourceFileLoader(alias, str(WIFI_WATCHER_PATH))
-    spec = importlib.util.spec_from_loader(alias, loader)
-    flask_mod = importlib.util.module_from_spec(spec)
-    sys.modules[alias] = flask_mod
-
-    # Stub only the non-Flask external deps.
-    from unittest.mock import MagicMock as MM
-    sysutils_stub = MM()
-    sysutils_stub.run_cmd = MM(return_value=MM(returncode=0, stdout="", stderr=""))
-    sysutils_stub.prime_gateway = MM()
-    sysutils_stub.reboot_system = MM()
-    sysutils_stub.get_system_hostname = MM(return_value="autostream")
-
-    saved_sysutils = sys.modules.get("autostream_sysutils")
-    sys.modules["autostream_sysutils"] = sysutils_stub
-    # Drop any cached wifi_web so it re-binds against the real flask used here
-    # (an earlier unit load may have bound it to the stubbed flask). The fresh
-    # watcher keeps its own reference as `flask_mod.wifi_web`.
-    sys.modules.pop("wifi_web", None)
-    try:
-        loader.exec_module(flask_mod)
-    finally:
-        if saved_sysutils is None:
-            sys.modules.pop("autostream_sysutils", None)
-        else:
-            sys.modules["autostream_sysutils"] = saved_sysutils
-
-    flask_mod.app.config["TESTING"] = True
-    return flask_mod.app.test_client(), flask_mod
+from _wifi_fixtures import (
+    _get_watcher,
+    _isolate_reboot_guard,
+    _reset_activation_worker,
+    _restore_root_log_level,
+    flask_client,
+    watcher,
+)
 
 
 # ---------------------------------------------------------------------------
