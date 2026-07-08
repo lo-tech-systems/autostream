@@ -191,6 +191,8 @@ class NoOpDisplayStatusProvider:
             "showing":        "noop",
             "last_error":     "",
             "last_error_at":  None,
+            "display_sleeping":     False,
+            "display_idle_seconds": 0,
         }
 
     def update_config(self, config) -> dict:

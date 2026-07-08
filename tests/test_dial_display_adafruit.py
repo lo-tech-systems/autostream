@@ -251,6 +251,46 @@ class TestMockedHardwareBackend:
             with pytest.raises(RuntimeError, match="GPIO24 reset"):
                 backend.open()
 
+    def test_sleep_turns_backlight_off_and_writes_true_black_frame(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+            backlight = backend._backlight
+            backend.sleep()
+
+        assert backlight.value is False
+        args, kwargs = fake_display.image.call_args
+        frame = args[0]
+        assert frame.size == (160, 128)
+        assert frame.getpixel((0, 0)) == (0, 0, 0)
+        assert frame.getpixel((0, 0)) != dda._BACKGROUND_RGB
+
+    def test_wake_turns_backlight_on_and_renders_nothing(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+            backlight = backend._backlight
+            backlight.value = False
+            fake_display.image.reset_mock()
+            backend.wake()
+
+        assert backlight.value is True
+        fake_display.image.assert_not_called()
+
+    def test_sleep_before_open_is_noop(self):
+        backend = AdafruitST7735SBackend()
+        backend.sleep()  # must not raise
+
+    def test_wake_before_open_is_noop(self):
+        backend = AdafruitST7735SBackend()
+        backend.wake()  # must not raise
+
     def test_busy_ce0_uses_hardware_chip_select(self):
         modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
             _install_fake_hardware_modules()

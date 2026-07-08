@@ -84,13 +84,16 @@ class FakeBackend:
     width = 128
     height = 160
 
-    def __init__(self, fail_open=False, fail_display=False):
+    def __init__(self, fail_open=False, fail_display=False, fail_sleep=False):
         self.fail_open = fail_open
         self.fail_display = fail_display
+        self.fail_sleep = fail_sleep
         self.opened = False
         self.closed = False
         self.cleared = False
         self.displayed: list = []
+        self.sleep_calls = 0
+        self.wake_calls = 0
 
     def open(self):
         if self.fail_open:
@@ -108,6 +111,14 @@ class FakeBackend:
         if self.fail_display:
             raise RuntimeError("display failed")
         self.displayed.append(image)
+
+    def sleep(self):
+        self.sleep_calls += 1
+        if self.fail_sleep:
+            raise RuntimeError("sleep failed")
+
+    def wake(self):
+        self.wake_calls += 1
 
 
 def _make_display(
@@ -147,6 +158,7 @@ class TestDisabledConfig:
             "fitted": False, "active": False, "backend": "noop",
             "backend_loaded": False, "showing": "noop",
             "last_error": "", "last_error_at": None,
+            "display_sleeping": False, "display_idle_seconds": 0,
         }
 
     def test_disabled_poll_does_not_query_targets(self):
@@ -574,6 +586,188 @@ class TestLogoFallback:
         status = display.get_status()
         assert status["last_error"] == "logo_unavailable"
         assert status["showing"] in ("logo", "noop")
+
+
+# ---------------------------------------------------------------------------
+# Idle sleep — 15 minutes of no playing targets dims the display; any
+# playing target (including unauthorized/erroring ones) counts as activity.
+# ---------------------------------------------------------------------------
+
+class _FakeClock:
+    """Controllable stand-in for time.monotonic — advanced explicitly between
+    polls so idle-elapsed math is deterministic instead of racing wall time.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.t = start
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class TestIdleSleep:
+    def test_no_targets_starts_idle_timer_and_shows_logo(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += 5.0
+            status = display.get_status()
+        assert status["showing"] == "logo"
+        assert status["display_idle_seconds"] == 5
+
+    def test_idle_below_threshold_does_not_sleep(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS - 1
+            display._poll_once()
+            status = display.get_status()
+        assert status["display_sleeping"] is False
+        assert fb.sleep_calls == 0
+
+    def test_idle_at_threshold_sleeps_once(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()  # idle timer starts
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()  # crosses threshold -> sleep
+            display._poll_once()  # still asleep -> no repeat sleep call
+            status = display.get_status()
+        assert status["display_sleeping"] is True
+        assert status["showing"] == "sleeping"
+        assert fb.sleep_calls == 1
+
+    def test_sleeping_does_not_repaint(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()
+            count_after_sleep = len(fb.displayed)
+            display._poll_once()
+            display._poll_once()
+        assert len(fb.displayed) == count_after_sleep
+
+    def test_idle_seconds_clamps_at_threshold_while_asleep(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()
+            clock.t += 1000.0  # long past threshold while asleep
+            status = display.get_status()
+        assert status["display_idle_seconds"] == dd.DISPLAY_IDLE_SLEEP_SECONDS
+
+    def test_target_appearing_wakes_before_next_frame(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()  # asleep now
+            assert display.get_status()["display_sleeping"] is True
+
+            gt.return_value = [t]
+            with patch("dial_display.fetch_target_status",
+                       return_value=_status_result(track_id=None)):
+                display._poll_once()
+            status = display.get_status()
+
+        assert fb.wake_calls == 1
+        assert status["display_sleeping"] is False
+        assert status["display_idle_seconds"] == 0
+        assert status["showing"] == "logo"
+
+    def test_wake_repaints_same_artwork_url_as_before_sleep(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+
+        fake_image = Image.new("RGB", (128, 160))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()  # showing artwork
+        assert display.get_status()["showing"] == "artwork"
+
+        gt.return_value = []
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()  # asleep
+        assert display.get_status()["display_sleeping"] is True
+
+        gt.return_value = [t]
+        displayed_before = len(fb.displayed)
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()  # wakes and repaints same artwork url
+
+        assert fb.wake_calls == 1
+        assert display.get_status()["display_sleeping"] is False
+        assert display.get_status()["showing"] == "artwork"
+        assert len(fb.displayed) > displayed_before
+
+    def test_playing_target_no_artwork_never_sleeps(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock), \
+             patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            for _ in range(5):
+                display._poll_once()
+                clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            status = display.get_status()
+        assert status["showing"] == "logo"
+        assert status["display_sleeping"] is False
+        assert status["display_idle_seconds"] == 0
+        assert fb.sleep_calls == 0
+
+    def test_unauthorized_target_present_counts_as_activity(self):
+        t = _target(display_authorized=False)
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            for _ in range(5):
+                display._poll_once()
+                clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            status = display.get_status()
+        assert status["display_sleeping"] is False
+        assert status["display_idle_seconds"] == 0
+        assert fb.sleep_calls == 0
+
+    def test_disable_while_asleep_resets_idle_and_sleep_state(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()
+        assert display.get_status()["display_sleeping"] is True
+
+        status = display.update_config(DialDisplayConfig(fitted=False))
+        assert status["display_sleeping"] is False
+        assert status["display_idle_seconds"] == 0
+        assert display._idle_started_at is None
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ DEFAULT_DISPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-centred-dark
 DISPLAY_POLL_INTERVAL_SECONDS = 6
 DIAL_STATUS_TIMEOUT_SECONDS = 2.0
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
+DISPLAY_IDLE_SLEEP_SECONDS = 15 * 60
 _MAX_ARTWORK_REDIRECTS = 2
 _ARTWORK_CONTENT_TYPES = ("image/jpeg", "image/png", "image/webp")
 
@@ -186,6 +187,8 @@ class DisplayRuntimeStatus:
     showing: str
     last_error: str
     last_error_at: float | None
+    display_sleeping: bool
+    display_idle_seconds: int
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -208,6 +211,10 @@ class DisplayBackend:
 
     def display(self, image) -> None: ...
 
+    def sleep(self) -> None: ...
+
+    def wake(self) -> None: ...
+
 
 class NoOpBackend(DisplayBackend):
     name = "noop"
@@ -224,6 +231,12 @@ class NoOpBackend(DisplayBackend):
         pass
 
     def display(self, image) -> None:
+        pass
+
+    def sleep(self) -> None:
+        pass
+
+    def wake(self) -> None:
         pass
 
 
@@ -262,6 +275,11 @@ class DialDisplay:
         self._source_artwork_url = ""
         self._current_rendered_image = None
 
+        # Idle/sleep state — set while the display has shown the logo with no
+        # playing targets on the network; cleared on any activity or disable.
+        self._idle_started_at: float | None = None
+        self._display_sleeping = False
+
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._log_limiter = _RateLimitedLogger()
@@ -299,6 +317,13 @@ class DialDisplay:
 
     def get_status(self) -> dict:
         with self._lock:
+            if self._idle_started_at is None:
+                idle_seconds = 0
+            else:
+                idle_seconds = min(
+                    DISPLAY_IDLE_SLEEP_SECONDS,
+                    int(time.monotonic() - self._idle_started_at),
+                )
             return DisplayRuntimeStatus(
                 fitted=self._config.fitted,
                 active=self._backend_open and self._backend_name != "noop",
@@ -307,6 +332,8 @@ class DialDisplay:
                 showing=self._showing,
                 last_error=self._last_error,
                 last_error_at=self._last_error_at,
+                display_sleeping=self._display_sleeping,
+                display_idle_seconds=idle_seconds,
             ).to_dict()
 
     def update_config(self, config) -> dict:
@@ -362,6 +389,10 @@ class DialDisplay:
             "dial display: backend %s open (%dx%d)",
             self._backend_name, backend.width, backend.height,
         )
+        # Rendering the logo here is the awake state — reset any stale idle
+        # timer/sleep flag from before this open.
+        self._idle_started_at = None
+        self._display_sleeping = False
         self._render_logo_locked()
 
     def _disable_locked(self) -> None:
@@ -377,6 +408,8 @@ class DialDisplay:
         self._showing = "noop"
         self._source_artwork_url = ""
         self._current_rendered_image = None
+        self._idle_started_at = None
+        self._display_sleeping = False
 
     def _clear_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -385,6 +418,36 @@ class DialDisplay:
             except Exception as e:
                 logging.debug("dial display: backend clear raised: %s", e)
         self._showing = "noop"
+
+    def _sleep_locked(self) -> None:
+        if self._backend_open and self._backend is not None:
+            try:
+                self._backend.sleep()
+            except Exception as e:
+                self._record_error_locked("display_sleep_failed")
+                logging.debug("dial display: backend sleep raised: %s", e)
+        self._display_sleeping = True
+        self._showing = "sleeping"
+        self._source_artwork_url = ""
+        self._current_rendered_image = None
+        logging.info("dial display: idle %ds — sleeping", DISPLAY_IDLE_SLEEP_SECONDS)
+
+    def _wake_locked(self) -> None:
+        if self._backend_open and self._backend is not None:
+            try:
+                self._backend.wake()
+            except Exception as e:
+                self._record_error_locked("display_wake_failed")
+                logging.debug("dial display: backend wake raised: %s", e)
+        self._display_sleeping = False
+        # The cached-artwork fast path in _show_artwork and the show_logo
+        # dedupe both skip rendering when _showing looks unchanged — force
+        # the next render to actually paint by clearing the known artwork
+        # url and setting a showing value neither path treats as "already
+        # shown".
+        self._showing = "waking"
+        self._source_artwork_url = ""
+        logging.info("dial display: activity resumed — waking")
 
     def _record_error_locked(self, error_id: str) -> None:
         self._last_error = error_id
@@ -444,8 +507,36 @@ class DialDisplay:
         if not fitted:
             return
 
+        targets = self._get_display_targets()
+
+        # Any visible playing target counts as activity — including
+        # unauthorized or status-erroring ones — because the mDNS
+        # _autostream-playing._tcp presence alone means audio is playing
+        # somewhere on the network, regardless of whether this dial's
+        # display is allowed to source artwork from it.
+        if targets:
+            with self._lock:
+                self._idle_started_at = None
+                if self._display_sleeping:
+                    self._wake_locked()
+        else:
+            with self._lock:
+                if self._idle_started_at is None:
+                    self._idle_started_at = time.monotonic()
+                if self._display_sleeping:
+                    # Stay dark — no repaint while asleep.
+                    return
+                should_sleep = (
+                    time.monotonic() - self._idle_started_at >= DISPLAY_IDLE_SLEEP_SECONDS
+                )
+                if should_sleep:
+                    self._sleep_locked()
+                    return
+            self.show_logo()
+            return
+
         selected_url = None
-        for target in self._get_display_targets():
+        for target in targets:
             if not target.display_authorized:
                 logging.debug("dial display: skip unauthorized row %s", target.service_name)
                 continue

@@ -175,3 +175,27 @@ class AdafruitST7735SBackend(DisplayBackend):
         if self._display is None:
             return
         self._display.image(_fit_image_to_panel(image, self.width, self.height))
+
+    def sleep(self) -> None:
+        if self._display is None:
+            return
+        # Backlight off first: the panel goes dark even if the SPI frame
+        # write below fails.
+        if self._backlight is not None:
+            try:
+                self._backlight.value = False
+            except Exception:
+                pass
+        from PIL import Image
+
+        black = Image.new("RGB", (_PANEL_WIDTH, _PANEL_HEIGHT), (0, 0, 0))
+        self._display.image(_fit_image_to_panel(black, self.width, self.height))
+
+    def wake(self) -> None:
+        if self._display is None:
+            return
+        if self._backlight is not None:
+            try:
+                self._backlight.value = True
+            except Exception:
+                pass

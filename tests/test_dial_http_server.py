@@ -744,7 +744,8 @@ class TestReconcileUpdateTimer:
 # ---------------------------------------------------------------------------
 
 _RUNTIME_KEYS = {"fitted", "active", "backend", "backend_loaded", "showing",
-                  "last_error", "last_error_at"}
+                  "last_error", "last_error_at",
+                  "display_sleeping", "display_idle_seconds"}
 
 
 class TestScreenSettingsGet:
@@ -862,6 +863,18 @@ class TestScreenSettingsPost:
                           setup_server=server)
         assert r["status"] == 200
         assert server._display_status.get_status()["fitted"] is True
+
+
+# ---------------------------------------------------------------------------
+# NoOpDisplayStatusProvider — placeholder runtime status shape
+# ---------------------------------------------------------------------------
+
+class TestNoOpDisplayStatusProvider:
+    def test_get_status_includes_sleep_fields(self):
+        provider = NoOpDisplayStatusProvider()
+        status = provider.get_status()
+        assert status["display_sleeping"] is False
+        assert status["display_idle_seconds"] == 0
 
 
 # ---------------------------------------------------------------------------
