@@ -49,7 +49,7 @@ class TestUsbFailureFallback:
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as ap:
-            acted = watcher.handle_usb_failure_fallback(hctx)
+            acted = watcher.wifi_adoption.handle_usb_failure_fallback(watcher.ADOPTION_CTX, hctx)
         assert acted is True
         ap.assert_called_once()
 
@@ -61,8 +61,8 @@ class TestUsbFailureFallback:
         facts = _facts_for(watcher, [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb], usb)
         hctx = self._hctx(watcher, facts, conn_ok=True,
                           prev_mac=usb.permanent_mac, prev_ifname="wlan1")
-        with patch.object(watcher, "apply_client_failed") as ap:
-            acted = watcher.handle_usb_failure_fallback(hctx)
+        with patch.object(watcher.wifi_adoption, "apply_client_failed") as ap:
+            acted = watcher.wifi_adoption.handle_usb_failure_fallback(watcher.ADOPTION_CTX, hctx)
         assert acted is False
         ap.assert_not_called()
 
@@ -73,7 +73,7 @@ class TestUsbFailureFallback:
         hctx = self._hctx(watcher, facts, conn_ok=False,
                           prev_mac=usb.permanent_mac, prev_ifname="wlan1")
         with patch.object(watcher.wifi_adoption, "apply_client_failed", return_value=True) as ap:
-            acted = watcher.handle_usb_failure_fallback(hctx)
+            acted = watcher.wifi_adoption.handle_usb_failure_fallback(watcher.ADOPTION_CTX, hctx)
         assert acted is True
         ap.assert_called_once()
 
@@ -95,8 +95,8 @@ class TestRuntimeUsbAdoption:
              patch.object(watcher.ADOPTION_CTX, "query_playing_status", return_value=False), \
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
-            first = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-            second = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            first = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            second = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert first is False   # first pass only records the candidate
         assert second is True   # second stable pass submits the adoption job
         job = submit.call_args[0][0]
@@ -109,12 +109,12 @@ class TestRuntimeUsbAdoption:
     def test_deferred_while_playing(self, watcher):
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
-        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+        with patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "query_playing_status", return_value=True), \
-             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
-            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True) as act:
+            watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         act.assert_not_called()  # never handed over while playing
 
     def test_deferred_then_adopted_when_idle(self, watcher):
@@ -130,27 +130,27 @@ class TestRuntimeUsbAdoption:
              patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
-            r1 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-            r2 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-            r3 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r1 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            r2 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            r3 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert (r1, r2, r3) == (False, False, True)
 
     def test_uncertain_status_defers(self, watcher):
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
-        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+        with patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "query_playing_status", return_value=None), \
-             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
-            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True) as act:
+            watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         act.assert_not_called()
 
     def test_ethernet_blocks_adoption(self, watcher):
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
-        with patch.object(watcher, "_activate_committed_on", return_value=True) as act:
-            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=True)
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True) as act:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=True)
         assert r is False
         act.assert_not_called()
 
@@ -158,9 +158,9 @@ class TestRuntimeUsbAdoption:
         builtin, usb1 = self._builtin_and_usb(watcher)
         usb2 = _adapter(watcher, "wlan2", "bb:bb:bb:bb:bb:20", is_usb=True)
         adapters = [builtin, usb1, usb2]
-        with patch.object(watcher, "resolve_active_client", return_value=usb1), \
-             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
-            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+        with patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=usb1), \
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True) as act:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert r is False
         act.assert_not_called()
 
@@ -175,8 +175,8 @@ class TestRuntimeUsbAdoption:
              patch.object(watcher.ADOPTION_CTX, "query_playing_status", return_value=False), \
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
-            watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert r is True
         job = submit.call_args[0][0]
         assert job.records_noip is True and job.stable_id == usb.stable_id
@@ -286,7 +286,7 @@ class TestBssidSurveyAndRoam:
         hctx = self._hctx(watcher, self._facts(watcher, usb))
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
-            watcher.bssid_survey_and_roam(hctx)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         scan.assert_any_call("wlan1", rescan=False)
 
     def test_cadence_gating_skips_until_interval_elapses(self, watcher):
@@ -294,17 +294,17 @@ class TestBssidSurveyAndRoam:
         hctx1 = self._hctx(watcher, self._facts(watcher, usb, now=1000.0))
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
-            watcher.bssid_survey_and_roam(hctx1)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx1)
             scan.reset_mock()
             hctx2 = self._hctx(watcher, self._facts(watcher, usb, now=1000.0 + 1.0))
-            watcher.bssid_survey_and_roam(hctx2)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx2)
         scan.assert_not_called()
 
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
             hctx3 = self._hctx(
                 watcher, self._facts(watcher, usb, now=1000.0 + watcher.BSSID_SURVEY_INTERVAL))
-            watcher.bssid_survey_and_roam(hctx3)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx3)
         scan.assert_any_call("wlan1", rescan=False)
 
     def test_idle_onboard_scanned_alongside(self, watcher):
@@ -316,7 +316,7 @@ class TestBssidSurveyAndRoam:
              patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=False), \
              patch.object(watcher.wifi_recovery, "adapter_quarantined_until", return_value=None), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
-            watcher.bssid_survey_and_roam(hctx)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         scan.assert_any_call("wlan0", rescan=True)
 
     def test_onboard_busy_as_hotspot_is_skipped(self, watcher):
@@ -326,7 +326,7 @@ class TestBssidSurveyAndRoam:
         with self._stub_ssid(watcher), \
              patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=onboard), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
-            watcher.bssid_survey_and_roam(hctx)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         assert all(c.args[0] != "wlan0" for c in scan.call_args_list)
 
     def test_onboard_disabled_is_skipped(self, watcher):
@@ -337,7 +337,7 @@ class TestBssidSurveyAndRoam:
              patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=None), \
              patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=True), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
-            watcher.bssid_survey_and_roam(hctx)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         assert all(c.args[0] != "wlan0" for c in scan.call_args_list)
 
     def test_playing_skips_full_usb_rescan(self, watcher):
@@ -347,7 +347,7 @@ class TestBssidSurveyAndRoam:
         hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=True)
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
-            watcher.bssid_survey_and_roam(hctx)
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         for c in scan.call_args_list:
             assert not (c.args == ("wlan1",) and c.kwargs.get("rescan") is True)
 
@@ -363,7 +363,7 @@ class TestBssidSurveyAndRoam:
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=rows), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
-            result = watcher.bssid_survey_and_roam(hctx)
+            result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         assert result is True
         job = submit.call_args[0][0]
         assert job.kind == "activate_committed" and job.ifname == "wlan1"
@@ -385,7 +385,7 @@ class TestBssidSurveyAndRoam:
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", side_effect=[survey_rows, confirm_rows]), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
-            result = watcher.bssid_survey_and_roam(hctx)
+            result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         assert result is False
         submit.assert_not_called()
 
@@ -395,7 +395,7 @@ class TestBssidSurveyAndRoam:
         with patch.object(watcher.ADOPTION_CTX, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("", "")), \
              patch.object(watcher.nm, "wifi_bssid_scan") as scan:
-            result = watcher.bssid_survey_and_roam(hctx)
+            result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         assert result is False
         scan.assert_not_called()
 
@@ -438,7 +438,7 @@ class TestIf6AdoptionScanGate:
         adapters = [builtin, usb]
         self._prime_to_gate(watcher, usb)
         with self._gate_ctx(watcher, builtin, scan={"Other": -50}) as (scan_mock, act):
-            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert r is False
         act.assert_not_called()
         scan_mock.assert_called_once()
@@ -455,8 +455,8 @@ class TestIf6AdoptionScanGate:
         adapters = [builtin, usb]
         self._prime_to_gate(watcher, usb)
         with self._gate_ctx(watcher, builtin, scan={"Other": -50}) as (scan_mock, act):
-            r1 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
-            r2 = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r1 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            r2 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert (r1, r2) == (False, False)
         act.assert_not_called()
         scan_mock.assert_called_once()  # second pass: not due -> no scan
@@ -467,7 +467,7 @@ class TestIf6AdoptionScanGate:
         adapters = [builtin, usb]
         self._prime_to_gate(watcher, usb)
         with self._gate_ctx(watcher, builtin, scan=None) as (scan_mock, act):
-            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert r is False
         act.assert_not_called()
         scan_mock.assert_called_once()
@@ -481,7 +481,7 @@ class TestIf6AdoptionScanGate:
         self._prime_to_gate(watcher, usb)
         with self._gate_ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock, _act), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
-            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert r is True
         scan_mock.assert_called_once()
         submit.assert_called_once()
@@ -505,7 +505,7 @@ class TestIf6AdoptionScanGate:
                                              return_value={"MyHomeWiFi": -50}))
             submit = stack.enter_context(
                 patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True))
-            r = watcher.handle_runtime_usb_adoption(adapters, wired_connected=False)
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
         assert r is True
         job = submit.call_args[0][0]
         assert job.records_noip is True and job.stable_id == usb.stable_id
@@ -535,7 +535,7 @@ class TestReconnectSavedEpisode:
                           return_value=watcher.wifi_net.NetworkState("Home", "uuid-1")), \
              patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=builtin), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
-            started = watcher.start_reconnect_saved_episode("retain_hotspot")
+            started = watcher.wifi_adoption.start_reconnect_saved_episode(watcher.ADOPTION_CTX, "retain_hotspot")
         assert started is True
         ep = watcher.STATE.reconnect_episode
         assert ep is not None
@@ -556,8 +556,8 @@ class TestReconnectSavedEpisode:
              patch.object(watcher.wifi_net, "client_candidate_order", return_value=[]), \
              patch.object(watcher, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("", "")), \
-             patch.object(watcher, "submit_activation_job") as submit:
-            started = watcher.start_reconnect_saved_episode()
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
+            started = watcher.wifi_adoption.start_reconnect_saved_episode(watcher.ADOPTION_CTX)
         assert started is False
         assert watcher.STATE.reconnect_episode is None
         submit.assert_not_called()
@@ -573,8 +573,8 @@ class TestReconnectSavedEpisode:
              patch.object(watcher.wifi_net, "find_adapter_by_mac", return_value=prev), \
              patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin, prev]), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=builtin), \
-             patch.object(watcher, "submit_activation_job", return_value=True):
-            watcher.start_reconnect_saved_episode()
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True):
+            watcher.wifi_adoption.start_reconnect_saved_episode(watcher.ADOPTION_CTX)
         ep = watcher.STATE.reconnect_episode
         # rollback adapter (wlan1) first, then client_candidate_order; rollback
         # profile restored (not the committed one).
@@ -582,33 +582,33 @@ class TestReconnectSavedEpisode:
         assert ep.profile_name == "Prev" and ep.profile_uuid == "uuid-prev"
 
     def test_failure_advances_to_next_target(self, watcher):
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan1", "wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=0, inflight_epoch=7)
-        job = watcher.ActivationJob(epoch=7, kind="activate_profile", ifname="wlan1")
-        watcher._advance_reconnect_episode(watcher.ActivationResult(7, False, "wlan1", job))
+        job = watcher.wifi_activation.ActivationJob(epoch=7, kind="activate_profile", ifname="wlan1")
+        watcher.wifi_adoption._advance_reconnect_episode(watcher.ADOPTION_CTX, watcher.wifi_activation.ActivationResult(7, False, "wlan1", job))
         ep = watcher.STATE.reconnect_episode
         assert ep.index == 1 and ep.inflight_epoch is None
         # A subsequent pass submits the next target and owns the pass.
         with patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
-            v = watcher.step_reconnect_episode(self._pre(watcher))
+            v = watcher.wifi_adoption.step_reconnect_episode(watcher.ADOPTION_CTX, self._pre(watcher))
         assert v is watcher.Verdict.OWN_PASS
         assert submit.call_args[0][0].ifname == "wlan0"
 
     def test_success_ends_episode(self, watcher):
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=0, inflight_epoch=3)
-        job = watcher.ActivationJob(epoch=3, kind="activate_profile", ifname="wlan0")
-        watcher._advance_reconnect_episode(watcher.ActivationResult(3, True, "wlan0", job))
+        job = watcher.wifi_activation.ActivationJob(epoch=3, kind="activate_profile", ifname="wlan0")
+        watcher.wifi_adoption._advance_reconnect_episode(watcher.ADOPTION_CTX, watcher.wifi_activation.ActivationResult(3, True, "wlan0", job))
         assert watcher.STATE.reconnect_episode is None
 
     def test_foreign_result_does_not_advance(self, watcher):
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=0, inflight_epoch=5)
-        job = watcher.ActivationJob(epoch=99, kind="activate_committed", ifname="wlan0")
-        watcher._advance_reconnect_episode(watcher.ActivationResult(99, False, "wlan0", job))
+        job = watcher.wifi_activation.ActivationJob(epoch=99, kind="activate_committed", ifname="wlan0")
+        watcher.wifi_adoption._advance_reconnect_episode(watcher.ADOPTION_CTX, watcher.wifi_activation.ActivationResult(99, False, "wlan0", job))
         # A result from a different job (epoch mismatch) leaves the episode intact.
         assert watcher.STATE.reconnect_episode.index == 0
 
@@ -616,10 +616,10 @@ class TestReconnectSavedEpisode:
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
             purpose=watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=1)
-        assert watcher._submit_next_reconnect_target() is False
+        assert watcher.wifi_adoption._submit_next_reconnect_target(watcher.ADOPTION_CTX) is False
         assert watcher.STATE.reconnect_episode is None
         # Hotspot retained, purpose unchanged.
         assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
@@ -629,26 +629,26 @@ class TestReconnectSavedEpisode:
         watcher.STATE.hotspot = watcher.HotspotSession(
             purpose=watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""))
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="reconfigure_timeout", index=1)
-        watcher._submit_next_reconnect_target()
+        watcher.wifi_adoption._submit_next_reconnect_target(watcher.ADOPTION_CTX)
         assert watcher.STATE.reconnect_episode is None
         assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
         assert watcher.STATE.hotspot.rollback is None
 
     def test_episode_deferred_while_transitioning(self, watcher):
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="", failure_tail="retain_hotspot")
         watcher.STATE.transitioning = True
-        with patch.object(watcher, "submit_activation_job") as submit:
-            v = watcher.step_reconnect_episode(self._pre(watcher))
+        with patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
+            v = watcher.wifi_adoption.step_reconnect_episode(watcher.ADOPTION_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         submit.assert_not_called()
 
     def test_disruptive_control_action_deferred_during_episode(self, watcher):
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="", failure_tail="retain_hotspot")
         watcher.STATE.transitioning = False
@@ -675,7 +675,7 @@ class TestReconnectSavedEpisode:
                           side_effect=lambda *a, **k: order.append("activate") or MagicMock(returncode=0, stderr="")), \
              patch.object(watcher, "wait_for_connection", return_value=True), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True):
-            watcher._activate_profile_on("wlan0", watcher.wifi_net.NetworkState("Home", ""))
+            watcher.wifi_activation._activate_profile_on(watcher.ACTIVATION_CTX, "wlan0", watcher.wifi_net.NetworkState("Home", ""))
         assert order == ["clear", "activate"]   # restrictions cleared BEFORE activation
 
     def test_activate_profile_on_netabsent_skips_ipv4_wait(self, watcher):
@@ -687,8 +687,8 @@ class TestReconnectSavedEpisode:
              patch.object(watcher.nm, "set_bssid"), \
              patch.object(watcher.nm, "activate", return_value=absent), \
              patch.object(watcher, "wait_for_connection") as wait:
-            ok = watcher._activate_profile_on(
-                "wlan0", watcher.wifi_net.NetworkState("Home", "uuid-1"))
+            ok = watcher.wifi_activation._activate_profile_on(
+                watcher.ACTIVATION_CTX, "wlan0", watcher.wifi_net.NetworkState("Home", "uuid-1"))
         assert ok is False
         wait.assert_not_called()
 
@@ -703,7 +703,7 @@ class TestPinUsbBssid:
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value=None), \
              patch.object(watcher.nm, "set_bssid") as set_bssid, \
              patch.object(watcher.nm, "wifi_bssid_scan") as scan:
-            result = watcher._pin_usb_bssid("wlan0", "uuid-1")
+            result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan0", "uuid-1")
         assert result == ""
         set_bssid.assert_called_once_with("uuid-1", "")
         scan.assert_not_called()
@@ -714,7 +714,7 @@ class TestPinUsbBssid:
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows()), \
              patch.object(watcher.nm, "set_bssid") as set_bssid:
-            result = watcher._pin_usb_bssid("wlan1", "uuid-1")
+            result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
         assert result == "AA:BB:CC:DD:EE:FF"
         set_bssid.assert_called_once_with("uuid-1", "AA:BB:CC:DD:EE:FF")
         assert watcher.STATE.last_bssid_pin["ifname"] == "wlan1"
@@ -727,7 +727,7 @@ class TestPinUsbBssid:
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=None), \
              patch.object(watcher.nm, "set_bssid") as set_bssid:
-            result = watcher._pin_usb_bssid("wlan1", "uuid-1")
+            result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
         assert result == ""
         set_bssid.assert_called_once_with("uuid-1", "")
         assert watcher.STATE.last_bssid_pin == {}
@@ -738,7 +738,7 @@ class TestPinUsbBssid:
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]), \
              patch.object(watcher.nm, "set_bssid") as set_bssid:
-            result = watcher._pin_usb_bssid("wlan1", "uuid-1")
+            result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
         assert result == ""
         set_bssid.assert_called_once_with("uuid-1", "")
 
@@ -756,8 +756,8 @@ class TestPinUsbBssid:
              patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=0, stderr="")), \
              patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=True), \
              patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=True):
-            ok = watcher._activate_profile_on(
-                "wlan1", watcher.wifi_net.NetworkState("Home", ""))
+            ok = watcher.wifi_activation._activate_profile_on(
+                watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
         assert ok is True
         assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
 
@@ -771,8 +771,8 @@ class TestPinUsbBssid:
              patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=1, stderr="failed")), \
              patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=False):
-            ok = watcher._activate_profile_on(
-                "wlan1", watcher.wifi_net.NetworkState("Home", ""))
+            ok = watcher.wifi_activation._activate_profile_on(
+                watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
         assert ok is False
         assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 1
 
@@ -788,7 +788,7 @@ class TestNmDisconnectedUsbDebounce:
         watcher.STATE.active_client_mac = usb_mac
         watcher.STATE.active_client_ifname = "wlan1"
         watcher.STATE.conn_unhealthy_checks = 1  # soft debounce in progress
-        watcher._set_active_client(None)
+        watcher.wifi_activation._set_active_client(watcher.ACTIVATION_CTX, None)
         assert watcher.STATE.active_client_mac == usb_mac, (
             "_set_active_client(None) cleared active_client_mac while the debounce is in progress"
         )
@@ -798,7 +798,7 @@ class TestNmDisconnectedUsbDebounce:
         watcher.STATE.active_client_mac = "bb:bb:bb:bb:bb:21"
         watcher.STATE.active_client_ifname = "wlan1"
         watcher.STATE.conn_unhealthy_checks = 0
-        watcher._set_active_client(None)
+        watcher.wifi_activation._set_active_client(watcher.ACTIVATION_CTX, None)
         assert watcher.STATE.active_client_mac == ""
         assert watcher.STATE.active_client_ifname == ""
 

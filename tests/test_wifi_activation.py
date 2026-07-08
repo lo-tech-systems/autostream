@@ -41,7 +41,7 @@ class TestClientUpTail:
     def test_sets_active_and_verifies_avahi(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi:
-            watcher.client_up_tail(a)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a)
         assert watcher.STATE.active_client_ifname == "wlan1"
         avahi.assert_called_once()
 
@@ -49,33 +49,33 @@ class TestClientUpTail:
         watcher.STATE.active_client_ifname = "wlan0"
         watcher.STATE.active_client_mac = "prev"
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
-             patch.object(watcher, "_set_active_client") as sac:
-            watcher.client_up_tail(None)
+             patch.object(watcher.wifi_activation, "_set_active_client") as sac:
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, None)
         sac.assert_not_called()
 
     def test_disconnect_builtin_runs_nmcli(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.nm, "disconnect_device") as disc:
-            watcher.client_up_tail(a, disconnect_builtin_ifname="wlan0")
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, disconnect_builtin_ifname="wlan0")
         disc.assert_called_once_with("wlan0")
 
     def test_empty_disconnect_ifname_skips_nmcli(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.nm, "disconnect_device") as disc:
-            watcher.client_up_tail(a, disconnect_builtin_ifname="")
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, disconnect_builtin_ifname="")
         disc.assert_not_called()
 
     def test_set_builtin_fallback_flags(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.STATE.using_builtin_fallback = True
-            watcher.client_up_tail(a, set_builtin_fallback=None)   # None -> untouched
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=None)   # None -> untouched
             assert watcher.STATE.using_builtin_fallback is True
-            watcher.client_up_tail(a, set_builtin_fallback=False)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=False)
             assert watcher.STATE.using_builtin_fallback is False
-            watcher.client_up_tail(a, set_builtin_fallback=True)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=True)
             assert watcher.STATE.using_builtin_fallback is True
 
     def test_clears_timers_and_onboard_bound(self, watcher):
@@ -84,7 +84,7 @@ class TestClientUpTail:
         watcher.STATE.last_reconnect_attempt = 5.0
         watcher.STATE.onboard_activation_failures = 2
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
-            watcher.client_up_tail(a, clear_down_timers=True, reset_onboard_bound=True)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_down_timers=True, reset_onboard_bound=True)
         assert watcher.STATE.conn_down_start is None
         assert watcher.STATE.last_reconnect_attempt is None
         assert watcher.STATE.onboard_activation_failures == 0
@@ -93,28 +93,28 @@ class TestClientUpTail:
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.wifi_recovery, "clear_noip_failures") as clr:
-            watcher.client_up_tail(a, clear_noip_stable_id="usb0")
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_noip_stable_id="usb0")
             clr.assert_called_once()
             clr.reset_mock()
-            watcher.client_up_tail(a, clear_noip_stable_id=None)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_noip_stable_id=None)
             clr.assert_not_called()
 
     def test_leave_setup_reason_forwarded(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave:
-            watcher.client_up_tail(a, leave_setup_reason="done")
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, leave_setup_reason="done")
             leave.assert_called_once_with("done")
             leave.reset_mock()
-            watcher.client_up_tail(a, leave_setup_reason=None)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, leave_setup_reason=None)
             leave.assert_not_called()
 
     def test_clear_dead_adapter_and_pending_adoption(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
-             patch.object(watcher, "_clear_pending_adoption") as cpa, \
+             patch.object(watcher.ACTIVATION_CTX, "clear_pending_adoption") as cpa, \
              patch.object(watcher.wifi_recovery, "clear_dead_adapter_state") as cda:
-            watcher.client_up_tail(a, clear_pending_adoption=True, clear_dead_adapter=True)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, clear_pending_adoption=True, clear_dead_adapter=True)
         cpa.assert_called_once()
         cda.assert_called_once()
 
@@ -127,7 +127,7 @@ class TestClientUpTail:
         a = self._adapter()
         watcher.STATE.last_roam_or_activation = None
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
-            watcher.client_up_tail(a)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a)
         assert watcher.STATE.last_roam_or_activation is not None
 
     def test_fresh_activation_defers_next_roam(self, watcher):
@@ -135,7 +135,7 @@ class TestClientUpTail:
         # survey pass's roam, not just a prior roam submission.
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
-            watcher.client_up_tail(a)
+            watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a)
         now = watcher.STATE.last_roam_or_activation + 1.0  # well under ROAM_HOLDOFF_SECS
         table = {
             "AA:BB:CC:DD:EE:01": {"ssid": "Home", "signal": 50, "last_seen": now,
@@ -155,22 +155,22 @@ class TestActivationWorker:
     (WS1-WP3/WP4), so these drive the skeleton directly."""
 
     def _job(self, watcher, **kw):
-        defaults = dict(epoch=watcher._next_activation_epoch(), kind="activate_committed",
+        defaults = dict(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX), kind="activate_committed",
                         ifname="wlan1")
         defaults.update(kw)
-        return watcher.ActivationJob(**defaults)
+        return watcher.wifi_activation.ActivationJob(**defaults)
 
     # ---- the split: _run_activation_job (worker half) ----
 
     def test_run_job_empty_ifname_fails(self, watcher):
         job = self._job(watcher, ifname="")
-        r = watcher._run_activation_job(job)
+        r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False and r.error == "no_ifname"
 
     def test_run_job_success_carries_job_and_epoch(self, watcher):
         job = self._job(watcher)
         with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True):
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is True and r.ifname == "wlan1" and r.job is job and r.epoch == job.epoch
 
     def test_run_job_drops_and_rebuilds_ap_on_failure(self, watcher):
@@ -181,7 +181,7 @@ class TestActivationWorker:
              patch.object(watcher.ACTIVATION_CTX, "stop_ap_mode") as stop_ap, \
              patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as start_ap, \
              patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as apflag:
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
         stop_ap.assert_called_once()
         start_ap.assert_called_once()
@@ -196,40 +196,40 @@ class TestActivationWorker:
         with patch.object(watcher.ACTIVATION_CTX, "_resolve_committed_uuid", return_value="u1"), \
              patch.object(watcher, "run_cmd", return_value=timed_out), \
              patch.object(watcher, "wait_for_connection", return_value=False):
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
 
     # ---- submit / drain / transitioning gate ----
 
     def test_submit_sets_transitioning_and_second_submit_deferred(self, watcher):
         job = self._job(watcher)
-        assert watcher.submit_activation_job(job) is True
+        assert watcher.wifi_activation.submit_activation_job(watcher.ACTIVATION_CTX, job) is True
         assert watcher.STATE.transitioning is True
         assert watcher.wifi_activation.get_inflight_activation_epoch() == job.epoch
         # A second submit while transitioning is refused (belt-and-braces gate).
-        assert watcher.submit_activation_job(self._job(watcher)) is False
+        assert watcher.wifi_activation.submit_activation_job(watcher.ACTIVATION_CTX, self._job(watcher)) is False
 
     def test_worker_thread_processes_job_and_posts_result(self, watcher):
         job = self._job(watcher)
         with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True):
-            watcher.submit_activation_job(job)
-            t = watcher.start_activation_worker()
+            watcher.wifi_activation.submit_activation_job(watcher.ACTIVATION_CTX, job)
+            t = watcher.wifi_activation.start_activation_worker(watcher.ACTIVATION_CTX)
             try:
-                assert watcher.activation_result_event.wait(timeout=5.0)
-                result = watcher.drain_activation_result()
+                assert watcher.wifi_activation.activation_result_event.wait(timeout=5.0)
+                result = watcher.wifi_activation.drain_activation_result()
             finally:
-                watcher._activation_job_queue.put(None)  # stop sentinel
+                watcher.wifi_activation._activation_job_queue.put(None)  # stop sentinel
                 t.join(timeout=5.0)
         assert result is not None and result.ok is True and result.epoch == job.epoch
 
     def test_step_apply_applies_tail_and_clears_gate(self, watcher):
         job = self._job(watcher, on_success_leaves_setup=True, leave_reason="done")
-        watcher.submit_activation_job(job)          # sets transitioning + inflight epoch
-        watcher._activation_job_queue.get_nowait()  # (don't run the real worker)
-        watcher._post_activation_result(
-            watcher.ActivationResult(job.epoch, True, "wlan1", job))
+        watcher.wifi_activation.submit_activation_job(watcher.ACTIVATION_CTX, job)          # sets transitioning + inflight epoch
+        watcher.wifi_activation._activation_job_queue.get_nowait()  # (don't run the real worker)
+        watcher.wifi_activation._post_activation_result(
+            watcher.wifi_activation.ActivationResult(job.epoch, True, "wlan1", job))
         with patch.object(watcher.wifi_activation, "apply_activation_result", return_value=True) as apply:
-            v = watcher.step_apply_activation_result(self._pre(watcher))
+            v = watcher.wifi_activation.step_apply_activation_result(watcher.ACTIVATION_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         apply.assert_called_once()
         assert watcher.STATE.transitioning is False
@@ -237,19 +237,19 @@ class TestActivationWorker:
 
     def test_step_apply_no_result_is_noop(self, watcher):
         with patch.object(watcher.wifi_activation, "apply_activation_result") as apply:
-            v = watcher.step_apply_activation_result(self._pre(watcher))
+            v = watcher.wifi_activation.step_apply_activation_result(watcher.ACTIVATION_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
     def test_step_apply_stale_epoch_discarded_but_gate_cleared(self, watcher):
         job = self._job(watcher)
-        watcher.submit_activation_job(job)
-        watcher._activation_job_queue.get_nowait()
+        watcher.wifi_activation.submit_activation_job(watcher.ACTIVATION_CTX, job)
+        watcher.wifi_activation._activation_job_queue.get_nowait()
         # Post a result with a mismatched epoch (defensive path).
-        watcher._post_activation_result(
-            watcher.ActivationResult(job.epoch + 999, True, "wlan1", job))
+        watcher.wifi_activation._post_activation_result(
+            watcher.wifi_activation.ActivationResult(job.epoch + 999, True, "wlan1", job))
         with patch.object(watcher.wifi_activation, "apply_activation_result") as apply:
-            watcher.step_apply_activation_result(self._pre(watcher))
+            watcher.wifi_activation.step_apply_activation_result(watcher.ACTIVATION_CTX, self._pre(watcher))
         apply.assert_not_called()                  # stale -> discarded
         assert watcher.STATE.transitioning is False  # but the gate is cleared
 
@@ -301,11 +301,11 @@ class TestActivateClient:
     def _run(self, watcher, ifname="wlan1", *, profile=None, **flags):
         wait = flags.get("wait_for_validation", True)
         kind = "activate_committed" if (profile is None and wait) else "activate_profile"
-        job = watcher.ActivationJob(
-            epoch=watcher._next_activation_epoch(), kind=kind, ifname=ifname,
+        job = watcher.wifi_activation.ActivationJob(
+            epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX), kind=kind, ifname=ifname,
             profile=profile, **flags)
-        result = watcher._run_activation_job(job)
-        return watcher.apply_activation_result(result)
+        result = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+        return watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
 
     @contextlib.contextmanager
     def _harness(self, watcher, *, core_ok=True, target=None):
@@ -476,7 +476,7 @@ class TestAttemptOnTargets:
              patch.object(watcher, "resolve_hotspot_adapter", return_value=hotspot), \
              patch.object(watcher, "stop_ap_mode") as stop_ap, \
              patch.object(watcher, "start_ap_mode") as start_ap, \
-             patch.object(watcher, "_set_active_client") as set_active, \
+             patch.object(watcher.wifi_activation, "_set_active_client") as set_active, \
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi:
             result = watcher.attempt_on_targets([target], lambda adapter: adapter.ifname == "wlan1")
@@ -531,17 +531,18 @@ class TestApplyCredentialsWorker:
     configure_wifi_with_nmcli and the loop applies the wait-page status tail."""
 
     def test_submit_sets_applying_and_enqueues_job(self, watcher):
-        with patch.object(watcher, "submit_activation_job", wraps=watcher.submit_activation_job):
+        with patch.object(watcher.wifi_activation, "submit_activation_job",
+                         wraps=watcher.wifi_activation.submit_activation_job):
             assert watcher.submit_apply_credentials("Home", "s3cr3t") is True
         assert watcher.STATE.apply_in_progress is True
         assert watcher.STATE.last_apply_result == "applying"
-        job = watcher._activation_job_queue.get_nowait()
+        job = watcher.wifi_activation._activation_job_queue.get_nowait()
         assert job.kind == "apply_credentials"
         assert job.ssid == "Home" and job.password == "s3cr3t"
 
     def test_submit_refused_when_apply_already_in_progress(self, watcher):
         watcher.STATE.apply_in_progress = True
-        with patch.object(watcher, "submit_activation_job") as submit:
+        with patch.object(watcher.wifi_activation, "submit_activation_job") as submit:
             assert watcher.submit_apply_credentials("Home", "x") is False
         submit.assert_not_called()
 
@@ -551,19 +552,19 @@ class TestApplyCredentialsWorker:
         # be applied and then clobbered back to "applying" by this call.
         seen = {}
 
-        def _check(job):
+        def _check(ctx, job):
             seen["apply_in_progress"] = watcher.STATE.apply_in_progress
             seen["last_apply_result"] = watcher.STATE.last_apply_result
             return True
 
-        with patch.object(watcher, "submit_activation_job", side_effect=_check):
+        with patch.object(watcher.wifi_activation, "submit_activation_job", side_effect=_check):
             assert watcher.submit_apply_credentials("Home", "x") is True
         assert seen == {"apply_in_progress": True, "last_apply_result": "applying"}
 
     def test_submit_rolls_back_applying_state_when_job_submission_fails(self, watcher):
         watcher.STATE.last_apply_result = "ok"
         watcher.STATE.last_apply_error = ""
-        with patch.object(watcher, "submit_activation_job", return_value=False):
+        with patch.object(watcher.wifi_activation, "submit_activation_job", return_value=False):
             assert watcher.submit_apply_credentials("Home", "x") is False
         assert watcher.STATE.apply_in_progress is False
         assert watcher.STATE.last_apply_result == "ok"
@@ -575,7 +576,7 @@ class TestApplyCredentialsWorker:
         # applies the session success tail (set-active / leave-setup / avahi) on
         # the loop thread.
         target = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:02", is_usb=True)
-        job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
+        job = watcher.wifi_activation.ActivationJob(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
                                     kind="apply_credentials", ifname="", ssid="Home", password="x",
                                     on_success_leaves_setup=True,
                                     leave_reason="WiFi client connection succeeded")
@@ -585,8 +586,8 @@ class TestApplyCredentialsWorker:
              patch.object(watcher.wifi_activation, "_set_active_client") as set_active, \
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi:
-            result = watcher._run_activation_job(job)
-            watcher.apply_activation_result(result)
+            result = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+            watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
         assert result.ok is True
         assert result.ifname == "wlan1"
         assert watcher.STATE.last_apply_result == "ok"
@@ -599,15 +600,15 @@ class TestApplyCredentialsWorker:
     def test_failure_retains_setup_and_returns_to_setup_mode(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.apply_in_progress = True
-        job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
+        job = watcher.wifi_activation.ActivationJob(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
                                     kind="apply_credentials", ifname="", ssid="Home", password="bad",
                                     on_success_leaves_setup=True,
                                     leave_reason="WiFi client connection succeeded")
         with patch.object(watcher.ACTIVATION_CTX, "configure_wifi_with_nmcli", return_value=None), \
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
              patch.object(watcher.ACTIVATION_CTX, "enter_setup_mode") as enter:
-            result = watcher._run_activation_job(job)
-            watcher.apply_activation_result(result)
+            result = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+            watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
         assert result.ok is False
         leave.assert_not_called()
         enter.assert_called_once()
@@ -662,7 +663,7 @@ class TestIf2WorkerSessionContract:
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode", side_effect=rec_leave), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[target]):
-            worker = watcher.start_activation_worker()
+            worker = watcher.wifi_activation.start_activation_worker(watcher.ACTIVATION_CTX)
             try:
                 assert watcher.submit_apply_credentials("Home", "s3cr3t") is True
                 assert started.wait(3.0)                 # worker picked up the job
@@ -679,12 +680,12 @@ class TestIf2WorkerSessionContract:
 
                 # Release the worker and wait for it to post the result.
                 release.set()
-                assert watcher.activation_result_event.wait(3.0)
+                assert watcher.wifi_activation.activation_result_event.wait(3.0)
 
                 # Apply the result at pass top (loop thread): the success tail runs
                 # here and transitioning is cleared.
                 pre = watcher.PreFactsContext(now=1001.0, boot_time=0.0, avahi_ok=True)
-                watcher.step_apply_activation_result(pre)
+                watcher.wifi_activation.step_apply_activation_result(watcher.ACTIVATION_CTX, pre)
                 assert watcher.STATE.transitioning is False
                 assert watcher.STATE.last_apply_result == "ok"
                 assert ("set_active", loop_ident) in tail_calls
@@ -697,7 +698,7 @@ class TestIf2WorkerSessionContract:
                 assert v2 is watcher.Verdict.OWN_PASS
                 disc_enforce.assert_called_once_with("wlan1")
             finally:
-                watcher._activation_job_queue.put(None)  # stop the worker thread
+                watcher.wifi_activation._activation_job_queue.put(None)  # stop the worker thread
                 worker.join(3.0)
 
         # Thread-identity invariant: every session-tail setter ran on the loop
@@ -709,9 +710,9 @@ class TestIf2WorkerSessionContract:
 class TestReconfigureTimeout:
     def test_timeout_starts_reconfigure_episode(self, watcher):
         # The timeout now starts a reconnect episode tagged reconfigure_timeout.
-        with patch.object(watcher, "start_reconnect_saved_episode", return_value=True) as start:
+        with patch.object(watcher.wifi_adoption, "start_reconnect_saved_episode", return_value=True) as start:
             watcher.handle_reconfigure_timeout()
-        start.assert_called_once_with(failure_tail="reconfigure_timeout")
+        start.assert_called_once_with(watcher.ADOPTION_CTX, failure_tail="reconfigure_timeout")
 
     def test_timeout_episode_failure_enters_recovery(self, watcher):
         # When the reconfigure-timeout episode exhausts its targets, its failure
@@ -722,10 +723,10 @@ class TestReconfigureTimeout:
             entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""),
         )
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="reconfigure_timeout", index=1)
-        watcher._submit_next_reconnect_target()   # index past end -> failure tail
+        watcher.wifi_adoption._submit_next_reconnect_target(watcher.ADOPTION_CTX)   # index past end -> failure tail
         assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
         assert watcher.STATE.hotspot.rollback is None
 
@@ -736,7 +737,7 @@ class TestReconfigureTimeout:
         watcher.STATE.hotspot = watcher.HotspotSession(
             purpose=watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE,
             entered_at=0.0, rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""))
-        watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
+        watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="reconfigure_timeout")
         pre = watcher.PreFactsContext(now=watcher.wifi_policy.AP_MAX_DURATION + 10, boot_time=0.0, avahi_ok=False)
@@ -752,13 +753,13 @@ class TestProbePatience:
     def test_network_absent_detects_hard_failure(self, watcher):
         absent = MagicMock(returncode=4,
                            stderr="Error: activation failed: The Wi-Fi network could not be found")
-        assert watcher._activation_network_absent(absent) is True
+        assert watcher.wifi_activation._activation_network_absent(absent) is True
 
     def test_network_absent_false_on_success_and_other_errors(self, watcher):
         ok = MagicMock(returncode=0, stderr="")
         other = MagicMock(returncode=1, stderr="Error: something else")
-        assert watcher._activation_network_absent(ok) is False
-        assert watcher._activation_network_absent(other) is False
+        assert watcher.wifi_activation._activation_network_absent(ok) is False
+        assert watcher.wifi_activation._activation_network_absent(other) is False
 
     def test_activate_committed_on_skips_wait_when_absent(self, watcher):
         state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u1")
@@ -769,6 +770,6 @@ class TestProbePatience:
              patch.object(watcher.nm, "clear_restrictions"), \
              patch.object(watcher.nm, "activate", return_value=absent), \
              patch.object(watcher, "wait_for_connection") as waiter:
-            result = watcher._activate_committed_on("wlan1")
+            result = watcher.wifi_activation._activate_committed_on(watcher.ACTIVATION_CTX, "wlan1")
         assert result is False
         waiter.assert_not_called()

@@ -150,8 +150,7 @@ import wifi_policy
 
 # Multi-adapter fallback / runtime USB adoption / reconnect-saved episode
 # machinery.  A standalone sibling module (imports only wifi_policy,
-# wifi_recovery, wifi_activation, and the shared network helper); imported
-# early so ReconnectEpisode is available for the STATE dataclass below.
+# wifi_recovery, wifi_activation, and the shared network helper).
 import wifi_adoption
 
 # Flask presentation/HTTP surface (page rendering, app factory, captive/setup
@@ -362,13 +361,6 @@ class HotspotSession:
     rollback: Optional[RollbackSnapshot] = None   # only EXPLICIT_RECONFIGURE
 
 
-# A reconnect-saved episode: restores a saved/rollback profile across passes
-# (one single-target activation job per pass, advanced on the result).  Lives
-# in wifi_adoption.py; re-exported so the STATE field annotation below and
-# existing `wifi_watcher.ReconnectEpisode` references keep working.
-ReconnectEpisode = wifi_adoption.ReconnectEpisode
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -483,7 +475,7 @@ class NetworkMonitorState:
     saved_ssid_name: str = ""
     rejoin_dismissed: bool = False
     # Active reconnect-saved episode (single-target-per-pass restore), or None.
-    reconnect_episode: "Optional[ReconnectEpisode]" = None
+    reconnect_episode: "Optional[wifi_adoption.ReconnectEpisode]" = None
     # Authoritative connectivity mode, applied by the loop each pass from the
     # pure wifi_policy.next_mode() classifier and published as device.mode.
     mode: "wifi_policy.Mode" = field(default_factory=lambda: wifi_policy.Mode.BOOT)
@@ -1031,7 +1023,7 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
 
     # 6) validate via the shared tail (net-absent short-circuit -> local IPv4 ->
     #    interface-specific gateway); the net-absent fix reaches this path too.
-    ok = _validate_activation(ifname, r_up)
+    ok = wifi_activation._validate_activation(ACTIVATION_CTX, ifname, r_up)
     logger.info("Candidate %s: validated=%s", ifname, ok)
 
     if not ok:
@@ -1323,11 +1315,12 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
     # The session success tail (set-active / leave-setup / avahi) is applied by
     # apply_activation_result on the loop thread — exactly as the
     # other job kinds — so carry the leave-setup flags the shared tail reads.
-    job = ActivationJob(epoch=_next_activation_epoch(), kind="apply_credentials",
-                        ifname="", ssid=ssid, password=pw,
-                        on_success_leaves_setup=True,
-                        leave_reason="WiFi client connection succeeded")
-    if not submit_activation_job(job):
+    job = wifi_activation.ActivationJob(
+        epoch=wifi_activation._next_activation_epoch(ACTIVATION_CTX), kind="apply_credentials",
+        ifname="", ssid=ssid, password=pw,
+        on_success_leaves_setup=True,
+        leave_reason="WiFi client connection succeeded")
+    if not wifi_activation.submit_activation_job(ACTIVATION_CTX, job):
         with state_lock:
             STATE.apply_in_progress = False
             STATE.last_apply_result = prev_result
@@ -1413,7 +1406,8 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
         elif action == "reconnect_saved":
             # Start an async episode (single-target restore per pass); "ok" here
             # means the episode was accepted, not that the join has completed.
-            result = "ok" if start_reconnect_saved_episode("retain_hotspot") else "failed"
+            result = "ok" if wifi_adoption.start_reconnect_saved_episode(
+                ADOPTION_CTX, "retain_hotspot") else "failed"
         elif action == "set_log_level":
             apply_log_level(params.get("level"), params.get("ttl_seconds"))
             result = "ok"
@@ -1457,30 +1451,10 @@ def start_explicit_setup() -> None:
                      reason="explicit_reconfigure", rollback=rollback)
 
 
-def start_reconnect_saved_episode(failure_tail: str = "retain_hotspot") -> bool:
-    return wifi_adoption.start_reconnect_saved_episode(ADOPTION_CTX, failure_tail)
-
-
-def _submit_next_reconnect_target() -> bool:
-    return wifi_adoption._submit_next_reconnect_target(ADOPTION_CTX)
-
-
-def _advance_reconnect_episode(result: "ActivationResult") -> None:
-    wifi_adoption._advance_reconnect_episode(ADOPTION_CTX, result)
-
-
-def _finish_reconnect_episode_failure() -> None:
-    wifi_adoption._finish_reconnect_episode_failure(ADOPTION_CTX)
-
-
-def step_reconnect_episode(pre: "PreFactsContext") -> "Verdict":
-    return wifi_adoption.step_reconnect_episode(ADOPTION_CTX, pre)
-
-
 def handle_reconfigure_timeout() -> None:
     """30-minute explicit-reconfiguration timeout rollback (starts an episode)."""
     logger.info("Explicit network setup timed out after %ds; restoring previous", wifi_policy.AP_MAX_DURATION)
-    start_reconnect_saved_episode(failure_tail="reconfigure_timeout")
+    wifi_adoption.start_reconnect_saved_episode(ADOPTION_CTX, failure_tail="reconfigure_timeout")
 
 
 
@@ -1546,7 +1520,7 @@ def gather_facts() -> "Facts":
         adapters=adapters,
         wired_connected=is_wired_connected(),
         wired_ok=any_wired_path_healthy(),
-        active_client=resolve_active_client(adapters),
+        active_client=wifi_adoption.resolve_active_client(adapters),
         addresses=wifi_net.list_interface_addresses(),
         taken_at=time.monotonic(),
     )
@@ -1866,8 +1840,8 @@ def network_monitor_loop(run_once: bool = False):
     # cross-pass loop_state; it is bound with functools.partial so run_steps keeps
     # a single uniform step(ctx) calling convention (§4.4).
     phase_a = [
-        step_reconnect_episode,
-        step_apply_activation_result,
+        partial(wifi_adoption.step_reconnect_episode, ADOPTION_CTX),
+        partial(wifi_activation.step_apply_activation_result, ACTIVATION_CTX),
         partial(step_avahi_hostname, loop_state=loop_state),
         step_mdns_reannounce,
         step_revert_log_level,
@@ -1976,14 +1950,6 @@ import wifi_recovery
 # needs it (client hand-over clears the no-IP hold-back marker).
 RECOVERY_STATE = wifi_recovery.RecoveryState()
 
-ActivationJob = wifi_activation.ActivationJob
-ActivationResult = wifi_activation.ActivationResult
-
-
-def _activation_network_absent(result) -> bool:
-    return wifi_activation._activation_network_absent(result)
-
-
 # ** CONFIGURED-NETWORK RECONNECT AND FIRST-BOOT IMPORT **
 #
 # The steady-state reconnect path and first-boot profile adoption/migration
@@ -2002,34 +1968,14 @@ CONFIG_CTX = wifi_config.ConfigContext(
     FIRST_BOOT_IMPORT_MARKER=FIRST_BOOT_IMPORT_MARKER,
     get_configured_network_state=get_configured_network_state,
     is_wifi_client_healthy=is_wifi_client_healthy,
-    _activation_network_absent=_activation_network_absent,
+    _activation_network_absent=wifi_activation._activation_network_absent,
     _commit_network_state=_commit_network_state,
 )
 
 
-def _pin_usb_bssid(ifname: str, uuid: str) -> str:
-    return wifi_activation._pin_usb_bssid(ACTIVATION_CTX, ifname, uuid)
-
-
-def _activate_profile_on(ifname: str, state: "wifi_net.NetworkState",
-                         *, wait_for_validation: bool = True) -> bool:
-    return wifi_activation._activate_profile_on(
-        ACTIVATION_CTX, ifname, state, wait_for_validation=wait_for_validation)
-
-
-def _validate_activation(ifname: str, activation_result,
-                         *, wait_for_validation: bool = True) -> bool:
-    return wifi_activation._validate_activation(
-        ACTIVATION_CTX, ifname, activation_result, wait_for_validation=wait_for_validation)
-
-
-def _activate_committed_on(ifname: str) -> bool:
-    return wifi_activation._activate_committed_on(ACTIVATION_CTX, ifname)
-
-
-# The recovery ledger hooks below are looked up by name at call time (not at
-# ACTIVATION_CTX construction), so they may reference RECOVERY_CTX and
-# _clear_pending_adoption even though those are defined later in this module.
+# The recovery/adoption ledger hooks below are looked up by name at call time
+# (not at ACTIVATION_CTX construction), so they may reference RECOVERY_CTX and
+# ADOPTION_CTX even though those are defined later in this module.
 
 def _clear_noip_failures_for_activation(stable_id) -> None:
     wifi_recovery.clear_noip_failures(RECOVERY_CTX, stable_id)
@@ -2044,7 +1990,11 @@ def _record_noip_failure_for_activation(record_id, at: float) -> int:
 
 
 def _clear_pending_adoption_for_activation() -> None:
-    _clear_pending_adoption()
+    wifi_adoption._clear_pending_adoption(ADOPTION_CTX)
+
+
+def _advance_reconnect_episode_for_activation(result: "wifi_activation.ActivationResult") -> None:
+    wifi_adoption._advance_reconnect_episode(ADOPTION_CTX, result)
 
 
 def verify_avahi_after_handover() -> None:
@@ -2092,130 +2042,14 @@ ACTIVATION_CTX = wifi_activation.ActivationContext(
     clear_dead_adapter_state=_clear_dead_adapter_state_for_activation,
     record_noip_failure=_record_noip_failure_for_activation,
     clear_pending_adoption=_clear_pending_adoption_for_activation,
-    advance_reconnect_episode=_advance_reconnect_episode,
+    advance_reconnect_episode=_advance_reconnect_episode_for_activation,
 )
-
-
-def _set_active_client(adapter) -> None:
-    wifi_activation._set_active_client(ACTIVATION_CTX, adapter)
-
-
-def client_up_tail(adapter, *, set_builtin_fallback=None,
-                   clear_noip_stable_id=None, disconnect_builtin_ifname="",
-                   leave_setup_reason=None, clear_down_timers=False,
-                   reset_onboard_bound=False, clear_pending_adoption=False,
-                   clear_dead_adapter=False) -> None:
-    wifi_activation.client_up_tail(
-        ACTIVATION_CTX, adapter,
-        set_builtin_fallback=set_builtin_fallback,
-        clear_noip_stable_id=clear_noip_stable_id,
-        disconnect_builtin_ifname=disconnect_builtin_ifname,
-        leave_setup_reason=leave_setup_reason,
-        clear_down_timers=clear_down_timers,
-        reset_onboard_bound=reset_onboard_bound,
-        clear_pending_adoption=clear_pending_adoption,
-        clear_dead_adapter=clear_dead_adapter,
-    )
-
-
-def apply_activation_result(result: "ActivationResult", adapter: "Optional[object]" = None) -> bool:
-    return wifi_activation.apply_activation_result(ACTIVATION_CTX, result, adapter)
-
-
-
-def _next_activation_epoch() -> int:
-    return wifi_activation._next_activation_epoch(ACTIVATION_CTX)
-
-
-def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
-    return wifi_activation._run_activation_job(ACTIVATION_CTX, job)
-
-
-# The worker's single-slot job queue and result slot live in wifi_activation
-# (module-global: there is only ever one activation worker for the process).
-# These names alias the shared queue/event objects so existing call sites and
-# tests can reach them directly; _inflight_activation_epoch is exposed through
-# accessor functions instead, since it is reassigned rather than mutated.
-_activation_job_queue = wifi_activation._activation_job_queue
-activation_result_event = wifi_activation.activation_result_event
-
-
-def submit_activation_job(job: "ActivationJob") -> bool:
-    return wifi_activation.submit_activation_job(ACTIVATION_CTX, job)
-
-
-def _post_activation_result(result: "ActivationResult") -> None:
-    wifi_activation._post_activation_result(result)
-
-
-def drain_activation_result() -> "Optional[ActivationResult]":
-    return wifi_activation.drain_activation_result()
-
-
-def start_activation_worker() -> "threading.Thread":
-    return wifi_activation.start_activation_worker(ACTIVATION_CTX)
-
-
-def step_apply_activation_result(pre: "PreFactsContext") -> "Verdict":
-    return wifi_activation.step_apply_activation_result(ACTIVATION_CTX, pre)
-
-
-def resolve_active_client(adapters: list) -> Optional[object]:
-    return wifi_adoption.resolve_active_client(adapters)
-
-
-def handle_usb_failure_fallback(hctx: "HealthContext") -> bool:
-    return wifi_adoption.handle_usb_failure_fallback(ADOPTION_CTX, hctx)
-
-
-def apply_client_failed(event, facts: "Facts") -> bool:
-    return wifi_adoption.apply_client_failed(ADOPTION_CTX, event, facts)
 
 
 # Remember which permanent MACs were last seen as USB, so that an absent active
 # adapter can still be classified as USB after it disappears from discovery.
 # Shared with wifi_recovery via RECOVERY_CTX._known_usb_macs (single owner).
 _known_usb_macs: set[str] = set()
-
-
-def _submit_client_activation(action: "wifi_policy.RecoveryAction", facts: "Facts") -> bool:
-    return wifi_adoption._submit_client_activation(ADOPTION_CTX, action, facts)
-
-
-def _saved_network_ssid() -> str:
-    return wifi_adoption._saved_network_ssid(ADOPTION_CTX)
-
-
-def _saved_ssid_visible(hotspot_adapter) -> bool:
-    return wifi_adoption._saved_ssid_visible(ADOPTION_CTX, hotspot_adapter)
-
-
-def _rate_gated_saved_ssid_scan(adapter, last_scan_attr: str,
-                                interval: float, now: float) -> Optional[bool]:
-    return wifi_adoption._rate_gated_saved_ssid_scan(
-        ADOPTION_CTX, adapter, last_scan_attr, interval, now)
-
-
-def _attempt_recovery_reconnect(facts: "Facts") -> None:
-    wifi_adoption._attempt_recovery_reconnect(ADOPTION_CTX, facts)
-
-
-def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
-                                playing_fn=None) -> bool:
-    return wifi_adoption.handle_runtime_usb_adoption(
-        ADOPTION_CTX, adapters, wired_connected, playing_fn)
-
-
-def _clear_pending_adoption() -> None:
-    wifi_adoption._clear_pending_adoption(ADOPTION_CTX)
-
-
-def update_known_adapters(adapters: list) -> None:
-    wifi_adoption.update_known_adapters(ADOPTION_CTX, adapters)
-
-
-def bssid_survey_and_roam(hctx: "HealthContext") -> bool:
-    return wifi_adoption.bssid_survey_and_roam(ADOPTION_CTX, hctx)
 
 
 # ** DEAD-PHY RECOVERY **
@@ -2281,8 +2115,8 @@ RECOVERY_CTX = wifi_recovery.RecoveryContext(
     DEAD_ADAPTER_REBOOT_STAMP=DEAD_ADAPTER_REBOOT_STAMP,
     ADAPTER_FAULT_STATE_PATH=ADAPTER_FAULT_STATE_PATH,
     is_wifi_client_healthy=is_wifi_client_healthy,
-    client_up_tail=client_up_tail,
-    _activate_committed_on=_activate_committed_on,
+    client_up_tail=partial(wifi_activation.client_up_tail, ACTIVATION_CTX),
+    _activate_committed_on=partial(wifi_activation._activate_committed_on, ACTIVATION_CTX),
     wait_for_interface_reappears=wait_for_interface_reappears,
     resolve_hotspot_adapter=resolve_hotspot_adapter,
     request_guarded_reboot=request_guarded_reboot,
@@ -2319,8 +2153,8 @@ ADOPTION_CTX = wifi_adoption.AdoptionContext(
     log_on_change=log_on_change,
     gather_recovery_facts=gather_recovery_facts,
     enter_setup_mode=enter_setup_mode,
-    submit_activation_job=submit_activation_job,
-    next_activation_epoch=_next_activation_epoch,
+    submit_activation_job=partial(wifi_activation.submit_activation_job, ACTIVATION_CTX),
+    next_activation_epoch=partial(wifi_activation._next_activation_epoch, ACTIVATION_CTX),
 )
 
 
@@ -2434,22 +2268,22 @@ LOOP_CTX = wifi_loop.LoopContext(
     process_control_action=process_control_action,
     handle_reconfigure_timeout=handle_reconfigure_timeout,
     log_on_change=log_on_change,
-    update_known_adapters=update_known_adapters,
+    update_known_adapters=partial(wifi_adoption.update_known_adapters, ADOPTION_CTX),
     gather_recovery_facts=gather_recovery_facts,
-    submit_client_activation=_submit_client_activation,
-    handle_usb_failure_fallback=handle_usb_failure_fallback,
-    handle_runtime_usb_adoption=handle_runtime_usb_adoption,
-    bssid_survey_and_roam=bssid_survey_and_roam,
+    submit_client_activation=partial(wifi_adoption._submit_client_activation, ADOPTION_CTX),
+    handle_usb_failure_fallback=partial(wifi_adoption.handle_usb_failure_fallback, ADOPTION_CTX),
+    handle_runtime_usb_adoption=partial(wifi_adoption.handle_runtime_usb_adoption, ADOPTION_CTX),
+    bssid_survey_and_roam=partial(wifi_adoption.bssid_survey_and_roam, ADOPTION_CTX),
     maybe_reset_noip_held_usb=_maybe_reset_noip_held_usb,
     escalate_dead_adapter_recovery=escalate_dead_adapter_recovery,
     publish_network_status=partial(wifi_status.publish_network_status, STATUS_CTX),
     hotspot_blocks_eth=_hotspot_blocks_eth,
     leave_setup_mode=leave_setup_mode,
     enter_setup_mode=enter_setup_mode,
-    set_active_client=_set_active_client,
+    set_active_client=partial(wifi_activation._set_active_client, ACTIVATION_CTX),
     connect_to_configured_wifi=partial(wifi_config.connect_to_configured_wifi, CONFIG_CTX),
     request_network_down_reboot=_request_network_down_reboot,
-    attempt_recovery_reconnect=_attempt_recovery_reconnect,
+    attempt_recovery_reconnect=partial(wifi_adoption._attempt_recovery_reconnect, ADOPTION_CTX),
     next_mode=wifi_policy.next_mode,
     next_recovery_action=wifi_policy.next_recovery_action,
     RecoveryKind=wifi_policy.RecoveryKind,
@@ -2513,7 +2347,7 @@ if __name__ == "__main__":
     wifi_web.init_control_token(WEB_CTX)
 
     # Start the off-thread activation worker; idle until a job is submitted.
-    start_activation_worker()
+    wifi_activation.start_activation_worker(ACTIVATION_CTX)
 
     # Start the network monitor in a background thread
     monitor_thread = threading.Thread(target=network_monitor_loop, daemon=True)

@@ -264,7 +264,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             handled = watcher.escalate_dead_adapter_recovery([usb], False)
         assert handled is True
@@ -284,7 +284,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch("time.monotonic", return_value=10_000.0):
             watcher.escalate_dead_adapter_recovery([usb], False)
@@ -317,7 +317,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True) as act, \
-             patch.object(watcher, "_set_active_client"), \
+             patch.object(watcher.wifi_activation, "_set_active_client"), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             handled = watcher.escalate_dead_adapter_recovery([usb, builtin], False)
         assert handled is True
@@ -334,7 +334,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot:
             # wired_connected=True -> reset still attempted, reboot never.
@@ -412,7 +412,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch("time.monotonic", return_value=emergency_now):
             # No other path (wired False, no healthy adapter) -> emergency reset.
@@ -445,7 +445,7 @@ class TestEscalateDeadAdapterRecovery:
              patch.object(watcher, "resolve_hotspot_adapter", return_value=usb), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             handled = watcher.escalate_dead_adapter_recovery([usb], False)
         # Sole dead radio is reset rather than left as a dead hotspot.
@@ -586,7 +586,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate",
                           side_effect=lambda i: order.append("B") or True), \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot, \
              patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
@@ -616,7 +616,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
              patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
              patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True), \
-             patch.object(watcher, "_set_active_client"), \
+             patch.object(watcher.wifi_activation, "_set_active_client"), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot, \
              patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
@@ -639,7 +639,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=None), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "reboot_system") as reboot, \
              patch("time.monotonic", clock), patch("time.time", return_value=1_000_000.0):
@@ -680,7 +680,7 @@ class TestDeadPhyEndToEnd:
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra2, \
              patch.object(watcher.wifi_net, "reset_usb_adapter_reenumerate", return_value=True) as rb2, \
              patch.object(watcher, "wait_for_interface_reappears", return_value="wlan0"), \
-             patch.object(watcher, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch("time.monotonic", clock):
             assert watcher.escalate_dead_adapter_recovery([usb], True) is True

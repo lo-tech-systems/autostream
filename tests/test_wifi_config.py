@@ -291,7 +291,7 @@ class TestResolveCommittedUuid:
             gcns.return_value = watcher.wifi_net.NetworkState(
                 connection_name="HomeNetwork", connection_uuid=""
             )
-            watcher._activate_committed_on("wlan1")
+            watcher.wifi_activation._activate_committed_on(watcher.ACTIVATION_CTX, "wlan1")
 
         clear.assert_called_once_with("resolved-uuid", watcher.wifi_net.CROSS_ADAPTER_RESTRICTIONS)
 

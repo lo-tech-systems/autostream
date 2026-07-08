@@ -322,7 +322,7 @@ class TestAdapterOverlayEvents:
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as ap:
-            acted = watcher.apply_client_failed(event, facts)
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
         assert acted is True
         ap.assert_called_once()
 
@@ -345,7 +345,7 @@ class TestAdapterOverlayEvents:
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as ap, \
              patch.object(watcher.ADOPTION_CTX, "enter_setup_mode") as enter:
-            acted = watcher.apply_client_failed(event, facts)
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
         assert acted is True
         ap.assert_not_called()
         enter.assert_called_once()
@@ -364,7 +364,7 @@ class TestAdapterOverlayEvents:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as ap, \
              patch.object(watcher.ADOPTION_CTX, "enter_setup_mode") as enter:
-            acted = watcher.apply_client_failed(event, facts)
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
         assert acted is True
         enter.assert_not_called()          # onboard fallback, NOT straight to hotspot
         ap.assert_called_once()
@@ -386,7 +386,7 @@ class TestAdapterOverlayEvents:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=False), \
              patch.object(watcher.ADOPTION_CTX, "enter_setup_mode") as enter:
-            acted = watcher.apply_client_failed(event, facts)
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
         assert acted is True
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
@@ -408,13 +408,13 @@ class TestAdapterOverlayEvents:
              patch.object(watcher.wifi_net, "find_adapter_by_ifname", return_value=builtin), \
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode"), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
-            acted = watcher.apply_client_failed(event, facts)     # submits the job
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)     # submits the job
             assert acted is True
             assert watcher.STATE.transitioning is True
-            job = watcher._activation_job_queue.get_nowait()
+            job = watcher.wifi_activation._activation_job_queue.get_nowait()
             assert job.sets_builtin_fallback is True              # onboard + usb present
-            result = watcher._run_activation_job(job)             # _activate_committed_on -> True
-            watcher.apply_activation_result(result)               # loop applies the tail
+            result = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)             # _activate_committed_on -> True
+            watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)               # loop applies the tail
         assert watcher.STATE.using_builtin_fallback is True
 
 
@@ -423,10 +423,10 @@ class TestBudgetedResetRetry:
     implicated the adapter."""
 
     def _job(self, watcher, **kw):
-        defaults = dict(epoch=watcher._next_activation_epoch(), kind="activate_committed",
+        defaults = dict(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX), kind="activate_committed",
                         ifname="wlan1")
         defaults.update(kw)
-        return watcher.ActivationJob(**defaults)
+        return watcher.wifi_activation.ActivationJob(**defaults)
 
     def _set_pin(self, watcher, ifname="wlan1", bssid="AA:BB:CC:DD:EE:FF", signal=70):
         watcher.STATE.last_bssid_pin = {"ifname": ifname, "bssid": bssid, "signal": signal, "at": 0.0}
@@ -443,7 +443,7 @@ class TestBudgetedResetRetry:
         job = self._job(watcher)
         with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
         reset.assert_not_called()
 
@@ -452,7 +452,7 @@ class TestBudgetedResetRetry:
         job = self._job(watcher)
         with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
         reset.assert_not_called()
 
@@ -465,7 +465,7 @@ class TestBudgetedResetRetry:
                           return_value=self._target(watcher)), \
              patch.object(watcher.wifi_recovery, "adapter_reset_budget_exhausted", return_value=True), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
         reset.assert_not_called()
 
@@ -477,7 +477,7 @@ class TestBudgetedResetRetry:
              patch.object(watcher.wifi_recovery, "build_target_adapter",
                           return_value=self._target(watcher, resettable=False)), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
         reset.assert_not_called()
 
@@ -492,7 +492,7 @@ class TestBudgetedResetRetry:
              patch.object(watcher.wifi_recovery, "record_adapter_reset") as record, \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True), \
              patch.object(watcher.wifi_recovery, "wait_for_interface_reappears", return_value=""):
-            watcher._run_activation_job(job)
+            watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         record.assert_called_once()
 
     def test_disappeared_after_reset_is_failure(self, watcher):
@@ -506,7 +506,7 @@ class TestBudgetedResetRetry:
              patch.object(watcher.wifi_recovery, "record_adapter_reset"), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True), \
              patch.object(watcher.wifi_recovery, "wait_for_interface_reappears", return_value=""):
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
         assert r.ifname == "wlan1"
 
@@ -523,7 +523,7 @@ class TestBudgetedResetRetry:
              patch.object(watcher.wifi_recovery, "wait_for_interface_reappears", return_value="wlan1"), \
              patch.object(watcher.wifi_activation, "_activate_profile_on",
                           return_value=True) as retry_activate:
-            r = watcher._run_activation_job(job)
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         retry_activate.assert_called_once()
         _, kwargs = retry_activate.call_args
         assert kwargs.get("exclude_bssid") == "AA:BB:CC:DD:EE:FF"
@@ -660,10 +660,10 @@ class TestManualAdapterControl:
     def test_disabled_candidate_not_adopted(self, watcher):
         builtin, usb = self._builtin_and_usb(watcher)
         watcher.wifi_recovery.disable_adapter(watcher, usb.stable_id)
-        with patch.object(watcher, "resolve_active_client", return_value=builtin), \
+        with patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=builtin), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "_activate_committed_on", return_value=True) as act:
-            r = watcher.handle_runtime_usb_adoption([builtin, usb], wired_connected=False)
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True) as act:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, [builtin, usb], wired_connected=False)
         assert r is False
         act.assert_not_called()
 
@@ -782,7 +782,7 @@ class TestNoIpHoldbackReset:
     def test_success_clears_holdback_flag(self, watcher):
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.RECOVERY_STATE.noip_holdback_reset_done.add(usb.stable_id)
-        watcher._set_active_client(usb)
+        watcher.wifi_activation._set_active_client(watcher.ACTIVATION_CTX, usb)
         assert usb.stable_id not in watcher.RECOVERY_STATE.noip_holdback_reset_done
 
 
@@ -930,7 +930,7 @@ class TestRecoveryExitEdge:
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "hotspot_station_count", return_value=0), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
         assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
@@ -950,7 +950,7 @@ class TestRecoveryExitEdge:
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "hotspot_station_count", return_value=0), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
         assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
@@ -967,7 +967,7 @@ class TestRecoveryExitEdge:
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible") as vis, \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
         assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_USB
@@ -986,7 +986,7 @@ class TestRecoveryExitEdge:
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible") as vis, \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_not_called()
         vis.assert_not_called()
 
@@ -1013,7 +1013,7 @@ class TestScanGatedRecovery:
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible") as vis, \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_called_once()
         assert apply.call_args[0][1].drop_hotspot is False
         vis.assert_not_called()   # no AP drop -> no scan-gate
@@ -1027,7 +1027,7 @@ class TestScanGatedRecovery:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_not_called()
 
     def test_single_radio_scan_interval_gates_scan(self, watcher):
@@ -1040,7 +1040,7 @@ class TestScanGatedRecovery:
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible") as vis, \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as apply:
             # Within RECOVERY_SCAN_INTERVAL of the last scan: do not scan or join.
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         vis.assert_not_called()
         apply.assert_not_called()
 
@@ -1052,7 +1052,7 @@ class TestScanGatedRecovery:
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=False), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_not_called()
         assert watcher.STATE.last_recovery_scan == 1000.0
 
@@ -1066,7 +1066,7 @@ class TestScanGatedRecovery:
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "hotspot_station_count", return_value=0), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
         assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
@@ -1084,7 +1084,7 @@ class TestScanGatedRecovery:
              patch.object(watcher.wifi_adoption, "_saved_network_ssid", return_value="MyHomeWiFi"), \
              patch.object(watcher.ADOPTION_CTX, "hotspot_station_count", return_value=1), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_not_called()          # AP not dropped
         assert watcher.STATE.saved_ssid_visible is True
         assert watcher.STATE.saved_ssid_name == "MyHomeWiFi"
@@ -1100,7 +1100,7 @@ class TestScanGatedRecovery:
              patch.object(watcher.wifi_adoption, "_saved_network_ssid", return_value="MyHomeWiFi"), \
              patch.object(watcher.ADOPTION_CTX, "hotspot_station_count", return_value=None), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         apply.assert_not_called()
         assert watcher.STATE.saved_ssid_visible is True
 
@@ -1115,7 +1115,7 @@ class TestScanGatedRecovery:
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible") as vis, \
              patch.object(watcher.ADOPTION_CTX, "hotspot_station_count") as stations, \
              patch.object(watcher.wifi_adoption, "_submit_client_activation") as apply:
-            watcher._attempt_recovery_reconnect(facts)
+            watcher.wifi_adoption._attempt_recovery_reconnect(watcher.ADOPTION_CTX, facts)
         vis.assert_not_called()
         stations.assert_not_called()
         apply.assert_not_called()
@@ -1124,7 +1124,7 @@ class TestScanGatedRecovery:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         with patch.object(watcher.wifi_adoption, "_saved_network_ssid", return_value="MyHomeWiFi"), \
              patch.object(watcher.wifi_net, "scan_adapter", return_value={"MyHomeWiFi": -50}):
-            assert watcher._saved_ssid_visible(builtin) is True
+            assert watcher.wifi_adoption._saved_ssid_visible(watcher.ADOPTION_CTX, builtin) is True
         with patch.object(watcher.wifi_adoption, "_saved_network_ssid", return_value="MyHomeWiFi"), \
              patch.object(watcher.wifi_net, "scan_adapter", return_value={"Other": -50}):
-            assert watcher._saved_ssid_visible(builtin) is False
+            assert watcher.wifi_adoption._saved_ssid_visible(watcher.ADOPTION_CTX, builtin) is False

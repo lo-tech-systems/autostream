@@ -89,13 +89,13 @@ class TestHotspotController:
         # The activation worker's AP self-undo goes through rebuild() (no direct
         # setup_mode write).
         watcher.STATE.setup_mode = True
-        job = watcher.ActivationJob(epoch=watcher._next_activation_epoch(),
+        job = watcher.wifi_activation.ActivationJob(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
                                     kind="activate_committed", ifname="wlan1",
                                     drop_hotspot=True)
-        with patch.object(watcher, "_activate_committed_on", return_value=False), \
+        with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
              patch.object(watcher, "stop_ap_mode"), \
              patch.object(watcher.hotspot_controller, "rebuild") as rebuild:
-            watcher._run_activation_job(job)
+            watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         rebuild.assert_called_once()
 
 

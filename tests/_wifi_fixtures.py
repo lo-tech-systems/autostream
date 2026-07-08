@@ -144,11 +144,11 @@ def _reset_activation_worker():
     yield
     try:
         while True:
-            mod._activation_job_queue.get_nowait()
+            mod.wifi_activation._activation_job_queue.get_nowait()
     except Exception:
         pass
     mod.wifi_activation._activation_result_slot = None
-    mod.activation_result_event.clear()
+    mod.wifi_activation.activation_result_event.clear()
     mod.wifi_activation.clear_inflight_activation_epoch()
 
 
