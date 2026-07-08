@@ -12,9 +12,9 @@ stale/unknown interpretation) is platform policy and lives here — never in
 ``core/autostream_wifi_network.py``.
 
 The public builders take a :class:`StatusContext` as their first argument — a
-narrow view of the watcher exposing only the STATE, constants and fact helpers
-the snapshot builder uses (the ``w`` seam narrowed, WP-11).  The watcher
-constructs it once and passes it where the whole module used to go.
+narrow view of the watcher exposing only the STATE, SnapshotState fragment,
+constants and fact helpers the snapshot builder uses.  The watcher constructs
+it once and passes it where the whole module used to go.
 ``autostream_wifi_network`` is imported directly because it is a shared module
 object (patching it affects both modules).
 """
@@ -46,6 +46,7 @@ class StatusContext:
 
     STATE: object
     LOG_STATE: object
+    SNAPSHOT_STATE: object
     state_lock: object
     RECOVERY_STATE: object
     # Constants
@@ -540,8 +541,8 @@ def publish_network_status(ctx, adapters: Optional[list] = None,
             ctx, adapters, wired_connected, wired_ok, addresses, health_fn)
         snapshot["ok"] = True
         with ctx.state_lock:
-            ctx.STATE.network_status_snapshot = snapshot
-            ctx.STATE.network_status_updated_at = snapshot.get("updated_at")
+            ctx.SNAPSHOT_STATE.network_status_snapshot = snapshot
+            ctx.SNAPSHOT_STATE.network_status_updated_at = snapshot.get("updated_at")
         if not _status_schema_logged:
             _status_schema_logged = True
             logger.info("Network status snapshot schema v%d initialised in memory",

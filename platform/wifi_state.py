@@ -5,12 +5,12 @@ Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
 Data-only state definitions for the Autostream Wi-Fi watcher: the shared
 connectivity-core ``NetworkMonitorState``, the per-concern state fragments
-(``ApplyState``, ``ControlState``, ``LogLevelState``), the plain rollback/
-hotspot-session data types, and the single ``state_lock`` guarding all of
-them. A leaf module at the bottom of the watcher's dependency graph — it
-imports nothing beyond the standard library and contains no behaviour beyond
-dataclass defaults, so every other module can depend on it without creating a
-cycle.
+(``ApplyState``, ``ControlState``, ``LogLevelState``, ``MdnsState``,
+``SnapshotState``), the plain rollback/hotspot-session data types, and the
+single ``state_lock`` guarding all of them. A leaf module at the bottom of the
+watcher's dependency graph — it imports nothing beyond the standard library
+and contains no behaviour beyond dataclass defaults, so every other module can
+depend on it without creating a cycle.
 """
 from __future__ import annotations
 
@@ -71,6 +71,29 @@ class LogLevelState:
 
 
 @dataclass
+class MdnsState:
+    """Avahi hostname-drift repair and mDNS address-set re-announce debounce."""
+    avahi_hostname: Optional[str] = None
+    avahi_mismatch_start: Optional[float] = None
+    last_avahi_restart: Optional[float] = None
+    last_avahi_handover_restart: Optional[float] = None
+    avahi_restart_count: int = 0
+    # Set of (ifname, ipv4) the host currently publishes; None until first observed.
+    mdns_address_set: Optional[frozenset] = None
+    # Monotonic time the published address set last changed (debounce anchor).
+    mdns_address_changed_at: Optional[float] = None
+    # Explicit re-announce nudge from an orchestrated handover.
+    mdns_reannounce_pending: bool = False
+
+
+@dataclass
+class SnapshotState:
+    """The published runtime network-status snapshot."""
+    network_status_snapshot: Optional[dict] = None
+    network_status_updated_at: Optional[float] = None
+
+
+@dataclass
 class NetworkMonitorState:
     # Link state (reported via /status and UI)
     wifistate: str = "unknown"        # "configured" / "unconfigured" / "unknown"
@@ -127,21 +150,6 @@ class NetworkMonitorState:
     # issued); any other value = retry permitted after that time.
     conn_reboot_retry_after: float = 0.0
 
-    # ---- Avahi mDNS hostname monitoring ----
-    avahi_hostname: Optional[str] = None
-    avahi_mismatch_start: Optional[float] = None
-    last_avahi_restart: Optional[float] = None
-    last_avahi_handover_restart: Optional[float] = None
-    avahi_restart_count: int = 0
-
-    # ---- mDNS host-record re-announce on address-set changes ----
-    # Set of (ifname, ipv4) the host currently publishes; None until first observed.
-    mdns_address_set: Optional[frozenset] = None
-    # Monotonic time the published address set last changed (debounce anchor).
-    mdns_address_changed_at: Optional[float] = None
-    # Explicit re-announce nudge from an orchestrated handover.
-    mdns_reannounce_pending: bool = False
-
     # ---- Off-thread activation worker ----
     # Set when an activation job is in flight on the worker and cleared when its
     # result is applied at pass top.  While set, handlers that would start a
@@ -174,12 +182,9 @@ class NetworkMonitorState:
     # disable ledgers live on RECOVERY_STATE (a wifi_recovery.RecoveryState),
     # shared with wifi_status for the status snapshot.  Apply-workflow,
     # local-control, and runtime-log-level fields live on ApplyState /
-    # ControlState / LogLevelState, threaded to the contexts that read/write
-    # them.
-
-    # ---- Runtime network-status snapshot ----
-    network_status_snapshot: Optional[dict] = None
-    network_status_updated_at: Optional[float] = None
+    # ControlState / LogLevelState; avahi/mDNS fields live on MdnsState; the
+    # published status snapshot lives on SnapshotState — each threaded to the
+    # contexts that read/write it.
 
 
 # Synchronisation primitive for every fragment above.

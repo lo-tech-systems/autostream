@@ -370,9 +370,9 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
             watcher.wifi_status.publish_network_status(
                 watcher.STATUS_CTX, [], wired_connected=False, wired_ok=False)
-        assert watcher.STATE.network_status_snapshot["ok"] is True
-        assert watcher.STATE.network_status_snapshot["device"]["state"] == "offline"
-        assert watcher.STATE.network_status_updated_at == watcher.STATE.network_status_snapshot["updated_at"]
+        assert watcher.SNAPSHOT_STATE.network_status_snapshot["ok"] is True
+        assert watcher.SNAPSHOT_STATE.network_status_snapshot["device"]["state"] == "offline"
+        assert watcher.SNAPSHOT_STATE.network_status_updated_at == watcher.SNAPSHOT_STATE.network_status_snapshot["updated_at"]
 
 
 class TestIf7StatusTruthfulness:

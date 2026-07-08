@@ -70,7 +70,8 @@ import autostream_wifi_network as wifi_net
 # hotspot-session types.  Imports nothing else in this tree.
 from wifi_state import (
     NetworkMonitorState, RollbackSnapshot, HotspotSession,
-    ApplyState, ControlState, LogLevelState, state_lock,
+    ApplyState, ControlState, LogLevelState, MdnsState, SnapshotState,
+    state_lock,
 )
 
 # The watcher is deployed beside its split sibling modules (wifi_status.py,
@@ -386,7 +387,7 @@ def _setup_logging() -> None:
         )
 
 # The shared connectivity-core state (wifi_state.NetworkMonitorState) plus the
-# per-concern fragments split out of it.  All four objects are guarded by the
+# per-concern fragments split out of it.  All six objects are guarded by the
 # single wifi_state.state_lock; build_contexts() threads each fragment only to
 # the contexts that read or write it.  The mode default is supplied here (not
 # in wifi_state, which does not import wifi_policy).
@@ -394,6 +395,8 @@ STATE = NetworkMonitorState(mode=wifi_policy.Mode.BOOT)
 APPLY_STATE = ApplyState()
 CONTROL_STATE = ControlState()
 LOG_STATE = LogLevelState()
+MDNS_STATE = MdnsState()
+SNAPSHOT_STATE = SnapshotState()
 
 # Serialise AP start/stop transitions
 ap_mode_lock = threading.Lock()
@@ -1885,6 +1888,7 @@ def build_contexts() -> None:
     STATUS_CTX = wifi_status.StatusContext(
         STATE=STATE,
         LOG_STATE=LOG_STATE,
+        SNAPSHOT_STATE=SNAPSHOT_STATE,
         state_lock=state_lock,
         RECOVERY_STATE=RECOVERY_STATE,
         NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
@@ -1900,12 +1904,13 @@ def build_contexts() -> None:
 
     # The avahi/mDNS block (hostname-drift repair + address-set re-announce
     # debounce) lives in platform/wifi_mdns.py, driven through an MdnsContext
-    # exposing the STATE, the constants and the callables it uses.  The
-    # monitor loop calls ``wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)``
-    # and ``wifi_mdns.maybe_reannounce_mdns(MDNS_CTX, now)`` every pass via the
+    # exposing the MDNS_STATE fragment, the constants and the callables it
+    # uses.  The monitor loop calls
+    # ``wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)`` and
+    # ``wifi_mdns.maybe_reannounce_mdns(MDNS_CTX, now)`` every pass via the
     # LOOP_CTX fields bound below.
     MDNS_CTX = wifi_mdns.MdnsContext(
-        STATE=STATE,
+        MDNS_STATE=MDNS_STATE,
         state_lock=state_lock,
         NMCLI_QUICK_TIMEOUT=NMCLI_QUICK_TIMEOUT,
         AVAHI_MISMATCH_GRACE=AVAHI_MISMATCH_GRACE,
@@ -1928,6 +1933,7 @@ def build_contexts() -> None:
         STATE=STATE,
         APPLY_STATE=APPLY_STATE,
         CONTROL_STATE=CONTROL_STATE,
+        SNAPSHOT_STATE=SNAPSHOT_STATE,
         state_lock=state_lock,
         logger=logger,
         control_action_event=control_action_event,

@@ -39,8 +39,8 @@ class TestAvahiHandoverReannounce:
     def test_mark_pending_arms_debounce(self, watcher):
         with patch("time.monotonic", return_value=100.0):
             watcher.wifi_mdns.mark_mdns_reannounce_pending(watcher.MDNS_CTX, "test")
-        assert watcher.STATE.mdns_reannounce_pending is True
-        assert watcher.STATE.mdns_address_changed_at == 100.0
+        assert watcher.MDNS_STATE.mdns_reannounce_pending is True
+        assert watcher.MDNS_STATE.mdns_address_changed_at == 100.0
 
     def test_first_observation_only_baselines(self, watcher):
         both = frozenset({("eth0", "192.168.1.5"), ("wlan1", "192.168.1.9")})
@@ -48,19 +48,19 @@ class TestAvahiHandoverReannounce:
              patch.object(watcher.wifi_mdns, "restart_avahi_daemon") as restart:
             watcher.wifi_mdns.maybe_reannounce_mdns(watcher.MDNS_CTX, now=0.0)
         restart.assert_not_called()
-        assert watcher.STATE.mdns_address_set == both
+        assert watcher.MDNS_STATE.mdns_address_set == both
 
     def test_address_change_debounces_then_restarts(self, watcher):
         both = frozenset({("eth0", "192.168.1.5"), ("wlan1", "192.168.1.9")})
         eth_only = frozenset({("eth0", "192.168.1.5")})
-        watcher.STATE.mdns_address_set = both
+        watcher.MDNS_STATE.mdns_address_set = both
 
         # Dongle removed: set changes -> arm debounce, no restart yet.
         with patch.object(watcher.wifi_mdns, "_current_mdns_address_set", return_value=eth_only), \
              patch.object(watcher.wifi_mdns, "restart_avahi_daemon") as restart:
             watcher.wifi_mdns.maybe_reannounce_mdns(watcher.MDNS_CTX, now=10.0)
         restart.assert_not_called()
-        assert watcher.STATE.mdns_address_changed_at == 10.0
+        assert watcher.MDNS_STATE.mdns_address_changed_at == 10.0
 
         # Stable but still inside the debounce window: no restart.
         with patch.object(watcher.wifi_mdns, "_current_mdns_address_set", return_value=eth_only), \
@@ -73,14 +73,14 @@ class TestAvahiHandoverReannounce:
              patch.object(watcher.wifi_mdns, "restart_avahi_daemon") as restart:
             watcher.wifi_mdns.maybe_reannounce_mdns(watcher.MDNS_CTX, now=20.0)
         restart.assert_called_once_with(watcher.MDNS_CTX, "network-path re-announce")
-        assert watcher.STATE.last_avahi_handover_restart == 20.0
-        assert watcher.STATE.mdns_address_changed_at is None
+        assert watcher.MDNS_STATE.last_avahi_handover_restart == 20.0
+        assert watcher.MDNS_STATE.mdns_address_changed_at is None
 
     def test_reannounce_is_rate_limited_for_60_seconds(self, watcher):
         eth_only = frozenset({("eth0", "192.168.1.5")})
-        watcher.STATE.mdns_address_set = eth_only
-        watcher.STATE.mdns_address_changed_at = 100.0
-        watcher.STATE.last_avahi_handover_restart = 100.0
+        watcher.MDNS_STATE.mdns_address_set = eth_only
+        watcher.MDNS_STATE.mdns_address_changed_at = 100.0
+        watcher.MDNS_STATE.last_avahi_handover_restart = 100.0
 
         # Debounce satisfied but within the 60s rate-limit window: suppressed,
         # and the trigger stays armed for a later pass.
@@ -88,18 +88,18 @@ class TestAvahiHandoverReannounce:
              patch.object(watcher.wifi_mdns, "restart_avahi_daemon") as restart:
             watcher.wifi_mdns.maybe_reannounce_mdns(watcher.MDNS_CTX, now=159.0)
         restart.assert_not_called()
-        assert watcher.STATE.mdns_address_changed_at == 100.0
+        assert watcher.MDNS_STATE.mdns_address_changed_at == 100.0
 
         # Past the rate-limit window: fires.
         with patch.object(watcher.wifi_mdns, "_current_mdns_address_set", return_value=eth_only), \
              patch.object(watcher.wifi_mdns, "restart_avahi_daemon") as restart:
             watcher.wifi_mdns.maybe_reannounce_mdns(watcher.MDNS_CTX, now=160.0)
         restart.assert_called_once_with(watcher.MDNS_CTX, "network-path re-announce")
-        assert watcher.STATE.last_avahi_handover_restart == 160.0
+        assert watcher.MDNS_STATE.last_avahi_handover_restart == 160.0
 
     def test_pending_nudge_fires_when_address_set_unchanged(self, watcher):
         eth_only = frozenset({("eth0", "192.168.1.5")})
-        watcher.STATE.mdns_address_set = eth_only
+        watcher.MDNS_STATE.mdns_address_set = eth_only
         # Orchestrated handover where our observed set looks the same.
         with patch("time.monotonic", return_value=200.0):
             watcher.wifi_mdns.mark_mdns_reannounce_pending(watcher.MDNS_CTX, "network handover")
@@ -107,18 +107,18 @@ class TestAvahiHandoverReannounce:
              patch.object(watcher.wifi_mdns, "restart_avahi_daemon") as restart:
             watcher.wifi_mdns.maybe_reannounce_mdns(watcher.MDNS_CTX, now=210.0)
         restart.assert_called_once_with(watcher.MDNS_CTX, "network-path re-announce")
-        assert watcher.STATE.mdns_reannounce_pending is False
+        assert watcher.MDNS_STATE.mdns_reannounce_pending is False
 
     def test_stable_address_set_does_not_restart(self, watcher):
         eth_only = frozenset({("eth0", "192.168.1.5")})
-        watcher.STATE.mdns_address_set = eth_only
+        watcher.MDNS_STATE.mdns_address_set = eth_only
         with patch.object(watcher.wifi_mdns, "_current_mdns_address_set", return_value=eth_only), \
              patch.object(watcher.wifi_mdns, "restart_avahi_daemon") as restart:
             watcher.wifi_mdns.maybe_reannounce_mdns(watcher.MDNS_CTX, now=500.0)
         restart.assert_not_called()
 
     def test_hostname_mismatch_repair_still_uses_conflict_restart_budget(self, watcher):
-        watcher.STATE.avahi_mismatch_start = 0.0
+        watcher.MDNS_STATE.avahi_mismatch_start = 0.0
 
         # The mDNS helpers read the watcher through MDNS_CTX (the narrowed
         # seam), so inject _DBUS_SEND/run_cmd/get_system_hostname on the context and
@@ -132,6 +132,6 @@ class TestAvahiHandoverReannounce:
 
         run.assert_called_once_with(["systemctl", "restart", "avahi-daemon.service"],
                                     timeout=watcher.NMCLI_QUICK_TIMEOUT)
-        assert watcher.STATE.avahi_restart_count == 1
-        assert watcher.STATE.last_avahi_restart == watcher.AVAHI_MISMATCH_GRACE + 1.0
-        assert watcher.STATE.last_avahi_handover_restart is None
+        assert watcher.MDNS_STATE.avahi_restart_count == 1
+        assert watcher.MDNS_STATE.last_avahi_restart == watcher.AVAHI_MISMATCH_GRACE + 1.0
+        assert watcher.MDNS_STATE.last_avahi_handover_restart is None

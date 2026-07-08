@@ -55,6 +55,7 @@ class WebContext:
     STATE: object
     APPLY_STATE: object
     CONTROL_STATE: object
+    SNAPSHOT_STATE: object
     state_lock: object
     logger: logging.Logger
     control_action_event: object
@@ -970,7 +971,7 @@ def build_app(ctx) -> Flask:
         if not _control_authorised():
             return jsonify({"ok": False, "error": "forbidden"}), 403
         with ctx.state_lock:
-            snapshot = ctx.STATE.network_status_snapshot
+            snapshot = ctx.SNAPSHOT_STATE.network_status_snapshot
         if not snapshot:
             return jsonify({
                 "ok": True,

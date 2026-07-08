@@ -460,7 +460,7 @@ class TestNetworkStatusRoute:
 
     def test_returns_in_memory_snapshot_when_present(self, flask_client):
         client, mod = flask_client
-        mod.STATE.network_status_snapshot = {
+        mod.SNAPSHOT_STATE.network_status_snapshot = {
             "ok": True,
             "schema_version": 1,
             "device": {"state": "online"},
@@ -475,7 +475,7 @@ class TestNetworkStatusRoute:
 
     def test_unknown_stale_before_first_snapshot(self, flask_client):
         client, mod = flask_client
-        mod.STATE.network_status_snapshot = None
+        mod.SNAPSHOT_STATE.network_status_snapshot = None
         with patch.object(mod.wifi_web, "_control_authorised", return_value=True):
             resp = client.get("/network_status")
         assert resp.status_code == 200
