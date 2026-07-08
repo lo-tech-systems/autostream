@@ -698,7 +698,7 @@ deploy_phase() {
   rm -f "${INSTALL_DIR}/requirements.lock"
   cp -a "${AUTOSTREAM_DIR}/core/."     "${INSTALL_DIR}/"
   install -m 0755 -o root -g root \
-      "${AUTOSTREAM_DIR}/platform/wifi_watcher" "${INSTALL_DIR}/autostream_wifi_watcher"
+      "${AUTOSTREAM_DIR}/platform/wifi_watcher.py" "${INSTALL_DIR}/autostream_wifi_watcher"
   sed -i 's/\r$//' "${INSTALL_DIR}/autostream_wifi_watcher"
   # wifi_watcher's split sibling modules (imported beside it from /opt/autostream).
   cp    "${AUTOSTREAM_DIR}/platform/wifi_status.py"   "${INSTALL_DIR}/"

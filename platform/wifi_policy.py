@@ -7,7 +7,7 @@ their plain policy input types.
 
 Nothing here reads ``STATE``, runs a subprocess, performs an effect, or depends
 on the watcher's ``w`` seam or on live ``autostream_wifi_network`` adapter
-objects.  ``platform/wifi_watcher`` re-exports these names and adapts its
+objects.  ``platform/wifi_watcher.py`` re-exports these names and adapts its
 runtime facts into the plain policy inputs, so this module stays importable and
 testable on its own.
 """

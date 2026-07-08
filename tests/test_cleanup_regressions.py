@@ -29,7 +29,7 @@ for _p in (_core, _dial):
 # ---------------------------------------------------------------------------
 
 def _watcher_source() -> str:
-    return (REPO_ROOT / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+    return (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
 
 
 def test_touch_ap_timer_removed():
@@ -62,9 +62,7 @@ class TestWatcherFlaskRoutesUnchanged:
         except ImportError:
             pytest.skip("Flask not available")
 
-        # spec_from_file_location returns None for extensionless scripts; use
-        # SourceFileLoader explicitly (same pattern as conftest.load_supervisor_script).
-        loader = SourceFileLoader("wifi_watcher", str(REPO_ROOT / "platform" / "wifi_watcher"))
+        loader = SourceFileLoader("wifi_watcher", str(REPO_ROOT / "platform" / "wifi_watcher.py"))
         spec = importlib.util.spec_from_loader("wifi_watcher", loader)
         mod = importlib.util.module_from_spec(spec)
         mod.__dict__["__name__"] = "wifi_watcher"

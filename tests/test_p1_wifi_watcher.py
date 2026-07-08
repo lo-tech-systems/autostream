@@ -1,6 +1,6 @@
 """P1 — Wi-Fi watcher state machine and captive portal tests.
 
-platform/wifi_watcher is the main appliance recovery path. It runs as root
+platform/wifi_watcher.py is the main appliance recovery path. It runs as root
 on Linux but every function tested here is deterministic and offline:
   - pure helper functions (_stateset, _is_rfc1918_ipv4)
   - nmcli output parsing (run_cmd patched)
@@ -34,7 +34,7 @@ import ipaddress
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
+WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher.py"
 
 # The watcher imports its sibling helper `autostream_wifi_network` (deployed
 # alongside it in /opt/autostream). Make core/ importable so the load succeeds.
@@ -4999,7 +4999,7 @@ class TestNmcliGoesThroughNMClient:
     """WP-7: the watcher orchestration module issues no direct nmcli itself — every
     nmcli invocation goes through the bounded NMClient (wifi_nm.py).
 
-    Scoped to platform/wifi_watcher (the WP's target): wifi_net keeps its
+    Scoped to platform/wifi_watcher.py: wifi_net keeps its
     facts/query helpers and the pure command builders/parsers NMClient calls, so
     this guard covers the imperative watcher code, not the core facts layer.
     """
@@ -5007,7 +5007,7 @@ class TestNmcliGoesThroughNMClient:
     def test_watcher_issues_no_raw_nmcli(self):
         import re
         from pathlib import Path
-        src = (Path(__file__).parent.parent / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+        src = (Path(__file__).parent.parent / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
         # No literal run_cmd(["nmcli", ...]) (single- or multi-line).
         assert not re.search(r'run_cmd\(\s*\[\s*"nmcli"', src), (
             "watcher must not issue a raw run_cmd(['nmcli', ...]); use the nm client"

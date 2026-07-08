@@ -116,7 +116,7 @@ install -m 0644 "$DEPLOY/dial/autostream_dial_control.py" \
     /opt/autostream/autostream_dial_control.py
 install -m 0755 "$DEPLOY/dial/autostream-dial-control" \
     /usr/local/bin/autostream-dial-control
-install -m 0755 "$DEPLOY/platform/wifi_watcher" /opt/autostream/autostream_wifi_watcher
+install -m 0755 "$DEPLOY/platform/wifi_watcher.py" /opt/autostream/autostream_wifi_watcher
 sed -i 's/\r$//' /opt/autostream/autostream_wifi_watcher
 
 deploy_admin

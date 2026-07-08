@@ -282,7 +282,7 @@ class TestSystemdDependencyOrdering:
         installer = INSTALL_SH.read_text(encoding="utf-8")
         assert exec_start == "/opt/autostream/autostream_wifi_watcher"
         assert '"${INSTALL_DIR}/autostream_wifi_watcher"' in installer
-        assert '"${AUTOSTREAM_DIR}/platform/wifi_watcher"' in installer
+        assert '"${AUTOSTREAM_DIR}/platform/wifi_watcher.py"' in installer
 
     def test_update_restarts_wifi_watcher_after_deploy(self):
         installer = INSTALL_SH.read_text(encoding="utf-8")
@@ -294,7 +294,7 @@ class TestSystemdDependencyOrdering:
         import (this guards the WS2-WP1 wifi_mdns split and the wifi_policy gap it
         surfaced)."""
         import re
-        watcher = (REPO_ROOT / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+        watcher = (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
         siblings = sorted({
             m for m in re.findall(r"^\s*import (wifi_\w+)", watcher, re.MULTILINE)
             if (REPO_ROOT / "platform" / f"{m}.py").exists()
