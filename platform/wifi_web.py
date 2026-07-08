@@ -8,41 +8,71 @@ This module owns:
 
   * presentation — the setup/captive-portal page rendering (render_setup_page,
     render_wait_page) plus APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS;
-  * the Flask app factory ``build_app(w)`` and all routes — the captive-portal/
+  * the Flask app factory ``build_app(ctx)`` and all routes — the captive-portal/
     setup surface and the privileged loopback control surface;
   * the loopback control/auth surface — the per-boot control token lifecycle
     (init_control_token/remove_control_token), loopback+token authorisation
     (_control_authorised, hmac.compare_digest), and request-shape validation.
 
-Routes only *validate, authenticate, and queue/trigger* via the watcher module
-``w``; all policy/orchestration (apply/scan, AP/setup transitions, the monitor
-loop's action consumption) stays in wifi_watcher.
+Routes only *validate, authenticate, and queue/trigger* via a :class:`WebContext`;
+all policy/orchestration (apply/scan, AP/setup transitions, the monitor loop's
+action consumption) stays in wifi_watcher.
 
 Runtime note:
 Like its sibling recovery modules (wifi_status.py, wifi_recovery.py) this runs
 on the system Python, not the app venv.  It imports only the standard library
 and ``flask``; it never imports an Autostream application module.  Functions
-that need watcher state receive the watcher module ``w`` as their first
-argument and read its constants/helpers through it (the star-topology seam):
-``w`` is the hub that owns STATE, state_lock, the logger, and the constants.
+that need watcher state receive a :class:`WebContext` as their first argument
+and read its constants/helpers through it — a narrow view of the watcher
+exposing only STATE, state_lock, the logger, and the constants/callables the
+routes use.
 """
 from __future__ import annotations
 
 import hmac
 import html
 import json
+import logging
 import os
 import secrets
 import tempfile
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from flask import Flask, request, jsonify, redirect, url_for, make_response
+
+
+@dataclass
+class WebContext:
+    """Narrow view of the watcher that the Flask HTTP surface depends on.
+
+    Constructed once by the watcher and passed to ``build_app()``,
+    ``init_control_token()``, and the route helpers; nothing else of the
+    watcher is reachable from this module.
+    """
+
+    app_name: str
+    STATE: object
+    state_lock: object
+    logger: logging.Logger
+    control_action_event: object
+    RUNTIME_LOG_LEVELS: dict
+    LOG_LEVEL_TTL_MIN: int
+    LOG_LEVEL_TTL_MAX: int
+    WIFI_WATCHER_VERSION: str
+    _DIAL_MODE: bool
+    wifi_net: object
+    get_system_hostname: Callable
+    get_configured_network_state: Callable
+    submit_apply_credentials: Callable
+    scan_all_networks: Callable
+
 
 # Per-boot control token.  Generated at startup; the normal Web
 # UI reads the token file and supplies it as an X-Autostream-Wifi-Control header
 # on direct-localhost requests.  Never sent to the browser or logged.  This is
 # the single source of truth for the loopback control surface (the watcher calls
-# init_control_token(w)/remove_control_token() at startup/shutdown).
+# init_control_token(ctx)/remove_control_token() at startup/shutdown).
 CONTROL_TOKEN_DIR = os.environ.get('APP_RUN_DIR', '/run/autostream')
 CONTROL_TOKEN_PATH = os.environ.get(
     'APP_WIFI_CONTROL_TOKEN', '/run/autostream/wifi-control.token'
@@ -527,7 +557,7 @@ def render_setup_page(error_code: str = "", show_reconnect: bool = False) -> str
         """
 
 
-def render_wait_page(w, selected_ssid: str = "") -> str:
+def render_wait_page(ctx, selected_ssid: str = "") -> str:
     """Wait page shown immediately after submit."""
     ua = (request.headers.get("User-Agent") or "").lower()
 
@@ -542,11 +572,11 @@ def render_wait_page(w, selected_ssid: str = "") -> str:
 
     ssid_safe = html.escape(selected_ssid or "")
     # Hostname may change at runtime (e.g. user renames device); re-read when rendering.
-    host_safe = html.escape(w.get_system_hostname())
+    host_safe = html.escape(ctx.get_system_hostname())
 
     # Dial mode: after joining, the user continues setup from an autostream appliance,
     # not from the dial's own web page.  Non-dial mode: redirect to the appliance web UI.
-    if w._DIAL_MODE:
+    if ctx._DIAL_MODE:
         next_step_html = "<p>Continue setup from an autostream appliance.</p>"
         success_js = "/* dial: remain on this page — user continues from an appliance */"
     else:
@@ -636,12 +666,12 @@ CAPTIVE_LANDING = """<!doctype html>
 """
 
 
-def _has_saved_network(w) -> bool:
+def _has_saved_network(ctx) -> bool:
     """True if a committed or rollback connection exists."""
-    if w.get_configured_network_state().is_configured:
+    if ctx.get_configured_network_state().is_configured:
         return True
-    with w.state_lock:
-        session = w.STATE.hotspot
+    with ctx.state_lock:
+        session = ctx.STATE.hotspot
     return bool(session is not None and session.rollback is not None
                 and session.rollback.connection_name)
 
@@ -675,7 +705,7 @@ def _atomic_write(path: str, data: str, mode: int = 0o644) -> None:
         raise
 
 
-def init_control_token(w) -> str:
+def init_control_token(ctx) -> str:
     """Generate the per-boot control token and write it root:autostream 0640.
 
     The runtime dir is created root:autostream 0750 when needed.  Replacement at
@@ -700,7 +730,7 @@ def init_control_token(w) -> str:
         except (KeyError, OSError, ImportError):
             pass
     except Exception as e:
-        w.logger.error("Failed to write control token file: %s", e)
+        ctx.logger.error("Failed to write control token file: %s", e)
     return _control_token
 
 
@@ -730,14 +760,14 @@ def _control_authorised() -> bool:
     return hmac.compare_digest(supplied, _control_token)
 
 
-def validate_log_level_request(w, level, ttl) -> tuple[str, Optional[int]]:
+def validate_log_level_request(ctx, level, ttl) -> tuple[str, Optional[int]]:
     """Validate a set_log_level request.
 
     Returns ``(error, clamped_ttl)``; *error* is "" when valid.  ``debug``
     requires a TTL; provided TTLs must be numeric and are clamped to
     [LOG_LEVEL_TTL_MIN, LOG_LEVEL_TTL_MAX].
     """
-    if level not in w.RUNTIME_LOG_LEVELS:
+    if level not in ctx.RUNTIME_LOG_LEVELS:
         return "invalid_level", None
     if ttl is None:
         if level == "debug":
@@ -745,19 +775,19 @@ def validate_log_level_request(w, level, ttl) -> tuple[str, Optional[int]]:
         return "", None
     if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or ttl <= 0:
         return "invalid_ttl", None
-    clamped = int(max(w.LOG_LEVEL_TTL_MIN, min(w.LOG_LEVEL_TTL_MAX, ttl)))
+    clamped = int(max(ctx.LOG_LEVEL_TTL_MIN, min(ctx.LOG_LEVEL_TTL_MAX, ttl)))
     return "", clamped
 
 
-def build_app(w) -> Flask:
+def build_app(ctx) -> Flask:
     """Build the watcher's Flask app and register the captive-portal/setup routes.
 
-    Handlers close over the watcher module ``w`` (the star-topology hub) and
-    read/queue through it: ``w.STATE``, ``w.state_lock``, ``w.submit_apply_credentials``,
-    ``w.scan_all_networks``, ``w.control_action_event``, ``w.logger``.  Endpoint
-    (handler) names are preserved so ``url_for`` keeps resolving.
+    Handlers close over a :class:`WebContext` and read/queue through it:
+    ``ctx.STATE``, ``ctx.state_lock``, ``ctx.submit_apply_credentials``,
+    ``ctx.scan_all_networks``, ``ctx.control_action_event``, ``ctx.logger``.
+    Endpoint (handler) names are preserved so ``url_for`` keeps resolving.
     """
-    app = Flask(w.__name__)
+    app = Flask(ctx.app_name)
 
     @app.route("/", methods=["GET"])
     def index():
@@ -776,28 +806,28 @@ def build_app(w) -> Flask:
             pw = request.form.get("password") or request.form.get("k") or ""
 
             if not ssid:
-                w.logger.warning("WiFi configuration POST received without SSID")
+                ctx.logger.warning("WiFi configuration POST received without SSID")
                 return _captive_response(render_setup_page())
 
             # Enqueue the apply on the shared activation worker instead of
             # spawning a Flask thread, so it is serialised with the loop's
             # activations (no unmanaged second writer).  submit_apply_credentials
             # sets apply_in_progress + "applying" on accept.
-            if not w.submit_apply_credentials(ssid, pw):
-                w.logger.info("Apply already in progress / worker busy; showing wait page again")
-            return _captive_response(render_wait_page(w, ssid))
+            if not ctx.submit_apply_credentials(ssid, pw):
+                ctx.logger.info("Apply already in progress / worker busy; showing wait page again")
+            return _captive_response(render_wait_page(ctx, ssid))
 
         # GET: show the setup form (include last failure, if any)
-        with w.state_lock:
+        with ctx.state_lock:
             e = (request.args.get("e") or "").strip()
-            if not e and w.STATE.last_apply_result == "failed":
-                e = w.STATE.last_apply_error or "failed"
+            if not e and ctx.STATE.last_apply_result == "failed":
+                e = ctx.STATE.last_apply_error or "failed"
 
-        w.logger.info("User requested /setup (error: %s)", e)
+        ctx.logger.info("User requested /setup (error: %s)", e)
 
         # Offer "Reconnect to saved network" only when a saved network exists —
         # never during first-run unconfigured setup.
-        show_reconnect = _has_saved_network(w)
+        show_reconnect = _has_saved_network(ctx)
         return _captive_response(render_setup_page(e, show_reconnect=show_reconnect))
 
     @app.route("/networks", methods=["GET"])
@@ -808,7 +838,7 @@ def build_app(w) -> Flask:
             {"networks": [{ssid, signal, builtin_visible, usb_visible,
                            adapter_macs}, ...], "builtin_scan_known": bool}
         """
-        nets, builtin_scan_known = w.scan_all_networks()
+        nets, builtin_scan_known = ctx.scan_all_networks()
         return jsonify({"networks": nets, "builtin_scan_known": builtin_scan_known})
 
     @app.route("/reconnect_saved", methods=["POST"])
@@ -820,16 +850,16 @@ def build_app(w) -> Flask:
         network-control API.  Queues the work for the monitor loop; the browser may
         lose AP connectivity, so success does not depend on a final acknowledgement.
         """
-        if not _has_saved_network(w):
+        if not _has_saved_network(ctx):
             return jsonify({"ok": False, "error": "no_saved_network"}), 409
-        with w.state_lock:
-            if w.STATE.apply_in_progress:
+        with ctx.state_lock:
+            if ctx.STATE.apply_in_progress:
                 return jsonify({"ok": False, "error": "apply_in_progress"}), 409
-            if w.STATE.pending_control_action or w.STATE.control_in_progress:
+            if ctx.STATE.pending_control_action or ctx.STATE.control_in_progress:
                 return jsonify({"ok": False, "error": "busy"}), 409
-            w.STATE.pending_control_action = "reconnect_saved"
-            w.control_action_event.set()
-        w.logger.info("Captive-page reconnect_saved queued")
+            ctx.STATE.pending_control_action = "reconnect_saved"
+            ctx.control_action_event.set()
+        ctx.logger.info("Captive-page reconnect_saved queued")
         return jsonify({"ok": True, "queued": True})
 
     @app.route("/dismiss_rejoin", methods=["POST"])
@@ -841,25 +871,25 @@ def build_app(w) -> Flask:
         strictly less powerful, only *suppressing* the automatic rejoin for one
         session; the flag resets when the session ends.
         """
-        with w.state_lock:
-            w.STATE.rejoin_dismissed = True
-            w.STATE.saved_ssid_visible = False
-        w.logger.info("Captive-page rejoin dismissed for this session")
+        with ctx.state_lock:
+            ctx.STATE.rejoin_dismissed = True
+            ctx.STATE.saved_ssid_visible = False
+        ctx.logger.info("Captive-page rejoin dismissed for this session")
         return jsonify({"ok": True})
 
     @app.route("/status", methods=["GET"])
     def status():
         """Return a simple JSON status including SetupMode and link states."""
-        with w.state_lock:
-            wifistate = w.STATE.wifistate
-            wiredstate = w.STATE.wiredstate
-            gateway_reachable = w.STATE.connectivity_ok
-            SetupMode = w.STATE.setup_mode
-            aip = w.STATE.apply_in_progress
-            lar = w.STATE.last_apply_result
-            lae = w.STATE.last_apply_error
-            saved_ssid_visible = bool(w.STATE.saved_ssid_visible)
-            saved_ssid = w.STATE.saved_ssid_name
+        with ctx.state_lock:
+            wifistate = ctx.STATE.wifistate
+            wiredstate = ctx.STATE.wiredstate
+            gateway_reachable = ctx.STATE.connectivity_ok
+            SetupMode = ctx.STATE.setup_mode
+            aip = ctx.STATE.apply_in_progress
+            lar = ctx.STATE.last_apply_result
+            lae = ctx.STATE.last_apply_error
+            saved_ssid_visible = bool(ctx.STATE.saved_ssid_visible)
+            saved_ssid = ctx.STATE.saved_ssid_name
 
         return jsonify(
             {
@@ -881,21 +911,21 @@ def build_app(w) -> Flask:
     @app.route("/hotspot-detect.html", methods=["GET"])
     @app.route("/library/test/success.html", methods=["GET"])
     def apple_captive_probe():
-        w.logger.debug("Captive portal probe (Apple): %s", request.path)
+        ctx.logger.debug("Captive portal probe (Apple): %s", request.path)
         return _captive_response(CAPTIVE_LANDING)
 
     # Android / Chrome probes
     @app.route("/generate_204", methods=["GET"])
     @app.route("/gen_204", methods=["GET"])
     def android_probe():
-        w.logger.debug("Captive portal probe (Android): %s", request.path)
+        ctx.logger.debug("Captive portal probe (Android): %s", request.path)
         return _captive_response(CAPTIVE_LANDING)
 
     # Windows NCSI probe
     @app.route("/ncsi.txt", methods=["GET"])
     @app.route("/connecttest.txt", methods=["GET"])
     def windows_probe():
-        w.logger.debug("Captive portal probe (Windows): %s", request.path)
+        ctx.logger.debug("Captive portal probe (Windows): %s", request.path)
         return _captive_response(CAPTIVE_LANDING)
 
     @app.route("/.well-known/captive-portal", methods=["GET"])
@@ -930,19 +960,19 @@ def build_app(w) -> Flask:
         return jsonify({
             "ok": True,
             "component": "wifi_watcher",
-            "version": w.WIFI_WATCHER_VERSION,
+            "version": ctx.WIFI_WATCHER_VERSION,
         })
 
     @app.route("/network_status", methods=["GET"])
     def network_status():
         if not _control_authorised():
             return jsonify({"ok": False, "error": "forbidden"}), 403
-        with w.state_lock:
-            snapshot = w.STATE.network_status_snapshot
+        with ctx.state_lock:
+            snapshot = ctx.STATE.network_status_snapshot
         if not snapshot:
             return jsonify({
                 "ok": True,
-                "schema_version": w.wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
+                "schema_version": ctx.wifi_net.NETWORK_STATUS_SCHEMA_VERSION,
                 "device": {"state": "unknown"},
                 "stale": True,
             })
@@ -958,7 +988,7 @@ def build_app(w) -> Flask:
         action while one is pending or in progress.
         """
         if not _control_authorised():
-            w.logger.warning("Rejected /network_control (unauthenticated/non-loopback)")
+            ctx.logger.warning("Rejected /network_control (unauthenticated/non-loopback)")
             return jsonify({"ok": False, "error": "forbidden"}), 403
 
         payload = request.get_json(silent=True)
@@ -979,9 +1009,9 @@ def build_app(w) -> Flask:
                 return jsonify({"ok": False, "error": "invalid_action"}), 400
             level = payload.get("level")
             ttl = payload.get("ttl_seconds", None)
-            error, clamped = validate_log_level_request(w, level, ttl)
+            error, clamped = validate_log_level_request(ctx, level, ttl)
             if error:
-                w.logger.warning("Rejected set_log_level request: %s", error)
+                ctx.logger.warning("Rejected set_log_level request: %s", error)
                 return jsonify({"ok": False, "error": error}), 400
             params = {"level": level, "ttl_seconds": clamped}
         elif action in ("clear_adapter", "disable_adapter", "enable_adapter"):
@@ -994,14 +1024,14 @@ def build_app(w) -> Flask:
         else:
             return jsonify({"ok": False, "error": "invalid_action"}), 400
 
-        with w.state_lock:
-            if w.STATE.pending_control_action or w.STATE.control_in_progress:
+        with ctx.state_lock:
+            if ctx.STATE.pending_control_action or ctx.STATE.control_in_progress:
                 return jsonify({"ok": False, "error": "busy"}), 409
-            w.STATE.pending_control_action = action
-            w.STATE.pending_control_params = params
-            w.control_action_event.set()
+            ctx.STATE.pending_control_action = action
+            ctx.STATE.pending_control_params = params
+            ctx.control_action_event.set()
 
-        w.logger.info("Queued network control action: %s", action)
+        ctx.logger.info("Queued network control action: %s", action)
         return jsonify({"ok": True, "queued": True, "action": action})
 
     @app.route("/request_ap_mode", methods=["POST"])
@@ -1015,7 +1045,7 @@ def build_app(w) -> Flask:
         the channel's busy semantics — instead of the legacy dedicated event.
         """
         if not _control_authorised():
-            w.logger.warning("Rejected /request_ap_mode (unauthenticated/non-loopback)")
+            ctx.logger.warning("Rejected /request_ap_mode (unauthenticated/non-loopback)")
             return jsonify({"ok": False, "error": "forbidden"}), 403
 
         reason = ""
@@ -1029,14 +1059,14 @@ def build_app(w) -> Flask:
         # whenever requested; the 30-minute session lifetime is the only rate
         # limit.  Reject with 409 only when another control action is already
         # pending or in progress (the caller retries once the channel is free).
-        with w.state_lock:
-            if w.STATE.pending_control_action or w.STATE.control_in_progress:
+        with ctx.state_lock:
+            if ctx.STATE.pending_control_action or ctx.STATE.control_in_progress:
                 return jsonify({"ok": False, "error": "busy"}), 409
-            w.STATE.pending_control_action = "manual_ap"
-            w.STATE.pending_control_params = {"reason": reason}
-            w.control_action_event.set()
+            ctx.STATE.pending_control_action = "manual_ap"
+            ctx.STATE.pending_control_params = {"reason": reason}
+            ctx.control_action_event.set()
 
-        w.logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")
+        ctx.logger.info("AP mode requested via /request_ap_mode (reason='%s')", reason or "UserRequest")
         return jsonify({"ok": True, "queued": True, "action": "manual_ap"})
 
     return app

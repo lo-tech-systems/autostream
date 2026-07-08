@@ -172,8 +172,8 @@ class TestWifiWebImportIsolation:
     # Top-level package names wifi_web is permitted to import (stdlib + flask).
     # `grp` is imported lazily inside init_control_token (Linux-only stdlib).
     ALLOWED = {
-        "__future__", "hmac", "html", "json", "os", "secrets",
-        "tempfile", "threading", "typing", "grp", "flask",
+        "__future__", "dataclasses", "hmac", "html", "json", "logging", "os",
+        "secrets", "tempfile", "threading", "typing", "grp", "flask",
     }
 
     def _imported_top_level(self) -> set[str]:

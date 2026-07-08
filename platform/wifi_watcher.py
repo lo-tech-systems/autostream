@@ -81,10 +81,11 @@ status snapshot. It is the star-topology hub that owns STATE, state_lock, the
 constants, and the logger. The Flask HTTP surface — page rendering, the app
 factory build_app(), all routes, and the loopback control-token/auth surface —
 lives in the deploy-together sibling wifi_web.py; this module wires the app at
-startup via ``app = wifi_web.build_app(_self_module())`` and drives the token
-lifecycle from __main__. Dead-PHY recovery lives in wifi_recovery.py and the
-status snapshot in wifi_status.py; both, like wifi_web, receive this module as
-``w`` across the seam and never import wifi_watcher.
+startup via ``app = wifi_web.build_app(WEB_CTX)`` and drives the token
+lifecycle from __main__ through the same ``WEB_CTX``. Dead-PHY recovery lives
+in wifi_recovery.py and the status snapshot in wifi_status.py; each, like
+wifi_web, receives a narrow context exposing only the STATE/constants/
+callables it uses, and none of the split modules import wifi_watcher.
 
 == Explicit state-machine model ==
 
@@ -167,11 +168,11 @@ import wifi_hotspot
 
 
 def _self_module():
-    """Return this watcher module object for the split-module seam.
+    """Return this watcher module object, for HotspotController's module seam.
 
     Works whether the watcher is run as a script (__main__) or loaded under an
-    alias by the test harness.  Defined early so the Flask app factory can be
-    wired at the original app-creation point.
+    alias by the test harness.  Defined early so it is available at the point
+    ``hotspot_controller`` is constructed.
     """
     return sys.modules.get(__name__) or sys.modules.get("__main__") or globals().get("__SELF__")
 
@@ -698,11 +699,9 @@ def hotspot_station_count(ifname: str) -> Optional[int]:
     return sum(1 for line in r.stdout.splitlines()
                if line.strip().lower().startswith("station "))
 
-# Build the Flask app via the wifi_web factory (HTTP-extraction plan).  All
-# routes (captive-portal/setup and the loopback control/auth surface) live in
-# wifi_web; keeping wifi_watcher.app importable here preserves the Flask-test-
-# client tests and the __main__ app.run() startup.
-app = wifi_web.build_app(_self_module())
+# The Flask app is built from WEB_CTX further down, once every callable the
+# routes need is defined; wifi_watcher.app stays importable there for the
+# Flask-test-client tests and the __main__ app.run() startup.
 
 # ** LOGGING **
 
@@ -2069,7 +2068,7 @@ def _clear_dead_adapter_state_for_activation() -> None:
 
 
 def _record_noip_failure_for_activation(record_id, at: float) -> int:
-    return wifi_recovery.record_noip_failure(_self_module(), record_id, at)
+    return wifi_recovery.record_noip_failure(RECOVERY_CTX, record_id, at)
 
 
 def _clear_pending_adoption_for_activation() -> None:
@@ -2445,6 +2444,29 @@ def _maybe_reset_noip_held_usb(adapters: list, now: float) -> bool:
     return wifi_recovery.maybe_reset_noip_held_usb(RECOVERY_CTX, adapters, now)
 
 
+# The narrowed Flask/HTTP seam.  Built once every callable and constant the
+# routes use exists; build_app() closes its handlers over this ctx and
+# init_control_token()/remove_control_token() are driven from __main__.
+WEB_CTX = wifi_web.WebContext(
+    app_name=__name__,
+    STATE=STATE,
+    state_lock=state_lock,
+    logger=logger,
+    control_action_event=control_action_event,
+    RUNTIME_LOG_LEVELS=RUNTIME_LOG_LEVELS,
+    LOG_LEVEL_TTL_MIN=LOG_LEVEL_TTL_MIN,
+    LOG_LEVEL_TTL_MAX=LOG_LEVEL_TTL_MAX,
+    WIFI_WATCHER_VERSION=WIFI_WATCHER_VERSION,
+    _DIAL_MODE=_DIAL_MODE,
+    wifi_net=wifi_net,
+    get_system_hostname=get_system_hostname,
+    get_configured_network_state=get_configured_network_state,
+    submit_apply_credentials=submit_apply_credentials,
+    scan_all_networks=scan_all_networks,
+)
+app = wifi_web.build_app(WEB_CTX)
+
+
 # The narrowed monitor-loop seam.  Built last (once every callable it needs
 # exists); network_monitor_loop binds each handler to this ctx with
 # functools.partial when building the ordered phase lists.
@@ -2549,7 +2571,7 @@ if __name__ == "__main__":
     )
 
     # Generate the per-boot control token before accepting any control request.
-    wifi_web.init_control_token(_self_module())
+    wifi_web.init_control_token(WEB_CTX)
 
     # Start the off-thread activation worker; idle until a job is submitted.
     start_activation_worker()

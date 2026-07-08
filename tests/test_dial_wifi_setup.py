@@ -276,7 +276,14 @@ def _load_wifi_web() -> types.ModuleType:
     loader = importlib.machinery.SourceFileLoader("wifi_web_dial_test", str(WIFI_WEB_PATH))
     spec = importlib.util.spec_from_loader("wifi_web_dial_test", loader)
     mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    # Register under its name before exec: the dataclass decorator on
+    # WebContext resolves its field annotations via sys.modules, so the
+    # module must be findable by name while it executes.
+    sys.modules["wifi_web_dial_test"] = mod
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.modules.pop("wifi_web_dial_test", None)
     return mod
 
 

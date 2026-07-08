@@ -50,9 +50,14 @@ def _load_wifi_web(alias: str, env_overrides: dict | None = None) -> object:
             injected.append("flask")
         # Drop any cached wifi_web so this fresh env takes effect.
         sys.modules.pop("wifi_web", None)
+        # Register under alias before exec: the dataclass decorator on
+        # WebContext resolves its field annotations via sys.modules, so the
+        # module must be findable by name while it executes.
+        sys.modules[alias] = mod
         try:
             loader.exec_module(mod)
         finally:
+            sys.modules.pop(alias, None)
             for sn in injected:
                 sys.modules.pop(sn, None)
         return mod

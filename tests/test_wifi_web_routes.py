@@ -85,10 +85,10 @@ class TestCaptivePortalRoutes:
         assert b"setup" in rv.data.lower()
 
     def test_factory_builds_app_with_named_endpoints(self, flask_client):
-        """wifi_web.build_app(watcher) registers the captive routes by name
+        """wifi_web.build_app(WEB_CTX) registers the captive routes by name
         (endpoint names preserved so url_for keeps resolving)."""
         client, mod = flask_client
-        app2 = mod.wifi_web.build_app(mod)
+        app2 = mod.wifi_web.build_app(mod.WEB_CTX)
         endpoints = {r.endpoint for r in app2.url_map.iter_rules()}
         for name in ("index", "setup", "networks", "reconnect_saved", "status",
                      "apple_captive_probe", "android_probe", "windows_probe",
@@ -99,7 +99,7 @@ class TestCaptivePortalRoutes:
 
     def test_networks_returns_merged_shape(self, flask_client):
         client, mod = flask_client
-        with patch.object(mod, "scan_all_networks",
+        with patch.object(mod.WEB_CTX, "scan_all_networks",
                           return_value=([{"ssid": "Net", "signal": 50}], True)):
             rv = client.get("/networks")
         assert rv.status_code == 200
@@ -375,7 +375,7 @@ class TestControlToken:
         token_path = tmp_path / "run" / "wifi-control.token"
         watcher.wifi_web.CONTROL_TOKEN_DIR = str(tmp_path / "run")
         watcher.wifi_web.CONTROL_TOKEN_PATH = str(token_path)
-        tok = watcher.wifi_web.init_control_token(watcher)
+        tok = watcher.wifi_web.init_control_token(watcher.WEB_CTX)
         assert tok and token_path.exists()
         # Token never empty; file content matches.
         assert token_path.read_text(encoding="utf-8").strip() == tok
@@ -396,9 +396,9 @@ class TestControlToken:
 
 class TestSavedNetworkGating:
     def test_has_saved_network_committed(self, watcher):
-        with patch.object(watcher, "get_configured_network_state",
+        with patch.object(watcher.WEB_CTX, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("Home", "u")):
-            assert watcher.wifi_web._has_saved_network(watcher) is True
+            assert watcher.wifi_web._has_saved_network(watcher.WEB_CTX) is True
 
     def test_has_saved_network_rollback_only(self, watcher):
         watcher.STATE.hotspot = watcher.HotspotSession(
@@ -406,14 +406,14 @@ class TestSavedNetworkGating:
             entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Old", "", ""),
         )
-        with patch.object(watcher, "get_configured_network_state",
+        with patch.object(watcher.WEB_CTX, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("", "")):
-            assert watcher.wifi_web._has_saved_network(watcher) is True
+            assert watcher.wifi_web._has_saved_network(watcher.WEB_CTX) is True
 
     def test_no_saved_network_first_run(self, watcher):
-        with patch.object(watcher, "get_configured_network_state",
+        with patch.object(watcher.WEB_CTX, "get_configured_network_state",
                           return_value=watcher.wifi_net.NetworkState("", "")):
-            assert watcher.wifi_web._has_saved_network(watcher) is False
+            assert watcher.wifi_web._has_saved_network(watcher.WEB_CTX) is False
 
 
 class TestControlAuthLogic:
