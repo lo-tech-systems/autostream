@@ -206,8 +206,7 @@ def watcher():
                 setattr(live, f.name, getattr(defaults, f.name))
 
     _reset()
-    mod._last_logged_values.clear()
-    mod._last_throttled_log.clear()
+    mod._log_dedup.clear()
     yield mod
     # Reset again in case the test mutated STATE
     _reset()

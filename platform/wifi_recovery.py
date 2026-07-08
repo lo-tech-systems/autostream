@@ -75,15 +75,17 @@ class RecoveryContext:
 
     Constructed once by the watcher and threaded through the recovery helpers.  It
     carries the shared STATE object and its lock, the recovery-owned ledger state,
-    the reset/quarantine/reboot constants and persistent-state paths, and the small
-    set of watcher callables the ladder invokes — nothing else of the watcher is
-    reachable from here.
+    the adoption-owned ``known_usb_macs`` set (read-only from here, to classify an
+    absent active adapter as USB), the reset/quarantine/reboot constants and
+    persistent-state paths, and the small set of watcher callables the ladder
+    invokes — nothing else of the watcher is reachable from here.
     """
 
     STATE: object
     state_lock: object
     logger: object
     RECOVERY_STATE: RecoveryState
+    ADOPTION_STATE: object
     # Constants
     AP_IFNAME: str
     USB_RESET_WINDOW: float
@@ -106,8 +108,6 @@ class RecoveryContext:
     wait_for_interface_reappears: Callable
     resolve_hotspot_adapter: Callable
     request_guarded_reboot: Callable
-    # Shared mutable set of adopted USB MACs (captured by reference).
-    _known_usb_macs: set
 
 
 @dataclass(frozen=True)
@@ -351,7 +351,7 @@ def diagnose_client_failure(ctx, adapters: list, active_client, conn_ok: bool,
     if conn_ok:
         return None
 
-    recorded_usb = bool(prev_mac) and prev_mac in ctx._known_usb_macs
+    recorded_usb = bool(prev_mac) and prev_mac in ctx.ADOPTION_STATE.known_usb_macs
     if not recorded_usb:
         # The condemned path is not a recorded USB client (built-in / unconfigured
         # / genuinely nothing); reconnect and the dead-PHY ladder own those.

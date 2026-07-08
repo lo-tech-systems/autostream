@@ -109,7 +109,10 @@ class AdoptionState:
     absence), used by the reset/retry gate.  ``last_bssid_survey_at`` and
     ``last_bssid_usb_full_survey_at`` rate-gate the cheap self-scan and the
     full rescan respectively.  ``last_adoption_scan`` rate-gates the
-    saved-SSID visibility probe before a runtime USB handover.
+    saved-SSID visibility probe before a runtime USB handover.  ``known_usb_macs``
+    is the set of permanent MACs ever seen as USB, so an adapter that has since
+    disappeared from discovery can still be classified as USB (read by
+    wifi_recovery to attribute an absent active client).
     """
     using_builtin_fallback: bool = False
     pending_usb_adoption_mac: Optional[str] = None
@@ -121,6 +124,7 @@ class AdoptionState:
     last_bssid_survey_at: Optional[float] = None
     last_bssid_usb_full_survey_at: Optional[float] = None
     last_adoption_scan: Optional[float] = None
+    known_usb_macs: set = field(default_factory=set)
 
 
 @dataclass

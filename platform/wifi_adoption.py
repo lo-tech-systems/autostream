@@ -70,11 +70,12 @@ class AdoptionContext:
 
     Constructed once by the watcher and passed to every function here.  It
     carries the shared STATE object and its lock, the AdoptionState fragment
-    (fallback/adoption tracking and BSSID roaming), the recovery context (for
-    the dead-PHY module's shared ``_known_usb_macs``/ledgers), the shared
-    log-dedup dict, the adoption/reconnect constants, and the small set of
-    watcher callables these helpers invoke — nothing else of the watcher is
-    reachable from this module.
+    (fallback/adoption tracking, BSSID roaming and the known-USB-MAC set the
+    recovery module reads), the recovery context (for the dead-PHY module's
+    reset ledgers), a callable to reset one log-dedup key, the
+    adoption/reconnect constants, and the small set of watcher callables these
+    helpers invoke — nothing else of the watcher is reachable from this
+    module.
     """
 
     STATE: object
@@ -85,7 +86,7 @@ class AdoptionContext:
     nm: object
     HotspotPurpose: object
     Verdict: object
-    _last_logged_values: dict
+    reset_log_key: Callable
     # Constants
     RECOVERY_SCAN_INTERVAL: float
     RECONNECT_ATTEMPT_INTERVAL: float
@@ -436,7 +437,7 @@ def handle_runtime_usb_adoption(ctx: AdoptionContext, adapters: list, wired_conn
         return False
     # Attempted (visible) pass: reset the skip key so a future not-visible
     # episode logs again, without emitting a spurious transition line.
-    ctx._last_logged_values.pop("usb_adopt_skipped_ssid_not_visible", None)
+    ctx.reset_log_key("usb_adopt_skipped_ssid_not_visible")
 
     # Transactional handover, off-thread: submit a worker job that validates the
     # USB (activate committed + IPv4/health wait); only the loop-half success tail
@@ -466,7 +467,7 @@ def update_known_adapters(ctx: AdoptionContext, adapters: list) -> None:
     macs = frozenset(a.permanent_mac for a in adapters if a.permanent_mac)
     for a in adapters:
         if a.is_usb and a.permanent_mac:
-            ctx.RECOVERY_CTX._known_usb_macs.add(a.permanent_mac)
+            ctx.ADOPTION_STATE.known_usb_macs.add(a.permanent_mac)
     with ctx.state_lock:
         prev = ctx.ADOPTION_STATE.last_detected_adapter_macs
         ctx.ADOPTION_STATE.last_detected_adapter_macs = macs

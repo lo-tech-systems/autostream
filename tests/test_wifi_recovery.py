@@ -251,7 +251,7 @@ class TestAdapterOverlayEvents:
     def test_absent_usb_returns_client_failed_absent(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb_mac = "bb:bb:bb:bb:bb:01"
-        watcher._known_usb_macs.add(usb_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb_mac)
         event = self._diagnose(watcher, [builtin], None,
                                conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
         assert isinstance(event, watcher.wifi_recovery.ClientFailed)
@@ -262,7 +262,7 @@ class TestAdapterOverlayEvents:
 
     def test_no_alt_path_when_no_builtin(self, watcher):
         usb_mac = "bb:bb:bb:bb:bb:01"
-        watcher._known_usb_macs.add(usb_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb_mac)
         event = self._diagnose(watcher, [], None,  # USB gone, no built-in
                                conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
         assert event.reason == "absent"
@@ -272,7 +272,7 @@ class TestAdapterOverlayEvents:
         # The hysteresis has not (yet) condemned the path (e.g. a single transient
         # unhealthy pass held prior True): the overlay must not fire.
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
-        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb.permanent_mac)
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
         event = self._diagnose(watcher, adapters, usb,
                                conn_ok=True, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
@@ -280,7 +280,7 @@ class TestAdapterOverlayEvents:
 
     def test_condemned_present_usb_returns_no_ip(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
-        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb.permanent_mac)
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
         event = self._diagnose(watcher, adapters, usb,
                                conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
@@ -292,7 +292,7 @@ class TestAdapterOverlayEvents:
         # USB present but NM-disconnected: active_client is None, so the event
         # ifname comes from the recorded (prev) identity.
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:07", is_usb=True)
-        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb.permanent_mac)
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
         event = self._diagnose(watcher, adapters, None,
                                conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")

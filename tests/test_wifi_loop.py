@@ -498,7 +498,7 @@ class TestBootEntryOnboardFirst:
 class TestLoopHandlers:
     """Loop-handlers WP6 — direct per-handler tests over synthetic contexts.
 
-    Isolation: the `watcher` fixture resets STATE (and _last_logged_values); the
+    Isolation: the `watcher` fixture resets STATE (and the log-dedup cache); the
     event-setting tests clear the threading.Events they touch so they cannot leak.
     """
 

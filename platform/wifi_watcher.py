@@ -501,8 +501,53 @@ def hotspot_station_count(ifname: str) -> Optional[int]:
 
 # ** LOGGING **
 
-_last_logged_values: dict[str, object] = {}
-_last_throttled_log: dict[str, float] = {}
+class LogDedupCache:
+    """The caches behind log_on_change/log_throttled — logging infrastructure,
+    not watcher domain state.  Unlocked, best-effort (a race at most emits one
+    extra line); every access here matches the module-global semantics this
+    replaced.
+    """
+
+    def __init__(self) -> None:
+        self._last_logged_values: dict = {}
+        self._last_throttled_log: dict = {}
+
+    def on_change(self, key: str, value: object, msg: str, level: int = logging.INFO) -> None:
+        """Log msg at *level* only when (key -> value) changes (semantic transition)."""
+        prev = self._last_logged_values.get(key, object())
+        if prev != value:
+            self._last_logged_values[key] = value
+            logger.log(level, "%s", msg)
+
+    def throttled(self, key: str, msg: str, *, interval: float,
+                  level: int = logging.WARNING, now: "Optional[float]" = None) -> bool:
+        """Log msg at most once per *interval* seconds per *key* (time-window throttle).
+
+        The shared rate-limiter for a condition that stays true across passes.
+        Returns True when it logged this call.
+        """
+        if now is None:
+            now = time.monotonic()
+        prev = self._last_throttled_log.get(key)
+        if prev is None or (now - prev) >= interval:
+            self._last_throttled_log[key] = now
+            logger.log(level, "%s", msg)
+            return True
+        return False
+
+    def reset_key(self, key: str) -> None:
+        """Drop a tracked transition *key* so its next occurrence logs again,
+        without emitting a spurious transition line itself.
+        """
+        self._last_logged_values.pop(key, None)
+
+    def clear(self) -> None:
+        """Drop every tracked key (test isolation between passes/episodes)."""
+        self._last_logged_values.clear()
+        self._last_throttled_log.clear()
+
+
+_log_dedup = LogDedupCache()
 
 
 # Log de-duplication — three complementary mechanisms, one job each.
@@ -516,10 +561,7 @@ _last_throttled_log: dict[str, float] = {}
 #     hammering while a persistent condition holds).  Use for repeated warnings.
 def log_on_change(key: str, value: object, msg: str, level: int = logging.INFO) -> None:
     """Log msg at *level* only when (key -> value) changes (semantic transition)."""
-    prev = _last_logged_values.get(key, object())
-    if prev != value:
-        _last_logged_values[key] = value
-        logger.log(level, "%s", msg)
+    _log_dedup.on_change(key, value, msg, level)
 
 
 def log_throttled(key: str, msg: str, *, interval: float,
@@ -527,17 +569,9 @@ def log_throttled(key: str, msg: str, *, interval: float,
     """Log msg at most once per *interval* seconds per *key* (time-window throttle).
 
     The shared rate-limiter for a condition that stays true across passes.  Returns
-    True when it logged this call.  Unlocked module state, matching log_on_change
-    (best-effort; a race at most emits one extra line).
+    True when it logged this call.
     """
-    if now is None:
-        now = time.monotonic()
-    prev = _last_throttled_log.get(key)
-    if prev is None or (now - prev) >= interval:
-        _last_throttled_log[key] = now
-        logger.log(level, "%s", msg)
-        return True
-    return False
+    return _log_dedup.throttled(key, msg, interval=interval, level=level, now=now)
 
 
 # ** SETUP/AP MODE **
@@ -1659,13 +1693,6 @@ def _warn_playing_status_unavailable() -> None:
         )
 
 
-# Remember which permanent MACs were last seen as USB, so that an absent
-# active adapter can still be classified as USB after it disappears from
-# discovery.  Shared with wifi_recovery via RECOVERY_CTX._known_usb_macs
-# (single owner).
-_known_usb_macs: set[str] = set()
-
-
 def verify_avahi_after_handover() -> None:
     """Verify the Avahi hostname and flag an mDNS host-record re-announce.
 
@@ -1777,6 +1804,7 @@ def build_contexts() -> None:
         state_lock=state_lock,
         logger=logger,
         RECOVERY_STATE=RECOVERY_STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
         AP_IFNAME=AP_IFNAME,
         USB_RESET_WINDOW=USB_RESET_WINDOW,
         USB_MAX_RESETS_TOTAL=USB_MAX_RESETS_TOTAL,
@@ -1797,7 +1825,6 @@ def build_contexts() -> None:
         wait_for_interface_reappears=wait_for_interface_reappears_closure,
         resolve_hotspot_adapter=resolve_hotspot_adapter,
         request_guarded_reboot=request_guarded_reboot,
-        _known_usb_macs=_known_usb_macs,
     )
 
     # Closures for the activation<->adoption cycle: ACTIVATION_CTX needs
@@ -1867,7 +1894,7 @@ def build_contexts() -> None:
         nm=nm,
         HotspotPurpose=wifi_policy.HotspotPurpose,
         Verdict=Verdict,
-        _last_logged_values=_last_logged_values,
+        reset_log_key=_log_dedup.reset_key,
         RECOVERY_SCAN_INTERVAL=RECOVERY_SCAN_INTERVAL,
         RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
         ADOPTION_SCAN_INTERVAL=ADOPTION_SCAN_INTERVAL,

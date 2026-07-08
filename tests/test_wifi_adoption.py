@@ -42,7 +42,7 @@ class TestUsbFailureFallback:
     def test_absent_active_usb_triggers_immediate_fallback(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb_mac = "bb:bb:bb:bb:bb:01"
-        watcher._known_usb_macs.add(usb_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb_mac)
         facts = _facts_for(watcher, [builtin], None)  # USB gone
         hctx = self._hctx(watcher, facts, conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
         action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
@@ -57,7 +57,7 @@ class TestUsbFailureFallback:
         # The hysteresis has not condemned the path yet (transient blip held True):
         # no fallback this pass.
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:02", is_usb=True)
-        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb.permanent_mac)
         facts = _facts_for(watcher, [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb], usb)
         hctx = self._hctx(watcher, facts, conn_ok=True,
                           prev_mac=usb.permanent_mac, prev_ifname="wlan1")
@@ -68,7 +68,7 @@ class TestUsbFailureFallback:
 
     def test_condemned_usb_triggers_fallback(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
-        watcher._known_usb_macs.add(usb.permanent_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb.permanent_mac)
         facts = _facts_for(watcher, [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb], usb)
         hctx = self._hctx(watcher, facts, conn_ok=False,
                           prev_mac=usb.permanent_mac, prev_ifname="wlan1")
@@ -814,7 +814,7 @@ class TestNmDisconnectedUsbDebounce:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", usb_mac, is_usb=True)
         adapters = [builtin, usb]
-        watcher._known_usb_macs.add(usb_mac)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb_mac)
         watcher.STATE.active_client_mac = usb_mac
         watcher.STATE.active_client_ifname = "wlan1"
         watcher.STATE.connectivity_ok = True
