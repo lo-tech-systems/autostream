@@ -256,7 +256,17 @@ class TestSuiteCompleteness:
         """All WP-specific test files must be present in tests/."""
         tests_dir = REPO_ROOT / "tests"
         required = [
-            "test_p1_wifi_watcher.py",
+            "test_wifi_watcher_core.py",
+            "test_wifi_web_routes.py",
+            "test_wifi_hotspot_ctl.py",
+            "test_wifi_activation.py",
+            "test_wifi_recovery.py",
+            "test_wifi_recovery_deadphy.py",
+            "test_wifi_adoption.py",
+            "test_wifi_config.py",
+            "test_wifi_loop.py",
+            "test_wifi_status.py",
+            "test_wifi_mdns.py",
             "test_autostream_wifi_network.py",
             "test_dial_wifi_setup.py",
             "test_p4_deployment_policy.py",

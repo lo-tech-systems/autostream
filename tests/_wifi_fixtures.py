@@ -14,6 +14,7 @@ import importlib
 import importlib.util
 import sys
 import threading
+from contextlib import ExitStack, contextmanager
 from dataclasses import fields
 from pathlib import Path
 from types import ModuleType
@@ -220,3 +221,126 @@ def flask_client(watcher):
     flask_mod = _load_watcher_module("wifi_watcher_flask_test", real_flask=True)
     flask_mod.app.config["TESTING"] = True
     return flask_mod.app.test_client(), flask_mod
+
+
+# ---------------------------------------------------------------------------
+# Shared test-data builders and patch helpers used across several wifi test
+# modules (adapter/facts construction, dead-PHY sysfs patching, the reset
+# ledger, and a single-pass monitor-loop runner).
+# ---------------------------------------------------------------------------
+
+def _adapter(mod, ifname, mac, is_usb=False, is_builtin=False):
+    return mod.wifi_net.WifiAdapter(
+        ifname=ifname, permanent_mac=mac, current_mac=mac,
+        is_builtin=is_builtin, is_usb=is_usb, managed=True,
+        state="connected", description=ifname,
+    )
+
+
+def _facts_for(mod, adapters, active_client, *, wifi_cfg=True, wired_ok=False,
+               wired_connected=False, now=1000.0):
+    """Build a per-pass Facts snapshot for handler/apply tests."""
+    return mod.Facts(
+        wifi_configured=wifi_cfg, adapters=adapters, wired_connected=wired_connected,
+        wired_ok=wired_ok, active_client=active_client, addresses={}, taken_at=now,
+    )
+
+
+@contextmanager
+def _patch_dead_phy_facts(watcher, *, sysfs_names=(), usb_paths_ifaces=(),
+                          link_down=True, healthy=False, sysfs_mac=""):
+    """Patch the sysfs/NM facts the dead-PHY helpers consult."""
+    def _usb_paths(ifname, sys_root="/sys/class/net"):
+        if ifname in usb_paths_ifaces:
+            return {"interface_id": "1-1.5:1.0", "driver": "rtl8xxxu",
+                    "usb_device_path": "/sys/devices/usb1/1-1.5"}
+        return None
+
+    def _find_by_mac(mac, sys_root="/sys/class/net"):
+        # Resolve the recorded MAC to its sysfs ifname (first faked netdev).
+        if mac and sysfs_mac and mac == sysfs_mac and sysfs_names:
+            return list(sysfs_names)[0]
+        return ""
+
+    with patch.object(watcher.wifi_net, "list_sysfs_netdevs",
+                      return_value=list(sysfs_names)), \
+         patch.object(watcher.wifi_net, "usb_sysfs_paths", side_effect=_usb_paths), \
+         patch.object(watcher.wifi_net, "read_link_down", return_value=link_down), \
+         patch.object(watcher.wifi_net, "find_sysfs_netdev_by_mac", side_effect=_find_by_mac), \
+         patch.object(watcher.wifi_net, "_sys_read_mac", return_value=sysfs_mac), \
+         patch.object(watcher, "is_wifi_client_healthy", return_value=healthy), \
+         patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=healthy):
+        yield
+
+
+def _ledger(watcher, stable_id):
+    return watcher.RECOVERY_STATE.adapter_reset_ledgers[stable_id]
+
+
+def _spend_window_budget(watcher, stable_id, now=0.0):
+    watcher.RECOVERY_STATE.adapter_reset_ledgers[stable_id] = {
+        "recent_resets": [now, now],
+        "total_resets": 2,
+        "quarantined_until": None,
+    }
+
+
+def tmp_guard():
+    """Return a unique temp path for a dead-PHY reboot guard file."""
+    import tempfile
+    return Path(tempfile.mkdtemp()) / "dead-phy-reboot.stamp"
+
+
+def _run_monitor_once(
+    watcher,
+    *,
+    now: float,
+    wifi_cfg: bool = False,
+    wired_connected: bool = False,
+    wired_ok: bool = False,
+    wifi_connected: bool = False,
+    client_ok: bool = False,
+    adapters: list | None = None,
+    active_client=None,
+    dead_recovery=None,
+):
+    """Run one monitor pass with external facts patched to deterministic values."""
+    adapters = adapters if adapters is not None else []
+    with ExitStack() as stack:
+        stack.enter_context(patch("time.monotonic", return_value=now))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "maybe_reannounce_mdns"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "revert_expired_log_level"))
+        stack.enter_context(patch.object(watcher, "is_wifi_configured", return_value=wifi_cfg))
+        stack.enter_context(patch.object(watcher, "is_wired_connected", return_value=wired_connected))
+        stack.enter_context(patch.object(watcher, "any_wired_path_healthy", return_value=wired_ok))
+        stack.enter_context(patch.object(watcher.wifi_net, "discover_adapters", return_value=adapters))
+        stack.enter_context(patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "update_known_adapters"))
+        stack.enter_context(patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=active_client))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=False))
+        stack.enter_context(patch.object(watcher.wifi_net, "is_wifi_connected", return_value=wifi_connected))
+        stack.enter_context(patch.object(watcher, "is_wifi_client_healthy", return_value=client_ok))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "handle_runtime_usb_adoption", return_value=False))
+        if dead_recovery is None:
+            dead_recovery = MagicMock(return_value=False)
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "escalate_dead_adapter_recovery", dead_recovery))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "publish_network_status"))
+        stack.enter_context(patch.object(watcher.LOOP_CTX, "log_on_change"))
+        stack.enter_context(patch.object(watcher, "step_boot_client_bringup",
+                                          return_value=watcher.Verdict.CONTINUE))
+        connect = stack.enter_context(patch.object(watcher.LOOP_CTX, "connect_to_configured_wifi"))
+        watcher.network_monitor_loop(run_once=True)
+        return connect
+
+
+class _Clock:
+    """Monotonic clock stub driven explicitly by the test."""
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, dt):
+        self.t += dt
