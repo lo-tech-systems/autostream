@@ -178,7 +178,7 @@ class TestFirstBootImport:
     def test_skips_when_marker_present(self, watcher, tmp_path):
         marker = tmp_path / "first-boot-import.done"
         marker.write_text("done")
-        with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", str(marker)), \
+        with patch.object(watcher.CONFIG_CTX, "FIRST_BOOT_IMPORT_MARKER", str(marker)), \
              patch.object(watcher.wifi_net, "discover_adapters") as disc:
             watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)
         disc.assert_not_called()   # marker present -> no work at all
