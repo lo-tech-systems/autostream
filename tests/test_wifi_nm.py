@@ -1,4 +1,4 @@
-"""Unit tests for the bounded nmcli client (WP-7).
+"""Unit tests for the bounded nmcli client.
 
 Every NMClient method must pass an explicit run_cmd(timeout=…) so there is no
 unbounded NetworkManager code path.  These load wifi_nm standalone (no watcher /

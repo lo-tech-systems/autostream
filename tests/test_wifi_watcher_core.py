@@ -724,7 +724,7 @@ class TestUnifiedGuardedReboot:
 
 
 class TestNmcliGoesThroughNMClient:
-    """WP-7: the watcher orchestration module issues no direct nmcli itself — every
+    """The watcher orchestration module issues no direct nmcli itself — every
     nmcli invocation goes through the bounded NMClient (wifi_nm.py).
 
     Scoped to platform/wifi_watcher.py: wifi_net keeps its

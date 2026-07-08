@@ -6,10 +6,10 @@ policy rows, and the pure forward-mode and recovery-ladder classifiers plus
 their plain policy input types.
 
 Nothing here reads ``STATE``, runs a subprocess, performs an effect, or depends
-on the watcher's ``w`` seam or on live ``autostream_wifi_network`` adapter
-objects.  ``platform/wifi_watcher.py`` re-exports these names and adapts its
-runtime facts into the plain policy inputs, so this module stays importable and
-testable on its own.
+on any watcher context or on live ``autostream_wifi_network`` adapter
+objects.  ``platform/wifi_watcher.py`` imports this module directly and adapts
+its runtime facts into the plain policy inputs, so this module stays
+importable and testable on its own.
 """
 
 from __future__ import annotations
@@ -145,12 +145,12 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
     """Pure recovery-ladder classifier: state + RecoveryFacts -> RecoveryAction.
 
     Like next_mode() this reads a pre-gathered immutable snapshot only: no STATE
-    mutation, no subprocess, no effects, no ``w`` seam.  It owns the
+    mutation, no subprocess, no effects.  It owns the single
     *client-path-vs-hotspot* priority ladder (Ethernet > preferred USB > onboard >
-    hotspot-last-resort) that was previously scattered across the boot-entry,
-    USB-failure fallback, and recovery-hotspot probe sites.  The low-level USB
-    reset/quarantine/reboot *mechanics* remain owned by the dead-PHY module; a
-    wedged USB with no onboard alternative is deferred to it via HOLD.
+    hotspot-last-resort) used at boot entry, on USB failure, and at the
+    recovery-hotspot probe.  The low-level USB reset/quarantine/reboot
+    *mechanics* remain owned by the dead-PHY module; a wedged USB with no
+    onboard alternative is deferred to it via HOLD.
     """
     by = facts.adapters_by_ifname
     active = facts.active_ifname

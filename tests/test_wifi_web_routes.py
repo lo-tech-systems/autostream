@@ -196,7 +196,7 @@ class TestStatusRoute:
         )
         assert rv.status_code == 200
         assert rv.get_json()["action"] == "manual_ap"
-        # Queued on the shared control channel, not a legacy dedicated event.
+        # Queued on the shared control channel.
         assert mod.CONTROL_STATE.pending_control_action == "manual_ap"
         assert mod.CONTROL_STATE.pending_control_params == {"reason": "test"}
         assert mod.control_action_event.is_set()

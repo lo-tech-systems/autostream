@@ -28,7 +28,7 @@ from _wifi_fixtures import _adapter
 
 
 class TestFirstBootImport:
-    """WP-5 — first-boot Wi-Fi profile import (the one destructive step)."""
+    """First-boot Wi-Fi profile import (the one destructive step)."""
 
     def _adapter(self, ifname):
         a = MagicMock()

@@ -83,9 +83,10 @@ if _HERE not in sys.path:
 
 # Every sibling module below is deployed flat beside the watcher in
 # /opt/autostream and takes a narrow context exposing only the STATE,
-# constants and callables it needs; none of them import wifi_watcher.
-# build_contexts() (defined further down, called once at the bottom of this
-# module) constructs every context in dependency order.
+# constants and callables it needs; the dependency direction is strictly
+# hub-to-spoke, never the reverse.  build_contexts() (defined further down,
+# called once at the bottom of this module) constructs every context in
+# dependency order.
 
 # Pure connectivity policy: enums, the hotspot purpose table, and the mode /
 # recovery-ladder classifiers.  A standalone effect-free module; the hub and
@@ -1823,8 +1824,8 @@ def build_contexts() -> None:
     def record_noip_failure_closure(record_id, at: float) -> int:
         return wifi_recovery.record_noip_failure(RECOVERY_CTX, record_id, at)
 
-    # The narrowed activation seam: the worker and loop-tail helpers thread
-    # this ctx instead of the whole module.
+    # The activation context: the worker and loop-tail helpers thread this
+    # ctx through every call.
     ACTIVATION_CTX = wifi_activation.ActivationContext(
         STATE=STATE,
         APPLY_STATE=APPLY_STATE,
@@ -1855,8 +1856,8 @@ def build_contexts() -> None:
         advance_reconnect_episode=advance_reconnect_episode_closure,
     )
 
-    # The narrowed adoption seam: the fallback/adoption/reconnect-episode
-    # helpers thread this ctx instead of the whole module.
+    # The adoption context: the fallback/adoption/reconnect-episode helpers
+    # thread this ctx through every call.
     ADOPTION_CTX = wifi_adoption.AdoptionContext(
         STATE=STATE,
         ADOPTION_STATE=ADOPTION_STATE,

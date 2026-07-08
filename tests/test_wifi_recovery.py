@@ -532,9 +532,9 @@ class TestBudgetedResetRetry:
 
 
 class TestAdapterFaultStatePersistence:
-    """WP-9 item 1 — the no-IP + reset/quarantine ledgers survive a restart, with
-    wall-clock timestamps translated back onto the monotonic clock and pruned by
-    the rolling windows."""
+    """The no-IP + reset/quarantine ledgers survive a restart, with wall-clock
+    timestamps translated back onto the monotonic clock and pruned by the
+    rolling windows."""
 
     def _target(self, watcher, stable_id="usb-C"):
         return watcher.wifi_recovery.TargetAdapter(
@@ -618,7 +618,7 @@ class TestAdapterFaultStatePersistence:
 
 
 class TestManualAdapterControl:
-    """WP-9 item 2 — manual clear / disable / enable adapter control actions."""
+    """Manual clear / disable / enable adapter control actions."""
 
     def _pre(self, watcher):
         return watcher.wifi_loop.PreFactsContext(now=0.0, boot_time=0.0, avahi_ok=False)
@@ -711,8 +711,8 @@ class TestManualAdapterControl:
 
 
 class TestNoIpHoldbackReset:
-    """WP-9 item 3 — one budgeted USB reset when an idle no-IP-held spare reaches
-    the final hold-back (the dead-PHY ladder only ever resets the active client)."""
+    """One budgeted USB reset when an idle no-IP-held spare reaches the final
+    hold-back (the dead-PHY ladder only ever resets the active client)."""
 
     def _held_usb(self, watcher, ifname="wlan1", mac="dc:62:79:91:4d:d6"):
         usb = _adapter(watcher, ifname, mac, is_usb=True)

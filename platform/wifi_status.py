@@ -14,7 +14,7 @@ stale/unknown interpretation) is platform policy and lives here — never in
 The public builders take a :class:`StatusContext` as their first argument — a
 narrow view of the watcher exposing only the STATE, SnapshotState fragment,
 constants and fact helpers the snapshot builder uses.  The watcher constructs
-it once and passes it where the whole module used to go.
+it once and passes it in.
 ``autostream_wifi_network`` is imported directly because it is a shared module
 object (patching it affects both modules).
 """

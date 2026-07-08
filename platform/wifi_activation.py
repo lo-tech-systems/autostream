@@ -18,10 +18,9 @@ at pass top by ``step_apply_activation_result``.
 
 Every function takes an :class:`ActivationContext` as its first argument — a
 narrow view of the watcher exposing only the STATE, constants and callables
-the worker needs.  The watcher constructs the context once and passes it
-where the whole module used to go.  ``autostream_wifi_network`` is imported
-directly because it is a shared module object (patching it affects both
-modules).
+the worker needs.  The watcher constructs the context once and passes it in.
+``autostream_wifi_network`` is imported directly because it is a shared
+module object (patching it affects both modules).
 """
 from __future__ import annotations
 

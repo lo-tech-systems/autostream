@@ -3,7 +3,7 @@
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
-The monitor-loop handler decomposition for the Autostream Wi-Fi watcher.
+The ordered monitor-loop handlers for the Autostream Wi-Fi watcher.
 
 The loop itself (``network_monitor_loop``) stays in the hub as the supervisor
 skeleton; this module owns the ordered per-pass handlers it drives (the
@@ -15,7 +15,7 @@ Phase B-early and Phase B-late.
 
 Every handler takes a :class:`LoopContext` as its first argument — a narrow
 view of the watcher exposing only the STATE, constants and callables these
-handlers use (the ``w`` seam narrowed, WP-11) — followed by the per-pass
+handlers use — followed by the per-pass
 phase context (``pre`` / ``fctx`` / ``hctx``) that ``run_steps`` threads
 through unchanged.  The watcher builds one ``LOOP_CTX`` and binds each handler
 to it with ``functools.partial`` when building the ordered phase lists, so

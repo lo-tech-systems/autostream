@@ -22,9 +22,8 @@ dead-PHY *reset* ladder (wifi_recovery):
 
 Every function takes an :class:`AdoptionContext` as its first argument — a
 narrow view of the watcher exposing only the STATE, constants and callables
-this module uses (the ``w`` seam narrowed, WP-11).  The watcher constructs
-the context once and passes it where the whole module used to go; internal
-cross-calls within this module take the same ``ctx``.  ``autostream_wifi_network``,
+this module uses.  The watcher constructs the context once and passes it in;
+internal cross-calls within this module take the same ``ctx``.  ``autostream_wifi_network``,
 ``wifi_policy``, ``wifi_recovery`` and ``wifi_activation`` are imported directly
 because they are shared module objects (patching them affects every module
 that imports them).

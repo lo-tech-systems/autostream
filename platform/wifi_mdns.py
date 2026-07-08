@@ -6,7 +6,7 @@ Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 Avahi / mDNS hostname monitoring and host-record re-announcement for the
 Autostream Wi-Fi watcher.
 
-This module owns the two mDNS concerns the watcher previously carried inline:
+This module owns the two mDNS concerns:
   * hostname-drift repair (avahi renames itself on an mDNS conflict; we detect the
     mismatch, wait out a grace period, then restart avahi-daemon so it reclaims the
     expected name — rate-limited and capped per boot), and
@@ -16,9 +16,9 @@ This module owns the two mDNS concerns the watcher previously carried inline:
 
 Every function takes an :class:`MdnsContext` as its first argument — a narrow view
 of the watcher exposing only the MdnsState fragment, constants and callables this
-module uses.  The watcher constructs the context once and passes it where the whole
-module used to go; internal cross-calls between these functions are direct (they
-take the same ``ctx``).  ``autostream_wifi_network`` is imported directly because it
+module uses.  The watcher constructs the context once and passes it in; internal
+cross-calls between these functions are direct (they take the same ``ctx``).
+``autostream_wifi_network`` is imported directly because it
 is a shared module object (patching it affects both modules).
 """
 from __future__ import annotations

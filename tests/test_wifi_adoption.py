@@ -86,7 +86,7 @@ class TestRuntimeUsbAdoption:
         )
 
     def test_adopts_after_two_passes_submits_transactional_job(self, watcher):
-        # WP-10: adoption now submits an off-thread job; the built-in disconnect /
+        # Adoption submits an off-thread job; the built-in disconnect /
         # set-active happens on the loop-half tail a pass later.
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
@@ -512,13 +512,13 @@ class TestIf6AdoptionScanGate:
 
 
 class TestReconnectSavedEpisode:
-    """WP-4 — reconnect-saved is a single-target-per-pass async episode.
+    """Reconnect-saved is a single-target-per-pass async episode.
 
-    The old synchronous multi-target join is gone; the per-target join mechanics
-    (AP drop/rebuild, restriction clearing, net-absent short-circuit) now run on
-    the worker via _run_activation_job / _activate_profile_on and are covered by
-    TestActivationWorker and the _activate_profile_on tests below.  These pin the
-    episode bookkeeping and the flags on each submitted job.
+    The per-target join mechanics (AP drop/rebuild, restriction clearing,
+    net-absent short-circuit) run on the worker via _run_activation_job /
+    _activate_profile_on and are covered by TestActivationWorker and the
+    _activate_profile_on tests below.  These pin the episode bookkeeping and
+    the flags on each submitted job.
     """
 
     def _pre(self, watcher, now=0.0):

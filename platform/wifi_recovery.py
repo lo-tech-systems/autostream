@@ -12,11 +12,10 @@ recovery-action ladder.  The bounded sysfs primitives live in
 
 Every public/helper function takes a :class:`RecoveryContext` as its first
 argument — a narrow view of the watcher exposing only the STATE, the reset/
-quarantine/reboot constants and the policy helpers this module uses (the ``w``
-seam narrowed, WP-11).  The watcher constructs it once and passes it where the
-whole module used to go; the recovery helpers call each other directly, threading
-the same ``ctx``.  ``autostream_wifi_network`` is imported directly (shared module
-object, so patching it affects both).
+quarantine/reboot constants and the policy helpers this module uses.  The
+watcher constructs it once and passes it in; the recovery helpers call each
+other directly, threading the same ``ctx``.  ``autostream_wifi_network`` is
+imported directly (shared module object, so patching it affects both).
 """
 from __future__ import annotations
 

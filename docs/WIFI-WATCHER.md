@@ -13,13 +13,15 @@ web UI by the presence of `/tmp/apmode`.
 ## Implementation map
 
 The installed recovery component is a star topology centered on
-`platform/wifi_watcher`. The watcher owns global `STATE`, `RECOVERY_STATE`,
-locks, constants, startup, and thin compatibility wrappers. Split modules are
-deployed beside it and receive narrow context objects or the watcher module:
+`platform/wifi_watcher.py`. The watcher owns global `STATE`, `RECOVERY_STATE`,
+locks, constants, startup, and the monitor-loop driver. Split modules are
+deployed beside it, each receiving a narrow context object built once at
+startup:
 
 | Module | Responsibility |
 |---|---|
-| `platform/wifi_watcher` | Startup, constants, shared state, fact gathering, setup/AP primitives, reboot guard, loop wiring, compatibility wrappers. |
+| `platform/wifi_watcher.py` | Startup, constants, shared state, fact gathering, setup/AP primitives, reboot guard, loop wiring, context composition. |
+| `platform/wifi_state.py` | Data-only state module: `NetworkMonitorState`, `state_lock`, and the per-concern state fragments (apply/control/log-level, mDNS, status snapshot, adoption). |
 | `platform/wifi_policy.py` | Pure decision core: `Mode`, `HotspotPurpose`, `PURPOSE_TABLE`, `next_mode`, recovery ladder, BSSID roam selection. |
 | `platform/wifi_loop.py` | Ordered monitor-loop phases and `step_*` handlers. |
 | `platform/wifi_activation.py` | Single-slot activation worker, activation jobs/results, loop-thread success/failure tails. |

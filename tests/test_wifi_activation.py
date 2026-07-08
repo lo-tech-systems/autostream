@@ -28,7 +28,7 @@ from _wifi_fixtures import _adapter, _facts_for
 
 
 class TestClientUpTail:
-    """WP-3 — the single shared 'a client came up' choreography (client_up_tail)."""
+    """The single shared 'a client came up' choreography (client_up_tail)."""
 
     def _adapter(self, ifname="wlan1", mac="AA:BB:CC:DD:EE:01", stable_id="usb0"):
         a = MagicMock()
@@ -316,9 +316,8 @@ class TestActivationWorker:
 class TestActivateClient:
     """Flag-matrix unit tests for the worker-half + loop-half tail composition.
 
-    WP-10 retired the synchronous activate_client facade; these drive the same
-    composition directly (_run_activation_job then apply_activation_result), which
-    is exactly what the facade did, so the tail-flag matrix stays covered."""
+    These drive the composition directly (_run_activation_job then
+    apply_activation_result) so the tail-flag matrix stays covered."""
 
     def _run(self, watcher, ifname="wlan1", *, profile=None, **flags):
         wait = flags.get("wait_for_validation", True)

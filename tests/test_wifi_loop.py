@@ -72,9 +72,8 @@ class TestConnectivityHysteresis:
         assert watcher.STATE.conn_unhealthy_checks == 0
 
     def test_nm_disconnected_present_usb_is_soft(self, watcher):
-        # C2-WP3: no active client this pass, but the recorded USB is still present
-        # (NM merely disconnected it) -> soft, debounced 2 passes (the behaviour the
-        # retired overlay counter used to provide).
+        # No active client this pass, but the recorded USB is still present
+        # (NM merely disconnected it) -> soft, debounced 2 passes.
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:35", is_usb=True)
         watcher.STATE.connectivity_ok = True
         facts = self._facts(watcher, [usb], None)  # USB present, not the active client
@@ -601,7 +600,7 @@ class TestLoopHandlers:
 
     def test_manual_ap_control_action_enters_when_not_in_ap(self, watcher):
         # A manual_ap control action enters a MANUAL hotspot via the shared
-        # control channel (folded from the legacy ap_request_event path).
+        # control channel.
         watcher.STATE.setup_mode = False
         with patch.object(watcher, "enter_setup_mode") as enter:
             watcher.process_control_action("manual_ap", {"reason": "user"})

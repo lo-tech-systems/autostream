@@ -26,7 +26,7 @@ from _wifi_fixtures import (
 
 
 class TestHotspotController:
-    """WP-8 — HotspotController owns the start/stop/rebuild/clear-stale sequencing
+    """HotspotController owns the start/stop/rebuild/clear-stale sequencing
     and pins the flag-ordering invariants."""
 
     def test_start_sets_flag_when_ap_started(self, watcher):
@@ -100,7 +100,7 @@ class TestHotspotController:
 
 
 class TestHotspotStationCount:
-    """WP-6 — the AP station-count primitive (iw dev <ifname> station dump)."""
+    """The AP station-count primitive (iw dev <ifname> station dump)."""
 
     _DUMP = (
         "Station dc:62:79:91:4d:d6 (on wlan0)\n"
