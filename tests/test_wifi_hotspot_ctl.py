@@ -31,8 +31,8 @@ class TestHotspotController:
 
     def test_start_sets_flag_when_ap_started(self, watcher):
         watcher.STATE.setup_mode = True   # start_ap_mode leaves it set (AP came up)
-        with patch.object(watcher, "start_ap_mode") as start, \
-             patch.object(watcher, "update_apmode_flag") as flag:
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as start, \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as flag:
             watcher.hotspot_controller.start()
         start.assert_called_once()
         flag.assert_called_once_with(True)
@@ -42,23 +42,23 @@ class TestHotspotController:
         def _abort():
             watcher.STATE.setup_mode = False
         watcher.STATE.setup_mode = True
-        with patch.object(watcher, "start_ap_mode", side_effect=_abort), \
-             patch.object(watcher, "update_apmode_flag") as flag:
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode", side_effect=_abort), \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as flag:
             watcher.hotspot_controller.start()
         flag.assert_not_called()
 
     def test_stop_tears_down_ap_before_removing_flag(self, watcher):
         order: list[str] = []
-        with patch.object(watcher, "stop_ap_mode", side_effect=lambda: order.append("stop_ap")), \
-             patch.object(watcher, "update_apmode_flag",
+        with patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode", side_effect=lambda: order.append("stop_ap")), \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag",
                           side_effect=lambda v: order.append(f"flag_{v}")):
             watcher.hotspot_controller.stop()
         assert order == ["stop_ap", "flag_False"]
 
     def test_rebuild_reasserts_setup_and_rebuilds(self, watcher):
         watcher.STATE.setup_mode = False   # a racing leave cleared it mid-drop
-        with patch.object(watcher, "start_ap_mode") as start, \
-             patch.object(watcher, "update_apmode_flag") as flag:
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as start, \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as flag:
             watcher.hotspot_controller.rebuild()
         assert watcher.STATE.setup_mode is True   # re-asserted
         start.assert_called_once()
@@ -71,8 +71,8 @@ class TestHotspotController:
             watcher.STATE.setup_mode = False
             watcher.STATE.hotspot = None
         watcher.STATE.setup_mode = False
-        with patch.object(watcher, "start_ap_mode", side_effect=_nmcli_failure) as start, \
-             patch.object(watcher, "update_apmode_flag") as flag:
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode", side_effect=_nmcli_failure) as start, \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as flag:
             watcher.hotspot_controller.rebuild()
         start.assert_called_once()
         flag.assert_not_called()
@@ -80,7 +80,7 @@ class TestHotspotController:
 
     def test_clear_stale_deletes_ap_and_clears_flag(self, watcher):
         with patch.object(watcher.nm, "delete_connection") as delete, \
-             patch.object(watcher, "clear_apmode_flag") as clear:
+             patch.object(watcher.HOTSPOT_CTX, "clear_apmode_flag") as clear:
             watcher.hotspot_controller.clear_stale()
         delete.assert_called_once_with(watcher.AP_CONNECTION_NAME)
         clear.assert_called_once()
@@ -144,8 +144,8 @@ class TestHotspotStationCount:
         watcher.STATE.saved_ssid_visible = True
         watcher.STATE.saved_ssid_name = "Old"
         watcher.STATE.rejoin_dismissed = True
-        with patch.object(watcher, "start_ap_mode"), \
-             patch.object(watcher, "update_apmode_flag"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode"), \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag"):
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.MANUAL, "x")
         assert watcher.STATE.saved_ssid_visible is False
         assert watcher.STATE.saved_ssid_name == ""

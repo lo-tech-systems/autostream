@@ -179,8 +179,8 @@ class TestActivationWorker:
         job = self._job(watcher, drop_hotspot=True)
         with patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
              patch.object(watcher.ACTIVATION_CTX, "stop_ap_mode") as stop_ap, \
-             patch.object(watcher, "start_ap_mode") as start_ap, \
-             patch.object(watcher, "update_apmode_flag") as apflag:
+             patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as start_ap, \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as apflag:
             r = watcher._run_activation_job(job)
         assert r.ok is False
         stop_ap.assert_called_once()
@@ -322,8 +322,8 @@ class TestActivateClient:
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave, \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover") as avahi, \
              patch.object(watcher.ACTIVATION_CTX, "stop_ap_mode") as stop_ap, \
-             patch.object(watcher, "start_ap_mode") as start_ap, \
-             patch.object(watcher, "update_apmode_flag") as apflag, \
+             patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as start_ap, \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as apflag, \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)) as run_cmd, \
              patch.object(watcher.nm, "disconnect_device") as nm_disconnect, \
              patch.object(watcher.wifi_recovery, "clear_noip_failures") as clear_noip, \
@@ -496,8 +496,8 @@ class TestAttemptOnTargets:
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=[hotspot]), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=hotspot), \
              patch.object(watcher, "stop_ap_mode") as stop_ap, \
-             patch.object(watcher, "start_ap_mode") as start_ap, \
-             patch.object(watcher, "update_apmode_flag") as apflag, \
+             patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as start_ap, \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as apflag, \
              patch.object(watcher.ACTIVATION_CTX, "leave_setup_mode") as leave:
             result = watcher.attempt_on_targets([hotspot], lambda adapter: False)
 
@@ -515,8 +515,8 @@ class TestAttemptOnTargets:
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=[usb]), \
              patch.object(watcher, "resolve_hotspot_adapter", return_value=usb), \
              patch.object(watcher, "stop_ap_mode") as stop_ap, \
-             patch.object(watcher, "start_ap_mode") as start_ap, \
-             patch.object(watcher, "update_apmode_flag") as apflag:
+             patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as start_ap, \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag") as apflag:
             result = watcher.attempt_on_targets([usb], lambda adapter: False)
 
         assert result is None

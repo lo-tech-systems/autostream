@@ -360,8 +360,8 @@ class TestEnterLeaveSetupMode:
     def test_enter_sets_setup_mode_true(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
         watcher.AP_MODE_FLAG_PATH = str(flag)
-        with patch.object(watcher, "start_ap_mode"), \
-             patch.object(watcher, "stop_ap_mode"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode"), \
+             patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"):
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "test")
         assert watcher.STATE.setup_mode is True
         assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.FIRST_RUN
@@ -369,16 +369,16 @@ class TestEnterLeaveSetupMode:
     def test_enter_creates_ap_flag_file(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
         watcher.AP_MODE_FLAG_PATH = str(flag)
-        with patch.object(watcher, "start_ap_mode"), \
-             patch.object(watcher, "stop_ap_mode"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode"), \
+             patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"):
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "test")
         assert flag.exists()
 
     def test_enter_is_idempotent(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
         watcher.AP_MODE_FLAG_PATH = str(flag)
-        with patch.object(watcher, "start_ap_mode") as mock_start, \
-             patch.object(watcher, "stop_ap_mode"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as mock_start, \
+             patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"):
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "first")
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.MANUAL, "second")
         # start_ap_mode called only once; the original session is kept.
@@ -390,8 +390,8 @@ class TestEnterLeaveSetupMode:
         flag.write_text("1\n")
         watcher.AP_MODE_FLAG_PATH = str(flag)
         watcher.STATE.setup_mode = True
-        with patch.object(watcher, "start_ap_mode"), \
-             patch.object(watcher, "stop_ap_mode"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode"), \
+             patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"):
             watcher.leave_setup_mode("done")
         assert watcher.STATE.setup_mode is False
 
@@ -401,8 +401,8 @@ class TestEnterLeaveSetupMode:
         watcher.AP_MODE_FLAG_PATH = str(flag)
         watcher.STATE.setup_mode = True
         watcher.STATE.last_active_path_seen = 1.0
-        with patch.object(watcher, "start_ap_mode"), \
-             patch.object(watcher, "stop_ap_mode"), \
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode"), \
+             patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"), \
              patch("time.monotonic", return_value=123.0):
             watcher.leave_setup_mode("done")
         assert watcher.STATE.last_active_path_seen == 123.0
@@ -412,8 +412,8 @@ class TestEnterLeaveSetupMode:
         flag.write_text("1\n")
         watcher.AP_MODE_FLAG_PATH = str(flag)
         watcher.STATE.setup_mode = True
-        with patch.object(watcher, "start_ap_mode"), \
-             patch.object(watcher, "stop_ap_mode"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode"), \
+             patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"):
             watcher.leave_setup_mode("done")
         assert not flag.exists()
 
@@ -421,7 +421,7 @@ class TestEnterLeaveSetupMode:
         flag = tmp_path / "apmode"
         watcher.AP_MODE_FLAG_PATH = str(flag)
         watcher.STATE.setup_mode = False
-        with patch.object(watcher, "stop_ap_mode") as mock_stop:
+        with patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode") as mock_stop:
             watcher.leave_setup_mode("done")
         mock_stop.assert_not_called()
 
@@ -432,8 +432,8 @@ class TestEnterLeaveSetupMode:
         watcher.AP_MODE_FLAG_PATH = str(flag)
         assert not hasattr(watcher.STATE, "ap_exhausted")
         assert not hasattr(watcher.STATE, "force_setup_mode")
-        with patch.object(watcher, "start_ap_mode") as mock_start, \
-             patch.object(watcher, "stop_ap_mode"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode") as mock_start, \
+             patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"):
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "first")
             watcher.leave_setup_mode("done")
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, "later loss")
@@ -458,8 +458,8 @@ class TestEnterLeaveSetupMode:
             if not in_setup and flag.exists():
                 flag.unlink()
 
-        with patch.object(watcher, "stop_ap_mode", side_effect=_stop), \
-             patch.object(watcher, "update_apmode_flag", side_effect=_update_flag):
+        with patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode", side_effect=_stop), \
+             patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag", side_effect=_update_flag):
             watcher.leave_setup_mode("ordering-test")
 
         assert order == ["stop_ap", "flag_False"], f"Wrong order: {order}"
@@ -548,7 +548,7 @@ class TestStartApModeNmcliFailure:
             stack.enter_context(patch.object(
                 watcher.nm, "add_ap_connection",
                 return_value=MagicMock(returncode=1, stderr="failed")))
-            flag = stack.enter_context(patch.object(watcher, "update_apmode_flag"))
+            flag = stack.enter_context(patch.object(watcher.HOTSPOT_CTX, "update_apmode_flag"))
             watcher.hotspot_controller.start()
         flag.assert_not_called()
 

@@ -335,7 +335,7 @@ class TestHotspotPurposeMachine:
         # fallback still raises a recovery hotspot (no once-per-boot suppression).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         # Simulate an earlier session that has since been left.
-        with patch.object(watcher, "start_ap_mode"), patch.object(watcher, "stop_ap_mode"):
+        with patch.object(watcher.HOTSPOT_CTX, "start_ap_mode"), patch.object(watcher.HOTSPOT_CTX, "stop_ap_mode"):
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "earlier")
             watcher.leave_setup_mode("earlier done")
         facts = _facts_for(watcher, [builtin], None)

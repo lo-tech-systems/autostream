@@ -164,18 +164,9 @@ import wifi_web
 import wifi_nm
 
 # Hotspot mechanics (start/stop/rebuild/clear-stale sequencing + flag ordering).
-# Deployed beside the watcher; instantiated below once the seam is available.
+# Deployed beside the watcher; instantiated below once its HotspotContext fields
+# (the AP primitives) are defined.
 import wifi_hotspot
-
-
-def _self_module():
-    """Return this watcher module object, for HotspotController's module seam.
-
-    Works whether the watcher is run as a script (__main__) or loaded under an
-    alias by the test harness.  Defined early so it is available at the point
-    ``hotspot_controller`` is constructed.
-    """
-    return sys.modules.get(__name__) or sys.modules.get("__main__") or globals().get("__SELF__")
 
 
 _DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
@@ -282,11 +273,6 @@ NMCLI_QUICK_TIMEOUT = 15                # modify / add / delete / device disconn
 # The single bounded nmcli client: every nmcli invocation passes one of the two
 # timeouts above, so there is no unbounded NetworkManager code path.
 nm = wifi_nm.NMClient(NMCLI_ACTIVATE_TIMEOUT, NMCLI_QUICK_TIMEOUT)
-
-# The single source of hotspot mechanics.  Holds this module across the seam and
-# drives the AP primitives (start_ap_mode / stop_ap_mode / update_apmode_flag /
-# clear_apmode_flag / nm) at call time.
-hotspot_controller = wifi_hotspot.HotspotController(_self_module())
 
 # Avahi mDNS hostname monitoring
 AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname checks
@@ -1270,6 +1256,21 @@ def stop_ap_mode() -> None:
         run_cmd(["systemctl", "stop", DNSMASQ_SERVICE], timeout=NMCLI_QUICK_TIMEOUT)
         wifi_net.remove_dnsmasq_runtime_config(DNSMASQ_RUNTIME_PATH)
         nm.delete_connection(AP_CONNECTION_NAME)
+
+
+# The single source of hotspot mechanics: start/stop/rebuild/clear-stale
+# sequencing and flag ordering, driven through a narrow HotspotContext.
+HOTSPOT_CTX = wifi_hotspot.HotspotContext(
+    STATE=STATE,
+    state_lock=state_lock,
+    nm=nm,
+    AP_CONNECTION_NAME=AP_CONNECTION_NAME,
+    start_ap_mode=start_ap_mode,
+    stop_ap_mode=stop_ap_mode,
+    update_apmode_flag=update_apmode_flag,
+    clear_apmode_flag=clear_apmode_flag,
+)
+hotspot_controller = wifi_hotspot.HotspotController(HOTSPOT_CTX)
 
 
 def scan_all_networks() -> tuple[list[dict], bool]:
