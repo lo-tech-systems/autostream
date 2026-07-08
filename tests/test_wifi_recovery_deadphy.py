@@ -534,7 +534,7 @@ class TestFieldLogRecoveryRegression:
             )
         enter.assert_not_called()  # no hotspot: submitted the onboard client instead
         action = submit.call_args[0][0]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert action.ifname == "wlan0"
 
     def test_in_hotspot_climbs_to_onboard_not_dead_usb(self, watcher):
@@ -542,7 +542,7 @@ class TestFieldLogRecoveryRegression:
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
         with patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"), \
              patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
@@ -554,7 +554,7 @@ class TestFieldLogRecoveryRegression:
         # onboard drop-AP rejoin, not the dead USB probe.
         apply.assert_called_once()
         action = apply.call_args[0][1]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert action.ifname == "wlan0"
         assert action.drop_hotspot is True
 

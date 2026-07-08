@@ -402,7 +402,7 @@ class TestSavedNetworkGating:
 
     def test_has_saved_network_rollback_only(self, watcher):
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            purpose=watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE,
             entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Old", "", ""),
         )

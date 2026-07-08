@@ -318,7 +318,7 @@ class TestAdapterOverlayEvents:
         facts = _facts_for(watcher, [builtin], None)
         event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
                                      reason="no_ip", has_alt_path=True)
-        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as ap:
@@ -327,7 +327,7 @@ class TestAdapterOverlayEvents:
         ap.assert_called_once()
 
     def _rf_stub(self, watcher, *, onboard="", hotspot="", active=""):
-        return watcher.RecoveryFacts(
+        return watcher.wifi_policy.RecoveryFacts(
             adapters_by_ifname={}, onboard_ifname=onboard, usb_ifnames=(),
             preferred_usb_ifname="", hotspot_ifname=hotspot, active_ifname=active,
             saved_configured=True, wired_ok=False, taken_at=1000.0,
@@ -338,8 +338,8 @@ class TestAdapterOverlayEvents:
         facts = _facts_for(watcher, [], None)
         event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
                                      reason="absent", has_alt_path=False)
-        action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
-                                        purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
+        action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ENTER_HOTSPOT,
+                                        purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY)
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts",
                           return_value=self._rf_stub(watcher, onboard="")), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
@@ -349,7 +349,7 @@ class TestAdapterOverlayEvents:
         assert acted is True
         ap.assert_not_called()
         enter.assert_called_once()
-        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_active_usb_no_ip_falls_back_to_onboard_not_hotspot(self, watcher):
         # Regression fix (C2-WP1 review): an active USB with carrier but no IP
@@ -369,7 +369,7 @@ class TestAdapterOverlayEvents:
         enter.assert_not_called()          # onboard fallback, NOT straight to hotspot
         ap.assert_called_once()
         applied = ap.call_args[0][1]
-        assert applied.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert applied.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert applied.ifname == "wlan0"
 
     def test_active_usb_no_ip_with_demoted_onboard_enters_hotspot(self, watcher):
@@ -389,7 +389,7 @@ class TestAdapterOverlayEvents:
             acted = watcher.apply_client_failed(event, facts)
         assert acted is True
         enter.assert_called_once()
-        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_apply_client_failed_onboard_success_sets_fallback(self, watcher):
         # WS1-WP3 async cycle: apply_client_failed submits an ACTIVATE_ONBOARD job
@@ -400,7 +400,7 @@ class TestAdapterOverlayEvents:
         facts = _facts_for(watcher, [builtin, usb], None)
         event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:09",
                                      reason="no_ip", has_alt_path=True)
-        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
              patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True), \
@@ -914,7 +914,7 @@ class TestRecoveryExitEdge:
         # The probe only ever runs from within a recovery hotspot on the onboard.
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
 
     def test_dead_second_radio_falls_through_to_onboard_rejoin(self, watcher):
         # Field-log shape: AP on onboard wlan0, USB wlan1 wedged. The wedged USB
@@ -933,7 +933,7 @@ class TestRecoveryExitEdge:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert action.ifname == "wlan0"
         assert action.drop_hotspot is True
 
@@ -953,7 +953,7 @@ class TestRecoveryExitEdge:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert action.drop_hotspot is True
 
     def test_healthy_second_radio_still_probes_without_dropping_ap(self, watcher):
@@ -970,7 +970,7 @@ class TestRecoveryExitEdge:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_USB
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_USB
         assert action.ifname == "wlan1"
         assert action.drop_hotspot is False
         vis.assert_not_called()   # no AP drop -> no scan-gate
@@ -1002,7 +1002,7 @@ class TestScanGatedRecovery:
     def _in_hotspot(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
 
     def test_second_radio_probes_without_dropping_ap(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -1069,7 +1069,7 @@ class TestScanGatedRecovery:
             watcher._attempt_recovery_reconnect(facts)
         apply.assert_called_once()
         action = apply.call_args[0][1]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert action.drop_hotspot is True
         assert watcher.STATE.saved_ssid_visible is False
 

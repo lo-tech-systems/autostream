@@ -193,7 +193,7 @@ class TestActivationWorker:
         state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u1")
         timed_out = MagicMock(returncode=124, stderr="")
         job = self._job(watcher, kind="activate_profile", profile=state)
-        with patch.object(watcher, "_resolve_committed_uuid", return_value="u1"), \
+        with patch.object(watcher.ACTIVATION_CTX, "_resolve_committed_uuid", return_value="u1"), \
              patch.object(watcher, "run_cmd", return_value=timed_out), \
              patch.object(watcher, "wait_for_connection", return_value=False):
             r = watcher._run_activation_job(job)
@@ -655,7 +655,7 @@ class TestIf2WorkerSessionContract:
 
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
 
         with patch.object(watcher.ACTIVATION_CTX, "configure_wifi_with_nmcli", side_effect=blocking_configure), \
              patch.object(watcher.wifi_activation, "_set_active_client", side_effect=rec_set_active), \
@@ -718,7 +718,7 @@ class TestReconfigureTimeout:
         # tail downgrades the session to an automatic recovery hotspot.
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            purpose=watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE,
             entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""),
         )
@@ -726,7 +726,7 @@ class TestReconfigureTimeout:
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="reconfigure_timeout", index=1)
         watcher._submit_next_reconnect_target()   # index past end -> failure tail
-        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
         assert watcher.STATE.hotspot.rollback is None
 
     def test_timeout_not_restarted_while_episode_active(self, watcher):
@@ -734,12 +734,12 @@ class TestReconfigureTimeout:
         # one is already running.
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE,
+            purpose=watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE,
             entered_at=0.0, rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""))
         watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="reconfigure_timeout")
-        pre = watcher.PreFactsContext(now=watcher.AP_MAX_DURATION + 10, boot_time=0.0, avahi_ok=False)
+        pre = watcher.PreFactsContext(now=watcher.wifi_policy.AP_MAX_DURATION + 10, boot_time=0.0, avahi_ok=False)
         with patch.object(watcher, "handle_reconfigure_timeout") as h:
             v = watcher.step_reconfigure_timeout(pre)
         h.assert_not_called()
@@ -765,7 +765,7 @@ class TestProbePatience:
         absent = MagicMock(returncode=4,
                            stderr="Error: The Wi-Fi network could not be found")
         with patch.object(watcher, "get_configured_network_state", return_value=state), \
-             patch.object(watcher, "_resolve_committed_uuid", return_value="u1"), \
+             patch.object(watcher.ACTIVATION_CTX, "_resolve_committed_uuid", return_value="u1"), \
              patch.object(watcher.nm, "clear_restrictions"), \
              patch.object(watcher.nm, "activate", return_value=absent), \
              patch.object(watcher, "wait_for_connection") as waiter:

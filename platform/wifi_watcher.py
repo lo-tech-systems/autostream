@@ -89,15 +89,17 @@ callables it uses, and none of the split modules import wifi_watcher.
 
 == Explicit state-machine model ==
 
-The operating mode is an explicit ``Mode`` (BOOT / ONLINE / OFFLINE_RECONNECTING
-/ HOTSPOT / REBOOT_PENDING), published as ``device.mode``.  All hotspot
-entry/exit policy is one five-row ``PURPOSE_TABLE`` keyed by ``HotspotPurpose``;
-the live session is a ``HotspotSession`` on STATE.  The decision core is **pure**
-and lives in ``platform/wifi_policy.py``: ``next_mode(state, facts)``, the
-``PURPOSE_TABLE`` lookups, and ``next_recovery_action`` take values in and return
-values out — no STATE mutation, no subprocess, no effects, no ``w`` seam.  The
-watcher re-exports those names and its loop *applies* the returned values each
-pass (setting ``STATE.mode``/``STATE.hotspot`` and invoking effects).  The
+The operating mode is an explicit ``wifi_policy.Mode`` (BOOT / ONLINE /
+OFFLINE_RECONNECTING / HOTSPOT / REBOOT_PENDING), published as
+``device.mode``.  All hotspot entry/exit policy is one five-row
+``wifi_policy.PURPOSE_TABLE`` keyed by ``wifi_policy.HotspotPurpose``; the live
+session is a ``HotspotSession`` on STATE.  The decision core is **pure** and
+lives in ``platform/wifi_policy.py``: ``next_mode(state, facts)``, the
+``PURPOSE_TABLE`` lookups, and ``next_recovery_action`` take values in and
+return values out — no STATE mutation, no subprocess, no effects, no watcher
+seam.  The loop calls those functions directly and *applies* the returned
+values each pass (setting ``STATE.mode``/``STATE.hotspot`` and invoking
+effects).  The
 adapter-remediation overlay (``wifi_recovery.diagnose_client_failure`` and the
 no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
 consumes them and applies the connectivity transition.  Slow transitions run
@@ -142,9 +144,8 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 # Pure connectivity policy: enums, the hotspot purpose table, and the mode /
-# recovery-ladder classifiers.  A standalone effect-free module; re-exported
-# below so existing `wifi_watcher.<name>` references and the `w` seam keep
-# working.
+# recovery-ladder classifiers.  A standalone effect-free module; the hub and
+# every context reference its names directly (`wifi_policy.<name>`).
 import wifi_policy
 
 # Multi-adapter fallback / runtime USB adoption / reconnect-saved episode
@@ -208,20 +209,18 @@ DNSMASQ_RUNTIME_PATH = os.environ.get(
 # Timers (all in seconds)
 NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
 
-BOOT_AP_GRACE = wifi_policy.BOOT_AP_GRACE  # if still offline after boot grace -> enter AP mode
 BOOT_AP_CUTOFF = 15 * 60                # ONLY allow *automatic* entry into AP mode within this many seconds of boot
 # AP mode lifetime for configured devices (fixed, not extended by web activity)
-# and the user-opened-hotspot probe grace now live in wifi_policy (they
-# parameterise PURPOSE_TABLE).  User-initiated hotspots (EXPLICIT_RECONFIGURE /
-# MANUAL) suppress the probe-for-saved-network-return for HOTSPOT_PROBE_GRACE
-# after entry: the user opened the portal to change networks and the old (saved)
-# SSID is almost always still in range, so probing immediately would rejoin —
-# and, on single-radio hardware, tear the hotspot down — before the user can
-# select a new network.  Automatic recovery purposes (BOOT_RECOVERY /
-# USB_LOSS_RECOVERY) use grace 0: they lost connectivity involuntarily and
-# should rejoin as soon as the network returns.
-AP_MAX_DURATION = wifi_policy.AP_MAX_DURATION
-HOTSPOT_PROBE_GRACE = wifi_policy.HOTSPOT_PROBE_GRACE
+# and the user-opened-hotspot probe grace live in wifi_policy (AP_MAX_DURATION,
+# HOTSPOT_PROBE_GRACE, BOOT_AP_GRACE; they parameterise PURPOSE_TABLE).
+# User-initiated hotspots (EXPLICIT_RECONFIGURE / MANUAL) suppress the
+# probe-for-saved-network-return for HOTSPOT_PROBE_GRACE after entry: the user
+# opened the portal to change networks and the old (saved) SSID is almost
+# always still in range, so probing immediately would rejoin — and, on
+# single-radio hardware, tear the hotspot down — before the user can select a
+# new network.  Automatic recovery purposes (BOOT_RECOVERY / USB_LOSS_RECOVERY)
+# use grace 0: they lost connectivity involuntarily and should rejoin as soon
+# as the network returns.
 NO_ACTIVE_PATH_REBOOT_AFTER = 12 * 60 * 60  # if no usable non-hotspot path for 12h -> reboot
 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
@@ -347,21 +346,13 @@ _NON_DISRUPTIVE_ACTIONS = {
 
 # ** EXPLICIT STATE MODEL **
 #
-# These types are the explicit model the watcher runs on: pure data + pure
-# classifiers (no STATE mutation, no subprocess, no effects, no dependency on the
-# `w` seam), living in the standalone platform/wifi_policy.py module (re-exported
-# below).  next_mode() is the pure forward classifier; the loop applies its
+# The explicit model the watcher runs on — connectivity mode, hotspot purpose,
+# the purpose-policy row shape, and the five-row PURPOSE_TABLE — is pure data
+# plus pure classifiers (no STATE mutation, no subprocess, no effects, no
+# dependency on any watcher seam) living in platform/wifi_policy.py.
+# wifi_policy.next_mode() is the pure forward classifier; the loop applies its
 # result by setting STATE.mode each pass, and the mode is published as
 # device.mode.
-
-
-# Connectivity mode, hotspot purpose, the purpose-policy row shape, and the
-# five-row PURPOSE_TABLE now live in the pure wifi_policy module; re-exported
-# here so existing wifi_watcher.<name> references (and tests) keep working.
-Mode = wifi_policy.Mode
-HotspotPurpose = wifi_policy.HotspotPurpose
-PurposePolicy = wifi_policy.PurposePolicy
-PURPOSE_TABLE = wifi_policy.PURPOSE_TABLE
 
 
 @dataclass(frozen=True)
@@ -377,9 +368,10 @@ class HotspotSession:
     """The live hotspot session: purpose + entry time (+ rollback for reconfigure).
 
     deadline / eth_suppressible / probes_return are not stored here — they are
-    looked up in PURPOSE_TABLE[purpose] so policy lives in exactly one place.
+    looked up in wifi_policy.PURPOSE_TABLE[purpose] so policy lives in exactly
+    one place.
     """
-    purpose: HotspotPurpose
+    purpose: "wifi_policy.HotspotPurpose"
     entered_at: float
     rollback: Optional[RollbackSnapshot] = None   # only EXPLICIT_RECONFIGURE
 
@@ -507,8 +499,8 @@ class NetworkMonitorState:
     # Active reconnect-saved episode (single-target-per-pass restore), or None.
     reconnect_episode: "Optional[ReconnectEpisode]" = None
     # Authoritative connectivity mode, applied by the loop each pass from the
-    # pure next_mode() classifier and published as device.mode.
-    mode: "Mode" = field(default_factory=lambda: Mode.BOOT)
+    # pure wifi_policy.next_mode() classifier and published as device.mode.
+    mode: "wifi_policy.Mode" = field(default_factory=lambda: wifi_policy.Mode.BOOT)
 
     # Timers (monotonic seconds)
     boot_time: Optional[float] = None
@@ -771,7 +763,7 @@ def update_apmode_flag(in_setup: bool) -> None:
         logger.warning("Error updating AP mode flag file %s: %s", AP_MODE_FLAG_PATH, e)
 
 
-def hotspot_purpose() -> "Optional[HotspotPurpose]":
+def hotspot_purpose() -> "Optional[wifi_policy.HotspotPurpose]":
     """Return the purpose of the active hotspot session, or None when not hosting."""
     with state_lock:
         return STATE.hotspot.purpose if STATE.hotspot else None
@@ -783,17 +775,18 @@ def _hotspot_blocks_eth(session) -> bool:
     EXPLICIT_RECONFIGURE / MANUAL hotspots are AP-to-connect-a-new-network and
     must not be torn down just because usable Ethernet appears.
     """
-    return session is not None and not PURPOSE_TABLE[session.purpose].eth_suppressible
+    return session is not None and not wifi_policy.PURPOSE_TABLE[session.purpose].eth_suppressible
 
 
-def enter_setup_mode(purpose: "HotspotPurpose", reason: str = "",
+def enter_setup_mode(purpose: "wifi_policy.HotspotPurpose", reason: str = "",
                      rollback: "Optional[RollbackSnapshot]" = None) -> None:
     """Transition into SetupMode and start the hotspot for *purpose*.
 
-    The session lifetime/exit policy is driven entirely by PURPOSE_TABLE[purpose]:
-    FIRST_RUN runs indefinitely; every other purpose runs for AP_MAX_DURATION
-    (30 min).  There is no once-per-boot budget — the recovery hotspot is
-    enterable whenever the device is offline.
+    The session lifetime/exit policy is driven entirely by
+    wifi_policy.PURPOSE_TABLE[purpose]: FIRST_RUN runs indefinitely; every
+    other purpose runs for wifi_policy.AP_MAX_DURATION (30 min).  There is no
+    once-per-boot budget — the recovery hotspot is enterable whenever the
+    device is offline.
     """
     with state_lock:
         if STATE.setup_mode:
@@ -1413,7 +1406,7 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
                 already_in_ap = STATE.setup_mode
             if not already_in_ap:
                 enter_setup_mode(
-                    HotspotPurpose.MANUAL,
+                    wifi_policy.HotspotPurpose.MANUAL,
                     reason=f"manual_request: {params.get('reason') or 'UserRequest'}")
             result = "ok"
         elif action == "reconnect_saved":
@@ -1450,7 +1443,7 @@ def start_explicit_setup() -> None:
     Snapshots the current profile/adapter, disconnects the current client
     session (without deleting its profile), and enters an EXPLICIT_RECONFIGURE
     hotspot.  The 30-minute deadline, no-eth-suppression, and rollback policy all
-    come from PURPOSE_TABLE[EXPLICIT_RECONFIGURE].
+    come from wifi_policy.PURPOSE_TABLE[EXPLICIT_RECONFIGURE].
     """
     rollback = _snapshot_rollback()
     # Disconnect the current client session without deleting its profile.
@@ -1459,7 +1452,7 @@ def start_explicit_setup() -> None:
     if active_ifname:
         nm.disconnect_device(active_ifname)
     logger.info("Explicit network setup starting (explicit_reconfigure)")
-    enter_setup_mode(HotspotPurpose.EXPLICIT_RECONFIGURE,
+    enter_setup_mode(wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE,
                      reason="explicit_reconfigure", rollback=rollback)
 
 
@@ -1485,7 +1478,7 @@ def step_reconnect_episode(pre: "PreFactsContext") -> "Verdict":
 
 def handle_reconfigure_timeout() -> None:
     """30-minute explicit-reconfiguration timeout rollback (starts an episode)."""
-    logger.info("Explicit network setup timed out after %ds; restoring previous", AP_MAX_DURATION)
+    logger.info("Explicit network setup timed out after %ds; restoring previous", wifi_policy.AP_MAX_DURATION)
     start_reconnect_saved_episode(failure_tail="reconfigure_timeout")
 
 
@@ -1558,23 +1551,22 @@ def gather_facts() -> "Facts":
     )
 
 
-# The pure forward mode classifier now lives in wifi_policy (it reads only plain
-# state/facts fields + policy constants); re-exported so the loop and tests keep
-# calling wifi_watcher.next_mode(STATE, facts).
-next_mode = wifi_policy.next_mode
+# The pure forward mode classifier lives in wifi_policy (it reads only plain
+# state/facts fields + policy constants); the loop calls
+# wifi_policy.next_mode(STATE, facts) directly.
 
 
 # ** RECOVERY LADDER (recovery-ladder unification) **
 #
 # The recovery decision is a second pure classifier alongside next_mode:
-# next_recovery_action(state, recovery_facts) -> RecoveryAction.  It now lives in
-# wifi_policy (with RecoveryFacts / RecoveryKind / RecoveryAction); the watcher
-# owns only gather_recovery_facts(), the effectful gatherer that adapts the
-# per-pass runtime facts into the plain RecoveryFacts snapshot.
-RecoveryFacts = wifi_policy.RecoveryFacts
+# wifi_policy.next_recovery_action(state, recovery_facts) ->
+# wifi_policy.RecoveryAction.  It lives in wifi_policy (with RecoveryFacts /
+# RecoveryKind / RecoveryAction); the watcher owns only
+# gather_recovery_facts(), the effectful gatherer that adapts the per-pass
+# runtime facts into the plain RecoveryFacts snapshot.
 
 
-def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
+def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
     """Gather the recovery-ladder snapshot from the per-pass Facts.
 
     Reuses Facts.adapters (single discover per pass) and derives the per-adapter
@@ -1616,7 +1608,7 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
                 and not brf.noip_suppressed and not brf.disabled):
             onboard_ifname = builtin.ifname
 
-    return RecoveryFacts(
+    return wifi_policy.RecoveryFacts(
         adapters_by_ifname=by_ifname,
         onboard_ifname=onboard_ifname,
         usb_ifnames=tuple(a.ifname for a in usb),
@@ -1629,12 +1621,8 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     )
 
 
-# The recovery-ladder enums, action type, and pure classifier now live in
-# wifi_policy; re-exported so the apply sites and tests keep using
-# wifi_watcher.<name>.
-RecoveryKind = wifi_policy.RecoveryKind
-RecoveryAction = wifi_policy.RecoveryAction
-next_recovery_action = wifi_policy.next_recovery_action
+# The recovery-ladder enums, action type, and pure classifier live in
+# wifi_policy; apply sites call wifi_policy.next_recovery_action directly.
 
 
 def _make_playing_status_memo():
@@ -1998,11 +1986,10 @@ def _activation_network_absent(result) -> bool:
 # ** CONFIGURED-NETWORK RECONNECT AND FIRST-BOOT IMPORT **
 #
 # The steady-state reconnect path and first-boot profile adoption/migration
-# live in platform/wifi_config.py.  The seam is narrowed (WP-11 style) to a
-# ConfigContext exposing only the NM client, the state-file paths and the
-# small set of watcher callables the helpers invoke.  The context is built
-# once here; these thin wrappers pass it and remain the entry points used
-# elsewhere in this module and at startup.
+# live in platform/wifi_config.py, which takes a ConfigContext exposing only
+# the NM client, the state-file paths and the small set of watcher callables
+# the helpers invoke.  The context is built once here and passed directly to
+# the module's functions at every call site (production and __main__).
 
 import wifi_config
 
@@ -2017,22 +2004,6 @@ CONFIG_CTX = wifi_config.ConfigContext(
     _activation_network_absent=_activation_network_absent,
     _commit_network_state=_commit_network_state,
 )
-
-
-def connect_to_configured_wifi() -> bool:
-    return wifi_config.connect_to_configured_wifi(CONFIG_CTX)
-
-
-def migrate_client_profiles_autoconnect_no() -> int:
-    return wifi_config.migrate_client_profiles_autoconnect_no(CONFIG_CTX)
-
-
-def import_first_boot_wifi_profile() -> None:
-    wifi_config.import_first_boot_wifi_profile(CONFIG_CTX)
-
-
-def _resolve_committed_uuid(state: "wifi_net.NetworkState") -> str:
-    return wifi_config._resolve_committed_uuid(CONFIG_CTX, state)
 
 
 def _pin_usb_bssid(ifname: str, uuid: str) -> str:
@@ -2080,15 +2051,15 @@ def verify_avahi_after_handover() -> None:
 
     Reuses the existing hostname verification path, then marks a re-announce as
     pending rather than restarting avahi-daemon directly.  The monitor loop owns
-    the actual re-announce (see maybe_reannounce_mdns): it waits for the published
-    address set to settle before restarting, so it re-announces only the surviving
-    interface's address (never re-poisoning clients with the address that is being
-    torn down mid-handover), and de-duplicates with the passive address-change
-    detector so a single restart covers both triggers.
+    the actual re-announce (see wifi_mdns.maybe_reannounce_mdns): it waits for
+    the published address set to settle before restarting, so it re-announces
+    only the surviving interface's address (never re-poisoning clients with the
+    address that is being torn down mid-handover), and de-duplicates with the
+    passive address-change detector so a single restart covers both triggers.
     """
     try:
-        check_and_repair_avahi_hostname()
-        mark_mdns_reannounce_pending("network handover")
+        wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)
+        wifi_mdns.mark_mdns_reannounce_pending(MDNS_CTX, "network handover")
     except Exception as e:
         logger.warning("Avahi handover verification failed: %s", e)
 
@@ -2103,7 +2074,7 @@ ACTIVATION_CTX = wifi_activation.ActivationContext(
     nm=nm,
     hotspot_controller=hotspot_controller,
     logger=logger,
-    HotspotPurpose=HotspotPurpose,
+    HotspotPurpose=wifi_policy.HotspotPurpose,
     Verdict=Verdict,
     WAIT_FOR_CONNECTION_TIMEOUT=WAIT_FOR_CONNECTION_TIMEOUT,
     WAIT_FOR_CONNECTION_INTERVAL=WAIT_FOR_CONNECTION_INTERVAL,
@@ -2112,7 +2083,7 @@ ACTIVATION_CTX = wifi_activation.ActivationContext(
     get_configured_network_state=get_configured_network_state,
     is_wifi_client_healthy=is_wifi_client_healthy,
     wait_for_connection=wait_for_connection,
-    _resolve_committed_uuid=_resolve_committed_uuid,
+    _resolve_committed_uuid=partial(wifi_config._resolve_committed_uuid, CONFIG_CTX),
     enter_setup_mode=enter_setup_mode,
     leave_setup_mode=leave_setup_mode,
     verify_avahi_after_handover=verify_avahi_after_handover,
@@ -2206,7 +2177,7 @@ def apply_client_failed(event, facts: "Facts") -> bool:
 _known_usb_macs: set[str] = set()
 
 
-def _submit_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
+def _submit_client_activation(action: "wifi_policy.RecoveryAction", facts: "Facts") -> bool:
     return wifi_adoption._submit_client_activation(ADOPTION_CTX, action, facts)
 
 
@@ -2330,7 +2301,7 @@ ADOPTION_CTX = wifi_adoption.AdoptionContext(
     logger=logger,
     RECOVERY_CTX=RECOVERY_CTX,
     nm=nm,
-    HotspotPurpose=HotspotPurpose,
+    HotspotPurpose=wifi_policy.HotspotPurpose,
     Verdict=Verdict,
     _last_logged_values=_last_logged_values,
     RECOVERY_SCAN_INTERVAL=RECOVERY_SCAN_INTERVAL,
@@ -2354,12 +2325,11 @@ ADOPTION_CTX = wifi_adoption.AdoptionContext(
 
 # ** RUNTIME NETWORK-STATUS SNAPSHOT **
 #
-# Snapshot construction/publishing lives in platform/wifi_status.py.  It no
-# longer receives the whole watcher module: the seam is narrowed (WP-11) to a
-# StatusContext exposing only the STATE, the three recovery constants and the
-# fact helpers the snapshot surfaces.  The context is built once here; this thin
-# wrapper passes it and remains the loop's entry point (step_publish_state calls
-# it every pass).
+# Snapshot construction/publishing lives in platform/wifi_status.py, which
+# takes a StatusContext exposing only the STATE, the three recovery constants
+# and the fact helpers the snapshot surfaces.  The context is built once here
+# and passed directly to wifi_status.publish_network_status at every call site
+# (step_publish_state calls it every pass).
 
 import wifi_status
 
@@ -2379,23 +2349,15 @@ STATUS_CTX = wifi_status.StatusContext(
 )
 
 
-def publish_network_status(adapters: Optional[list] = None,
-                           wired_connected: Optional[bool] = None,
-                           wired_ok: Optional[bool] = None,
-                           addresses: Optional[dict] = None,
-                           health_fn=None) -> None:
-    wifi_status.publish_network_status(
-        STATUS_CTX, adapters, wired_connected, wired_ok, addresses, health_fn)
-
-
 # ** AVAHI mDNS HOSTNAME MONITORING **
 #
-# The avahi/mDNS block (hostname-drift repair + address-set re-announce debounce)
-# lives in platform/wifi_mdns.py.  It no longer receives the whole watcher module:
-# the seam is narrowed (WP-11) to an ``MdnsContext`` exposing only the STATE, the
-# constants and the callables it uses.  The context is built once here; these thin
-# wrappers pass it and remain the loop's entry points (so the monitor loop keeps
-# calling ``check_and_repair_avahi_hostname()`` / ``maybe_reannounce_mdns()`` etc.).
+# The avahi/mDNS block (hostname-drift repair + address-set re-announce
+# debounce) lives in platform/wifi_mdns.py, which takes an ``MdnsContext``
+# exposing only the STATE, the constants and the callables it uses.  The
+# context is built once here and passed directly to the module's functions at
+# every call site (the monitor loop calls
+# ``wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)`` /
+# ``wifi_mdns.maybe_reannounce_mdns(MDNS_CTX, now)`` etc.).
 
 import wifi_mdns
 
@@ -2414,30 +2376,6 @@ MDNS_CTX = wifi_mdns.MdnsContext(
     log_on_change=log_on_change,
     get_system_hostname=get_system_hostname,
 )
-
-
-def get_avahi_registered_hostname() -> Optional[str]:
-    return wifi_mdns.get_avahi_registered_hostname(MDNS_CTX)
-
-
-def restart_avahi_daemon(reason: str) -> bool:
-    return wifi_mdns.restart_avahi_daemon(MDNS_CTX, reason)
-
-
-def mark_mdns_reannounce_pending(reason: str) -> None:
-    wifi_mdns.mark_mdns_reannounce_pending(MDNS_CTX, reason)
-
-
-def _current_mdns_address_set() -> frozenset:
-    return wifi_mdns._current_mdns_address_set(MDNS_CTX)
-
-
-def maybe_reannounce_mdns(now: float) -> None:
-    wifi_mdns.maybe_reannounce_mdns(MDNS_CTX, now)
-
-
-def check_and_repair_avahi_hostname() -> None:
-    wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)
 
 
 def _maybe_reset_noip_held_usb(adapters: list, now: float) -> bool:
@@ -2475,13 +2413,13 @@ LOOP_CTX = wifi_loop.LoopContext(
     state_lock=state_lock,
     logger=logger,
     Verdict=Verdict,
-    HotspotPurpose=HotspotPurpose,
+    HotspotPurpose=wifi_policy.HotspotPurpose,
     _NON_DISRUPTIVE_ACTIONS=_NON_DISRUPTIVE_ACTIONS,
     control_action_event=control_action_event,
     nm=nm,
     AVAHI_CHECK_INTERVAL=AVAHI_CHECK_INTERVAL,
-    AP_MAX_DURATION=AP_MAX_DURATION,
-    BOOT_AP_GRACE=BOOT_AP_GRACE,
+    AP_MAX_DURATION=wifi_policy.AP_MAX_DURATION,
+    BOOT_AP_GRACE=wifi_policy.BOOT_AP_GRACE,
     BOOT_AP_CUTOFF=BOOT_AP_CUTOFF,
     GW_DOWN_REBOOT_AFTER=GW_DOWN_REBOOT_AFTER,
     GW_DOWN_RECONNECT_AFTER=GW_DOWN_RECONNECT_AFTER,
@@ -2489,8 +2427,8 @@ LOOP_CTX = wifi_loop.LoopContext(
     NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
     CONNECTIVITY_DOWN_DEBOUNCE=CONNECTIVITY_DOWN_DEBOUNCE,
     AP_IFNAME=AP_IFNAME,
-    check_and_repair_avahi_hostname=check_and_repair_avahi_hostname,
-    maybe_reannounce_mdns=maybe_reannounce_mdns,
+    check_and_repair_avahi_hostname=partial(wifi_mdns.check_and_repair_avahi_hostname, MDNS_CTX),
+    maybe_reannounce_mdns=partial(wifi_mdns.maybe_reannounce_mdns, MDNS_CTX),
     revert_expired_log_level=revert_expired_log_level,
     process_control_action=process_control_action,
     handle_reconfigure_timeout=handle_reconfigure_timeout,
@@ -2503,18 +2441,18 @@ LOOP_CTX = wifi_loop.LoopContext(
     bssid_survey_and_roam=bssid_survey_and_roam,
     maybe_reset_noip_held_usb=_maybe_reset_noip_held_usb,
     escalate_dead_adapter_recovery=escalate_dead_adapter_recovery,
-    publish_network_status=publish_network_status,
+    publish_network_status=partial(wifi_status.publish_network_status, STATUS_CTX),
     hotspot_blocks_eth=_hotspot_blocks_eth,
     leave_setup_mode=leave_setup_mode,
     enter_setup_mode=enter_setup_mode,
     set_active_client=_set_active_client,
-    connect_to_configured_wifi=connect_to_configured_wifi,
+    connect_to_configured_wifi=partial(wifi_config.connect_to_configured_wifi, CONFIG_CTX),
     request_network_down_reboot=_request_network_down_reboot,
     attempt_recovery_reconnect=_attempt_recovery_reconnect,
-    next_mode=next_mode,
-    next_recovery_action=next_recovery_action,
-    RecoveryKind=RecoveryKind,
-    PURPOSE_TABLE=PURPOSE_TABLE,
+    next_mode=wifi_policy.next_mode,
+    next_recovery_action=wifi_policy.next_recovery_action,
+    RecoveryKind=wifi_policy.RecoveryKind,
+    PURPOSE_TABLE=wifi_policy.PURPOSE_TABLE,
 )
 
 
@@ -2546,12 +2484,12 @@ if __name__ == "__main__":
     # single managed profile and delete other saved client profiles (marker-gated,
     # runs at most once).  Before the autoconnect sweep so it can query the active
     # connections while they are untouched.
-    import_first_boot_wifi_profile()
+    wifi_config.import_first_boot_wifi_profile(CONFIG_CTX)
     # Idempotently disable NM autoconnect on every managed non-AP client profile
     # (self-healing for pre-existing/installer-imported autoconnect=yes profiles),
     # so the watcher is the sole agent that brings a client up.
     try:
-        migrate_client_profiles_autoconnect_no()
+        wifi_config.migrate_client_profiles_autoconnect_no(CONFIG_CTX)
     except Exception as e:
         logger.warning("autoconnect=no startup migration failed: %s", e)
     # Initial client bring-up is done by the monitor loop's BOOT-window ladder rung

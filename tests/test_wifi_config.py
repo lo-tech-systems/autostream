@@ -55,7 +55,7 @@ class TestFirstBootImport:
              patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
              patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
              patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
-            watcher.import_first_boot_wifi_profile()
+            watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)
         commit.assert_called_once_with("HomeNet", "uuid-home")
         deleted = self._deleted_idents(del_uuid, del_name)
         assert "uuid-old" in deleted
@@ -82,7 +82,7 @@ class TestFirstBootImport:
              patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
              patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
              patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
-            watcher.import_first_boot_wifi_profile()
+            watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)
         # NetB carries the default route -> retained; NetA deleted.
         commit.assert_called_once_with("NetB", "uuid-NetB")
         deleted = self._deleted_idents(del_uuid, del_name)
@@ -98,7 +98,7 @@ class TestFirstBootImport:
              patch.object(watcher.CONFIG_CTX, "_commit_network_state") as commit, \
              patch.object(watcher.wifi_net, "list_wifi_connection_profiles") as lst, \
              patch.object(watcher, "run_cmd") as rc:
-            watcher.import_first_boot_wifi_profile()
+            watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)
         commit.assert_not_called()
         lst.assert_not_called()
         rc.assert_not_called()
@@ -119,7 +119,7 @@ class TestFirstBootImport:
              patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
              patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
              patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
-            watcher.import_first_boot_wifi_profile()
+            watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)
         commit.assert_called_once_with("Managed", "uuid-m")
         assert self._deleted_idents(del_uuid, del_name) == []   # nothing else to delete
         assert os.path.exists(marker)
@@ -143,7 +143,7 @@ class TestFirstBootImport:
              patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
              patch.object(watcher.nm, "delete_by_uuid", return_value=MagicMock(returncode=0, stderr="")) as del_uuid, \
              patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
-            watcher.import_first_boot_wifi_profile()
+            watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)
         deleted = self._deleted_idents(del_uuid, del_name)
         assert "uuid-old" in deleted
         assert "uuid-hs" not in deleted   # AP profile never deleted
@@ -168,7 +168,7 @@ class TestFirstBootImport:
              patch.object(watcher.nm, "set_autoconnect_no", return_value=MagicMock(returncode=0, stderr="")), \
              patch.object(watcher.nm, "delete_by_uuid", side_effect=_del) as del_uuid, \
              patch.object(watcher.nm, "delete_connection", return_value=MagicMock(returncode=0, stderr="")) as del_name:
-            watcher.import_first_boot_wifi_profile()   # must not raise
+            watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)   # must not raise
         deleted = self._deleted_idents(del_uuid, del_name)
         # Both deletions attempted despite the first failing.
         assert "uuid-old" in deleted
@@ -180,7 +180,7 @@ class TestFirstBootImport:
         marker.write_text("done")
         with patch.object(watcher, "FIRST_BOOT_IMPORT_MARKER", str(marker)), \
              patch.object(watcher.wifi_net, "discover_adapters") as disc:
-            watcher.import_first_boot_wifi_profile()
+            watcher.wifi_config.import_first_boot_wifi_profile(watcher.CONFIG_CTX)
         disc.assert_not_called()   # marker present -> no work at all
 
 
@@ -199,7 +199,7 @@ class TestConnectToConfiguredWifiUuid:
              patch.object(watcher.nm, "activate_ident",
                           return_value=MagicMock(returncode=0, stderr="")) as activate, \
              patch.object(watcher, "wait_for_connection") as wait:
-            ok = watcher.connect_to_configured_wifi()
+            ok = watcher.wifi_config.connect_to_configured_wifi(watcher.CONFIG_CTX)
         assert ok is True
         wait.assert_not_called()  # fire-and-forget: no blocking IPv4 wait in the loop
         # restrictions cleared with the resolved UUID, and the activation carries it.
@@ -213,7 +213,7 @@ class TestConnectToConfiguredWifiUuid:
              patch.object(watcher.CONFIG_CTX, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher, "run_cmd",
                           side_effect=lambda c, *a, **k: calls.append(c) or MagicMock(returncode=0)):
-            ok = watcher.connect_to_configured_wifi()
+            ok = watcher.wifi_config.connect_to_configured_wifi(watcher.CONFIG_CTX)
         assert ok is True
         assert not any(isinstance(c, list) and "up" in c for c in calls), (
             "healthy path must not issue nmcli connection up"
@@ -231,7 +231,7 @@ class TestResolveCommittedUuid:
         state = self._state(watcher, uuid="existing-uuid")
         with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name") as resolve, \
              patch.object(watcher.wifi_net, "save_network_state") as save:
-            result = watcher._resolve_committed_uuid(state)
+            result = watcher.wifi_config._resolve_committed_uuid(watcher.CONFIG_CTX, state)
         assert result == "existing-uuid"
         resolve.assert_not_called()
         save.assert_not_called()
@@ -241,7 +241,7 @@ class TestResolveCommittedUuid:
         with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="resolved-uuid") as resolve, \
              patch.object(watcher.wifi_net, "save_network_state") as save:
-            result = watcher._resolve_committed_uuid(state)
+            result = watcher.wifi_config._resolve_committed_uuid(watcher.CONFIG_CTX, state)
         assert result == "resolved-uuid"
         resolve.assert_called_once_with("HomeNetwork")
         save.assert_called_once()
@@ -254,7 +254,7 @@ class TestResolveCommittedUuid:
         with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name",
                           return_value="") as resolve, \
              patch.object(watcher.wifi_net, "save_network_state") as save:
-            result = watcher._resolve_committed_uuid(state)
+            result = watcher.wifi_config._resolve_committed_uuid(watcher.CONFIG_CTX, state)
         assert result == ""
         resolve.assert_called_once_with("HomeNetwork")
         save.assert_not_called()
@@ -262,7 +262,7 @@ class TestResolveCommittedUuid:
     def test_returns_empty_when_name_empty(self, watcher):
         state = self._state(watcher, name="", uuid="")
         with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name") as resolve:
-            result = watcher._resolve_committed_uuid(state)
+            result = watcher.wifi_config._resolve_committed_uuid(watcher.CONFIG_CTX, state)
         assert result == ""
         resolve.assert_not_called()
 
@@ -274,7 +274,7 @@ class TestResolveCommittedUuid:
                           return_value="resolved-uuid"), \
              patch.object(watcher.wifi_net, "save_network_state",
                           side_effect=OSError("disk full")):
-            result = watcher._resolve_committed_uuid(state)
+            result = watcher.wifi_config._resolve_committed_uuid(watcher.CONFIG_CTX, state)
         assert result == "resolved-uuid"
 
     def test_activate_committed_on_resolves_uuid_before_restriction_clear(self, watcher):
@@ -318,7 +318,7 @@ class TestClientProfileAutoconnectMigration:
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           side_effect=lambda ident: modes[ident]), \
              patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
-            count = watcher.migrate_client_profiles_autoconnect_no()
+            count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
 
         assert count == 2
         assert modified == ["uuid-1", "uuid-2"]   # AP profile skipped
@@ -327,7 +327,7 @@ class TestClientProfileAutoconnectMigration:
         with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
                           return_value=[]), \
              patch.object(watcher, "run_cmd") as run:
-            count = watcher.migrate_client_profiles_autoconnect_no()
+            count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
         assert count == 0
         run.assert_not_called()
 
@@ -342,7 +342,7 @@ class TestClientProfileAutoconnectMigration:
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           return_value="infrastructure"), \
              patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
-            count = watcher.migrate_client_profiles_autoconnect_no()
+            count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
         assert count == 1   # uuid-1 failed, uuid-2 succeeded, sweep continued
 
     def test_sweep_converts_by_setting_autoconnect_no(self, watcher):
@@ -365,7 +365,7 @@ class TestClientProfileAutoconnectMigration:
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           side_effect=lambda ident: modes[ident]), \
              patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
-            count = watcher.migrate_client_profiles_autoconnect_no()
+            count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
 
         assert count == 1
         assert issued == [("uuid-yes", "Home")]        # client only; AP skipped

@@ -178,7 +178,7 @@ class TestBootClientBringup:
         assert v is watcher.Verdict.OWN_PASS
         apply.assert_called_once()
         action = apply.call_args[0][0]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_USB
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_USB
         assert action.ifname == "wlan1"    # USB tried before the built-in
 
     def test_boot_window_falls_to_onboard_when_no_usb(self, watcher):
@@ -191,7 +191,7 @@ class TestBootClientBringup:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.OWN_PASS
         action = apply.call_args[0][0]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert action.ifname == "wlan0"
 
     def test_wired_ok_short_circuits(self, watcher):
@@ -222,7 +222,7 @@ class TestBootClientBringup:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:06", is_usb=True)
         fctx = self._fctx(watcher, [builtin, usb], None,
-                          now=watcher.BOOT_AP_GRACE + 10.0, boot_time=0.0)
+                          now=watcher.wifi_policy.BOOT_AP_GRACE + 10.0, boot_time=0.0)
         with patch.object(watcher, "_submit_client_activation") as apply:
             v = watcher.step_boot_client_bringup(fctx)
         assert v is watcher.Verdict.CONTINUE
@@ -263,7 +263,7 @@ class TestHotspotPurposeMachine:
         # without dropping the AP (WP6 second-radio path).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
-        self._session(watcher, watcher.HotspotPurpose.BOOT_RECOVERY, entered_at=100.0)
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=100.0)
         with patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect") as probe:
             _run_monitor_once(watcher, now=120.0, wifi_cfg=True, adapters=[builtin, usb])
         probe.assert_called_once()
@@ -271,7 +271,7 @@ class TestHotspotPurposeMachine:
     def test_first_run_does_not_probe(self, watcher):
         # FIRST_RUN has nothing saved to probe for.
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
-        self._session(watcher, watcher.HotspotPurpose.FIRST_RUN, entered_at=100.0)
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.FIRST_RUN, entered_at=100.0)
         with patch.object(watcher, "_attempt_recovery_reconnect") as probe, \
              patch.object(watcher, "leave_setup_mode") as leave:
             _run_monitor_once(watcher, now=120.0, wifi_cfg=False, adapters=[usb])
@@ -280,15 +280,15 @@ class TestHotspotPurposeMachine:
 
     def test_first_run_is_indefinite(self, watcher):
         # Past 30 minutes, an unconfigured FIRST_RUN hotspot is not torn down.
-        self._session(watcher, watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
-        now = watcher.AP_MAX_DURATION + 60.0
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+        now = watcher.wifi_policy.AP_MAX_DURATION + 60.0
         with patch.object(watcher, "leave_setup_mode") as leave:
             _run_monitor_once(watcher, now=now, wifi_cfg=False)
         leave.assert_not_called()
 
     def test_recovery_purpose_expires_at_deadline(self, watcher):
-        self._session(watcher, watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
-        now = watcher.AP_MAX_DURATION + 60.0
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+        now = watcher.wifi_policy.AP_MAX_DURATION + 60.0
         with patch.object(watcher.LOOP_CTX, "leave_setup_mode") as leave, \
              patch.object(watcher, "_attempt_recovery_reconnect"):
             _run_monitor_once(watcher, now=now, wifi_cfg=True)
@@ -296,7 +296,7 @@ class TestHotspotPurposeMachine:
 
     def test_explicit_hotspot_not_torn_down_by_ethernet(self, watcher):
         # EXPLICIT_RECONFIGURE is not eth-suppressible (Section 2.3).
-        self._session(watcher, watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=100.0)
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=100.0)
         with patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher, "_attempt_recovery_reconnect"):
             _run_monitor_once(watcher, now=120.0, wifi_cfg=False,
@@ -307,8 +307,8 @@ class TestHotspotPurposeMachine:
         # A user opened the portal to change networks; within HOTSPOT_PROBE_GRACE
         # the watcher must NOT probe for (and rejoin) the old saved network, or it
         # would tear the hotspot down before the user can pick a new one.
-        self._session(watcher, watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=100.0)
-        within = 100.0 + watcher.HOTSPOT_PROBE_GRACE - 1.0
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=100.0)
+        within = 100.0 + watcher.wifi_policy.HOTSPOT_PROBE_GRACE - 1.0
         with patch.object(watcher, "_attempt_recovery_reconnect") as probe:
             _run_monitor_once(watcher, now=within, wifi_cfg=True)
         probe.assert_not_called()
@@ -316,8 +316,8 @@ class TestHotspotPurposeMachine:
     def test_user_hotspot_probes_after_grace(self, watcher):
         # Once the grace window elapses, the user-initiated hotspot resumes
         # probing for the saved network (idle-user recovery before the deadline).
-        self._session(watcher, watcher.HotspotPurpose.MANUAL, entered_at=0.0)
-        after = watcher.HOTSPOT_PROBE_GRACE + 30.0
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.MANUAL, entered_at=0.0)
+        after = watcher.wifi_policy.HOTSPOT_PROBE_GRACE + 30.0
         with patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect") as probe:
             _run_monitor_once(watcher, now=after, wifi_cfg=True)
         probe.assert_called_once()
@@ -325,7 +325,7 @@ class TestHotspotPurposeMachine:
     def test_recovery_hotspot_probes_immediately_no_grace(self, watcher):
         # Automatic recovery purposes have probe_grace_s == 0: they lost the path
         # involuntarily and must probe from the first pass.
-        self._session(watcher, watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=100.0)
+        self._session(watcher, watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=100.0)
         with patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect") as probe:
             _run_monitor_once(watcher, now=101.0, wifi_cfg=True)
         probe.assert_called_once()
@@ -336,14 +336,14 @@ class TestHotspotPurposeMachine:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         # Simulate an earlier session that has since been left.
         with patch.object(watcher, "start_ap_mode"), patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "earlier")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "earlier")
             watcher.leave_setup_mode("earlier done")
         facts = _facts_for(watcher, [builtin], None)
         event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:0a",
                                      reason="later usb loss", has_alt_path=False)
-        action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
-                                        purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
-        rf = watcher.RecoveryFacts(
+        action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ENTER_HOTSPOT,
+                                        purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY)
+        rf = watcher.wifi_policy.RecoveryFacts(
             adapters_by_ifname={}, onboard_ifname="", usb_ifnames=(),
             preferred_usb_ifname="", hotspot_ifname="", active_ifname="",
             saved_configured=True, wired_ok=False, taken_at=1000.0)
@@ -353,7 +353,7 @@ class TestHotspotPurposeMachine:
             acted = watcher.apply_client_failed(event, facts)
         assert acted is True
         enter.assert_called_once()
-        assert enter.call_args[0][0] is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
 
 class TestWs1Wp3AsyncRecovery:
@@ -374,7 +374,7 @@ class TestWs1Wp3AsyncRecovery:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
         facts = _facts_for(watcher, [builtin, usb], None)
-        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
             watcher._submit_client_activation(action, facts)
         job = submit.call_args[0][0]
@@ -399,8 +399,8 @@ class TestWs1Wp3AsyncRecovery:
         watcher.STATE.onboard_activation_failures = 2
         facts = _facts_for(watcher, [], None)
         hctx = self._hctx(watcher, facts, conn_ok=True)
-        with patch.object(watcher, "publish_network_status"), \
-             patch.object(watcher, "next_mode", return_value=watcher.Mode.ONLINE):
+        with patch.object(watcher.LOOP_CTX, "publish_network_status"), \
+             patch.object(watcher.LOOP_CTX, "next_mode", return_value=watcher.wifi_policy.Mode.ONLINE):
             watcher.step_publish_state(hctx)
         assert watcher.STATE.onboard_activation_failures == 0
 
@@ -439,10 +439,10 @@ class TestWs1Wp3AsyncRecovery:
     def test_hotspot_deadline_deferred_while_transitioning(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
         watcher.STATE.transitioning = True
         facts = _facts_for(watcher, [], None, wifi_cfg=True,
-                           now=watcher.AP_MAX_DURATION + 60.0)
+                           now=watcher.wifi_policy.AP_MAX_DURATION + 60.0)
         hctx = self._hctx(watcher, facts)
         with patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher, "_attempt_recovery_reconnect") as probe:
@@ -471,7 +471,7 @@ class TestBootEntryOnboardFirst:
             )
         submit.assert_called_once()
         action = submit.call_args[0][0]
-        assert action.kind is watcher.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
         assert action.ifname == "wlan0"
         enter.assert_not_called()   # onboard submitted -> no hotspot this pass
 
@@ -493,7 +493,7 @@ class TestBootEntryOnboardFirst:
             )
         submit.assert_not_called()   # onboard budget spent, USB wedged -> no client path
         enter.assert_called_once()
-        assert enter.call_args[0][0] is watcher.HotspotPurpose.BOOT_RECOVERY
+        assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY
 
 
 class TestLoopHandlers:
@@ -559,7 +559,7 @@ class TestLoopHandlers:
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:41", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb, now=100.0)
         hctx = self._hctx(watcher, facts, wifi_connected=True, client_ok=False, conn_ok=False)
-        with patch.object(watcher, "next_recovery_action") as nra, \
+        with patch.object(watcher.LOOP_CTX, "next_recovery_action") as nra, \
              patch.object(watcher, "enter_setup_mode") as enter:
             v = watcher.step_boot_ap_entry(hctx)
         assert v is watcher.Verdict.CONTINUE
@@ -571,8 +571,8 @@ class TestLoopHandlers:
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:42", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb, now=100.0)
         hctx = self._hctx(watcher, facts, wifi_connected=True, client_ok=False, conn_ok=False)
-        action = watcher.RecoveryAction(watcher.RecoveryKind.ENTER_HOTSPOT,
-                                        purpose=watcher.HotspotPurpose.BOOT_RECOVERY)
+        action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ENTER_HOTSPOT,
+                                        purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY)
         with patch.object(watcher.LOOP_CTX, "gather_recovery_facts"), \
              patch.object(watcher.LOOP_CTX, "next_recovery_action", return_value=action) as nra, \
              patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter:
@@ -606,7 +606,7 @@ class TestLoopHandlers:
         with patch.object(watcher, "enter_setup_mode") as enter:
             watcher.process_control_action("manual_ap", {"reason": "user"})
         enter.assert_called_once()
-        assert enter.call_args[0][0] is watcher.HotspotPurpose.MANUAL
+        assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.MANUAL
         assert watcher.STATE.last_control_result == "ok"
 
     def test_manual_ap_control_action_noop_when_already_in_ap(self, watcher):
@@ -723,13 +723,13 @@ class TestExplicitModeClassifier:
         # The loop applies the classifier by setting STATE.mode each full pass.
         _run_monitor_once(watcher, now=1000.0, wifi_cfg=True,
                           wifi_connected=True, client_ok=True)
-        assert watcher.STATE.mode is watcher.Mode.ONLINE
+        assert watcher.STATE.mode is watcher.wifi_policy.Mode.ONLINE
 
     def test_snapshot_publishes_authoritative_state_mode(self, watcher):
         # device.mode publishes the authoritative STATE.mode the loop applies.
         usb = _adapter(watcher, "wlan0", "AA:BB:CC:DD:EE:09", is_usb=True)
         watcher.STATE.setup_mode = True
-        watcher.STATE.mode = watcher.Mode.HOTSPOT
+        watcher.STATE.mode = watcher.wifi_policy.Mode.HOTSPOT
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
@@ -894,7 +894,7 @@ class TestNetworkMonitorCatchAll:
         watcher.STATE.last_active_path_seen = 0.0
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.MANUAL, entered_at=now - 10.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.MANUAL, entered_at=now - 10.0)
         with patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher, "reboot_system", return_value=True) as reboot:
             _run_monitor_once(

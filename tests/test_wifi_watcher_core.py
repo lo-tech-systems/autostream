@@ -362,16 +362,16 @@ class TestEnterLeaveSetupMode:
         watcher.AP_MODE_FLAG_PATH = str(flag)
         with patch.object(watcher, "start_ap_mode"), \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "test")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "test")
         assert watcher.STATE.setup_mode is True
-        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.FIRST_RUN
+        assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.FIRST_RUN
 
     def test_enter_creates_ap_flag_file(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
         watcher.AP_MODE_FLAG_PATH = str(flag)
         with patch.object(watcher, "start_ap_mode"), \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "test")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "test")
         assert flag.exists()
 
     def test_enter_is_idempotent(self, watcher, tmp_path):
@@ -379,11 +379,11 @@ class TestEnterLeaveSetupMode:
         watcher.AP_MODE_FLAG_PATH = str(flag)
         with patch.object(watcher, "start_ap_mode") as mock_start, \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "first")
-            watcher.enter_setup_mode(watcher.HotspotPurpose.MANUAL, "second")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "first")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.MANUAL, "second")
         # start_ap_mode called only once; the original session is kept.
         assert mock_start.call_count == 1
-        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.FIRST_RUN
+        assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.FIRST_RUN
 
     def test_leave_sets_setup_mode_false(self, watcher, tmp_path):
         flag = tmp_path / "apmode"
@@ -434,12 +434,12 @@ class TestEnterLeaveSetupMode:
         assert not hasattr(watcher.STATE, "force_setup_mode")
         with patch.object(watcher, "start_ap_mode") as mock_start, \
              patch.object(watcher, "stop_ap_mode"):
-            watcher.enter_setup_mode(watcher.HotspotPurpose.FIRST_RUN, "first")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "first")
             watcher.leave_setup_mode("done")
-            watcher.enter_setup_mode(watcher.HotspotPurpose.USB_LOSS_RECOVERY, "later loss")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, "later loss")
         assert mock_start.call_count == 2
         assert watcher.STATE.setup_mode is True
-        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_leave_calls_stop_ap_before_removing_flag(self, watcher, tmp_path):
         """stop_ap_mode must run before the AP flag is removed (ordering invariant)."""
@@ -478,7 +478,7 @@ class TestStartApModeNmcliFailure:
     def test_add_ap_connection_failure_clears_setup_mode(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.FIRST_RUN, entered_at=0.0)
         with ExitStack() as stack:
             for p in self._patch_common(watcher):
                 stack.enter_context(p)
@@ -498,7 +498,7 @@ class TestStartApModeNmcliFailure:
     def test_activate_ap_failure_clears_setup_mode(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.FIRST_RUN, entered_at=0.0)
         with ExitStack() as stack:
             for p in self._patch_common(watcher):
                 stack.enter_context(p)
@@ -518,7 +518,7 @@ class TestStartApModeNmcliFailure:
     def test_success_leaves_setup_mode_and_starts_dnsmasq(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.FIRST_RUN, entered_at=0.0)
         with ExitStack() as stack:
             for p in self._patch_common(watcher):
                 stack.enter_context(p)
@@ -540,7 +540,7 @@ class TestStartApModeNmcliFailure:
         # nmcli's verdict, not just the pre-existing abort paths.
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.FIRST_RUN, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.FIRST_RUN, entered_at=0.0)
         with ExitStack() as stack:
             for p in self._patch_common(watcher):
                 stack.enter_context(p)
@@ -633,7 +633,7 @@ class TestStartExplicitSetup:
             watcher.start_explicit_setup()
         enter.assert_called_once()
         # Enters an EXPLICIT_RECONFIGURE hotspot carrying the rollback snapshot.
-        assert enter.call_args[0][0] is watcher.HotspotPurpose.EXPLICIT_RECONFIGURE
+        assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE
         rollback = enter.call_args.kwargs["rollback"]
         assert rollback.connection_name == "Home"
         assert rollback.connection_uuid == "uuid-1"
@@ -650,17 +650,8 @@ class TestStartExplicitSetup:
 
 
 class TestWifiPolicyModule:
-    """Phase B: the pure policy core lives in a standalone importable module and
-    is re-exported by the watcher for backwards compatibility."""
-
-    def test_reexports_are_the_policy_objects(self, watcher):
-        import wifi_policy
-        assert watcher.Mode is wifi_policy.Mode
-        assert watcher.HotspotPurpose is wifi_policy.HotspotPurpose
-        assert watcher.PurposePolicy is wifi_policy.PurposePolicy
-        assert watcher.PURPOSE_TABLE is wifi_policy.PURPOSE_TABLE
-        assert watcher.AP_MAX_DURATION == wifi_policy.AP_MAX_DURATION
-        assert watcher.HOTSPOT_PROBE_GRACE == wifi_policy.HOTSPOT_PROBE_GRACE
+    """Phase B: the pure policy core lives in a standalone importable module,
+    independent of the watcher."""
 
     def test_policy_module_has_no_watcher_dependency(self):
         # Importable without loading the watcher / flask / sysutils stubs.
@@ -825,8 +816,8 @@ class TestSubprocessTimeoutBounds:
             watcher.STATE.setup_mode = True
             watcher.start_ap_mode()                        # delete / add (fails fast: rc=124)
             watcher.stop_ap_mode()                         # systemctl stop / delete
-            watcher.connect_to_configured_wifi()           # clear-restrictions / connection up
-            watcher.migrate_client_profiles_autoconnect_no()  # autoconnect-no modify
+            watcher.wifi_config.connect_to_configured_wifi(watcher.CONFIG_CTX)  # clear-restrictions / connection up
+            watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)  # autoconnect-no modify
             watcher.STATE.active_client_ifname = "wlan0"
             with patch.object(watcher, "enter_setup_mode"):
                 watcher.start_explicit_setup()             # device disconnect

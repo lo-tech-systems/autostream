@@ -146,7 +146,7 @@ class TestHotspotStationCount:
         watcher.STATE.rejoin_dismissed = True
         with patch.object(watcher, "start_ap_mode"), \
              patch.object(watcher, "update_apmode_flag"):
-            watcher.enter_setup_mode(watcher.HotspotPurpose.MANUAL, "x")
+            watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.MANUAL, "x")
         assert watcher.STATE.saved_ssid_visible is False
         assert watcher.STATE.saved_ssid_name == ""
         assert watcher.STATE.rejoin_dismissed is False

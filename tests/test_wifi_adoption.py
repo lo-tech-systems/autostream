@@ -45,7 +45,7 @@ class TestUsbFailureFallback:
         watcher._known_usb_macs.add(usb_mac)
         facts = _facts_for(watcher, [builtin], None)  # USB gone
         hctx = self._hctx(watcher, facts, conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
-        action = watcher.RecoveryAction(watcher.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
+        action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as ap:
@@ -527,7 +527,7 @@ class TestReconnectSavedEpisode:
     def test_starts_episode_and_submits_first_target(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         with patch.object(watcher.wifi_net, "discover_adapters", return_value=[builtin]), \
              patch.object(watcher.wifi_net, "client_candidate_order", return_value=[builtin]), \
@@ -565,7 +565,7 @@ class TestReconnectSavedEpisode:
     def test_explicit_reconfigure_prefers_rollback_adapter_and_profile(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=0.0,
+            purpose=watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Prev", "uuid-prev", "aa:bb:cc:00:00:09"))
         prev = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:09", is_usb=True)
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -615,26 +615,26 @@ class TestReconnectSavedEpisode:
     def test_exhaustion_retain_hotspot_tail(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
+            purpose=watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY, entered_at=0.0)
         watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="retain_hotspot", index=1)
         assert watcher._submit_next_reconnect_target() is False
         assert watcher.STATE.reconnect_episode is None
         # Hotspot retained, purpose unchanged.
-        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_exhaustion_reconfigure_timeout_converts_to_usb_loss(self, watcher):
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
-            purpose=watcher.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=0.0,
+            purpose=watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=0.0,
             rollback=watcher.RollbackSnapshot("Home", "uuid-1", ""))
         watcher.STATE.reconnect_episode = watcher.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="reconfigure_timeout", index=1)
         watcher._submit_next_reconnect_target()
         assert watcher.STATE.reconnect_episode is None
-        assert watcher.STATE.hotspot.purpose is watcher.HotspotPurpose.USB_LOSS_RECOVERY
+        assert watcher.STATE.hotspot.purpose is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
         assert watcher.STATE.hotspot.rollback is None
 
     def test_episode_deferred_while_transitioning(self, watcher):
