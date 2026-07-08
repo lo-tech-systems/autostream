@@ -179,7 +179,7 @@ class TestNoIpLedgerAndDiagnosis:
         # C-WP3: the demoted-from-active marker — device reports it is running on
         # the on-board radio as a fallback.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        watcher.STATE.using_builtin_fallback = True
+        watcher.ADOPTION_STATE.using_builtin_fallback = True
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
@@ -415,7 +415,7 @@ class TestAdapterOverlayEvents:
             assert job.sets_builtin_fallback is True              # onboard + usb present
             result = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)             # _activate_committed_on -> True
             watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)               # loop applies the tail
-        assert watcher.STATE.using_builtin_fallback is True
+        assert watcher.ADOPTION_STATE.using_builtin_fallback is True
 
 
 class TestBudgetedResetRetry:
@@ -429,7 +429,7 @@ class TestBudgetedResetRetry:
         return watcher.wifi_activation.ActivationJob(**defaults)
 
     def _set_pin(self, watcher, ifname="wlan1", bssid="AA:BB:CC:DD:EE:FF", signal=70):
-        watcher.STATE.last_bssid_pin = {"ifname": ifname, "bssid": bssid, "signal": signal, "at": 0.0}
+        watcher.ADOPTION_STATE.last_bssid_pin = {"ifname": ifname, "bssid": bssid, "signal": signal, "at": 0.0}
 
     def _target(self, watcher, resettable=True):
         return watcher.wifi_recovery.TargetAdapter(

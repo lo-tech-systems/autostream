@@ -70,14 +70,16 @@ class AdoptionContext:
     """Narrow view of the watcher that the adoption/fallback helpers depend on.
 
     Constructed once by the watcher and passed to every function here.  It
-    carries the shared STATE object and its lock, the recovery context (for the
-    dead-PHY module's shared ``_known_usb_macs``/ledgers), the shared log-dedup
-    dict, the adoption/reconnect constants, and the small set of watcher
-    callables these helpers invoke — nothing else of the watcher is reachable
-    from this module.
+    carries the shared STATE object and its lock, the AdoptionState fragment
+    (fallback/adoption tracking and BSSID roaming), the recovery context (for
+    the dead-PHY module's shared ``_known_usb_macs``/ledgers), the shared
+    log-dedup dict, the adoption/reconnect constants, and the small set of
+    watcher callables these helpers invoke — nothing else of the watcher is
+    reachable from this module.
     """
 
     STATE: object
+    ADOPTION_STATE: object
     state_lock: object
     logger: object
     RECOVERY_CTX: object
@@ -248,14 +250,14 @@ def _saved_ssid_visible(ctx: AdoptionContext, hotspot_adapter) -> bool:
     return scan is not None and ssid in scan
 
 
-def _rate_gated_saved_ssid_scan(ctx: AdoptionContext, adapter, last_scan_attr: str,
-                                interval: float, now: float) -> Optional[bool]:
+def _rate_gated_saved_ssid_scan(ctx: AdoptionContext, adapter, state_obj: object,
+                                last_scan_attr: str, interval: float, now: float) -> Optional[bool]:
     """Rate-bounded "is the committed SSID visible on *adapter*" probe.
 
     Shared by every idle-time saved-SSID scan site (the recovery hotspot exit
     edge and runtime USB adoption) so the check-stamp-scan mechanics live in one
-    place.  *last_scan_attr* names the
-    per-site STATE timestamp field.
+    place.  *state_obj* is the state fragment carrying the timestamp;
+    *last_scan_attr* names its field.
 
     Returns None when a scan is not yet due (`last is not None and now - last <
     interval`) — the caller must treat this as "no information, do nothing".
@@ -265,11 +267,11 @@ def _rate_gated_saved_ssid_scan(ctx: AdoptionContext, adapter, last_scan_attr: s
     `_saved_ssid_visible` by module-global name so test patches still intercept.
     """
     with ctx.state_lock:
-        last = getattr(ctx.STATE, last_scan_attr)
+        last = getattr(state_obj, last_scan_attr)
     if last is not None and now - last < interval:
         return None
     with ctx.state_lock:
-        setattr(ctx.STATE, last_scan_attr, now)
+        setattr(state_obj, last_scan_attr, now)
     return _saved_ssid_visible(ctx, adapter)
 
 
@@ -316,7 +318,7 @@ def _attempt_recovery_reconnect(ctx: AdoptionContext, facts: "Facts") -> None:
         if hotspot is None:
             return
         visible = _rate_gated_saved_ssid_scan(
-            ctx, hotspot, "last_recovery_scan", ctx.RECOVERY_SCAN_INTERVAL, now)
+            ctx, hotspot, ctx.STATE, "last_recovery_scan", ctx.RECOVERY_SCAN_INTERVAL, now)
         if not visible:
             # None (scan not due) or False (not visible / scan failed): keep the AP.
             if visible is False:
@@ -396,12 +398,12 @@ def handle_runtime_usb_adoption(ctx: AdoptionContext, adapters: list, wired_conn
 
     # Two-pass stability on the same deterministic candidate.
     with ctx.state_lock:
-        if ctx.STATE.pending_usb_adoption_mac == candidate.permanent_mac:
-            ctx.STATE.pending_usb_adoption_checks += 1
+        if ctx.ADOPTION_STATE.pending_usb_adoption_mac == candidate.permanent_mac:
+            ctx.ADOPTION_STATE.pending_usb_adoption_checks += 1
         else:
-            ctx.STATE.pending_usb_adoption_mac = candidate.permanent_mac
-            ctx.STATE.pending_usb_adoption_checks = 1
-        checks = ctx.STATE.pending_usb_adoption_checks
+            ctx.ADOPTION_STATE.pending_usb_adoption_mac = candidate.permanent_mac
+            ctx.ADOPTION_STATE.pending_usb_adoption_checks = 1
+        checks = ctx.ADOPTION_STATE.pending_usb_adoption_checks
     if checks < ctx.USB_ADOPTION_STABLE_PASSES:
         return False
 
@@ -425,7 +427,7 @@ def handle_runtime_usb_adoption(ctx: AdoptionContext, adapters: list, wired_conn
     # stays pending and the no-IP ledger is untouched (the dongle never got the
     # chance to fail DHCP).
     visible = _rate_gated_saved_ssid_scan(
-        ctx, candidate, "last_adoption_scan", ctx.ADOPTION_SCAN_INTERVAL, now)
+        ctx, candidate, ctx.ADOPTION_STATE, "last_adoption_scan", ctx.ADOPTION_SCAN_INTERVAL, now)
     if visible is None:
         return False
     if visible is False:
@@ -456,8 +458,8 @@ def handle_runtime_usb_adoption(ctx: AdoptionContext, adapters: list, wired_conn
 
 def _clear_pending_adoption(ctx: AdoptionContext) -> None:
     with ctx.state_lock:
-        ctx.STATE.pending_usb_adoption_mac = None
-        ctx.STATE.pending_usb_adoption_checks = 0
+        ctx.ADOPTION_STATE.pending_usb_adoption_mac = None
+        ctx.ADOPTION_STATE.pending_usb_adoption_checks = 0
 
 
 def update_known_adapters(ctx: AdoptionContext, adapters: list) -> None:
@@ -467,8 +469,8 @@ def update_known_adapters(ctx: AdoptionContext, adapters: list) -> None:
         if a.is_usb and a.permanent_mac:
             ctx.RECOVERY_CTX._known_usb_macs.add(a.permanent_mac)
     with ctx.state_lock:
-        prev = ctx.STATE.last_detected_adapter_macs
-        ctx.STATE.last_detected_adapter_macs = macs
+        prev = ctx.ADOPTION_STATE.last_detected_adapter_macs
+        ctx.ADOPTION_STATE.last_detected_adapter_macs = macs
     if prev is not None and prev != macs:
         ctx.logger.info("Detected Wi-Fi adapter set changed: %s", sorted(macs))
     # Drop no-IP ledgers for adapters that are no longer present so a replaced
@@ -490,12 +492,12 @@ def update_known_adapters(ctx: AdoptionContext, adapters: list) -> None:
 
 
 def _survey_due(ctx: AdoptionContext, attr: str, interval: float, now: float) -> bool:
-    """Rate gate: True (and stamps *attr*) once *interval* has elapsed."""
+    """Rate gate: True (and stamps *attr* on ADOPTION_STATE) once *interval* has elapsed."""
     with ctx.state_lock:
-        last = getattr(ctx.STATE, attr)
+        last = getattr(ctx.ADOPTION_STATE, attr)
         if last is not None and now - last < interval:
             return False
-        setattr(ctx.STATE, attr, now)
+        setattr(ctx.ADOPTION_STATE, attr, now)
         return True
 
 
@@ -549,14 +551,14 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
         if rows is not None:
             with ctx.state_lock:
                 current_bssid, current_signal = wifi_policy.update_bssid_table(
-                    ctx.STATE.bssid_table, rows, ssid, now)
+                    ctx.ADOPTION_STATE.bssid_table, rows, ssid, now)
             scanned = True
         onboard = _idle_onboard_for_survey(ctx, facts, usb_ifname)
         if onboard is not None:
             onboard_rows = ctx.nm.wifi_bssid_scan(onboard.ifname, rescan=True)
             if onboard_rows is not None:
                 with ctx.state_lock:
-                    wifi_policy.update_bssid_table(ctx.STATE.bssid_table, onboard_rows, ssid, now)
+                    wifi_policy.update_bssid_table(ctx.ADOPTION_STATE.bssid_table, onboard_rows, ssid, now)
 
     if playing is False and _survey_due(
             ctx, "last_bssid_usb_full_survey_at", ctx.BSSID_USB_SURVEY_INTERVAL, now):
@@ -564,16 +566,16 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
         if rows is not None:
             with ctx.state_lock:
                 current_bssid, current_signal = wifi_policy.update_bssid_table(
-                    ctx.STATE.bssid_table, rows, ssid, now)
+                    ctx.ADOPTION_STATE.bssid_table, rows, ssid, now)
             scanned = True
 
     if not scanned or not current_bssid or playing is not False:
         return False
 
     with ctx.state_lock:
-        last_roam = ctx.STATE.last_roam_or_activation
+        last_roam = ctx.ADOPTION_STATE.last_roam_or_activation
         target = wifi_policy.next_roam_target(
-            ctx.STATE.bssid_table, current_bssid, now, playing, last_roam)
+            ctx.ADOPTION_STATE.bssid_table, current_bssid, now, playing, last_roam)
     if not target:
         return False
 
@@ -584,14 +586,14 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
         return False
     with ctx.state_lock:
         confirm_bssid, confirm_signal = wifi_policy.update_bssid_table(
-            ctx.STATE.bssid_table, confirm_rows, ssid, now)
-        last_roam = ctx.STATE.last_roam_or_activation
+            ctx.ADOPTION_STATE.bssid_table, confirm_rows, ssid, now)
+        last_roam = ctx.ADOPTION_STATE.last_roam_or_activation
         confirmed_target = wifi_policy.next_roam_target(
-            ctx.STATE.bssid_table, confirm_bssid or current_bssid, now, playing, last_roam)
+            ctx.ADOPTION_STATE.bssid_table, confirm_bssid or current_bssid, now, playing, last_roam)
         if not confirmed_target:
             return False
-        target_signal = ctx.STATE.bssid_table.get(confirmed_target, {}).get("signal", 0)
-        ctx.STATE.last_roam_or_activation = now
+        target_signal = ctx.ADOPTION_STATE.bssid_table.get(confirmed_target, {}).get("signal", 0)
+        ctx.ADOPTION_STATE.last_roam_or_activation = now
 
     ctx.logger.info(
         "BSSID roam: SSID '%s' %s (signal %d) -> %s (signal %d)",

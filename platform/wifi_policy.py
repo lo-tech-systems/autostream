@@ -210,9 +210,9 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
 
 
 # ---- USB BSSID ownership: table maintenance + selection/roam policy --------
-# Pure functions over a passed-in table dict (STATE.bssid_table) — no STATE, no
-# effects, consistent with this module's contract.  Units are nmcli SIGNAL
-# percent (0-100) throughout.
+# Pure functions over a passed-in table dict (ADOPTION_STATE.bssid_table) — no
+# STATE, no effects, consistent with this module's contract.  Units are nmcli
+# SIGNAL percent (0-100) throughout.
 
 BSSID_FRESH_SECS = 180          # max age for a selectable candidate
 BSSID_EVICT_SECS = 900          # unseen entries evicted from the table

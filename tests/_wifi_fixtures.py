@@ -191,6 +191,7 @@ def watcher():
         (mod.LOG_STATE, mod.LogLevelState()),
         (mod.MDNS_STATE, mod.MdnsState()),
         (mod.SNAPSHOT_STATE, mod.SnapshotState()),
+        (mod.ADOPTION_STATE, mod.AdoptionState()),
         (mod.RECOVERY_STATE, mod.wifi_recovery.RecoveryState()),
     ]
 

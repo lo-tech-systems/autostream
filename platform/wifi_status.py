@@ -39,14 +39,16 @@ class StatusContext:
     """Narrow view of the watcher that the status builder depends on.
 
     Constructed once by the watcher and passed to the snapshot builders.  It
-    carries the shared STATE object and its lock, the three recovery constants the
-    snapshot surfaces, and the fact helpers it calls — nothing else of the watcher
-    is reachable from this module.
+    carries the shared STATE object and its lock, the AdoptionState fragment
+    (for the published ``using_builtin_fallback`` flag), the three recovery
+    constants the snapshot surfaces, and the fact helpers it calls — nothing
+    else of the watcher is reachable from this module.
     """
 
     STATE: object
     LOG_STATE: object
     SNAPSHOT_STATE: object
+    ADOPTION_STATE: object
     state_lock: object
     RECOVERY_STATE: object
     # Constants
@@ -256,7 +258,7 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
     with ctx.state_lock:
         active_ifname = ctx.STATE.active_client_ifname
         active_mac = ctx.STATE.active_client_mac
-        using_fallback = ctx.STATE.using_builtin_fallback
+        using_fallback = ctx.ADOPTION_STATE.using_builtin_fallback
         in_setup = ctx.STATE.setup_mode
         dead_ifname = ctx.RECOVERY_STATE.dead_adapter_ifname
         dead_since = ctx.RECOVERY_STATE.dead_adapter_since

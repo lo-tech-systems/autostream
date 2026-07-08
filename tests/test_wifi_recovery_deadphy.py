@@ -323,7 +323,7 @@ class TestEscalateDeadAdapterRecovery:
         assert handled is True
         act.assert_called_once_with("wlan1")
         ra.assert_not_called()
-        assert watcher.STATE.using_builtin_fallback is True
+        assert watcher.ADOPTION_STATE.using_builtin_fallback is True
 
     def test_resets_happen_even_when_wired(self, watcher):
         usb = self._usb(watcher)

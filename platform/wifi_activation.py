@@ -44,14 +44,16 @@ class ActivationContext:
     """Narrow view of the watcher that the activation engine depends on.
 
     Constructed once by the watcher and passed to every function here.  It
-    carries the shared STATE object and its lock, the NM client singleton, the
-    hotspot controller, the timeout constants, and the small set of watcher
-    callables the worker and the loop-thread tail invoke — nothing else of
-    the watcher is reachable from this module.
+    carries the shared STATE object and its lock, the AdoptionState fragment
+    (BSSID pin/table and roam-holdoff bookkeeping), the NM client singleton,
+    the hotspot controller, the timeout constants, and the small set of
+    watcher callables the worker and the loop-thread tail invoke — nothing
+    else of the watcher is reachable from this module.
     """
 
     STATE: object
     APPLY_STATE: object
+    ADOPTION_STATE: object
     state_lock: object
     RECOVERY_STATE: object
     RECOVERY_CTX: object
@@ -98,14 +100,14 @@ def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str, exclude: str 
     Non-USB targets, and USB targets whose scan fails or yields no selectable
     candidate, are explicitly unpinned (the scan must never become a new way
     for activation to fail).  Records the pin (or its absence) on
-    ``STATE.last_bssid_pin`` for the reset/retry gate.  ``exclude`` skips a
-    BSSID (the one a just-failed pinned attempt used) so a retry selects a
-    different candidate.
+    ``ADOPTION_STATE.last_bssid_pin`` for the reset/retry gate.  ``exclude``
+    skips a BSSID (the one a just-failed pinned attempt used) so a retry
+    selects a different candidate.
     """
     if wifi_net.usb_sysfs_paths(ifname) is None:
         ctx.nm.set_bssid(uuid, "")
         with ctx.state_lock:
-            ctx.STATE.last_bssid_pin = {}
+            ctx.ADOPTION_STATE.last_bssid_pin = {}
         return ""
 
     rows = ctx.nm.wifi_bssid_scan(ifname, rescan=True)
@@ -114,20 +116,20 @@ def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str, exclude: str 
         ssid = wifi_net.get_connection_ssid(uuid)
         now = time.monotonic()
         with ctx.state_lock:
-            wifi_policy.update_bssid_table(ctx.STATE.bssid_table, rows, ssid, now)
-            bssid = wifi_policy.select_bssid(ctx.STATE.bssid_table, now, exclude=exclude)
+            wifi_policy.update_bssid_table(ctx.ADOPTION_STATE.bssid_table, rows, ssid, now)
+            bssid = wifi_policy.select_bssid(ctx.ADOPTION_STATE.bssid_table, now, exclude=exclude)
             if bssid:
-                signal = ctx.STATE.bssid_table[bssid]["signal"]
+                signal = ctx.ADOPTION_STATE.bssid_table[bssid]["signal"]
 
     if not bssid:
         ctx.nm.set_bssid(uuid, "")
         with ctx.state_lock:
-            ctx.STATE.last_bssid_pin = {}
+            ctx.ADOPTION_STATE.last_bssid_pin = {}
         return ""
 
     ctx.nm.set_bssid(uuid, bssid)
     with ctx.state_lock:
-        ctx.STATE.last_bssid_pin = {
+        ctx.ADOPTION_STATE.last_bssid_pin = {
             "ifname": ifname, "bssid": bssid, "signal": signal, "at": time.monotonic(),
         }
     return bssid
@@ -160,9 +162,9 @@ def _activate_profile_on(ctx: ActivationContext, ifname: str, state: "wifi_net.N
     if pinned_bssid:
         with ctx.state_lock:
             if ok:
-                wifi_policy.record_bssid_success(ctx.STATE.bssid_table, pinned_bssid, time.monotonic())
+                wifi_policy.record_bssid_success(ctx.ADOPTION_STATE.bssid_table, pinned_bssid, time.monotonic())
             else:
-                wifi_policy.record_bssid_failure(ctx.STATE.bssid_table, pinned_bssid)
+                wifi_policy.record_bssid_failure(ctx.ADOPTION_STATE.bssid_table, pinned_bssid)
     return ok
 
 
@@ -253,7 +255,7 @@ def _pin_implicates_adapter(ctx: ActivationContext, ifname: str) -> bool:
     activation whose scan found a strong candidate does.
     """
     with ctx.state_lock:
-        pin = dict(ctx.STATE.last_bssid_pin)
+        pin = dict(ctx.ADOPTION_STATE.last_bssid_pin)
     return (pin.get("ifname") == ifname and bool(pin.get("bssid"))
             and pin.get("signal", 0) >= PIN_IMPLICATE_SIGNAL)
 
@@ -269,7 +271,7 @@ def _retry_after_implicated_failure(ctx: ActivationContext, job: "ActivationJob"
         return None
 
     with ctx.state_lock:
-        failed_bssid = ctx.STATE.last_bssid_pin.get("bssid", "")
+        failed_bssid = ctx.ADOPTION_STATE.last_bssid_pin.get("bssid", "")
 
     adapters = wifi_net.discover_adapters()
     target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, job.ifname, adapters)
@@ -494,14 +496,14 @@ def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None
 
     One place applies the standardised handover effects; each caller passes only
     the deltas it needs and does its own adapter discovery/logging first.  The
-    individual effects touch disjoint STATE fields (or independent nmcli/ledger
-    calls), so their order is not load-bearing.
+    individual effects touch disjoint STATE/ADOPTION_STATE fields (or
+    independent nmcli/ledger calls), so their order is not load-bearing.
 
     - ``adapter``: the resolved client adapter to record active (None = skip).
     - ``disconnect_builtin_ifname``: disconnect this still-connected built-in
       client after the handover (""/None = skip).
     - ``clear_noip_stable_id``: clear the no-IP ledger for this stable id.
-    - ``set_builtin_fallback``: assign STATE.using_builtin_fallback when not None.
+    - ``set_builtin_fallback``: assign ADOPTION_STATE.using_builtin_fallback when not None.
     - ``clear_down_timers``: reset the connectivity-down / reconnect timers.
     - ``reset_onboard_bound``: reset the per-episode onboard-failure bound.
     - ``clear_pending_adoption`` / ``clear_dead_adapter``: clear the pending USB
@@ -522,9 +524,9 @@ def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None
     if clear_noip_stable_id:
         ctx.clear_noip_failures(clear_noip_stable_id)
     with ctx.state_lock:
-        ctx.STATE.last_roam_or_activation = time.monotonic()
+        ctx.ADOPTION_STATE.last_roam_or_activation = time.monotonic()
         if set_builtin_fallback is not None:
-            ctx.STATE.using_builtin_fallback = set_builtin_fallback
+            ctx.ADOPTION_STATE.using_builtin_fallback = set_builtin_fallback
         if clear_down_timers:
             ctx.STATE.conn_down_start = None
             ctx.STATE.last_reconnect_attempt = None

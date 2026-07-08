@@ -367,7 +367,7 @@ class TestBssidSurveyAndRoam:
         assert result is True
         job = submit.call_args[0][0]
         assert job.kind == "activate_committed" and job.ifname == "wlan1"
-        assert watcher.STATE.last_roam_or_activation == now
+        assert watcher.ADOPTION_STATE.last_roam_or_activation == now
 
     def test_confirm_scan_reversal_no_submission(self, watcher):
         usb = self._usb(watcher)
@@ -414,8 +414,8 @@ class TestIf6AdoptionScanGate:
     def _prime_to_gate(self, watcher, candidate):
         """Arm STATE so the *next* adoption call reaches the scan gate (two-pass
         stability already satisfied)."""
-        watcher.STATE.pending_usb_adoption_mac = candidate.permanent_mac
-        watcher.STATE.pending_usb_adoption_checks = 1
+        watcher.ADOPTION_STATE.pending_usb_adoption_mac = candidate.permanent_mac
+        watcher.ADOPTION_STATE.pending_usb_adoption_checks = 1
 
     @contextlib.contextmanager
     def _gate_ctx(self, watcher, builtin, *, scan):
@@ -443,8 +443,8 @@ class TestIf6AdoptionScanGate:
         act.assert_not_called()
         scan_mock.assert_called_once()
         # Pending candidate survives so a later due scan can proceed.
-        assert watcher.STATE.pending_usb_adoption_mac == usb.permanent_mac
-        assert watcher.STATE.pending_usb_adoption_checks == 2
+        assert watcher.ADOPTION_STATE.pending_usb_adoption_mac == usb.permanent_mac
+        assert watcher.ADOPTION_STATE.pending_usb_adoption_checks == 2
         # No no-IP failure recorded — the dongle never got to fail DHCP.
         assert watcher.wifi_recovery.noip_failure_count(watcher, usb.permanent_mac) == 0
 
@@ -707,7 +707,7 @@ class TestPinUsbBssid:
         assert result == ""
         set_bssid.assert_called_once_with("uuid-1", "")
         scan.assert_not_called()
-        assert watcher.STATE.last_bssid_pin == {}
+        assert watcher.ADOPTION_STATE.last_bssid_pin == {}
 
     def test_usb_target_pins_from_scan(self, watcher):
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
@@ -717,10 +717,10 @@ class TestPinUsbBssid:
             result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
         assert result == "AA:BB:CC:DD:EE:FF"
         set_bssid.assert_called_once_with("uuid-1", "AA:BB:CC:DD:EE:FF")
-        assert watcher.STATE.last_bssid_pin["ifname"] == "wlan1"
-        assert watcher.STATE.last_bssid_pin["bssid"] == "AA:BB:CC:DD:EE:FF"
-        assert watcher.STATE.last_bssid_pin["signal"] == 70
-        assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["ssid"] == "Home"
+        assert watcher.ADOPTION_STATE.last_bssid_pin["ifname"] == "wlan1"
+        assert watcher.ADOPTION_STATE.last_bssid_pin["bssid"] == "AA:BB:CC:DD:EE:FF"
+        assert watcher.ADOPTION_STATE.last_bssid_pin["signal"] == 70
+        assert watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["ssid"] == "Home"
 
     def test_scan_failure_falls_back_to_unpinned(self, watcher):
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
@@ -730,7 +730,7 @@ class TestPinUsbBssid:
             result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
         assert result == ""
         set_bssid.assert_called_once_with("uuid-1", "")
-        assert watcher.STATE.last_bssid_pin == {}
+        assert watcher.ADOPTION_STATE.last_bssid_pin == {}
 
     def test_no_candidate_falls_back_to_unpinned(self, watcher):
         # Scan succeeds but yields no row for the committed SSID.
@@ -743,7 +743,7 @@ class TestPinUsbBssid:
         set_bssid.assert_called_once_with("uuid-1", "")
 
     def test_success_accounting_reaches_table(self, watcher):
-        watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"] = {
+        watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"] = {
             "ssid": "Home", "signal": 70, "last_seen": 100.0,
             "fail_count": 2, "quarantined_until": None,
         }
@@ -759,7 +759,7 @@ class TestPinUsbBssid:
             ok = watcher.wifi_activation._activate_profile_on(
                 watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
         assert ok is True
-        assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
+        assert watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
 
     def test_failure_accounting_reaches_table(self, watcher):
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
@@ -774,7 +774,7 @@ class TestPinUsbBssid:
             ok = watcher.wifi_activation._activate_profile_on(
                 watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
         assert ok is False
-        assert watcher.STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 1
+        assert watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 1
 
 
 class TestNmDisconnectedUsbDebounce:

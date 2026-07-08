@@ -6,11 +6,11 @@ Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 Data-only state definitions for the Autostream Wi-Fi watcher: the shared
 connectivity-core ``NetworkMonitorState``, the per-concern state fragments
 (``ApplyState``, ``ControlState``, ``LogLevelState``, ``MdnsState``,
-``SnapshotState``), the plain rollback/hotspot-session data types, and the
-single ``state_lock`` guarding all of them. A leaf module at the bottom of the
-watcher's dependency graph — it imports nothing beyond the standard library
-and contains no behaviour beyond dataclass defaults, so every other module can
-depend on it without creating a cycle.
+``SnapshotState``, ``AdoptionState``), the plain rollback/hotspot-session data
+types, and the single ``state_lock`` guarding all of them. A leaf module at
+the bottom of the watcher's dependency graph — it imports nothing beyond the
+standard library and contains no behaviour beyond dataclass defaults, so every
+other module can depend on it without creating a cycle.
 """
 from __future__ import annotations
 
@@ -94,6 +94,36 @@ class SnapshotState:
 
 
 @dataclass
+class AdoptionState:
+    """Multi-adapter fallback/adoption tracking and USB BSSID roaming.
+
+    ``using_builtin_fallback`` records whether the client is currently running
+    on the built-in radio as a fallback for a failed/demoted configured USB
+    path.  ``pending_usb_adoption_mac``/``pending_usb_adoption_checks`` track
+    two-pass stability for a runtime USB adoption candidate.
+    ``last_detected_adapter_macs`` is the adapter set from the previous pass,
+    used to log adapter-set changes.  ``bssid_table`` is the per-BSSID
+    signal/success/failure table for the active USB client's SSID;
+    ``last_roam_or_activation`` is the roam holdoff anchor.  ``last_bssid_pin``
+    records the BSSID pinned for the most recent activation attempt (or its
+    absence), used by the reset/retry gate.  ``last_bssid_survey_at`` and
+    ``last_bssid_usb_full_survey_at`` rate-gate the cheap self-scan and the
+    full rescan respectively.  ``last_adoption_scan`` rate-gates the
+    saved-SSID visibility probe before a runtime USB handover.
+    """
+    using_builtin_fallback: bool = False
+    pending_usb_adoption_mac: Optional[str] = None
+    pending_usb_adoption_checks: int = 0
+    last_detected_adapter_macs: Optional[frozenset] = None
+    bssid_table: dict = field(default_factory=dict)
+    last_roam_or_activation: Optional[float] = None
+    last_bssid_pin: dict = field(default_factory=dict)
+    last_bssid_survey_at: Optional[float] = None
+    last_bssid_usb_full_survey_at: Optional[float] = None
+    last_adoption_scan: Optional[float] = None
+
+
+@dataclass
 class NetworkMonitorState:
     # Link state (reported via /status and UI)
     wifistate: str = "unknown"        # "configured" / "unconfigured" / "unknown"
@@ -142,9 +172,6 @@ class NetworkMonitorState:
     last_reconnect_attempt: Optional[float] = None
     # Last time a recovery hotspot scanned for the saved SSID (scan gate).
     last_recovery_scan: Optional[float] = None
-    # Last time runtime USB adoption scanned the candidate for the committed SSID
-    # (scan gate).
-    last_adoption_scan: Optional[float] = None
     # Reboot-request throttle: monotonic time before which another reboot request is
     # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
     # issued); any other value = retry permitted after that time.
@@ -162,20 +189,9 @@ class NetworkMonitorState:
     # longer offered as a client rung, so the ladder falls to the hotspot.
     onboard_activation_failures: int = 0
 
-    # ---- Multi-adapter failure / adoption ----
-    using_builtin_fallback: bool = False
+    # ---- Active client identity ----
     active_client_ifname: str = ""
     active_client_mac: str = ""
-    pending_usb_adoption_mac: Optional[str] = None
-    pending_usb_adoption_checks: int = 0
-    last_detected_adapter_macs: Optional[frozenset] = None
-
-    # ---- USB BSSID ownership (roaming) ----
-    bssid_table: dict = field(default_factory=dict)
-    last_roam_or_activation: Optional[float] = None
-    last_bssid_pin: dict = field(default_factory=dict)
-    last_bssid_survey_at: Optional[float] = None
-    last_bssid_usb_full_survey_at: Optional[float] = None
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
     # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-
@@ -183,8 +199,9 @@ class NetworkMonitorState:
     # shared with wifi_status for the status snapshot.  Apply-workflow,
     # local-control, and runtime-log-level fields live on ApplyState /
     # ControlState / LogLevelState; avahi/mDNS fields live on MdnsState; the
-    # published status snapshot lives on SnapshotState — each threaded to the
-    # contexts that read/write it.
+    # published status snapshot lives on SnapshotState; multi-adapter fallback/
+    # adoption and USB BSSID roaming fields live on AdoptionState — each
+    # threaded to the contexts that read/write it.
 
 
 # Synchronisation primitive for every fragment above.

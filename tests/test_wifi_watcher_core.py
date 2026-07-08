@@ -852,13 +852,13 @@ class TestLogThrottled:
 
     def test_warn_playing_status_gated_on_pending_and_throttled(self, watcher):
         # No pending adoption -> never warns.
-        watcher.STATE.pending_usb_adoption_mac = None
+        watcher.ADOPTION_STATE.pending_usb_adoption_mac = None
         with patch.object(watcher, "logger") as log:
             watcher._warn_playing_status_unavailable()
         log.warning.assert_not_called()
 
         # Pending adoption -> warns once, then throttled within the window.
-        watcher.STATE.pending_usb_adoption_mac = "aa:bb:cc:00:00:01"
+        watcher.ADOPTION_STATE.pending_usb_adoption_mac = "aa:bb:cc:00:00:01"
         with patch.object(watcher, "logger") as log:
             watcher._warn_playing_status_unavailable()
             watcher._warn_playing_status_unavailable()

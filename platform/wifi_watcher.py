@@ -71,7 +71,7 @@ import autostream_wifi_network as wifi_net
 from wifi_state import (
     NetworkMonitorState, RollbackSnapshot, HotspotSession,
     ApplyState, ControlState, LogLevelState, MdnsState, SnapshotState,
-    state_lock,
+    AdoptionState, state_lock,
 )
 
 # The watcher is deployed beside its split sibling modules (wifi_status.py,
@@ -387,7 +387,7 @@ def _setup_logging() -> None:
         )
 
 # The shared connectivity-core state (wifi_state.NetworkMonitorState) plus the
-# per-concern fragments split out of it.  All six objects are guarded by the
+# per-concern fragments split out of it.  All seven objects are guarded by the
 # single wifi_state.state_lock; build_contexts() threads each fragment only to
 # the contexts that read or write it.  The mode default is supplied here (not
 # in wifi_state, which does not import wifi_policy).
@@ -397,6 +397,7 @@ CONTROL_STATE = ControlState()
 LOG_STATE = LogLevelState()
 MDNS_STATE = MdnsState()
 SNAPSHOT_STATE = SnapshotState()
+ADOPTION_STATE = AdoptionState()
 
 # Serialise AP start/stop transitions
 ap_mode_lock = threading.Lock()
@@ -801,7 +802,7 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
         logger.error("Could not persist network state for '%s': %s", conn_name, e)
     # A new committed SSID invalidates any BSSID table entries from the previous one.
     with state_lock:
-        wifi_policy.clear_bssid_table(STATE.bssid_table)
+        wifi_policy.clear_bssid_table(ADOPTION_STATE.bssid_table)
 
 
 def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
@@ -1648,7 +1649,7 @@ def query_playing_status() -> Optional[bool]:
 def _warn_playing_status_unavailable() -> None:
     """Throttled WARNING when playback status is unavailable during pending adoption."""
     with state_lock:
-        pending = STATE.pending_usb_adoption_mac is not None
+        pending = ADOPTION_STATE.pending_usb_adoption_mac is not None
     if pending:
         log_throttled(
             "playing_status_unavailable",
@@ -1827,6 +1828,7 @@ def build_contexts() -> None:
     ACTIVATION_CTX = wifi_activation.ActivationContext(
         STATE=STATE,
         APPLY_STATE=APPLY_STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
         state_lock=state_lock,
         RECOVERY_STATE=RECOVERY_STATE,
         RECOVERY_CTX=RECOVERY_CTX,
@@ -1857,6 +1859,7 @@ def build_contexts() -> None:
     # helpers thread this ctx instead of the whole module.
     ADOPTION_CTX = wifi_adoption.AdoptionContext(
         STATE=STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
         state_lock=state_lock,
         logger=logger,
         RECOVERY_CTX=RECOVERY_CTX,
@@ -1889,6 +1892,7 @@ def build_contexts() -> None:
         STATE=STATE,
         LOG_STATE=LOG_STATE,
         SNAPSHOT_STATE=SNAPSHOT_STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
         state_lock=state_lock,
         RECOVERY_STATE=RECOVERY_STATE,
         NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,

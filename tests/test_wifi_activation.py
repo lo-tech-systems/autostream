@@ -70,13 +70,13 @@ class TestClientUpTail:
     def test_set_builtin_fallback_flags(self, watcher):
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
-            watcher.STATE.using_builtin_fallback = True
+            watcher.ADOPTION_STATE.using_builtin_fallback = True
             watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=None)   # None -> untouched
-            assert watcher.STATE.using_builtin_fallback is True
+            assert watcher.ADOPTION_STATE.using_builtin_fallback is True
             watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=False)
-            assert watcher.STATE.using_builtin_fallback is False
+            assert watcher.ADOPTION_STATE.using_builtin_fallback is False
             watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a, set_builtin_fallback=True)
-            assert watcher.STATE.using_builtin_fallback is True
+            assert watcher.ADOPTION_STATE.using_builtin_fallback is True
 
     def test_clears_timers_and_onboard_bound(self, watcher):
         a = self._adapter()
@@ -125,10 +125,10 @@ class TestClientUpTail:
         # recovery) funnels through, so it must stamp the same field the roam
         # submission does.
         a = self._adapter()
-        watcher.STATE.last_roam_or_activation = None
+        watcher.ADOPTION_STATE.last_roam_or_activation = None
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a)
-        assert watcher.STATE.last_roam_or_activation is not None
+        assert watcher.ADOPTION_STATE.last_roam_or_activation is not None
 
     def test_fresh_activation_defers_next_roam(self, watcher):
         # End-to-end: a successful activation must hold off the very next
@@ -136,7 +136,7 @@ class TestClientUpTail:
         a = self._adapter()
         with patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
             watcher.wifi_activation.client_up_tail(watcher.ACTIVATION_CTX, a)
-        now = watcher.STATE.last_roam_or_activation + 1.0  # well under ROAM_HOLDOFF_SECS
+        now = watcher.ADOPTION_STATE.last_roam_or_activation + 1.0  # well under ROAM_HOLDOFF_SECS
         table = {
             "AA:BB:CC:DD:EE:01": {"ssid": "Home", "signal": 50, "last_seen": now,
                                   "fail_count": 0, "quarantined_until": None},
@@ -144,7 +144,7 @@ class TestClientUpTail:
                                   "fail_count": 0, "quarantined_until": None},
         }
         target = watcher.wifi_policy.next_roam_target(
-            table, "AA:BB:CC:DD:EE:01", now, False, watcher.STATE.last_roam_or_activation)
+            table, "AA:BB:CC:DD:EE:01", now, False, watcher.ADOPTION_STATE.last_roam_or_activation)
         assert target == ""
 
 
@@ -351,11 +351,11 @@ class TestActivateClient:
         h["record_noip"].assert_not_called()
 
     def test_success_does_not_touch_builtin_fallback_or_timers_by_default(self, watcher):
-        watcher.STATE.using_builtin_fallback = True
+        watcher.ADOPTION_STATE.using_builtin_fallback = True
         watcher.STATE.conn_down_start = 123.0
         with self._harness(watcher):
             self._run(watcher, "wlan1")
-        assert watcher.STATE.using_builtin_fallback is True   # untouched (flag None)
+        assert watcher.ADOPTION_STATE.using_builtin_fallback is True   # untouched (flag None)
         assert watcher.STATE.conn_down_start == 123.0         # untouched
 
     def test_sets_builtin_fallback_and_clears_timers(self, watcher):
@@ -364,7 +364,7 @@ class TestActivateClient:
         with self._harness(watcher):
             self._run(watcher, "wlan1", sets_builtin_fallback=True,
                                     clears_down_timers=True)
-        assert watcher.STATE.using_builtin_fallback is True
+        assert watcher.ADOPTION_STATE.using_builtin_fallback is True
         assert watcher.STATE.conn_down_start is None
         assert watcher.STATE.last_reconnect_attempt is None
 
