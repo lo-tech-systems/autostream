@@ -43,7 +43,7 @@ class TestConnectivityHysteresis:
         watcher.STATE.connectivity_ok = True  # was online this boot
         facts = self._facts(watcher, [usb], usb)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False):  # carrier up -> soft
-            ok = watcher._debounced_connectivity(facts, usb, client_ok=False)
+            ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
         assert ok is True                       # a single soft blip does NOT flip
         assert watcher.STATE.conn_unhealthy_checks == 1
 
@@ -52,22 +52,22 @@ class TestConnectivityHysteresis:
         watcher.STATE.connectivity_ok = True
         facts = self._facts(watcher, [usb], usb)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False):
-            first = watcher._debounced_connectivity(facts, usb, client_ok=False)
-            second = watcher._debounced_connectivity(facts, usb, client_ok=False)
+            first = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
+            second = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
         assert (first, second) == (True, False)  # condemned only after N consecutive
 
     def test_healthy_pass_recovers_immediately_and_resets(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:33", is_usb=True)
         watcher.STATE.conn_unhealthy_checks = 1
         facts = self._facts(watcher, [usb], usb)
-        ok = watcher._debounced_connectivity(facts, usb, client_ok=True)
+        ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=True)
         assert ok is True
         assert watcher.STATE.conn_unhealthy_checks == 0
 
     def test_no_active_client_is_hard(self, watcher):
         watcher.STATE.connectivity_ok = True
         facts = self._facts(watcher, [], None)
-        ok = watcher._debounced_connectivity(facts, None, client_ok=False)
+        ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, None, client_ok=False)
         assert ok is False                       # hard: condemned immediately
         assert watcher.STATE.conn_unhealthy_checks == 0
 
@@ -78,9 +78,9 @@ class TestConnectivityHysteresis:
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:35", is_usb=True)
         watcher.STATE.connectivity_ok = True
         facts = self._facts(watcher, [usb], None)  # USB present, not the active client
-        first = watcher._debounced_connectivity(facts, None, client_ok=False,
+        first = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, None, client_ok=False,
                                                 prev_mac=usb.permanent_mac)
-        second = watcher._debounced_connectivity(facts, None, client_ok=False,
+        second = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, None, client_ok=False,
                                                  prev_mac=usb.permanent_mac)
         assert (first, second) == (True, False)   # 2-pass debounce, not immediate
         assert watcher.STATE.conn_unhealthy_checks == 2
@@ -89,7 +89,7 @@ class TestConnectivityHysteresis:
         # Recorded USB physically gone from adapters -> hard (immediate), no debounce.
         watcher.STATE.connectivity_ok = True
         facts = self._facts(watcher, [], None)     # USB gone
-        ok = watcher._debounced_connectivity(facts, None, client_ok=False,
+        ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, None, client_ok=False,
                                              prev_mac="bb:bb:bb:bb:bb:36")
         assert ok is False
         assert watcher.STATE.conn_unhealthy_checks == 0
@@ -99,13 +99,13 @@ class TestConnectivityHysteresis:
         watcher.STATE.connectivity_ok = True
         facts = self._facts(watcher, [usb], usb)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=True):  # NO-CARRIER
-            ok = watcher._debounced_connectivity(facts, usb, client_ok=False)
+            ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
         assert ok is False
 
     def test_wired_ok_is_online_without_debounce(self, watcher):
         watcher.STATE.conn_unhealthy_checks = 5
         facts = self._facts(watcher, [], None, wired_ok=True)
-        ok = watcher._debounced_connectivity(facts, None, client_ok=False)
+        ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, None, client_ok=False)
         assert ok is True
         assert watcher.STATE.conn_unhealthy_checks == 0
 
@@ -162,8 +162,8 @@ class TestBootClientBringup:
               now=10.0, boot_time=0.0):
         facts = _facts_for(watcher, adapters, active_client, wifi_cfg=wifi_cfg,
                            wired_ok=wired_ok, now=now)
-        pre = watcher.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=True)
-        return watcher.FactsContext(pre, facts, lambda: False)
+        pre = watcher.wifi_loop.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=True)
+        return watcher.wifi_loop.FactsContext(pre, facts, lambda: False)
 
     def test_boot_window_engages_preferred_usb(self, watcher):
         # Offline in the boot window with a usable USB and no active client: the
@@ -174,7 +174,7 @@ class TestBootClientBringup:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as apply:
-            v = watcher.step_boot_client_bringup(fctx)
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
         assert v is watcher.Verdict.OWN_PASS
         apply.assert_called_once()
         action = apply.call_args[0][0]
@@ -188,7 +188,7 @@ class TestBootClientBringup:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as apply:
-            v = watcher.step_boot_client_bringup(fctx)
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
         assert v is watcher.Verdict.OWN_PASS
         action = apply.call_args[0][0]
         assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
@@ -200,7 +200,7 @@ class TestBootClientBringup:
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:04", is_usb=True)
         fctx = self._fctx(watcher, [builtin, usb], None, wired_ok=True)
         with patch.object(watcher.LOOP_CTX, "submit_client_activation") as apply:
-            v = watcher.step_boot_client_bringup(fctx)
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
@@ -212,7 +212,7 @@ class TestBootClientBringup:
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher.LOOP_CTX, "submit_client_activation") as apply:
-            v = watcher.step_boot_client_bringup(fctx)
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
@@ -224,7 +224,7 @@ class TestBootClientBringup:
         fctx = self._fctx(watcher, [builtin, usb], None,
                           now=watcher.wifi_policy.BOOT_AP_GRACE + 10.0, boot_time=0.0)
         with patch.object(watcher.LOOP_CTX, "submit_client_activation") as apply:
-            v = watcher.step_boot_client_bringup(fctx)
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
@@ -234,7 +234,7 @@ class TestBootClientBringup:
         watcher.STATE.setup_mode = True
         fctx = self._fctx(watcher, [builtin, usb], None)
         with patch.object(watcher.LOOP_CTX, "submit_client_activation") as apply:
-            v = watcher.step_boot_client_bringup(fctx)
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
@@ -244,7 +244,7 @@ class TestBootClientBringup:
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:08", is_usb=True)
         fctx = self._fctx(watcher, [builtin, usb], None, wifi_cfg=False)
         with patch.object(watcher.LOOP_CTX, "submit_client_activation") as apply:
-            v = watcher.step_boot_client_bringup(fctx)
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
@@ -339,7 +339,7 @@ class TestHotspotPurposeMachine:
             watcher.enter_setup_mode(watcher.wifi_policy.HotspotPurpose.FIRST_RUN, "earlier")
             watcher.leave_setup_mode("earlier done")
         facts = _facts_for(watcher, [builtin], None)
-        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:0a",
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:0a",
                                      reason="later usb loss", has_alt_path=False)
         action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ENTER_HOTSPOT,
                                         purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY)
@@ -362,9 +362,9 @@ class TestWs1Wp3AsyncRecovery:
     off while a job is in flight (transitioning)."""
 
     def _hctx(self, watcher, facts, *, conn_ok=False):
-        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
-        fctx = watcher.FactsContext(pre, facts, lambda: False)
-        return watcher.HealthContext(
+        pre = watcher.wifi_loop.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.wifi_loop.FactsContext(pre, facts, lambda: False)
+        return watcher.wifi_loop.HealthContext(
             fctx, health_ifname="wlan0", wifi_connected=False, client_ok=False,
             conn_ok=conn_ok, active_path_ok=conn_ok)
 
@@ -401,7 +401,7 @@ class TestWs1Wp3AsyncRecovery:
         hctx = self._hctx(watcher, facts, conn_ok=True)
         with patch.object(watcher.LOOP_CTX, "publish_network_status"), \
              patch.object(watcher.LOOP_CTX, "next_mode", return_value=watcher.wifi_policy.Mode.ONLINE):
-            watcher.step_publish_state(hctx)
+            watcher.wifi_loop.step_publish_state(watcher.LOOP_CTX, hctx)
         assert watcher.STATE.onboard_activation_failures == 0
 
     # ---- transitioning defer-gates (§2.3) ----
@@ -413,12 +413,12 @@ class TestWs1Wp3AsyncRecovery:
         watcher.STATE.transitioning = True
         with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback") as usb_fb, \
              patch.object(watcher.LOOP_CTX, "handle_runtime_usb_adoption") as adopt, \
-             patch.object(watcher, "escalate_dead_adapter_recovery") as dead, \
+             patch.object(watcher.LOOP_CTX, "escalate_dead_adapter_recovery") as dead, \
              patch.object(watcher.LOOP_CTX, "submit_client_activation") as submit:
-            assert watcher.step_usb_failure_fallback(hctx) is watcher.Verdict.CONTINUE
-            assert watcher.step_runtime_usb_adoption(hctx) is watcher.Verdict.CONTINUE
-            assert watcher.step_dead_phy_recovery(hctx) is watcher.Verdict.CONTINUE
-            assert watcher.step_boot_ap_entry(hctx) is watcher.Verdict.CONTINUE
+            assert watcher.wifi_loop.step_usb_failure_fallback(watcher.LOOP_CTX, hctx) is watcher.Verdict.CONTINUE
+            assert watcher.wifi_loop.step_runtime_usb_adoption(watcher.LOOP_CTX, hctx) is watcher.Verdict.CONTINUE
+            assert watcher.wifi_loop.step_dead_phy_recovery(watcher.LOOP_CTX, hctx) is watcher.Verdict.CONTINUE
+            assert watcher.wifi_loop.step_boot_ap_entry(watcher.LOOP_CTX, hctx) is watcher.Verdict.CONTINUE
         usb_fb.assert_not_called()
         adopt.assert_not_called()
         dead.assert_not_called()
@@ -431,7 +431,7 @@ class TestWs1Wp3AsyncRecovery:
         watcher.STATE.transitioning = True
         with patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher, "run_cmd") as run:
-            v = watcher.step_ethernet_wins(hctx)
+            v = watcher.wifi_loop.step_ethernet_wins(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.OWN_PASS   # observed (owns pass)
         leave.assert_not_called()              # enforcement deferred
         run.assert_not_called()
@@ -446,7 +446,7 @@ class TestWs1Wp3AsyncRecovery:
         hctx = self._hctx(watcher, facts)
         with patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect") as probe:
-            v = watcher.step_hotspot_policy(hctx)
+            v = watcher.wifi_loop.step_hotspot_policy(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.OWN_PASS
         leave.assert_not_called()   # deadline observed, not enforced
         probe.assert_not_called()   # probe deferred
@@ -504,7 +504,7 @@ class TestLoopHandlers:
     """
 
     def _pre(self, watcher, *, now=1000.0, boot_time=0.0, avahi_ok=True):
-        return watcher.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=avahi_ok)
+        return watcher.wifi_loop.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=avahi_ok)
 
     def _facts(self, watcher, *, adapters=None, wifi_cfg=False, wired_ok=False,
                wired_connected=False, active_client=None, now=1000.0):
@@ -517,8 +517,8 @@ class TestLoopHandlers:
     def _hctx(self, watcher, facts, *, playing=None, health_ifname="wlan0",
               wifi_connected=False, client_ok=False, conn_ok=False, active_path_ok=False):
         pre = self._pre(watcher, now=facts.taken_at)
-        fctx = watcher.FactsContext(pre, facts, playing or (lambda: False))
-        return watcher.HealthContext(
+        fctx = watcher.wifi_loop.FactsContext(pre, facts, playing or (lambda: False))
+        return watcher.wifi_loop.HealthContext(
             fctx, health_ifname=health_ifname, wifi_connected=wifi_connected,
             client_ok=client_ok, conn_ok=conn_ok, active_path_ok=active_path_ok,
         )
@@ -543,10 +543,10 @@ class TestLoopHandlers:
         # A Phase B-late OWN_PASS (hotspot policy) must prevent the trailing
         # always-CONTINUE handlers from running — the load-bearing short-circuit.
         watcher.STATE.boot_time = 0.0
-        with patch.object(watcher, "step_hotspot_policy",
+        with patch.object(watcher.wifi_loop, "step_hotspot_policy",
                           return_value=watcher.Verdict.OWN_PASS) as hp, \
-             patch.object(watcher, "step_connection_reliability") as cr, \
-             patch.object(watcher, "step_catchall_reboot") as co:
+             patch.object(watcher.wifi_loop, "step_connection_reliability") as cr, \
+             patch.object(watcher.wifi_loop, "step_catchall_reboot") as co:
             _run_monitor_once(watcher, now=1000.0, wifi_cfg=True)
         hp.assert_called_once()
         cr.assert_not_called()
@@ -561,7 +561,7 @@ class TestLoopHandlers:
         hctx = self._hctx(watcher, facts, wifi_connected=True, client_ok=False, conn_ok=False)
         with patch.object(watcher.LOOP_CTX, "next_recovery_action") as nra, \
              patch.object(watcher, "enter_setup_mode") as enter:
-            v = watcher.step_boot_ap_entry(hctx)
+            v = watcher.wifi_loop.step_boot_ap_entry(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         nra.assert_not_called()   # runtime paths own it, not boot-entry
         enter.assert_not_called()
@@ -576,7 +576,7 @@ class TestLoopHandlers:
         with patch.object(watcher.LOOP_CTX, "gather_recovery_facts"), \
              patch.object(watcher.LOOP_CTX, "next_recovery_action", return_value=action) as nra, \
              patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter:
-            v = watcher.step_boot_ap_entry(hctx)
+            v = watcher.wifi_loop.step_boot_ap_entry(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.OWN_PASS
         nra.assert_called_once()
         enter.assert_called_once()
@@ -584,19 +584,19 @@ class TestLoopHandlers:
     # ---- Phase A ----
 
     def test_step_avahi_hostname_gated_and_rate_limited(self, watcher):
-        ls = watcher.LoopState()
+        ls = watcher.wifi_loop.LoopState()
         with patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname") as chk:
-            v = watcher.step_avahi_hostname(self._pre(watcher, now=1000.0), ls)
+            v = watcher.wifi_loop.step_avahi_hostname(watcher.LOOP_CTX, self._pre(watcher, now=1000.0), ls)
         assert v is watcher.Verdict.CONTINUE
         chk.assert_called_once()
         assert ls.last_avahi_check == 1000.0
         # Within AVAHI_CHECK_INTERVAL -> not called again.
         with patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname") as chk2:
-            watcher.step_avahi_hostname(self._pre(watcher, now=1005.0), ls)
+            watcher.wifi_loop.step_avahi_hostname(watcher.LOOP_CTX, self._pre(watcher, now=1005.0), ls)
         chk2.assert_not_called()
         # avahi_ok False -> skipped regardless of interval.
         with patch.object(watcher.LOOP_CTX, "check_and_repair_avahi_hostname") as chk3:
-            watcher.step_avahi_hostname(self._pre(watcher, now=99999.0, avahi_ok=False), ls)
+            watcher.wifi_loop.step_avahi_hostname(watcher.LOOP_CTX, self._pre(watcher, now=99999.0, avahi_ok=False), ls)
         chk3.assert_not_called()
 
     def test_manual_ap_control_action_enters_when_not_in_ap(self, watcher):
@@ -625,7 +625,7 @@ class TestLoopHandlers:
         watcher.STATE.pending_control_params = {"reason": "user"}
         watcher.control_action_event.set()
         with patch.object(watcher, "enter_setup_mode"):
-            v = watcher.step_control_action(self._pre(watcher))
+            v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.OWN_PASS
         assert not watcher.control_action_event.is_set()
 
@@ -635,7 +635,7 @@ class TestLoopHandlers:
         watcher.STATE.pending_control_params = {"reason": "user"}
         watcher.control_action_event.set()
         with patch.object(watcher, "enter_setup_mode") as enter:
-            v = watcher.step_control_action(self._pre(watcher))
+            v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         enter.assert_not_called()
         # Left queued for a later pass (never dropped).
@@ -652,7 +652,7 @@ class TestLoopHandlers:
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
         hctx = self._hctx(watcher, facts, conn_ok=False)
         with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=True) as h:
-            v = watcher.step_usb_failure_fallback(hctx)
+            v = watcher.wifi_loop.step_usb_failure_fallback(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.OWN_PASS
         h.assert_called_once_with(hctx)
 
@@ -661,7 +661,7 @@ class TestLoopHandlers:
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
         hctx = self._hctx(watcher, facts, conn_ok=True)
         with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=False) as h:
-            v = watcher.step_usb_failure_fallback(hctx)
+            v = watcher.wifi_loop.step_usb_failure_fallback(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         h.assert_called_once_with(hctx)
 
@@ -671,7 +671,7 @@ class TestLoopHandlers:
         hctx = self._hctx(watcher, facts, conn_ok=False)
         watcher.STATE.setup_mode = True
         with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback") as h:
-            v = watcher.step_usb_failure_fallback(hctx)
+            v = watcher.wifi_loop.step_usb_failure_fallback(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         h.assert_not_called()
 
@@ -683,20 +683,20 @@ class TestLoopHandlers:
                           conn_ok=True, active_path_ok=True)
         with patch.object(watcher, "run_cmd") as run, \
              patch.object(watcher, "leave_setup_mode") as leave:
-            v = watcher.step_ethernet_wins(hctx)
+            v = watcher.wifi_loop.step_ethernet_wins(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.OWN_PASS  # owns on the predicate
         run.assert_not_called()               # nothing to disconnect
         leave.assert_not_called()
 
     def test_step_ethernet_wins_continue_when_not_wired(self, watcher):
         hctx = self._hctx(watcher, self._facts(watcher, wired_ok=False))
-        assert watcher.step_ethernet_wins(hctx) is watcher.Verdict.CONTINUE
+        assert watcher.wifi_loop.step_ethernet_wins(watcher.LOOP_CTX, hctx) is watcher.Verdict.CONTINUE
 
     def test_step_connection_reliability_always_continue(self, watcher):
         facts = self._facts(watcher, wifi_cfg=True, wired_ok=False)
         hctx = self._hctx(watcher, facts, conn_ok=False)
         with patch.object(watcher.LOOP_CTX, "connect_to_configured_wifi") as conn:
-            v = watcher.step_connection_reliability(hctx)
+            v = watcher.wifi_loop.step_connection_reliability(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE   # never owns, even when it reconnects
         conn.assert_called_once()              # prompt reconnect on first entry
         assert watcher.STATE.conn_down_start == hctx.now
@@ -706,7 +706,7 @@ class TestLoopHandlers:
         facts = self._facts(watcher, now=watcher.NO_ACTIVE_PATH_REBOOT_AFTER + 100.0)
         hctx = self._hctx(watcher, facts)
         with patch.object(watcher.LOOP_CTX, "request_network_down_reboot") as reboot:
-            v = watcher.step_catchall_reboot(hctx)
+            v = watcher.wifi_loop.step_catchall_reboot(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         reboot.assert_called_once()
 
@@ -734,9 +734,9 @@ class TestExplicitModeClassifier:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=usb):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         assert snap["device"]["mode"] == "hotspot"
 
 

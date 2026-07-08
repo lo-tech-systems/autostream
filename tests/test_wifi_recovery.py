@@ -148,9 +148,9 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "degraded_no_ip"
         assert rec["policy"]["warning"] == "no_ip_address"
@@ -167,9 +167,9 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "no_ip_held_back"   # not link_down / degraded_no_ip
         assert rec["policy"]["warning"] == "no_ip_held_back"
@@ -184,9 +184,9 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [builtin], wired_connected=False, wired_ok=False)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [builtin], wired_connected=False, wired_ok=False)
         assert snap["device"]["using_builtin_fallback"] is True
 
     def test_prune_drops_absent_macs(self, watcher):
@@ -203,9 +203,9 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "degraded_no_ip"
         assert rec["health"]["checks"] >= 1
@@ -227,10 +227,10 @@ class TestNoIpLedgerAndDiagnosis:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
-             patch.object(watcher, "is_wifi_client_healthy", side_effect=_health), \
-             patch.object(watcher, "is_gateway_reachable", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, 
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", side_effect=_health), \
+             patch.object(watcher.STATUS_CTX, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX,
                 [builtin, usb], wired_connected=False, wired_ok=False)
         # The idle, unattributed USB must not flip the device to degraded.
         assert snap["device"]["state"] == "online"
@@ -254,7 +254,7 @@ class TestAdapterOverlayEvents:
         watcher._known_usb_macs.add(usb_mac)
         event = self._diagnose(watcher, [builtin], None,
                                conn_ok=False, prev_mac=usb_mac, prev_ifname="wlan1")
-        assert isinstance(event, watcher.ClientFailed)
+        assert isinstance(event, watcher.wifi_recovery.ClientFailed)
         assert event.reason == "absent"
         assert event.mac == usb_mac
         assert event.ifname == "wlan1"
@@ -284,7 +284,7 @@ class TestAdapterOverlayEvents:
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
         event = self._diagnose(watcher, adapters, usb,
                                conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
-        assert isinstance(event, watcher.ClientFailed)
+        assert isinstance(event, watcher.wifi_recovery.ClientFailed)
         assert event.reason == "no_ip"
         assert event.ifname == "wlan1"
 
@@ -316,7 +316,7 @@ class TestAdapterOverlayEvents:
     def test_apply_client_failed_activates_via_ladder(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         facts = _facts_for(watcher, [builtin], None)
-        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
                                      reason="no_ip", has_alt_path=True)
         action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
@@ -336,7 +336,7 @@ class TestAdapterOverlayEvents:
     def test_apply_client_failed_enters_hotspot_when_no_client_path(self, watcher):
         # C2-WP1: ENTER_HOTSPOT with no usable onboard falls to USB_LOSS_RECOVERY.
         facts = _facts_for(watcher, [], None)
-        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
                                      reason="absent", has_alt_path=False)
         action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ENTER_HOTSPOT,
                                         purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY)
@@ -358,7 +358,7 @@ class TestAdapterOverlayEvents:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:50", is_usb=True)
         facts = _facts_for(watcher, [builtin, usb], usb)  # USB is the active client
-        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:50",
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:50",
                                      reason="no_ip", has_alt_path=True)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
@@ -380,7 +380,7 @@ class TestAdapterOverlayEvents:
         watcher.RECOVERY_STATE.adapter_noip_ledgers[builtin.stable_id] = {
             "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf")}
         facts = _facts_for(watcher, [builtin, usb], usb)
-        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:51",
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:51",
                                      reason="no_ip", has_alt_path=True)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
@@ -398,7 +398,7 @@ class TestAdapterOverlayEvents:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:09", is_usb=True)
         facts = _facts_for(watcher, [builtin, usb], None)
-        event = watcher.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:09",
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:09",
                                      reason="no_ip", has_alt_path=True)
         action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
@@ -621,7 +621,7 @@ class TestManualAdapterControl:
     """WP-9 item 2 — manual clear / disable / enable adapter control actions."""
 
     def _pre(self, watcher):
-        return watcher.PreFactsContext(now=0.0, boot_time=0.0, avahi_ok=False)
+        return watcher.wifi_loop.PreFactsContext(now=0.0, boot_time=0.0, avahi_ok=False)
 
     def test_disable_and_enable_round_trip(self, watcher):
         wr = watcher.wifi_recovery
@@ -682,7 +682,7 @@ class TestManualAdapterControl:
                               present_in_sysfs=True, resettable_usb=True)), \
              patch.object(watcher.wifi_recovery, "update_dead_adapter_detection", return_value=True), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
-            handled = watcher.escalate_dead_adapter_recovery([usb], False)
+            handled = watcher.wifi_recovery.escalate_dead_adapter_recovery(watcher.RECOVERY_CTX, [usb], False)
         assert handled is False
         reset.assert_not_called()
 
@@ -704,7 +704,7 @@ class TestManualAdapterControl:
         watcher.STATE.pending_control_action = "disable_adapter"
         watcher.STATE.pending_control_params = {"adapter": "usb-N"}
         watcher.control_action_event.set()
-        v = watcher.step_control_action(self._pre(watcher))
+        v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE          # never owns the pass
         assert "usb-N" in watcher.RECOVERY_STATE.disabled_adapters   # applied, not deferred
         assert not watcher.control_action_event.is_set()
@@ -803,9 +803,9 @@ class TestRecoveryFacts:
 
     def test_adapter_recovery_facts_healthy_builtin(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        with patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+        with patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False):
-            rf = watcher._adapter_recovery_facts(builtin, 1000.0)
+            rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, builtin, 1000.0)
         assert rf.ifname == "wlan0"
         assert rf.is_builtin and not rf.is_usb
         assert rf.healthy is True and rf.carrier is True

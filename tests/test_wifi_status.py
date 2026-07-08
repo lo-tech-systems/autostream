@@ -36,11 +36,11 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=healthy), \
-             patch.object(watcher, "is_gateway_reachable", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=healthy), \
+             patch.object(watcher.STATUS_CTX, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None), \
              patch("time.monotonic", return_value=now):
-            return watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
+            return watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
 
     def test_healthy_usb_client_online(self, watcher):
         usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
@@ -53,10 +53,10 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid", return_value="MyHomeWiFi"), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "is_gateway_reachable", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=usb):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=usb):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         assert snap["schema_version"] == 1
         assert snap["device"]["state"] == "online"
         assert snap["device"]["primary_ifname"] == "wlan0"
@@ -96,10 +96,10 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None), \
              patch("time.monotonic", return_value=1000.0):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "dead_phy"
         assert rec["health"]["checks"] == 4
@@ -195,9 +195,9 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "read_operstate", return_value="down"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="10.0.0.1"), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["state"] == "degraded"
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ssid"] == ""
@@ -230,10 +230,10 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "default_gateway_ipv4",
                           side_effect=lambda ifname: gateways.get(ifname, "")), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid", return_value="MyHomeWiFi"), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "is_gateway_reachable", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "usb_wifi"
         assert snap["device"]["primary_ifname"] == "wlan0"
         assert snap["device"]["primary_ssid"] == "MyHomeWiFi"
@@ -255,9 +255,9 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "default_gateway_ipv4",
                           side_effect=lambda ifname: gateways.get(ifname, "")), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ifname"] == "eth0"
         assert snap["device"]["primary_ssid"] == ""
@@ -280,10 +280,10 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "default_gateway_ipv4",
                           side_effect=lambda ifname: gateways.get(ifname, "")), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "is_gateway_reachable", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ifname"] == "eth0"
         get_ssid.assert_not_called()
@@ -303,9 +303,9 @@ class TestBuildNetworkStatusSnapshot:
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [usb], wired_connected=True, wired_ok=True)
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ifname"] == "eth0"
         assert snap["device"]["primary_ipv4_info"]["gateway"] == ""
@@ -314,8 +314,8 @@ class TestBuildNetworkStatusSnapshot:
     def test_carrier_only_ethernet_is_not_online_or_primary(self, watcher):
         addrs = {"eth0": []}
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=True, wired_ok=False)
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=True, wired_ok=False)
         assert snap["device"]["state"] == "offline"
         assert snap["device"]["primary_kind"] == ""
         assert snap["device"]["primary_ifname"] == ""
@@ -336,8 +336,8 @@ class TestBuildNetworkStatusSnapshot:
         addrs = {"eth0": [{"family": "ipv4", "address": "10.0.0.5",
                            "prefixlen": 24, "scope": "global"}]}
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=True, wired_ok=True)
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=True, wired_ok=True)
         assert snap["device"]["state"] == "setup_mode"
         assert snap["connectivity"]["active_path_ok"] is False
         assert snap["connectivity"]["no_active_path_age_seconds"] is None
@@ -346,9 +346,9 @@ class TestBuildNetworkStatusSnapshot:
     def test_connectivity_timer_age_and_remaining(self, watcher):
         watcher.STATE.last_active_path_seen = 1000.0
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None), \
              patch("time.monotonic", return_value=1030.0):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=False, wired_ok=False)
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=False, wired_ok=False)
         assert snap["connectivity"]["last_active_path_seen_monotonic"] == 1000.0
         assert snap["connectivity"]["no_active_path_age_seconds"] == 30.0
         assert snap["connectivity"]["no_active_path_reboot_after_seconds"] == watcher.NO_ACTIVE_PATH_REBOOT_AFTER
@@ -356,8 +356,8 @@ class TestBuildNetworkStatusSnapshot:
 
     def test_logging_block_present(self, watcher):
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=False, wired_ok=False)
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=False, wired_ok=False)
         assert snap["logging"]["effective_level"] == "info"
         assert snap["logging"]["default_level"] == "info"
         assert snap["logging"]["temporary_level_expires_at"] is None
@@ -391,11 +391,11 @@ class TestIf7StatusTruthfulness:
              patch.object(watcher.wifi_net, "read_operstate",
                           return_value=("down" if link_down else "up")), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None), \
              patch("time.monotonic", return_value=now):
             snap = watcher.wifi_status.build_network_status_snapshot(
-                watcher, [usb], wired_connected=False, wired_ok=False)
+                watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         return snap["adapters"][0]
 
     def test_held_back_carrier_down_publishes_count_and_reason(self, watcher):
@@ -450,11 +450,11 @@ class TestIf7StatusTruthfulness:
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="192.168.1.1"), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid", return_value="MyHomeWiFi"), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "is_gateway_reachable", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
             snap = watcher.wifi_status.build_network_status_snapshot(
-                watcher, [usb], wired_connected=False, wired_ok=False)
+                watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         rec = snap["adapters"][0]
         assert rec["health"]["state"] == "healthy"
         assert rec["health"]["checks"] == 0
@@ -476,11 +476,11 @@ class TestIf7StatusTruthfulness:
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name",
                           return_value=conn_name) as get_conn, \
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value=conn_ssid) as get_conn_ssid, \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
-             patch.object(watcher, "is_gateway_reachable", return_value=True), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "is_gateway_reachable", return_value=True), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
             snap = watcher.wifi_status.build_network_status_snapshot(
-                watcher, [usb], wired_connected=False, wired_ok=False)
+                watcher.STATUS_CTX, [usb], wired_connected=False, wired_ok=False)
         return snap, get_ssid, get_conn, get_conn_ssid
 
     def test_hidden_ssid_falls_back_to_profile_ssid(self, watcher):
@@ -520,10 +520,10 @@ class TestIf7StatusTruthfulness:
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value="10.0.0.1"), \
              patch.object(watcher.wifi_net, "get_active_wifi_ssid") as get_ssid, \
              patch.object(watcher.wifi_net, "get_active_wifi_connection_name") as get_conn, \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
+             patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
             snap = watcher.wifi_status.build_network_status_snapshot(
-                watcher, [usb], wired_connected=True, wired_ok=True)
+                watcher.STATUS_CTX, [usb], wired_connected=True, wired_ok=True)
         assert snap["device"]["primary_kind"] == "ethernet"
         assert snap["device"]["primary_ssid"] == ""
         get_ssid.assert_not_called()

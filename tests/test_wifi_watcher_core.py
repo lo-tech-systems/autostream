@@ -941,20 +941,17 @@ class TestModuleSplit:
         assert hasattr(wifi_recovery, "TargetAdapter")
         assert hasattr(wifi_status, "build_network_status_snapshot")
 
-    def test_watcher_reexports_target_adapter(self, watcher):
-        import wifi_recovery
-        assert watcher.TargetAdapter is wifi_recovery.TargetAdapter
-
     def test_escalate_delegates(self, watcher):
         usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=False, healthy=True):
             # Healthy target -> ladder returns False via the delegated impl.
-            assert watcher.escalate_dead_adapter_recovery([usb], False) is False
+            assert watcher.wifi_recovery.escalate_dead_adapter_recovery(
+                watcher.RECOVERY_CTX, [usb], False) is False
 
     def test_snapshot_delegates(self, watcher):
         with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
-             patch.object(watcher, "resolve_hotspot_adapter", return_value=None):
-            snap = watcher.wifi_status.build_network_status_snapshot(watcher, [], wired_connected=False, wired_ok=False)
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=False, wired_ok=False)
         assert snap["schema_version"] == 1

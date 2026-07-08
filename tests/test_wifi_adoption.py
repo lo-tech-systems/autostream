@@ -32,9 +32,9 @@ class TestUsbFailureFallback:
     HealthContext (conn_ok + pre-set-active identity) and wires diagnose->apply."""
 
     def _hctx(self, watcher, facts, *, conn_ok, prev_mac="", prev_ifname=""):
-        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
-        fctx = watcher.FactsContext(pre, facts, lambda: False)
-        return watcher.HealthContext(
+        pre = watcher.wifi_loop.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.wifi_loop.FactsContext(pre, facts, lambda: False)
+        return watcher.wifi_loop.HealthContext(
             fctx, health_ifname="wlan1", wifi_connected=False, client_ok=False,
             conn_ok=conn_ok, active_path_ok=conn_ok,
             prev_active_mac=prev_mac, prev_active_ifname=prev_ifname)
@@ -190,9 +190,9 @@ class TestStepBssidSurvey:
         return _adapter(watcher, ifname, mac, is_usb=True)
 
     def _hctx(self, watcher, facts, *, client_ok=True, playing=False):
-        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
-        fctx = watcher.FactsContext(pre, facts, lambda: playing)
-        return watcher.HealthContext(
+        pre = watcher.wifi_loop.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.wifi_loop.FactsContext(pre, facts, lambda: playing)
+        return watcher.wifi_loop.HealthContext(
             fctx, health_ifname="wlan1", wifi_connected=True, client_ok=client_ok,
             conn_ok=client_ok, active_path_ok=client_ok)
 
@@ -201,7 +201,7 @@ class TestStepBssidSurvey:
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
-            v = watcher.step_bssid_survey(hctx)
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         survey.assert_not_called()
 
@@ -210,7 +210,7 @@ class TestStepBssidSurvey:
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
-            v = watcher.step_bssid_survey(hctx)
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         survey.assert_not_called()
 
@@ -218,14 +218,14 @@ class TestStepBssidSurvey:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         hctx = self._hctx(watcher, _facts_for(watcher, [builtin], builtin))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
-            v = watcher.step_bssid_survey(hctx)
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         survey.assert_not_called()
 
     def test_no_active_client_skips(self, watcher):
         hctx = self._hctx(watcher, _facts_for(watcher, [], None))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
-            v = watcher.step_bssid_survey(hctx)
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         survey.assert_not_called()
 
@@ -233,7 +233,7 @@ class TestStepBssidSurvey:
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb), client_ok=False)
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
-            v = watcher.step_bssid_survey(hctx)
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
         survey.assert_not_called()
 
@@ -241,7 +241,7 @@ class TestStepBssidSurvey:
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam", return_value=True) as survey:
-            v = watcher.step_bssid_survey(hctx)
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.OWN_PASS
         survey.assert_called_once_with(hctx)
 
@@ -249,7 +249,7 @@ class TestStepBssidSurvey:
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam", return_value=False):
-            v = watcher.step_bssid_survey(hctx)
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
 
 
@@ -265,9 +265,9 @@ class TestBssidSurveyAndRoam:
         return _facts_for(watcher, adapters, usb, now=now)
 
     def _hctx(self, watcher, facts, *, playing=False):
-        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
-        fctx = watcher.FactsContext(pre, facts, lambda: playing)
-        return watcher.HealthContext(
+        pre = watcher.wifi_loop.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.wifi_loop.FactsContext(pre, facts, lambda: playing)
+        return watcher.wifi_loop.HealthContext(
             fctx, health_ifname=facts.active_client.ifname, wifi_connected=True,
             client_ok=True, conn_ok=True, active_path_ok=True)
 
@@ -522,7 +522,7 @@ class TestReconnectSavedEpisode:
     """
 
     def _pre(self, watcher, now=0.0):
-        return watcher.PreFactsContext(now=now, boot_time=0.0, avahi_ok=False)
+        return watcher.wifi_loop.PreFactsContext(now=now, boot_time=0.0, avahi_ok=False)
 
     def test_starts_episode_and_submits_first_target(self, watcher):
         watcher.STATE.setup_mode = True
@@ -655,7 +655,7 @@ class TestReconnectSavedEpisode:
         watcher.STATE.pending_control_action = "start_setup"
         watcher.control_action_event.set()
         with patch.object(watcher.LOOP_CTX, "process_control_action") as pca:
-            v = watcher.step_control_action(self._pre(watcher))
+            v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         pca.assert_not_called()
         assert watcher.control_action_event.is_set()   # left queued until episode ends
@@ -822,10 +822,10 @@ class TestNmDisconnectedUsbDebounce:
         def _one_pass():
             # NM-disconnected: resolve_active_client finds nothing connected.
             facts = _facts_for(watcher, adapters, None)
-            pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
-            fctx = watcher.FactsContext(pre, facts, lambda: False)
-            hctx = watcher.finalize_active_client_and_health(fctx)
-            return watcher.step_usb_failure_fallback(hctx)
+            pre = watcher.wifi_loop.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+            fctx = watcher.wifi_loop.FactsContext(pre, facts, lambda: False)
+            hctx = watcher.wifi_loop.finalize_active_client_and_health(watcher.LOOP_CTX, fctx)
+            return watcher.wifi_loop.step_usb_failure_fallback(watcher.LOOP_CTX, hctx)
 
         with patch.object(watcher.wifi_net, "is_wifi_connected", return_value=False), \
              patch.object(watcher, "is_wifi_client_healthy", return_value=False), \

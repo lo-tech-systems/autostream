@@ -254,7 +254,7 @@ class TestActivationWorker:
         assert watcher.STATE.transitioning is False  # but the gate is cleared
 
     def _pre(self, watcher):
-        return watcher.PreFactsContext(now=1000.0, boot_time=0.0, avahi_ok=True)
+        return watcher.wifi_loop.PreFactsContext(now=1000.0, boot_time=0.0, avahi_ok=True)
 
     # ---- peek-then-consume control action (§3.6) ----
 
@@ -264,7 +264,7 @@ class TestActivationWorker:
         watcher.STATE.pending_control_params = {}
         watcher.control_action_event.set()
         with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
-            v = watcher.step_control_action(self._pre(watcher))
+            v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE
         proc.assert_not_called()                       # not consumed
         assert watcher.STATE.pending_control_action == "start_setup"  # left queued
@@ -273,7 +273,7 @@ class TestActivationWorker:
         # Once the transition completes, the queued action is applied exactly once.
         watcher.STATE.transitioning = False
         with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
-            v = watcher.step_control_action(self._pre(watcher))
+            v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.OWN_PASS
         proc.assert_called_once()
         assert watcher.STATE.pending_control_action == ""
@@ -284,7 +284,7 @@ class TestActivationWorker:
         watcher.STATE.pending_control_params = {"level": "debug"}
         watcher.control_action_event.set()
         with patch.object(watcher.LOOP_CTX, "process_control_action") as proc:
-            v = watcher.step_control_action(self._pre(watcher))
+            v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.CONTINUE           # non-disruptive: pass continues
         proc.assert_called_once()                      # applied immediately
         assert watcher.STATE.pending_control_action == ""  # consumed
@@ -623,9 +623,9 @@ class TestIf2WorkerSessionContract:
 
     def _eth_hctx(self, watcher, now):
         facts = _facts_for(watcher, [], None, wired_ok=True, now=now)
-        pre = watcher.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
-        fctx = watcher.FactsContext(pre, facts, lambda: False)
-        return watcher.HealthContext(
+        pre = watcher.wifi_loop.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.wifi_loop.FactsContext(pre, facts, lambda: False)
+        return watcher.wifi_loop.HealthContext(
             fctx, health_ifname="wlan0", wifi_connected=False, client_ok=False,
             conn_ok=True, active_path_ok=True)
 
@@ -672,7 +672,7 @@ class TestIf2WorkerSessionContract:
                 # Mid-job ethernet-appears pass: step_ethernet_wins observes it but
                 # DEFERS enforcement (owns the pass; no leave, no disconnect).
                 with patch.object(watcher.nm, "disconnect_device") as disc_defer:
-                    v = watcher.step_ethernet_wins(self._eth_hctx(watcher, now=1000.0))
+                    v = watcher.wifi_loop.step_ethernet_wins(watcher.LOOP_CTX, self._eth_hctx(watcher, now=1000.0))
                 assert v is watcher.Verdict.OWN_PASS
                 disc_defer.assert_not_called()
                 assert tail_calls == []                  # no success tail yet
@@ -684,7 +684,7 @@ class TestIf2WorkerSessionContract:
 
                 # Apply the result at pass top (loop thread): the success tail runs
                 # here and transitioning is cleared.
-                pre = watcher.PreFactsContext(now=1001.0, boot_time=0.0, avahi_ok=True)
+                pre = watcher.wifi_loop.PreFactsContext(now=1001.0, boot_time=0.0, avahi_ok=True)
                 watcher.wifi_activation.step_apply_activation_result(watcher.ACTIVATION_CTX, pre)
                 assert watcher.STATE.transitioning is False
                 assert watcher.STATE.last_apply_result == "ok"
@@ -694,7 +694,7 @@ class TestIf2WorkerSessionContract:
                 # The pass AFTER the result is applied now enforces ethernet: the
                 # idle Wi-Fi client is disconnected (no longer deferred).
                 with patch.object(watcher.nm, "disconnect_device") as disc_enforce:
-                    v2 = watcher.step_ethernet_wins(self._eth_hctx(watcher, now=1002.0))
+                    v2 = watcher.wifi_loop.step_ethernet_wins(watcher.LOOP_CTX, self._eth_hctx(watcher, now=1002.0))
                 assert v2 is watcher.Verdict.OWN_PASS
                 disc_enforce.assert_called_once_with("wlan1")
             finally:
@@ -740,9 +740,9 @@ class TestReconfigureTimeout:
         watcher.STATE.reconnect_episode = watcher.wifi_adoption.ReconnectEpisode(
             target_ifnames=["wlan0"], profile_name="Home", profile_uuid="uuid-1",
             hotspot_ifname="wlan0", failure_tail="reconfigure_timeout")
-        pre = watcher.PreFactsContext(now=watcher.wifi_policy.AP_MAX_DURATION + 10, boot_time=0.0, avahi_ok=False)
+        pre = watcher.wifi_loop.PreFactsContext(now=watcher.wifi_policy.AP_MAX_DURATION + 10, boot_time=0.0, avahi_ok=False)
         with patch.object(watcher, "handle_reconfigure_timeout") as h:
-            v = watcher.step_reconfigure_timeout(pre)
+            v = watcher.wifi_loop.step_reconfigure_timeout(watcher.LOOP_CTX, pre)
         h.assert_not_called()
         assert v is watcher.Verdict.CONTINUE
 

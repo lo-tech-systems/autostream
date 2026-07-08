@@ -327,7 +327,7 @@ def _run_monitor_once(
         stack.enter_context(patch.object(watcher.LOOP_CTX, "escalate_dead_adapter_recovery", dead_recovery))
         stack.enter_context(patch.object(watcher.LOOP_CTX, "publish_network_status"))
         stack.enter_context(patch.object(watcher.LOOP_CTX, "log_on_change"))
-        stack.enter_context(patch.object(watcher, "step_boot_client_bringup",
+        stack.enter_context(patch.object(watcher.wifi_loop, "step_boot_client_bringup",
                                           return_value=watcher.Verdict.CONTINUE))
         connect = stack.enter_context(patch.object(watcher.LOOP_CTX, "connect_to_configured_wifi"))
         watcher.network_monitor_loop(run_once=True)
