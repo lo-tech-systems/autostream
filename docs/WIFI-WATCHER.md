@@ -143,20 +143,39 @@ headless recovery (no station) is unchanged.
 ## Recovery decision tree
 
 **Recovery ladder** (one pure classifier, used identically at boot-entry, on USB
-failure, and from within a recovery hotspot): ethernet > preferred USB > onboard
-client > hotspot as last resort. Disabled, quarantined, no-IP-suppressed, or
-onboard-failure-bound adapters are not offered as client rungs. The invariant: a
-broken USB dongle must never trap the device in a hotspot on the only working
-radio — the onboard is tried as a client before hosting a recovery AP, and
-climbed back to from within one.
+failure, and from within a recovery hotspot): ethernet > preferred USB > **one
+budgeted USB reset** > onboard client > hotspot as last resort. Disabled,
+quarantined, no-IP-suppressed, or onboard-failure-bound adapters are not offered
+as client rungs. When the preferred USB is condemned by a link-down wedge (not
+merely no-IP) — resettable, within its reset budget, not hosting the hotspot,
+and not already spent this offline episode — the ladder resets and reactivates
+it before onboard is tried: salvage (NM re-activation) still runs first, and on
+reset success the client resumes on the same MAC/lease/IP, so failover's
+client-visible churn (and the mDNS TTL wait) is avoided. The attempt counts in
+the visible reset ledger and is capped at once per offline episode; a
+non-resettable, budget-exhausted, quarantined, hotspot-hosting, or
+already-spent wedge falls straight to onboard, and quarantine still applies per
+the existing thresholds once the reset option is exhausted. The
+associated-but-no-IP class is ambiguous evidence (could be router/DHCP) and
+keeps its own path — the in-job implicated-failure retry and the no-IP ledger
+promotion — unaffected by this rung. The invariant: a broken USB dongle must
+never trap the device in a hotspot on the only working radio — the onboard is
+tried as a client before hosting a recovery AP, and climbed back to from within
+one.
 
 **Dead-PHY reset ladder** (a wedged-but-present adapter, NO-CARRIER / DOWN, after a
-2-pass debounce): built-in fallback → USB reset (method A rebind, then B
-re-enumerate, alternating) → quarantine/back-off → guarded reboot (offline only).
-Reset budget is **2 per 24 h** for the preferred client; **5 total** trips
-quarantine until the adapter is stable or replaced. Reset history decays after
-24 h of sustained health. The reset ladder is `transitioning`-gated so it never
-overlaps a worker activation, and is left synchronous by design.
+2-pass debounce): USB reset (method A rebind, then B re-enumerate, alternating),
+for a resettable target with reset budget available, → built-in fallback →
+quarantine/back-off → guarded reboot (offline only) — the same reset-before-
+fallback order as the primary recovery ladder above. A non-resettable,
+budget-exhausted, or disabled target falls straight through to built-in
+fallback instead of holding the device offline; between reset attempt windows
+the ladder falls through to built-in fallback the same way rather than waiting
+for the next window. Reset budget is **2 per 24 h** for the preferred client;
+**5 total** trips quarantine until the adapter is stable or replaced. Reset
+history decays after 24 h of sustained health. The reset ladder is
+`transitioning`-gated so it never overlaps a worker activation, and is left
+synchronous by design.
 
 **Runtime USB adoption**: a newly stable USB spare that can see the committed SSID
 is validated *before* the healthy built-in is dropped (transactional handover),
@@ -176,6 +195,10 @@ only submits the roam if it still names the same candidate and still clears
 policy. The 15-minute roam/activation holdoff still applies. Failure/success
 accounting on a pin is scoped to the pinned interface's own table, so a
 failure on one USB adapter can never quarantine entries observed by another.
+At `debug` log level every scan (USB self-scan, onboard survey, activation pin
+scan) logs one compact line — ifname, rescan flag, purpose, and the strongest
+BSSID/signal rows for the committed SSID; `info` and above stay quiet about
+scans.
 
 **Persistent fault state**: the per-adapter no-IP and reset/quarantine ledgers are
 persisted to `/var/lib/autostream/adapter-fault-state.json` (wall-clock
