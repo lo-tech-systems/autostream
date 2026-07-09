@@ -347,6 +347,26 @@ def clear_bssid_tables(tables: dict) -> None:
     tables.clear()
 
 
+def format_bssid_scan_debug(ifname: str, rescan: bool, purpose: str,
+                             rows: Optional[list], ssid: str) -> str:
+    """One-line DEBUG summary of a raw BSSID scan result.
+
+    ``rows`` is the raw scan output (pre-table); ``rows=None`` renders a
+    distinct failure form.  Otherwise the row count is the rows matching
+    *ssid*, listed BSSID/signal descending and capped at the strongest 8,
+    with a trailing ``*`` marking the in-use row.
+    """
+    prefix = f"BSSID scan on {ifname} (rescan={rescan}, {purpose}):"
+    if rows is None:
+        return f"{prefix} scan failed"
+    matching = [row for row in rows if row.get("ssid") == ssid]
+    matching.sort(key=lambda row: row["signal"], reverse=True)
+    entries = ", ".join(
+        f"{row['bssid']} {row['signal']}{'*' if row.get('in_use') else ''}"
+        for row in matching[:8])
+    return f"{prefix} {len(matching)} rows for '{ssid}': {entries}"
+
+
 def update_roam_streak(streak: dict, ifname: str, candidate: str, now: float) -> dict:
     """Advance the consecutive-scan roam-candidate streak; returns a new dict.
 

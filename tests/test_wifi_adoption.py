@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -579,6 +580,81 @@ class TestBssidSurveyAndRoam:
         submit.assert_not_called()
         assert "BB:BB:BB:BB:BB:BB" in watcher.ADOPTION_STATE.bssid_tables["wlan0"]
         assert "BB:BB:BB:BB:BB:BB" not in watcher.ADOPTION_STATE.bssid_tables["wlan1"]
+
+
+class TestBssidScanDebugLogging:
+    """SL-1: every BSSID scan (USB survey, onboard survey) emits one compact
+    DEBUG line; nothing about scans is logged at INFO."""
+
+    def _usb(self, watcher, ifname="wlan1", mac="bb:bb:bb:bb:bb:01"):
+        return _adapter(watcher, ifname, mac, is_usb=True)
+
+    def _hctx(self, watcher, facts, *, playing=False):
+        pre = watcher.wifi_loop.PreFactsContext(now=facts.taken_at, boot_time=0.0, avahi_ok=True)
+        fctx = watcher.wifi_loop.FactsContext(pre, facts, lambda: playing)
+        return watcher.wifi_loop.HealthContext(
+            fctx, health_ifname=facts.active_client.ifname, wifi_connected=True,
+            client_ok=True, conn_ok=True, active_path_ok=True)
+
+    @contextlib.contextmanager
+    def _stub_ssid(self, watcher, ssid="Home"):
+        with patch.object(watcher.ADOPTION_CTX, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState(ssid, "uuid-1")), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value=ssid):
+            yield
+
+    def test_usb_survey_scan_logs_one_debug_line(self, watcher, caplog):
+        usb = self._usb(watcher)
+        facts = _facts_for(watcher, [usb], usb, now=1000.0)
+        hctx = self._hctx(watcher, facts, playing=False)
+        rows = [{"in_use": True, "bssid": "AA:AA:AA:AA:AA:AA", "ssid": "Home", "signal": 63}]
+        with caplog.at_level(logging.DEBUG, logger="wifi_watcher"), \
+             self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=rows):
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        matches = [r for r in caplog.records if r.levelno == logging.DEBUG
+                   and "BSSID scan on wlan1" in r.getMessage()]
+        assert len(matches) == 1
+        msg = matches[0].getMessage()
+        assert "rescan=True" in msg and "survey" in msg
+        assert not any(r.levelno >= logging.INFO and "BSSID scan" in r.getMessage()
+                       for r in caplog.records)
+
+    def test_usb_survey_scan_failure_logs_failure_form(self, watcher, caplog):
+        usb = self._usb(watcher)
+        facts = _facts_for(watcher, [usb], usb, now=1000.0)
+        hctx = self._hctx(watcher, facts, playing=False)
+        with caplog.at_level(logging.DEBUG, logger="wifi_watcher"), \
+             self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=None):
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        matches = [r for r in caplog.records if "BSSID scan on wlan1" in r.getMessage()]
+        assert len(matches) == 1
+        assert matches[0].getMessage().endswith("scan failed")
+
+    def test_onboard_survey_scan_logs_one_debug_line(self, watcher, caplog):
+        usb = self._usb(watcher)
+        onboard = _adapter(watcher, "wlan0", "aa:aa:aa:aa:aa:01", is_builtin=True)
+        facts = _facts_for(watcher, [usb, onboard], usb, now=1000.0)
+        hctx = self._hctx(watcher, facts, playing=False)
+        onboard_rows = [{"in_use": False, "bssid": "CC:CC:CC:CC:CC:CC", "ssid": "Home", "signal": 40}]
+
+        def _scan(ifname, rescan):
+            return onboard_rows if ifname == "wlan0" else []
+
+        with caplog.at_level(logging.DEBUG, logger="wifi_watcher"), \
+             self._stub_ssid(watcher), \
+             patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=False), \
+             patch.object(watcher.wifi_recovery, "adapter_quarantined_until", return_value=None), \
+             patch.object(watcher.nm, "wifi_bssid_scan", side_effect=_scan):
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        matches = [r for r in caplog.records if "BSSID scan on wlan0" in r.getMessage()]
+        assert len(matches) == 1
+        msg = matches[0].getMessage()
+        assert "rescan=True" in msg and "onboard" in msg
+        assert not any(r.levelno >= logging.INFO and "BSSID scan" in r.getMessage()
+                       for r in caplog.records)
 
 
 class TestIf6AdoptionScanGate:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -872,3 +873,34 @@ class TestPinAccountingInterfaceScoping:
         assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["11:22:33:44:55:66"]["quarantined_until"] is not None
         # wlan0's identically-shaped entry is untouched by the wlan1 success.
         assert watcher.ADOPTION_STATE.bssid_tables["wlan0"]["11:22:33:44:55:66"]["quarantined_until"] is None
+
+
+class TestPinScanDebugLogging:
+    """SL-1: the pin scan in _pin_usb_bssid emits one compact DEBUG line;
+    nothing about scans is logged at INFO."""
+
+    def test_pin_scan_logs_one_debug_line(self, watcher, caplog):
+        rows = [{"in_use": False, "bssid": "AA:BB:CC:DD:EE:FF", "ssid": "Home", "signal": 70}]
+        with caplog.at_level(logging.DEBUG, logger="wifi_watcher"), \
+             patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=rows), \
+             patch.object(watcher.nm, "set_bssid"):
+            watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
+        matches = [r for r in caplog.records if r.levelno == logging.DEBUG
+                   and "BSSID scan on wlan1" in r.getMessage()]
+        assert len(matches) == 1
+        msg = matches[0].getMessage()
+        assert "rescan=True" in msg and "pin" in msg
+        assert not any(r.levelno >= logging.INFO and "BSSID scan" in r.getMessage()
+                       for r in caplog.records)
+
+    def test_pin_scan_failure_logs_failure_form(self, watcher, caplog):
+        with caplog.at_level(logging.DEBUG, logger="wifi_watcher"), \
+             patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=None), \
+             patch.object(watcher.nm, "set_bssid"):
+            watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
+        matches = [r for r in caplog.records if "BSSID scan on wlan1" in r.getMessage()]
+        assert len(matches) == 1
+        assert matches[0].getMessage().endswith("scan failed")

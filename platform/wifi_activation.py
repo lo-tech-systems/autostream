@@ -110,9 +110,10 @@ def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str, exclude: str 
         return ""
 
     rows = ctx.nm.wifi_bssid_scan(ifname, rescan=True)
+    ssid = wifi_net.get_connection_ssid(uuid) if rows is not None else ""
+    ctx.logger.debug(wifi_policy.format_bssid_scan_debug(ifname, True, "pin", rows, ssid))
     bssid, signal = "", 0
     if rows is not None:
-        ssid = wifi_net.get_connection_ssid(uuid)
         now = time.monotonic()
         with ctx.state_lock:
             table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, ifname)

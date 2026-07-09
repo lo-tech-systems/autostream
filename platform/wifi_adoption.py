@@ -557,6 +557,7 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
 
     eligible = playing is False
     rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=eligible)
+    ctx.logger.debug(wifi_policy.format_bssid_scan_debug(usb_ifname, eligible, "survey", rows, ssid))
     current_bssid, current_signal = "", 0
     if rows is not None:
         with ctx.state_lock:
@@ -568,6 +569,7 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
     onboard = _idle_onboard_for_survey(ctx, facts, usb_ifname)
     if onboard is not None:
         onboard_rows = ctx.nm.wifi_bssid_scan(onboard.ifname, rescan=True)
+        ctx.logger.debug(wifi_policy.format_bssid_scan_debug(onboard.ifname, True, "onboard", onboard_rows, ssid))
         if onboard_rows is not None:
             with ctx.state_lock:
                 onboard_table = wifi_policy.bssid_table_for_interface(
