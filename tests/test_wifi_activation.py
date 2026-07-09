@@ -794,3 +794,81 @@ class TestProbePatience:
             result = watcher.wifi_activation._activate_committed_on(watcher.ACTIVATION_CTX, "wlan1")
         assert result is False
         waiter.assert_not_called()
+
+
+class TestPinAccountingInterfaceScoping:
+    """BM-4: _pin_usb_bssid selection and success/failure accounting operate
+    only on the activation target interface's own BSSID table."""
+
+    def _rows(self, bssid="AA:BB:CC:DD:EE:FF", ssid="Home", signal=70, in_use=False):
+        return [{"in_use": in_use, "bssid": bssid, "ssid": ssid, "signal": signal}]
+
+    def test_pin_selects_only_from_target_interface_table(self, watcher):
+        # A stronger candidate seeded in wlan0's table must never be selected
+        # when pinning for wlan1 -- wlan1's scan is the only source consulted.
+        watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan0", {})["11:22:33:44:55:66"] = {
+            "ssid": "Home", "signal": 95, "last_seen": 100.0,
+            "fail_count": 0, "quarantined_until": None,
+        }
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows(signal=70)), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
+        assert result == "AA:BB:CC:DD:EE:FF"
+        set_bssid.assert_called_once_with("uuid-1", "AA:BB:CC:DD:EE:FF")
+        # wlan0's stronger candidate is untouched and was never selected.
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan0"]["11:22:33:44:55:66"]["signal"] == 95
+        assert "11:22:33:44:55:66" not in watcher.ADOPTION_STATE.bssid_tables.get("wlan1", {})
+
+    def test_failure_accounting_touches_only_target_interface_table(self, watcher):
+        # Seed the SAME bssid in wlan0's table to prove a wlan1 pin failure
+        # cannot bleed fail_count into another interface's observations.
+        watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan0", {})["AA:BB:CC:DD:EE:FF"] = {
+            "ssid": "Home", "signal": 70, "last_seen": 100.0,
+            "fail_count": 0, "quarantined_until": None,
+        }
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-1"), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows()), \
+             patch.object(watcher.nm, "set_bssid"), \
+             patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=1, stderr="failed")), \
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=False), \
+             patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=False):
+            ok = watcher.wifi_activation._activate_profile_on(
+                watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
+        assert ok is False
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["AA:BB:CC:DD:EE:FF"]["fail_count"] == 1
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan0"]["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
+
+    def test_success_quarantine_touches_only_target_interface_table(self, watcher):
+        # Two same-SSID entries with enough failures to quarantine, one in
+        # wlan1's table and an identically-shaped one in wlan0's table. A
+        # successful pin on wlan1 must quarantine only wlan1's entry.
+        seeded_at = time.monotonic()
+        watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan1", {})["11:22:33:44:55:66"] = {
+            "ssid": "Home", "signal": 40, "last_seen": seeded_at,
+            "fail_count": watcher.wifi_policy.BSSID_QUARANTINE_FAILS, "quarantined_until": None,
+        }
+        watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan0", {})["11:22:33:44:55:66"] = {
+            "ssid": "Home", "signal": 40, "last_seen": seeded_at,
+            "fail_count": watcher.wifi_policy.BSSID_QUARANTINE_FAILS, "quarantined_until": None,
+        }
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-1"), \
+             patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows()), \
+             patch.object(watcher.nm, "set_bssid"), \
+             patch.object(watcher.nm, "activate", return_value=MagicMock(returncode=0, stderr="")), \
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=True), \
+             patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=True):
+            ok = watcher.wifi_activation._activate_profile_on(
+                watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
+        assert ok is True
+        # wlan1's other same-SSID entry with enough failures is quarantined.
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["11:22:33:44:55:66"]["quarantined_until"] is not None
+        # wlan0's identically-shaped entry is untouched by the wlan1 success.
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan0"]["11:22:33:44:55:66"]["quarantined_until"] is None
