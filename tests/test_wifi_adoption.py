@@ -311,8 +311,8 @@ class TestBssidSurveyAndRoam:
             watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx2)
         scan.assert_not_called()
 
-        # The old 15-minute BSSID_USB_SURVEY_INTERVAL gate is gone: a full
-        # scan is due again as soon as BSSID_SURVEY_INTERVAL elapses.
+        # A full scan is due again as soon as BSSID_SURVEY_INTERVAL elapses;
+        # there is no separate, longer interval gating full USB scans.
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
             hctx3 = self._hctx(

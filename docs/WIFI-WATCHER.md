@@ -162,11 +162,20 @@ overlaps a worker activation, and is left synchronous by design.
 is validated *before* the healthy built-in is dropped (transactional handover),
 gated by playback and by a saved-SSID scan.
 
-**USB BSSID ownership / roam**: active USB clients keep a BSSID table fresh with a
-cheap self-scan every 60 s, an opportunistic idle-onboard scan when available, and
-a full USB rescan every 15 min while playback is idle. A roam is submitted only
-when a fresh, unquarantined candidate clears the signal margin and the 15-minute
-roam/activation holdoff has elapsed.
+**USB BSSID ownership / roam**: each interface keeps its own BSSID table, so an
+onboard scan can never feed a USB roam decision. Active USB clients self-scan
+every 60 s (a full rescan while playback is exactly `False`, a cheap read
+otherwise that keeps the table fresh without advancing or resetting the
+roam-candidate streak); an opportunistic idle-onboard scan updates the onboard
+table alongside it for diagnostics only. A roam candidate must clear the
+existing gates (fresh, unquarantined, signal margin) **and** an absolute
+signal floor (`BSSID_ROAM_MIN_SIGNAL`), and must be preferred over 3
+consecutive eligible USB scans before a same-candidate confirmation scan is
+even attempted; the confirmation scan re-evaluates from a fresh USB table and
+only submits the roam if it still names the same candidate and still clears
+policy. The 15-minute roam/activation holdoff still applies. Failure/success
+accounting on a pin is scoped to the pinned interface's own table, so a
+failure on one USB adapter can never quarantine entries observed by another.
 
 **Persistent fault state**: the per-adapter no-IP and reset/quarantine ledgers are
 persisted to `/var/lib/autostream/adapter-fault-state.json` (wall-clock
@@ -208,8 +217,7 @@ cross-boot cap of **3 reboots per 24 h** plus an in-process throttle):
 | Reconnect attempt interval | 2 min |
 | Recovery-hotspot saved-SSID scan | 30 s |
 | Runtime USB-adoption scan | 5 min |
-| BSSID cheap survey | 60 s |
-| BSSID full USB survey | 15 min |
+| BSSID survey (full rescan when idle, cheap read during playback) | 60 s |
 | BSSID roam/activation holdoff | 15 min |
 | Gateway-down / dead-PHY → reboot | 30 min |
 | No usable path → catch-all reboot | 12 h |
