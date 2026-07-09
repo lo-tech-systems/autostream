@@ -142,14 +142,22 @@ def apply_client_failed(ctx: AdoptionContext, event, facts: "Facts") -> bool:
     gather_recovery_facts gate onboard usability, so a demoted onboard is skipped
     and we go to the recovery hotspot instead.
 
-    A diagnosed USB failure always tries a usable built-in before the hotspot: the
-    overlay fires a ClientFailed once the connectivity hysteresis has condemned
-    the path, but the ladder returns HOLD("usb_active_no_ip") for an active USB
-    that still has carrier (it wants the no-IP ledger to govern in steady state),
-    and it may also pick ACTIVATE_USB (re-activate) for an NM-dropped-but-present
-    USB.  In either case — a HOLD, or the ladder offering no client path — we
-    still try a *usable* onboard (one the gate did not exclude) before the
-    USB_LOSS_RECOVERY hotspot.
+    A condemned active USB is retried in place before any demotion.  The ladder
+    returns HOLD("usb_active_no_ip") for an active preferred USB that still has
+    carrier but no usable IP; this handler answers it by submitting an
+    ifname-pinned re-activation of that same USB ("usb_active_reactivate"), not
+    the onboard fallback.  A transient blip re-activates and the client keeps
+    its identity; a genuine failure records a no-IP ledger entry (the job's
+    records_noip tail), whose escalating retry_after backoff excludes the
+    adapter from preferred_usb, so the next ClientFailed reaches the ladder's
+    onboard rung and demotes naturally — after NOIP_STOP_AFTER failures the
+    exclusion is indefinite.  HOLD("usb_link_down_debouncing") means the
+    dead-PHY debounce owns the adapter: no action this pass (a sustained
+    link-down accrues the wedged verdict and proceeds to the budgeted reset /
+    onboard rungs).  HOLDs with any other reason, and the ladder offering no
+    client path, still try a *usable* onboard (one the gate did not exclude)
+    before the USB_LOSS_RECOVERY hotspot; the ladder may also pick ACTIVATE_USB
+    (re-activate) itself for an NM-dropped-but-present USB.
 
     The chosen activation is *submitted* to the worker (non-blocking) and owns the
     pass; its result is applied at the next pass top, and the ladder
@@ -167,7 +175,30 @@ def apply_client_failed(ctx: AdoptionContext, event, facts: "Facts") -> bool:
                         wifi_policy.RecoveryKind.ACTIVATE_ONBOARD):
         if _submit_client_activation(ctx, raction, facts):
             return True
-    # Ladder held on the failing USB, or offered no client path: try a usable
+    # The active preferred USB has carrier but no usable IP: retry the same
+    # adapter in place instead of demoting to onboard.  The re-activation job
+    # records a no-IP failure on failure, so a genuinely broken USB backs off
+    # out of preferred_usb and the next ClientFailed demotes via the ladder.
+    elif (raction.kind == wifi_policy.RecoveryKind.HOLD
+          and raction.reason == "usb_active_no_ip"):
+        retry = wifi_policy.RecoveryAction(
+            wifi_policy.RecoveryKind.ACTIVATE_USB, ifname=rf.preferred_usb_ifname,
+            drop_hotspot=(rf.preferred_usb_ifname == rf.hotspot_ifname),
+            reason="usb_active_reactivate",
+        )
+        return _submit_client_activation(ctx, retry, facts)
+    # The active USB reads link-down but the dead-PHY debounce has not declared
+    # it wedged: take no action this pass.  A sustained link-down accrues the
+    # wedged verdict and proceeds to the reset/onboard rungs on a later pass.
+    elif (raction.kind == wifi_policy.RecoveryKind.HOLD
+          and raction.reason == "usb_link_down_debouncing"):
+        ctx.log_on_change(
+            "client_failed_overlay_held", raction.reason,
+            f"ClientFailed overlay held ({raction.reason}); "
+            f"deferring to the dead-PHY debounce",
+        )
+        return False
+    # Ladder held for another reason, or offered no client path: try a usable
     # onboard before the hotspot (not the adapter the ladder targeted, and not a
     # gated-out quarantined/suppressed/budget-spent onboard — rf.onboard_ifname is
     # "" once the onboard failure bound is reached).
