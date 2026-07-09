@@ -25,7 +25,7 @@ from _wifi_fixtures import (
     flask_client,
     watcher,
 )
-from _wifi_fixtures import _adapter, _facts_for
+from _wifi_fixtures import _adapter, _facts_for, _spend_window_budget
 
 
 class TestUsbFailureFallback:
@@ -94,7 +94,8 @@ class TestRuntimeUsbAdoption:
         with patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=builtin), \
              patch.object(watcher.ADOPTION_CTX, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "query_playing_status", return_value=False), \
-             patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher.wifi_adoption, "_saved_ssid_scan_outcome",
+                          return_value=watcher.wifi_adoption.SCAN_SSID_VISIBLE), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
             first = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
             second = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
@@ -127,7 +128,8 @@ class TestRuntimeUsbAdoption:
         with patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=builtin), \
              patch.object(watcher.ADOPTION_CTX, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "query_playing_status", side_effect=lambda: playing.pop(0)), \
-             patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher.wifi_adoption, "_saved_ssid_scan_outcome",
+                          return_value=watcher.wifi_adoption.SCAN_SSID_VISIBLE), \
              patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True), \
              patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
              patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)):
@@ -174,7 +176,8 @@ class TestRuntimeUsbAdoption:
         with patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=builtin), \
              patch.object(watcher.ADOPTION_CTX, "is_wifi_client_healthy", return_value=True), \
              patch.object(watcher.ADOPTION_CTX, "query_playing_status", return_value=False), \
-             patch.object(watcher.wifi_adoption, "_saved_ssid_visible", return_value=True), \
+             patch.object(watcher.wifi_adoption, "_saved_ssid_scan_outcome",
+                          return_value=watcher.wifi_adoption.SCAN_SSID_VISIBLE), \
              patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
             watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
             r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
@@ -766,6 +769,169 @@ class TestIf6AdoptionScanGate:
         assert r is True
         job = submit.call_args[0][0]
         assert job.records_noip is True and job.stable_id == usb.stable_id
+
+
+class TestEmptyScanStreakRemediation:
+    """U-2: the adoption scan path counts consecutive empty scans on a present
+    idle USB candidate (a wedged radio, not an absent AP) and routes a streak
+    of EMPTY_SCAN_RESET_STREAK through remediate_unusable_usb; a quarantined
+    candidate is excluded from adoption before any scan work."""
+
+    def _builtin_and_usb(self, watcher):
+        return (
+            _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True),
+            _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:10", is_usb=True),
+        )
+
+    def _prime_to_gate(self, watcher, candidate):
+        """Arm STATE so the *next* adoption call reaches the scan gate (two-pass
+        stability already satisfied)."""
+        watcher.ADOPTION_STATE.pending_usb_adoption_mac = candidate.permanent_mac
+        watcher.ADOPTION_STATE.pending_usb_adoption_checks = 1
+
+    @contextlib.contextmanager
+    def _ctx(self, watcher, builtin, *, scan):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(watcher.wifi_adoption, "resolve_active_client", return_value=builtin))
+            stack.enter_context(patch.object(watcher.ADOPTION_CTX, "is_wifi_client_healthy", return_value=True))
+            stack.enter_context(patch.object(watcher.ADOPTION_CTX, "query_playing_status", return_value=False))
+            stack.enter_context(patch.object(watcher.wifi_adoption, "_saved_network_ssid", return_value="MyHomeWiFi"))
+            scan_mock = stack.enter_context(
+                patch.object(watcher.wifi_net, "scan_adapter", return_value=scan))
+            act = stack.enter_context(patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True))
+            stack.enter_context(patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"))
+            stack.enter_context(patch.object(watcher, "run_cmd", return_value=MagicMock(returncode=0)))
+            yield scan_mock, act
+
+    # ---- Scan outcome classification (test 5) ----
+
+    def test_failed_scan_no_streak_change_no_remediation(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        with self._ctx(watcher, builtin, scan=None), \
+             patch.object(watcher.wifi_recovery, "remediate_unusable_usb") as remediate:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r is False
+        remediate.assert_not_called()
+        assert usb.stable_id not in watcher.ADOPTION_STATE.empty_scan_streaks
+
+    def test_empty_scan_increments_streak_below_threshold(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        with self._ctx(watcher, builtin, scan={}), \
+             patch.object(watcher.wifi_recovery, "remediate_unusable_usb") as remediate:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r is False
+        remediate.assert_not_called()
+        assert watcher.ADOPTION_STATE.empty_scan_streaks[usb.stable_id] == 1
+
+    def test_rows_without_ssid_resets_streak_and_skips_as_today(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        watcher.ADOPTION_STATE.empty_scan_streaks[usb.stable_id] = 1
+        with self._ctx(watcher, builtin, scan={"Other": -50}) as (scan_mock, act):
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r is False
+        act.assert_not_called()
+        scan_mock.assert_called_once()
+        assert usb.stable_id not in watcher.ADOPTION_STATE.empty_scan_streaks
+
+    def test_rows_with_ssid_resets_streak_and_adoption_proceeds(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        watcher.ADOPTION_STATE.empty_scan_streaks[usb.stable_id] = 1
+        with self._ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock, _act), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r is True
+        submit.assert_called_once()
+        assert usb.stable_id not in watcher.ADOPTION_STATE.empty_scan_streaks
+
+    # ---- Streak reaches threshold: reset, then quarantine on exhaustion (tests 6-7) ----
+
+    def test_streak_threshold_resets_and_clears_adoption_rate_gate(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        watcher.ADOPTION_STATE.empty_scan_streaks[usb.stable_id] = 1   # one prior empty scan
+        real_remediate = watcher.wifi_recovery.remediate_unusable_usb
+        with self._ctx(watcher, builtin, scan={}) as (scan_mock, _act), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as rebind, \
+             patch.object(watcher.wifi_recovery, "remediate_unusable_usb", side_effect=real_remediate) as remediate:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r is False
+        remediate.assert_called_once()
+        assert remediate.call_args.kwargs["reason"] == "empty_scan"
+        target = remediate.call_args.args[1]
+        assert target.stable_id == usb.stable_id and target.ifname == usb.ifname
+        rebind.assert_called_once_with(usb.ifname)
+        assert usb.stable_id not in watcher.ADOPTION_STATE.empty_scan_streaks
+        # Rate gate cleared on a "reset" outcome: the next pass re-scans
+        # immediately (same monotonic time) instead of waiting out
+        # ADOPTION_SCAN_INTERVAL (5 minutes).
+        assert watcher.ADOPTION_STATE.last_adoption_scan is None
+        with self._ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock2, _act2), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True):
+            watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        scan_mock2.assert_called_once()
+
+    def test_streak_threshold_budget_exhausted_quarantines_and_gate_skips_scan(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        watcher.ADOPTION_STATE.empty_scan_streaks[usb.stable_id] = 1
+        _spend_window_budget(watcher, usb.stable_id, now=0.0)
+        with patch("time.monotonic", return_value=100.0), \
+             self._ctx(watcher, builtin, scan={}) as (scan_mock, _act), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as rebind:
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r is False
+        rebind.assert_not_called()
+        assert usb.stable_id not in watcher.ADOPTION_STATE.empty_scan_streaks
+        target = watcher.wifi_recovery.build_target_adapter(watcher.RECOVERY_CTX, usb.ifname, adapters)
+        assert watcher.wifi_recovery.adapter_quarantined_until(watcher.RECOVERY_CTX, target, 100.0) is not None
+
+        # A later pass skips the quarantined candidate at the new gate, without
+        # attempting a scan.
+        with patch("time.monotonic", return_value=200.0), \
+             self._ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock2, _act2):
+            r2 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r2 is False
+        scan_mock2.assert_not_called()
+
+    # ---- Quarantine gate: exclusion + expiry (test 8) ----
+
+    def test_quarantined_candidate_excluded_then_eligible_after_expiry(self, watcher):
+        builtin, usb = self._builtin_and_usb(watcher)
+        adapters = [builtin, usb]
+        self._prime_to_gate(watcher, usb)
+        target = watcher.wifi_recovery.build_target_adapter(watcher.RECOVERY_CTX, usb.ifname, adapters)
+        watcher.wifi_recovery.quarantine_adapter(watcher.RECOVERY_CTX, target, now=100.0, reason="empty_scan")
+
+        with patch("time.monotonic", return_value=150.0), \
+             self._ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock, _act):
+            r = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r is False
+        scan_mock.assert_not_called()
+
+        # The quarantine gate cleared the pending-adoption stability counter
+        # (like the disabled-adapter gate) while it was active, so re-passing
+        # the quarantine gate needs its own two stable passes before adoption
+        # proceeds.
+        after_expiry = 100.0 + watcher.USB_RESET_WINDOW + 1.0
+        with patch("time.monotonic", return_value=after_expiry), \
+             self._ctx(watcher, builtin, scan={"MyHomeWiFi": -50}) as (scan_mock2, _act2), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            r2 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+            assert r2 is False   # first stable pass after expiry
+            scan_mock2.assert_not_called()   # not yet due for a scan
+            r3 = watcher.wifi_adoption.handle_runtime_usb_adoption(watcher.ADOPTION_CTX, adapters, wired_connected=False)
+        assert r3 is True
+        submit.assert_called_once()
 
 
 class TestReconnectSavedEpisode:

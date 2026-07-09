@@ -117,7 +117,10 @@ class AdoptionState:
     saved-SSID visibility probe before a runtime USB handover.  ``known_usb_macs``
     is the set of permanent MACs ever seen as USB, so an adapter that has since
     disappeared from discovery can still be classified as USB (read by
-    wifi_recovery to attribute an absent active client).
+    wifi_recovery to attribute an absent active client).  ``empty_scan_streaks``
+    counts consecutive adoption scans that succeeded with zero rows per
+    stable_id (a wedged idle-spare radio); entries are dropped once the
+    candidate is no longer the current adoption candidate.
     """
     using_builtin_fallback: bool = False
     pending_usb_adoption_mac: Optional[str] = None
@@ -130,6 +133,7 @@ class AdoptionState:
     last_bssid_survey_at: Optional[float] = None
     last_adoption_scan: Optional[float] = None
     known_usb_macs: set = field(default_factory=set)
+    empty_scan_streaks: dict = field(default_factory=dict)
 
 
 @dataclass

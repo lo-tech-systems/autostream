@@ -92,6 +92,7 @@ class AdoptionContext:
     RECONNECT_ATTEMPT_INTERVAL: float
     ADOPTION_SCAN_INTERVAL: float
     USB_ADOPTION_STABLE_PASSES: int
+    EMPTY_SCAN_RESET_STREAK: int
     BSSID_SURVEY_INTERVAL: float
     # Callables
     get_configured_network_state: Callable
@@ -249,43 +250,93 @@ def _saved_network_ssid(ctx: AdoptionContext) -> str:
     return wifi_net.get_connection_ssid(name) if name else ""
 
 
+# Three-way classification of a saved-SSID scan attempt, distinguishing a
+# failed scan command from a scan that succeeded with zero rows (a wedged
+# radio) from one that succeeded but did not include the saved SSID.
+SCAN_FAILED = "failed"
+SCAN_EMPTY = "empty"
+SCAN_SSID_ABSENT = "absent"
+SCAN_SSID_VISIBLE = "visible"
+
+
+def _saved_ssid_scan_outcome(ctx: AdoptionContext, adapter) -> str:
+    """Classify one saved-SSID scan on *adapter*.
+
+    Returns SCAN_FAILED when no saved SSID is configured or the scan command
+    itself failed (`scan_adapter` returned None) — both are "no information"
+    outcomes.  Returns SCAN_EMPTY when the scan succeeded but returned zero
+    rows (the radio is wedged: a working scan always sees *some* network).
+    Returns SCAN_SSID_ABSENT when the scan returned rows but not the saved
+    SSID, and SCAN_SSID_VISIBLE when it did.
+    """
+    ssid = _saved_network_ssid(ctx)
+    if not ssid:
+        return SCAN_FAILED
+    scan = wifi_net.scan_adapter(adapter)
+    if scan is None:
+        return SCAN_FAILED
+    if not scan:
+        return SCAN_EMPTY
+    return SCAN_SSID_VISIBLE if ssid in scan else SCAN_SSID_ABSENT
+
+
 def _saved_ssid_visible(ctx: AdoptionContext, hotspot_adapter) -> bool:
     """True when the saved SSID is visible in a scan on the hotspot radio.
 
     Scanning works in AP mode on the onboard radio without dropping the AP, so a
     single-radio recovery hotspot can cheaply check for the network's return
-    before committing to the expensive tear-down->join.
+    before committing to the expensive tear-down->join.  A failed scan or an
+    empty scan are both "not visible" here — callers needing to distinguish
+    them use `_saved_ssid_scan_outcome` directly.
     """
-    ssid = _saved_network_ssid(ctx)
-    if not ssid:
+    return _saved_ssid_scan_outcome(ctx, hotspot_adapter) == SCAN_SSID_VISIBLE
+
+
+def _scan_due_and_stamp(ctx: AdoptionContext, state_obj: object, last_scan_attr: str,
+                        interval: float, now: float) -> bool:
+    """Rate-gate mechanics shared by every idle-time saved-SSID scan site.
+
+    *state_obj* is the state fragment carrying the timestamp; *last_scan_attr*
+    names its field.  Returns False (nothing else to do) when a scan is not
+    yet due; otherwise stamps the timestamp under `state_lock` and returns
+    True.
+    """
+    with ctx.state_lock:
+        last = getattr(state_obj, last_scan_attr)
+    if last is not None and now - last < interval:
         return False
-    scan = wifi_net.scan_adapter(hotspot_adapter)
-    return scan is not None and ssid in scan
+    with ctx.state_lock:
+        setattr(state_obj, last_scan_attr, now)
+    return True
 
 
 def _rate_gated_saved_ssid_scan(ctx: AdoptionContext, adapter, state_obj: object,
                                 last_scan_attr: str, interval: float, now: float) -> Optional[bool]:
     """Rate-bounded "is the committed SSID visible on *adapter*" probe.
 
-    Shared by every idle-time saved-SSID scan site (the recovery hotspot exit
-    edge and runtime USB adoption) so the check-stamp-scan mechanics live in one
-    place.  *state_obj* is the state fragment carrying the timestamp;
-    *last_scan_attr* names its field.
-
-    Returns None when a scan is not yet due (`last is not None and now - last <
-    interval`) — the caller must treat this as "no information, do nothing".
-    Otherwise stamps the timestamp under `state_lock` and returns
-    `_saved_ssid_visible(adapter)` (which already treats a failed scan as not
-    visible — the conservative default every consumer wants).  It calls
-    `_saved_ssid_visible` by module-global name so test patches still intercept.
+    Used by the recovery hotspot exit edge, which only needs the collapsed
+    boolean.  Returns None when a scan is not yet due — the caller must treat
+    this as "no information, do nothing".  It calls `_saved_ssid_visible` by
+    module-global name so test patches still intercept.
     """
-    with ctx.state_lock:
-        last = getattr(state_obj, last_scan_attr)
-    if last is not None and now - last < interval:
+    if not _scan_due_and_stamp(ctx, state_obj, last_scan_attr, interval, now):
         return None
-    with ctx.state_lock:
-        setattr(state_obj, last_scan_attr, now)
     return _saved_ssid_visible(ctx, adapter)
+
+
+def _rate_gated_saved_ssid_outcome(ctx: AdoptionContext, adapter, state_obj: object,
+                                   last_scan_attr: str, interval: float, now: float) -> Optional[str]:
+    """Rate-bounded saved-SSID scan outcome (SCAN_FAILED/EMPTY/SSID_ABSENT/SSID_VISIBLE).
+
+    Used by runtime USB adoption, which needs to distinguish a wedged radio
+    (SCAN_EMPTY) from a working scan that simply doesn't see the saved network
+    (SCAN_SSID_ABSENT) or a failed scan command (SCAN_FAILED).  Returns None
+    when a scan is not yet due.  It calls `_saved_ssid_scan_outcome` by
+    module-global name so test patches still intercept.
+    """
+    if not _scan_due_and_stamp(ctx, state_obj, last_scan_attr, interval, now):
+        return None
+    return _saved_ssid_scan_outcome(ctx, adapter)
 
 
 def _attempt_recovery_reconnect(ctx: AdoptionContext, facts: "Facts") -> None:
@@ -385,11 +436,23 @@ def handle_runtime_usb_adoption(ctx: AdoptionContext, adapters: list, wired_conn
     usb = wifi_net.usb_candidates(adapters)
     if not usb:
         _clear_pending_adoption(ctx)
+        _prune_empty_scan_streaks(ctx, None)
         return False
     candidate = usb[0]
+    # A candidate change drops any other stable_id's empty-scan streak; the
+    # entry survives only while its adapter remains the current candidate.
+    _prune_empty_scan_streaks(ctx, candidate.stable_id)
 
     # An operator-disabled adapter is never adopted.
     if wifi_recovery.adapter_disabled(ctx.RECOVERY_CTX, candidate.stable_id):
+        _clear_pending_adoption(ctx)
+        return False
+
+    # A quarantined adapter (reset budget exhausted after repeated failures,
+    # whatever the failure mode) is neither scanned nor adopted until the
+    # quarantine expires.
+    target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, candidate.ifname, adapters)
+    if wifi_recovery.adapter_quarantined_until(ctx.RECOVERY_CTX, target, now) is not None:
         _clear_pending_adoption(ctx)
         return False
 
@@ -435,16 +498,23 @@ def handle_runtime_usb_adoption(ctx: AdoptionContext, adapters: list, wired_conn
     # built-in too, and `nmcli connection up ... ifname <usb>` *moves* an
     # already-active connection — it deactivates the built-in as part of trying
     # the USB.  A USB that cannot even see the SSID would fail that move and take
-    # the whole device offline, so proceed only once the
-    # candidate's own scan shows the committed SSID.  A not-due (None) or
-    # not-visible/failed (False) scan is a non-destructive skip: the candidate
-    # stays pending and the no-IP ledger is untouched (the dongle never got the
-    # chance to fail DHCP).
-    visible = _rate_gated_saved_ssid_scan(
+    # the whole device offline, so proceed only once the candidate's own scan
+    # shows the committed SSID.  The scan outcome is classified three ways: a
+    # not-due (None) or failed (command error / no saved SSID) scan is a
+    # non-destructive skip identical to before — the candidate stays pending
+    # and the no-IP ledger is untouched (the dongle never got the chance to
+    # fail DHCP).  A scan that succeeds with zero rows means the radio itself
+    # is wedged (a working scan always sees *some* network) and counts toward
+    # the empty-scan streak; any other outcome resets that streak.
+    outcome = _rate_gated_saved_ssid_outcome(
         ctx, candidate, ctx.ADOPTION_STATE, "last_adoption_scan", ctx.ADOPTION_SCAN_INTERVAL, now)
-    if visible is None:
+    if outcome is None or outcome == SCAN_FAILED:
         return False
-    if visible is False:
+    if outcome == SCAN_EMPTY:
+        _handle_empty_adoption_scan(ctx, candidate, adapters, now)
+        return False
+    _clear_empty_scan_streak(ctx, candidate.stable_id)
+    if outcome == SCAN_SSID_ABSENT:
         ctx.log_on_change("usb_adopt_skipped_ssid_not_visible", True,
                           "USB adoption skipped: committed SSID not visible on %s"
                           % candidate.ifname)
@@ -474,6 +544,57 @@ def _clear_pending_adoption(ctx: AdoptionContext) -> None:
     with ctx.state_lock:
         ctx.ADOPTION_STATE.pending_usb_adoption_mac = None
         ctx.ADOPTION_STATE.pending_usb_adoption_checks = 0
+
+
+def _prune_empty_scan_streaks(ctx: AdoptionContext, keep_stable_id: Optional[str]) -> None:
+    """Drop empty-scan streak entries for every stable_id but the current
+    candidate (or all of them when there is no current candidate)."""
+    with ctx.state_lock:
+        streaks = ctx.ADOPTION_STATE.empty_scan_streaks
+        for stale in [sid for sid in streaks if sid != keep_stable_id]:
+            del streaks[stale]
+
+
+def _clear_empty_scan_streak(ctx: AdoptionContext, stable_id: str) -> None:
+    with ctx.state_lock:
+        ctx.ADOPTION_STATE.empty_scan_streaks.pop(stable_id, None)
+
+
+def _bump_empty_scan_streak(ctx: AdoptionContext, stable_id: str) -> int:
+    with ctx.state_lock:
+        streaks = ctx.ADOPTION_STATE.empty_scan_streaks
+        streak = streaks.get(stable_id, 0) + 1
+        streaks[stable_id] = streak
+        return streak
+
+
+def _handle_empty_adoption_scan(ctx: AdoptionContext, candidate, adapters: list, now: float) -> None:
+    """Count one empty adoption scan against *candidate* and remediate once the
+    streak reaches EMPTY_SCAN_RESET_STREAK.
+
+    A present idle USB candidate whose scan repeatedly returns zero rows is a
+    wedged radio, not an absent network — routed through the shared
+    remediate_unusable_usb primitive (reason="empty_scan") the same way every
+    other unusable-USB detector is.  On a "reset" outcome the adoption
+    scan rate-gate is cleared so the next pass re-scans promptly instead of
+    waiting out ADOPTION_SCAN_INTERVAL; a recovered radio then fails back
+    through the ordinary adoption path above, untouched.  On "quarantined"
+    the rate gate is left alone (the new candidate gate above now skips this
+    adapter regardless).
+    """
+    streak = _bump_empty_scan_streak(ctx, candidate.stable_id)
+    ctx.log_on_change(
+        "usb_adopt_empty_scan_streak_%s" % candidate.stable_id, streak,
+        "USB adoption candidate %s scan returned zero rows (streak %d/%d)"
+        % (candidate.ifname, streak, ctx.EMPTY_SCAN_RESET_STREAK))
+    if streak < ctx.EMPTY_SCAN_RESET_STREAK:
+        return
+    target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, candidate.ifname, adapters)
+    outcome = wifi_recovery.remediate_unusable_usb(ctx.RECOVERY_CTX, target, now, reason="empty_scan")
+    _clear_empty_scan_streak(ctx, candidate.stable_id)
+    if outcome == "reset":
+        with ctx.state_lock:
+            ctx.ADOPTION_STATE.last_adoption_scan = None
 
 
 def update_known_adapters(ctx: AdoptionContext, adapters: list) -> None:

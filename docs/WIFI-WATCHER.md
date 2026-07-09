@@ -190,6 +190,21 @@ synchronous by design.
 is validated *before* the healthy built-in is dropped (transactional handover),
 gated by playback and by a saved-SSID scan.
 
+**Idle-spare wedge recovery**: the adoption saved-SSID scan distinguishes a scan
+command failure from a scan that succeeds with zero rows from one that succeeds
+but simply doesn't see the committed SSID. Zero rows on a present candidate means
+the radio itself is wedged (a working scan always sees *some* network, even when
+the saved AP is away) — a streak of **2** consecutive empty scans (about 10
+minutes at the adoption scan cadence) routes the candidate through the same
+`remediate_unusable_usb` primitive every other unusable-USB detector uses: a
+budgeted reset while budget remains, clearing the scan rate-gate so the next
+pass re-scans immediately and a recovered radio fails back through the ordinary
+adoption path unmodified; quarantine once the budget is exhausted. A quarantined
+adapter is excluded from adoption's candidate gate entirely — no scan, no
+reset attempt — until the shared 24 h quarantine self-expires and it is
+re-probed on the next stable pass, the same lifecycle every other
+unusable-USB path converges on.
+
 **USB BSSID ownership / roam**: each interface keeps its own BSSID table, so an
 onboard scan can never feed a USB roam decision. Active USB clients self-scan
 every 60 s (a full rescan while playback is exactly `False`, a cheap read

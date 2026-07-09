@@ -187,6 +187,10 @@ RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery sc
 # costs nothing; the first scan for a newly stable candidate always runs
 # immediately (last is None -> due), and this interval only throttles *re*-scans.
 ADOPTION_SCAN_INTERVAL = 5 * 60         # seconds between saved-SSID adoption scans
+# Consecutive adoption scans that succeed with zero rows before a present idle
+# USB candidate is treated as unusable (wedged radio) and routed through
+# remediate_unusable_usb; ~10 minutes at the 5-minute adoption scan cadence.
+EMPTY_SCAN_RESET_STREAK = 2
 # USB BSSID survey cadence: the USB self-scan (+ opportunistic idle onboard
 # scan) runs every BSSID_SURVEY_INTERVAL.  It is a full rescan (eligible for
 # the proactive-roam candidate streak) only while playback is exactly False;
@@ -1947,6 +1951,7 @@ def build_contexts() -> None:
         RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
         ADOPTION_SCAN_INTERVAL=ADOPTION_SCAN_INTERVAL,
         USB_ADOPTION_STABLE_PASSES=USB_ADOPTION_STABLE_PASSES,
+        EMPTY_SCAN_RESET_STREAK=EMPTY_SCAN_RESET_STREAK,
         BSSID_SURVEY_INTERVAL=BSSID_SURVEY_INTERVAL,
         get_configured_network_state=get_configured_network_state,
         is_wifi_client_healthy=is_wifi_client_healthy,
