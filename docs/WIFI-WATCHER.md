@@ -146,7 +146,16 @@ headless recovery (no station) is unchanged.
 failure, and from within a recovery hotspot): ethernet > preferred USB > **one
 budgeted USB reset** > onboard client > hotspot as last resort. Disabled,
 quarantined, no-IP-suppressed, or onboard-failure-bound adapters are not offered
-as client rungs. When the preferred USB is condemned by a link-down wedge (not
+as client rungs. Activation never requires carrier: for Wi-Fi, carrier means
+*associated*, and association is what activation performs, so a preferred USB
+that is merely idle (autoconnect is disabled everywhere, so every adapter reads
+link-down until the watcher activates it) gets a normal activation, never a
+reset. When that USB is instead the *active* client and reads link-down but has
+not yet accrued a debounced wedged verdict, the ladder holds
+(`usb_link_down_debouncing`) rather than resetting or failing over: transient
+drops are left to the reconnect machinery, and only a sustained failure —
+the same debounced dead-PHY verdict the status snapshot reports as `dead_phy` —
+condemns it. When the preferred USB is condemned by that wedged verdict (not
 merely no-IP) — resettable, within its reset budget, not hosting the hotspot,
 and not already spent this offline episode — the ladder resets and reactivates
 it before onboard is tried: salvage (NM re-activation) still runs first, and on
