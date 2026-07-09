@@ -2500,14 +2500,16 @@ def send_setup_page(
               if (action === 'toggle-allow') dialToggleAllow(card, ev.target.checked);
               if (action === 'save-config' && (
                 ev.target.classList.contains('dial-autoupdate') ||
-                ev.target.classList.contains('dial-channel')
+                ev.target.classList.contains('dial-channel') ||
+                ev.target.classList.contains('dial-step')
               )) dialSaveConfig(card);
               if (action === 'save-screen') dialSaveScreenSettings(card);
             }});
             card.addEventListener('focusout', function(ev) {{
               if (ev.target.dataset.dialAction === 'save-config'
                   && !ev.target.classList.contains('dial-autoupdate')
-                  && !ev.target.classList.contains('dial-channel')) {{
+                  && !ev.target.classList.contains('dial-channel')
+                  && !ev.target.classList.contains('dial-step')) {{
                 dialSaveConfig(card);
               }}
             }});

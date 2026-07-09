@@ -640,6 +640,14 @@ class TestMainDialCardStructural:
         source = self._get_setup_page_source()
         assert "classList.contains('dial-channel')" in source
 
+    def test_change_listener_includes_dial_step(self):
+        """The step slider must save on change — focusout alone never fires
+        after a plain drag-and-release, silently dropping the new value."""
+        source = self._get_setup_page_source()
+        change_handler = source.split("card.addEventListener('change'", 1)[1]
+        change_handler = change_handler.split("card.addEventListener('focusout'", 1)[0]
+        assert "classList.contains('dial-step')" in change_handler
+
     def test_proxy_passthrough_no_modification(self):
         """The proxy strips uuid and forwards all other fields — no dials.py changes needed."""
         source_path = REPO_ROOT / "core" / "autostream_webui_dials.py"
