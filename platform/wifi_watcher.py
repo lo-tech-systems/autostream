@@ -1245,9 +1245,9 @@ def apply_log_level(level: str, ttl_seconds: Optional[int]) -> None:
             LOG_STATE.temporary_log_level_until = None
             LOG_STATE.default_log_level_name = level
     if ttl_seconds:
-        logger.info("Runtime log level changed to %s for %ds", level, ttl_seconds)
+        logger.warning("Runtime log level changed to %s for %ds", level, ttl_seconds)
     else:
-        logger.info("Runtime log level changed to %s", level)
+        logger.warning("Runtime log level changed to %s", level)
 
 
 def revert_expired_log_level(now: Optional[float] = None) -> None:
@@ -1262,7 +1262,7 @@ def revert_expired_log_level(now: Optional[float] = None) -> None:
         LOG_STATE.temporary_log_level = ""
         LOG_STATE.temporary_log_level_until = None
     _apply_runtime_level(RUNTIME_LOG_LEVELS.get(default, logging.INFO))
-    logger.info("Runtime log level reverted to %s", default)
+    logger.warning("Runtime log level reverted to %s", default)
 
 
 def process_control_action(action: str, params: Optional[dict] = None) -> None:

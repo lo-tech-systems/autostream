@@ -1056,6 +1056,53 @@ class TestApplyRuntimeLevelWerkzeugGating:
         assert _logging.getLogger("werkzeug").level == _logging.WARNING
 
 
+class TestLogLevelChangeConfirmationVisibility:
+    """apply_log_level / revert_expired_log_level log their confirmation at
+    WARNING so the record survives even when the runtime level itself has
+    been lowered to warning."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_logger_state(self, watcher):
+        import logging as _logging
+        werkzeug_logger = _logging.getLogger("werkzeug")
+        saved_root_level = _logging.getLogger().level
+        saved_werkzeug_level = werkzeug_logger.level
+        saved_temp_level = watcher.LOG_STATE.temporary_log_level
+        saved_temp_until = watcher.LOG_STATE.temporary_log_level_until
+        saved_default_name = watcher.LOG_STATE.default_log_level_name
+        yield
+        _logging.getLogger().setLevel(saved_root_level)
+        werkzeug_logger.setLevel(saved_werkzeug_level)
+        watcher.LOG_STATE.temporary_log_level = saved_temp_level
+        watcher.LOG_STATE.temporary_log_level_until = saved_temp_until
+        watcher.LOG_STATE.default_log_level_name = saved_default_name
+
+    def test_apply_log_level_confirmation_survives_warning_runtime_level(self, watcher, caplog):
+        import logging as _logging
+        watcher._apply_runtime_level(_logging.WARNING)
+        with caplog.at_level(_logging.WARNING, logger=watcher.logger.name):
+            with patch("time.monotonic", return_value=1000.0):
+                watcher.apply_log_level("debug", 900)
+        assert any(
+            r.levelno == _logging.WARNING
+            and "Runtime log level changed to debug for 900s" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_revert_expired_log_level_confirmation_survives_warning_runtime_level(self, watcher, caplog):
+        import logging as _logging
+        watcher.LOG_STATE.default_log_level_name = "warning"
+        with patch("time.monotonic", return_value=1000.0):
+            watcher.apply_log_level("debug", 900)
+        with caplog.at_level(_logging.WARNING, logger=watcher.logger.name):
+            watcher.revert_expired_log_level(now=2000.0)
+        assert any(
+            r.levelno == _logging.WARNING
+            and "Runtime log level reverted to warning" in r.getMessage()
+            for r in caplog.records
+        )
+
+
 class TestProcessSetLogLevel:
     def test_process_applies_level(self, watcher):
         with patch("time.monotonic", return_value=1000.0):
