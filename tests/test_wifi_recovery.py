@@ -279,15 +279,32 @@ class TestAdapterOverlayEvents:
                                conn_ok=True, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
         assert event is None
 
-    def test_condemned_present_usb_returns_no_ip(self, watcher):
+    def test_condemned_present_usb_returns_unresponsive(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:03", is_usb=True)
         watcher.ADOPTION_STATE.known_usb_macs.add(usb.permanent_mac)
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
         event = self._diagnose(watcher, adapters, usb,
                                conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
         assert isinstance(event, watcher.wifi_recovery.ClientFailed)
-        assert event.reason == "no_ip"
+        assert event.reason == "unresponsive"
         assert event.ifname == "wlan1"
+
+    def test_condemnation_log_drops_recorded_and_carries_unresponsive(self, watcher, caplog):
+        # diagnose_client_failure is a pure classifier (nothing is "Recorded");
+        # the overlay reason for a still-enumerable condemned USB is "unresponsive",
+        # not the no-IP-ledger/DEGRADED_NO_IP status-taxonomy "no_ip".
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:04", is_usb=True)
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb.permanent_mac)
+        adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
+        with caplog.at_level(logging.INFO, logger="wifi_watcher"):
+            self._diagnose(watcher, adapters, usb,
+                           conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
+        matches = [r for r in caplog.records if usb.permanent_mac in r.getMessage()]
+        assert len(matches) == 1
+        message = matches[0].getMessage()
+        assert "Recorded" not in message
+        assert "unresponsive" in message
+        assert "no_ip" not in message
 
     def test_condemned_nm_disconnected_usb_uses_prev_ifname(self, watcher):
         # USB present but NM-disconnected: active_client is None, so the event
@@ -297,7 +314,7 @@ class TestAdapterOverlayEvents:
         adapters = [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True), usb]
         event = self._diagnose(watcher, adapters, None,
                                conn_ok=False, prev_mac=usb.permanent_mac, prev_ifname="wlan1")
-        assert event.reason == "no_ip"       # present -> no_ip (not absent)
+        assert event.reason == "unresponsive"   # present -> unresponsive (not absent)
         assert event.ifname == "wlan1"
 
     def test_condemned_non_usb_returns_none(self, watcher):
@@ -318,7 +335,7 @@ class TestAdapterOverlayEvents:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         facts = _facts_for(watcher, [builtin], None)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
-                                     reason="no_ip", has_alt_path=True)
+                                     reason="unresponsive", has_alt_path=True)
         action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \
@@ -360,7 +377,7 @@ class TestAdapterOverlayEvents:
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:50", is_usb=True)
         facts = _facts_for(watcher, [builtin, usb], usb)  # USB is the active client
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:50",
-                                     reason="no_ip", has_alt_path=True)
+                                     reason="unresponsive", has_alt_path=True)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as ap, \
@@ -382,7 +399,7 @@ class TestAdapterOverlayEvents:
             "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf")}
         facts = _facts_for(watcher, [builtin, usb], usb)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:51",
-                                     reason="no_ip", has_alt_path=True)
+                                     reason="unresponsive", has_alt_path=True)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=False), \
@@ -462,7 +479,7 @@ class TestAdapterOverlayEvents:
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:09", is_usb=True)
         facts = _facts_for(watcher, [builtin, usb], None)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:09",
-                                     reason="no_ip", has_alt_path=True)
+                                     reason="unresponsive", has_alt_path=True)
         action = watcher.wifi_policy.RecoveryAction(watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD, ifname="wlan0")
         with patch.object(watcher.ADOPTION_CTX, "gather_recovery_facts"), \
              patch.object(watcher.wifi_policy, "next_recovery_action", return_value=action), \

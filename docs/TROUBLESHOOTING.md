@@ -491,7 +491,7 @@ Log lines operators are expected to see (watcher log
 | INFO | `USB reset (method A/B) attempted on <if>` | A reset step was issued |
 | INFO | `USB reset (method A/B) recovered <if>` | The adapter came back and reconnected |
 | INFO | `Dead-PHY: built-in fallback selected and connected on <if>` | A separate built-in radio took over |
-| INFO | `USB adapter <if> quarantined for preferred client use ...` | Reset budget exhausted; another path is up |
+| WARNING | `USB adapter <if> quarantined (<reason>)` | Reset budget exhausted; another path is up |
 | INFO | `USB adapter <if> reset budget exhausted but no other path; slow emergency reset attempt` | USB-only emergency retry |
 | WARNING | `USB reset (method A/B) failed on <if>; escalating` | A reset step failed |
 | WARNING | `USB rebind reset: cannot resolve sysfs paths for <if>` | sysfs paths could not be resolved (ladder falls through to reboot) |

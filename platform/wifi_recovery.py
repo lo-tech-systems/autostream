@@ -368,9 +368,9 @@ def diagnose_client_failure(ctx, adapters: list, active_client, conn_ok: bool,
         a.is_usb and a.permanent_mac == prev_mac for a in adapters
     )
     has_alt_path = wifi_net.resolve_builtin(adapters) is not None
-    reason = "no_ip" if recorded_usb_present else "absent"
+    reason = "unresponsive" if recorded_usb_present else "absent"
     ifname = active_client.ifname if active_client else prev_ifname
-    ctx.logger.info("Recorded USB client %s condemned (%s); overlay ClientFailed(%s)",
+    ctx.logger.info("USB client %s condemned (%s); overlay ClientFailed(%s)",
                   prev_mac, "present" if recorded_usb_present else "absent", reason)
     return ClientFailed(ifname=ifname, mac=prev_mac,
                         reason=reason, has_alt_path=has_alt_path)
