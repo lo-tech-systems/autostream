@@ -1188,9 +1188,13 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
     """Run one step of the dead-PHY recovery ladder.
 
     Resolves the target client, advances dead detection, and — when the adapter
-    is dead — steps the ladder: built-in fallback -> USB reset (Method A/B) ->
-    quarantine/backoff -> guarded reboot (offline only).  Returns True when an
-    action owned this pass (the caller should sleep and ``continue``).
+    is dead — steps the ladder: setup-mode deferral -> USB reset (Method A/B,
+    only for a resettable target with reset budget available and its interval
+    due) -> built-in fallback -> quarantine/backoff -> guarded reboot (offline
+    only).  A non-resettable, budget-exhausted, or reset-not-yet-due target
+    falls through the reset rung straight to built-in fallback instead of
+    holding the device offline until the next reset window.  Returns True when
+    an action owned this pass (the caller should sleep and ``continue``).
     """
     now = time.monotonic()
     target = resolve_target_client(ctx, adapters)
@@ -1222,7 +1226,34 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
             "dead; using USB reset ladder instead", target.ifname,
         )
 
-    # (2) Built-in client fallback when a *separate* built-in radio is present.
+    other_path = _other_network_path_available(ctx, adapters, target, wired_connected)
+
+    # (2) USB reset rung — only a resettable USB target with reset budget gets
+    # an active reset attempt here.  A budget-exhausted target with another
+    # path available skips the reset outright and falls through to built-in
+    # fallback; its quarantine is decided after fallback below (unchanged
+    # decision, just moved past the now-earlier reset rung).
+    budget_spent = False
+    if target.resettable_usb:
+        budget_spent = adapter_reset_budget_exhausted(ctx, target, now)
+        if not (budget_spent and other_path):
+            # Emergency-only slow backoff when this USB is the only path;
+            # otherwise the normal reset cadence.
+            interval = ctx.USB_EMERGENCY_BACKOFF if budget_spent else ctx.RESET_ATTEMPT_INTERVAL
+            with ctx.state_lock:
+                last = ctx.RECOVERY_STATE.last_reset_attempt
+            due = last is None or (now - last) >= interval
+            if due:
+                if budget_spent:
+                    ctx.logger.info(
+                        "USB adapter %s reset budget exhausted but no other path; "
+                        "slow emergency reset attempt", target.ifname,
+                    )
+                return _perform_reset_step(ctx, target, now)
+            # Reset interval not yet elapsed: fall through to built-in fallback
+            # rather than holding the device offline until the next window.
+
+    # (3) Built-in client fallback when a *separate* built-in radio is present.
     builtin = wifi_net.resolve_builtin(adapters)
     if builtin is not None and builtin.ifname != target.ifname:
         if ctx._activate_committed_on(builtin.ifname):
@@ -1233,47 +1264,30 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
             ctx.client_up_tail(builtin, dead_phy_recovered_via_builtin_fallback())
             return True
 
-    other_path = _other_network_path_available(ctx, adapters, target, wired_connected)
-
-    # (3)/(4)/(5) USB reset rungs — only a resettable USB target can be reset.
-    if target.resettable_usb:
-        budget_spent = adapter_reset_budget_exhausted(ctx, target, now)
-        if budget_spent and other_path:
-            # (3) Quarantine for preferred client use; keep publishing degraded
-            # status and let the normal loop logic run.
-            with ctx.state_lock:
-                _prune_adapter_ledgers_locked(ctx, now)
-                ledger = _adapter_ledger_locked(ctx, target)
-                current = ledger.get("quarantined_until") if ledger else None
-                newly = not (
-                    isinstance(current, (int, float))
-                    and not isinstance(current, bool)
-                    and now < current
-                )
-                if ledger is not None:
-                    ledger["quarantined_until"] = now + ctx.USB_RESET_WINDOW
-            if newly:
-                ctx.logger.info(
-                    "USB adapter %s quarantined for preferred client use "
-                    "(reset budget exhausted; alternate path available)", target.ifname,
-                )
-            return False
-
-        # (4) Emergency-only slow backoff when this USB is the only path;
-        # (5) otherwise the normal reset cadence.
-        interval = ctx.USB_EMERGENCY_BACKOFF if budget_spent else ctx.RESET_ATTEMPT_INTERVAL
+    # (4) Quarantine for preferred client use when the reset budget is spent
+    # and another path exists; the reset rung above skipped the actual reset
+    # in that case.  Keep publishing degraded status and let the normal loop
+    # logic run.
+    if target.resettable_usb and budget_spent and other_path:
         with ctx.state_lock:
-            last = ctx.RECOVERY_STATE.last_reset_attempt
-        due = last is None or (now - last) >= interval
-        if due:
-            if budget_spent:
-                ctx.logger.info(
-                    "USB adapter %s reset budget exhausted but no other path; "
-                    "slow emergency reset attempt", target.ifname,
-                )
-            return _perform_reset_step(ctx, target, now)
+            _prune_adapter_ledgers_locked(ctx, now)
+            ledger = _adapter_ledger_locked(ctx, target)
+            current = ledger.get("quarantined_until") if ledger else None
+            newly = not (
+                isinstance(current, (int, float))
+                and not isinstance(current, bool)
+                and now < current
+            )
+            if ledger is not None:
+                ledger["quarantined_until"] = now + ctx.USB_RESET_WINDOW
+        if newly:
+            ctx.logger.info(
+                "USB adapter %s quarantined for preferred client use "
+                "(reset budget exhausted; alternate path available)", target.ifname,
+            )
+        return False
 
-    # (6) Reboot escalation — only when genuinely offline.
+    # (5) Reboot escalation — only when genuinely offline.
     if not wired_connected and _maybe_request_dead_phy_reboot(ctx, target, now):
         return True
 

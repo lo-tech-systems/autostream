@@ -307,12 +307,38 @@ class TestEscalateDeadAdapterRecovery:
             watcher.wifi_recovery.escalate_dead_adapter_recovery(watcher.RECOVERY_CTX, [usb], False)
         assert watcher.RECOVERY_STATE.dead_adapter_ifname == ""
 
-    def test_builtin_fallback_preferred_over_reset(self, watcher):
+    def test_reset_preferred_over_builtin_fallback(self, watcher):
+        """RF-3: a resettable, budget-ok, due USB reset rung runs before the
+        built-in fallback rung is even reached (item 10)."""
         usb = self._usb(watcher)
         builtin = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:01", is_builtin=True)
         self._mark_dead(watcher)
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
                                    usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin) as rb, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher.RECOVERY_CTX, "wait_for_interface_reappears", return_value="wlan0"), \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher.wifi_activation, "_set_active_client"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
+            handled = watcher.wifi_recovery.escalate_dead_adapter_recovery(watcher.RECOVERY_CTX, [usb, builtin], False)
+        assert handled is True
+        ra.assert_called_once_with("wlan0")
+        # The reset recovered the USB target directly on its own ifname; the
+        # built-in fallback rung is never even reached this pass.
+        act.assert_called_once_with("wlan0")
+        rb.assert_not_called()
+        assert watcher.ADOPTION_STATE.using_builtin_fallback is False
+
+    def test_non_resettable_still_reaches_builtin_fallback_first(self, watcher):
+        """Item 11: a non-resettable target has no reset rung to prefer, so it
+        reaches built-in fallback exactly as before the reorder."""
+        usb = self._usb(watcher)
+        builtin = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._mark_dead(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
+                                   usb_paths_ifaces=[],  # not resettable
                                    link_down=True, healthy=False), \
              patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
@@ -323,6 +349,68 @@ class TestEscalateDeadAdapterRecovery:
         assert handled is True
         act.assert_called_once_with("wlan1")
         ra.assert_not_called()
+        assert watcher.ADOPTION_STATE.using_builtin_fallback is True
+
+    def test_budget_exhausted_still_reaches_builtin_fallback_first(self, watcher):
+        """Item 11: a budget-exhausted resettable target (with another path
+        available) skips the reset and reaches built-in fallback first."""
+        usb = self._usb(watcher)
+        builtin = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._mark_dead(watcher)
+        _spend_window_budget(watcher, self.USB_MAC, now=0.0)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher.wifi_activation, "_set_active_client"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
+             patch("time.monotonic", return_value=1.0):
+            # wired_connected=True also provides an alternate path.
+            handled = watcher.wifi_recovery.escalate_dead_adapter_recovery(watcher.RECOVERY_CTX, [usb, builtin], True)
+        assert handled is True
+        act.assert_called_once_with("wlan1")
+        ra.assert_not_called()
+
+    def test_disabled_target_never_reaches_reset_or_builtin(self, watcher):
+        """The disabled early-return is unchanged by the reorder (item 2)."""
+        usb = self._usb(watcher)
+        builtin = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._mark_dead(watcher)
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=True), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin) as rb, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra:
+            handled = watcher.wifi_recovery.escalate_dead_adapter_recovery(watcher.RECOVERY_CTX, [usb, builtin], False)
+        assert handled is False
+        ra.assert_not_called()
+        rb.assert_not_called()
+
+    def test_between_reset_windows_falls_through_to_builtin_fallback(self, watcher):
+        """Item 12: when the reset rung is not yet due (interval not elapsed),
+        the ladder falls through to built-in fallback rather than holding the
+        device offline until the next reset window."""
+        usb = self._usb(watcher)
+        builtin = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:01", is_builtin=True)
+        self._mark_dead(watcher)
+        watcher.RECOVERY_STATE.last_reset_attempt = 1000.0
+        with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0", "wlan1"],
+                                   usb_paths_ifaces=["wlan0"],
+                                   link_down=True, healthy=False), \
+             patch.object(watcher.wifi_net, "resolve_builtin", return_value=builtin), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind", return_value=True) as ra, \
+             patch.object(watcher.RECOVERY_CTX, "_activate_committed_on", return_value=True) as act, \
+             patch.object(watcher.wifi_activation, "_set_active_client"), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"), \
+             patch("time.monotonic", return_value=1000.0 + watcher.RESET_ATTEMPT_INTERVAL / 2):
+            # Well inside the reset interval: reset rung declines to act.
+            handled = watcher.wifi_recovery.escalate_dead_adapter_recovery(watcher.RECOVERY_CTX, [usb, builtin], False)
+        assert handled is True
+        ra.assert_not_called()
+        act.assert_called_once_with("wlan1")
         assert watcher.ADOPTION_STATE.using_builtin_fallback is True
 
     def test_resets_happen_even_when_wired(self, watcher):
