@@ -263,3 +263,13 @@ plus the OS captive-portal probe endpoints (`/generate_204`, `/ncsi.txt`,
 **Log levels:** `fatal`, `log`, `warning`, `info` (default), `debug`, `spam`.
 Only `warning` / `info` / `debug` are settable at runtime via `set_log_level`;
 `debug` must carry a TTL of 60–3600 s and reverts automatically.
+
+The watcher's runtime level follows the autostream web UI's log-level control
+over this loopback API: the web UI forwards every successful level change
+(and the persisted level once at its own startup) as a best-effort
+`set_log_level` call, mapping `spam`/`debug` to `debug` with the maximum
+`ttl_seconds` of 3600, `info` to `info`, and `warning`/`log`/`fatal` to
+`warning`. A UI-set `debug` therefore still auto-reverts after the 1-hour TTL
+ceiling even while the UI continues to show debug. A watcher-only restart
+drops the forwarded level and falls back to `AUTOSTREAM_WIFI_LOG_LEVEL` until
+the next UI change or a web-UI restart re-forwards the persisted level.
