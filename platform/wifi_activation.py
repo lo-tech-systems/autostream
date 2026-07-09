@@ -18,10 +18,9 @@ at pass top by ``step_apply_activation_result``.
 
 Every function takes an :class:`ActivationContext` as its first argument — a
 narrow view of the watcher exposing only the STATE, constants and callables
-the worker needs.  The watcher constructs the context once and passes it
-where the whole module used to go.  ``autostream_wifi_network`` is imported
-directly because it is a shared module object (patching it affects both
-modules).
+the worker needs.  The watcher constructs the context once and passes it in.
+``autostream_wifi_network`` is imported directly because it is a shared
+module object (patching it affects both modules).
 """
 from __future__ import annotations
 
@@ -44,13 +43,16 @@ class ActivationContext:
     """Narrow view of the watcher that the activation engine depends on.
 
     Constructed once by the watcher and passed to every function here.  It
-    carries the shared STATE object and its lock, the NM client singleton, the
-    hotspot controller, the timeout constants, and the small set of watcher
-    callables the worker and the loop-thread tail invoke — nothing else of
-    the watcher is reachable from this module.
+    carries the shared STATE object and its lock, the AdoptionState fragment
+    (BSSID pin/table and roam-holdoff bookkeeping), the NM client singleton,
+    the hotspot controller, the timeout constants, and the small set of
+    watcher callables the worker and the loop-thread tail invoke — nothing
+    else of the watcher is reachable from this module.
     """
 
     STATE: object
+    APPLY_STATE: object
+    ADOPTION_STATE: object
     state_lock: object
     RECOVERY_STATE: object
     RECOVERY_CTX: object
@@ -97,36 +99,38 @@ def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str, exclude: str 
     Non-USB targets, and USB targets whose scan fails or yields no selectable
     candidate, are explicitly unpinned (the scan must never become a new way
     for activation to fail).  Records the pin (or its absence) on
-    ``STATE.last_bssid_pin`` for the reset/retry gate.  ``exclude`` skips a
-    BSSID (the one a just-failed pinned attempt used) so a retry selects a
-    different candidate.
+    ``ADOPTION_STATE.last_bssid_pin`` for the reset/retry gate.  ``exclude``
+    skips a BSSID (the one a just-failed pinned attempt used) so a retry
+    selects a different candidate.
     """
     if wifi_net.usb_sysfs_paths(ifname) is None:
         ctx.nm.set_bssid(uuid, "")
         with ctx.state_lock:
-            ctx.STATE.last_bssid_pin = {}
+            ctx.ADOPTION_STATE.last_bssid_pin = {}
         return ""
 
     rows = ctx.nm.wifi_bssid_scan(ifname, rescan=True)
+    ssid = wifi_net.get_connection_ssid(uuid) if rows is not None else ""
+    ctx.logger.debug(wifi_policy.format_bssid_scan_debug(ifname, True, "pin", rows, ssid))
     bssid, signal = "", 0
     if rows is not None:
-        ssid = wifi_net.get_connection_ssid(uuid)
         now = time.monotonic()
         with ctx.state_lock:
-            wifi_policy.update_bssid_table(ctx.STATE.bssid_table, rows, ssid, now)
-            bssid = wifi_policy.select_bssid(ctx.STATE.bssid_table, now, exclude=exclude)
+            table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, ifname)
+            wifi_policy.update_bssid_table(table, rows, ssid, now)
+            bssid = wifi_policy.select_bssid(table, now, exclude=exclude)
             if bssid:
-                signal = ctx.STATE.bssid_table[bssid]["signal"]
+                signal = table[bssid]["signal"]
 
     if not bssid:
         ctx.nm.set_bssid(uuid, "")
         with ctx.state_lock:
-            ctx.STATE.last_bssid_pin = {}
+            ctx.ADOPTION_STATE.last_bssid_pin = {}
         return ""
 
     ctx.nm.set_bssid(uuid, bssid)
     with ctx.state_lock:
-        ctx.STATE.last_bssid_pin = {
+        ctx.ADOPTION_STATE.last_bssid_pin = {
             "ifname": ifname, "bssid": bssid, "signal": signal, "at": time.monotonic(),
         }
     return bssid
@@ -158,10 +162,11 @@ def _activate_profile_on(ctx: ActivationContext, ifname: str, state: "wifi_net.N
     ok = _validate_activation(ctx, ifname, r_up, wait_for_validation=wait_for_validation)
     if pinned_bssid:
         with ctx.state_lock:
+            table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, ifname)
             if ok:
-                wifi_policy.record_bssid_success(ctx.STATE.bssid_table, pinned_bssid, time.monotonic())
+                wifi_policy.record_bssid_success(table, pinned_bssid, time.monotonic())
             else:
-                wifi_policy.record_bssid_failure(ctx.STATE.bssid_table, pinned_bssid)
+                wifi_policy.record_bssid_failure(table, pinned_bssid)
     return ok
 
 
@@ -219,9 +224,12 @@ class ActivationJob:
     # Runtime-adoption transactional handover: disconnect this previously-active
     # client on the success tail (only after the worker validated the new one).
     disconnects_previous_ifname: str = ""
-    clears_pending_adoption: bool = False   # clear STATE.pending_usb_adoption on done
+    clears_pending_adoption: bool = False   # clear ADOPTION_STATE.pending_usb_adoption on done
     stable_id: "Optional[str]" = None
     wait_for_validation: bool = True
+    # RESET_USB rung: one budgeted hardware reset + interface reappear before the
+    # activation core runs (on the resolved, possibly-renamed ifname).
+    reset_before: bool = False
 
 
 @dataclass(frozen=True)
@@ -252,9 +260,21 @@ def _pin_implicates_adapter(ctx: ActivationContext, ifname: str) -> bool:
     activation whose scan found a strong candidate does.
     """
     with ctx.state_lock:
-        pin = dict(ctx.STATE.last_bssid_pin)
+        pin = dict(ctx.ADOPTION_STATE.last_bssid_pin)
     return (pin.get("ifname") == ifname and bool(pin.get("bssid"))
             and pin.get("signal", 0) >= PIN_IMPLICATE_SIGNAL)
+
+
+def _reset_usb_and_wait_reappear(ctx: ActivationContext, target: "wifi_recovery.TargetAdapter") -> str:
+    """Record one budgeted USB reset, rebind, and wait for the interface to
+    reappear (possibly renamed).  Returns the resolved ifname, or "" if it
+    never reappears.  Shared by the in-job implicated-failure retry and the
+    reset-before-failover job prefix — each call site logs its own reason for
+    triggering the reset.
+    """
+    wifi_recovery.record_adapter_reset(ctx.RECOVERY_CTX, target, time.monotonic())
+    wifi_net.reset_usb_adapter_rebind(target.ifname)
+    return wifi_recovery.wait_for_interface_reappears(ctx.RECOVERY_CTX, target)
 
 
 def _retry_after_implicated_failure(ctx: ActivationContext, job: "ActivationJob"):
@@ -268,7 +288,7 @@ def _retry_after_implicated_failure(ctx: ActivationContext, job: "ActivationJob"
         return None
 
     with ctx.state_lock:
-        failed_bssid = ctx.STATE.last_bssid_pin.get("bssid", "")
+        failed_bssid = ctx.ADOPTION_STATE.last_bssid_pin.get("bssid", "")
 
     adapters = wifi_net.discover_adapters()
     target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, job.ifname, adapters)
@@ -281,9 +301,7 @@ def _retry_after_implicated_failure(ctx: ActivationContext, job: "ActivationJob"
     ctx.logger.info(
         "Pinned activation on %s failed with a joinable scan (implicated adapter); "
         "spending one budgeted USB reset and retrying", job.ifname)
-    wifi_recovery.record_adapter_reset(ctx.RECOVERY_CTX, target, now)
-    wifi_net.reset_usb_adapter_rebind(job.ifname)
-    new_ifname = wifi_recovery.wait_for_interface_reappears(ctx.RECOVERY_CTX, target)
+    new_ifname = _reset_usb_and_wait_reappear(ctx, target)
     if not new_ifname:
         ctx.logger.warning("USB reset: %s did not reappear; retry failed", job.ifname)
         return (False, job.ifname)
@@ -299,12 +317,17 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     """Worker half: the slow, bounded effects only (no connectivity/session tail).
 
     Optional AP drop for the attempt, the shared activation core, and — symmetric
-    self-undo — rebuild the AP it dropped if this attempt then failed.  A failed
-    activate_committed/activate_profile on an implicated USB target gets exactly
-    one budgeted reset + retry (see ``_retry_after_implicated_failure``) before
-    the outcome is final.  Takes ``state_lock`` only for the brief flag reads/
-    writes, never across the blocking nmcli/wait calls.  Returns the outcome;
-    the loop applies the tail.
+    self-undo — rebuild the AP it dropped if this attempt then failed.  A
+    ``reset_before`` job (the RESET_USB rung) spends its one budgeted reset first
+    and runs the activation core on the resolved (possibly-renamed) interface; if
+    the interface never reappears the job fails cleanly with no activation
+    attempt.  A failed activate_committed/activate_profile on an implicated USB
+    target otherwise gets exactly one budgeted reset + retry (see
+    ``_retry_after_implicated_failure``) before the outcome is final — never
+    stacked on top of a ``reset_before`` job's own reset (one reset per job,
+    ever).  Takes ``state_lock`` only for the brief flag reads/writes, never
+    across the blocking nmcli/wait calls.  Returns the outcome; the loop applies
+    the tail.
     """
     if job.kind == "apply_credentials":
         # The credential-apply transaction runs the rollback-safe candidate
@@ -322,6 +345,25 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     if not job.ifname:
         return ActivationResult(job.epoch, False, "", job, error="no_ifname")
 
+    target_ifname = job.ifname
+    already_reset = False
+    if job.reset_before:
+        already_reset = True
+        adapters = wifi_net.discover_adapters()
+        reset_target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, job.ifname, adapters)
+        snapshot = wifi_recovery.adapter_reset_ledger_snapshot(
+            ctx.RECOVERY_CTX, reset_target, time.monotonic())
+        ctx.logger.info(
+            "resetting active USB %s before onboard failover (reset %d of %d in window)",
+            job.ifname, len(snapshot.get("recent_resets", [])) + 1,
+            ctx.RECOVERY_CTX.USB_MAX_RESETS_PER_WINDOW,
+        )
+        target_ifname = _reset_usb_and_wait_reappear(ctx, reset_target)
+        if not target_ifname:
+            ctx.logger.warning(
+                "USB reset before failover: %s did not reappear", job.ifname)
+            return ActivationResult(job.epoch, False, job.ifname, job, error="reset_no_reappear")
+
     dropped_ap = False
     if job.drop_hotspot:
         with ctx.state_lock:
@@ -333,13 +375,13 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     if job.profile is None and job.wait_for_validation:
         # Common case: route through the named _activate_committed_on seam so
         # existing per-caller test patches continue to intercept the core.
-        ok = _activate_committed_on(ctx, job.ifname)
+        ok = _activate_committed_on(ctx, target_ifname)
     else:
         state = job.profile if job.profile is not None else ctx.get_configured_network_state()
-        ok = _activate_profile_on(ctx, job.ifname, state, wait_for_validation=job.wait_for_validation)
+        ok = _activate_profile_on(ctx, target_ifname, state, wait_for_validation=job.wait_for_validation)
 
-    result_ifname = job.ifname
-    if not ok and job.kind in ("activate_committed", "activate_profile"):
+    result_ifname = target_ifname
+    if not ok and job.kind in ("activate_committed", "activate_profile") and not already_reset:
         retried = _retry_after_implicated_failure(ctx, job)
         if retried is not None:
             ok, result_ifname = retried
@@ -484,29 +526,36 @@ def _set_active_client(ctx: ActivationContext, adapter) -> None:
         ctx.logger.info("Active client adapter changed -> %s (%s)", adapter.ifname, adapter.kind)
 
 
-def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None,
-                   clear_noip_stable_id=None, disconnect_builtin_ifname="",
-                   leave_setup_reason=None, clear_down_timers=False,
-                   reset_onboard_bound=False, clear_pending_adoption=False,
-                   clear_dead_adapter=False) -> None:
+def activation_success_tail(*, set_builtin_fallback=None, clear_noip_stable_id=None,
+                            disconnect_builtin_ifname="", leave_setup_reason=None,
+                            clear_down_timers=False, clear_pending_adoption=False) -> "wifi_recovery.TailSpec":
+    """Tail for a client the activation worker just brought up successfully
+    (bring-up, adoption, reconnect episode, or credential apply) — every job
+    kind that runs through ``apply_activation_result`` funnels here.  Always
+    resets the onboard-failure bound; never touches dead-PHY recovery state
+    (that ladder has its own tail variants)."""
+    return wifi_recovery.TailSpec(
+        set_builtin_fallback=set_builtin_fallback,
+        clear_noip_stable_id=clear_noip_stable_id,
+        disconnect_builtin_ifname=disconnect_builtin_ifname,
+        leave_setup_reason=leave_setup_reason,
+        clear_down_timers=clear_down_timers,
+        reset_onboard_bound=True,
+        clear_pending_adoption=clear_pending_adoption,
+    )
+
+
+def client_up_tail(ctx: ActivationContext, adapter,
+                   spec: "wifi_recovery.TailSpec" = wifi_recovery.TailSpec()) -> None:
     """The shared "a client came up" choreography (loop thread only).
 
-    One place applies the standardised handover effects; each caller passes only
-    the deltas it needs and does its own adapter discovery/logging first.  The
-    individual effects touch disjoint STATE fields (or independent nmcli/ledger
+    One place applies the standardised handover effects; each caller passes a
+    :class:`wifi_recovery.TailSpec` describing only the deltas it needs and
+    does its own adapter discovery/logging first.  The individual effects
+    touch disjoint STATE/ADOPTION_STATE fields (or independent nmcli/ledger
     calls), so their order is not load-bearing.
 
-    - ``adapter``: the resolved client adapter to record active (None = skip).
-    - ``disconnect_builtin_ifname``: disconnect this still-connected built-in
-      client after the handover (""/None = skip).
-    - ``clear_noip_stable_id``: clear the no-IP ledger for this stable id.
-    - ``set_builtin_fallback``: assign STATE.using_builtin_fallback when not None.
-    - ``clear_down_timers``: reset the connectivity-down / reconnect timers.
-    - ``reset_onboard_bound``: reset the per-episode onboard-failure bound.
-    - ``clear_pending_adoption`` / ``clear_dead_adapter``: clear the pending USB
-      adoption and dead-PHY recovery state respectively.
-    - ``leave_setup_reason``: leave setup mode with this reason (None = skip;
-      leave_setup_mode is itself a no-op when not in setup).
+    ``adapter`` is the resolved client adapter to record active (None = skip).
 
     Every call here is a successful client activation, so this is also the
     other half of the BSSID roam holdoff (the roam submission stamps the same
@@ -515,26 +564,31 @@ def client_up_tail(ctx: ActivationContext, adapter, *, set_builtin_fallback=None
     """
     if adapter is not None:
         _set_active_client(ctx, adapter)
-    if disconnect_builtin_ifname:
-        ctx.logger.info("Disconnecting built-in client on %s", disconnect_builtin_ifname)
-        ctx.nm.disconnect_device(disconnect_builtin_ifname)
-    if clear_noip_stable_id:
-        ctx.clear_noip_failures(clear_noip_stable_id)
+    if spec.disconnect_builtin_ifname:
+        ctx.logger.info("Disconnecting built-in client on %s", spec.disconnect_builtin_ifname)
+        ctx.nm.disconnect_device(spec.disconnect_builtin_ifname)
+    if spec.clear_noip_stable_id:
+        ctx.clear_noip_failures(spec.clear_noip_stable_id)
     with ctx.state_lock:
-        ctx.STATE.last_roam_or_activation = time.monotonic()
-        if set_builtin_fallback is not None:
-            ctx.STATE.using_builtin_fallback = set_builtin_fallback
-        if clear_down_timers:
+        ctx.ADOPTION_STATE.last_roam_or_activation = time.monotonic()
+        if spec.set_builtin_fallback is not None:
+            ctx.ADOPTION_STATE.using_builtin_fallback = spec.set_builtin_fallback
+        if spec.clear_down_timers:
             ctx.STATE.conn_down_start = None
             ctx.STATE.last_reconnect_attempt = None
-        if reset_onboard_bound:
+        if spec.reset_onboard_bound:
             ctx.STATE.onboard_activation_failures = 0
-    if clear_pending_adoption:
+    if spec.clear_pending_adoption:
         ctx.clear_pending_adoption()
-    if clear_dead_adapter:
+    if spec.clear_dead_adapter:
         ctx.clear_dead_adapter_state()
-    if leave_setup_reason is not None:
-        ctx.leave_setup_mode(leave_setup_reason)
+        # The dead-PHY recovery episode this adapter was tracked under is over
+        # (recovered or handed to another radio): clear the RESET_USB spend so
+        # a fresh wedge gets its one budgeted reset again.
+        with ctx.state_lock:
+            ctx.RECOVERY_STATE.failover_reset_done.clear()
+    if spec.leave_setup_reason is not None:
+        ctx.leave_setup_mode(spec.leave_setup_reason)
     ctx.verify_avahi_after_handover()
 
 
@@ -553,9 +607,9 @@ def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
         # apply_in_progress and, on failure, returning to setup mode.
         if not result.ok:
             with ctx.state_lock:
-                ctx.STATE.last_apply_result = "failed"
-                ctx.STATE.last_apply_error = "nmcli-failed"
-                ctx.STATE.apply_in_progress = False
+                ctx.APPLY_STATE.last_apply_result = "failed"
+                ctx.APPLY_STATE.last_apply_error = "nmcli-failed"
+                ctx.APPLY_STATE.apply_in_progress = False
                 # Re-enter with whatever purpose the interrupted session held
                 # (configure_wifi_with_nmcli keeps setup_mode set on failure, so
                 # this is normally a no-op); fall back to FIRST_RUN.
@@ -564,9 +618,9 @@ def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
             ctx.enter_setup_mode(purpose, reason="nmcli failed to configure WiFi")
             return False
         with ctx.state_lock:
-            ctx.STATE.last_apply_result = "ok"
-            ctx.STATE.last_apply_error = ""
-            ctx.STATE.apply_in_progress = False
+            ctx.APPLY_STATE.last_apply_result = "ok"
+            ctx.APPLY_STATE.last_apply_error = ""
+            ctx.APPLY_STATE.apply_in_progress = False
         ctx.logger.info("WiFi configuration and connectivity verified")
         # Fall through to the shared success tail below (set active client by
         # result.ifname, leave setup, verify avahi) — the same tail the other job
@@ -594,16 +648,14 @@ def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
         # previous-client disconnect, clear the no-IP ledger, fallback/timer flags,
         # reset the onboard-failure bound, leave setup, clear pending adoption,
         # verify avahi).
-        client_up_tail(
-            ctx, resolved,
+        client_up_tail(ctx, resolved, activation_success_tail(
             set_builtin_fallback=job.sets_builtin_fallback,
             clear_noip_stable_id=(clear_id or None),
             disconnect_builtin_ifname=disconnect_ifname,
             leave_setup_reason=(job.leave_reason if job.on_success_leaves_setup else None),
             clear_down_timers=job.clears_down_timers,
-            reset_onboard_bound=True,
             clear_pending_adoption=job.clears_pending_adoption,
-        )
+        ))
         return True
 
     # Failure tail (the worker already rebuilt any AP it dropped).

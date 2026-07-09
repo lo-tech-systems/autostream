@@ -12,11 +12,10 @@ recovery-action ladder.  The bounded sysfs primitives live in
 
 Every public/helper function takes a :class:`RecoveryContext` as its first
 argument — a narrow view of the watcher exposing only the STATE, the reset/
-quarantine/reboot constants and the policy helpers this module uses (the ``w``
-seam narrowed, WP-11).  The watcher constructs it once and passes it where the
-whole module used to go; the recovery helpers call each other directly, threading
-the same ``ctx``.  ``autostream_wifi_network`` is imported directly (shared module
-object, so patching it affects both).
+quarantine/reboot constants and the policy helpers this module uses.  The
+watcher constructs it once and passes it in; the recovery helpers call each
+other directly, threading the same ``ctx``.  ``autostream_wifi_network`` is
+imported directly (shared module object, so patching it affects both).
 """
 from __future__ import annotations
 
@@ -52,6 +51,13 @@ class RecoveryState:
     # healthy active client (success) or disappears, so a fresh hold-back may
     # reset again.
     noip_holdback_reset_done: set = field(default_factory=set)
+    # Stable-ids that already spent their one budgeted USB reset at the
+    # RESET_USB ladder rung this offline episode (distinct from
+    # noip_holdback_reset_done, which guards the idle-spare hold-back reset).
+    # Not persisted: an offline episode never spans a reboot.  Cleared on a
+    # healthy pass (fresh episode) and when client_up_tail's clear_dead_adapter
+    # effect runs.
+    failover_reset_done: set = field(default_factory=set)
 
     # ---- Dead-PHY recovery ----
     dead_adapter_ifname: str = ""               # interface currently classed dead ("" = none)
@@ -76,15 +82,17 @@ class RecoveryContext:
 
     Constructed once by the watcher and threaded through the recovery helpers.  It
     carries the shared STATE object and its lock, the recovery-owned ledger state,
-    the reset/quarantine/reboot constants and persistent-state paths, and the small
-    set of watcher callables the ladder invokes — nothing else of the watcher is
-    reachable from here.
+    the adoption-owned ``known_usb_macs`` set (read-only from here, to classify an
+    absent active adapter as USB), the reset/quarantine/reboot constants and
+    persistent-state paths, and the small set of watcher callables the ladder
+    invokes — nothing else of the watcher is reachable from here.
     """
 
     STATE: object
     state_lock: object
     logger: object
     RECOVERY_STATE: RecoveryState
+    ADOPTION_STATE: object
     # Constants
     AP_IFNAME: str
     USB_RESET_WINDOW: float
@@ -107,8 +115,50 @@ class RecoveryContext:
     wait_for_interface_reappears: Callable
     resolve_hotspot_adapter: Callable
     request_guarded_reboot: Callable
-    # Shared mutable set of adopted USB MACs (captured by reference).
-    _known_usb_macs: set
+
+
+@dataclass(frozen=True)
+class TailSpec:
+    """The declarative handover effects ``wifi_activation.client_up_tail``
+    applies for one successful client activation.  Defined here (rather than
+    in ``wifi_activation``, which imports this module) so ``wifi_recovery``'s
+    own dead-PHY rungs can build one without a reverse import.
+
+    - ``set_builtin_fallback``: assign ADOPTION_STATE.using_builtin_fallback
+      when not None.
+    - ``clear_noip_stable_id``: clear the no-IP ledger for this stable id.
+    - ``disconnect_builtin_ifname``: disconnect this still-connected built-in
+      client after the handover (""/None = skip).
+    - ``leave_setup_reason``: leave setup mode with this reason (None = skip;
+      leave_setup_mode is itself a no-op when not in setup).
+    - ``clear_down_timers``: reset the connectivity-down / reconnect timers.
+    - ``reset_onboard_bound``: reset the per-episode onboard-failure bound.
+    - ``clear_pending_adoption`` / ``clear_dead_adapter``: clear the pending
+      USB adoption and dead-PHY recovery state respectively.
+    """
+    set_builtin_fallback: "Optional[bool]" = None
+    clear_noip_stable_id: "Optional[str]" = None
+    disconnect_builtin_ifname: str = ""
+    leave_setup_reason: "Optional[str]" = None
+    clear_down_timers: bool = False
+    reset_onboard_bound: bool = False
+    clear_pending_adoption: bool = False
+    clear_dead_adapter: bool = False
+
+
+def dead_phy_recovered_via_usb_reset(leave_setup_reason: str) -> TailSpec:
+    """Tail for a dead-PHY target that came back healthy after a USB reset:
+    clear the builtin-fallback flag and dead-PHY recovery state, leave setup
+    if it was up, and re-announce mDNS."""
+    return TailSpec(set_builtin_fallback=False, clear_dead_adapter=True,
+                     leave_setup_reason=leave_setup_reason)
+
+
+def dead_phy_recovered_via_builtin_fallback() -> TailSpec:
+    """Tail for falling back to a healthy built-in radio while the USB target
+    is dead: mark the builtin-fallback flag and clear dead-PHY recovery
+    state."""
+    return TailSpec(set_builtin_fallback=True, clear_dead_adapter=True)
 
 
 # ---- Adapter-remediation overlay event contract ----
@@ -308,7 +358,7 @@ def diagnose_client_failure(ctx, adapters: list, active_client, conn_ok: bool,
     if conn_ok:
         return None
 
-    recorded_usb = bool(prev_mac) and prev_mac in ctx._known_usb_macs
+    recorded_usb = bool(prev_mac) and prev_mac in ctx.ADOPTION_STATE.known_usb_macs
     if not recorded_usb:
         # The condemned path is not a recorded USB client (built-in / unconfigured
         # / genuinely nothing); reconnect and the dead-PHY ladder own those.
@@ -571,19 +621,50 @@ def update_dead_adapter_detection(ctx, adapters: list, target: Optional[TargetAd
     return result
 
 
+def _reset_budget_counts_for_stable_id(ctx, stable_id: Optional[str], now: float) -> tuple:
+    """Return (recent, total) reset counts for *stable_id* after pruning.
+
+    Creates an empty ledger entry when the id is unknown and non-empty,
+    matching the legacy TargetAdapter-keyed lookup's side effect (the entry is
+    pruned away again on a later pass if it stays empty).
+    """
+    with ctx.state_lock:
+        _prune_adapter_ledgers_locked(ctx, now)
+        ledger = None
+        if stable_id:
+            ledgers = ctx.RECOVERY_STATE.adapter_reset_ledgers
+            ledger = ledgers.get(stable_id)
+            if ledger is None:
+                ledger = _new_adapter_ledger()
+                ledgers[stable_id] = ledger
+        recent = len(ledger["recent_resets"]) if ledger else 0
+        total = int(ledger.get("total_resets", 0) or 0) if ledger else 0
+    return recent, total
+
+
+def adapter_reset_budget_exhausted_for_stable_id(ctx, stable_id: Optional[str], now: float) -> bool:
+    """True when *stable_id* has hit either the per-window or total reset budget.
+
+    Stable-id-keyed form: the reset ledgers are already keyed by stable id, so
+    this needs no TargetAdapter construction.  Used directly for
+    ``AdapterRecoveryFacts.reset_budget_ok``; ``adapter_reset_budget_exhausted``
+    below delegates to this for the TargetAdapter-taking call sites, with
+    identical semantics.
+    """
+    recent, total = _reset_budget_counts_for_stable_id(ctx, stable_id, now)
+    return recent >= ctx.USB_MAX_RESETS_PER_WINDOW or total >= ctx.USB_MAX_RESETS_TOTAL
+
+
 def adapter_reset_budget_exhausted(ctx, target: Optional[TargetAdapter], now: float) -> bool:
     """True when the adapter has hit either the per-window or total reset budget.
 
     The *policy* decision (quarantine vs. emergency-only retry) lives in the
     ladder; this reports only whether the budget is spent.
     """
-    with ctx.state_lock:
-        _prune_adapter_ledgers_locked(ctx, now)
-        ledger = _adapter_ledger_locked(ctx, target)
-        recent = len(ledger["recent_resets"]) if ledger else 0
-        total = int(ledger.get("total_resets", 0) or 0) if ledger else 0
-    exhausted = recent >= ctx.USB_MAX_RESETS_PER_WINDOW or total >= ctx.USB_MAX_RESETS_TOTAL
+    stable_id = target.stable_id if target is not None else None
+    exhausted = adapter_reset_budget_exhausted_for_stable_id(ctx, stable_id, now)
     if exhausted:
+        recent, total = _reset_budget_counts_for_stable_id(ctx, stable_id, now)
         ctx.logger.debug(
             "Reset budget exhausted for %s: recent=%d/%d total=%d/%d",
             target.ifname if target else "?", recent, ctx.USB_MAX_RESETS_PER_WINDOW,
@@ -690,6 +771,10 @@ class AdapterRecoveryFacts:
     noip_suppressed: bool
     is_no_ip: bool
     disabled: bool
+    # USB-only facts for the RESET_USB ladder rung; both False for a non-USB
+    # adapter (no sysfs work is performed for the onboard).
+    resettable: bool
+    reset_budget_ok: bool
 
 
 def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> AdapterRecoveryFacts:
@@ -726,6 +811,16 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
     budget_exhausted = (
         recent >= ctx.USB_MAX_RESETS_PER_WINDOW or total >= ctx.USB_MAX_RESETS_TOTAL
     )
+    # USB-only, no added sysfs work for the onboard: resettable is a direct
+    # sysfs presence check; reset_budget_ok reuses the stable-id-keyed budget
+    # check (same ledgers as budget_exhausted above, keyed identically).
+    if a.is_usb:
+        resettable = wifi_net.usb_sysfs_paths(a.ifname) is not None
+        reset_budget_ok = not adapter_reset_budget_exhausted_for_stable_id(
+            ctx, a.stable_id, now_monotonic)
+    else:
+        resettable = False
+        reset_budget_ok = False
     return AdapterRecoveryFacts(
         ifname=a.ifname,
         stable_id=a.stable_id,
@@ -748,6 +843,8 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
             stable_id=a.stable_id,
         ),
         disabled=adapter_disabled(ctx, a.stable_id),
+        resettable=resettable,
+        reset_budget_ok=reset_budget_ok,
     )
 
 
@@ -1061,9 +1158,7 @@ def _perform_reset_step(ctx, target: TargetAdapter, now: float) -> bool:
         # up (leave_setup_mode no-ops otherwise), and re-announce mDNS.
         ctx.client_up_tail(
             recovered,
-            set_builtin_fallback=False,
-            clear_dead_adapter=True,
-            leave_setup_reason="dead-PHY recovered via USB reset",
+            dead_phy_recovered_via_usb_reset("dead-PHY recovered via USB reset"),
         )
     return True
 
@@ -1093,9 +1188,13 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
     """Run one step of the dead-PHY recovery ladder.
 
     Resolves the target client, advances dead detection, and — when the adapter
-    is dead — steps the ladder: built-in fallback -> USB reset (Method A/B) ->
-    quarantine/backoff -> guarded reboot (offline only).  Returns True when an
-    action owned this pass (the caller should sleep and ``continue``).
+    is dead — steps the ladder: setup-mode deferral -> USB reset (Method A/B,
+    only for a resettable target with reset budget available and its interval
+    due) -> built-in fallback -> quarantine/backoff -> guarded reboot (offline
+    only).  A non-resettable, budget-exhausted, or reset-not-yet-due target
+    falls through the reset rung straight to built-in fallback instead of
+    holding the device offline until the next reset window.  Returns True when
+    an action owned this pass (the caller should sleep and ``continue``).
     """
     now = time.monotonic()
     target = resolve_target_client(ctx, adapters)
@@ -1127,7 +1226,34 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
             "dead; using USB reset ladder instead", target.ifname,
         )
 
-    # (2) Built-in client fallback when a *separate* built-in radio is present.
+    other_path = _other_network_path_available(ctx, adapters, target, wired_connected)
+
+    # (2) USB reset rung — only a resettable USB target with reset budget gets
+    # an active reset attempt here.  A budget-exhausted target with another
+    # path available skips the reset outright and falls through to built-in
+    # fallback; its quarantine is decided after fallback below (unchanged
+    # decision, just moved past the now-earlier reset rung).
+    budget_spent = False
+    if target.resettable_usb:
+        budget_spent = adapter_reset_budget_exhausted(ctx, target, now)
+        if not (budget_spent and other_path):
+            # Emergency-only slow backoff when this USB is the only path;
+            # otherwise the normal reset cadence.
+            interval = ctx.USB_EMERGENCY_BACKOFF if budget_spent else ctx.RESET_ATTEMPT_INTERVAL
+            with ctx.state_lock:
+                last = ctx.RECOVERY_STATE.last_reset_attempt
+            due = last is None or (now - last) >= interval
+            if due:
+                if budget_spent:
+                    ctx.logger.info(
+                        "USB adapter %s reset budget exhausted but no other path; "
+                        "slow emergency reset attempt", target.ifname,
+                    )
+                return _perform_reset_step(ctx, target, now)
+            # Reset interval not yet elapsed: fall through to built-in fallback
+            # rather than holding the device offline until the next window.
+
+    # (3) Built-in client fallback when a *separate* built-in radio is present.
     builtin = wifi_net.resolve_builtin(adapters)
     if builtin is not None and builtin.ifname != target.ifname:
         if ctx._activate_committed_on(builtin.ifname):
@@ -1135,54 +1261,33 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
                           builtin.ifname)
             # Shared handover tail: set the built-in active, mark the
             # builtin-fallback flag, clear dead-PHY recovery state, verify avahi.
-            ctx.client_up_tail(
-                builtin,
-                set_builtin_fallback=True,
-                clear_dead_adapter=True,
-            )
+            ctx.client_up_tail(builtin, dead_phy_recovered_via_builtin_fallback())
             return True
 
-    other_path = _other_network_path_available(ctx, adapters, target, wired_connected)
-
-    # (3)/(4)/(5) USB reset rungs — only a resettable USB target can be reset.
-    if target.resettable_usb:
-        budget_spent = adapter_reset_budget_exhausted(ctx, target, now)
-        if budget_spent and other_path:
-            # (3) Quarantine for preferred client use; keep publishing degraded
-            # status and let the normal loop logic run.
-            with ctx.state_lock:
-                _prune_adapter_ledgers_locked(ctx, now)
-                ledger = _adapter_ledger_locked(ctx, target)
-                current = ledger.get("quarantined_until") if ledger else None
-                newly = not (
-                    isinstance(current, (int, float))
-                    and not isinstance(current, bool)
-                    and now < current
-                )
-                if ledger is not None:
-                    ledger["quarantined_until"] = now + ctx.USB_RESET_WINDOW
-            if newly:
-                ctx.logger.info(
-                    "USB adapter %s quarantined for preferred client use "
-                    "(reset budget exhausted; alternate path available)", target.ifname,
-                )
-            return False
-
-        # (4) Emergency-only slow backoff when this USB is the only path;
-        # (5) otherwise the normal reset cadence.
-        interval = ctx.USB_EMERGENCY_BACKOFF if budget_spent else ctx.RESET_ATTEMPT_INTERVAL
+    # (4) Quarantine for preferred client use when the reset budget is spent
+    # and another path exists; the reset rung above skipped the actual reset
+    # in that case.  Keep publishing degraded status and let the normal loop
+    # logic run.
+    if target.resettable_usb and budget_spent and other_path:
         with ctx.state_lock:
-            last = ctx.RECOVERY_STATE.last_reset_attempt
-        due = last is None or (now - last) >= interval
-        if due:
-            if budget_spent:
-                ctx.logger.info(
-                    "USB adapter %s reset budget exhausted but no other path; "
-                    "slow emergency reset attempt", target.ifname,
-                )
-            return _perform_reset_step(ctx, target, now)
+            _prune_adapter_ledgers_locked(ctx, now)
+            ledger = _adapter_ledger_locked(ctx, target)
+            current = ledger.get("quarantined_until") if ledger else None
+            newly = not (
+                isinstance(current, (int, float))
+                and not isinstance(current, bool)
+                and now < current
+            )
+            if ledger is not None:
+                ledger["quarantined_until"] = now + ctx.USB_RESET_WINDOW
+        if newly:
+            ctx.logger.info(
+                "USB adapter %s quarantined for preferred client use "
+                "(reset budget exhausted; alternate path available)", target.ifname,
+            )
+        return False
 
-    # (6) Reboot escalation — only when genuinely offline.
+    # (5) Reboot escalation — only when genuinely offline.
     if not wired_connected and _maybe_request_dead_phy_reboot(ctx, target, now):
         return True
 

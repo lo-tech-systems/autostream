@@ -3,7 +3,7 @@
 Covers:
 - dial/dial_webui_assets.py: badge img tag and three favicon link tags are
   present in SETUP_PAGE_HTML.
-- platform/wifi_watcher: APP_BANNER_IMAGE env var causes BANNER_HTML to render
+- platform/wifi_watcher.py: APP_BANNER_IMAGE env var causes BANNER_HTML to render
   an <img> element; when unset, the text <div class="app-title"> is rendered.
   .app-banner-image CSS class is defined for the image variant.
 - system/systemd/autostream_dial_wifi_watcher.service: APP_BANNER_IMAGE is set
@@ -18,7 +18,7 @@ from importlib.machinery import SourceFileLoader
 
 REPO_ROOT = Path(__file__).parent.parent
 DIAL_WEBUI_ASSETS = REPO_ROOT / "dial" / "dial_webui_assets.py"
-WIFI_WATCHER = REPO_ROOT / "platform" / "wifi_watcher"
+WIFI_WATCHER = REPO_ROOT / "platform" / "wifi_watcher.py"
 # Presentation (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS) was extracted
 # to wifi_web.py (HTTP-extraction plan, WP1).
 WIFI_WEB = REPO_ROOT / "platform" / "wifi_web.py"
@@ -50,9 +50,14 @@ def _load_wifi_web(alias: str, env_overrides: dict | None = None) -> object:
             injected.append("flask")
         # Drop any cached wifi_web so this fresh env takes effect.
         sys.modules.pop("wifi_web", None)
+        # Register under alias before exec: the dataclass decorator on
+        # WebContext resolves its field annotations via sys.modules, so the
+        # module must be findable by name while it executes.
+        sys.modules[alias] = mod
         try:
             loader.exec_module(mod)
         finally:
+            sys.modules.pop(alias, None)
             for sn in injected:
                 sys.modules.pop(sn, None)
         return mod

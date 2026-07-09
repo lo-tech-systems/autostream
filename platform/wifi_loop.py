@@ -3,7 +3,7 @@
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
-The monitor-loop handler decomposition for the Autostream Wi-Fi watcher.
+The ordered monitor-loop handlers for the Autostream Wi-Fi watcher.
 
 The loop itself (``network_monitor_loop``) stays in the hub as the supervisor
 skeleton; this module owns the ordered per-pass handlers it drives (the
@@ -15,7 +15,7 @@ Phase B-early and Phase B-late.
 
 Every handler takes a :class:`LoopContext` as its first argument — a narrow
 view of the watcher exposing only the STATE, constants and callables these
-handlers use (the ``w`` seam narrowed, WP-11) — followed by the per-pass
+handlers use — followed by the per-pass
 phase context (``pre`` / ``fctx`` / ``hctx``) that ``run_steps`` threads
 through unchanged.  The watcher builds one ``LOOP_CTX`` and binds each handler
 to it with ``functools.partial`` when building the ordered phase lists, so
@@ -42,6 +42,9 @@ class LoopContext:
     """
 
     STATE: object
+    APPLY_STATE: object
+    CONTROL_STATE: object
+    RECOVERY_STATE: object
     state_lock: object
     logger: logging.Logger
     Verdict: object
@@ -292,16 +295,16 @@ def step_control_action(ctx: LoopContext, pre: "PreFactsContext") -> "Verdict":
     if not ctx.control_action_event.is_set():
         return ctx.Verdict.CONTINUE
     with ctx.state_lock:
-        action = ctx.STATE.pending_control_action
-        params = dict(ctx.STATE.pending_control_params)
+        action = ctx.CONTROL_STATE.pending_control_action
+        params = dict(ctx.CONTROL_STATE.pending_control_params)
         # Non-disruptive actions touch no connectivity/AP state, so they are never
         # deferred and never own the pass: log-level and the manual adapter
         # enable/disable/clear-fault actions.
         disruptive = bool(action) and action not in ctx._NON_DISRUPTIVE_ACTIONS
         defer = disruptive and (ctx.STATE.transitioning or ctx.STATE.reconnect_episode is not None)
         if not defer:
-            ctx.STATE.pending_control_action = ""
-            ctx.STATE.pending_control_params = {}
+            ctx.CONTROL_STATE.pending_control_action = ""
+            ctx.CONTROL_STATE.pending_control_params = {}
             ctx.control_action_event.clear()
     if defer:
         # Leave the disruptive action queued (event stays set) for a later pass.
@@ -347,8 +350,10 @@ def step_boot_client_bringup(ctx: LoopContext, fctx: "FactsContext") -> "Verdict
     ladder each pass to bring up a client (preferred USB first, else onboard).
     The ladder ranks the same USB-before-onboard priority, so a
     USB adapter that finishes enumerating after boot is engaged on the pass it
-    appears; a healthy client makes the ladder HOLD (no thrash).  Only ACTIVATE_*
-    acts here — hotspot entry stays with step_boot_ap_entry after the grace window.
+    appears; a healthy client makes the ladder HOLD (no thrash).  A wedged
+    resettable USB gets its one budgeted reset (RESET_USB) before onboard is
+    tried, same as at runtime.  Only ACTIVATE_*/RESET_USB act here — hotspot
+    entry stays with step_boot_ap_entry after the grace window.
     """
     facts = fctx.facts
     boot_age_now = fctx.now - fctx.boot_time
@@ -362,7 +367,8 @@ def step_boot_client_bringup(ctx: LoopContext, fctx: "FactsContext") -> "Verdict
             and not transitioning):        # hold off while a job is in flight
         return ctx.Verdict.CONTINUE
     raction = ctx.next_recovery_action(ctx.STATE, ctx.gather_recovery_facts(facts))
-    if raction.kind in (ctx.RecoveryKind.ACTIVATE_USB, ctx.RecoveryKind.ACTIVATE_ONBOARD) \
+    if raction.kind in (ctx.RecoveryKind.ACTIVATE_USB, ctx.RecoveryKind.RESET_USB,
+                        ctx.RecoveryKind.ACTIVATE_ONBOARD) \
             and ctx.submit_client_activation(raction, facts):
         return ctx.Verdict.OWN_PASS
     return ctx.Verdict.CONTINUE
@@ -464,8 +470,11 @@ def step_publish_state(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
         if hctx.conn_ok:
             ctx.STATE.been_online_this_boot = True
             # A healthy pass ends the offline episode: reset the onboard-failure
-            # bound so a later failure gets a fresh set of attempts.
+            # bound so a later failure gets a fresh set of attempts, and clear
+            # the RESET_USB per-episode spend so a later wedge gets its one
+            # budgeted reset again.
             ctx.STATE.onboard_activation_failures = 0
+            ctx.RECOVERY_STATE.failover_reset_done.clear()
         if hctx.active_path_ok and not ctx.STATE.setup_mode:
             ctx.STATE.last_active_path_seen = hctx.now
             ctx.STATE.conn_reboot_retry_after = 0.0
@@ -556,7 +565,7 @@ def step_ethernet_wins(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
         with ctx.state_lock:
             active_wifi_ifname = ctx.STATE.active_client_ifname
             skip_disconnect = (
-                ctx.STATE.apply_in_progress or ctx.STATE.setup_mode or in_ap_for_eth
+                ctx.APPLY_STATE.apply_in_progress or ctx.STATE.setup_mode or in_ap_for_eth
             )
         # Drop the redundant Wi-Fi client so there is one deterministic path and
         # one mDNS address.  Deferred while streaming or while playback is

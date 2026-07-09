@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).parent.parent
 WEBUI_SRC = (REPO_ROOT / "core" / "autostream_webui.py").read_text(encoding="utf-8")
 WEBUI_API_SRC = (REPO_ROOT / "core" / "autostream_webui_api.py").read_text(encoding="utf-8")
 WIFI_NETWORK_SRC = (REPO_ROOT / "core" / "autostream_wifi_network.py").read_text(encoding="utf-8")
-WIFI_WATCHER_SRC = (REPO_ROOT / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+WIFI_WATCHER_SRC = (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
 # The Flask HTTP surface — including the per-boot control-token lifecycle — was
 # extracted to wifi_web.py (HTTP-extraction plan); the watcher wires/invokes it.
 WIFI_WEB_SRC = (REPO_ROOT / "platform" / "wifi_web.py").read_text(encoding="utf-8")
@@ -256,7 +256,17 @@ class TestSuiteCompleteness:
         """All WP-specific test files must be present in tests/."""
         tests_dir = REPO_ROOT / "tests"
         required = [
-            "test_p1_wifi_watcher.py",
+            "test_wifi_watcher_core.py",
+            "test_wifi_web_routes.py",
+            "test_wifi_hotspot_ctl.py",
+            "test_wifi_activation.py",
+            "test_wifi_recovery.py",
+            "test_wifi_recovery_deadphy.py",
+            "test_wifi_adoption.py",
+            "test_wifi_config.py",
+            "test_wifi_loop.py",
+            "test_wifi_status.py",
+            "test_wifi_mdns.py",
             "test_autostream_wifi_network.py",
             "test_dial_wifi_setup.py",
             "test_p4_deployment_policy.py",

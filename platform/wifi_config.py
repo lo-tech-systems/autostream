@@ -7,7 +7,7 @@ Configured-network reconnect and first-boot Wi-Fi profile import/migration for
 the Autostream Wi-Fi watcher.
 
 This module owns the two "which profile does NetworkManager know about, and
-which one is ours" concerns the watcher previously carried inline:
+which one is ours" concerns:
   * the steady-state reconnect path used by the runtime reliability handler
     (``connect_to_configured_wifi``), which is fire-and-forget and defers to
     the monitor loop for validation, and
@@ -17,8 +17,7 @@ which one is ours" concerns the watcher previously carried inline:
 
 Every function takes a :class:`ConfigContext` as its first argument — a narrow
 view of the watcher exposing only the constants and callables this module
-uses (the ``w`` seam narrowed, WP-11).  The watcher constructs the context
-once and passes it where the whole module used to go.
+uses.  The watcher constructs the context once and passes it in.
 ``autostream_wifi_network`` is imported directly because it is a shared
 module object (patching it affects both modules).
 """

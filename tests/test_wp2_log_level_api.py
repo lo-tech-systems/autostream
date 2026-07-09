@@ -278,6 +278,127 @@ class TestSendLogLevelPutJson:
 
 
 # ---------------------------------------------------------------------------
+# send_log_level_put_json — forwarding to the wifi watcher
+# ---------------------------------------------------------------------------
+
+class TestSendLogLevelPutJsonWatcherForwarding:
+    def _call(self, level: str, tmp_path, *, forward_return=False, forward_side_effect=None):
+        state = _make_state(str(tmp_path / "cfg.json"))
+        h = _make_handler()
+        sent = []
+        set_result = {
+            "ok": True, "level": level, "changed_by": "user",
+            "changed_at": None, "changed": True, "applied": {"nginx": True},
+        }
+
+        forward_kwargs = {}
+        if forward_side_effect is not None:
+            forward_kwargs["side_effect"] = forward_side_effect
+        else:
+            forward_kwargs["return_value"] = forward_return
+
+        with patch("autostream_log_policy.set_log_level", return_value=set_result), \
+             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))), \
+             patch("autostream_webui_api.forward_log_level_to_watcher", **forward_kwargs) as m_forward:
+            api_mod.send_log_level_put_json(h, state, {"level": level}, "user")
+
+        return sent, m_forward
+
+    def test_forwards_normalized_level_on_success(self, tmp_path):
+        sent, m_forward = self._call("debug", tmp_path, forward_return=True)
+        m_forward.assert_called_once_with("debug")
+        assert sent[0][1]["applied"]["wifi_watcher"] is True
+        # Existing applied entries are preserved alongside the new key.
+        assert sent[0][1]["applied"]["nginx"] is True
+
+    def test_forward_failure_still_returns_200(self, tmp_path):
+        sent, m_forward = self._call("info", tmp_path, forward_return=False)
+        assert sent[0][0] == 200
+        assert sent[0][1]["applied"]["wifi_watcher"] is False
+
+    def test_invalid_level_does_not_forward(self, tmp_path):
+        state = _make_state(str(tmp_path / "cfg.json"))
+        h = _make_handler()
+        sent = []
+        set_result = {"ok": False, "error": "Unsupported log level: 'verbose'"}
+
+        with patch("autostream_log_policy.set_log_level", return_value=set_result), \
+             patch("autostream_webui_api.send_browser_api_error", lambda h, c, e, **kw: sent.append((c, e))), \
+             patch("autostream_webui_api.forward_log_level_to_watcher") as m_forward:
+            api_mod.send_log_level_put_json(h, state, {"level": "verbose"}, "user")
+
+        m_forward.assert_not_called()
+        assert sent[0][0] == 400
+
+
+# ---------------------------------------------------------------------------
+# forward_log_level_to_watcher()
+# ---------------------------------------------------------------------------
+
+class TestForwardLogLevelToWatcher:
+    @pytest.mark.parametrize("app_level,watcher_level", [
+        ("spam", "debug"),
+        ("debug", "debug"),
+        ("info", "info"),
+        ("warning", "warning"),
+        ("log", "warning"),
+        ("fatal", "warning"),
+    ])
+    def test_mapping(self, app_level, watcher_level):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request",
+                   return_value=(200, {"ok": True, "queued": True})) as m_request:
+            assert api_mod.forward_log_level_to_watcher(app_level) is True
+        args, _ = m_request.call_args
+        assert args[0] == "POST"
+        assert args[1] == "/network_control"
+        assert args[2]["level"] == watcher_level
+
+    def test_debug_carries_ttl(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request",
+                   return_value=(200, {"ok": True})) as m_request:
+            api_mod.forward_log_level_to_watcher("debug")
+        body = m_request.call_args[0][2]
+        assert body["ttl_seconds"] == 3600
+
+    @pytest.mark.parametrize("app_level", ["info", "warning"])
+    def test_non_debug_has_no_ttl(self, app_level):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request",
+                   return_value=(200, {"ok": True})) as m_request:
+            api_mod.forward_log_level_to_watcher(app_level)
+        body = m_request.call_args[0][2]
+        assert "ttl_seconds" not in body
+
+    def test_unknown_level_returns_false_without_request(self):
+        with patch("autostream_webui_api._watcher_request") as m_request:
+            assert api_mod.forward_log_level_to_watcher("verbose") is False
+        m_request.assert_not_called()
+
+    def test_missing_token_returns_false_without_request(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value=""), \
+             patch("autostream_webui_api._watcher_request") as m_request:
+            assert api_mod.forward_log_level_to_watcher("info") is False
+        m_request.assert_not_called()
+
+    def test_request_exception_returns_false(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request", side_effect=OSError("refused")):
+            assert api_mod.forward_log_level_to_watcher("info") is False
+
+    def test_non_200_returns_false(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request", return_value=(503, {})):
+            assert api_mod.forward_log_level_to_watcher("info") is False
+
+    def test_missing_ok_true_returns_false(self):
+        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_webui_api._watcher_request", return_value=(200, {"ok": False})):
+            assert api_mod.forward_log_level_to_watcher("info") is False
+
+
+# ---------------------------------------------------------------------------
 # ConfigWebHandler.do_PUT routing
 # ---------------------------------------------------------------------------
 

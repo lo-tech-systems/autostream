@@ -89,6 +89,8 @@ install -m 0644 "$DEPLOY/core/autostream_mdns.py"     /opt/autostream/autostream
 install -m 0644 -o root -g root "$DEPLOY/core/autostream_wifi_network.py" \
     /opt/autostream/autostream_wifi_network.py
 # wifi_watcher's split sibling modules (imported beside it from /opt/autostream).
+install -m 0644 -o root -g root "$DEPLOY/platform/wifi_state.py" \
+    /opt/autostream/wifi_state.py
 install -m 0644 -o root -g root "$DEPLOY/platform/wifi_status.py" \
     /opt/autostream/wifi_status.py
 install -m 0644 -o root -g root "$DEPLOY/platform/wifi_recovery.py" \
@@ -116,7 +118,7 @@ install -m 0644 "$DEPLOY/dial/autostream_dial_control.py" \
     /opt/autostream/autostream_dial_control.py
 install -m 0755 "$DEPLOY/dial/autostream-dial-control" \
     /usr/local/bin/autostream-dial-control
-install -m 0755 "$DEPLOY/platform/wifi_watcher" /opt/autostream/autostream_wifi_watcher
+install -m 0755 "$DEPLOY/platform/wifi_watcher.py" /opt/autostream/autostream_wifi_watcher
 sed -i 's/\r$//' /opt/autostream/autostream_wifi_watcher
 
 deploy_admin

@@ -18,7 +18,8 @@ detect_install_version() {
 }
 
 install_os_packages() {
-    # Flask is system Python (outside venv) — see wifi_watcher source comment line 13.
+    # Flask is system Python (outside venv) — see the runtime note in
+    # platform/wifi_watcher.py's module docstring.
     # Offline-recovery packages are omitted here; install_recovery_packages() is
     # the single install site, called unconditionally for both fresh and update paths.
     apt-get install -y --no-install-recommends \

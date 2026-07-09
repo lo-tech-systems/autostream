@@ -313,7 +313,14 @@ def _load_wifi_web(env: dict | None = None) -> ModuleType:
         loader = importlib.machinery.SourceFileLoader(alias, str(WIFI_WEB_PATH))
         spec = importlib.util.spec_from_loader(alias, loader)
         mod = importlib.util.module_from_spec(spec)
-        loader.exec_module(mod)
+        # Register under alias before exec: the dataclass decorator on
+        # WebContext resolves its field annotations via sys.modules, so the
+        # module must be findable by name while it executes.
+        sys.modules[alias] = mod
+        try:
+            loader.exec_module(mod)
+        finally:
+            sys.modules.pop(alias, None)
     finally:
         for k, v in saved.items():
             if v is None:

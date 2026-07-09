@@ -49,7 +49,7 @@ fi
 # When --fetch-autostream is requested the installer will clone main anyway.
 # Bypass the release download so the installer and app code are always the same
 # version — mixing the release installer with main app files breaks when files
-# have moved between the two (e.g. platform/wifi_watcher vs old core/ layout).
+# have moved between the two (e.g. platform/wifi_watcher.py vs old core/ layout).
 for _arg in "$@"; do
   if [[ "${_arg}" == "--fetch-autostream" ]]; then
     repo_root="${STAGING_DIR}/src/main"

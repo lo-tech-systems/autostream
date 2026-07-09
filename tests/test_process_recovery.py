@@ -345,6 +345,67 @@ class TestOutputUsageStartup:
         monitor_client.assert_not_called()
 
 
+class TestStartupWifiWatcherForwarding:
+    def test_forwards_persisted_level_once(self):
+        """apply_startup_log_level's persisted level is forwarded to the watcher."""
+        cfg = MagicMock()
+        cfg.general.log_level = "debug"
+        settings = MagicMock()
+        settings.snapshot.return_value = cfg
+        settings.save_now.return_value = True
+
+        with patch.object(_core_mod, "stop_flag") as mock_flag, \
+             patch.object(_core_mod, "_install_signal_handlers"), \
+             patch.object(_core_mod, "setup_logging"), \
+             patch("autostream_log_policy.apply_startup_log_level"), \
+             patch("autostream_webui_api.forward_log_level_to_watcher",
+                   return_value=True) as m_forward, \
+             patch.object(_core_mod, "audit_static_system_facts"), \
+             patch.object(_core_mod, "_ensure_playback_tracker"), \
+             patch.object(_core_mod, "get_install_state", return_value={}), \
+             patch.object(_core_mod, "remove_avahi_playing_service"), \
+             patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(_core_mod, "_start_output_usage_poller"), \
+             patch.object(_core_mod, "MonitorClient") as monitor_client, \
+             patch.object(_core_mod, "_cleanup_discovery"):
+            mock_flag.is_set.return_value = True
+            avahi_path.exists.return_value = False
+
+            _core_mod.run_autostream("unused.json", settings=settings)
+
+        m_forward.assert_called_once_with("debug")
+        monitor_client.assert_not_called()
+
+    def test_forward_failure_does_not_raise(self):
+        """A forwarding failure at startup must not interrupt coordinator startup."""
+        cfg = MagicMock()
+        cfg.general.log_level = "info"
+        settings = MagicMock()
+        settings.snapshot.return_value = cfg
+        settings.save_now.return_value = True
+
+        with patch.object(_core_mod, "stop_flag") as mock_flag, \
+             patch.object(_core_mod, "_install_signal_handlers"), \
+             patch.object(_core_mod, "setup_logging"), \
+             patch("autostream_log_policy.apply_startup_log_level"), \
+             patch("autostream_webui_api.forward_log_level_to_watcher",
+                   side_effect=RuntimeError("watcher down")), \
+             patch.object(_core_mod, "audit_static_system_facts"), \
+             patch.object(_core_mod, "_ensure_playback_tracker"), \
+             patch.object(_core_mod, "get_install_state", return_value={}), \
+             patch.object(_core_mod, "remove_avahi_playing_service"), \
+             patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(_core_mod, "_start_output_usage_poller"), \
+             patch.object(_core_mod, "MonitorClient") as monitor_client, \
+             patch.object(_core_mod, "_cleanup_discovery"):
+            mock_flag.is_set.return_value = True
+            avahi_path.exists.return_value = False
+
+            _core_mod.run_autostream("unused.json", settings=settings)  # must not raise
+
+        monitor_client.assert_not_called()
+
+
 class TestStaticSystemFactsStartupAudit:
     def test_audit_runs_after_logging_and_before_webui_startup(self):
         import inspect

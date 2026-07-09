@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher"
+WIFI_WATCHER_PATH = REPO_ROOT / "platform" / "wifi_watcher.py"
 WIFI_CONFIG_PATH = REPO_ROOT / "platform" / "wifi_config.py"
 WIFI_WEB_PATH = REPO_ROOT / "platform" / "wifi_web.py"
 DIAL_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_dial_wifi_watcher.service"
@@ -35,11 +35,11 @@ if _CORE not in sys.path:
 
 
 # ---------------------------------------------------------------------------
-# Helpers to load wifi_watcher as a module (it has no .py extension)
+# Helpers to load wifi_watcher as a module
 # ---------------------------------------------------------------------------
 
 def _load_wifi_watcher(env_overrides: dict | None = None) -> types.ModuleType:
-    """Import platform/wifi_watcher as a module with optional env overrides.
+    """Import platform/wifi_watcher.py as a module with optional env overrides.
 
     We reload on each call with a clean sys.modules entry so env vars set via
     os.environ take effect (module-level constants read env at import time).
@@ -276,7 +276,14 @@ def _load_wifi_web() -> types.ModuleType:
     loader = importlib.machinery.SourceFileLoader("wifi_web_dial_test", str(WIFI_WEB_PATH))
     spec = importlib.util.spec_from_loader("wifi_web_dial_test", loader)
     mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
+    # Register under its name before exec: the dataclass decorator on
+    # WebContext resolves its field annotations via sys.modules, so the
+    # module must be findable by name while it executes.
+    sys.modules["wifi_web_dial_test"] = mod
+    try:
+        loader.exec_module(mod)
+    finally:
+        sys.modules.pop("wifi_web_dial_test", None)
     return mod
 
 

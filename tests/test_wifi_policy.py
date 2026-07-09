@@ -5,7 +5,8 @@ wifi_policy directly, with no watcher / Flask / sysutils load, proving the
 decision core is genuinely standalone and effect-free (constraint 10).  State
 and facts are supplied as plain SimpleNamespace stand-ins; the per-adapter
 recovery facts are duck-typed (next_recovery_action reads only .healthy,
-.link_down, .quarantined, .noip_suppressed, .managed).
+.link_down, .quarantined, .noip_suppressed, .managed, .resettable,
+.reset_budget_ok).
 """
 
 from __future__ import annotations
@@ -114,20 +115,23 @@ class TestNextRecoveryAction:
     P = wifi_policy.HotspotPurpose
 
     def _arf(self, ifname, *, is_usb=False, is_builtin=False, healthy=False,
-             link_down=False, quarantined=False, noip_suppressed=False, managed=True):
+             link_down=False, quarantined=False, noip_suppressed=False, managed=True,
+             resettable=False, reset_budget_ok=False):
         return SimpleNamespace(
             ifname=ifname, is_usb=is_usb, is_builtin=is_builtin, managed=managed,
             healthy=healthy, link_down=link_down, quarantined=quarantined,
-            noip_suppressed=noip_suppressed,
+            noip_suppressed=noip_suppressed, resettable=resettable,
+            reset_budget_ok=reset_budget_ok,
         )
 
     def _rf(self, records, *, onboard="", usb=(), preferred_usb="", hotspot="",
-            active="", saved=True, wired_ok=False, now=1000.0):
+            active="", saved=True, wired_ok=False, now=1000.0, failover_reset_spent=False):
         return wifi_policy.RecoveryFacts(
             adapters_by_ifname={r.ifname: r for r in records},
             onboard_ifname=onboard, usb_ifnames=tuple(usb),
             preferred_usb_ifname=preferred_usb, hotspot_ifname=hotspot,
             active_ifname=active, saved_configured=saved, wired_ok=wired_ok, taken_at=now,
+            failover_reset_spent=failover_reset_spent,
         )
 
     def _act(self, facts):
@@ -186,6 +190,89 @@ class TestNextRecoveryAction:
         usb = self._arf("wlan1", is_usb=True, link_down=True)
         f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1")
         assert self._act(f).kind is self.K.HOLD
+
+    # ---- RESET_USB ladder rung (1c) ----
+
+    def test_wedged_resettable_usb_outranks_activate_onboard(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.RESET_USB and a.ifname == "wlan1"
+
+    def test_falls_through_when_not_resettable(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=False, reset_budget_ok=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_budget_spent(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=False)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_quarantined_suppressed_or_disabled(self):
+        # A quarantined/suppressed/disabled adapter is never selected as
+        # preferred_usb upstream (gather_recovery_facts filters it out); model
+        # that here with preferred_usb="" so the ladder sees no USB candidate.
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True, quarantined=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_episode_reset_already_spent(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1", failover_reset_spent=True)
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_link_not_down_holds_no_ip(self):
+        # Carrier-up no-IP keeps HOLD usb_active_no_ip (rung 1b) regardless of
+        # resettable/reset_budget_ok — RESET_USB never fires for that class.
+        usb = self._arf("wlan1", is_usb=True, link_down=False, healthy=False,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.HOLD and a.reason == "usb_active_no_ip"
+
+    def test_never_returned_when_wired_ok(self):
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1",
+                     wired_ok=True)
+        assert self._act(f).kind is self.K.HOLD
+
+    def test_never_returned_when_unconfigured(self):
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1",
+                     saved=False)
+        a = self._act(f)
+        assert a.kind is self.K.ENTER_HOTSPOT
+
+    def test_never_returned_when_wedged_usb_is_hotspot_adapter(self):
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1",
+                     hotspot="wlan1")
+        a = self._act(f)
+        assert a.kind is not self.K.RESET_USB
+        assert a.kind is self.K.HOLD and a.reason == "usb_only_defer_reset_ladder"
 
     def test_no_w_seam(self):
         assert "w" not in inspect.signature(wifi_policy.next_recovery_action).parameters
@@ -409,3 +496,87 @@ class TestNextRoamTarget:
         table = {"CUR": {"ssid": "Home", "signal": 50, "last_seen": 100.0,
                          "fail_count": 0, "quarantined_until": None}}
         assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_below_floor_rejected_despite_margin(self):
+        # The field incident verbatim: 30 -> 47 clears ROAM_LOW_MARGIN but the
+        # candidate is well below BSSID_ROAM_MIN_SIGNAL.
+        table = self._table(current_signal=30, candidate_signal=47)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_below_floor_rejected_on_full_margin_arm(self):
+        table = self._table(current_signal=30, candidate_signal=wifi_policy.BSSID_ROAM_MIN_SIGNAL - 1)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_at_floor_with_margin_accepted(self):
+        table = self._table(current_signal=30, candidate_signal=wifi_policy.BSSID_ROAM_MIN_SIGNAL)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == "CAND"
+
+    def test_above_floor_with_low_signal_margin_accepted(self):
+        # current satisfies the low-signal arm (<= ROAM_LOW_SIGNAL) and the
+        # candidate clears both the relaxed margin and the absolute floor.
+        current = wifi_policy.ROAM_LOW_SIGNAL - 1
+        candidate = current + wifi_policy.ROAM_LOW_MARGIN
+        assert candidate == wifi_policy.BSSID_ROAM_MIN_SIGNAL
+        table = self._table(current_signal=current, candidate_signal=candidate)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == "CAND"
+
+    def test_custom_min_signal_overrides_default_floor(self):
+        table = self._table(current_signal=30, candidate_signal=47)
+        assert wifi_policy.next_roam_target(
+            table, "CUR", 100.0, False, None, min_signal=40) == "CAND"
+
+
+class TestUpdateRoamStreak:
+    def test_empty_candidate_resets(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 2, "last_seen": 100.0}
+        assert wifi_policy.update_roam_streak(streak, "wlan1", "", 200.0) == {}
+
+    def test_same_candidate_increments_and_refreshes(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+        result = wifi_policy.update_roam_streak(streak, "wlan1", "AA:BB", 200.0)
+        assert result == {"ifname": "wlan1", "bssid": "AA:BB", "count": 2, "last_seen": 200.0}
+
+    def test_different_candidate_resets_to_one(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 3, "last_seen": 100.0}
+        result = wifi_policy.update_roam_streak(streak, "wlan1", "CC:DD", 200.0)
+        assert result == {"ifname": "wlan1", "bssid": "CC:DD", "count": 1, "last_seen": 200.0}
+
+    def test_different_interface_resets_to_one(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 3, "last_seen": 100.0}
+        result = wifi_policy.update_roam_streak(streak, "wlan2", "AA:BB", 200.0)
+        assert result == {"ifname": "wlan2", "bssid": "AA:BB", "count": 1, "last_seen": 200.0}
+
+    def test_empty_streak_starts_at_one(self):
+        result = wifi_policy.update_roam_streak({}, "wlan1", "AA:BB", 100.0)
+        assert result == {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+
+    def test_does_not_mutate_input_streak(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+        wifi_policy.update_roam_streak(streak, "wlan1", "AA:BB", 200.0)
+        assert streak == {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+
+
+class TestBssidTablesAccessors:
+    def test_bssid_table_for_interface_creates_empty_table(self):
+        tables = {}
+        table = wifi_policy.bssid_table_for_interface(tables, "wlan1")
+        assert table == {}
+        assert tables == {"wlan1": {}}
+
+    def test_bssid_table_for_interface_returns_same_table_on_repeat_calls(self):
+        tables = {}
+        table1 = wifi_policy.bssid_table_for_interface(tables, "wlan1")
+        table1["AA:BB"] = {"ssid": "Home"}
+        table2 = wifi_policy.bssid_table_for_interface(tables, "wlan1")
+        assert table2 == {"AA:BB": {"ssid": "Home"}}
+
+    def test_bssid_table_for_interface_keeps_interfaces_separate(self):
+        tables = {}
+        wifi_policy.bssid_table_for_interface(tables, "wlan0")["X"] = 1
+        wifi_policy.bssid_table_for_interface(tables, "wlan1")["Y"] = 2
+        assert tables == {"wlan0": {"X": 1}, "wlan1": {"Y": 2}}
+
+    def test_clear_bssid_tables_drops_all_interfaces(self):
+        tables = {"wlan0": {"X": 1}, "wlan1": {"Y": 2}}
+        wifi_policy.clear_bssid_tables(tables)
+        assert tables == {}

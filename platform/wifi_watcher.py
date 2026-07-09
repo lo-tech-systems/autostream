@@ -3,117 +3,49 @@
 
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
-This module should be run continuously as root. It monitors (and logs) the network
-connection status of the device.
+Runs continuously as root, monitoring and logging the device's network
+connectivity. Executed directly via its shebang on the system Python
+interpreter (not the app venv), so the WiFi setup/recovery path survives a
+broken venv; Flask is installed at the system level by the installer. Always
+serves the setup page — the NGINX config routes browser traffic to this
+service or to the main web UI by the presence of ``/tmp/apmode``. See
+``docs/WIFI-WATCHER.md`` for the full behavioural spec (AP-mode purpose
+table, connection-reliability timers, reboot domains, first-boot import).
 
-Runtime note:
-This service is intentionally executed directly via its shebang using the system
-Python interpreter, rather than the autostream application venv. That keeps the
-WiFi setup/recovery path available even if the venv is missing or broken, so
-Flask must be installed at the system level by the installer.
+== Module map ==
 
-== Access Point Mode ==
+This module is the star-topology hub: it owns ``STATE``/``state_lock``, the
+constants, the logger, AP start/stop primitives, the credential-apply
+candidate sequence, per-pass fact gathering, the monitor-loop driver, and
+``__main__``. Every other concern lives in a deploy-together sibling module
+that takes a narrow context exposing only the STATE/constants/callables it
+needs — none of them import this module: ``wifi_state`` (data-only leaf:
+``NetworkMonitorState``/``state_lock`` and the per-concern state fragments),
+``wifi_policy`` (pure decision core), ``wifi_loop`` (ordered step_*
+handlers), ``wifi_activation`` (off-thread worker), ``wifi_recovery``
+(dead-PHY/reset/reboot-guard ledgers), ``wifi_adoption`` (USB
+fallback/adoption/BSSID roam), ``wifi_config`` (configured-network reconnect,
+first-boot import), ``wifi_status`` (status snapshot), ``wifi_mdns`` (avahi
+repair/re-announce), ``wifi_hotspot`` (AP controller), ``wifi_nm`` (bounded
+nmcli client), ``wifi_web`` (Flask surface). ``build_contexts()``, called
+once at import time, constructs every context in dependency order and binds
+it to a module global of the same name (``LOOP_CTX``, ``ACTIVATION_CTX``,
+...).
 
-If the WiFi is unconfigured or remains disconnected for 1 minute after boot, it is put into
-AP mode with a captive portal that enables the user to easily connect the Pi to the WiFi.
+== State machine ==
 
-The hotspot is a single parameterised state, HOTSPOT(purpose), whose entry/exit policy is
-read from one five-row purpose table (PURPOSE_TABLE) rather than a soup of booleans:
+The operating mode is an explicit ``wifi_policy.Mode`` published as
+``device.mode``; hotspot entry/exit policy is ``wifi_policy.PURPOSE_TABLE``.
+Two pure classifiers in ``wifi_policy`` — ``next_mode`` (forward mode) and
+``next_recovery_action`` (Ethernet > preferred USB > onboard > hotspot
+priority ladder) — take state/facts snapshots and return decisions with no
+STATE mutation, subprocess, or other effect; the loop applies each result.
 
-  - FIRST_RUN (unconfigured): runs indefinitely until the user configures a network or
-        usable wired ethernet appears.  Nothing saved to probe for.
-  - BOOT_RECOVERY (configured, offline at boot): runs for up to 30 minutes but probes for
-        the saved network's return every pass and leaves as soon as it reconnects — so a
-        device whose router booted slower than the Pi recovers promptly.
-  - USB_LOSS_RECOVERY (configured, lost its client path at runtime): same 30-minute,
-        probe-for-return policy.
-  - EXPLICIT_RECONFIGURE / MANUAL (user-initiated): 30 minutes, not suppressed by ethernet.
-        These probe for the saved network too, but only after a HOTSPOT_PROBE_GRACE window
-        (15 min) so the watcher does not rejoin the network the user opened the portal to
-        change before they have selected a new one.  EXPLICIT_RECONFIGURE still rolls back to
-        the previous network at the 30-minute deadline if the user never completes setup.
+== Threading model ==
 
-There is no once-per-boot AP budget: the 30-minute session lifetime is the only rate limit,
-so a recovery hotspot is available whenever the device is offline.  A failed
-WiFi configuration attempt simply re-enters the hotspot.
-
-If a wired ethernet path is usable (carrier plus a valid non-link-local IPv4 address),
-automatic-purpose hotspots (FIRST_RUN / BOOT_RECOVERY / USB_LOSS_RECOVERY) are suppressed.
-A carrier-only cable is reported as a fact but does not count as a usable path.  A
-user-initiated hotspot (EXPLICIT_RECONFIGURE / MANUAL) is left up — it exists to connect a
-new network, so ethernet appearing does not close it.
-
-On hardware without a built-in radio, the setup hotspot uses a managed USB adapter. With multiple
-USB adapters, it prefers a USB adapter that is not the active WiFi client so a second radio can keep
-the setup hotspot reachable during credential retries.
-
-== Connection Reliability ==
-
-If the WiFi is configured and usable wired ethernet is down, the script monitors the network
-health by monitoring the kernel's view of the default gateway. If this goes offline for more
-than 5 minutes, the script trys to reconnect to the network periodically.
-
-When usable wired ethernet is present it wins regardless of subnet: the watcher disconnects the
-idle WiFi client and runs on ethernet to leave a single deterministic network path and mDNS
-address. The only gate is playback — switching the active interface changes the
-appliance IP and would break an in-flight stream, so the disconnect is deferred while playback
-is active or uncertain (and while apply/setup work is in progress). If ethernet later drops, the
-watcher attempts a prompt reconnect on entry to the offline-reconnecting state (no 5-minute wait).
-
-If the gateway remains unreachable for more than 30 minutes, the script will reboot the device.
-Whilst this seems aggressive, the WiFi chipset in the Pi-Zero range is not great in terms
-of long periods of uptime so this is a defensive strategy. Music can't play if the device
-isn't on the network anyway.
-
-As a final safety net, if normal monitoring has not seen any usable non-hotspot WiFi or
-ethernet path for 12 hours, the watcher requests a guarded NetworkDown reboot. Setup/AP mode
-suspends this catch-all timer, and leaving setup/AP mode resets it.
-
-Note that this script always serves the setup page. The associated NGINX configuration
-controls which web server (this or autostream_webui.py) services requests via the presence
-(or not) of /tmp/apmode.
-
-== Module responsibility split ==
-
-This module owns recovery *policy/orchestration*: the state machine, timers,
-AP/setup transitions, apply/scan, fallback, dead-PHY recovery, and the runtime
-status snapshot. It is the star-topology hub that owns STATE, state_lock, the
-constants, and the logger. The Flask HTTP surface — page rendering, the app
-factory build_app(), all routes, and the loopback control-token/auth surface —
-lives in the deploy-together sibling wifi_web.py; this module wires the app at
-startup via ``app = wifi_web.build_app(_self_module())`` and drives the token
-lifecycle from __main__. Dead-PHY recovery lives in wifi_recovery.py and the
-status snapshot in wifi_status.py; both, like wifi_web, receive this module as
-``w`` across the seam and never import wifi_watcher.
-
-== Explicit state-machine model ==
-
-The operating mode is an explicit ``Mode`` (BOOT / ONLINE / OFFLINE_RECONNECTING
-/ HOTSPOT / REBOOT_PENDING), published as ``device.mode``.  All hotspot
-entry/exit policy is one five-row ``PURPOSE_TABLE`` keyed by ``HotspotPurpose``;
-the live session is a ``HotspotSession`` on STATE.  The decision core is **pure**
-and lives in ``platform/wifi_policy.py``: ``next_mode(state, facts)``, the
-``PURPOSE_TABLE`` lookups, and ``next_recovery_action`` take values in and return
-values out — no STATE mutation, no subprocess, no effects, no ``w`` seam.  The
-watcher re-exports those names and its loop *applies* the returned values each
-pass (setting ``STATE.mode``/``STATE.hotspot`` and invoking effects).  The
-adapter-remediation overlay (``wifi_recovery.diagnose_client_failure`` and the
-no-IP verdict) **emits events** (``ClientFailed`` / ``NeedReboot``); the loop
-consumes them and applies the connectivity transition.  Slow transitions run
-off-thread on the activation worker, gated by a load-bearing in-flight-job flag
-so at most one effectful transition is in flight at a time.
-
-A second pure classifier, ``next_recovery_action(state, recovery_facts)``, owns the
-*recovery priority ladder* — Ethernet > preferred USB > onboard client >
-hotspot-as-last-resort — over a per-pass ``RecoveryFacts`` snapshot built from the
-shared per-adapter facts in ``wifi_recovery.adapter_recovery_facts`` (health,
-carrier, reset budget, quarantine, no-IP).  It is the single source of the
-client-path-vs-hotspot decision.  A wedged USB with no onboard alternative is
-left to the dead-PHY reset/quarantine/reboot mechanics in ``wifi_recovery``.
-The invariant it encodes: a broken USB dongle must never trap the device in a
-30-minute hotspot on the only working radio — the onboard is tried as a client
-before hosting a recovery AP (boot entry) and is climbed back to from within a
-recovery hotspot (the exit edge).
+One monitor-loop thread, one activation worker thread, Flask on the main
+thread. ``STATE`` is guarded throughout by ``state_lock``; the ``transitioning``
+flag ensures at most one effectful connectivity transition is in flight.
 """
 
 import glob
@@ -133,6 +65,15 @@ from dataclasses import dataclass, field
 from autostream_sysutils import run_cmd, prime_gateway, reboot_system, get_system_hostname
 import autostream_wifi_network as wifi_net
 
+# Data-only leaf: NetworkMonitorState/state_lock, the per-concern state
+# fragments (ApplyState/ControlState/LogLevelState), and the plain rollback/
+# hotspot-session types.  Imports nothing else in this tree.
+from wifi_state import (
+    NetworkMonitorState, RollbackSnapshot, HotspotSession,
+    ApplyState, ControlState, LogLevelState, MdnsState, SnapshotState,
+    AdoptionState, state_lock,
+)
+
 # The watcher is deployed beside its split sibling modules (wifi_status.py,
 # wifi_recovery.py) in /opt/autostream.  Ensure that directory is importable
 # both in production (script run directly) and under the test loader.
@@ -140,40 +81,52 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+# Every sibling module below is deployed flat beside the watcher in
+# /opt/autostream and takes a narrow context exposing only the STATE,
+# constants and callables it needs; the dependency direction is strictly
+# hub-to-spoke, never the reverse.  build_contexts() (defined further down,
+# called once at the bottom of this module) constructs every context in
+# dependency order.
+
 # Pure connectivity policy: enums, the hotspot purpose table, and the mode /
-# recovery-ladder classifiers.  A standalone effect-free module; re-exported
-# below so existing `wifi_watcher.<name>` references and the `w` seam keep
-# working.
+# recovery-ladder classifiers.  A standalone effect-free module; the hub and
+# every context reference its names directly (`wifi_policy.<name>`).
 import wifi_policy
 
-# Multi-adapter fallback / runtime USB adoption / reconnect-saved episode
-# machinery.  A standalone sibling module (imports only wifi_policy,
-# wifi_recovery, wifi_activation, and the shared network helper); imported
-# early so ReconnectEpisode is available for the STATE dataclass below.
-import wifi_adoption
-
-# Flask presentation/HTTP surface (page rendering, app factory, captive/setup
-# routes).  Deployed beside the watcher in /opt/autostream; it takes this module
-# across the seam and never imports wifi_watcher.
-import wifi_web
-
-# The single bounded nmcli client (instantiated below once the timeout constants
-# exist).  Deployed beside the watcher; every nmcli invocation goes through it.
+# The single bounded nmcli client; every nmcli invocation goes through it.
 import wifi_nm
 
-# Hotspot mechanics (start/stop/rebuild/clear-stale sequencing + flag ordering).
-# Deployed beside the watcher; instantiated below once the seam is available.
+# Dead-PHY detection, reset/quarantine/no-IP ledgers, persistence, and the
+# persistent reboot guard.
+import wifi_recovery
+
+# Off-thread activation worker, job/result types, client_up_tail, and
+# activation-result application.
+import wifi_activation
+
+# Multi-adapter fallback / runtime USB adoption / reconnect-saved episode
+# machinery.
+import wifi_adoption
+
+# Configured-network reconnect and first-boot profile import/migration.
+import wifi_config
+
+# Runtime network-status snapshot construction/publishing.
+import wifi_status
+
+# Avahi mDNS hostname-drift repair and address-set re-announce debounce.
+import wifi_mdns
+
+# Hotspot mechanics (start/stop/rebuild/clear-stale sequencing + flag
+# ordering).
 import wifi_hotspot
 
+# Flask presentation/HTTP surface (page rendering, app factory, captive/setup
+# routes).
+import wifi_web
 
-def _self_module():
-    """Return this watcher module object for the split-module seam.
-
-    Works whether the watcher is run as a script (__main__) or loaded under an
-    alias by the test harness.  Defined early so the Flask app factory can be
-    wired at the original app-creation point.
-    """
-    return sys.modules.get(__name__) or sys.modules.get("__main__") or globals().get("__SELF__")
+# The ordered step_* monitor-loop handlers and their phase context types.
+import wifi_loop
 
 
 _DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
@@ -207,20 +160,18 @@ DNSMASQ_RUNTIME_PATH = os.environ.get(
 # Timers (all in seconds)
 NETWORK_MONITOR_INTERVAL = 15            # seconds between network checks
 
-BOOT_AP_GRACE = wifi_policy.BOOT_AP_GRACE  # if still offline after boot grace -> enter AP mode
 BOOT_AP_CUTOFF = 15 * 60                # ONLY allow *automatic* entry into AP mode within this many seconds of boot
 # AP mode lifetime for configured devices (fixed, not extended by web activity)
-# and the user-opened-hotspot probe grace now live in wifi_policy (they
-# parameterise PURPOSE_TABLE).  User-initiated hotspots (EXPLICIT_RECONFIGURE /
-# MANUAL) suppress the probe-for-saved-network-return for HOTSPOT_PROBE_GRACE
-# after entry: the user opened the portal to change networks and the old (saved)
-# SSID is almost always still in range, so probing immediately would rejoin —
-# and, on single-radio hardware, tear the hotspot down — before the user can
-# select a new network.  Automatic recovery purposes (BOOT_RECOVERY /
-# USB_LOSS_RECOVERY) use grace 0: they lost connectivity involuntarily and
-# should rejoin as soon as the network returns.
-AP_MAX_DURATION = wifi_policy.AP_MAX_DURATION
-HOTSPOT_PROBE_GRACE = wifi_policy.HOTSPOT_PROBE_GRACE
+# and the user-opened-hotspot probe grace live in wifi_policy (AP_MAX_DURATION,
+# HOTSPOT_PROBE_GRACE, BOOT_AP_GRACE; they parameterise PURPOSE_TABLE).
+# User-initiated hotspots (EXPLICIT_RECONFIGURE / MANUAL) suppress the
+# probe-for-saved-network-return for HOTSPOT_PROBE_GRACE after entry: the user
+# opened the portal to change networks and the old (saved) SSID is almost
+# always still in range, so probing immediately would rejoin — and, on
+# single-radio hardware, tear the hotspot down — before the user can select a
+# new network.  Automatic recovery purposes (BOOT_RECOVERY / USB_LOSS_RECOVERY)
+# use grace 0: they lost connectivity involuntarily and should rejoin as soon
+# as the network returns.
 NO_ACTIVE_PATH_REBOOT_AFTER = 12 * 60 * 60  # if no usable non-hotspot path for 12h -> reboot
 
 GW_DOWN_RECONNECT_AFTER = 5 * 60        # gateway unreachable for this long -> start reconnect attempts
@@ -236,12 +187,12 @@ RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery sc
 # costs nothing; the first scan for a newly stable candidate always runs
 # immediately (last is None -> due), and this interval only throttles *re*-scans.
 ADOPTION_SCAN_INTERVAL = 5 * 60         # seconds between saved-SSID adoption scans
-# USB BSSID survey cadence: the cheap self-scan (+ opportunistic idle onboard
-# scan) runs every BSSID_SURVEY_INTERVAL; the more expensive full USB rescan
-# (covers bands an idle onboard radio cannot see) runs only every
-# BSSID_USB_SURVEY_INTERVAL, and only while playback is idle.
+# USB BSSID survey cadence: the USB self-scan (+ opportunistic idle onboard
+# scan) runs every BSSID_SURVEY_INTERVAL.  It is a full rescan (eligible for
+# the proactive-roam candidate streak) only while playback is exactly False;
+# otherwise it is a cheap read that keeps the table fresh without advancing
+# or resetting the streak.
 BSSID_SURVEY_INTERVAL = 60
-BSSID_USB_SURVEY_INTERVAL = 15 * 60
 REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
 # Multi-adapter failure/adoption tuning.
@@ -279,14 +230,10 @@ WAIT_FOR_CONNECTION_INTERVAL = 2        # Poll interval for local IPv4 checks
 NMCLI_ACTIVATE_TIMEOUT = WAIT_FOR_CONNECTION_TIMEOUT  # `nmcli connection up`
 NMCLI_QUICK_TIMEOUT = 15                # modify / add / delete / device disconnect
 
-# The single bounded nmcli client: every nmcli invocation passes one of the two
-# timeouts above, so there is no unbounded NetworkManager code path.
-nm = wifi_nm.NMClient(NMCLI_ACTIVATE_TIMEOUT, NMCLI_QUICK_TIMEOUT)
-
-# The single source of hotspot mechanics.  Holds this module across the seam and
-# drives the AP primitives (start_ap_mode / stop_ap_mode / update_apmode_flag /
-# clear_apmode_flag / nm) at call time.
-hotspot_controller = wifi_hotspot.HotspotController(_self_module())
+# The single bounded nmcli client (built by build_contexts()): every nmcli
+# invocation passes one of the two timeouts above, so there is no unbounded
+# NetworkManager code path.
+nm: "wifi_nm.NMClient" = None  # type: ignore[assignment]
 
 # Avahi mDNS hostname monitoring
 AVAHI_CHECK_INTERVAL       = 60         # seconds between avahi mDNS hostname checks
@@ -346,48 +293,14 @@ _NON_DISRUPTIVE_ACTIONS = {
 
 # ** EXPLICIT STATE MODEL **
 #
-# These types are the explicit model the watcher runs on: pure data + pure
-# classifiers (no STATE mutation, no subprocess, no effects, no dependency on the
-# `w` seam), living in the standalone platform/wifi_policy.py module (re-exported
-# below).  next_mode() is the pure forward classifier; the loop applies its
+# The explicit model the watcher runs on — connectivity mode, hotspot purpose,
+# the purpose-policy row shape, and the five-row PURPOSE_TABLE — is pure data
+# plus pure classifiers (no STATE mutation, no subprocess, no effects, no
+# dependency on any watcher seam) living in platform/wifi_policy.py.
+# wifi_policy.next_mode() is the pure forward classifier; the loop applies its
 # result by setting STATE.mode each pass, and the mode is published as
-# device.mode.
-
-
-# Connectivity mode, hotspot purpose, the purpose-policy row shape, and the
-# five-row PURPOSE_TABLE now live in the pure wifi_policy module; re-exported
-# here so existing wifi_watcher.<name> references (and tests) keep working.
-Mode = wifi_policy.Mode
-HotspotPurpose = wifi_policy.HotspotPurpose
-PurposePolicy = wifi_policy.PurposePolicy
-PURPOSE_TABLE = wifi_policy.PURPOSE_TABLE
-
-
-@dataclass(frozen=True)
-class RollbackSnapshot:
-    """Rollback target for an EXPLICIT_RECONFIGURE session (mirrors rollback_* fields)."""
-    connection_name: str
-    connection_uuid: str
-    adapter_mac: str
-
-
-@dataclass
-class HotspotSession:
-    """The live hotspot session: purpose + entry time (+ rollback for reconfigure).
-
-    deadline / eth_suppressible / probes_return are not stored here — they are
-    looked up in PURPOSE_TABLE[purpose] so policy lives in exactly one place.
-    """
-    purpose: HotspotPurpose
-    entered_at: float
-    rollback: Optional[RollbackSnapshot] = None   # only EXPLICIT_RECONFIGURE
-
-
-# A reconnect-saved episode: restores a saved/rollback profile across passes
-# (one single-target activation job per pass, advanced on the result).  Lives
-# in wifi_adoption.py; re-exported so the STATE field annotation below and
-# existing `wifi_watcher.ReconnectEpisode` references keep working.
-ReconnectEpisode = wifi_adoption.ReconnectEpisode
+# device.mode.  RollbackSnapshot and HotspotSession (STATE.hotspot) are
+# plain data types defined in wifi_state.py.
 
 
 logger = logging.getLogger(__name__)
@@ -444,7 +357,7 @@ def _setup_logging() -> None:
     # Record the startup/default runtime level name for the status snapshot and
     # for reverting temporary levels.  Only the runtime-settable names are
     # carried verbatim; anything else (fatal/log/spam) reports as "info".
-    STATE.default_log_level_name = env_level if env_level in RUNTIME_LOG_LEVELS else "info"
+    LOG_STATE.default_log_level_name = env_level if env_level in RUNTIME_LOG_LEVELS else "info"
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -474,134 +387,18 @@ def _setup_logging() -> None:
             "Failed to initialise file logging (%s); continuing with stdout only.", e
         )
 
-@dataclass
-class NetworkMonitorState:
-    # Link state (reported via /status and UI)
-    wifistate: str = "unknown"        # "configured" / "unconfigured" / "unknown"
-    wiredstate: str = "unknown"       # "connected" / "disconnected" / "unknown"
-    connectivity_ok: bool = False     # "healthy" using the same validation logic as initial wifi checks
-    # Consecutive *soft* unhealthy passes for the connectivity_ok down-debounce;
-    # reset to 0 on any healthy pass or a hard failure.
-    conn_unhealthy_checks: int = 0
-    # True once the device has been ONLINE at least once this boot.  A
-    # runtime connectivity loss after this must be handled by the debounced
-    # runtime paths, never by re-entering the boot-recovery rung.
-    been_online_this_boot: bool = False
-
-    # Setup / AP state.  ``setup_mode`` is the "a hotspot session is active"
-    # boolean read across the modules and tests; ``hotspot`` is the authoritative
-    # HotspotSession.  There is no once-per-boot AP budget: the 30-minute session
-    # lifetime is the rate limit.
-    setup_mode: bool = False
-    hotspot: "Optional[HotspotSession]" = None
-    # Rejoin prompt (per hotspot session): set when the saved SSID becomes visible
-    # during a session with a client associated to the AP, so the setup page can
-    # offer "rejoin or keep reconfiguring" instead of the watcher silently yanking
-    # the AP.  ``rejoin_dismissed`` records the user choosing to keep
-    # reconfiguring, which suppresses the probe/modal for the rest of the session.
-    # All three reset on session entry/exit.
-    saved_ssid_visible: bool = False
-    saved_ssid_name: str = ""
-    rejoin_dismissed: bool = False
-    # Active reconnect-saved episode (single-target-per-pass restore), or None.
-    reconnect_episode: "Optional[ReconnectEpisode]" = None
-    # Authoritative connectivity mode, applied by the loop each pass from the
-    # pure next_mode() classifier and published as device.mode.
-    mode: "Mode" = field(default_factory=lambda: Mode.BOOT)
-
-    # Timers (monotonic seconds)
-    boot_time: Optional[float] = None
-    last_active_path_seen: Optional[float] = None
-
-    # Degradation tracking for "healthy connectivity"
-    conn_down_start: Optional[float] = None
-    last_reconnect_attempt: Optional[float] = None
-    # Last time a recovery hotspot scanned for the saved SSID (scan gate).
-    last_recovery_scan: Optional[float] = None
-    # Last time runtime USB adoption scanned the candidate for the committed SSID
-    # (scan gate).
-    last_adoption_scan: Optional[float] = None
-    # Reboot-request throttle: monotonic time before which another reboot request is
-    # suppressed.  0.0 = unrestricted; float('inf') = accepted and permanent (reboot
-    # issued); any other value = retry permitted after that time.
-    conn_reboot_retry_after: float = 0.0
-
-    # ---- WiFi apply workflow / wait-page status ----
-    apply_in_progress: bool = False
-    # idle | applying | ok | failed
-    last_apply_result: str = "idle"
-    # short error code/message (e.g. nmcli-failed, no-local-ip)
-    last_apply_error: str = ""
-
-    # ---- Avahi mDNS hostname monitoring ----
-    avahi_hostname: Optional[str] = None
-    avahi_mismatch_start: Optional[float] = None
-    last_avahi_restart: Optional[float] = None
-    last_avahi_handover_restart: Optional[float] = None
-    avahi_restart_count: int = 0
-
-    # ---- mDNS host-record re-announce on address-set changes ----
-    # Set of (ifname, ipv4) the host currently publishes; None until first observed.
-    mdns_address_set: Optional[frozenset] = None
-    # Monotonic time the published address set last changed (debounce anchor).
-    mdns_address_changed_at: Optional[float] = None
-    # Explicit re-announce nudge from an orchestrated handover.
-    mdns_reannounce_pending: bool = False
-
-    # ---- Off-thread activation worker ----
-    # Set when an activation job is in flight on the worker and cleared when its
-    # result is applied at pass top.  While set, handlers that would start a
-    # conflicting connectivity/AP transition hold off (one effectful transition at
-    # a time); monitoring, status publishing and non-disruptive control actions
-    # keep running.
-    transitioning: bool = False
-    # Async onboard-activation failures this offline episode (reset on a healthy
-    # pass).  When it reaches ONBOARD_ACTIVATION_MAX_FAILURES the onboard is no
-    # longer offered as a client rung, so the ladder falls to the hotspot.
-    onboard_activation_failures: int = 0
-
-    # ---- Multi-adapter failure / adoption ----
-    using_builtin_fallback: bool = False
-    active_client_ifname: str = ""
-    active_client_mac: str = ""
-    pending_usb_adoption_mac: Optional[str] = None
-    pending_usb_adoption_checks: int = 0
-    last_detected_adapter_macs: Optional[frozenset] = None
-
-    # ---- USB BSSID ownership (roaming) ----
-    bssid_table: dict = field(default_factory=dict)
-    last_roam_or_activation: Optional[float] = None
-    last_bssid_pin: dict = field(default_factory=dict)
-    last_bssid_survey_at: Optional[float] = None
-    last_bssid_usb_full_survey_at: Optional[float] = None
-
-    # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
-    # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-
-    # disable ledgers live on RECOVERY_STATE (a wifi_recovery.RecoveryState),
-    # shared with wifi_status for the status snapshot.
-
-    # ---- Local control API ----
-    pending_control_action: str = ""
-    control_in_progress: bool = False
-    last_control_action: str = ""
-    last_control_result: str = ""
-    last_control_error: str = ""
-
-    # ---- Runtime log-level control ----
-    pending_control_params: dict = field(default_factory=dict)
-    temporary_log_level: str = ""
-    temporary_log_level_until: Optional[float] = None
-    default_log_level_name: str = "info"
-
-    # ---- Runtime network-status snapshot ----
-    network_status_snapshot: Optional[dict] = None
-    network_status_updated_at: Optional[float] = None
-
-
-STATE = NetworkMonitorState()
-
-# Synchronisation primitive for shared state
-state_lock = threading.Lock()
+# The shared connectivity-core state (wifi_state.NetworkMonitorState) plus the
+# per-concern fragments split out of it.  All seven objects are guarded by the
+# single wifi_state.state_lock; build_contexts() threads each fragment only to
+# the contexts that read or write it.  The mode default is supplied here (not
+# in wifi_state, which does not import wifi_policy).
+STATE = NetworkMonitorState(mode=wifi_policy.Mode.BOOT)
+APPLY_STATE = ApplyState()
+CONTROL_STATE = ControlState()
+LOG_STATE = LogLevelState()
+MDNS_STATE = MdnsState()
+SNAPSHOT_STATE = SnapshotState()
+ADOPTION_STATE = AdoptionState()
 
 # Serialise AP start/stop transitions
 ap_mode_lock = threading.Lock()
@@ -698,16 +495,59 @@ def hotspot_station_count(ifname: str) -> Optional[int]:
     return sum(1 for line in r.stdout.splitlines()
                if line.strip().lower().startswith("station "))
 
-# Build the Flask app via the wifi_web factory (HTTP-extraction plan).  All
-# routes (captive-portal/setup and the loopback control/auth surface) live in
-# wifi_web; keeping wifi_watcher.app importable here preserves the Flask-test-
-# client tests and the __main__ app.run() startup.
-app = wifi_web.build_app(_self_module())
+# The Flask app is built from WEB_CTX further down, once every callable the
+# routes need is defined; wifi_watcher.app stays importable there for the
+# Flask-test-client tests and the __main__ app.run() startup.
 
 # ** LOGGING **
 
-_last_logged_values: dict[str, object] = {}
-_last_throttled_log: dict[str, float] = {}
+class LogDedupCache:
+    """The caches behind log_on_change/log_throttled — logging infrastructure,
+    not watcher domain state.  Unlocked, best-effort (a race at most emits one
+    extra line); every access here matches the module-global semantics this
+    replaced.
+    """
+
+    def __init__(self) -> None:
+        self._last_logged_values: dict = {}
+        self._last_throttled_log: dict = {}
+
+    def on_change(self, key: str, value: object, msg: str, level: int = logging.INFO) -> None:
+        """Log msg at *level* only when (key -> value) changes (semantic transition)."""
+        prev = self._last_logged_values.get(key, object())
+        if prev != value:
+            self._last_logged_values[key] = value
+            logger.log(level, "%s", msg)
+
+    def throttled(self, key: str, msg: str, *, interval: float,
+                  level: int = logging.WARNING, now: "Optional[float]" = None) -> bool:
+        """Log msg at most once per *interval* seconds per *key* (time-window throttle).
+
+        The shared rate-limiter for a condition that stays true across passes.
+        Returns True when it logged this call.
+        """
+        if now is None:
+            now = time.monotonic()
+        prev = self._last_throttled_log.get(key)
+        if prev is None or (now - prev) >= interval:
+            self._last_throttled_log[key] = now
+            logger.log(level, "%s", msg)
+            return True
+        return False
+
+    def reset_key(self, key: str) -> None:
+        """Drop a tracked transition *key* so its next occurrence logs again,
+        without emitting a spurious transition line itself.
+        """
+        self._last_logged_values.pop(key, None)
+
+    def clear(self) -> None:
+        """Drop every tracked key (test isolation between passes/episodes)."""
+        self._last_logged_values.clear()
+        self._last_throttled_log.clear()
+
+
+_log_dedup = LogDedupCache()
 
 
 # Log de-duplication — three complementary mechanisms, one job each.
@@ -721,10 +561,7 @@ _last_throttled_log: dict[str, float] = {}
 #     hammering while a persistent condition holds).  Use for repeated warnings.
 def log_on_change(key: str, value: object, msg: str, level: int = logging.INFO) -> None:
     """Log msg at *level* only when (key -> value) changes (semantic transition)."""
-    prev = _last_logged_values.get(key, object())
-    if prev != value:
-        _last_logged_values[key] = value
-        logger.log(level, "%s", msg)
+    _log_dedup.on_change(key, value, msg, level)
 
 
 def log_throttled(key: str, msg: str, *, interval: float,
@@ -732,17 +569,9 @@ def log_throttled(key: str, msg: str, *, interval: float,
     """Log msg at most once per *interval* seconds per *key* (time-window throttle).
 
     The shared rate-limiter for a condition that stays true across passes.  Returns
-    True when it logged this call.  Unlocked module state, matching log_on_change
-    (best-effort; a race at most emits one extra line).
+    True when it logged this call.
     """
-    if now is None:
-        now = time.monotonic()
-    prev = _last_throttled_log.get(key)
-    if prev is None or (now - prev) >= interval:
-        _last_throttled_log[key] = now
-        logger.log(level, "%s", msg)
-        return True
-    return False
+    return _log_dedup.throttled(key, msg, interval=interval, level=level, now=now)
 
 
 # ** SETUP/AP MODE **
@@ -772,7 +601,7 @@ def update_apmode_flag(in_setup: bool) -> None:
         logger.warning("Error updating AP mode flag file %s: %s", AP_MODE_FLAG_PATH, e)
 
 
-def hotspot_purpose() -> "Optional[HotspotPurpose]":
+def hotspot_purpose() -> "Optional[wifi_policy.HotspotPurpose]":
     """Return the purpose of the active hotspot session, or None when not hosting."""
     with state_lock:
         return STATE.hotspot.purpose if STATE.hotspot else None
@@ -784,17 +613,18 @@ def _hotspot_blocks_eth(session) -> bool:
     EXPLICIT_RECONFIGURE / MANUAL hotspots are AP-to-connect-a-new-network and
     must not be torn down just because usable Ethernet appears.
     """
-    return session is not None and not PURPOSE_TABLE[session.purpose].eth_suppressible
+    return session is not None and not wifi_policy.PURPOSE_TABLE[session.purpose].eth_suppressible
 
 
-def enter_setup_mode(purpose: "HotspotPurpose", reason: str = "",
+def enter_setup_mode(purpose: "wifi_policy.HotspotPurpose", reason: str = "",
                      rollback: "Optional[RollbackSnapshot]" = None) -> None:
     """Transition into SetupMode and start the hotspot for *purpose*.
 
-    The session lifetime/exit policy is driven entirely by PURPOSE_TABLE[purpose]:
-    FIRST_RUN runs indefinitely; every other purpose runs for AP_MAX_DURATION
-    (30 min).  There is no once-per-boot budget — the recovery hotspot is
-    enterable whenever the device is offline.
+    The session lifetime/exit policy is driven entirely by
+    wifi_policy.PURPOSE_TABLE[purpose]: FIRST_RUN runs indefinitely; every
+    other purpose runs for wifi_policy.AP_MAX_DURATION (30 min).  There is no
+    once-per-boot budget — the recovery hotspot is enterable whenever the
+    device is offline.
     """
     with state_lock:
         if STATE.setup_mode:
@@ -1005,9 +835,13 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
         )
     except Exception as e:
         logger.error("Could not persist network state for '%s': %s", conn_name, e)
-    # A new committed SSID invalidates any BSSID table entries from the previous one.
+    # A new committed SSID invalidates any BSSID observations, the pending pin
+    # record, and any in-progress roam-candidate streak from the previous one,
+    # across every scanning interface.
     with state_lock:
-        wifi_policy.clear_bssid_table(STATE.bssid_table)
+        wifi_policy.clear_bssid_tables(ADOPTION_STATE.bssid_tables)
+        ADOPTION_STATE.last_bssid_pin = {}
+        ADOPTION_STATE.bssid_roam_candidate = {}
 
 
 def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
@@ -1053,7 +887,7 @@ def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
 
     # 6) validate via the shared tail (net-absent short-circuit -> local IPv4 ->
     #    interface-specific gateway); the net-absent fix reaches this path too.
-    ok = _validate_activation(ifname, r_up)
+    ok = wifi_activation._validate_activation(ACTIVATION_CTX, ifname, r_up)
     logger.info("Candidate %s: validated=%s", ifname, ok)
 
     if not ok:
@@ -1320,25 +1154,26 @@ def submit_apply_credentials(ssid: str, pw: str) -> bool:
     rolling the "applying" marking back first.
     """
     with state_lock:
-        if STATE.apply_in_progress:
+        if APPLY_STATE.apply_in_progress:
             return False
-        prev_result = STATE.last_apply_result
-        prev_error = STATE.last_apply_error
-        STATE.apply_in_progress = True
-        STATE.last_apply_result = "applying"
-        STATE.last_apply_error = ""
+        prev_result = APPLY_STATE.last_apply_result
+        prev_error = APPLY_STATE.last_apply_error
+        APPLY_STATE.apply_in_progress = True
+        APPLY_STATE.last_apply_result = "applying"
+        APPLY_STATE.last_apply_error = ""
     # The session success tail (set-active / leave-setup / avahi) is applied by
     # apply_activation_result on the loop thread — exactly as the
     # other job kinds — so carry the leave-setup flags the shared tail reads.
-    job = ActivationJob(epoch=_next_activation_epoch(), kind="apply_credentials",
-                        ifname="", ssid=ssid, password=pw,
-                        on_success_leaves_setup=True,
-                        leave_reason="WiFi client connection succeeded")
-    if not submit_activation_job(job):
+    job = wifi_activation.ActivationJob(
+        epoch=wifi_activation._next_activation_epoch(ACTIVATION_CTX), kind="apply_credentials",
+        ifname="", ssid=ssid, password=pw,
+        on_success_leaves_setup=True,
+        leave_reason="WiFi client connection succeeded")
+    if not wifi_activation.submit_activation_job(ACTIVATION_CTX, job):
         with state_lock:
-            STATE.apply_in_progress = False
-            STATE.last_apply_result = prev_result
-            STATE.last_apply_error = prev_error
+            APPLY_STATE.apply_in_progress = False
+            APPLY_STATE.last_apply_result = prev_result
+            APPLY_STATE.last_apply_error = prev_error
         return False
     return True
 
@@ -1368,12 +1203,12 @@ def apply_log_level(level: str, ttl_seconds: Optional[int]) -> None:
     now = time.monotonic()
     with state_lock:
         if ttl_seconds:
-            STATE.temporary_log_level = level
-            STATE.temporary_log_level_until = now + ttl_seconds
+            LOG_STATE.temporary_log_level = level
+            LOG_STATE.temporary_log_level_until = now + ttl_seconds
         else:
-            STATE.temporary_log_level = ""
-            STATE.temporary_log_level_until = None
-            STATE.default_log_level_name = level
+            LOG_STATE.temporary_log_level = ""
+            LOG_STATE.temporary_log_level_until = None
+            LOG_STATE.default_log_level_name = level
     if ttl_seconds:
         logger.info("Runtime log level changed to %s for %ds", level, ttl_seconds)
     else:
@@ -1385,12 +1220,12 @@ def revert_expired_log_level(now: Optional[float] = None) -> None:
     if now is None:
         now = time.monotonic()
     with state_lock:
-        until = STATE.temporary_log_level_until
+        until = LOG_STATE.temporary_log_level_until
         if until is None or now < until:
             return
-        default = STATE.default_log_level_name or "info"
-        STATE.temporary_log_level = ""
-        STATE.temporary_log_level_until = None
+        default = LOG_STATE.default_log_level_name or "info"
+        LOG_STATE.temporary_log_level = ""
+        LOG_STATE.temporary_log_level_until = None
     logging.getLogger().setLevel(RUNTIME_LOG_LEVELS.get(default, logging.INFO))
     logger.info("Runtime log level reverted to %s", default)
 
@@ -1399,9 +1234,9 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
     """Consume one queued control action in the monitor loop."""
     params = params or {}
     with state_lock:
-        STATE.control_in_progress = True
-        STATE.last_control_action = action
-        STATE.last_control_error = ""
+        CONTROL_STATE.control_in_progress = True
+        CONTROL_STATE.last_control_action = action
+        CONTROL_STATE.last_control_error = ""
     try:
         if action == "start_setup":
             start_explicit_setup()
@@ -1414,13 +1249,14 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
                 already_in_ap = STATE.setup_mode
             if not already_in_ap:
                 enter_setup_mode(
-                    HotspotPurpose.MANUAL,
+                    wifi_policy.HotspotPurpose.MANUAL,
                     reason=f"manual_request: {params.get('reason') or 'UserRequest'}")
             result = "ok"
         elif action == "reconnect_saved":
             # Start an async episode (single-target restore per pass); "ok" here
             # means the episode was accepted, not that the join has completed.
-            result = "ok" if start_reconnect_saved_episode("retain_hotspot") else "failed"
+            result = "ok" if wifi_adoption.start_reconnect_saved_episode(
+                ADOPTION_CTX, "retain_hotspot") else "failed"
         elif action == "set_log_level":
             apply_log_level(params.get("level"), params.get("ttl_seconds"))
             result = "ok"
@@ -1439,10 +1275,10 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
         logger.warning("Control action '%s' raised: %s", action, e)
         result = "failed"
         with state_lock:
-            STATE.last_control_error = str(e)
+            CONTROL_STATE.last_control_error = str(e)
     with state_lock:
-        STATE.control_in_progress = False
-        STATE.last_control_result = result
+        CONTROL_STATE.control_in_progress = False
+        CONTROL_STATE.last_control_result = result
 
 
 def start_explicit_setup() -> None:
@@ -1451,7 +1287,7 @@ def start_explicit_setup() -> None:
     Snapshots the current profile/adapter, disconnects the current client
     session (without deleting its profile), and enters an EXPLICIT_RECONFIGURE
     hotspot.  The 30-minute deadline, no-eth-suppression, and rollback policy all
-    come from PURPOSE_TABLE[EXPLICIT_RECONFIGURE].
+    come from wifi_policy.PURPOSE_TABLE[EXPLICIT_RECONFIGURE].
     """
     rollback = _snapshot_rollback()
     # Disconnect the current client session without deleting its profile.
@@ -1460,34 +1296,14 @@ def start_explicit_setup() -> None:
     if active_ifname:
         nm.disconnect_device(active_ifname)
     logger.info("Explicit network setup starting (explicit_reconfigure)")
-    enter_setup_mode(HotspotPurpose.EXPLICIT_RECONFIGURE,
+    enter_setup_mode(wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE,
                      reason="explicit_reconfigure", rollback=rollback)
-
-
-def start_reconnect_saved_episode(failure_tail: str = "retain_hotspot") -> bool:
-    return wifi_adoption.start_reconnect_saved_episode(ADOPTION_CTX, failure_tail)
-
-
-def _submit_next_reconnect_target() -> bool:
-    return wifi_adoption._submit_next_reconnect_target(ADOPTION_CTX)
-
-
-def _advance_reconnect_episode(result: "ActivationResult") -> None:
-    wifi_adoption._advance_reconnect_episode(ADOPTION_CTX, result)
-
-
-def _finish_reconnect_episode_failure() -> None:
-    wifi_adoption._finish_reconnect_episode_failure(ADOPTION_CTX)
-
-
-def step_reconnect_episode(pre: "PreFactsContext") -> "Verdict":
-    return wifi_adoption.step_reconnect_episode(ADOPTION_CTX, pre)
 
 
 def handle_reconfigure_timeout() -> None:
     """30-minute explicit-reconfiguration timeout rollback (starts an episode)."""
-    logger.info("Explicit network setup timed out after %ds; restoring previous", AP_MAX_DURATION)
-    start_reconnect_saved_episode(failure_tail="reconfigure_timeout")
+    logger.info("Explicit network setup timed out after %ds; restoring previous", wifi_policy.AP_MAX_DURATION)
+    wifi_adoption.start_reconnect_saved_episode(ADOPTION_CTX, failure_tail="reconfigure_timeout")
 
 
 
@@ -1553,29 +1369,28 @@ def gather_facts() -> "Facts":
         adapters=adapters,
         wired_connected=is_wired_connected(),
         wired_ok=any_wired_path_healthy(),
-        active_client=resolve_active_client(adapters),
+        active_client=wifi_adoption.resolve_active_client(adapters),
         addresses=wifi_net.list_interface_addresses(),
         taken_at=time.monotonic(),
     )
 
 
-# The pure forward mode classifier now lives in wifi_policy (it reads only plain
-# state/facts fields + policy constants); re-exported so the loop and tests keep
-# calling wifi_watcher.next_mode(STATE, facts).
-next_mode = wifi_policy.next_mode
+# The pure forward mode classifier lives in wifi_policy (it reads only plain
+# state/facts fields + policy constants); the loop calls
+# wifi_policy.next_mode(STATE, facts) directly.
 
 
 # ** RECOVERY LADDER (recovery-ladder unification) **
 #
 # The recovery decision is a second pure classifier alongside next_mode:
-# next_recovery_action(state, recovery_facts) -> RecoveryAction.  It now lives in
-# wifi_policy (with RecoveryFacts / RecoveryKind / RecoveryAction); the watcher
-# owns only gather_recovery_facts(), the effectful gatherer that adapts the
-# per-pass runtime facts into the plain RecoveryFacts snapshot.
-RecoveryFacts = wifi_policy.RecoveryFacts
+# wifi_policy.next_recovery_action(state, recovery_facts) ->
+# wifi_policy.RecoveryAction.  It lives in wifi_policy (with RecoveryFacts /
+# RecoveryKind / RecoveryAction); the watcher owns only
+# gather_recovery_facts(), the effectful gatherer that adapts the per-pass
+# runtime facts into the plain RecoveryFacts snapshot.
 
 
-def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
+def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
     """Gather the recovery-ladder snapshot from the per-pass Facts.
 
     Reuses Facts.adapters (single discover per pass) and derives the per-adapter
@@ -1584,7 +1399,7 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
     """
     now = facts.taken_at
     adapters = facts.adapters
-    by_ifname = {a.ifname: _adapter_recovery_facts(a, now, facts.health_memo)
+    by_ifname = {a.ifname: wifi_recovery.adapter_recovery_facts(RECOVERY_CTX, a, now, facts.health_memo)
                  for a in adapters}
 
     builtin = wifi_net.resolve_builtin(adapters)
@@ -1594,6 +1409,7 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
         in_setup = STATE.setup_mode
         onboard_budget_spent = (
             STATE.onboard_activation_failures >= ONBOARD_ACTIVATION_MAX_FAILURES)
+        failover_reset_done = set(RECOVERY_STATE.failover_reset_done)
 
     preferred_usb = ""
     for a in usb:
@@ -1602,6 +1418,13 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
                 and not rf.noip_suppressed and not rf.disabled):
             preferred_usb = a.ifname
             break
+
+    # failover_reset_spent is keyed to preferred_usb specifically (the adapter
+    # whose RESET_USB rung it gates), not the active client.
+    preferred_usb_rf = by_ifname.get(preferred_usb) if preferred_usb else None
+    failover_reset_spent = bool(
+        preferred_usb_rf is not None and preferred_usb_rf.stable_id
+        and preferred_usb_rf.stable_id in failover_reset_done)
 
     # The onboard is only offered as a client rung when it is actually usable
     # (managed, not quarantined, not no-IP-suppressed) — mirroring preferred_usb.
@@ -1617,7 +1440,7 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
                 and not brf.noip_suppressed and not brf.disabled):
             onboard_ifname = builtin.ifname
 
-    return RecoveryFacts(
+    return wifi_policy.RecoveryFacts(
         adapters_by_ifname=by_ifname,
         onboard_ifname=onboard_ifname,
         usb_ifnames=tuple(a.ifname for a in usb),
@@ -1627,15 +1450,12 @@ def gather_recovery_facts(facts: "Facts") -> "RecoveryFacts":
         saved_configured=facts.wifi_configured,
         wired_ok=bool(facts.wired_ok),
         taken_at=now,
+        failover_reset_spent=failover_reset_spent,
     )
 
 
-# The recovery-ladder enums, action type, and pure classifier now live in
-# wifi_policy; re-exported so the apply sites and tests keep using
-# wifi_watcher.<name>.
-RecoveryKind = wifi_policy.RecoveryKind
-RecoveryAction = wifi_policy.RecoveryAction
-next_recovery_action = wifi_policy.next_recovery_action
+# The recovery-ladder enums, action type, and pure classifier live in
+# wifi_policy; apply sites call wifi_policy.next_recovery_action directly.
 
 
 def _make_playing_status_memo():
@@ -1723,104 +1543,11 @@ class Verdict(Enum):
 
 # The per-pass phase context types (PreFactsContext / FactsContext /
 # HealthContext / LoopState), the fact/health derivation, and the ordered
-# step_* Verdict handlers live in platform/wifi_loop.py.  The seam is narrowed
-# (WP-11 style) to a LoopContext exposing only the STATE, constants and
-# callables the handlers use.  The context is built once (near the end of this
-# module, once every callable it needs exists); these thin wrappers pass it
-# and remain network_monitor_loop's entry points, bound via functools.partial
-# where a handler also needs the cross-pass LoopState.
+# step_* Verdict handlers live in platform/wifi_loop.py, driven through
+# LOOP_CTX exposing only the STATE, constants and callables the handlers use.
+# network_monitor_loop builds its ordered phase lists directly from
+# wifi_loop.step_* bound to LOOP_CTX with functools.partial.
 
-import wifi_loop
-
-PreFactsContext = wifi_loop.PreFactsContext
-FactsContext = wifi_loop.FactsContext
-HealthContext = wifi_loop.HealthContext
-LoopState = wifi_loop.LoopState
-
-
-def finalize_active_client_and_health(fctx: "FactsContext") -> "HealthContext":
-    return wifi_loop.finalize_active_client_and_health(LOOP_CTX, fctx)
-
-
-def _connectivity_failure_is_hard(facts: "Facts", active_client, prev_mac: str) -> bool:
-    return wifi_loop._connectivity_failure_is_hard(facts, active_client, prev_mac)
-
-
-def _debounced_connectivity(facts: "Facts", active_client, client_ok: bool,
-                            prev_mac: str = "") -> bool:
-    return wifi_loop._debounced_connectivity(LOOP_CTX, facts, active_client, client_ok, prev_mac)
-
-
-def step_avahi_hostname(pre: "PreFactsContext", loop_state: "LoopState") -> "Verdict":
-    return wifi_loop.step_avahi_hostname(LOOP_CTX, pre, loop_state)
-
-
-def step_mdns_reannounce(pre: "PreFactsContext") -> "Verdict":
-    return wifi_loop.step_mdns_reannounce(LOOP_CTX, pre)
-
-
-def step_revert_log_level(pre: "PreFactsContext") -> "Verdict":
-    return wifi_loop.step_revert_log_level(LOOP_CTX, pre)
-
-
-def step_control_action(pre: "PreFactsContext") -> "Verdict":
-    return wifi_loop.step_control_action(LOOP_CTX, pre)
-
-
-def step_reconfigure_timeout(pre: "PreFactsContext") -> "Verdict":
-    return wifi_loop.step_reconfigure_timeout(LOOP_CTX, pre)
-
-
-def step_update_known_adapters(fctx: "FactsContext") -> "Verdict":
-    return wifi_loop.step_update_known_adapters(LOOP_CTX, fctx)
-
-
-def step_boot_client_bringup(fctx: "FactsContext") -> "Verdict":
-    return wifi_loop.step_boot_client_bringup(LOOP_CTX, fctx)
-
-
-def step_usb_failure_fallback(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_usb_failure_fallback(LOOP_CTX, hctx)
-
-
-def step_runtime_usb_adoption(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_runtime_usb_adoption(LOOP_CTX, hctx)
-
-
-def step_noip_holdback_reset(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_noip_holdback_reset(LOOP_CTX, hctx)
-
-
-def step_dead_phy_recovery(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_dead_phy_recovery(LOOP_CTX, hctx)
-
-
-def step_publish_state(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_publish_state(LOOP_CTX, hctx)
-
-
-def step_bssid_survey(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_bssid_survey(LOOP_CTX, hctx)
-
-
-def step_ethernet_wins(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_ethernet_wins(LOOP_CTX, hctx)
-
-
-def step_hotspot_policy(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_hotspot_policy(LOOP_CTX, hctx)
-
-
-def step_boot_ap_entry(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_boot_ap_entry(LOOP_CTX, hctx)
-
-
-def step_connection_reliability(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_connection_reliability(LOOP_CTX, hctx)
-
-
-def step_catchall_reboot(hctx: "HealthContext") -> "Verdict":
-    return wifi_loop.step_catchall_reboot(LOOP_CTX, hctx)
 
 def run_steps(steps, ctx) -> "Verdict":
     """Run *steps* in order, returning on the first OWN_PASS, else CONTINUE.
@@ -1872,44 +1599,44 @@ def network_monitor_loop(run_once: bool = False):
         if STATE.last_active_path_seen is None:
             STATE.last_active_path_seen = STATE.boot_time
 
-    loop_state = LoopState()  # persists across passes (last_avahi_check)
+    loop_state = wifi_loop.LoopState()  # persists across passes (last_avahi_check)
 
     # Ordered handler lists.  Built once.  step_avahi_hostname also needs the
     # cross-pass loop_state; it is bound with functools.partial so run_steps keeps
     # a single uniform step(ctx) calling convention (§4.4).
     phase_a = [
-        step_reconnect_episode,
-        step_apply_activation_result,
-        partial(step_avahi_hostname, loop_state=loop_state),
-        step_mdns_reannounce,
-        step_revert_log_level,
-        step_control_action,
-        step_reconfigure_timeout,
+        partial(wifi_adoption.step_reconnect_episode, ADOPTION_CTX),
+        partial(wifi_activation.step_apply_activation_result, ACTIVATION_CTX),
+        partial(wifi_loop.step_avahi_hostname, LOOP_CTX, loop_state=loop_state),
+        partial(wifi_loop.step_mdns_reannounce, LOOP_CTX),
+        partial(wifi_loop.step_revert_log_level, LOOP_CTX),
+        partial(wifi_loop.step_control_action, LOOP_CTX),
+        partial(wifi_loop.step_reconfigure_timeout, LOOP_CTX),
     ]
     phase_b_early = [
-        step_update_known_adapters,
-        step_boot_client_bringup,
+        partial(wifi_loop.step_update_known_adapters, LOOP_CTX),
+        partial(wifi_loop.step_boot_client_bringup, LOOP_CTX),
     ]
     phase_b_late = [
-        step_usb_failure_fallback,
-        step_runtime_usb_adoption,
-        step_noip_holdback_reset,
-        step_dead_phy_recovery,
-        step_publish_state,
-        step_bssid_survey,
-        step_ethernet_wins,
-        step_hotspot_policy,
-        step_boot_ap_entry,
-        step_connection_reliability,
-        step_catchall_reboot,
+        partial(wifi_loop.step_usb_failure_fallback, LOOP_CTX),
+        partial(wifi_loop.step_runtime_usb_adoption, LOOP_CTX),
+        partial(wifi_loop.step_noip_holdback_reset, LOOP_CTX),
+        partial(wifi_loop.step_dead_phy_recovery, LOOP_CTX),
+        partial(wifi_loop.step_publish_state, LOOP_CTX),
+        partial(wifi_loop.step_bssid_survey, LOOP_CTX),
+        partial(wifi_loop.step_ethernet_wins, LOOP_CTX),
+        partial(wifi_loop.step_hotspot_policy, LOOP_CTX),
+        partial(wifi_loop.step_boot_ap_entry, LOOP_CTX),
+        partial(wifi_loop.step_connection_reliability, LOOP_CTX),
+        partial(wifi_loop.step_catchall_reboot, LOOP_CTX),
     ]
 
     while True:
         now = time.monotonic()
         with state_lock:
             boot_time = STATE.boot_time or now
-            avahi_ok = not STATE.setup_mode and not STATE.apply_in_progress
-        pre = PreFactsContext(now=now, boot_time=boot_time, avahi_ok=avahi_ok)
+            avahi_ok = not STATE.setup_mode and not APPLY_STATE.apply_in_progress
+        pre = wifi_loop.PreFactsContext(now=now, boot_time=boot_time, avahi_ok=avahi_ok)
         if run_steps(phase_a, pre) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
                 return
@@ -1917,14 +1644,14 @@ def network_monitor_loop(run_once: bool = False):
 
         # Single immutable per-tick snapshot: one discover_adapters /
         # wired probe / address enumeration per pass; playback via the per-pass memo.
-        fctx = FactsContext(pre, gather_facts(), _make_playing_status_memo())
+        fctx = wifi_loop.FactsContext(pre, gather_facts(), _make_playing_status_memo())
         if run_steps(phase_b_early, fctx) is Verdict.OWN_PASS:
             if _sleep_or_finish_monitor_pass(run_once):
                 return
             continue
 
         # Named phase boundary between B-early and B-late (never owns the pass).
-        hctx = finalize_active_client_and_health(fctx)
+        hctx = wifi_loop.finalize_active_client_and_health(LOOP_CTX, fctx)
         # Final phase: run_steps still short-circuits internally on the first
         # OWN_PASS (so the trailing CONTINUE handlers do not run after an owning
         # handler); the driver omits only the outer branch because the next line
@@ -1970,7 +1697,7 @@ def query_playing_status() -> Optional[bool]:
 def _warn_playing_status_unavailable() -> None:
     """Throttled WARNING when playback status is unavailable during pending adoption."""
     with state_lock:
-        pending = STATE.pending_usb_adoption_mac is not None
+        pending = ADOPTION_STATE.pending_usb_adoption_mac is not None
     if pending:
         log_throttled(
             "playing_status_unavailable",
@@ -1979,521 +1706,349 @@ def _warn_playing_status_unavailable() -> None:
         )
 
 
-import wifi_activation
-import wifi_recovery
-
-# Owns the dead-PHY / reset / no-IP / manual-disable ledgers; shared with
-# wifi_status (read-only, for the status snapshot) via StatusContext.  Built
-# early (ahead of the recovery seam below) because the activation context also
-# needs it (client hand-over clears the no-IP hold-back marker).
-RECOVERY_STATE = wifi_recovery.RecoveryState()
-
-ActivationJob = wifi_activation.ActivationJob
-ActivationResult = wifi_activation.ActivationResult
-
-
-def _activation_network_absent(result) -> bool:
-    return wifi_activation._activation_network_absent(result)
-
-
-# ** CONFIGURED-NETWORK RECONNECT AND FIRST-BOOT IMPORT **
-#
-# The steady-state reconnect path and first-boot profile adoption/migration
-# live in platform/wifi_config.py.  The seam is narrowed (WP-11 style) to a
-# ConfigContext exposing only the NM client, the state-file paths and the
-# small set of watcher callables the helpers invoke.  The context is built
-# once here; these thin wrappers pass it and remain the entry points used
-# elsewhere in this module and at startup.
-
-import wifi_config
-
-CONFIG_CTX = wifi_config.ConfigContext(
-    nm=nm,
-    logger=logger,
-    NETWORK_STATE_PATH=NETWORK_STATE_PATH,
-    CONFIGURED_SSID=CONFIGURED_SSID,
-    FIRST_BOOT_IMPORT_MARKER=FIRST_BOOT_IMPORT_MARKER,
-    get_configured_network_state=get_configured_network_state,
-    is_wifi_client_healthy=is_wifi_client_healthy,
-    _activation_network_absent=_activation_network_absent,
-    _commit_network_state=_commit_network_state,
-)
-
-
-def connect_to_configured_wifi() -> bool:
-    return wifi_config.connect_to_configured_wifi(CONFIG_CTX)
-
-
-def migrate_client_profiles_autoconnect_no() -> int:
-    return wifi_config.migrate_client_profiles_autoconnect_no(CONFIG_CTX)
-
-
-def import_first_boot_wifi_profile() -> None:
-    wifi_config.import_first_boot_wifi_profile(CONFIG_CTX)
-
-
-def _resolve_committed_uuid(state: "wifi_net.NetworkState") -> str:
-    return wifi_config._resolve_committed_uuid(CONFIG_CTX, state)
-
-
-def _pin_usb_bssid(ifname: str, uuid: str) -> str:
-    return wifi_activation._pin_usb_bssid(ACTIVATION_CTX, ifname, uuid)
-
-
-def _activate_profile_on(ifname: str, state: "wifi_net.NetworkState",
-                         *, wait_for_validation: bool = True) -> bool:
-    return wifi_activation._activate_profile_on(
-        ACTIVATION_CTX, ifname, state, wait_for_validation=wait_for_validation)
-
-
-def _validate_activation(ifname: str, activation_result,
-                         *, wait_for_validation: bool = True) -> bool:
-    return wifi_activation._validate_activation(
-        ACTIVATION_CTX, ifname, activation_result, wait_for_validation=wait_for_validation)
-
-
-def _activate_committed_on(ifname: str) -> bool:
-    return wifi_activation._activate_committed_on(ACTIVATION_CTX, ifname)
-
-
-# The recovery ledger hooks below are looked up by name at call time (not at
-# ACTIVATION_CTX construction), so they may reference RECOVERY_CTX and
-# _clear_pending_adoption even though those are defined later in this module.
-
-def _clear_noip_failures_for_activation(stable_id) -> None:
-    wifi_recovery.clear_noip_failures(RECOVERY_CTX, stable_id)
-
-
-def _clear_dead_adapter_state_for_activation() -> None:
-    wifi_recovery.clear_dead_adapter_state(RECOVERY_CTX)
-
-
-def _record_noip_failure_for_activation(record_id, at: float) -> int:
-    return wifi_recovery.record_noip_failure(_self_module(), record_id, at)
-
-
-def _clear_pending_adoption_for_activation() -> None:
-    _clear_pending_adoption()
-
-
 def verify_avahi_after_handover() -> None:
     """Verify the Avahi hostname and flag an mDNS host-record re-announce.
 
     Reuses the existing hostname verification path, then marks a re-announce as
     pending rather than restarting avahi-daemon directly.  The monitor loop owns
-    the actual re-announce (see maybe_reannounce_mdns): it waits for the published
-    address set to settle before restarting, so it re-announces only the surviving
-    interface's address (never re-poisoning clients with the address that is being
-    torn down mid-handover), and de-duplicates with the passive address-change
-    detector so a single restart covers both triggers.
+    the actual re-announce (see wifi_mdns.maybe_reannounce_mdns): it waits for
+    the published address set to settle before restarting, so it re-announces
+    only the surviving interface's address (never re-poisoning clients with the
+    address that is being torn down mid-handover), and de-duplicates with the
+    passive address-change detector so a single restart covers both triggers.
     """
     try:
-        check_and_repair_avahi_hostname()
-        mark_mdns_reannounce_pending("network handover")
+        wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)
+        wifi_mdns.mark_mdns_reannounce_pending(MDNS_CTX, "network handover")
     except Exception as e:
         logger.warning("Avahi handover verification failed: %s", e)
 
 
-# The narrowed activation seam.  Built once from the symbols defined above; the
-# worker and loop-tail helpers thread this ctx instead of the whole module.
-ACTIVATION_CTX = wifi_activation.ActivationContext(
-    STATE=STATE,
-    state_lock=state_lock,
-    RECOVERY_STATE=RECOVERY_STATE,
-    RECOVERY_CTX=None,  # set below once RECOVERY_CTX exists (forward reference)
-    nm=nm,
-    hotspot_controller=hotspot_controller,
-    logger=logger,
-    HotspotPurpose=HotspotPurpose,
-    Verdict=Verdict,
-    WAIT_FOR_CONNECTION_TIMEOUT=WAIT_FOR_CONNECTION_TIMEOUT,
-    WAIT_FOR_CONNECTION_INTERVAL=WAIT_FOR_CONNECTION_INTERVAL,
-    configure_wifi_with_nmcli=configure_wifi_with_nmcli,
-    stop_ap_mode=stop_ap_mode,
-    get_configured_network_state=get_configured_network_state,
-    is_wifi_client_healthy=is_wifi_client_healthy,
-    wait_for_connection=wait_for_connection,
-    _resolve_committed_uuid=_resolve_committed_uuid,
-    enter_setup_mode=enter_setup_mode,
-    leave_setup_mode=leave_setup_mode,
-    verify_avahi_after_handover=verify_avahi_after_handover,
-    clear_noip_failures=_clear_noip_failures_for_activation,
-    clear_dead_adapter_state=_clear_dead_adapter_state_for_activation,
-    record_noip_failure=_record_noip_failure_for_activation,
-    clear_pending_adoption=_clear_pending_adoption_for_activation,
-    advance_reconnect_episode=_advance_reconnect_episode,
-)
+def build_contexts() -> None:
+    """Construct every context, in dependency order, and bind module globals.
 
+    Called once at import time (below). Two genuine two-way dependencies exist
+    between the recovery and activation/adoption seams:
 
-def _set_active_client(adapter) -> None:
-    wifi_activation._set_active_client(ACTIVATION_CTX, adapter)
+    - ``RECOVERY_CTX`` needs activation-bound callables (``client_up_tail``,
+      ``_activate_committed_on``) to run its reset/retry rung, while
+      ``ACTIVATION_CTX`` needs the real ``RECOVERY_CTX`` object as a field.
+      Broken by building ``RECOVERY_CTX`` first, with local closures for the
+      two activation callables that resolve ``ACTIVATION_CTX`` at call time
+      (by then this function has returned and the global is set); passing the
+      already-built ``RECOVERY_CTX`` object into ``ACTIVATION_CTX`` needs no
+      such trick.
+    - ``ACTIVATION_CTX`` needs adoption-bound callables
+      (``clear_pending_adoption``, ``advance_reconnect_episode``) that only
+      exist once ``ADOPTION_CTX`` is built, and ``ADOPTION_CTX`` needs
+      activation-bound callables in return. Broken the same way: local
+      closures on the activation side resolve ``ADOPTION_CTX`` at call time.
+    - ``RECOVERY_CTX.wait_for_interface_reappears`` is a genuine self-reference
+      (it must be handed the very context it is a field of); resolved with a
+      local closure that reads the ``RECOVERY_CTX`` global once this function
+      has returned.
+    """
+    global nm, HOTSPOT_CTX, hotspot_controller, RECOVERY_STATE, CONFIG_CTX
+    global ACTIVATION_CTX, RECOVERY_CTX, ADOPTION_CTX, STATUS_CTX, MDNS_CTX
+    global WEB_CTX, app, LOOP_CTX
 
+    # The single bounded nmcli client; every nmcli invocation passes one of
+    # NMCLI_ACTIVATE_TIMEOUT/NMCLI_QUICK_TIMEOUT, so there is no unbounded
+    # NetworkManager code path.
+    nm = wifi_nm.NMClient(NMCLI_ACTIVATE_TIMEOUT, NMCLI_QUICK_TIMEOUT)
 
-def client_up_tail(adapter, *, set_builtin_fallback=None,
-                   clear_noip_stable_id=None, disconnect_builtin_ifname="",
-                   leave_setup_reason=None, clear_down_timers=False,
-                   reset_onboard_bound=False, clear_pending_adoption=False,
-                   clear_dead_adapter=False) -> None:
-    wifi_activation.client_up_tail(
-        ACTIVATION_CTX, adapter,
-        set_builtin_fallback=set_builtin_fallback,
-        clear_noip_stable_id=clear_noip_stable_id,
-        disconnect_builtin_ifname=disconnect_builtin_ifname,
-        leave_setup_reason=leave_setup_reason,
-        clear_down_timers=clear_down_timers,
-        reset_onboard_bound=reset_onboard_bound,
-        clear_pending_adoption=clear_pending_adoption,
-        clear_dead_adapter=clear_dead_adapter,
+    # The single source of hotspot mechanics: start/stop/rebuild/clear-stale
+    # sequencing and flag ordering, driven through a narrow HotspotContext.
+    HOTSPOT_CTX = wifi_hotspot.HotspotContext(
+        STATE=STATE,
+        state_lock=state_lock,
+        nm=nm,
+        AP_CONNECTION_NAME=AP_CONNECTION_NAME,
+        start_ap_mode=start_ap_mode,
+        stop_ap_mode=stop_ap_mode,
+        update_apmode_flag=update_apmode_flag,
+        clear_apmode_flag=clear_apmode_flag,
+    )
+    hotspot_controller = wifi_hotspot.HotspotController(HOTSPOT_CTX)
+
+    # Owns the dead-PHY / reset / no-IP / manual-disable ledgers; shared with
+    # wifi_status (read-only, for the status snapshot) via StatusContext.
+    RECOVERY_STATE = wifi_recovery.RecoveryState()
+
+    # The steady-state reconnect path and first-boot profile adoption/
+    # migration live in platform/wifi_config.py, driven through a
+    # ConfigContext exposing only the NM client, the state-file paths and the
+    # small set of watcher callables the helpers invoke.
+    CONFIG_CTX = wifi_config.ConfigContext(
+        nm=nm,
+        logger=logger,
+        NETWORK_STATE_PATH=NETWORK_STATE_PATH,
+        CONFIGURED_SSID=CONFIGURED_SSID,
+        FIRST_BOOT_IMPORT_MARKER=FIRST_BOOT_IMPORT_MARKER,
+        get_configured_network_state=get_configured_network_state,
+        is_wifi_client_healthy=is_wifi_client_healthy,
+        _activation_network_absent=wifi_activation._activation_network_absent,
+        _commit_network_state=_commit_network_state,
+    )
+
+    # Closures for the recovery<->activation cycle: RECOVERY_CTX needs these
+    # activation-bound callables now, but ACTIVATION_CTX (below) is what they
+    # must be bound to; each resolves the ACTIVATION_CTX global at call time.
+    def client_up_tail_closure(*args, **kwargs):
+        return wifi_activation.client_up_tail(ACTIVATION_CTX, *args, **kwargs)
+
+    def activate_committed_on_closure(*args, **kwargs):
+        return wifi_activation._activate_committed_on(ACTIVATION_CTX, *args, **kwargs)
+
+    # RECOVERY_CTX.wait_for_interface_reappears is handed RECOVERY_CTX itself;
+    # this closure resolves the RECOVERY_CTX global at call time, once this
+    # function has returned and the global is set.
+    def wait_for_interface_reappears_closure(
+        target, timeout=wifi_recovery.INTERFACE_REAPPEAR_TIMEOUT,
+    ):
+        return wifi_recovery.wait_for_interface_reappears(RECOVERY_CTX, target, timeout)
+
+    # Detection, reset budgets, the persistent reboot guard, and the recovery
+    # ladder live in platform/wifi_recovery.py, driven through a narrow
+    # RecoveryContext exposing the STATE, the reset/quarantine/reboot
+    # constants and the policy helpers the ladder invokes.
+    RECOVERY_CTX = wifi_recovery.RecoveryContext(
+        STATE=STATE,
+        state_lock=state_lock,
+        logger=logger,
+        RECOVERY_STATE=RECOVERY_STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
+        AP_IFNAME=AP_IFNAME,
+        USB_RESET_WINDOW=USB_RESET_WINDOW,
+        USB_MAX_RESETS_TOTAL=USB_MAX_RESETS_TOTAL,
+        USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
+        USB_EMERGENCY_BACKOFF=USB_EMERGENCY_BACKOFF,
+        RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,
+        RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
+        DEAD_ADAPTER_DEBOUNCE=DEAD_ADAPTER_DEBOUNCE,
+        DEAD_ADAPTER_REBOOT_AFTER=DEAD_ADAPTER_REBOOT_AFTER,
+        DEAD_ADAPTER_REBOOT_WINDOW=DEAD_ADAPTER_REBOOT_WINDOW,
+        DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW=DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW,
+        DEAD_ADAPTER_HEALTHY_DECAY=DEAD_ADAPTER_HEALTHY_DECAY,
+        DEAD_ADAPTER_REBOOT_STAMP=DEAD_ADAPTER_REBOOT_STAMP,
+        ADAPTER_FAULT_STATE_PATH=ADAPTER_FAULT_STATE_PATH,
+        is_wifi_client_healthy=is_wifi_client_healthy,
+        client_up_tail=client_up_tail_closure,
+        _activate_committed_on=activate_committed_on_closure,
+        wait_for_interface_reappears=wait_for_interface_reappears_closure,
+        resolve_hotspot_adapter=resolve_hotspot_adapter,
+        request_guarded_reboot=request_guarded_reboot,
+    )
+
+    # Closures for the activation<->adoption cycle: ACTIVATION_CTX needs
+    # these adoption-bound callables now, but ADOPTION_CTX (built after
+    # ACTIVATION_CTX, since adoption needs activation-bound callables in
+    # return) is what they must be bound to; each resolves the ADOPTION_CTX
+    # global at call time.
+    def clear_pending_adoption_closure() -> None:
+        wifi_adoption._clear_pending_adoption(ADOPTION_CTX)
+
+    def advance_reconnect_episode_closure(result: "wifi_activation.ActivationResult") -> None:
+        wifi_adoption._advance_reconnect_episode(ADOPTION_CTX, result)
+
+    # These three look up wifi_recovery's names by attribute at call time
+    # (rather than a functools.partial captured now) so tests may patch
+    # wifi_recovery.clear_noip_failures / clear_dead_adapter_state /
+    # record_noip_failure and have ACTIVATION_CTX observe the patch.
+    def clear_noip_failures_closure(stable_id) -> None:
+        wifi_recovery.clear_noip_failures(RECOVERY_CTX, stable_id)
+
+    def clear_dead_adapter_state_closure() -> None:
+        wifi_recovery.clear_dead_adapter_state(RECOVERY_CTX)
+
+    def record_noip_failure_closure(record_id, at: float) -> int:
+        return wifi_recovery.record_noip_failure(RECOVERY_CTX, record_id, at)
+
+    # The activation context: the worker and loop-tail helpers thread this
+    # ctx through every call.
+    ACTIVATION_CTX = wifi_activation.ActivationContext(
+        STATE=STATE,
+        APPLY_STATE=APPLY_STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
+        state_lock=state_lock,
+        RECOVERY_STATE=RECOVERY_STATE,
+        RECOVERY_CTX=RECOVERY_CTX,
+        nm=nm,
+        hotspot_controller=hotspot_controller,
+        logger=logger,
+        HotspotPurpose=wifi_policy.HotspotPurpose,
+        Verdict=Verdict,
+        WAIT_FOR_CONNECTION_TIMEOUT=WAIT_FOR_CONNECTION_TIMEOUT,
+        WAIT_FOR_CONNECTION_INTERVAL=WAIT_FOR_CONNECTION_INTERVAL,
+        configure_wifi_with_nmcli=configure_wifi_with_nmcli,
+        stop_ap_mode=stop_ap_mode,
+        get_configured_network_state=get_configured_network_state,
+        is_wifi_client_healthy=is_wifi_client_healthy,
+        wait_for_connection=wait_for_connection,
+        _resolve_committed_uuid=partial(wifi_config._resolve_committed_uuid, CONFIG_CTX),
+        enter_setup_mode=enter_setup_mode,
+        leave_setup_mode=leave_setup_mode,
+        verify_avahi_after_handover=verify_avahi_after_handover,
+        clear_noip_failures=clear_noip_failures_closure,
+        clear_dead_adapter_state=clear_dead_adapter_state_closure,
+        record_noip_failure=record_noip_failure_closure,
+        clear_pending_adoption=clear_pending_adoption_closure,
+        advance_reconnect_episode=advance_reconnect_episode_closure,
+    )
+
+    # The adoption context: the fallback/adoption/reconnect-episode helpers
+    # thread this ctx through every call.
+    ADOPTION_CTX = wifi_adoption.AdoptionContext(
+        STATE=STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
+        state_lock=state_lock,
+        logger=logger,
+        RECOVERY_CTX=RECOVERY_CTX,
+        nm=nm,
+        HotspotPurpose=wifi_policy.HotspotPurpose,
+        Verdict=Verdict,
+        reset_log_key=_log_dedup.reset_key,
+        RECOVERY_SCAN_INTERVAL=RECOVERY_SCAN_INTERVAL,
+        RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
+        ADOPTION_SCAN_INTERVAL=ADOPTION_SCAN_INTERVAL,
+        USB_ADOPTION_STABLE_PASSES=USB_ADOPTION_STABLE_PASSES,
+        BSSID_SURVEY_INTERVAL=BSSID_SURVEY_INTERVAL,
+        get_configured_network_state=get_configured_network_state,
+        is_wifi_client_healthy=is_wifi_client_healthy,
+        resolve_hotspot_adapter=resolve_hotspot_adapter,
+        hotspot_station_count=hotspot_station_count,
+        query_playing_status=query_playing_status,
+        log_on_change=log_on_change,
+        gather_recovery_facts=gather_recovery_facts,
+        enter_setup_mode=enter_setup_mode,
+        submit_activation_job=partial(wifi_activation.submit_activation_job, ACTIVATION_CTX),
+        next_activation_epoch=partial(wifi_activation._next_activation_epoch, ACTIVATION_CTX),
+    )
+
+    # Snapshot construction/publishing lives in platform/wifi_status.py,
+    # driven through a StatusContext exposing the STATE, the three recovery
+    # constants and the fact helpers the snapshot surfaces.
+    STATUS_CTX = wifi_status.StatusContext(
+        STATE=STATE,
+        LOG_STATE=LOG_STATE,
+        SNAPSHOT_STATE=SNAPSHOT_STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
+        state_lock=state_lock,
+        RECOVERY_STATE=RECOVERY_STATE,
+        NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
+        USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
+        RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,
+        is_wired_connected=is_wired_connected,
+        any_wired_path_healthy=any_wired_path_healthy,
+        is_gateway_reachable=is_gateway_reachable,
+        resolve_hotspot_adapter=resolve_hotspot_adapter,
+        hotspot_station_count=hotspot_station_count,
+        _adapter_recovery_facts=partial(wifi_recovery.adapter_recovery_facts, RECOVERY_CTX),
+    )
+
+    # The avahi/mDNS block (hostname-drift repair + address-set re-announce
+    # debounce) lives in platform/wifi_mdns.py, driven through an MdnsContext
+    # exposing the MDNS_STATE fragment, the constants and the callables it
+    # uses.  The monitor loop calls
+    # ``wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)`` and
+    # ``wifi_mdns.maybe_reannounce_mdns(MDNS_CTX, now)`` every pass via the
+    # LOOP_CTX fields bound below.
+    MDNS_CTX = wifi_mdns.MdnsContext(
+        MDNS_STATE=MDNS_STATE,
+        state_lock=state_lock,
+        NMCLI_QUICK_TIMEOUT=NMCLI_QUICK_TIMEOUT,
+        AVAHI_MISMATCH_GRACE=AVAHI_MISMATCH_GRACE,
+        AVAHI_RESTART_MIN_INTERVAL=AVAHI_RESTART_MIN_INTERVAL,
+        AVAHI_HANDOVER_RESTART_MIN_INTERVAL=AVAHI_HANDOVER_RESTART_MIN_INTERVAL,
+        AVAHI_MAX_RESTART_ATTEMPTS=AVAHI_MAX_RESTART_ATTEMPTS,
+        AVAHI_REANNOUNCE_DEBOUNCE=AVAHI_REANNOUNCE_DEBOUNCE,
+        _DBUS_SEND=_DBUS_SEND,
+        run_cmd=run_cmd,
+        logger=logger,
+        log_on_change=log_on_change,
+        get_system_hostname=get_system_hostname,
+    )
+
+    # The narrowed Flask/HTTP seam: build_app() closes its handlers over this
+    # ctx and init_control_token()/remove_control_token() are driven from
+    # __main__.
+    WEB_CTX = wifi_web.WebContext(
+        app_name=__name__,
+        STATE=STATE,
+        APPLY_STATE=APPLY_STATE,
+        CONTROL_STATE=CONTROL_STATE,
+        SNAPSHOT_STATE=SNAPSHOT_STATE,
+        state_lock=state_lock,
+        logger=logger,
+        control_action_event=control_action_event,
+        RUNTIME_LOG_LEVELS=RUNTIME_LOG_LEVELS,
+        LOG_LEVEL_TTL_MIN=LOG_LEVEL_TTL_MIN,
+        LOG_LEVEL_TTL_MAX=LOG_LEVEL_TTL_MAX,
+        WIFI_WATCHER_VERSION=WIFI_WATCHER_VERSION,
+        _DIAL_MODE=_DIAL_MODE,
+        wifi_net=wifi_net,
+        get_system_hostname=get_system_hostname,
+        get_configured_network_state=get_configured_network_state,
+        submit_apply_credentials=submit_apply_credentials,
+        scan_all_networks=scan_all_networks,
+    )
+    app = wifi_web.build_app(WEB_CTX)
+
+    # The narrowed monitor-loop seam, built last (every callable it needs
+    # already exists): network_monitor_loop binds each handler to this ctx
+    # with functools.partial when building the ordered phase lists.
+    LOOP_CTX = wifi_loop.LoopContext(
+        STATE=STATE,
+        APPLY_STATE=APPLY_STATE,
+        CONTROL_STATE=CONTROL_STATE,
+        RECOVERY_STATE=RECOVERY_STATE,
+        state_lock=state_lock,
+        logger=logger,
+        Verdict=Verdict,
+        HotspotPurpose=wifi_policy.HotspotPurpose,
+        _NON_DISRUPTIVE_ACTIONS=_NON_DISRUPTIVE_ACTIONS,
+        control_action_event=control_action_event,
+        nm=nm,
+        AVAHI_CHECK_INTERVAL=AVAHI_CHECK_INTERVAL,
+        AP_MAX_DURATION=wifi_policy.AP_MAX_DURATION,
+        BOOT_AP_GRACE=wifi_policy.BOOT_AP_GRACE,
+        BOOT_AP_CUTOFF=BOOT_AP_CUTOFF,
+        GW_DOWN_REBOOT_AFTER=GW_DOWN_REBOOT_AFTER,
+        GW_DOWN_RECONNECT_AFTER=GW_DOWN_RECONNECT_AFTER,
+        RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
+        NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
+        CONNECTIVITY_DOWN_DEBOUNCE=CONNECTIVITY_DOWN_DEBOUNCE,
+        AP_IFNAME=AP_IFNAME,
+        check_and_repair_avahi_hostname=partial(wifi_mdns.check_and_repair_avahi_hostname, MDNS_CTX),
+        maybe_reannounce_mdns=partial(wifi_mdns.maybe_reannounce_mdns, MDNS_CTX),
+        revert_expired_log_level=revert_expired_log_level,
+        process_control_action=process_control_action,
+        handle_reconfigure_timeout=handle_reconfigure_timeout,
+        log_on_change=log_on_change,
+        update_known_adapters=partial(wifi_adoption.update_known_adapters, ADOPTION_CTX),
+        gather_recovery_facts=gather_recovery_facts,
+        submit_client_activation=partial(wifi_adoption._submit_client_activation, ADOPTION_CTX),
+        handle_usb_failure_fallback=partial(wifi_adoption.handle_usb_failure_fallback, ADOPTION_CTX),
+        handle_runtime_usb_adoption=partial(wifi_adoption.handle_runtime_usb_adoption, ADOPTION_CTX),
+        bssid_survey_and_roam=partial(wifi_adoption.bssid_survey_and_roam, ADOPTION_CTX),
+        maybe_reset_noip_held_usb=partial(wifi_recovery.maybe_reset_noip_held_usb, RECOVERY_CTX),
+        escalate_dead_adapter_recovery=partial(wifi_recovery.escalate_dead_adapter_recovery, RECOVERY_CTX),
+        publish_network_status=partial(wifi_status.publish_network_status, STATUS_CTX),
+        hotspot_blocks_eth=_hotspot_blocks_eth,
+        leave_setup_mode=leave_setup_mode,
+        enter_setup_mode=enter_setup_mode,
+        set_active_client=partial(wifi_activation._set_active_client, ACTIVATION_CTX),
+        connect_to_configured_wifi=partial(wifi_config.connect_to_configured_wifi, CONFIG_CTX),
+        request_network_down_reboot=_request_network_down_reboot,
+        attempt_recovery_reconnect=partial(wifi_adoption._attempt_recovery_reconnect, ADOPTION_CTX),
+        next_mode=wifi_policy.next_mode,
+        next_recovery_action=wifi_policy.next_recovery_action,
+        RecoveryKind=wifi_policy.RecoveryKind,
+        PURPOSE_TABLE=wifi_policy.PURPOSE_TABLE,
     )
 
 
-def apply_activation_result(result: "ActivationResult", adapter: "Optional[object]" = None) -> bool:
-    return wifi_activation.apply_activation_result(ACTIVATION_CTX, result, adapter)
-
-
-
-def _next_activation_epoch() -> int:
-    return wifi_activation._next_activation_epoch(ACTIVATION_CTX)
-
-
-def _run_activation_job(job: "ActivationJob") -> "ActivationResult":
-    return wifi_activation._run_activation_job(ACTIVATION_CTX, job)
-
-
-# The worker's single-slot job queue and result slot live in wifi_activation
-# (module-global: there is only ever one activation worker for the process).
-# These names alias the shared queue/event objects so existing call sites and
-# tests can reach them directly; _inflight_activation_epoch is exposed through
-# accessor functions instead, since it is reassigned rather than mutated.
-_activation_job_queue = wifi_activation._activation_job_queue
-activation_result_event = wifi_activation.activation_result_event
-
-
-def submit_activation_job(job: "ActivationJob") -> bool:
-    return wifi_activation.submit_activation_job(ACTIVATION_CTX, job)
-
-
-def _post_activation_result(result: "ActivationResult") -> None:
-    wifi_activation._post_activation_result(result)
-
-
-def drain_activation_result() -> "Optional[ActivationResult]":
-    return wifi_activation.drain_activation_result()
-
-
-def start_activation_worker() -> "threading.Thread":
-    return wifi_activation.start_activation_worker(ACTIVATION_CTX)
-
-
-def step_apply_activation_result(pre: "PreFactsContext") -> "Verdict":
-    return wifi_activation.step_apply_activation_result(ACTIVATION_CTX, pre)
-
-
-def resolve_active_client(adapters: list) -> Optional[object]:
-    return wifi_adoption.resolve_active_client(adapters)
-
-
-def handle_usb_failure_fallback(hctx: "HealthContext") -> bool:
-    return wifi_adoption.handle_usb_failure_fallback(ADOPTION_CTX, hctx)
-
-
-def apply_client_failed(event, facts: "Facts") -> bool:
-    return wifi_adoption.apply_client_failed(ADOPTION_CTX, event, facts)
-
-
-# Remember which permanent MACs were last seen as USB, so that an absent active
-# adapter can still be classified as USB after it disappears from discovery.
-# Shared with wifi_recovery via RECOVERY_CTX._known_usb_macs (single owner).
-_known_usb_macs: set[str] = set()
-
-
-def _submit_client_activation(action: "RecoveryAction", facts: "Facts") -> bool:
-    return wifi_adoption._submit_client_activation(ADOPTION_CTX, action, facts)
-
-
-def _saved_network_ssid() -> str:
-    return wifi_adoption._saved_network_ssid(ADOPTION_CTX)
-
-
-def _saved_ssid_visible(hotspot_adapter) -> bool:
-    return wifi_adoption._saved_ssid_visible(ADOPTION_CTX, hotspot_adapter)
-
-
-def _rate_gated_saved_ssid_scan(adapter, last_scan_attr: str,
-                                interval: float, now: float) -> Optional[bool]:
-    return wifi_adoption._rate_gated_saved_ssid_scan(
-        ADOPTION_CTX, adapter, last_scan_attr, interval, now)
-
-
-def _attempt_recovery_reconnect(facts: "Facts") -> None:
-    wifi_adoption._attempt_recovery_reconnect(ADOPTION_CTX, facts)
-
-
-def handle_runtime_usb_adoption(adapters: list, wired_connected: bool,
-                                playing_fn=None) -> bool:
-    return wifi_adoption.handle_runtime_usb_adoption(
-        ADOPTION_CTX, adapters, wired_connected, playing_fn)
-
-
-def _clear_pending_adoption() -> None:
-    wifi_adoption._clear_pending_adoption(ADOPTION_CTX)
-
-
-def update_known_adapters(adapters: list) -> None:
-    wifi_adoption.update_known_adapters(ADOPTION_CTX, adapters)
-
-
-def bssid_survey_and_roam(hctx: "HealthContext") -> bool:
-    return wifi_adoption.bssid_survey_and_roam(ADOPTION_CTX, hctx)
-
-
-# ** DEAD-PHY RECOVERY **
-#
-# Detection, reset budgets, the persistent reboot guard, and the recovery
-# ladder live in platform/wifi_recovery.py.  It no longer receives the whole
-# watcher module: the seam is narrowed (WP-11) to a RecoveryContext (RECOVERY_CTX,
-# built below) exposing only the STATE, the reset/quarantine/reboot constants and
-# the policy helpers the ladder invokes.  TargetAdapter is re-exported for
-# callers/tests.
-
-TargetAdapter = wifi_recovery.TargetAdapter
-INTERFACE_REAPPEAR_TIMEOUT = wifi_recovery.INTERFACE_REAPPEAR_TIMEOUT
-# Adapter-remediation overlay event contract, re-exported so the loop and tests
-# can reference the event shapes without importing wifi_recovery.
-OverlayEvent = wifi_recovery.OverlayEvent
-ClientFailed = wifi_recovery.ClientFailed
-NeedReboot = wifi_recovery.NeedReboot
-
-
-# Only wrappers with a genuine production caller remain: _adapter_recovery_facts
-# (gather_recovery_facts + wifi_status), wait_for_interface_reappears and
-# escalate_dead_adapter_recovery (the dead-PHY reset ladder /
-# step_dead_phy_recovery).
-
-
-def _adapter_recovery_facts(adapter, now, health_fn=None):
-    # Inject the live health check (late-bound module global) so it stays patchable
-    # at the watcher boundary even though RECOVERY_CTX froze its callables.
-    if health_fn is None:
-        health_fn = is_wifi_client_healthy
-    return wifi_recovery.adapter_recovery_facts(RECOVERY_CTX, adapter, now, health_fn)
-
-
-def wait_for_interface_reappears(target, timeout=INTERFACE_REAPPEAR_TIMEOUT):
-    return wifi_recovery.wait_for_interface_reappears(RECOVERY_CTX, target, timeout)
-
-
-def escalate_dead_adapter_recovery(adapters, wired_connected):
-    return wifi_recovery.escalate_dead_adapter_recovery(RECOVERY_CTX, adapters, wired_connected)
-
-
-# The narrowed recovery seam.  Built once from the symbols defined above; the
-# recovery helpers thread this ctx instead of the whole module.  wait_for_-
-# interface_reappears is the watcher wrapper (which re-enters wifi_recovery).
-RECOVERY_CTX = wifi_recovery.RecoveryContext(
-    STATE=STATE,
-    state_lock=state_lock,
-    logger=logger,
-    RECOVERY_STATE=RECOVERY_STATE,
-    AP_IFNAME=AP_IFNAME,
-    USB_RESET_WINDOW=USB_RESET_WINDOW,
-    USB_MAX_RESETS_TOTAL=USB_MAX_RESETS_TOTAL,
-    USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
-    USB_EMERGENCY_BACKOFF=USB_EMERGENCY_BACKOFF,
-    RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,
-    RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
-    DEAD_ADAPTER_DEBOUNCE=DEAD_ADAPTER_DEBOUNCE,
-    DEAD_ADAPTER_REBOOT_AFTER=DEAD_ADAPTER_REBOOT_AFTER,
-    DEAD_ADAPTER_REBOOT_WINDOW=DEAD_ADAPTER_REBOOT_WINDOW,
-    DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW=DEAD_ADAPTER_MAX_REBOOTS_PER_WINDOW,
-    DEAD_ADAPTER_HEALTHY_DECAY=DEAD_ADAPTER_HEALTHY_DECAY,
-    DEAD_ADAPTER_REBOOT_STAMP=DEAD_ADAPTER_REBOOT_STAMP,
-    ADAPTER_FAULT_STATE_PATH=ADAPTER_FAULT_STATE_PATH,
-    is_wifi_client_healthy=is_wifi_client_healthy,
-    client_up_tail=client_up_tail,
-    _activate_committed_on=_activate_committed_on,
-    wait_for_interface_reappears=wait_for_interface_reappears,
-    resolve_hotspot_adapter=resolve_hotspot_adapter,
-    request_guarded_reboot=request_guarded_reboot,
-    _known_usb_macs=_known_usb_macs,
-)
-# ACTIVATION_CTX was built before RECOVERY_CTX existed (the reset/retry rung
-# needs both budget-ledger access and the loop-tail callables); wire it in now.
-ACTIVATION_CTX.RECOVERY_CTX = RECOVERY_CTX
-
-
-# The narrowed adoption seam.  Built once from the symbols defined above; the
-# fallback/adoption/reconnect-episode helpers thread this ctx instead of the
-# whole module.
-ADOPTION_CTX = wifi_adoption.AdoptionContext(
-    STATE=STATE,
-    state_lock=state_lock,
-    logger=logger,
-    RECOVERY_CTX=RECOVERY_CTX,
-    nm=nm,
-    HotspotPurpose=HotspotPurpose,
-    Verdict=Verdict,
-    _last_logged_values=_last_logged_values,
-    RECOVERY_SCAN_INTERVAL=RECOVERY_SCAN_INTERVAL,
-    RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
-    ADOPTION_SCAN_INTERVAL=ADOPTION_SCAN_INTERVAL,
-    USB_ADOPTION_STABLE_PASSES=USB_ADOPTION_STABLE_PASSES,
-    BSSID_SURVEY_INTERVAL=BSSID_SURVEY_INTERVAL,
-    BSSID_USB_SURVEY_INTERVAL=BSSID_USB_SURVEY_INTERVAL,
-    get_configured_network_state=get_configured_network_state,
-    is_wifi_client_healthy=is_wifi_client_healthy,
-    resolve_hotspot_adapter=resolve_hotspot_adapter,
-    hotspot_station_count=hotspot_station_count,
-    query_playing_status=query_playing_status,
-    log_on_change=log_on_change,
-    gather_recovery_facts=gather_recovery_facts,
-    enter_setup_mode=enter_setup_mode,
-    submit_activation_job=submit_activation_job,
-    next_activation_epoch=_next_activation_epoch,
-)
-
-
-# ** RUNTIME NETWORK-STATUS SNAPSHOT **
-#
-# Snapshot construction/publishing lives in platform/wifi_status.py.  It no
-# longer receives the whole watcher module: the seam is narrowed (WP-11) to a
-# StatusContext exposing only the STATE, the three recovery constants and the
-# fact helpers the snapshot surfaces.  The context is built once here; this thin
-# wrapper passes it and remains the loop's entry point (step_publish_state calls
-# it every pass).
-
-import wifi_status
-
-STATUS_CTX = wifi_status.StatusContext(
-    STATE=STATE,
-    state_lock=state_lock,
-    RECOVERY_STATE=RECOVERY_STATE,
-    NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
-    USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
-    RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,
-    is_wired_connected=is_wired_connected,
-    any_wired_path_healthy=any_wired_path_healthy,
-    is_gateway_reachable=is_gateway_reachable,
-    resolve_hotspot_adapter=resolve_hotspot_adapter,
-    hotspot_station_count=hotspot_station_count,
-    _adapter_recovery_facts=_adapter_recovery_facts,
-)
-
-
-def publish_network_status(adapters: Optional[list] = None,
-                           wired_connected: Optional[bool] = None,
-                           wired_ok: Optional[bool] = None,
-                           addresses: Optional[dict] = None,
-                           health_fn=None) -> None:
-    wifi_status.publish_network_status(
-        STATUS_CTX, adapters, wired_connected, wired_ok, addresses, health_fn)
-
-
-# ** AVAHI mDNS HOSTNAME MONITORING **
-#
-# The avahi/mDNS block (hostname-drift repair + address-set re-announce debounce)
-# lives in platform/wifi_mdns.py.  It no longer receives the whole watcher module:
-# the seam is narrowed (WP-11) to an ``MdnsContext`` exposing only the STATE, the
-# constants and the callables it uses.  The context is built once here; these thin
-# wrappers pass it and remain the loop's entry points (so the monitor loop keeps
-# calling ``check_and_repair_avahi_hostname()`` / ``maybe_reannounce_mdns()`` etc.).
-
-import wifi_mdns
-
-MDNS_CTX = wifi_mdns.MdnsContext(
-    STATE=STATE,
-    state_lock=state_lock,
-    NMCLI_QUICK_TIMEOUT=NMCLI_QUICK_TIMEOUT,
-    AVAHI_MISMATCH_GRACE=AVAHI_MISMATCH_GRACE,
-    AVAHI_RESTART_MIN_INTERVAL=AVAHI_RESTART_MIN_INTERVAL,
-    AVAHI_HANDOVER_RESTART_MIN_INTERVAL=AVAHI_HANDOVER_RESTART_MIN_INTERVAL,
-    AVAHI_MAX_RESTART_ATTEMPTS=AVAHI_MAX_RESTART_ATTEMPTS,
-    AVAHI_REANNOUNCE_DEBOUNCE=AVAHI_REANNOUNCE_DEBOUNCE,
-    _DBUS_SEND=_DBUS_SEND,
-    run_cmd=run_cmd,
-    logger=logger,
-    log_on_change=log_on_change,
-    get_system_hostname=get_system_hostname,
-)
-
-
-def get_avahi_registered_hostname() -> Optional[str]:
-    return wifi_mdns.get_avahi_registered_hostname(MDNS_CTX)
-
-
-def restart_avahi_daemon(reason: str) -> bool:
-    return wifi_mdns.restart_avahi_daemon(MDNS_CTX, reason)
-
-
-def mark_mdns_reannounce_pending(reason: str) -> None:
-    wifi_mdns.mark_mdns_reannounce_pending(MDNS_CTX, reason)
-
-
-def _current_mdns_address_set() -> frozenset:
-    return wifi_mdns._current_mdns_address_set(MDNS_CTX)
-
-
-def maybe_reannounce_mdns(now: float) -> None:
-    wifi_mdns.maybe_reannounce_mdns(MDNS_CTX, now)
-
-
-def check_and_repair_avahi_hostname() -> None:
-    wifi_mdns.check_and_repair_avahi_hostname(MDNS_CTX)
-
-
-def _maybe_reset_noip_held_usb(adapters: list, now: float) -> bool:
-    return wifi_recovery.maybe_reset_noip_held_usb(RECOVERY_CTX, adapters, now)
-
-
-# The narrowed monitor-loop seam.  Built last (once every callable it needs
-# exists); network_monitor_loop binds each handler to this ctx with
-# functools.partial when building the ordered phase lists.
-LOOP_CTX = wifi_loop.LoopContext(
-    STATE=STATE,
-    state_lock=state_lock,
-    logger=logger,
-    Verdict=Verdict,
-    HotspotPurpose=HotspotPurpose,
-    _NON_DISRUPTIVE_ACTIONS=_NON_DISRUPTIVE_ACTIONS,
-    control_action_event=control_action_event,
-    nm=nm,
-    AVAHI_CHECK_INTERVAL=AVAHI_CHECK_INTERVAL,
-    AP_MAX_DURATION=AP_MAX_DURATION,
-    BOOT_AP_GRACE=BOOT_AP_GRACE,
-    BOOT_AP_CUTOFF=BOOT_AP_CUTOFF,
-    GW_DOWN_REBOOT_AFTER=GW_DOWN_REBOOT_AFTER,
-    GW_DOWN_RECONNECT_AFTER=GW_DOWN_RECONNECT_AFTER,
-    RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
-    NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
-    CONNECTIVITY_DOWN_DEBOUNCE=CONNECTIVITY_DOWN_DEBOUNCE,
-    AP_IFNAME=AP_IFNAME,
-    check_and_repair_avahi_hostname=check_and_repair_avahi_hostname,
-    maybe_reannounce_mdns=maybe_reannounce_mdns,
-    revert_expired_log_level=revert_expired_log_level,
-    process_control_action=process_control_action,
-    handle_reconfigure_timeout=handle_reconfigure_timeout,
-    log_on_change=log_on_change,
-    update_known_adapters=update_known_adapters,
-    gather_recovery_facts=gather_recovery_facts,
-    submit_client_activation=_submit_client_activation,
-    handle_usb_failure_fallback=handle_usb_failure_fallback,
-    handle_runtime_usb_adoption=handle_runtime_usb_adoption,
-    bssid_survey_and_roam=bssid_survey_and_roam,
-    maybe_reset_noip_held_usb=_maybe_reset_noip_held_usb,
-    escalate_dead_adapter_recovery=escalate_dead_adapter_recovery,
-    publish_network_status=publish_network_status,
-    hotspot_blocks_eth=_hotspot_blocks_eth,
-    leave_setup_mode=leave_setup_mode,
-    enter_setup_mode=enter_setup_mode,
-    set_active_client=_set_active_client,
-    connect_to_configured_wifi=connect_to_configured_wifi,
-    request_network_down_reboot=_request_network_down_reboot,
-    attempt_recovery_reconnect=_attempt_recovery_reconnect,
-    next_mode=next_mode,
-    next_recovery_action=next_recovery_action,
-    RecoveryKind=RecoveryKind,
-    PURPOSE_TABLE=PURPOSE_TABLE,
-)
+build_contexts()
 
 
 if __name__ == "__main__":
@@ -2524,12 +2079,12 @@ if __name__ == "__main__":
     # single managed profile and delete other saved client profiles (marker-gated,
     # runs at most once).  Before the autoconnect sweep so it can query the active
     # connections while they are untouched.
-    import_first_boot_wifi_profile()
+    wifi_config.import_first_boot_wifi_profile(CONFIG_CTX)
     # Idempotently disable NM autoconnect on every managed non-AP client profile
     # (self-healing for pre-existing/installer-imported autoconnect=yes profiles),
     # so the watcher is the sole agent that brings a client up.
     try:
-        migrate_client_profiles_autoconnect_no()
+        wifi_config.migrate_client_profiles_autoconnect_no(CONFIG_CTX)
     except Exception as e:
         logger.warning("autoconnect=no startup migration failed: %s", e)
     # Initial client bring-up is done by the monitor loop's BOOT-window ladder rung
@@ -2549,10 +2104,10 @@ if __name__ == "__main__":
     )
 
     # Generate the per-boot control token before accepting any control request.
-    wifi_web.init_control_token(_self_module())
+    wifi_web.init_control_token(WEB_CTX)
 
     # Start the off-thread activation worker; idle until a job is submitted.
-    start_activation_worker()
+    wifi_activation.start_activation_worker(ACTIVATION_CTX)
 
     # Start the network monitor in a background thread
     monitor_thread = threading.Thread(target=network_monitor_loop, daemon=True)

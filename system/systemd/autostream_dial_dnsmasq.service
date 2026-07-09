@@ -1,7 +1,7 @@
 # /etc/systemd/system/autostream_dial_dnsmasq.service
 #
 # Captive-portal DNS for the autostream dial AP mode.
-# Started by platform/wifi_watcher (via APP_DNSMASQ_SERVICE env var).
+# Started by platform/wifi_watcher.py (via APP_DNSMASQ_SERVICE env var).
 # The system dnsmasq.service is masked during install to avoid port conflicts.
 #
 # This file is part of autostream dial.

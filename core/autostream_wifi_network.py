@@ -4,7 +4,7 @@
 Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 
 Dedicated, root-owned network-facts and bounded-primitive helper for the
-Autostream Wi-Fi recovery watcher (``platform/wifi_watcher``).
+Autostream Wi-Fi recovery watcher (``platform/wifi_watcher.py``).
 
 Responsibility boundary (see the implementation plan, section 2.7):
 

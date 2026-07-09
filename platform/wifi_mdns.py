@@ -6,7 +6,7 @@ Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 Avahi / mDNS hostname monitoring and host-record re-announcement for the
 Autostream Wi-Fi watcher.
 
-This module owns the two mDNS concerns the watcher previously carried inline:
+This module owns the two mDNS concerns:
   * hostname-drift repair (avahi renames itself on an mDNS conflict; we detect the
     mismatch, wait out a grace period, then restart avahi-daemon so it reclaims the
     expected name — rate-limited and capped per boot), and
@@ -15,12 +15,11 @@ This module owns the two mDNS concerns the watcher previously carried inline:
     ``<hostname>.local`` answers; explicit handovers nudge the same debounce).
 
 Every function takes an :class:`MdnsContext` as its first argument — a narrow view
-of the watcher exposing only the STATE fields, constants and callables this module
-uses (the ``w`` seam narrowed, WP-11).  The watcher constructs the context once and
-passes it where the whole module used to go; internal cross-calls between these
-functions are now direct (they take the same ``ctx``).  ``autostream_wifi_network``
-is imported directly because it is a shared module object (patching it affects both
-modules).
+of the watcher exposing only the MdnsState fragment, constants and callables this
+module uses.  The watcher constructs the context once and passes it in; internal
+cross-calls between these functions are direct (they take the same ``ctx``).
+``autostream_wifi_network`` is imported directly because it
+is a shared module object (patching it affects both modules).
 """
 from __future__ import annotations
 
@@ -37,12 +36,12 @@ class MdnsContext:
     """Narrow view of the watcher that the mDNS helpers depend on.
 
     Constructed once by the watcher and passed to every function here.  It carries
-    the shared STATE object and its lock, the avahi/mDNS constants, and the small
+    the MdnsState fragment and its lock, the avahi/mDNS constants, and the small
     set of watcher callables the helpers invoke — nothing else of the watcher is
     reachable from this module.
     """
 
-    STATE: object
+    MDNS_STATE: object
     state_lock: object
     # Constants
     NMCLI_QUICK_TIMEOUT: float
@@ -124,10 +123,10 @@ def mark_mdns_reannounce_pending(ctx: MdnsContext, reason: str) -> None:
     """
     now = time.monotonic()
     with ctx.state_lock:
-        ctx.STATE.mdns_reannounce_pending = True
+        ctx.MDNS_STATE.mdns_reannounce_pending = True
         # Anchor the debounce so the loop waits for the path to settle before
         # restarting, even when our observed address set looks unchanged.
-        ctx.STATE.mdns_address_changed_at = now
+        ctx.MDNS_STATE.mdns_address_changed_at = now
     ctx.logger.info(
         "mDNS re-announce requested (%s); will fire once the address set settles",
         reason,
@@ -173,10 +172,10 @@ def maybe_reannounce_mdns(ctx: MdnsContext, now: float) -> None:
     current = _current_mdns_address_set(ctx)
     fire = False
     with ctx.state_lock:
-        previous = ctx.STATE.mdns_address_set
+        previous = ctx.MDNS_STATE.mdns_address_set
 
         if previous != current:
-            ctx.STATE.mdns_address_set = current
+            ctx.MDNS_STATE.mdns_address_set = current
 
         if previous is None:
             # First observation: establish a baseline without re-announcing.  Any
@@ -187,7 +186,7 @@ def maybe_reannounce_mdns(ctx: MdnsContext, now: float) -> None:
         if current != previous:
             # Address set changed this pass; (re)start the debounce timer and wait
             # for it to settle before acting so flapping cannot re-poison clients.
-            ctx.STATE.mdns_address_changed_at = now
+            ctx.MDNS_STATE.mdns_address_changed_at = now
             ctx.logger.info(
                 "mDNS published address set changed -> %s; scheduling re-announce",
                 sorted(current),
@@ -196,13 +195,13 @@ def maybe_reannounce_mdns(ctx: MdnsContext, now: float) -> None:
 
         # Set unchanged this pass.  A re-announce is due only when something armed
         # the debounce (a prior change or an explicit handover nudge).
-        changed_at = ctx.STATE.mdns_address_changed_at
-        if changed_at is None and not ctx.STATE.mdns_reannounce_pending:
+        changed_at = ctx.MDNS_STATE.mdns_address_changed_at
+        if changed_at is None and not ctx.MDNS_STATE.mdns_reannounce_pending:
             return
         if changed_at is not None and (now - changed_at) < ctx.AVAHI_REANNOUNCE_DEBOUNCE:
             return
 
-        last_restart = ctx.STATE.last_avahi_handover_restart
+        last_restart = ctx.MDNS_STATE.last_avahi_handover_restart
         if (
             last_restart is not None
             and (now - last_restart) < ctx.AVAHI_HANDOVER_RESTART_MIN_INTERVAL
@@ -216,9 +215,9 @@ def maybe_reannounce_mdns(ctx: MdnsContext, now: float) -> None:
             return
 
         # Commit: consume the trigger and record the restart time under the lock.
-        ctx.STATE.mdns_address_changed_at = None
-        ctx.STATE.mdns_reannounce_pending = False
-        ctx.STATE.last_avahi_handover_restart = now
+        ctx.MDNS_STATE.mdns_address_changed_at = None
+        ctx.MDNS_STATE.mdns_reannounce_pending = False
+        ctx.MDNS_STATE.last_avahi_handover_restart = now
         fire = True
 
     if fire:
@@ -259,13 +258,13 @@ def check_and_repair_avahi_hostname(ctx: MdnsContext) -> None:
     now = time.monotonic()
 
     with ctx.state_lock:
-        ctx.STATE.avahi_hostname = avahi_host
+        ctx.MDNS_STATE.avahi_hostname = avahi_host
 
     if avahi_host.lower() == expected:
         with ctx.state_lock:
-            was_mismatched = ctx.STATE.avahi_mismatch_start is not None
-            ctx.STATE.avahi_mismatch_start = None
-            ctx.STATE.avahi_restart_count = 0
+            was_mismatched = ctx.MDNS_STATE.avahi_mismatch_start is not None
+            ctx.MDNS_STATE.avahi_mismatch_start = None
+            ctx.MDNS_STATE.avahi_restart_count = 0
         if was_mismatched:
             ctx.logger.info("avahi mDNS hostname restored to expected value '%s'", avahi_host)
         else:
@@ -274,15 +273,15 @@ def check_and_repair_avahi_hostname(ctx: MdnsContext) -> None:
 
     # --- Mismatch ---
     with ctx.state_lock:
-        if ctx.STATE.avahi_mismatch_start is None:
-            ctx.STATE.avahi_mismatch_start = now
+        if ctx.MDNS_STATE.avahi_mismatch_start is None:
+            ctx.MDNS_STATE.avahi_mismatch_start = now
             ctx.logger.warning(
                 "avahi mDNS hostname mismatch detected: avahi='%s', expected='%s'",
                 avahi_host, expected,
             )
-        mismatch_duration = now - ctx.STATE.avahi_mismatch_start
-        restart_count = ctx.STATE.avahi_restart_count
-        last_restart = ctx.STATE.last_avahi_restart
+        mismatch_duration = now - ctx.MDNS_STATE.avahi_mismatch_start
+        restart_count = ctx.MDNS_STATE.avahi_restart_count
+        last_restart = ctx.MDNS_STATE.last_avahi_restart
 
     # Give up after the maximum number of restart attempts (disabled when -1)
     if ctx.AVAHI_MAX_RESTART_ATTEMPTS >= 0 and restart_count >= ctx.AVAHI_MAX_RESTART_ATTEMPTS:
@@ -304,9 +303,9 @@ def check_and_repair_avahi_hostname(ctx: MdnsContext) -> None:
         return
 
     with ctx.state_lock:
-        ctx.STATE.last_avahi_restart = now
-        ctx.STATE.avahi_restart_count += 1
-        new_count = ctx.STATE.avahi_restart_count
+        ctx.MDNS_STATE.last_avahi_restart = now
+        ctx.MDNS_STATE.avahi_restart_count += 1
+        new_count = ctx.MDNS_STATE.avahi_restart_count
 
     attempt_str = (
         f"{new_count}/{ctx.AVAHI_MAX_RESTART_ATTEMPTS}"

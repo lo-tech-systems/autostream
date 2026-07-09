@@ -6,10 +6,10 @@ policy rows, and the pure forward-mode and recovery-ladder classifiers plus
 their plain policy input types.
 
 Nothing here reads ``STATE``, runs a subprocess, performs an effect, or depends
-on the watcher's ``w`` seam or on live ``autostream_wifi_network`` adapter
-objects.  ``platform/wifi_watcher`` re-exports these names and adapts its
-runtime facts into the plain policy inputs, so this module stays importable and
-testable on its own.
+on any watcher context or on live ``autostream_wifi_network`` adapter
+objects.  ``platform/wifi_watcher.py`` imports this module directly and adapts
+its runtime facts into the plain policy inputs, so this module stays
+importable and testable on its own.
 """
 
 from __future__ import annotations
@@ -121,12 +121,20 @@ class RecoveryFacts:
     saved_configured: bool            # a client profile is committed
     wired_ok: bool
     taken_at: float
+    # True when the preferred USB's one-per-episode RESET_USB reset (rung 1c)
+    # has already been spent this offline episode.  Keyed to
+    # preferred_usb_ifname specifically — that is the adapter whose rung this
+    # flag gates, not necessarily the currently-active adapter (a wedged
+    # preferred USB is, by definition, not the healthy active client).
+    # Default preserves existing positional/keyword RecoveryFacts constructions.
+    failover_reset_spent: bool = False
 
 
 class RecoveryKind(Enum):
     """The single recovery remediation the ladder selects for this pass."""
     HOLD = "hold"                      # active path fine / Ethernet / defer to dead-PHY reset
     ACTIVATE_USB = "activate_usb"      # (re)activate the committed profile on the preferred USB
+    RESET_USB = "reset_usb"            # one budgeted hardware reset on a wedged preferred USB
     ACTIVATE_ONBOARD = "activate_onboard"  # run the client on the built-in radio (drop AP if hosting)
     ENTER_HOTSPOT = "enter_hotspot"    # last resort: no radio can carry a client
 
@@ -145,12 +153,12 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
     """Pure recovery-ladder classifier: state + RecoveryFacts -> RecoveryAction.
 
     Like next_mode() this reads a pre-gathered immutable snapshot only: no STATE
-    mutation, no subprocess, no effects, no ``w`` seam.  It owns the
+    mutation, no subprocess, no effects.  It owns the single
     *client-path-vs-hotspot* priority ladder (Ethernet > preferred USB > onboard >
-    hotspot-last-resort) that was previously scattered across the boot-entry,
-    USB-failure fallback, and recovery-hotspot probe sites.  The low-level USB
-    reset/quarantine/reboot *mechanics* remain owned by the dead-PHY module; a
-    wedged USB with no onboard alternative is deferred to it via HOLD.
+    hotspot-last-resort) used at boot entry, on USB failure, and at the
+    recovery-hotspot probe.  The low-level USB reset/quarantine/reboot
+    *mechanics* remain owned by the dead-PHY module; a wedged USB with no
+    onboard alternative is deferred to it via HOLD.
     """
     by = facts.adapters_by_ifname
     active = facts.active_ifname
@@ -189,6 +197,26 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
     if usb_has_carrier and active == preferred_usb:
         return RecoveryAction(RecoveryKind.HOLD, reason="usb_active_no_ip")
 
+    # (1c) The preferred USB is wedged (link-down), resettable, still has reset
+    #      budget, is not the adapter hosting the recovery hotspot, and this
+    #      offline episode has not already spent its one budgeted reset ->
+    #      reset it before falling to onboard (a successful reset resumes on
+    #      the same MAC/lease/IP; onboard failover changes identity).
+    #      preferred_usb already excludes a quarantined/suppressed/disabled
+    #      adapter (see its selection above), so this rung tests only the
+    #      reset-specific facts.  Never fires for the hotspot-hosting radio —
+    #      the single-radio dead-PHY ladder owns that case.
+    if (
+        usb_rf is not None
+        and usb_rf.link_down is True
+        and usb_rf.resettable
+        and usb_rf.reset_budget_ok
+        and preferred_usb != facts.hotspot_ifname
+        and not facts.failover_reset_spent
+    ):
+        return RecoveryAction(RecoveryKind.RESET_USB, ifname=preferred_usb,
+                              reason="usb_wedged_reset_first")
+
     # (2) No usable USB right now (absent / quarantined / no-IP-suppressed / wedged).
     #     Try the onboard radio as a client before any hotspot — this is the
     #     boot-entry onboard-first rule AND the exit edge from a recovery hotspot.
@@ -210,7 +238,8 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
 
 
 # ---- USB BSSID ownership: table maintenance + selection/roam policy --------
-# Pure functions over a passed-in table dict (STATE.bssid_table) — no STATE, no
+# Pure functions over a passed-in per-interface table dict, one entry per
+# scanning interface (ADOPTION_STATE.bssid_tables[ifname]) — no STATE, no
 # effects, consistent with this module's contract.  Units are nmcli SIGNAL
 # percent (0-100) throughout.
 
@@ -222,6 +251,8 @@ ROAM_LOW_SIGNAL = 50            # "current link is weak" floor (approx -75 dBm)
 ROAM_MARGIN = 12                # required candidate advantage (approx 6 dB)
 ROAM_LOW_MARGIN = 6             # relaxed advantage when current <= low floor
 ROAM_HOLDOFF_SECS = 900         # min gap between roams / after activation
+BSSID_ROAM_REQUIRED_SCANS = 3   # consecutive eligible scans preferring the same candidate
+BSSID_ROAM_MIN_SIGNAL = 55      # absolute candidate floor for proactive optimisation roams
 
 
 def update_bssid_table(table: dict, rows: list, ssid: str, now: float) -> tuple:
@@ -299,12 +330,14 @@ def select_bssid(table: dict, now: float, exclude: str = "") -> str:
 
 
 def next_roam_target(table: dict, current_bssid: str, now: float, playing,
-                     last_roam_or_activation) -> str:
+                     last_roam_or_activation, *, min_signal: int = BSSID_ROAM_MIN_SIGNAL) -> str:
     """Pure roam decision: "" means hold, otherwise the target BSSID.
 
     Roams only when playback is exactly False (None defers), the holdoff has
-    elapsed since the last roam/activation, and the best fresh, unquarantined
-    candidate clears the signal margin over the current AP.
+    elapsed since the last roam/activation, the best fresh, unquarantined
+    candidate clears the signal margin over the current AP, AND the
+    candidate's own signal is at least *min_signal* — a candidate must be
+    strong in absolute terms, not just less bad than the current AP.
     """
     if playing is not False:
         return ""
@@ -318,6 +351,8 @@ def next_roam_target(table: dict, current_bssid: str, now: float, playing,
     current_entry = table.get(current_bssid)
     current_signal = current_entry["signal"] if current_entry else 0
     candidate_signal = table[candidate]["signal"]
+    if candidate_signal < min_signal:
+        return ""
 
     if candidate_signal >= current_signal + ROAM_MARGIN:
         return candidate
@@ -328,3 +363,52 @@ def next_roam_target(table: dict, current_bssid: str, now: float, playing,
 
 def clear_bssid_table(table: dict) -> None:
     table.clear()
+
+
+def bssid_table_for_interface(tables: dict, ifname: str) -> dict:
+    """The per-BSSID table for *ifname*, creating an empty one if absent."""
+    return tables.setdefault(ifname, {})
+
+
+def clear_bssid_tables(tables: dict) -> None:
+    """Drop every interface's BSSID table (e.g. on a committed-SSID change)."""
+    tables.clear()
+
+
+def format_bssid_scan_debug(ifname: str, rescan: bool, purpose: str,
+                             rows: Optional[list], ssid: str) -> str:
+    """One-line DEBUG summary of a raw BSSID scan result.
+
+    ``rows`` is the raw scan output (pre-table); ``rows=None`` renders a
+    distinct failure form.  Otherwise the row count is the rows matching
+    *ssid*, listed BSSID/signal descending and capped at the strongest 8,
+    with a trailing ``*`` marking the in-use row.
+    """
+    prefix = f"BSSID scan on {ifname} (rescan={rescan}, {purpose}):"
+    if rows is None:
+        return f"{prefix} scan failed"
+    matching = [row for row in rows if row.get("ssid") == ssid]
+    matching.sort(key=lambda row: row["signal"], reverse=True)
+    entries = ", ".join(
+        f"{row['bssid']} {row['signal']}{'*' if row.get('in_use') else ''}"
+        for row in matching[:8])
+    return f"{prefix} {len(matching)} rows for '{ssid}': {entries}"
+
+
+def update_roam_streak(streak: dict, ifname: str, candidate: str, now: float) -> dict:
+    """Advance the consecutive-scan roam-candidate streak; returns a new dict.
+
+    An empty *candidate* resets the streak to {}. The same (ifname, bssid) as
+    the current streak increments its count and refreshes last_seen. A
+    different candidate or interface starts a fresh streak at count=1.
+    """
+    if not candidate:
+        return {}
+    if streak.get("ifname") == ifname and streak.get("bssid") == candidate:
+        return {
+            "ifname": ifname,
+            "bssid": candidate,
+            "count": streak["count"] + 1,
+            "last_seen": now,
+        }
+    return {"ifname": ifname, "bssid": candidate, "count": 1, "last_seen": now}

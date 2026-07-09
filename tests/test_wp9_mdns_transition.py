@@ -16,7 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 
-WIFI_WATCHER_SRC = (REPO_ROOT / "platform" / "wifi_watcher").read_text(encoding="utf-8")
+WIFI_WATCHER_SRC = (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
 WIFI_NETWORK_SRC = (REPO_ROOT / "core" / "autostream_wifi_network.py").read_text(encoding="utf-8")
 
 # Known mDNS service types used by autostream
