@@ -44,6 +44,7 @@ class LoopContext:
     STATE: object
     APPLY_STATE: object
     CONTROL_STATE: object
+    RECOVERY_STATE: object
     state_lock: object
     logger: logging.Logger
     Verdict: object
@@ -466,8 +467,11 @@ def step_publish_state(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
         if hctx.conn_ok:
             ctx.STATE.been_online_this_boot = True
             # A healthy pass ends the offline episode: reset the onboard-failure
-            # bound so a later failure gets a fresh set of attempts.
+            # bound so a later failure gets a fresh set of attempts, and clear
+            # the RESET_USB per-episode spend so a later wedge gets its one
+            # budgeted reset again.
             ctx.STATE.onboard_activation_failures = 0
+            ctx.RECOVERY_STATE.failover_reset_done.clear()
         if hctx.active_path_ok and not ctx.STATE.setup_mode:
             ctx.STATE.last_active_path_seen = hctx.now
             ctx.STATE.conn_reboot_retry_after = 0.0

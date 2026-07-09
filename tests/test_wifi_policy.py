@@ -5,7 +5,8 @@ wifi_policy directly, with no watcher / Flask / sysutils load, proving the
 decision core is genuinely standalone and effect-free (constraint 10).  State
 and facts are supplied as plain SimpleNamespace stand-ins; the per-adapter
 recovery facts are duck-typed (next_recovery_action reads only .healthy,
-.link_down, .quarantined, .noip_suppressed, .managed).
+.link_down, .quarantined, .noip_suppressed, .managed, .resettable,
+.reset_budget_ok).
 """
 
 from __future__ import annotations
@@ -114,20 +115,23 @@ class TestNextRecoveryAction:
     P = wifi_policy.HotspotPurpose
 
     def _arf(self, ifname, *, is_usb=False, is_builtin=False, healthy=False,
-             link_down=False, quarantined=False, noip_suppressed=False, managed=True):
+             link_down=False, quarantined=False, noip_suppressed=False, managed=True,
+             resettable=False, reset_budget_ok=False):
         return SimpleNamespace(
             ifname=ifname, is_usb=is_usb, is_builtin=is_builtin, managed=managed,
             healthy=healthy, link_down=link_down, quarantined=quarantined,
-            noip_suppressed=noip_suppressed,
+            noip_suppressed=noip_suppressed, resettable=resettable,
+            reset_budget_ok=reset_budget_ok,
         )
 
     def _rf(self, records, *, onboard="", usb=(), preferred_usb="", hotspot="",
-            active="", saved=True, wired_ok=False, now=1000.0):
+            active="", saved=True, wired_ok=False, now=1000.0, failover_reset_spent=False):
         return wifi_policy.RecoveryFacts(
             adapters_by_ifname={r.ifname: r for r in records},
             onboard_ifname=onboard, usb_ifnames=tuple(usb),
             preferred_usb_ifname=preferred_usb, hotspot_ifname=hotspot,
             active_ifname=active, saved_configured=saved, wired_ok=wired_ok, taken_at=now,
+            failover_reset_spent=failover_reset_spent,
         )
 
     def _act(self, facts):
@@ -186,6 +190,89 @@ class TestNextRecoveryAction:
         usb = self._arf("wlan1", is_usb=True, link_down=True)
         f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1")
         assert self._act(f).kind is self.K.HOLD
+
+    # ---- RESET_USB ladder rung (1c) ----
+
+    def test_wedged_resettable_usb_outranks_activate_onboard(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.RESET_USB and a.ifname == "wlan1"
+
+    def test_falls_through_when_not_resettable(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=False, reset_budget_ok=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_budget_spent(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=False)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_quarantined_suppressed_or_disabled(self):
+        # A quarantined/suppressed/disabled adapter is never selected as
+        # preferred_usb upstream (gather_recovery_facts filters it out); model
+        # that here with preferred_usb="" so the ladder sees no USB candidate.
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True, quarantined=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_episode_reset_already_spent(self):
+        onboard = self._arf("wlan0", is_builtin=True)
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([onboard, usb], onboard="wlan0", usb=("wlan1",),
+                     preferred_usb="wlan1", active="wlan1", failover_reset_spent=True)
+        a = self._act(f)
+        assert a.kind is self.K.ACTIVATE_ONBOARD
+
+    def test_falls_through_when_link_not_down_holds_no_ip(self):
+        # Carrier-up no-IP keeps HOLD usb_active_no_ip (rung 1b) regardless of
+        # resettable/reset_budget_ok — RESET_USB never fires for that class.
+        usb = self._arf("wlan1", is_usb=True, link_down=False, healthy=False,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1")
+        a = self._act(f)
+        assert a.kind is self.K.HOLD and a.reason == "usb_active_no_ip"
+
+    def test_never_returned_when_wired_ok(self):
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1",
+                     wired_ok=True)
+        assert self._act(f).kind is self.K.HOLD
+
+    def test_never_returned_when_unconfigured(self):
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1",
+                     saved=False)
+        a = self._act(f)
+        assert a.kind is self.K.ENTER_HOTSPOT
+
+    def test_never_returned_when_wedged_usb_is_hotspot_adapter(self):
+        usb = self._arf("wlan1", is_usb=True, link_down=True,
+                        resettable=True, reset_budget_ok=True)
+        f = self._rf([usb], usb=("wlan1",), preferred_usb="wlan1", active="wlan1",
+                     hotspot="wlan1")
+        a = self._act(f)
+        assert a.kind is not self.K.RESET_USB
+        assert a.kind is self.K.HOLD and a.reason == "usb_only_defer_reset_ladder"
 
     def test_no_w_seam(self):
         assert "w" not in inspect.signature(wifi_policy.next_recovery_action).parameters

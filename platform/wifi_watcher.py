@@ -1409,6 +1409,7 @@ def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
         in_setup = STATE.setup_mode
         onboard_budget_spent = (
             STATE.onboard_activation_failures >= ONBOARD_ACTIVATION_MAX_FAILURES)
+        failover_reset_done = set(RECOVERY_STATE.failover_reset_done)
 
     preferred_usb = ""
     for a in usb:
@@ -1417,6 +1418,13 @@ def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
                 and not rf.noip_suppressed and not rf.disabled):
             preferred_usb = a.ifname
             break
+
+    # failover_reset_spent is keyed to preferred_usb specifically (the adapter
+    # whose RESET_USB rung it gates), not the active client.
+    preferred_usb_rf = by_ifname.get(preferred_usb) if preferred_usb else None
+    failover_reset_spent = bool(
+        preferred_usb_rf is not None and preferred_usb_rf.stable_id
+        and preferred_usb_rf.stable_id in failover_reset_done)
 
     # The onboard is only offered as a client rung when it is actually usable
     # (managed, not quarantined, not no-IP-suppressed) — mirroring preferred_usb.
@@ -1442,6 +1450,7 @@ def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
         saved_configured=facts.wifi_configured,
         wired_ok=bool(facts.wired_ok),
         taken_at=now,
+        failover_reset_spent=failover_reset_spent,
     )
 
 
@@ -1992,6 +2001,7 @@ def build_contexts() -> None:
         STATE=STATE,
         APPLY_STATE=APPLY_STATE,
         CONTROL_STATE=CONTROL_STATE,
+        RECOVERY_STATE=RECOVERY_STATE,
         state_lock=state_lock,
         logger=logger,
         Verdict=Verdict,

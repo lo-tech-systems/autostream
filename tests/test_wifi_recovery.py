@@ -616,6 +616,31 @@ class TestAdapterFaultStatePersistence:
         watcher.wifi_recovery.load_adapter_fault_state(watcher)
         assert watcher.RECOVERY_STATE.adapter_noip_ledgers == {}
 
+    def test_failover_reset_done_does_not_persist(self, watcher):
+        """RF-1: failover_reset_done is a per-episode marker (an offline
+        episode never spans a reboot), so it must not round-trip through
+        persist/load like the reset/no-IP ledgers do."""
+        wr = watcher.wifi_recovery
+        target = self._target(watcher, "usb-D")
+        wr.record_adapter_reset(watcher, target, now=1000.0)
+        watcher.RECOVERY_STATE.failover_reset_done.add("usb-D")
+        assert os.path.exists(watcher.ADAPTER_FAULT_STATE_PATH)
+        with open(watcher.ADAPTER_FAULT_STATE_PATH, "r", encoding="utf-8") as f:
+            on_disk = json.load(f)
+        assert "failover_reset_done" not in on_disk
+
+        # Simulate a restart: drop in-memory state (including the episode
+        # marker) and reload from disk.
+        watcher.RECOVERY_STATE.adapter_noip_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_reset_ledgers = {}
+        watcher.RECOVERY_STATE.failover_reset_done = set()
+        wr.load_adapter_fault_state(watcher)
+        # The reset ledger (which the budget check reads) survives restart...
+        assert watcher.RECOVERY_STATE.adapter_reset_ledgers.get("usb-D") is not None
+        # ...but the episode-scoped spend marker does not: load_adapter_fault_state
+        # never touches it, so it stays whatever the caller set it to.
+        assert watcher.RECOVERY_STATE.failover_reset_done == set()
+
 
 class TestManualAdapterControl:
     """Manual clear / disable / enable adapter control actions."""
@@ -878,6 +903,69 @@ class TestRecoveryFacts:
              patch.object(watcher.wifi_net, "read_link_down", return_value=True):
             rec = watcher.gather_recovery_facts(facts)
         assert rec.onboard_ifname == ""
+
+
+class TestResetBudgetStableIdParity:
+    """RF-1: the stable-id-keyed budget check
+    (``adapter_reset_budget_exhausted_for_stable_id``) must agree exactly
+    with the TargetAdapter-taking form it now delegates to, across a matrix
+    of ledger states (empty, within budget, per-window exhausted, total
+    exhausted, unknown id)."""
+
+    def _target(self, watcher, stable_id="usb-Z"):
+        return watcher.wifi_recovery.TargetAdapter(
+            ifname="wlan1", stable_id=stable_id, kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=True)
+
+    def test_matches_across_ledger_states(self, watcher):
+        wr = watcher.wifi_recovery
+        now = 1000.0
+
+        # Unknown id: neither budget is exhausted.
+        target_unknown = self._target(watcher, "usb-unknown")
+        assert (wr.adapter_reset_budget_exhausted(watcher, target_unknown, now)
+                == wr.adapter_reset_budget_exhausted_for_stable_id(
+                    watcher, target_unknown.stable_id, now))
+
+        # Within budget (one recent reset, well under the per-window cap).
+        watcher.RECOVERY_STATE.adapter_reset_ledgers["usb-within"] = {
+            "recent_resets": [now - 10], "total_resets": 1, "quarantined_until": None,
+        }
+        target_within = self._target(watcher, "usb-within")
+        assert wr.adapter_reset_budget_exhausted(watcher, target_within, now) is False
+        assert (wr.adapter_reset_budget_exhausted(watcher, target_within, now)
+                == wr.adapter_reset_budget_exhausted_for_stable_id(
+                    watcher, target_within.stable_id, now))
+
+        # Per-window budget exhausted.
+        watcher.RECOVERY_STATE.adapter_reset_ledgers["usb-window"] = {
+            "recent_resets": [now - 10] * watcher.USB_MAX_RESETS_PER_WINDOW,
+            "total_resets": watcher.USB_MAX_RESETS_PER_WINDOW, "quarantined_until": None,
+        }
+        target_window = self._target(watcher, "usb-window")
+        assert wr.adapter_reset_budget_exhausted(watcher, target_window, now) is True
+        assert (wr.adapter_reset_budget_exhausted(watcher, target_window, now)
+                == wr.adapter_reset_budget_exhausted_for_stable_id(
+                    watcher, target_window.stable_id, now))
+
+        # Total budget exhausted (recent resets pruned out of the window).
+        watcher.RECOVERY_STATE.adapter_reset_ledgers["usb-total"] = {
+            "recent_resets": [], "total_resets": watcher.USB_MAX_RESETS_TOTAL,
+            "quarantined_until": None,
+        }
+        target_total = self._target(watcher, "usb-total")
+        assert wr.adapter_reset_budget_exhausted(watcher, target_total, now) is True
+        assert (wr.adapter_reset_budget_exhausted(watcher, target_total, now)
+                == wr.adapter_reset_budget_exhausted_for_stable_id(
+                    watcher, target_total.stable_id, now))
+
+    def test_none_target_and_empty_stable_id_agree(self, watcher):
+        wr = watcher.wifi_recovery
+        assert (wr.adapter_reset_budget_exhausted(watcher, None, 1000.0)
+                == wr.adapter_reset_budget_exhausted_for_stable_id(watcher, None, 1000.0)
+                == wr.adapter_reset_budget_exhausted_for_stable_id(watcher, "", 1000.0)
+                is False)
 
 
 class TestExplicitModelInvariants:

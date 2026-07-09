@@ -51,6 +51,13 @@ class RecoveryState:
     # healthy active client (success) or disappears, so a fresh hold-back may
     # reset again.
     noip_holdback_reset_done: set = field(default_factory=set)
+    # Stable-ids that already spent their one budgeted USB reset at the
+    # RESET_USB ladder rung this offline episode (distinct from
+    # noip_holdback_reset_done, which guards the idle-spare hold-back reset).
+    # Not persisted: an offline episode never spans a reboot.  Cleared on a
+    # healthy pass (fresh episode) and when client_up_tail's clear_dead_adapter
+    # effect runs.
+    failover_reset_done: set = field(default_factory=set)
 
     # ---- Dead-PHY recovery ----
     dead_adapter_ifname: str = ""               # interface currently classed dead ("" = none)
@@ -614,19 +621,50 @@ def update_dead_adapter_detection(ctx, adapters: list, target: Optional[TargetAd
     return result
 
 
+def _reset_budget_counts_for_stable_id(ctx, stable_id: Optional[str], now: float) -> tuple:
+    """Return (recent, total) reset counts for *stable_id* after pruning.
+
+    Creates an empty ledger entry when the id is unknown and non-empty,
+    matching the legacy TargetAdapter-keyed lookup's side effect (the entry is
+    pruned away again on a later pass if it stays empty).
+    """
+    with ctx.state_lock:
+        _prune_adapter_ledgers_locked(ctx, now)
+        ledger = None
+        if stable_id:
+            ledgers = ctx.RECOVERY_STATE.adapter_reset_ledgers
+            ledger = ledgers.get(stable_id)
+            if ledger is None:
+                ledger = _new_adapter_ledger()
+                ledgers[stable_id] = ledger
+        recent = len(ledger["recent_resets"]) if ledger else 0
+        total = int(ledger.get("total_resets", 0) or 0) if ledger else 0
+    return recent, total
+
+
+def adapter_reset_budget_exhausted_for_stable_id(ctx, stable_id: Optional[str], now: float) -> bool:
+    """True when *stable_id* has hit either the per-window or total reset budget.
+
+    Stable-id-keyed form: the reset ledgers are already keyed by stable id, so
+    this needs no TargetAdapter construction.  Used directly for
+    ``AdapterRecoveryFacts.reset_budget_ok``; ``adapter_reset_budget_exhausted``
+    below delegates to this for the TargetAdapter-taking call sites, with
+    identical semantics.
+    """
+    recent, total = _reset_budget_counts_for_stable_id(ctx, stable_id, now)
+    return recent >= ctx.USB_MAX_RESETS_PER_WINDOW or total >= ctx.USB_MAX_RESETS_TOTAL
+
+
 def adapter_reset_budget_exhausted(ctx, target: Optional[TargetAdapter], now: float) -> bool:
     """True when the adapter has hit either the per-window or total reset budget.
 
     The *policy* decision (quarantine vs. emergency-only retry) lives in the
     ladder; this reports only whether the budget is spent.
     """
-    with ctx.state_lock:
-        _prune_adapter_ledgers_locked(ctx, now)
-        ledger = _adapter_ledger_locked(ctx, target)
-        recent = len(ledger["recent_resets"]) if ledger else 0
-        total = int(ledger.get("total_resets", 0) or 0) if ledger else 0
-    exhausted = recent >= ctx.USB_MAX_RESETS_PER_WINDOW or total >= ctx.USB_MAX_RESETS_TOTAL
+    stable_id = target.stable_id if target is not None else None
+    exhausted = adapter_reset_budget_exhausted_for_stable_id(ctx, stable_id, now)
     if exhausted:
+        recent, total = _reset_budget_counts_for_stable_id(ctx, stable_id, now)
         ctx.logger.debug(
             "Reset budget exhausted for %s: recent=%d/%d total=%d/%d",
             target.ifname if target else "?", recent, ctx.USB_MAX_RESETS_PER_WINDOW,
@@ -733,6 +771,10 @@ class AdapterRecoveryFacts:
     noip_suppressed: bool
     is_no_ip: bool
     disabled: bool
+    # USB-only facts for the RESET_USB ladder rung; both False for a non-USB
+    # adapter (no sysfs work is performed for the onboard).
+    resettable: bool
+    reset_budget_ok: bool
 
 
 def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> AdapterRecoveryFacts:
@@ -769,6 +811,16 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
     budget_exhausted = (
         recent >= ctx.USB_MAX_RESETS_PER_WINDOW or total >= ctx.USB_MAX_RESETS_TOTAL
     )
+    # USB-only, no added sysfs work for the onboard: resettable is a direct
+    # sysfs presence check; reset_budget_ok reuses the stable-id-keyed budget
+    # check (same ledgers as budget_exhausted above, keyed identically).
+    if a.is_usb:
+        resettable = wifi_net.usb_sysfs_paths(a.ifname) is not None
+        reset_budget_ok = not adapter_reset_budget_exhausted_for_stable_id(
+            ctx, a.stable_id, now_monotonic)
+    else:
+        resettable = False
+        reset_budget_ok = False
     return AdapterRecoveryFacts(
         ifname=a.ifname,
         stable_id=a.stable_id,
@@ -791,6 +843,8 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
             stable_id=a.stable_id,
         ),
         disabled=adapter_disabled(ctx, a.stable_id),
+        resettable=resettable,
+        reset_budget_ok=reset_budget_ok,
     )
 
 

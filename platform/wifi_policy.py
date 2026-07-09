@@ -121,12 +121,20 @@ class RecoveryFacts:
     saved_configured: bool            # a client profile is committed
     wired_ok: bool
     taken_at: float
+    # True when the preferred USB's one-per-episode RESET_USB reset (rung 1c)
+    # has already been spent this offline episode.  Keyed to
+    # preferred_usb_ifname specifically — that is the adapter whose rung this
+    # flag gates, not necessarily the currently-active adapter (a wedged
+    # preferred USB is, by definition, not the healthy active client).
+    # Default preserves existing positional/keyword RecoveryFacts constructions.
+    failover_reset_spent: bool = False
 
 
 class RecoveryKind(Enum):
     """The single recovery remediation the ladder selects for this pass."""
     HOLD = "hold"                      # active path fine / Ethernet / defer to dead-PHY reset
     ACTIVATE_USB = "activate_usb"      # (re)activate the committed profile on the preferred USB
+    RESET_USB = "reset_usb"            # one budgeted hardware reset on a wedged preferred USB
     ACTIVATE_ONBOARD = "activate_onboard"  # run the client on the built-in radio (drop AP if hosting)
     ENTER_HOTSPOT = "enter_hotspot"    # last resort: no radio can carry a client
 
@@ -188,6 +196,26 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
     #      hold — the no-IP ledger governs and promotes onboard once suppressed.
     if usb_has_carrier and active == preferred_usb:
         return RecoveryAction(RecoveryKind.HOLD, reason="usb_active_no_ip")
+
+    # (1c) The preferred USB is wedged (link-down), resettable, still has reset
+    #      budget, is not the adapter hosting the recovery hotspot, and this
+    #      offline episode has not already spent its one budgeted reset ->
+    #      reset it before falling to onboard (a successful reset resumes on
+    #      the same MAC/lease/IP; onboard failover changes identity).
+    #      preferred_usb already excludes a quarantined/suppressed/disabled
+    #      adapter (see its selection above), so this rung tests only the
+    #      reset-specific facts.  Never fires for the hotspot-hosting radio —
+    #      the single-radio dead-PHY ladder owns that case.
+    if (
+        usb_rf is not None
+        and usb_rf.link_down is True
+        and usb_rf.resettable
+        and usb_rf.reset_budget_ok
+        and preferred_usb != facts.hotspot_ifname
+        and not facts.failover_reset_spent
+    ):
+        return RecoveryAction(RecoveryKind.RESET_USB, ifname=preferred_usb,
+                              reason="usb_wedged_reset_first")
 
     # (2) No usable USB right now (absent / quarantined / no-IP-suppressed / wedged).
     #     Try the onboard radio as a client before any hotspot — this is the

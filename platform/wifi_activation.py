@@ -545,6 +545,11 @@ def client_up_tail(ctx: ActivationContext, adapter,
         ctx.clear_pending_adoption()
     if spec.clear_dead_adapter:
         ctx.clear_dead_adapter_state()
+        # The dead-PHY recovery episode this adapter was tracked under is over
+        # (recovered or handed to another radio): clear the RESET_USB spend so
+        # a fresh wedge gets its one budgeted reset again.
+        with ctx.state_lock:
+            ctx.RECOVERY_STATE.failover_reset_done.clear()
     if spec.leave_setup_reason is not None:
         ctx.leave_setup_mode(spec.leave_setup_reason)
     ctx.verify_avahi_after_handover()
