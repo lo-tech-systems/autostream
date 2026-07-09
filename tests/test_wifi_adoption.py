@@ -281,9 +281,20 @@ class TestBssidSurveyAndRoam:
     def _row(self, bssid, ssid="Home", signal=70, in_use=False):
         return {"in_use": in_use, "bssid": bssid, "ssid": ssid, "signal": signal}
 
-    def test_cheap_usb_scan_runs(self, watcher):
+    def test_idle_usb_scan_is_full_rescan(self, watcher):
+        # playback exactly False (idle) -> the USB self-scan is a full rescan,
+        # eligible evidence for the roam-candidate streak.
         usb = self._usb(watcher)
-        hctx = self._hctx(watcher, self._facts(watcher, usb))
+        hctx = self._hctx(watcher, self._facts(watcher, usb), playing=False)
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        scan.assert_any_call("wlan1", rescan=True)
+
+    def test_playing_usb_scan_is_cheap_read(self, watcher):
+        # playback True -> the USB self-scan is a cheap, non-eligible read.
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, self._facts(watcher, usb), playing=True)
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
             watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
@@ -300,12 +311,14 @@ class TestBssidSurveyAndRoam:
             watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx2)
         scan.assert_not_called()
 
+        # The old 15-minute BSSID_USB_SURVEY_INTERVAL gate is gone: a full
+        # scan is due again as soon as BSSID_SURVEY_INTERVAL elapses.
         with self._stub_ssid(watcher), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
             hctx3 = self._hctx(
                 watcher, self._facts(watcher, usb, now=1000.0 + watcher.BSSID_SURVEY_INTERVAL))
             watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx3)
-        scan.assert_any_call("wlan1", rescan=False)
+        scan.assert_any_call("wlan1", rescan=True)
 
     def test_idle_onboard_scanned_alongside(self, watcher):
         usb = self._usb(watcher)
@@ -340,39 +353,128 @@ class TestBssidSurveyAndRoam:
             watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         assert all(c.args[0] != "wlan0" for c in scan.call_args_list)
 
-    def test_playing_skips_full_usb_rescan(self, watcher):
-        usb = self._usb(watcher)
-        # Elapse both cadences so only the playback gate can suppress the full scan.
-        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
-        hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=True)
-        with self._stub_ssid(watcher), \
-             patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]) as scan:
-            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
-        for c in scan.call_args_list:
-            assert not (c.args == ("wlan1",) and c.kwargs.get("rescan") is True)
+    def _pass(self, watcher, usb, now, playing, rows):
+        """Run one bssid_survey_and_roam pass at *now* with a fixed scan result."""
+        hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=playing)
+        with patch.object(watcher.nm, "wifi_bssid_scan", return_value=rows), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        return result, submit
 
-    def test_dial_mode_playback_false_full_scan_and_roam(self, watcher):
+    def test_streak_gating_requires_three_eligible_scans(self, watcher):
         # playback False (dial mode / idle) is exactly the roam-eligible state.
+        # A clearly-better candidate must win three consecutive eligible scans
+        # before a roam job is submitted.
         usb = self._usb(watcher)
-        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
-        hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=False)
         rows = [
             self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
             self._row("BB:BB:BB:BB:BB:BB", signal=90),
         ]
-        with self._stub_ssid(watcher), \
-             patch.object(watcher.nm, "wifi_bssid_scan", return_value=rows), \
-             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
-            result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
-        assert result is True
-        job = submit.call_args[0][0]
+        now = 1000.0
+        with self._stub_ssid(watcher):
+            r1, submit1 = self._pass(watcher, usb, now, False, rows)
+            now += watcher.BSSID_SURVEY_INTERVAL
+            r2, submit2 = self._pass(watcher, usb, now, False, rows)
+            now += watcher.BSSID_SURVEY_INTERVAL
+            r3, submit3 = self._pass(watcher, usb, now, False, rows)
+        assert (r1, r2, r3) == (False, False, True)
+        submit1.assert_not_called()
+        submit2.assert_not_called()
+        submit3.assert_called_once()
+        job = submit3.call_args[0][0]
         assert job.kind == "activate_committed" and job.ifname == "wlan1"
         assert watcher.ADOPTION_STATE.last_roam_or_activation == now
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate == {}   # reset on submit
+
+    def test_streak_resets_on_candidate_change(self, watcher):
+        usb = self._usb(watcher)
+        rows_b = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=90),
+        ]
+        rows_c = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=60),
+            self._row("CC:CC:CC:CC:CC:CC", signal=99),
+        ]
+        now = 1000.0
+        with self._stub_ssid(watcher):
+            self._pass(watcher, usb, now, False, rows_b)
+            assert watcher.ADOPTION_STATE.bssid_roam_candidate["bssid"] == "BB:BB:BB:BB:BB:BB"
+            assert watcher.ADOPTION_STATE.bssid_roam_candidate["count"] == 1
+            now += watcher.BSSID_SURVEY_INTERVAL
+            self._pass(watcher, usb, now, False, rows_b)
+            assert watcher.ADOPTION_STATE.bssid_roam_candidate["count"] == 2
+            now += watcher.BSSID_SURVEY_INTERVAL
+            result, submit = self._pass(watcher, usb, now, False, rows_c)
+        assert result is False
+        submit.assert_not_called()
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate["bssid"] == "CC:CC:CC:CC:CC:CC"
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate["count"] == 1
+
+    def test_streak_resets_on_candidate_disappearance(self, watcher):
+        # The candidate stops clearing policy (the current AP catches up) -> the
+        # streak resets to {} entirely, not just to count=1 on a new candidate.
+        usb = self._usb(watcher)
+        rows_b = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=90),
+        ]
+        rows_even = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=90, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=90),
+        ]
+        now = 1000.0
+        with self._stub_ssid(watcher):
+            self._pass(watcher, usb, now, False, rows_b)
+            now += watcher.BSSID_SURVEY_INTERVAL
+            self._pass(watcher, usb, now, False, rows_b)
+            assert watcher.ADOPTION_STATE.bssid_roam_candidate["count"] == 2
+            now += watcher.BSSID_SURVEY_INTERVAL
+            result, submit = self._pass(watcher, usb, now, False, rows_even)
+        assert result is False
+        submit.assert_not_called()
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate == {}
+
+    def test_below_floor_candidate_never_builds_streak(self, watcher):
+        # The field case verbatim: 30 -> 47 clears the margin but not the
+        # absolute BSSID_ROAM_MIN_SIGNAL floor.
+        usb = self._usb(watcher)
+        rows = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=30, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=47),
+        ]
+        now = 1000.0
+        with self._stub_ssid(watcher):
+            for _ in range(3):
+                result, submit = self._pass(watcher, usb, now, False, rows)
+                assert result is False
+                submit.assert_not_called()
+                assert watcher.ADOPTION_STATE.bssid_roam_candidate == {}
+                now += watcher.BSSID_SURVEY_INTERVAL
+
+    def test_non_idle_playback_blocks_full_scan_streak_and_roam(self, watcher):
+        # playing True or None: cheap read only, no streak progression, no roam,
+        # even across enough passes to otherwise satisfy the streak.
+        usb = self._usb(watcher)
+        rows = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=90),
+        ]
+        for playing in (True, None):
+            watcher.ADOPTION_STATE.bssid_roam_candidate = {}
+            watcher.ADOPTION_STATE.last_bssid_survey_at = None
+            now = 1000.0
+            with self._stub_ssid(watcher):
+                for _ in range(3):
+                    result, submit = self._pass(watcher, usb, now, playing, rows)
+                    assert result is False
+                    submit.assert_not_called()
+                    assert watcher.ADOPTION_STATE.bssid_roam_candidate == {}
+                    now += watcher.BSSID_SURVEY_INTERVAL
 
     def test_confirm_scan_reversal_no_submission(self, watcher):
         usb = self._usb(watcher)
-        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
-        hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=False)
         survey_rows = [
             self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
             self._row("BB:BB:BB:BB:BB:BB", signal=90),
@@ -382,10 +484,45 @@ class TestBssidSurveyAndRoam:
             self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
             self._row("BB:BB:BB:BB:BB:BB", signal=52),
         ]
-        with self._stub_ssid(watcher), \
-             patch.object(watcher.nm, "wifi_bssid_scan", side_effect=[survey_rows, confirm_rows]), \
-             patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
-            result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        now = 1000.0
+        with self._stub_ssid(watcher):
+            self._pass(watcher, usb, now, False, survey_rows)
+            now += watcher.BSSID_SURVEY_INTERVAL
+            self._pass(watcher, usb, now, False, survey_rows)
+            now += watcher.BSSID_SURVEY_INTERVAL
+            hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=False)
+            with patch.object(watcher.nm, "wifi_bssid_scan", side_effect=[survey_rows, confirm_rows]), \
+                 patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
+                result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        assert result is False
+        submit.assert_not_called()
+        # The failed confirmation leaves the streak as it was (not reset).
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate["bssid"] == "BB:BB:BB:BB:BB:BB"
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate["count"] == 3
+
+    def test_confirm_must_confirm_same_candidate(self, watcher):
+        # The confirm scan still clears policy, but for a different BSSID than
+        # the one that built the streak: not submitted.
+        usb = self._usb(watcher)
+        survey_rows = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=90),
+        ]
+        confirm_rows = [
+            self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True),
+            self._row("BB:BB:BB:BB:BB:BB", signal=56),
+            self._row("DD:DD:DD:DD:DD:DD", signal=99),
+        ]
+        now = 1000.0
+        with self._stub_ssid(watcher):
+            self._pass(watcher, usb, now, False, survey_rows)
+            now += watcher.BSSID_SURVEY_INTERVAL
+            self._pass(watcher, usb, now, False, survey_rows)
+            now += watcher.BSSID_SURVEY_INTERVAL
+            hctx = self._hctx(watcher, self._facts(watcher, usb, now=now), playing=False)
+            with patch.object(watcher.nm, "wifi_bssid_scan", side_effect=[survey_rows, confirm_rows]), \
+                 patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
+                result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
         assert result is False
         submit.assert_not_called()
 
@@ -423,7 +560,7 @@ class TestBssidSurveyAndRoam:
     def test_onboard_only_candidate_never_triggers_usb_roam(self, watcher):
         usb = self._usb(watcher)
         onboard = _adapter(watcher, "wlan0", "aa:aa:aa:aa:aa:01", is_builtin=True)
-        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
+        now = 1000.0 + watcher.BSSID_SURVEY_INTERVAL
         hctx = self._hctx(watcher, self._facts(watcher, usb, extra_adapters=[onboard], now=now), playing=False)
         usb_rows = [self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True)]
         onboard_rows = [self._row("BB:BB:BB:BB:BB:BB", signal=95)]

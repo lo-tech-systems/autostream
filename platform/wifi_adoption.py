@@ -93,7 +93,6 @@ class AdoptionContext:
     ADOPTION_SCAN_INTERVAL: float
     USB_ADOPTION_STABLE_PASSES: int
     BSSID_SURVEY_INTERVAL: float
-    BSSID_USB_SURVEY_INTERVAL: float
     # Callables
     get_configured_network_state: Callable
     is_wifi_client_healthy: Callable
@@ -524,14 +523,24 @@ def _idle_onboard_for_survey(ctx: AdoptionContext, facts: "Facts", usb_ifname: s
 def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
     """Periodic BSSID survey for the active USB client, plus a gated roam.
 
-    Rate-gated per source: a cheap USB self-scan (rescan=False) every
-    BSSID_SURVEY_INTERVAL, with an opportunistic idle-onboard scan
-    (rescan=True) alongside it; and a full USB rescan every
-    BSSID_USB_SURVEY_INTERVAL, only while playback is exactly False.  The roam
-    decision uses the current BSSID/signal from whichever scan ran this pass
-    (the in-use row) — without a fresh scan this pass there is nothing to roam
-    from, so the roam is skipped.  Returns True when a roam job was submitted
-    (the caller owns the pass).
+    Single cadence gate: every BSSID_SURVEY_INTERVAL the USB self-scan runs
+    alongside an opportunistic idle-onboard scan (the latter always
+    rescan=True, written only to its own interface's table — it never
+    influences a USB roam decision).  The USB scan is a full rescan
+    (rescan=True) — "eligible" evidence for the roam-candidate streak — only
+    while playback is exactly False; while playback is True/None it is a
+    cheap rescan=False read that keeps the table fresh but never advances or
+    resets the streak.
+
+    On an eligible scan, a candidate that clears wifi_policy.next_roam_target
+    advances ADOPTION_STATE.bssid_roam_candidate (wifi_policy.update_roam_streak);
+    a candidate that fails policy, or no eligible scan at all, resets/leaves the
+    streak per update_roam_streak's rules.  Only once the streak reaches
+    BSSID_ROAM_REQUIRED_SCANS does a fresh confirmation scan run; the roam is
+    submitted only when the confirmation scan still names the same candidate and
+    it still clears policy — the world may have moved since the scan that built
+    the streak.  Returns True when a roam job was submitted (the caller owns
+    the pass).
     """
     facts = hctx.facts
     usb = facts.active_client
@@ -543,51 +552,61 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
     if not ssid:
         return False
 
+    if not _survey_due(ctx, "last_bssid_survey_at", ctx.BSSID_SURVEY_INTERVAL, now):
+        return False
+
+    eligible = playing is False
+    rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=eligible)
     current_bssid, current_signal = "", 0
-    scanned = False
+    if rows is not None:
+        with ctx.state_lock:
+            usb_table = wifi_policy.bssid_table_for_interface(
+                ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
+            current_bssid, current_signal = wifi_policy.update_bssid_table(
+                usb_table, rows, ssid, now)
 
-    if _survey_due(ctx, "last_bssid_survey_at", ctx.BSSID_SURVEY_INTERVAL, now):
-        rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=False)
-        if rows is not None:
+    onboard = _idle_onboard_for_survey(ctx, facts, usb_ifname)
+    if onboard is not None:
+        onboard_rows = ctx.nm.wifi_bssid_scan(onboard.ifname, rescan=True)
+        if onboard_rows is not None:
             with ctx.state_lock:
-                usb_table = wifi_policy.bssid_table_for_interface(
-                    ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
-                current_bssid, current_signal = wifi_policy.update_bssid_table(
-                    usb_table, rows, ssid, now)
-            scanned = True
-        onboard = _idle_onboard_for_survey(ctx, facts, usb_ifname)
-        if onboard is not None:
-            onboard_rows = ctx.nm.wifi_bssid_scan(onboard.ifname, rescan=True)
-            if onboard_rows is not None:
-                with ctx.state_lock:
-                    onboard_table = wifi_policy.bssid_table_for_interface(
-                        ctx.ADOPTION_STATE.bssid_tables, onboard.ifname)
-                    wifi_policy.update_bssid_table(onboard_table, onboard_rows, ssid, now)
+                onboard_table = wifi_policy.bssid_table_for_interface(
+                    ctx.ADOPTION_STATE.bssid_tables, onboard.ifname)
+                wifi_policy.update_bssid_table(onboard_table, onboard_rows, ssid, now)
 
-    if playing is False and _survey_due(
-            ctx, "last_bssid_usb_full_survey_at", ctx.BSSID_USB_SURVEY_INTERVAL, now):
-        rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=True)
-        if rows is not None:
-            with ctx.state_lock:
-                usb_table = wifi_policy.bssid_table_for_interface(
-                    ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
-                current_bssid, current_signal = wifi_policy.update_bssid_table(
-                    usb_table, rows, ssid, now)
-            scanned = True
-
-    if not scanned or not current_bssid or playing is not False:
+    # A non-eligible (cheap) scan, a failed scan, or an eligible scan with no
+    # in-use row (nothing to compare a candidate against) leaves the streak
+    # untouched: there is no fresh evidence this pass.
+    if not eligible or rows is None or not current_bssid:
         return False
 
     with ctx.state_lock:
         usb_table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
         last_roam = ctx.ADOPTION_STATE.last_roam_or_activation
-        target = wifi_policy.next_roam_target(
-            usb_table, current_bssid, now, playing, last_roam)
+        target = wifi_policy.next_roam_target(usb_table, current_bssid, now, playing, last_roam)
+        streak = wifi_policy.update_roam_streak(
+            ctx.ADOPTION_STATE.bssid_roam_candidate, usb_ifname, target, now)
+        ctx.ADOPTION_STATE.bssid_roam_candidate = streak
+        target_signal = usb_table.get(target, {}).get("signal", 0) if target else 0
+
     if not target:
         return False
 
+    if streak["count"] == 1:
+        ctx.logger.info(
+            "BSSID roam candidate streak started on %s: %s (%d) -> %s (%d)",
+            usb_ifname, current_bssid, current_signal, target, target_signal)
+    else:
+        ctx.logger.debug(
+            "BSSID roam candidate on %s: %s (%d) -> %s (%d) [%d/%d]",
+            usb_ifname, current_bssid, current_signal, target, target_signal,
+            streak["count"], wifi_policy.BSSID_ROAM_REQUIRED_SCANS)
+
+    if streak["count"] < wifi_policy.BSSID_ROAM_REQUIRED_SCANS:
+        return False
+
     # Confirm with one fresh scan before committing — the world may have moved
-    # in the time since the survey scan that first suggested a roam.
+    # since the survey scan that built the streak.
     confirm_rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=True)
     if confirm_rows is None:
         return False
@@ -598,14 +617,16 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
         last_roam = ctx.ADOPTION_STATE.last_roam_or_activation
         confirmed_target = wifi_policy.next_roam_target(
             usb_table, confirm_bssid or current_bssid, now, playing, last_roam)
-        if not confirmed_target:
+        if confirmed_target != target:
             return False
-        target_signal = usb_table.get(confirmed_target, {}).get("signal", 0)
+        confirmed_signal = usb_table.get(confirmed_target, {}).get("signal", 0)
         ctx.ADOPTION_STATE.last_roam_or_activation = now
+        ctx.ADOPTION_STATE.bssid_roam_candidate = {}
 
     ctx.logger.info(
-        "BSSID roam: SSID '%s' %s (signal %d) -> %s (signal %d)",
-        ssid, confirm_bssid or current_bssid, confirm_signal, confirmed_target, target_signal)
+        "BSSID roam: SSID '%s' %s %s (signal %d) -> %s (signal %d) after %d scans",
+        ssid, usb_ifname, confirm_bssid or current_bssid, confirm_signal,
+        confirmed_target, confirmed_signal, wifi_policy.BSSID_ROAM_REQUIRED_SCANS)
 
     job = wifi_activation.ActivationJob(
         epoch=ctx.next_activation_epoch(), kind="activate_committed", ifname=usb_ifname)

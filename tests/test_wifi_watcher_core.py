@@ -943,11 +943,15 @@ class TestCommitNetworkStateClearsBssidState:
         watcher.ADOPTION_STATE.last_bssid_pin = {
             "ifname": "wlan1", "bssid": "BB:BB:BB:BB:BB:BB", "signal": 70, "at": 0.0,
         }
+        watcher.ADOPTION_STATE.bssid_roam_candidate = {
+            "ifname": "wlan1", "bssid": "BB:BB:BB:BB:BB:BB", "count": 2, "last_seen": 0.0,
+        }
         with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-new"), \
              patch.object(watcher.wifi_net, "save_network_state"):
             watcher._commit_network_state("NewHome", "uuid-new")
         assert watcher.ADOPTION_STATE.bssid_tables == {}
         assert watcher.ADOPTION_STATE.last_bssid_pin == {}
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate == {}
 
 
 class TestModuleSplit:

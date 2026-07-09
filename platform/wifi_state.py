@@ -110,9 +110,10 @@ class AdoptionState:
     streak for a proactive roam candidate (``{}`` when no streak is active).
     ``last_bssid_pin``
     records the BSSID pinned for the most recent activation attempt (or its
-    absence), used by the reset/retry gate.  ``last_bssid_survey_at`` and
-    ``last_bssid_usb_full_survey_at`` rate-gate the cheap self-scan and the
-    full rescan respectively.  ``last_adoption_scan`` rate-gates the
+    absence), used by the reset/retry gate.  ``last_bssid_survey_at``
+    rate-gates the USB self-scan (and the alongside opportunistic onboard
+    scan); the scan is a full rescan when playback is exactly False, else a
+    cheap read.  ``last_adoption_scan`` rate-gates the
     saved-SSID visibility probe before a runtime USB handover.  ``known_usb_macs``
     is the set of permanent MACs ever seen as USB, so an adapter that has since
     disappeared from discovery can still be classified as USB (read by
@@ -127,7 +128,6 @@ class AdoptionState:
     last_roam_or_activation: Optional[float] = None
     last_bssid_pin: dict = field(default_factory=dict)
     last_bssid_survey_at: Optional[float] = None
-    last_bssid_usb_full_survey_at: Optional[float] = None
     last_adoption_scan: Optional[float] = None
     known_usb_macs: set = field(default_factory=set)
 

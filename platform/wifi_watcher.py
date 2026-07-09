@@ -187,12 +187,12 @@ RECOVERY_SCAN_INTERVAL = 30             # seconds between saved-SSID recovery sc
 # costs nothing; the first scan for a newly stable candidate always runs
 # immediately (last is None -> due), and this interval only throttles *re*-scans.
 ADOPTION_SCAN_INTERVAL = 5 * 60         # seconds between saved-SSID adoption scans
-# USB BSSID survey cadence: the cheap self-scan (+ opportunistic idle onboard
-# scan) runs every BSSID_SURVEY_INTERVAL; the more expensive full USB rescan
-# (covers bands an idle onboard radio cannot see) runs only every
-# BSSID_USB_SURVEY_INTERVAL, and only while playback is idle.
+# USB BSSID survey cadence: the USB self-scan (+ opportunistic idle onboard
+# scan) runs every BSSID_SURVEY_INTERVAL.  It is a full rescan (eligible for
+# the proactive-roam candidate streak) only while playback is exactly False;
+# otherwise it is a cheap read that keeps the table fresh without advancing
+# or resetting the streak.
 BSSID_SURVEY_INTERVAL = 60
-BSSID_USB_SURVEY_INTERVAL = 15 * 60
 REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot after this long (exceeds the admin's 1-hour window)
 
 # Multi-adapter failure/adoption tuning.
@@ -835,11 +835,13 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
         )
     except Exception as e:
         logger.error("Could not persist network state for '%s': %s", conn_name, e)
-    # A new committed SSID invalidates any BSSID observations and the pin record
-    # from the previous one, across every scanning interface.
+    # A new committed SSID invalidates any BSSID observations, the pending pin
+    # record, and any in-progress roam-candidate streak from the previous one,
+    # across every scanning interface.
     with state_lock:
         wifi_policy.clear_bssid_tables(ADOPTION_STATE.bssid_tables)
         ADOPTION_STATE.last_bssid_pin = {}
+        ADOPTION_STATE.bssid_roam_candidate = {}
 
 
 def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:
@@ -1902,7 +1904,6 @@ def build_contexts() -> None:
         ADOPTION_SCAN_INTERVAL=ADOPTION_SCAN_INTERVAL,
         USB_ADOPTION_STABLE_PASSES=USB_ADOPTION_STABLE_PASSES,
         BSSID_SURVEY_INTERVAL=BSSID_SURVEY_INTERVAL,
-        BSSID_USB_SURVEY_INTERVAL=BSSID_USB_SURVEY_INTERVAL,
         get_configured_network_state=get_configured_network_state,
         is_wifi_client_healthy=is_wifi_client_healthy,
         resolve_hotspot_adapter=resolve_hotspot_adapter,
