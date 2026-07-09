@@ -392,11 +392,12 @@ class TestAdapterOverlayEvents:
         assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_wedged_usb_submits_reset_before_job_and_marks_episode(self, watcher):
-        # RF-2: a link-down (wedged), resettable, budget-ok preferred USB gets
+        # RF-2: a debounced-wedged, resettable, budget-ok preferred USB gets
         # its one budgeted reset (RESET_USB) before onboard failover; the
         # episode is marked on submission so a failed job cannot loop the rung.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:70", is_usb=True)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         facts = _facts_for(watcher, [builtin, usb], None)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
                                      reason="dead_phy_quarantined", has_alt_path=True)
@@ -419,6 +420,7 @@ class TestAdapterOverlayEvents:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:71", is_usb=True)
         watcher.RECOVERY_STATE.failover_reset_done.add(usb.stable_id)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         facts = _facts_for(watcher, [builtin, usb], None)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
                                      reason="dead_phy_quarantined", has_alt_path=True)
@@ -895,6 +897,28 @@ class TestRecoveryFacts:
         assert rf.is_builtin and not rf.is_usb
         assert rf.healthy is True and rf.carrier is True
         assert rf.quarantined is False and rf.budget_exhausted is False
+        assert rf.wedged is False
+
+    def test_adapter_recovery_facts_wedged_true_iff_declared_dead(self, watcher):
+        # wedged is derived from the exact same source as the status
+        # snapshot's dead_phy state: RECOVERY_STATE.dead_adapter_ifname.
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:80", is_usb=True)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
+        with patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, usb, 1000.0)
+        assert rf.wedged is True
+
+    def test_adapter_recovery_facts_stable_id_alone_is_not_wedged(self, watcher):
+        # A populated dead_adapter_stable_id with dead_adapter_ifname still
+        # empty means the debounce is merely in progress, not declared dead.
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:81", is_usb=True)
+        watcher.RECOVERY_STATE.dead_adapter_stable_id = usb.stable_id
+        watcher.RECOVERY_STATE.dead_adapter_ifname = ""
+        with patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, usb, 1000.0)
+        assert rf.wedged is False
 
     def test_gather_prefers_usable_usb(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -1065,12 +1089,14 @@ class TestRecoveryExitEdge:
             purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)
 
     def test_dead_second_radio_falls_through_to_onboard_rejoin(self, watcher):
-        # Field-log shape: AP on onboard wlan0, USB wlan1 wedged. The wedged USB
-        # (no carrier) must NOT be chosen; the ladder selects the onboard drop-AP
-        # rejoin (exit edge) instead of probing the dead USB forever.
+        # Field-log shape: AP on onboard wlan0, USB wlan1 declared wedged
+        # (debounced dead-PHY verdict). The wedged, non-resettable USB must
+        # NOT be chosen; the ladder selects the onboard drop-AP rejoin (exit
+        # edge) instead of probing the dead USB forever.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         self._in_hotspot(watcher)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         facts = _facts_for(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"), \

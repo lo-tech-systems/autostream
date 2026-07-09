@@ -186,9 +186,13 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
     usb_has_carrier = usb_rf is not None and usb_rf.link_down is not True
     onboard = facts.onboard_ifname
 
-    # (1) USB is the highest-priority client path.  A usable (carrier-up) preferred
-    #     USB that is not already our active client -> (re)activate it.
-    if usb_has_carrier and active != preferred_usb:
+    # (1) USB is the highest-priority client path.  A preferred USB that is not
+    #     wedged (debounced dead-PHY verdict) and is not already our active
+    #     client -> (re)activate it.  Carrier is NOT required: for Wi-Fi,
+    #     carrier means "associated", and association is exactly what
+    #     activation performs (autoconnect=no profiles mean the watcher is the
+    #     sole reconnection agent, so an idle adapter is always link-down).
+    if usb_rf is not None and not usb_rf.wedged and active != preferred_usb:
         return RecoveryAction(RecoveryKind.ACTIVATE_USB, ifname=preferred_usb,
                               drop_hotspot=(preferred_usb == facts.hotspot_ifname),
                               reason="usb_preferred")
@@ -196,19 +200,26 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
     #      hold — the no-IP ledger governs and promotes onboard once suppressed.
     if usb_has_carrier and active == preferred_usb:
         return RecoveryAction(RecoveryKind.HOLD, reason="usb_active_no_ip")
+    # (1b') The active USB reads link-down but the dead-PHY debounce has not
+    #      declared it wedged: hold.  Transient drops are owned by the
+    #      reconnect machinery; a sustained failure accrues the wedged verdict
+    #      and proceeds to the reset rung below.
+    if usb_rf is not None and active == preferred_usb and not usb_rf.wedged:
+        return RecoveryAction(RecoveryKind.HOLD, reason="usb_link_down_debouncing")
 
-    # (1c) The preferred USB is wedged (link-down), resettable, still has reset
-    #      budget, is not the adapter hosting the recovery hotspot, and this
-    #      offline episode has not already spent its one budgeted reset ->
-    #      reset it before falling to onboard (a successful reset resumes on
-    #      the same MAC/lease/IP; onboard failover changes identity).
-    #      preferred_usb already excludes a quarantined/suppressed/disabled
-    #      adapter (see its selection above), so this rung tests only the
-    #      reset-specific facts.  Never fires for the hotspot-hosting radio —
-    #      the single-radio dead-PHY ladder owns that case.
+    # (1c) The preferred USB carries a debounced wedged verdict, is resettable,
+    #      still has reset budget, is not the adapter hosting the recovery
+    #      hotspot, and this offline episode has not already spent its one
+    #      budgeted reset -> reset it before falling to onboard (a successful
+    #      reset resumes on the same MAC/lease/IP; onboard failover changes
+    #      identity).  preferred_usb already excludes a quarantined/
+    #      suppressed/disabled adapter (see its selection above), so this rung
+    #      tests only the reset-specific facts.  Never fires for the
+    #      hotspot-hosting radio — the single-radio dead-PHY ladder owns that
+    #      case.
     if (
         usb_rf is not None
-        and usb_rf.link_down is True
+        and usb_rf.wedged
         and usb_rf.resettable
         and usb_rf.reset_budget_ok
         and preferred_usb != facts.hotspot_ifname
@@ -217,8 +228,9 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
         return RecoveryAction(RecoveryKind.RESET_USB, ifname=preferred_usb,
                               reason="usb_wedged_reset_first")
 
-    # (2) No usable USB right now (absent / quarantined / no-IP-suppressed / wedged).
-    #     Try the onboard radio as a client before any hotspot — this is the
+    # (2) No usable USB right now (absent / quarantined / no-IP-suppressed, or
+    #     wedged with its reset already spent or its budget gone).  Try the
+    #     onboard radio as a client before any hotspot — this is the
     #     boot-entry onboard-first rule AND the exit edge from a recovery hotspot.
     if onboard and active != onboard:
         return RecoveryAction(RecoveryKind.ACTIVATE_ONBOARD, ifname=onboard,

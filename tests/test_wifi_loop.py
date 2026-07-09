@@ -180,6 +180,25 @@ class TestBootClientBringup:
         assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_USB
         assert action.ifname == "wlan1"    # USB tried before the built-in
 
+    def test_boot_window_idle_link_down_usb_activates_without_reset(self, watcher):
+        # Field regression at the boot rung: first pass, configured, no wire,
+        # idle link-down (not yet wedged) preferred USB -> the submitted
+        # activation job has reset_before=False (rung 1, not RESET_USB).
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:11", is_usb=True)
+        fctx = self._fctx(watcher, [builtin, usb], None)
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths",
+                          side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
+        assert v is watcher.Verdict.OWN_PASS
+        submit.assert_called_once()
+        job = submit.call_args[0][0]
+        assert job.ifname == "wlan1"
+        assert job.reset_before is False
+
     def test_boot_window_falls_to_onboard_when_no_usb(self, watcher):
         # No USB present: the ladder engages the onboard (rung 2) as a client.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -238,10 +257,12 @@ class TestBootClientBringup:
         apply.assert_not_called()
 
     def test_boot_window_resets_wedged_usb_before_onboard(self, watcher):
-        # A dongle wedged at power-on gets its one budgeted reset before
-        # onboard/hotspot (RF-2 boot-window parity with runtime).
+        # A dongle already declared dead-PHY-wedged (debounce completed
+        # earlier, e.g. across a watcher restart) gets its one budgeted reset
+        # before onboard/hotspot (RF-2 boot-window parity with runtime).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:09", is_usb=True)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         fctx = self._fctx(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "usb_sysfs_paths",
                           side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
@@ -260,6 +281,7 @@ class TestBootClientBringup:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:10", is_usb=True)
         watcher.RECOVERY_STATE.failover_reset_done.add(usb.permanent_mac)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         fctx = self._fctx(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "usb_sysfs_paths",
                           side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
@@ -502,10 +524,12 @@ class TestBootEntryOnboardFirst:
     """Recovery-ladder WP3 — boot-window entry tries a client before the hotspot."""
 
     def test_wedged_usb_boot_entry_submits_onboard_not_hotspot(self, watcher):
-        # Field-log shape: USB active but wedged, onboard idle. Boot-window entry
-        # must SUBMIT the client on the onboard (WS1-WP3) rather than open a hotspot.
+        # Field-log shape: USB active but declared wedged (debounced dead-PHY
+        # verdict), onboard idle. Boot-window entry must SUBMIT the client on
+        # the onboard (WS1-WP3) rather than open a hotspot.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         watcher.STATE.boot_time = 300.0  # now=1000 -> boot_age 700s, inside window
         with patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as submit, \
              patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter, \

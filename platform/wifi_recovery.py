@@ -771,6 +771,12 @@ class AdapterRecoveryFacts:
     noip_suppressed: bool
     is_no_ip: bool
     disabled: bool
+    # Debounced dead-PHY verdict — True only after DEAD_ADAPTER_DEBOUNCE
+    # consecutive down+unhealthy passes declared this adapter dead.  Matches
+    # the status snapshot's dead_phy state exactly (both key off
+    # RECOVERY_STATE.dead_adapter_ifname), so the ladder and the status
+    # snapshot can never disagree.
+    wedged: bool
     # USB-only facts for the RESET_USB ladder rung; both False for a non-USB
     # adapter (no sysfs work is performed for the onboard).
     resettable: bool
@@ -806,6 +812,12 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
     )
     ledger = adapter_reset_ledger_snapshot(ctx, target, now_monotonic)
     quarantined_until = adapter_quarantined_until(ctx, target, now_monotonic)
+    # Same source the status snapshot uses for its dead_phy state: only a
+    # *declared* dead_adapter_ifname counts.  A populated dead_adapter_stable_id
+    # with dead_adapter_ifname still empty means the debounce is merely in
+    # progress and must not count as wedged.
+    with ctx.state_lock:
+        wedged = ctx.RECOVERY_STATE.dead_adapter_ifname == a.ifname
     recent = len(ledger.get("recent_resets", []))
     total = int(ledger.get("total_resets", 0) or 0)
     budget_exhausted = (
@@ -843,6 +855,7 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
             stable_id=a.stable_id,
         ),
         disabled=adapter_disabled(ctx, a.stable_id),
+        wedged=wedged,
         resettable=resettable,
         reset_budget_ok=reset_budget_ok,
     )
