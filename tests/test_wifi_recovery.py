@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -24,7 +25,7 @@ from _wifi_fixtures import (
     flask_client,
     watcher,
 )
-from _wifi_fixtures import _adapter, _facts_for
+from _wifi_fixtures import _adapter, _facts_for, _ledger, _spend_window_budget
 
 
 class TestRecoveryAdapter:
@@ -847,14 +848,18 @@ class TestNoIpHoldbackReset:
         reset.assert_not_called()
 
     def test_no_reset_when_budget_exhausted(self, watcher):
+        # New behaviour: an exhausted reset budget no longer means a silent
+        # skip -- the shared remediation primitive quarantines the adapter.
         wr = watcher.wifi_recovery
         usb = self._held_usb(watcher)
+        _spend_window_budget(watcher, usb.stable_id, now=0.0)
         with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
-             patch.object(wr, "adapter_reset_budget_exhausted", return_value=True), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
             r = wr.maybe_reset_noip_held_usb(watcher, [usb], now=200.0)
-        assert r is False
+        assert r is False   # quarantining does not own the pass
         reset.assert_not_called()
+        assert usb.stable_id not in watcher.RECOVERY_STATE.noip_holdback_reset_done
+        assert _ledger(watcher, usb.stable_id)["quarantined_until"] is not None
 
     def test_disabled_adapter_not_reset(self, watcher):
         wr = watcher.wifi_recovery
@@ -871,6 +876,106 @@ class TestNoIpHoldbackReset:
         watcher.RECOVERY_STATE.noip_holdback_reset_done.add(usb.stable_id)
         watcher.wifi_activation._set_active_client(watcher.ACTIVATION_CTX, usb)
         assert usb.stable_id not in watcher.RECOVERY_STATE.noip_holdback_reset_done
+
+
+class TestQuarantineAdapter:
+    """quarantine_adapter is the single writer of quarantined_until: sets the
+    deadline, persists immediately, logs once, and is idempotent while active."""
+
+    def _target(self, watcher, ifname="wlan1", stable_id="usb-Q"):
+        return watcher.wifi_recovery.TargetAdapter(
+            ifname=ifname, stable_id=stable_id, kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=True)
+
+    def test_sets_deadline_and_persists(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        assert _ledger(watcher, target.stable_id)["quarantined_until"] == 1000.0 + watcher.USB_RESET_WINDOW
+        assert os.path.exists(watcher.ADAPTER_FAULT_STATE_PATH)
+        with open(watcher.ADAPTER_FAULT_STATE_PATH, "r", encoding="utf-8") as f:
+            on_disk = json.load(f)
+        assert on_disk["reset_ledgers"][target.stable_id]["quarantined_until"] is not None
+
+    def test_logs_one_warning_with_reason(self, watcher, caplog):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        with caplog.at_level(logging.WARNING, logger="wifi_watcher"):
+            wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        matches = [r for r in caplog.records if r.levelno == logging.WARNING
+                   and target.ifname in r.getMessage() and "empty_scan" in r.getMessage()]
+        assert len(matches) == 1
+
+    def test_idempotent_while_active(self, watcher, caplog):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        first_deadline = _ledger(watcher, target.stable_id)["quarantined_until"]
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="wifi_watcher"):
+            wr.quarantine_adapter(watcher, target, now=1100.0, reason="empty_scan")
+        # No deadline extension.
+        assert _ledger(watcher, target.stable_id)["quarantined_until"] == first_deadline
+        # No re-log on the second (idempotent) call.
+        matches = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(matches) == 0
+
+    def test_relog_after_expiry(self, watcher, caplog):
+        """A fresh quarantine after the previous one expires logs again."""
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        expiry = _ledger(watcher, target.stable_id)["quarantined_until"]
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="wifi_watcher"):
+            wr.quarantine_adapter(watcher, target, now=expiry + 1.0, reason="empty_scan")
+        matches = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(matches) == 1
+        assert _ledger(watcher, target.stable_id)["quarantined_until"] == expiry + 1.0 + watcher.USB_RESET_WINDOW
+
+
+class TestRemediateUnusableUsb:
+    """remediate_unusable_usb: budgeted reset while budget remains, else
+    quarantine -- the shared primitive behind every unusable-USB detector."""
+
+    def _target(self, watcher, ifname="wlan1", stable_id="usb-R"):
+        return watcher.wifi_recovery.TargetAdapter(
+            ifname=ifname, stable_id=stable_id, kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=True)
+
+    def test_budget_available_resets_and_records(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        with patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as rebind:
+            outcome = wr.remediate_unusable_usb(watcher, target, now=200.0, reason="empty_scan")
+        assert outcome == "reset"
+        rebind.assert_called_once_with(target.ifname)
+        assert watcher.RECOVERY_STATE.adapter_reset_ledgers[target.stable_id]["total_resets"] == 1
+        assert _ledger(watcher, target.stable_id)["quarantined_until"] is None
+
+    def test_budget_exhausted_quarantines_without_reset(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        _spend_window_budget(watcher, target.stable_id, now=0.0)
+        with patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as rebind:
+            outcome = wr.remediate_unusable_usb(watcher, target, now=200.0, reason="empty_scan")
+        assert outcome == "quarantined"
+        rebind.assert_not_called()
+        assert _ledger(watcher, target.stable_id)["quarantined_until"] is not None
+
+    def test_outcomes_are_distinguishable(self, watcher):
+        wr = watcher.wifi_recovery
+        reset_target = self._target(watcher, ifname="wlan1", stable_id="usb-R1")
+        exhausted_target = self._target(watcher, ifname="wlan2", stable_id="usb-R2")
+        _spend_window_budget(watcher, exhausted_target.stable_id, now=0.0)
+        with patch.object(watcher.wifi_net, "reset_usb_adapter_rebind"):
+            reset_outcome = wr.remediate_unusable_usb(watcher, reset_target, now=200.0, reason="empty_scan")
+            quarantined_outcome = wr.remediate_unusable_usb(
+                watcher, exhausted_target, now=200.0, reason="empty_scan")
+        assert reset_outcome != quarantined_outcome
+        assert {reset_outcome, quarantined_outcome} == {"reset", "quarantined"}
 
 
 class TestRecoveryFacts:

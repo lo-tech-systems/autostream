@@ -487,6 +487,12 @@ class TestEscalateDeadAdapterRecovery:
         assert handled is False
         ra.assert_not_called()
         assert _ledger(watcher, self.USB_MAC)["quarantined_until"] is not None
+        # The fault-state file is now persisted at quarantine time (via the
+        # shared quarantine_adapter helper), not left to a later ledger event.
+        assert os.path.exists(watcher.ADAPTER_FAULT_STATE_PATH)
+        with open(watcher.ADAPTER_FAULT_STATE_PATH, "r", encoding="utf-8") as f:
+            on_disk = json.load(f)
+        assert on_disk["reset_ledgers"][self.USB_MAC]["quarantined_until"] is not None
 
     def test_usb_only_emergency_attempt_when_no_path(self, watcher):
         usb = self._usb(watcher)

@@ -691,6 +691,56 @@ def record_adapter_reset(ctx, target: Optional[TargetAdapter], now: float) -> No
     persist_adapter_fault_state(ctx)
 
 
+def quarantine_adapter(ctx, target: Optional[TargetAdapter], now: float, reason: str) -> None:
+    """Apply the one quarantine flag for *target* in the reset ledger.
+
+    The single writer of ``quarantined_until``: sets the deadline to
+    ``now + USB_RESET_WINDOW``, persists the fault-state file immediately (so
+    the quarantine is never lost to a crash before some later ledger event
+    happens to flush it), and logs one WARNING naming the adapter and the
+    failure-mode *reason*.  Idempotent while a quarantine is already active —
+    a repeat call neither re-logs nor extends the deadline.
+    """
+    with ctx.state_lock:
+        _prune_adapter_ledgers_locked(ctx, now)
+        ledger = _adapter_ledger_locked(ctx, target)
+        if ledger is None:
+            return
+        current = ledger.get("quarantined_until")
+        already_active = (
+            isinstance(current, (int, float))
+            and not isinstance(current, bool)
+            and now < current
+        )
+        if not already_active:
+            ledger["quarantined_until"] = now + ctx.USB_RESET_WINDOW
+    if already_active:
+        return
+    persist_adapter_fault_state(ctx)
+    ctx.logger.warning(
+        "USB adapter %s quarantined (%s)", target.ifname if target else "?", reason,
+    )
+
+
+def remediate_unusable_usb(ctx, target: TargetAdapter, now: float, reason: str) -> str:
+    """Reset-or-quarantine primitive for a USB adapter a detector has found
+    unusable (whatever the failure mode named by *reason*).
+
+    Callers guarantee an alternate healthy path is already up before calling
+    this — it does not re-verify one.  Reset budget available for the
+    target's stable id -> one synchronous rebind reset, recorded against the
+    shared budget/quarantine ledger, one INFO logged, returns ``"reset"``;
+    budget exhausted -> :func:`quarantine_adapter`, returns ``"quarantined"``.
+    """
+    if not adapter_reset_budget_exhausted_for_stable_id(ctx, target.stable_id, now):
+        ctx.logger.info("USB adapter %s reset (%s)", target.ifname, reason)
+        record_adapter_reset(ctx, target, now)
+        wifi_net.reset_usb_adapter_rebind(target.ifname)
+        return "reset"
+    quarantine_adapter(ctx, target, now, reason)
+    return "quarantined"
+
+
 def maybe_reset_noip_held_usb(ctx, adapters: list, now: float) -> bool:
     """Spend one budgeted USB reset on an idle no-IP-held spare before the
     hold-back becomes final.
@@ -700,15 +750,18 @@ def maybe_reset_noip_held_usb(ctx, adapters: list, now: float) -> bool:
     no-IP ledger without the watcher ever attempting the one cheap hardware
     remediation it has (the field unit showed "held back … Reset attempts: 0").
     When such a spare is at the final hold-back (no-IP count >= NOIP_STOP_AFTER),
-    resettable, still has reset budget, and has not already spent its one
-    hold-back reset this episode, perform one reset (accounted against the normal
-    reset budget/quarantine ledger) and clear its no-IP suppression so the normal
-    adoption path gets a fresh attempt.  If the reset does not bring it to a
+    resettable, and has not already spent its one hold-back reset this episode,
+    route it through the shared ``remediate_unusable_usb`` primitive: reset
+    budget available -> one reset (accounted against the normal reset budget/
+    quarantine ledger), clearing its no-IP suppression so the normal adoption
+    path gets a fresh attempt; budget exhausted -> the adapter is quarantined
+    instead of being silently skipped.  If a reset does not bring it to a
     joinable state it re-accumulates and the hold-back proceeds — the
     holdback-reset-done flag prevents a second reset.  Returns True when a reset
     was spent (the caller owns the pass; this is a blocking effect like the
-    dead-PHY reset).  The caller must gate on a healthy device (conn_ok) so only
-    idle spares — never the active path — are reset here.
+    dead-PHY reset); quarantining does not own the pass.  The caller must gate
+    on a healthy device (conn_ok) so only idle spares — never the active path
+    — are reset here.
     """
     for a in adapters:
         if not getattr(a, "is_usb", False) or not a.stable_id:
@@ -724,13 +777,9 @@ def maybe_reset_noip_held_usb(ctx, adapters: list, now: float) -> bool:
         target = build_target_adapter(ctx, a.ifname, adapters)
         if not target.resettable_usb:
             continue
-        if adapter_reset_budget_exhausted(ctx, target, now):
+        outcome = remediate_unusable_usb(ctx, target, now, reason="noip_holdback")
+        if outcome != "reset":
             continue
-        ctx.logger.info(
-            "No-IP hold-back on idle USB %s: spending one budgeted reset before "
-            "finalising the hold-back", a.ifname)
-        record_adapter_reset(ctx, target, now)
-        wifi_net.reset_usb_adapter_rebind(a.ifname)
         with ctx.state_lock:
             ctx.RECOVERY_STATE.noip_holdback_reset_done.add(a.stable_id)
         # Fresh adoption chance: clear the no-IP suppression (the reset may have
@@ -1282,22 +1331,7 @@ def escalate_dead_adapter_recovery(ctx, adapters: list, wired_connected: bool) -
     # in that case.  Keep publishing degraded status and let the normal loop
     # logic run.
     if target.resettable_usb and budget_spent and other_path:
-        with ctx.state_lock:
-            _prune_adapter_ledgers_locked(ctx, now)
-            ledger = _adapter_ledger_locked(ctx, target)
-            current = ledger.get("quarantined_until") if ledger else None
-            newly = not (
-                isinstance(current, (int, float))
-                and not isinstance(current, bool)
-                and now < current
-            )
-            if ledger is not None:
-                ledger["quarantined_until"] = now + ctx.USB_RESET_WINDOW
-        if newly:
-            ctx.logger.info(
-                "USB adapter %s quarantined for preferred client use "
-                "(reset budget exhausted; alternate path available)", target.ifname,
-            )
+        quarantine_adapter(ctx, target, now, reason="dead_phy_reset_budget_exhausted")
         return False
 
     # (5) Reboot escalation — only when genuinely offline.
