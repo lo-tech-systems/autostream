@@ -865,6 +865,84 @@ class TestLogThrottled:
         log.log.assert_called_once()   # log_throttled uses logger.log(level, ...)
 
 
+class TestRepeatSuppressionFilter:
+    """Consecutive-repeat log suppression (replaces the windowed dedupe filter,
+    which dropped every record while monotonic time was below its window)."""
+
+    @staticmethod
+    def _record(msg: str):
+        import logging
+        return logging.LogRecord(
+            name="test", level=logging.INFO, pathname=__file__, lineno=1,
+            msg=msg, args=None, exc_info=None,
+        )
+
+    def test_fresh_boot_first_record_passes(self, watcher):
+        # Regression: a never-seen message must pass even at low monotonic
+        # values (e.g. shortly after boot), not just once uptime is high.
+        with patch("time.monotonic", return_value=35.0):
+            f = watcher.RepeatSuppressionFilter()
+            assert f.filter(self._record("hello")) is True
+
+    def test_consecutive_repeats_suppressed_after_free_passes(self, watcher):
+        f = watcher.RepeatSuppressionFilter()
+        with patch("time.monotonic", return_value=0.0):
+            assert f.filter(self._record("m")) is True
+            assert f.filter(self._record("m")) is True
+            assert f.filter(self._record("m")) is True
+            assert f.filter(self._record("m")) is False
+            assert f.filter(self._record("m")) is False
+
+    def test_reminder_after_interval_annotates_count(self, watcher):
+        f = watcher.RepeatSuppressionFilter()
+        with patch("time.monotonic", return_value=0.0):
+            for _ in range(3):
+                assert f.filter(self._record("m")) is True
+            assert f.filter(self._record("m")) is False
+        with patch("time.monotonic", return_value=300.0):
+            rec = self._record("m")
+            assert f.filter(rec) is True
+            assert rec.getMessage().endswith("(repeated 5 times)")
+
+    def test_run_reset_on_new_message(self, watcher):
+        f = watcher.RepeatSuppressionFilter()
+        with patch("time.monotonic", return_value=0.0):
+            assert f.filter(self._record("A")) is True
+            assert f.filter(self._record("A")) is True
+            assert f.filter(self._record("A")) is True
+            assert f.filter(self._record("A")) is False
+            assert f.filter(self._record("B")) is True
+            assert f.filter(self._record("A")) is True
+
+    def test_alternating_messages_never_suppressed(self, watcher):
+        f = watcher.RepeatSuppressionFilter()
+        with patch("time.monotonic", return_value=0.0):
+            for msg in ["A", "B", "A", "B"]:
+                assert f.filter(self._record(msg)) is True
+
+    def test_two_handlers_share_record_stream_annotate_once(self, watcher):
+        # Both handlers receive the same LogRecord object per log call; the
+        # reminder annotation must be applied exactly once and stay in sync
+        # across both filter instances' independent run tracking.
+        f1 = watcher.RepeatSuppressionFilter()
+        f2 = watcher.RepeatSuppressionFilter()
+        with patch("time.monotonic", return_value=0.0):
+            for _ in range(3):
+                r = self._record("m")
+                assert f1.filter(r) is True
+                assert f2.filter(r) is True
+            r = self._record("m")
+            assert f1.filter(r) is False
+            assert f2.filter(r) is False
+        with patch("time.monotonic", return_value=300.0):
+            r = self._record("m")
+            assert f1.filter(r) is True
+            first_rendered = r.getMessage()
+            assert first_rendered.endswith("(repeated 5 times)")
+            assert f2.filter(r) is True
+            assert r.getMessage() == first_rendered
+
+
 class TestLogLevelValidation:
     def test_valid_info_no_ttl(self, watcher):
         assert watcher.wifi_web.validate_log_level_request(watcher,"info", None) == ("", None)

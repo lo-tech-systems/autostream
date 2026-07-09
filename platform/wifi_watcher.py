@@ -306,33 +306,53 @@ _NON_DISRUPTIVE_ACTIONS = {
 logger = logging.getLogger(__name__)
 
 
-class DeduplicateFilter(logging.Filter):
-    """Suppress a log record if an identical record (same logger, level, rendered
-    message) was emitted within the last _WINDOW seconds.
+class RepeatSuppressionFilter(logging.Filter):
+    """Suppress runs of consecutively repeated messages, syslog-style.
 
-    Each handler carries its own instance so filtering is applied independently
-    per destination (stdout vs file).  Both instances stay in sync in practice
-    because all handlers receive the same records in the same order.
+    The first REPEAT_FREE_PASSES occurrences of a consecutive run are
+    emitted; further repeats are dropped, except that a reminder (annotated
+    with the suppressed count) is emitted every REPEAT_REMINDER_SECONDS.
+    Any different message resets the run.  O(1) state; intervals use
+    time.monotonic() so NTP clock steps cannot distort them.
+
+    Each handler carries its own instance so filtering is applied
+    independently per destination (stdout vs file).  Handlers receive the
+    same LogRecord object, so a reminder's annotation is stashed on the
+    record itself (``_repeat_original``) and never re-applied, keeping the
+    two instances' run tracking in sync when the record propagates to both.
     """
 
-    _WINDOW = 60.0
+    REPEAT_FREE_PASSES = 3
+    REPEAT_REMINDER_SECONDS = 300.0
 
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.Lock()
-        # (logger_name, levelno, rendered_message) -> last emission time (monotonic)
-        self._cache: dict[tuple, float] = {}
+        self._last_msg: Optional[str] = None
+        self._run_count = 0            # consecutive occurrences of _last_msg
+        self._last_emit: float = 0.0   # monotonic time _last_msg last emitted
 
     def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        key = (record.name, record.levelno, msg)
+        msg = getattr(record, "_repeat_original", record.getMessage())
         now = time.monotonic()
         with self._lock:
-            last = self._cache.get(key, 0.0)
-            if now - last < self._WINDOW:
-                return False
-            self._cache[key] = now
-        return True
+            if msg != self._last_msg:
+                self._last_msg = msg
+                self._run_count = 1
+                self._last_emit = now
+                return True
+            self._run_count += 1
+            if self._run_count <= self.REPEAT_FREE_PASSES:
+                self._last_emit = now
+                return True
+            if now - self._last_emit >= self.REPEAT_REMINDER_SECONDS:
+                if not hasattr(record, "_repeat_original"):
+                    record._repeat_original = msg
+                    record.msg = f"{msg} (repeated {self._run_count} times)"
+                    record.args = None
+                self._last_emit = now
+                return True
+            return False
 
 
 def _setup_logging() -> None:
@@ -372,7 +392,7 @@ def _setup_logging() -> None:
 
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
-    stream_handler.addFilter(DeduplicateFilter())
+    stream_handler.addFilter(RepeatSuppressionFilter())
     root.addHandler(stream_handler)
 
     try:
@@ -380,7 +400,7 @@ def _setup_logging() -> None:
         os.makedirs(log_dir, exist_ok=True)
         file_handler = logging.FileHandler(LOG_FILE)
         file_handler.setFormatter(formatter)
-        file_handler.addFilter(DeduplicateFilter())
+        file_handler.addFilter(RepeatSuppressionFilter())
         root.addHandler(file_handler)
     except Exception as e:
         logger.error(
@@ -552,8 +572,9 @@ _log_dedup = LogDedupCache()
 
 # Log de-duplication — three complementary mechanisms, one job each.
 # New code should pick the one matching intent:
-#   * DeduplicateFilter — transport-level; drops any record identical to one seen
-#     in the last 60 s.  A blanket backstop; do not rely on it for semantics.
+#   * RepeatSuppressionFilter — transport-level; drops a message once it has
+#     repeated consecutively past a small threshold.  A blanket backstop; do
+#     not rely on it for semantics.
 #   * log_on_change(key, value, ...) — semantic *transitions*; emit only when a
 #     tracked value changes (state/mode flips).  Use for "X changed -> Y".
 #   * log_throttled(key, msg, interval=...) — time-window *rate limit*; emit at
