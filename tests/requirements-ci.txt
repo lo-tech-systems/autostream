@@ -1,0 +1,13 @@
+# Single source of truth for the shared Python test dependencies used by
+# .github/workflows/ci.yml (offline-tests, env-dependent-tests, wsl-tests,
+# and playwright, which additionally installs pytest-playwright on top of
+# this file).
+#
+# pillow is required by tests/test_dial_display*.py. On the appliance itself
+# Pillow is provided by the apt package python3-pil, so it is intentionally
+# not listed in dial/requirements.txt.
+pytest
+flask
+requests
+pytest-timeout
+pillow

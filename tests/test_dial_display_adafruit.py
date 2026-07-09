@@ -14,7 +14,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PIL import Image
+
+Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
 
 REPO_ROOT = Path(__file__).parent.parent
 _DIAL = str(REPO_ROOT / "dial")

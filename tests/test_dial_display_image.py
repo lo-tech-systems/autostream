@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from PIL import Image
+
+Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
 
 REPO_ROOT = Path(__file__).parent.parent
 _DIAL = str(REPO_ROOT / "dial")

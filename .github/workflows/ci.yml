@@ -22,7 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install pytest flask requests pytest-timeout
+        run: pip install -r tests/requirements-ci.txt
 
       - name: Run offline test suite
         run: python -m pytest tests/ -q --ignore=tests/playwright --timeout=60
@@ -55,7 +55,7 @@ jobs:
             systemd
 
       - name: Install Python dependencies
-        run: pip install pytest flask requests pytest-timeout
+        run: pip install -r tests/requirements-ci.txt
 
       - name: Run full test suite (env-dependent tests now active)
         run: python -m pytest tests/ -q --ignore=tests/playwright --timeout=60
@@ -88,7 +88,7 @@ jobs:
             systemd
 
       - name: Install Python dependencies
-        run: pip install pytest flask requests pytest-timeout
+        run: pip install -r tests/requirements-ci.txt
 
       - name: Run WSL test suite
         run: bash scripts/run_wsl_tests.sh
@@ -113,7 +113,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install pytest flask requests pytest-playwright pytest-timeout
+        run: pip install -r tests/requirements-ci.txt pytest-playwright
 
       - name: Install Playwright browsers
         run: playwright install --with-deps chromium
