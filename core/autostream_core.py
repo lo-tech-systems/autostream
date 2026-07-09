@@ -2407,6 +2407,12 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         _apply_startup_log_level(config_path)
     except Exception:
         logging.warning("apply_startup_log_level: import or apply failed; continuing")
+    try:
+        from autostream_webui_api import forward_log_level_to_watcher as _forward_log_level_to_watcher
+        if not _forward_log_level_to_watcher(cfg.general.log_level):
+            logging.debug("forward_log_level_to_watcher: startup forward not accepted")
+    except Exception:
+        logging.debug("forward_log_level_to_watcher: startup import or forward failed; continuing")
     audit_static_system_facts()
     _ensure_playback_tracker(cfg)
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))

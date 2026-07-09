@@ -2103,6 +2103,9 @@ def send_log_level_put_json(
             send_browser_api_error(handler, 500, "Configuration could not be saved")
         return
 
+    applied_level = result.get("level", requested_level)
+    result.setdefault("applied", {})["wifi_watcher"] = forward_log_level_to_watcher(applied_level)
+
     send_json(handler, 200, result)
 
 
@@ -2164,6 +2167,54 @@ def _watcher_request(method: str, path: str, body: Optional[dict] = None):
     except ValueError:
         parsed = {}
     return status, parsed
+
+
+_WATCHER_LEVEL_MAP = {
+    "spam": "debug", "debug": "debug",
+    "info": "info",
+    "warning": "warning", "log": "warning", "fatal": "warning",
+}
+_WATCHER_DEBUG_TTL_SECONDS = 3600
+
+
+def forward_log_level_to_watcher(app_level: str) -> bool:
+    """Best-effort: map and forward *app_level* to the watcher's control API.
+
+    Maps the app's log-level vocabulary to the watcher's runtime vocabulary
+    (warning/info/debug) and POSTs a set_log_level action to the watcher's
+    /network_control endpoint. A forwarded debug level carries the watcher's
+    maximum TTL (1 hour); info/warning are forwarded without a TTL. Never
+    raises: any failure (unknown level, missing token, transport error,
+    non-success response) is logged and reported as False so a forwarding
+    failure never blocks the app-level change that triggered it.
+    """
+    watcher_level = _WATCHER_LEVEL_MAP.get(str(app_level or "").strip().lower())
+    if watcher_level is None:
+        logging.warning("forward_log_level_to_watcher: unknown app level %r", app_level)
+        return False
+
+    if not _read_watcher_control_token():
+        logging.debug("forward_log_level_to_watcher: no watcher control token available")
+        return False
+
+    body: dict = {"action": "set_log_level", "level": watcher_level}
+    if watcher_level == "debug":
+        body["ttl_seconds"] = _WATCHER_DEBUG_TTL_SECONDS
+
+    try:
+        status, data = _watcher_request("POST", "/network_control", body)
+    except Exception as e:
+        logging.warning("forward_log_level_to_watcher: request failed: %s", e)
+        return False
+
+    if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+        logging.warning(
+            "forward_log_level_to_watcher: watcher rejected request (status=%s, data=%r)",
+            status, data,
+        )
+        return False
+
+    return True
 
 
 def get_wifi_watcher_version() -> str:
