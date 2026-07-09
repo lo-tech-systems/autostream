@@ -106,7 +106,9 @@ class AdoptionState:
     signal/success/failure table per scanning interface (ifname -> table), so
     an onboard survey scan can never overwrite or influence the active USB
     client's own observations; ``last_roam_or_activation`` is the roam
-    holdoff anchor.  ``last_bssid_pin``
+    holdoff anchor.  ``bssid_roam_candidate`` tracks the consecutive-scan
+    streak for a proactive roam candidate (``{}`` when no streak is active).
+    ``last_bssid_pin``
     records the BSSID pinned for the most recent activation attempt (or its
     absence), used by the reset/retry gate.  ``last_bssid_survey_at`` and
     ``last_bssid_usb_full_survey_at`` rate-gate the cheap self-scan and the
@@ -121,6 +123,7 @@ class AdoptionState:
     pending_usb_adoption_checks: int = 0
     last_detected_adapter_macs: Optional[frozenset] = None
     bssid_tables: dict = field(default_factory=dict)
+    bssid_roam_candidate: dict = field(default_factory=dict)
     last_roam_or_activation: Optional[float] = None
     last_bssid_pin: dict = field(default_factory=dict)
     last_bssid_survey_at: Optional[float] = None

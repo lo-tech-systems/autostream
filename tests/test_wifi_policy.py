@@ -409,3 +409,87 @@ class TestNextRoamTarget:
         table = {"CUR": {"ssid": "Home", "signal": 50, "last_seen": 100.0,
                          "fail_count": 0, "quarantined_until": None}}
         assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_below_floor_rejected_despite_margin(self):
+        # The field incident verbatim: 30 -> 47 clears ROAM_LOW_MARGIN but the
+        # candidate is well below BSSID_ROAM_MIN_SIGNAL.
+        table = self._table(current_signal=30, candidate_signal=47)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_below_floor_rejected_on_full_margin_arm(self):
+        table = self._table(current_signal=30, candidate_signal=wifi_policy.BSSID_ROAM_MIN_SIGNAL - 1)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == ""
+
+    def test_at_floor_with_margin_accepted(self):
+        table = self._table(current_signal=30, candidate_signal=wifi_policy.BSSID_ROAM_MIN_SIGNAL)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == "CAND"
+
+    def test_above_floor_with_low_signal_margin_accepted(self):
+        # current satisfies the low-signal arm (<= ROAM_LOW_SIGNAL) and the
+        # candidate clears both the relaxed margin and the absolute floor.
+        current = wifi_policy.ROAM_LOW_SIGNAL - 1
+        candidate = current + wifi_policy.ROAM_LOW_MARGIN
+        assert candidate == wifi_policy.BSSID_ROAM_MIN_SIGNAL
+        table = self._table(current_signal=current, candidate_signal=candidate)
+        assert wifi_policy.next_roam_target(table, "CUR", 100.0, False, None) == "CAND"
+
+    def test_custom_min_signal_overrides_default_floor(self):
+        table = self._table(current_signal=30, candidate_signal=47)
+        assert wifi_policy.next_roam_target(
+            table, "CUR", 100.0, False, None, min_signal=40) == "CAND"
+
+
+class TestUpdateRoamStreak:
+    def test_empty_candidate_resets(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 2, "last_seen": 100.0}
+        assert wifi_policy.update_roam_streak(streak, "wlan1", "", 200.0) == {}
+
+    def test_same_candidate_increments_and_refreshes(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+        result = wifi_policy.update_roam_streak(streak, "wlan1", "AA:BB", 200.0)
+        assert result == {"ifname": "wlan1", "bssid": "AA:BB", "count": 2, "last_seen": 200.0}
+
+    def test_different_candidate_resets_to_one(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 3, "last_seen": 100.0}
+        result = wifi_policy.update_roam_streak(streak, "wlan1", "CC:DD", 200.0)
+        assert result == {"ifname": "wlan1", "bssid": "CC:DD", "count": 1, "last_seen": 200.0}
+
+    def test_different_interface_resets_to_one(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 3, "last_seen": 100.0}
+        result = wifi_policy.update_roam_streak(streak, "wlan2", "AA:BB", 200.0)
+        assert result == {"ifname": "wlan2", "bssid": "AA:BB", "count": 1, "last_seen": 200.0}
+
+    def test_empty_streak_starts_at_one(self):
+        result = wifi_policy.update_roam_streak({}, "wlan1", "AA:BB", 100.0)
+        assert result == {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+
+    def test_does_not_mutate_input_streak(self):
+        streak = {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+        wifi_policy.update_roam_streak(streak, "wlan1", "AA:BB", 200.0)
+        assert streak == {"ifname": "wlan1", "bssid": "AA:BB", "count": 1, "last_seen": 100.0}
+
+
+class TestBssidTablesAccessors:
+    def test_bssid_table_for_interface_creates_empty_table(self):
+        tables = {}
+        table = wifi_policy.bssid_table_for_interface(tables, "wlan1")
+        assert table == {}
+        assert tables == {"wlan1": {}}
+
+    def test_bssid_table_for_interface_returns_same_table_on_repeat_calls(self):
+        tables = {}
+        table1 = wifi_policy.bssid_table_for_interface(tables, "wlan1")
+        table1["AA:BB"] = {"ssid": "Home"}
+        table2 = wifi_policy.bssid_table_for_interface(tables, "wlan1")
+        assert table2 == {"AA:BB": {"ssid": "Home"}}
+
+    def test_bssid_table_for_interface_keeps_interfaces_separate(self):
+        tables = {}
+        wifi_policy.bssid_table_for_interface(tables, "wlan0")["X"] = 1
+        wifi_policy.bssid_table_for_interface(tables, "wlan1")["Y"] = 2
+        assert tables == {"wlan0": {"X": 1}, "wlan1": {"Y": 2}}
+
+    def test_clear_bssid_tables_drops_all_interfaces(self):
+        tables = {"wlan0": {"X": 1}, "wlan1": {"Y": 2}}
+        wifi_policy.clear_bssid_tables(tables)
+        assert tables == {}

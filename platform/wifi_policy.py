@@ -223,6 +223,8 @@ ROAM_LOW_SIGNAL = 50            # "current link is weak" floor (approx -75 dBm)
 ROAM_MARGIN = 12                # required candidate advantage (approx 6 dB)
 ROAM_LOW_MARGIN = 6             # relaxed advantage when current <= low floor
 ROAM_HOLDOFF_SECS = 900         # min gap between roams / after activation
+BSSID_ROAM_REQUIRED_SCANS = 3   # consecutive eligible scans preferring the same candidate
+BSSID_ROAM_MIN_SIGNAL = 55      # absolute candidate floor for proactive optimisation roams
 
 
 def update_bssid_table(table: dict, rows: list, ssid: str, now: float) -> tuple:
@@ -300,12 +302,14 @@ def select_bssid(table: dict, now: float, exclude: str = "") -> str:
 
 
 def next_roam_target(table: dict, current_bssid: str, now: float, playing,
-                     last_roam_or_activation) -> str:
+                     last_roam_or_activation, *, min_signal: int = BSSID_ROAM_MIN_SIGNAL) -> str:
     """Pure roam decision: "" means hold, otherwise the target BSSID.
 
     Roams only when playback is exactly False (None defers), the holdoff has
-    elapsed since the last roam/activation, and the best fresh, unquarantined
-    candidate clears the signal margin over the current AP.
+    elapsed since the last roam/activation, the best fresh, unquarantined
+    candidate clears the signal margin over the current AP, AND the
+    candidate's own signal is at least *min_signal* — a candidate must be
+    strong in absolute terms, not just less bad than the current AP.
     """
     if playing is not False:
         return ""
@@ -319,6 +323,8 @@ def next_roam_target(table: dict, current_bssid: str, now: float, playing,
     current_entry = table.get(current_bssid)
     current_signal = current_entry["signal"] if current_entry else 0
     candidate_signal = table[candidate]["signal"]
+    if candidate_signal < min_signal:
+        return ""
 
     if candidate_signal >= current_signal + ROAM_MARGIN:
         return candidate
@@ -339,3 +345,22 @@ def bssid_table_for_interface(tables: dict, ifname: str) -> dict:
 def clear_bssid_tables(tables: dict) -> None:
     """Drop every interface's BSSID table (e.g. on a committed-SSID change)."""
     tables.clear()
+
+
+def update_roam_streak(streak: dict, ifname: str, candidate: str, now: float) -> dict:
+    """Advance the consecutive-scan roam-candidate streak; returns a new dict.
+
+    An empty *candidate* resets the streak to {}. The same (ifname, bssid) as
+    the current streak increments its count and refreshes last_seen. A
+    different candidate or interface starts a fresh streak at count=1.
+    """
+    if not candidate:
+        return {}
+    if streak.get("ifname") == ifname and streak.get("bssid") == candidate:
+        return {
+            "ifname": ifname,
+            "bssid": candidate,
+            "count": streak["count"] + 1,
+            "last_seen": now,
+        }
+    return {"ifname": ifname, "bssid": candidate, "count": 1, "last_seen": now}
