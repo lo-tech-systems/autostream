@@ -273,3 +273,8 @@ over this loopback API: the web UI forwards every successful level change
 ceiling even while the UI continues to show debug. A watcher-only restart
 drops the forwarded level and falls back to `AUTOSTREAM_WIFI_LOG_LEVEL` until
 the next UI change or a web-UI restart re-forwards the persisted level.
+
+The runtime level also gates werkzeug (the watcher's HTTP server): HTTP
+access logging for `/network_status` and other polling requests is only
+emitted at `debug`; at `warning`/`info` those lines are suppressed. Werkzeug's
+own warnings and errors always surface regardless of the runtime level.

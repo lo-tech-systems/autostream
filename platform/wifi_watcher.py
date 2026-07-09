@@ -355,6 +355,20 @@ class RepeatSuppressionFilter(logging.Filter):
             return False
 
 
+def _apply_runtime_level(levelno: int) -> None:
+    """Apply the runtime level to the root logger and gate werkzeug by it.
+
+    Werkzeug self-configures its logger to INFO, which would bypass the
+    root level for propagated records.  HTTP access lines are routine
+    polling noise, so they are only enabled at debug; werkzeug's own
+    warnings/errors always pass.
+    """
+    logging.getLogger().setLevel(levelno)
+    logging.getLogger("werkzeug").setLevel(
+        logging.INFO if levelno <= logging.DEBUG else logging.WARNING
+    )
+
+
 def _setup_logging() -> None:
     """Configure root-level logging to stdout and (if possible) a log file.
 
@@ -380,7 +394,7 @@ def _setup_logging() -> None:
     LOG_STATE.default_log_level_name = env_level if env_level in RUNTIME_LOG_LEVELS else "info"
 
     root = logging.getLogger()
-    root.setLevel(level)
+    _apply_runtime_level(level)
 
     if root.handlers:
         return
@@ -1220,7 +1234,7 @@ def apply_log_level(level: str, ttl_seconds: Optional[int]) -> None:
     (AUTOSTREAM_WIFI_LOG_LEVEL) is preserved for revert.
     """
     levelno = RUNTIME_LOG_LEVELS[level]
-    logging.getLogger().setLevel(levelno)
+    _apply_runtime_level(levelno)
     now = time.monotonic()
     with state_lock:
         if ttl_seconds:
@@ -1247,7 +1261,7 @@ def revert_expired_log_level(now: Optional[float] = None) -> None:
         default = LOG_STATE.default_log_level_name or "info"
         LOG_STATE.temporary_log_level = ""
         LOG_STATE.temporary_log_level_until = None
-    logging.getLogger().setLevel(RUNTIME_LOG_LEVELS.get(default, logging.INFO))
+    _apply_runtime_level(RUNTIME_LOG_LEVELS.get(default, logging.INFO))
     logger.info("Runtime log level reverted to %s", default)
 
 

@@ -1001,6 +1001,61 @@ class TestApplyAndRevertLogLevel:
         assert logging.getLogger().level == logging.INFO
 
 
+class TestApplyRuntimeLevelWerkzeugGating:
+    """Werkzeug self-configures its logger to INFO, which would otherwise
+    bypass the root level for propagated HTTP access-log records.
+    _apply_runtime_level pins werkzeug in step with the runtime level so
+    access lines only flow at debug; its own warnings/errors always pass."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_logger_state(self, watcher):
+        import logging as _logging
+        werkzeug_logger = _logging.getLogger("werkzeug")
+        saved_root_level = _logging.getLogger().level
+        saved_werkzeug_level = werkzeug_logger.level
+        saved_temp_level = watcher.LOG_STATE.temporary_log_level
+        saved_temp_until = watcher.LOG_STATE.temporary_log_level_until
+        saved_default_name = watcher.LOG_STATE.default_log_level_name
+        yield
+        _logging.getLogger().setLevel(saved_root_level)
+        werkzeug_logger.setLevel(saved_werkzeug_level)
+        watcher.LOG_STATE.temporary_log_level = saved_temp_level
+        watcher.LOG_STATE.temporary_log_level_until = saved_temp_until
+        watcher.LOG_STATE.default_log_level_name = saved_default_name
+
+    def test_apply_runtime_level_info_sets_werkzeug_warning(self, watcher):
+        import logging as _logging
+        watcher._apply_runtime_level(_logging.INFO)
+        assert _logging.getLogger().level == _logging.INFO
+        assert _logging.getLogger("werkzeug").level == _logging.WARNING
+
+    def test_apply_runtime_level_debug_sets_werkzeug_info(self, watcher):
+        import logging as _logging
+        watcher._apply_runtime_level(_logging.DEBUG)
+        assert _logging.getLogger().level == _logging.DEBUG
+        assert _logging.getLogger("werkzeug").level == _logging.INFO
+
+    def test_apply_log_level_debug_sets_werkzeug_info(self, watcher):
+        import logging as _logging
+        with patch("time.monotonic", return_value=1000.0):
+            watcher.apply_log_level("debug", 900)
+        assert _logging.getLogger("werkzeug").level == _logging.INFO
+
+    def test_revert_expired_log_level_restores_werkzeug_warning(self, watcher):
+        import logging as _logging
+        watcher.LOG_STATE.default_log_level_name = "info"
+        with patch("time.monotonic", return_value=1000.0):
+            watcher.apply_log_level("debug", 900)
+        assert _logging.getLogger("werkzeug").level == _logging.INFO
+        # Before expiry: werkzeug stays gated for debug access logging.
+        watcher.revert_expired_log_level(now=1500.0)
+        assert _logging.getLogger("werkzeug").level == _logging.INFO
+        # After expiry: reverts to the default level's werkzeug gating.
+        watcher.revert_expired_log_level(now=2000.0)
+        assert _logging.getLogger().level == _logging.INFO
+        assert _logging.getLogger("werkzeug").level == _logging.WARNING
+
+
 class TestProcessSetLogLevel:
     def test_process_applies_level(self, watcher):
         with patch("time.monotonic", return_value=1000.0):
