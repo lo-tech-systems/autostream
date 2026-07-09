@@ -238,6 +238,24 @@ when it reaches the final hold-back the watcher spends **one** budgeted USB rese
 adoption attempt. If that still fails, the hold-back proceeds — one reset per
 hold-back episode.
 
+**ClientFailed overlay HOLD handling / post-handover settling**: when the
+recovery ladder holds an active, carrier-up, unhealthy preferred USB
+(`usb_active_no_ip`), the ClientFailed overlay retries that same USB in place
+(an ifname-pinned re-activation) instead of falling back to onboard — a
+transient blip re-activates and the client keeps its identity, while a genuine
+failure records a no-IP ledger entry whose escalating backoff eventually
+excludes the adapter from `preferred_usb`, letting the next overlay pass demote
+through the ladder's own rung. `usb_link_down_debouncing` holds outright (the
+dead-PHY debounce owns that adapter); other HOLD reasons keep the existing
+onboard-fallback behaviour. Separately, for **45 s** after the active client
+identity last changed (boot detection, adoption handover, or a recovery
+activation), a HARD connectivity verdict (active-client link-down, or no
+active client and no recorded USB left to reconnect to) is softened to the
+normal `CONNECTIVITY_DOWN_DEBOUNCE`-pass debounce instead of condemning on a
+single sample — shielding a just-completed handover from one-sample races
+(NM state settling, ARP `INCOMPLETE`, a coincident avahi restart) while a
+genuinely dead handover still condemns within the usual debounce window.
+
 **Manual adapter control** (loopback+token, via `/network_control`):
 `disable_adapter` (a disabled adapter is never offered as a client, adopted, or
 reset until re-enabled — persisted across restarts), `enable_adapter`, and

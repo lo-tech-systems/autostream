@@ -62,6 +62,7 @@ class LoopContext:
     RECONNECT_ATTEMPT_INTERVAL: float
     NO_ACTIVE_PATH_REBOOT_AFTER: float
     CONNECTIVITY_DOWN_DEBOUNCE: int
+    HANDOVER_SETTLE_SECONDS: float
     AP_IFNAME: str
     # Callables
     check_and_repair_avahi_hostname: Callable
@@ -207,7 +208,7 @@ def finalize_active_client_and_health(ctx: LoopContext, fctx: "FactsContext") ->
     )
 
 
-def _connectivity_failure_is_hard(facts: "Facts", active_client, prev_mac: str) -> bool:
+def _connectivity_failure_is_hard(ctx: LoopContext, facts: "Facts", active_client, prev_mac: str) -> bool:
     """True when this pass's connectivity failure is a HARD signal (no debounce).
 
     Hard: nothing configured; the active client reports NO-CARRIER (link down); or
@@ -217,17 +218,31 @@ def _connectivity_failure_is_hard(facts: "Facts", active_client, prev_mac: str) 
     the recorded USB is still physically present (NM merely disconnected it, may
     reassociate) — softening the NM-disconnected case gives it the same 2-pass
     debounce.
+
+    Within HANDOVER_SETTLE_SECONDS of the last active-client identity change, a
+    HARD signal is demoted to soft (returns False here) instead of condemning on
+    a single pass: races settling right after a handover still condemn, but only
+    after the normal debounce.  No grace when no identity change has ever been
+    recorded (STATE.active_client_changed_at is None).
     """
     if not facts.wifi_configured:
         return True
     if active_client is not None:
-        return wifi_net.read_link_down(active_client.ifname) is True
-    # No active client: soft only if the recorded USB is still present (a
-    # disconnect that may recover); otherwise the path is genuinely down.
-    recorded_usb_present = bool(prev_mac) and any(
-        a.is_usb and a.permanent_mac == prev_mac for a in facts.adapters
-    )
-    return not recorded_usb_present
+        hard = wifi_net.read_link_down(active_client.ifname) is True
+    else:
+        # No active client: soft only if the recorded USB is still present (a
+        # disconnect that may recover); otherwise the path is genuinely down.
+        recorded_usb_present = bool(prev_mac) and any(
+            a.is_usb and a.permanent_mac == prev_mac for a in facts.adapters
+        )
+        hard = not recorded_usb_present
+    if not hard:
+        return False
+    with ctx.state_lock:
+        changed_at = ctx.STATE.active_client_changed_at
+    if changed_at is not None and (facts.taken_at - changed_at) < ctx.HANDOVER_SETTLE_SECONDS:
+        return False
+    return True
 
 
 def _debounced_connectivity(ctx: LoopContext, facts: "Facts", active_client, client_ok: bool,
@@ -245,7 +260,7 @@ def _debounced_connectivity(ctx: LoopContext, facts: "Facts", active_client, cli
         with ctx.state_lock:
             ctx.STATE.conn_unhealthy_checks = 0
         return True
-    if _connectivity_failure_is_hard(facts, active_client, prev_mac):
+    if _connectivity_failure_is_hard(ctx, facts, active_client, prev_mac):
         with ctx.state_lock:
             ctx.STATE.conn_unhealthy_checks = 0
         return False

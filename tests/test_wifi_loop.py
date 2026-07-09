@@ -109,6 +109,76 @@ class TestConnectivityHysteresis:
         assert watcher.STATE.conn_unhealthy_checks == 0
 
 
+class TestHandoverSettlingGrace:
+    """H-2: a HARD connectivity signal within HANDOVER_SETTLE_SECONDS of the
+    last active-client identity change is demoted to the soft (debounced)
+    class; a genuinely dead handover still condemns via the normal debounce,
+    and the grace never touches the already-soft path."""
+
+    def _facts(self, watcher, adapters, active, *, taken_at=1000.0):
+        return watcher.Facts(
+            wifi_configured=True, adapters=adapters, wired_connected=False,
+            wired_ok=False, active_client=active, addresses={}, taken_at=taken_at,
+        )
+
+    def test_hard_signal_within_grace_is_soft(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:40", is_usb=True)
+        watcher.STATE.connectivity_ok = True
+        watcher.STATE.active_client_changed_at = 1000.0  # just handed over
+        facts = self._facts(watcher, [usb], usb, taken_at=1010.0)  # 10s later, within 45s
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=True):  # hard: NO-CARRIER
+            first = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
+            second = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
+        assert (first, second) == (True, False)  # demoted to the 2-pass soft debounce
+
+    def test_hard_signal_after_grace_is_immediate(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:41", is_usb=True)
+        watcher.STATE.connectivity_ok = True
+        watcher.STATE.active_client_changed_at = 1000.0
+        facts = self._facts(watcher, [usb], usb, taken_at=1000.0 + watcher.HANDOVER_SETTLE_SECONDS + 1)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
+        assert ok is False  # unchanged: immediate condemnation once the grace has elapsed
+
+    def test_hard_signal_no_recorded_handover_is_immediate(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:42", is_usb=True)
+        watcher.STATE.connectivity_ok = True
+        watcher.STATE.active_client_changed_at = None  # unconfigured startup: no grace
+        facts = self._facts(watcher, [usb], usb, taken_at=1000.0)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            ok = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
+        assert ok is False
+
+    def test_stamp_not_refreshed_on_same_identity(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:43", is_usb=True)
+        watcher.STATE.active_client_ifname = usb.ifname
+        watcher.STATE.active_client_mac = usb.permanent_mac
+        watcher.STATE.active_client_changed_at = 500.0
+        with patch.object(watcher.wifi_activation.time, "monotonic", return_value=999.0):
+            watcher.wifi_activation._set_active_client(watcher.ACTIVATION_CTX, usb)
+        assert watcher.STATE.active_client_changed_at == 500.0  # unchanged: same identity
+
+    def test_stamp_refreshed_on_genuine_change(self, watcher):
+        usb_old = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:44", is_usb=True)
+        usb_new = _adapter(watcher, "wlan2", "bb:bb:bb:bb:bb:45", is_usb=True)
+        watcher.STATE.active_client_ifname = usb_old.ifname
+        watcher.STATE.active_client_mac = usb_old.permanent_mac
+        watcher.STATE.active_client_changed_at = 500.0
+        with patch.object(watcher.wifi_activation.time, "monotonic", return_value=999.0):
+            watcher.wifi_activation._set_active_client(watcher.ACTIVATION_CTX, usb_new)
+        assert watcher.STATE.active_client_changed_at == 999.0  # refreshed on identity change
+
+    def test_soft_failure_within_grace_still_condemns_after_two_passes(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:46", is_usb=True)
+        watcher.STATE.connectivity_ok = True
+        watcher.STATE.active_client_changed_at = 1000.0
+        facts = self._facts(watcher, [usb], usb, taken_at=1010.0)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False):  # already soft
+            first = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
+            second = watcher.wifi_loop._debounced_connectivity(watcher.LOOP_CTX, facts, usb, client_ok=False)
+        assert (first, second) == (True, False)  # grace does not weaken the soft path
+
+
 class TestHealthMemo:
     """C-WP0: is_wifi_client_healthy is sampled once per (pass, ifname) and the
     recovery classifier and status snapshot see the same verdict in a pass."""

@@ -208,6 +208,13 @@ REBOOT_RATE_LIMIT_RETRY = 70 * 60       # retry a rate-limited/failed reboot aft
 # present.  HARD signals (nothing configured, no client and no present USB to
 # reconnect, NO-CARRIER) bypass the debounce.
 CONNECTIVITY_DOWN_DEBOUNCE = 2
+# Post-handover settling window: for this long after the active client identity
+# changes (boot detection, adoption handover, recovery activation), a HARD
+# connectivity signal is demoted to the soft (debounced) class instead of
+# condemning the path on a single pass — races settling right after a handover
+# (NM state, ARP INCOMPLETE, a coincident avahi restart) get the same 2-pass
+# grace as a soft failure.  After the window, hard classification is unchanged.
+HANDOVER_SETTLE_SECONDS = 45
 USB_ADOPTION_STABLE_PASSES = 2         # consecutive passes a USB candidate must be present
 # Bound async onboard-client activation failures per offline episode so a
 # present-but-failing onboard (which the no-IP ledger never suppresses) eventually
@@ -2058,6 +2065,7 @@ def build_contexts() -> None:
         RECONNECT_ATTEMPT_INTERVAL=RECONNECT_ATTEMPT_INTERVAL,
         NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
         CONNECTIVITY_DOWN_DEBOUNCE=CONNECTIVITY_DOWN_DEBOUNCE,
+        HANDOVER_SETTLE_SECONDS=HANDOVER_SETTLE_SECONDS,
         AP_IFNAME=AP_IFNAME,
         check_and_repair_avahi_hostname=partial(wifi_mdns.check_and_repair_avahi_hostname, MDNS_CTX),
         maybe_reannounce_mdns=partial(wifi_mdns.maybe_reannounce_mdns, MDNS_CTX),

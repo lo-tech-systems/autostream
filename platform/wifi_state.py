@@ -205,6 +205,10 @@ class NetworkMonitorState:
     # ---- Active client identity ----
     active_client_ifname: str = ""
     active_client_mac: str = ""
+    # Monotonic timestamp of the last active-client identity change (boot
+    # detection, adoption handover, or recovery activation); None before any
+    # identity has been recorded.  Not cleared on health — it simply ages out.
+    active_client_changed_at: Optional[float] = None
 
     # Explicit reconfiguration, rollback snapshot, and AP-session timing live on
     # the HotspotSession (STATE.hotspot).  The dead-PHY / reset / no-IP / manual-

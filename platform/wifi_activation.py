@@ -516,6 +516,8 @@ def _set_active_client(ctx: ActivationContext, adapter) -> None:
         changed = ctx.STATE.active_client_ifname != (adapter.ifname if adapter else "")
         ctx.STATE.active_client_ifname = adapter.ifname if adapter else ""
         ctx.STATE.active_client_mac = adapter.permanent_mac if adapter else ""
+        if changed:
+            ctx.STATE.active_client_changed_at = time.monotonic()
         # This adapter is now the healthy active client: end its no-IP hold-back
         # episode so a future hold-back may spend a fresh reset.
         if adapter is not None:
