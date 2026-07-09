@@ -210,9 +210,10 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
 
 
 # ---- USB BSSID ownership: table maintenance + selection/roam policy --------
-# Pure functions over a passed-in table dict (ADOPTION_STATE.bssid_table) — no
-# STATE, no effects, consistent with this module's contract.  Units are nmcli
-# SIGNAL percent (0-100) throughout.
+# Pure functions over a passed-in per-interface table dict, one entry per
+# scanning interface (ADOPTION_STATE.bssid_tables[ifname]) — no STATE, no
+# effects, consistent with this module's contract.  Units are nmcli SIGNAL
+# percent (0-100) throughout.
 
 BSSID_FRESH_SECS = 180          # max age for a selectable candidate
 BSSID_EVICT_SECS = 900          # unseen entries evicted from the table
@@ -328,3 +329,13 @@ def next_roam_target(table: dict, current_bssid: str, now: float, playing,
 
 def clear_bssid_table(table: dict) -> None:
     table.clear()
+
+
+def bssid_table_for_interface(tables: dict, ifname: str) -> dict:
+    """The per-BSSID table for *ifname*, creating an empty one if absent."""
+    return tables.setdefault(ifname, {})
+
+
+def clear_bssid_tables(tables: dict) -> None:
+    """Drop every interface's BSSID table (e.g. on a committed-SSID change)."""
+    tables.clear()

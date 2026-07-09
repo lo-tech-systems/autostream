@@ -835,9 +835,11 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
         )
     except Exception as e:
         logger.error("Could not persist network state for '%s': %s", conn_name, e)
-    # A new committed SSID invalidates any BSSID table entries from the previous one.
+    # A new committed SSID invalidates any BSSID observations and the pin record
+    # from the previous one, across every scanning interface.
     with state_lock:
-        wifi_policy.clear_bssid_table(ADOPTION_STATE.bssid_table)
+        wifi_policy.clear_bssid_tables(ADOPTION_STATE.bssid_tables)
+        ADOPTION_STATE.last_bssid_pin = {}
 
 
 def _try_candidate_on_adapter(ssid: str, password: str, target) -> bool:

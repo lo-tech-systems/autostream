@@ -115,10 +115,11 @@ def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str, exclude: str 
         ssid = wifi_net.get_connection_ssid(uuid)
         now = time.monotonic()
         with ctx.state_lock:
-            wifi_policy.update_bssid_table(ctx.ADOPTION_STATE.bssid_table, rows, ssid, now)
-            bssid = wifi_policy.select_bssid(ctx.ADOPTION_STATE.bssid_table, now, exclude=exclude)
+            table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, ifname)
+            wifi_policy.update_bssid_table(table, rows, ssid, now)
+            bssid = wifi_policy.select_bssid(table, now, exclude=exclude)
             if bssid:
-                signal = ctx.ADOPTION_STATE.bssid_table[bssid]["signal"]
+                signal = table[bssid]["signal"]
 
     if not bssid:
         ctx.nm.set_bssid(uuid, "")
@@ -160,10 +161,11 @@ def _activate_profile_on(ctx: ActivationContext, ifname: str, state: "wifi_net.N
     ok = _validate_activation(ctx, ifname, r_up, wait_for_validation=wait_for_validation)
     if pinned_bssid:
         with ctx.state_lock:
+            table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, ifname)
             if ok:
-                wifi_policy.record_bssid_success(ctx.ADOPTION_STATE.bssid_table, pinned_bssid, time.monotonic())
+                wifi_policy.record_bssid_success(table, pinned_bssid, time.monotonic())
             else:
-                wifi_policy.record_bssid_failure(ctx.ADOPTION_STATE.bssid_table, pinned_bssid)
+                wifi_policy.record_bssid_failure(table, pinned_bssid)
     return ok
 
 

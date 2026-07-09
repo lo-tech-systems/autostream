@@ -399,6 +399,50 @@ class TestBssidSurveyAndRoam:
         assert result is False
         scan.assert_not_called()
 
+    def test_usb_and_onboard_scans_land_in_separate_tables(self, watcher):
+        usb = self._usb(watcher)
+        onboard = _adapter(watcher, "wlan0", "aa:aa:aa:aa:aa:01", is_builtin=True)
+        hctx = self._hctx(watcher, self._facts(watcher, usb, extra_adapters=[onboard]), playing=True)
+        usb_rows = [self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True)]
+        onboard_rows = [self._row("BB:BB:BB:BB:BB:BB", signal=90)]
+
+        def _scan(ifname, rescan=False):
+            return onboard_rows if ifname == "wlan0" else usb_rows
+
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=False), \
+             patch.object(watcher.wifi_recovery, "adapter_quarantined_until", return_value=None), \
+             patch.object(watcher.nm, "wifi_bssid_scan", side_effect=_scan):
+            watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        usb_table = watcher.ADOPTION_STATE.bssid_tables["wlan1"]
+        onboard_table = watcher.ADOPTION_STATE.bssid_tables["wlan0"]
+        assert "AA:AA:AA:AA:AA:AA" in usb_table and "BB:BB:BB:BB:BB:BB" not in usb_table
+        assert "BB:BB:BB:BB:BB:BB" in onboard_table and "AA:AA:AA:AA:AA:AA" not in onboard_table
+
+    def test_onboard_only_candidate_never_triggers_usb_roam(self, watcher):
+        usb = self._usb(watcher)
+        onboard = _adapter(watcher, "wlan0", "aa:aa:aa:aa:aa:01", is_builtin=True)
+        now = 1000.0 + watcher.BSSID_USB_SURVEY_INTERVAL
+        hctx = self._hctx(watcher, self._facts(watcher, usb, extra_adapters=[onboard], now=now), playing=False)
+        usb_rows = [self._row("AA:AA:AA:AA:AA:AA", signal=50, in_use=True)]
+        onboard_rows = [self._row("BB:BB:BB:BB:BB:BB", signal=95)]
+
+        def _scan(ifname, rescan=False):
+            return onboard_rows if ifname == "wlan0" else usb_rows
+
+        with self._stub_ssid(watcher), \
+             patch.object(watcher.ADOPTION_CTX, "resolve_hotspot_adapter", return_value=None), \
+             patch.object(watcher.wifi_recovery, "adapter_disabled", return_value=False), \
+             patch.object(watcher.wifi_recovery, "adapter_quarantined_until", return_value=None), \
+             patch.object(watcher.nm, "wifi_bssid_scan", side_effect=_scan), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit:
+            result = watcher.wifi_adoption.bssid_survey_and_roam(watcher.ADOPTION_CTX, hctx)
+        assert result is False
+        submit.assert_not_called()
+        assert "BB:BB:BB:BB:BB:BB" in watcher.ADOPTION_STATE.bssid_tables["wlan0"]
+        assert "BB:BB:BB:BB:BB:BB" not in watcher.ADOPTION_STATE.bssid_tables["wlan1"]
+
 
 class TestIf6AdoptionScanGate:
     """IF-6: runtime USB adoption scans the candidate for the committed SSID
@@ -720,7 +764,7 @@ class TestPinUsbBssid:
         assert watcher.ADOPTION_STATE.last_bssid_pin["ifname"] == "wlan1"
         assert watcher.ADOPTION_STATE.last_bssid_pin["bssid"] == "AA:BB:CC:DD:EE:FF"
         assert watcher.ADOPTION_STATE.last_bssid_pin["signal"] == 70
-        assert watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["ssid"] == "Home"
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["AA:BB:CC:DD:EE:FF"]["ssid"] == "Home"
 
     def test_scan_failure_falls_back_to_unpinned(self, watcher):
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
@@ -743,7 +787,7 @@ class TestPinUsbBssid:
         set_bssid.assert_called_once_with("uuid-1", "")
 
     def test_success_accounting_reaches_table(self, watcher):
-        watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"] = {
+        watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan1", {})["AA:BB:CC:DD:EE:FF"] = {
             "ssid": "Home", "signal": 70, "last_seen": 100.0,
             "fail_count": 2, "quarantined_until": None,
         }
@@ -759,7 +803,7 @@ class TestPinUsbBssid:
             ok = watcher.wifi_activation._activate_profile_on(
                 watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
         assert ok is True
-        assert watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
 
     def test_failure_accounting_reaches_table(self, watcher):
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
@@ -774,7 +818,7 @@ class TestPinUsbBssid:
             ok = watcher.wifi_activation._activate_profile_on(
                 watcher.ACTIVATION_CTX, "wlan1", watcher.wifi_net.NetworkState("Home", ""))
         assert ok is False
-        assert watcher.ADOPTION_STATE.bssid_table["AA:BB:CC:DD:EE:FF"]["fail_count"] == 1
+        assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["AA:BB:CC:DD:EE:FF"]["fail_count"] == 1
 
 
 class TestNmDisconnectedUsbDebounce:

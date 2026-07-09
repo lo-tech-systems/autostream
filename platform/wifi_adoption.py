@@ -550,32 +550,39 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
         rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=False)
         if rows is not None:
             with ctx.state_lock:
+                usb_table = wifi_policy.bssid_table_for_interface(
+                    ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
                 current_bssid, current_signal = wifi_policy.update_bssid_table(
-                    ctx.ADOPTION_STATE.bssid_table, rows, ssid, now)
+                    usb_table, rows, ssid, now)
             scanned = True
         onboard = _idle_onboard_for_survey(ctx, facts, usb_ifname)
         if onboard is not None:
             onboard_rows = ctx.nm.wifi_bssid_scan(onboard.ifname, rescan=True)
             if onboard_rows is not None:
                 with ctx.state_lock:
-                    wifi_policy.update_bssid_table(ctx.ADOPTION_STATE.bssid_table, onboard_rows, ssid, now)
+                    onboard_table = wifi_policy.bssid_table_for_interface(
+                        ctx.ADOPTION_STATE.bssid_tables, onboard.ifname)
+                    wifi_policy.update_bssid_table(onboard_table, onboard_rows, ssid, now)
 
     if playing is False and _survey_due(
             ctx, "last_bssid_usb_full_survey_at", ctx.BSSID_USB_SURVEY_INTERVAL, now):
         rows = ctx.nm.wifi_bssid_scan(usb_ifname, rescan=True)
         if rows is not None:
             with ctx.state_lock:
+                usb_table = wifi_policy.bssid_table_for_interface(
+                    ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
                 current_bssid, current_signal = wifi_policy.update_bssid_table(
-                    ctx.ADOPTION_STATE.bssid_table, rows, ssid, now)
+                    usb_table, rows, ssid, now)
             scanned = True
 
     if not scanned or not current_bssid or playing is not False:
         return False
 
     with ctx.state_lock:
+        usb_table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
         last_roam = ctx.ADOPTION_STATE.last_roam_or_activation
         target = wifi_policy.next_roam_target(
-            ctx.ADOPTION_STATE.bssid_table, current_bssid, now, playing, last_roam)
+            usb_table, current_bssid, now, playing, last_roam)
     if not target:
         return False
 
@@ -585,14 +592,15 @@ def bssid_survey_and_roam(ctx: AdoptionContext, hctx: "HealthContext") -> bool:
     if confirm_rows is None:
         return False
     with ctx.state_lock:
+        usb_table = wifi_policy.bssid_table_for_interface(ctx.ADOPTION_STATE.bssid_tables, usb_ifname)
         confirm_bssid, confirm_signal = wifi_policy.update_bssid_table(
-            ctx.ADOPTION_STATE.bssid_table, confirm_rows, ssid, now)
+            usb_table, confirm_rows, ssid, now)
         last_roam = ctx.ADOPTION_STATE.last_roam_or_activation
         confirmed_target = wifi_policy.next_roam_target(
-            ctx.ADOPTION_STATE.bssid_table, confirm_bssid or current_bssid, now, playing, last_roam)
+            usb_table, confirm_bssid or current_bssid, now, playing, last_roam)
         if not confirmed_target:
             return False
-        target_signal = ctx.ADOPTION_STATE.bssid_table.get(confirmed_target, {}).get("signal", 0)
+        target_signal = usb_table.get(confirmed_target, {}).get("signal", 0)
         ctx.ADOPTION_STATE.last_roam_or_activation = now
 
     ctx.logger.info(

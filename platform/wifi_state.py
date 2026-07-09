@@ -102,9 +102,11 @@ class AdoptionState:
     path.  ``pending_usb_adoption_mac``/``pending_usb_adoption_checks`` track
     two-pass stability for a runtime USB adoption candidate.
     ``last_detected_adapter_macs`` is the adapter set from the previous pass,
-    used to log adapter-set changes.  ``bssid_table`` is the per-BSSID
-    signal/success/failure table for the active USB client's SSID;
-    ``last_roam_or_activation`` is the roam holdoff anchor.  ``last_bssid_pin``
+    used to log adapter-set changes.  ``bssid_tables`` holds one per-BSSID
+    signal/success/failure table per scanning interface (ifname -> table), so
+    an onboard survey scan can never overwrite or influence the active USB
+    client's own observations; ``last_roam_or_activation`` is the roam
+    holdoff anchor.  ``last_bssid_pin``
     records the BSSID pinned for the most recent activation attempt (or its
     absence), used by the reset/retry gate.  ``last_bssid_survey_at`` and
     ``last_bssid_usb_full_survey_at`` rate-gate the cheap self-scan and the
@@ -118,7 +120,7 @@ class AdoptionState:
     pending_usb_adoption_mac: Optional[str] = None
     pending_usb_adoption_checks: int = 0
     last_detected_adapter_macs: Optional[frozenset] = None
-    bssid_table: dict = field(default_factory=dict)
+    bssid_tables: dict = field(default_factory=dict)
     last_roam_or_activation: Optional[float] = None
     last_bssid_pin: dict = field(default_factory=dict)
     last_bssid_survey_at: Optional[float] = None

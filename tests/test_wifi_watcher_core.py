@@ -932,6 +932,24 @@ class TestProcessSetLogLevel:
         assert watcher.CONTROL_STATE.last_control_result == "ok"
 
 
+class TestCommitNetworkStateClearsBssidState:
+    """A newly committed SSID invalidates every interface's BSSID observations
+    and the pending pin record — stale signal data from the previous network
+    must never leak into roam/pin decisions for the new one."""
+
+    def test_commit_clears_all_interface_tables_and_pin(self, watcher):
+        watcher.ADOPTION_STATE.bssid_tables["wlan0"] = {"AA:AA:AA:AA:AA:AA": {"ssid": "Old"}}
+        watcher.ADOPTION_STATE.bssid_tables["wlan1"] = {"BB:BB:BB:BB:BB:BB": {"ssid": "Old"}}
+        watcher.ADOPTION_STATE.last_bssid_pin = {
+            "ifname": "wlan1", "bssid": "BB:BB:BB:BB:BB:BB", "signal": 70, "at": 0.0,
+        }
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-new"), \
+             patch.object(watcher.wifi_net, "save_network_state"):
+            watcher._commit_network_state("NewHome", "uuid-new")
+        assert watcher.ADOPTION_STATE.bssid_tables == {}
+        assert watcher.ADOPTION_STATE.last_bssid_pin == {}
+
+
 class TestModuleSplit:
     def test_recovery_and_status_modules_import(self, watcher):
         # The watcher fixture loads the watcher, which puts platform/ on sys.path.
