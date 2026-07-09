@@ -237,6 +237,41 @@ class TestBootClientBringup:
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
+    def test_boot_window_resets_wedged_usb_before_onboard(self, watcher):
+        # A dongle wedged at power-on gets its one budgeted reset before
+        # onboard/hotspot (RF-2 boot-window parity with runtime).
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:09", is_usb=True)
+        fctx = self._fctx(watcher, [builtin, usb], None)
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths",
+                          side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as apply:
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
+        assert v is watcher.Verdict.OWN_PASS
+        action = apply.call_args[0][0]
+        assert action.kind is watcher.wifi_policy.RecoveryKind.RESET_USB
+        assert action.ifname == "wlan1"
+
+    def test_boot_window_episode_spent_falls_through_to_onboard(self, watcher):
+        # Once the episode reset is already spent, the boot rung falls through
+        # to onboard exactly as a runtime pass would.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:10", is_usb=True)
+        watcher.RECOVERY_STATE.failover_reset_done.add(usb.permanent_mac)
+        fctx = self._fctx(watcher, [builtin, usb], None)
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths",
+                          side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as apply:
+            v = watcher.wifi_loop.step_boot_client_bringup(watcher.LOOP_CTX, fctx)
+        assert v is watcher.Verdict.OWN_PASS
+        action = apply.call_args[0][0]
+        assert action.kind is watcher.wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
+        assert action.ifname == "wlan0"
+
     def test_unconfigured_skips(self, watcher):
         # Nothing committed: the boot rung has no client profile to bring up.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -402,6 +437,18 @@ class TestWs1Wp3AsyncRecovery:
              patch.object(watcher.LOOP_CTX, "next_mode", return_value=watcher.wifi_policy.Mode.ONLINE):
             watcher.wifi_loop.step_publish_state(watcher.LOOP_CTX, hctx)
         assert watcher.STATE.onboard_activation_failures == 0
+
+    def test_healthy_pass_clears_failover_reset_episode_alongside_onboard_bound(self, watcher):
+        # The RESET_USB per-episode spend clears at the same site as the
+        # onboard-failure bound: a fresh offline episode gets its own reset.
+        watcher.STATE.onboard_activation_failures = 2
+        watcher.RECOVERY_STATE.failover_reset_done.add("bb:bb:bb:bb:bb:99")
+        facts = _facts_for(watcher, [], None)
+        hctx = self._hctx(watcher, facts, conn_ok=True)
+        with patch.object(watcher.LOOP_CTX, "publish_network_status"), \
+             patch.object(watcher.LOOP_CTX, "next_mode", return_value=watcher.wifi_policy.Mode.ONLINE):
+            watcher.wifi_loop.step_publish_state(watcher.LOOP_CTX, hctx)
+        assert watcher.RECOVERY_STATE.failover_reset_done == set()
 
     # ---- transitioning defer-gates (§2.3) ----
 

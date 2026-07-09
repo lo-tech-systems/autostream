@@ -162,7 +162,8 @@ def apply_client_failed(ctx: AdoptionContext, event, facts: "Facts") -> bool:
     )
     rf = ctx.gather_recovery_facts(facts)
     raction = wifi_policy.next_recovery_action(ctx.STATE, rf)
-    if raction.kind in (wifi_policy.RecoveryKind.ACTIVATE_USB, wifi_policy.RecoveryKind.ACTIVATE_ONBOARD):
+    if raction.kind in (wifi_policy.RecoveryKind.ACTIVATE_USB, wifi_policy.RecoveryKind.RESET_USB,
+                        wifi_policy.RecoveryKind.ACTIVATE_ONBOARD):
         if _submit_client_activation(ctx, raction, facts):
             return True
     # Ladder held on the failing USB, or offered no client path: try a usable
@@ -185,7 +186,8 @@ def apply_client_failed(ctx: AdoptionContext, event, facts: "Facts") -> bool:
 
 
 def _submit_client_activation(ctx: AdoptionContext, action: "RecoveryAction", facts: "Facts") -> bool:
-    """Submit an ACTIVATE_USB / ACTIVATE_ONBOARD recovery action to the worker.
+    """Submit an ACTIVATE_USB / RESET_USB / ACTIVATE_ONBOARD recovery action to
+    the worker.
 
     Builds an ActivationJob with the tail flags the activation needs and submits it
     (non-blocking).  Returns True when the job was accepted (the loop owns the pass
@@ -195,19 +197,24 @@ def _submit_client_activation(ctx: AdoptionContext, action: "RecoveryAction", fa
     Cross-pass progression: on failure the ladder re-evaluates each pass — a USB
     failure is no-IP-recorded (suppressed after its budget), and an onboard failure
     is counted toward ONBOARD_ACTIVATION_MAX_FAILURES so the onboard eventually
-    stops being offered and the ladder falls to the recovery hotspot.
+    stops being offered and the ladder falls to the recovery hotspot.  RESET_USB is
+    the same USB recovery job with a reset prefix (``reset_before``); its episode
+    spend is marked here, on submission, so a failed job cannot loop the rung.
     """
     ifname = action.ifname
     if not ifname:
         return False
 
+    is_reset_usb = action.kind == wifi_policy.RecoveryKind.RESET_USB
     # Onboard counts as a fallback only when a USB path also exists (a broken
     # configured USB); a lone onboard client is not "degraded".
     usb_present = any(a.is_usb for a in facts.adapters)
     sets_fallback = action.kind == wifi_policy.RecoveryKind.ACTIVATE_ONBOARD and usb_present
-    # Record a no-IP failure only for USB (the ladder promotes the onboard once the
-    # USB budget is spent); onboard failures instead count toward the hotspot bound.
-    records_usb_noip = action.kind == wifi_policy.RecoveryKind.ACTIVATE_USB
+    # Record a no-IP failure only for USB targets (the ladder promotes the onboard
+    # once the USB budget is spent); onboard failures instead count toward the
+    # hotspot bound.
+    records_usb_noip = action.kind in (wifi_policy.RecoveryKind.ACTIVATE_USB,
+                                       wifi_policy.RecoveryKind.RESET_USB)
     records_onboard = action.kind == wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
     stable_id = None
     if records_usb_noip:
@@ -218,6 +225,7 @@ def _submit_client_activation(ctx: AdoptionContext, action: "RecoveryAction", fa
         epoch=ctx.next_activation_epoch(), kind="activate_committed", ifname=ifname,
         drop_hotspot=action.drop_hotspot, on_success_leaves_setup=True,
         leave_reason=f"recovery: client up on {ifname} ({action.reason})",
+        reset_before=is_reset_usb,
         records_noip=records_usb_noip, noip_at=facts.taken_at,
         records_onboard_failure=records_onboard,
         sets_builtin_fallback=sets_fallback, clears_down_timers=True, stable_id=stable_id,
@@ -225,6 +233,12 @@ def _submit_client_activation(ctx: AdoptionContext, action: "RecoveryAction", fa
     submitted = ctx.submit_activation_job(job)
     if submitted:
         ctx.logger.info("Recovery: submitted client activation on %s (%s)", ifname, action.reason)
+        if is_reset_usb and stable_id:
+            # Mark the episode spend on submission (not success): a failed reset
+            # job must not loop the rung — match noip_holdback_reset_done's
+            # locking exactly.
+            with ctx.RECOVERY_CTX.state_lock:
+                ctx.RECOVERY_CTX.RECOVERY_STATE.failover_reset_done.add(stable_id)
     return submitted
 
 
@@ -299,7 +313,8 @@ def _attempt_recovery_reconnect(ctx: AdoptionContext, facts: "Facts") -> None:
             return
 
     raction = wifi_policy.next_recovery_action(ctx.STATE, ctx.gather_recovery_facts(facts))
-    if raction.kind not in (wifi_policy.RecoveryKind.ACTIVATE_USB, wifi_policy.RecoveryKind.ACTIVATE_ONBOARD):
+    if raction.kind not in (wifi_policy.RecoveryKind.ACTIVATE_USB, wifi_policy.RecoveryKind.RESET_USB,
+                            wifi_policy.RecoveryKind.ACTIVATE_ONBOARD):
         # HOLD / ENTER_HOTSPOT: the active path is fine, Ethernet is up, or a
         # wedged-USB-only case the dead-PHY ladder owns — retain the hotspot.
         return

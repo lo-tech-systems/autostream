@@ -314,6 +314,119 @@ class TestActivationWorker:
         assert not watcher.control_action_event.is_set()
 
 
+class TestResetBeforeFailover:
+    """RF-2 — a RESET_USB job (``reset_before=True``) spends one budgeted reset
+    before running the normal activation core on the resolved (possibly
+    renamed) interface; a failed job never stacks a second reset via the
+    in-job implicated-failure retry."""
+
+    def _job(self, watcher, **kw):
+        defaults = dict(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
+                        kind="activate_committed", ifname="wlan1", reset_before=True)
+        defaults.update(kw)
+        return watcher.wifi_activation.ActivationJob(**defaults)
+
+    def _target(self, watcher, ifname="wlan1", stable_id="m1", resettable=True):
+        return watcher.wifi_recovery.TargetAdapter(
+            ifname=ifname, stable_id=stable_id, kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=resettable)
+
+    def test_reset_then_activates_on_resolved_ifname(self, watcher):
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher)), \
+             patch.object(watcher.wifi_recovery, "record_adapter_reset") as record, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as rebind, \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears",
+                          return_value="wlan2") as reappear, \
+             patch.object(watcher.wifi_activation, "_activate_committed_on",
+                          return_value=True) as core:
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+        record.assert_called_once()
+        rebind.assert_called_once_with("wlan1")
+        reappear.assert_called_once()
+        core.assert_called_once_with(watcher.ACTIVATION_CTX, "wlan2")
+        assert r.ok is True
+        assert r.ifname == "wlan2"
+
+    def test_success_applies_normal_recovery_tail(self, watcher):
+        # End-to-end: the worker result, applied on the loop thread, sets the
+        # active client exactly like a normal (non-reset) USB recovery job.
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:60", is_usb=True)
+        job = self._job(watcher, stable_id=usb.stable_id, records_noip=True,
+                        clears_down_timers=True)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher, stable_id=usb.stable_id)), \
+             patch.object(watcher.wifi_recovery, "record_adapter_reset"), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind"), \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears",
+                          return_value="wlan1"), \
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True), \
+             patch.object(watcher.wifi_net, "find_adapter_by_ifname", return_value=usb), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+            watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, r)
+        assert watcher.STATE.active_client_ifname == "wlan1"
+        assert watcher.STATE.active_client_mac == usb.permanent_mac
+
+    def test_no_reappear_fails_cleanly_without_activating(self, watcher):
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher)), \
+             patch.object(watcher.wifi_recovery, "record_adapter_reset") as record, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind"), \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears", return_value=""), \
+             patch.object(watcher.wifi_activation, "_activate_committed_on") as core:
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+        assert r.ok is False
+        assert r.error == "reset_no_reappear"
+        assert r.ifname == "wlan1"
+        core.assert_not_called()
+        record.assert_called_once()   # exactly the one reset, no second attempt
+
+    def test_activation_failure_does_not_stack_a_second_reset(self, watcher):
+        # The interface reappears but the join itself fails; even with a scan
+        # strong enough to normally implicate the adapter, a reset_before job
+        # must not spend a second reset via the implicated-failure retry.
+        watcher.ADOPTION_STATE.last_bssid_pin = {
+            "ifname": "wlan1", "bssid": "AA:BB:CC:DD:EE:FF",
+            "signal": watcher.wifi_activation.PIN_IMPLICATE_SIGNAL, "at": 0.0,
+        }
+        job = self._job(watcher)
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter",
+                          return_value=self._target(watcher)), \
+             patch.object(watcher.wifi_recovery, "record_adapter_reset") as record, \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as rebind, \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears",
+                          return_value="wlan1"), \
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=False), \
+             patch.object(watcher.wifi_activation, "_retry_after_implicated_failure") as retry:
+            r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+        assert r.ok is False
+        retry.assert_not_called()
+        record.assert_called_once()
+        rebind.assert_called_once()
+
+    def test_reset_reflected_in_ledger_snapshot(self, watcher):
+        target = self._target(watcher, stable_id="reset-snap-mac")
+        job = self._job(watcher, stable_id="reset-snap-mac")
+        with patch.object(watcher.wifi_net, "discover_adapters", return_value=[]), \
+             patch.object(watcher.wifi_recovery, "build_target_adapter", return_value=target), \
+             patch.object(watcher.wifi_net, "reset_usb_adapter_rebind"), \
+             patch.object(watcher.wifi_recovery, "wait_for_interface_reappears",
+                          return_value="wlan1"), \
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True):
+            watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+        snapshot = watcher.wifi_recovery.adapter_reset_ledger_snapshot(
+            watcher.RECOVERY_CTX, target, time.monotonic())
+        assert snapshot["total_resets"] == 1
+
+
 class TestActivateClient:
     """Flag-matrix unit tests for the worker-half + loop-half tail composition.
 

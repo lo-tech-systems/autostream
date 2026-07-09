@@ -227,6 +227,9 @@ class ActivationJob:
     clears_pending_adoption: bool = False   # clear ADOPTION_STATE.pending_usb_adoption on done
     stable_id: "Optional[str]" = None
     wait_for_validation: bool = True
+    # RESET_USB rung: one budgeted hardware reset + interface reappear before the
+    # activation core runs (on the resolved, possibly-renamed ifname).
+    reset_before: bool = False
 
 
 @dataclass(frozen=True)
@@ -262,6 +265,18 @@ def _pin_implicates_adapter(ctx: ActivationContext, ifname: str) -> bool:
             and pin.get("signal", 0) >= PIN_IMPLICATE_SIGNAL)
 
 
+def _reset_usb_and_wait_reappear(ctx: ActivationContext, target: "wifi_recovery.TargetAdapter") -> str:
+    """Record one budgeted USB reset, rebind, and wait for the interface to
+    reappear (possibly renamed).  Returns the resolved ifname, or "" if it
+    never reappears.  Shared by the in-job implicated-failure retry and the
+    reset-before-failover job prefix — each call site logs its own reason for
+    triggering the reset.
+    """
+    wifi_recovery.record_adapter_reset(ctx.RECOVERY_CTX, target, time.monotonic())
+    wifi_net.reset_usb_adapter_rebind(target.ifname)
+    return wifi_recovery.wait_for_interface_reappears(ctx.RECOVERY_CTX, target)
+
+
 def _retry_after_implicated_failure(ctx: ActivationContext, job: "ActivationJob"):
     """One budgeted USB reset + a single retry, excluding the failed BSSID.
 
@@ -286,9 +301,7 @@ def _retry_after_implicated_failure(ctx: ActivationContext, job: "ActivationJob"
     ctx.logger.info(
         "Pinned activation on %s failed with a joinable scan (implicated adapter); "
         "spending one budgeted USB reset and retrying", job.ifname)
-    wifi_recovery.record_adapter_reset(ctx.RECOVERY_CTX, target, now)
-    wifi_net.reset_usb_adapter_rebind(job.ifname)
-    new_ifname = wifi_recovery.wait_for_interface_reappears(ctx.RECOVERY_CTX, target)
+    new_ifname = _reset_usb_and_wait_reappear(ctx, target)
     if not new_ifname:
         ctx.logger.warning("USB reset: %s did not reappear; retry failed", job.ifname)
         return (False, job.ifname)
@@ -304,12 +317,17 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     """Worker half: the slow, bounded effects only (no connectivity/session tail).
 
     Optional AP drop for the attempt, the shared activation core, and — symmetric
-    self-undo — rebuild the AP it dropped if this attempt then failed.  A failed
-    activate_committed/activate_profile on an implicated USB target gets exactly
-    one budgeted reset + retry (see ``_retry_after_implicated_failure``) before
-    the outcome is final.  Takes ``state_lock`` only for the brief flag reads/
-    writes, never across the blocking nmcli/wait calls.  Returns the outcome;
-    the loop applies the tail.
+    self-undo — rebuild the AP it dropped if this attempt then failed.  A
+    ``reset_before`` job (the RESET_USB rung) spends its one budgeted reset first
+    and runs the activation core on the resolved (possibly-renamed) interface; if
+    the interface never reappears the job fails cleanly with no activation
+    attempt.  A failed activate_committed/activate_profile on an implicated USB
+    target otherwise gets exactly one budgeted reset + retry (see
+    ``_retry_after_implicated_failure``) before the outcome is final — never
+    stacked on top of a ``reset_before`` job's own reset (one reset per job,
+    ever).  Takes ``state_lock`` only for the brief flag reads/writes, never
+    across the blocking nmcli/wait calls.  Returns the outcome; the loop applies
+    the tail.
     """
     if job.kind == "apply_credentials":
         # The credential-apply transaction runs the rollback-safe candidate
@@ -327,6 +345,25 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     if not job.ifname:
         return ActivationResult(job.epoch, False, "", job, error="no_ifname")
 
+    target_ifname = job.ifname
+    already_reset = False
+    if job.reset_before:
+        already_reset = True
+        adapters = wifi_net.discover_adapters()
+        reset_target = wifi_recovery.build_target_adapter(ctx.RECOVERY_CTX, job.ifname, adapters)
+        snapshot = wifi_recovery.adapter_reset_ledger_snapshot(
+            ctx.RECOVERY_CTX, reset_target, time.monotonic())
+        ctx.logger.info(
+            "resetting active USB %s before onboard failover (reset %d of %d in window)",
+            job.ifname, len(snapshot.get("recent_resets", [])) + 1,
+            ctx.RECOVERY_CTX.USB_MAX_RESETS_PER_WINDOW,
+        )
+        target_ifname = _reset_usb_and_wait_reappear(ctx, reset_target)
+        if not target_ifname:
+            ctx.logger.warning(
+                "USB reset before failover: %s did not reappear", job.ifname)
+            return ActivationResult(job.epoch, False, job.ifname, job, error="reset_no_reappear")
+
     dropped_ap = False
     if job.drop_hotspot:
         with ctx.state_lock:
@@ -338,13 +375,13 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     if job.profile is None and job.wait_for_validation:
         # Common case: route through the named _activate_committed_on seam so
         # existing per-caller test patches continue to intercept the core.
-        ok = _activate_committed_on(ctx, job.ifname)
+        ok = _activate_committed_on(ctx, target_ifname)
     else:
         state = job.profile if job.profile is not None else ctx.get_configured_network_state()
-        ok = _activate_profile_on(ctx, job.ifname, state, wait_for_validation=job.wait_for_validation)
+        ok = _activate_profile_on(ctx, target_ifname, state, wait_for_validation=job.wait_for_validation)
 
-    result_ifname = job.ifname
-    if not ok and job.kind in ("activate_committed", "activate_profile"):
+    result_ifname = target_ifname
+    if not ok and job.kind in ("activate_committed", "activate_profile") and not already_reset:
         retried = _retry_after_implicated_failure(ctx, job)
         if retried is not None:
             ok, result_ifname = retried

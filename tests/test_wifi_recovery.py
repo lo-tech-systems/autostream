@@ -391,6 +391,66 @@ class TestAdapterOverlayEvents:
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
+    def test_wedged_usb_submits_reset_before_job_and_marks_episode(self, watcher):
+        # RF-2: a link-down (wedged), resettable, budget-ok preferred USB gets
+        # its one budgeted reset (RESET_USB) before onboard failover; the
+        # episode is marked on submission so a failed job cannot loop the rung.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:70", is_usb=True)
+        facts = _facts_for(watcher, [builtin, usb], None)
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
+                                     reason="dead_phy_quarantined", has_alt_path=True)
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths",
+                          side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
+        assert acted is True
+        submit.assert_called_once()
+        job = submit.call_args[0][0]
+        assert job.reset_before is True
+        assert job.ifname == "wlan1"
+        assert usb.stable_id in watcher.RECOVERY_STATE.failover_reset_done
+
+    def test_second_client_failed_same_episode_falls_through_to_onboard(self, watcher):
+        # A second ClientFailed within the same offline episode finds the
+        # reset already spent and goes straight to onboard.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:71", is_usb=True)
+        watcher.RECOVERY_STATE.failover_reset_done.add(usb.stable_id)
+        facts = _facts_for(watcher, [builtin, usb], None)
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
+                                     reason="dead_phy_quarantined", has_alt_path=True)
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths",
+                          side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
+        assert acted is True
+        job = submit.call_args[0][0]
+        assert job.reset_before is False
+        assert job.ifname == "wlan0"
+
+    def test_unplugged_usb_fails_over_immediately_no_reset_job(self, watcher):
+        # An absent (unplugged) USB is not resettable (no sysfs paths) — the
+        # ladder falls straight to onboard, no RESET_USB rung.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb_mac = "bb:bb:bb:bb:bb:72"
+        watcher.ADOPTION_STATE.known_usb_macs.add(usb_mac)
+        facts = _facts_for(watcher, [builtin], None)  # USB physically gone
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb_mac,
+                                     reason="absent", has_alt_path=True)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
+        assert acted is True
+        job = submit.call_args[0][0]
+        assert job.reset_before is False
+        assert job.ifname == "wlan0"
+
     def test_apply_client_failed_onboard_success_sets_fallback(self, watcher):
         # WS1-WP3 async cycle: apply_client_failed submits an ACTIVATE_ONBOARD job
         # (USB also present); running the worker + applying the result sets

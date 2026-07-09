@@ -350,8 +350,10 @@ def step_boot_client_bringup(ctx: LoopContext, fctx: "FactsContext") -> "Verdict
     ladder each pass to bring up a client (preferred USB first, else onboard).
     The ladder ranks the same USB-before-onboard priority, so a
     USB adapter that finishes enumerating after boot is engaged on the pass it
-    appears; a healthy client makes the ladder HOLD (no thrash).  Only ACTIVATE_*
-    acts here — hotspot entry stays with step_boot_ap_entry after the grace window.
+    appears; a healthy client makes the ladder HOLD (no thrash).  A wedged
+    resettable USB gets its one budgeted reset (RESET_USB) before onboard is
+    tried, same as at runtime.  Only ACTIVATE_*/RESET_USB act here — hotspot
+    entry stays with step_boot_ap_entry after the grace window.
     """
     facts = fctx.facts
     boot_age_now = fctx.now - fctx.boot_time
@@ -365,7 +367,8 @@ def step_boot_client_bringup(ctx: LoopContext, fctx: "FactsContext") -> "Verdict
             and not transitioning):        # hold off while a job is in flight
         return ctx.Verdict.CONTINUE
     raction = ctx.next_recovery_action(ctx.STATE, ctx.gather_recovery_facts(facts))
-    if raction.kind in (ctx.RecoveryKind.ACTIVATE_USB, ctx.RecoveryKind.ACTIVATE_ONBOARD) \
+    if raction.kind in (ctx.RecoveryKind.ACTIVATE_USB, ctx.RecoveryKind.RESET_USB,
+                        ctx.RecoveryKind.ACTIVATE_ONBOARD) \
             and ctx.submit_client_activation(raction, facts):
         return ctx.Verdict.OWN_PASS
     return ctx.Verdict.CONTINUE
