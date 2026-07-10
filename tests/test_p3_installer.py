@@ -20,6 +20,7 @@ Environment-dependent (not run here):
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -125,6 +126,85 @@ class TestVibraMiniInstallContract:
             "Build and install vibra-mini ${VIBRA_VERSION} "
             "for optional track identification"
         ) in installer
+
+
+# ---------------------------------------------------------------------------
+# Uninstaller hands Wi-Fi profiles back to NetworkManager
+# ---------------------------------------------------------------------------
+
+class TestUninstallRestoresWifiProfiles:
+    """autostream_uninstall.sh must undo the wifi watcher's autoconnect=no
+    policy (migrate_client_profiles_autoconnect_no in platform/wifi_config.py)
+    and any BSSID/interface-name pins, and must remove leftover AP profiles,
+    so a Wi-Fi-only headless device is not stranded after uninstall."""
+
+    def _uninstall_text(self) -> str:
+        return (REPO_ROOT / "autostream_uninstall.sh").read_text(encoding="utf-8")
+
+    def test_restores_autoconnect(self):
+        text = self._uninstall_text()
+        assert "connection.autoconnect yes" in text, (
+            "uninstaller must restore connection.autoconnect yes on Wi-Fi client profiles"
+        )
+
+    def test_clears_bssid_pin(self):
+        text = self._uninstall_text()
+        assert "802-11-wireless.bssid" in text, (
+            "uninstaller must clear any 802-11-wireless.bssid pin left by the wifi watcher"
+        )
+
+    def test_clears_interface_name_restriction(self):
+        text = self._uninstall_text()
+        assert "connection.interface-name" in text, (
+            "uninstaller must clear any connection.interface-name restriction"
+        )
+
+    def test_deletes_ap_mode_profiles(self):
+        text = self._uninstall_text()
+        assert re.search(r'802-11-wireless\.mode', text), (
+            "uninstaller must inspect 802-11-wireless.mode to distinguish AP from client profiles"
+        )
+        assert re.search(r'"ap"', text), (
+            "uninstaller must check for mode \"ap\" to identify leftover AP/Hotspot profiles"
+        )
+        assert "nmcli connection delete" in text, (
+            "uninstaller must delete leftover AP-mode profiles rather than restoring autoconnect on them"
+        )
+
+    def test_sweep_filters_on_wifi_connection_type(self):
+        text = self._uninstall_text()
+        assert "802-11-wireless" in text
+        assert "TYPE" in text or "-f UUID,TYPE" in text, (
+            "uninstaller must filter the connection sweep to Wi-Fi (TYPE=802-11-wireless) "
+            "so wired/ethernet connections are provably untouched"
+        )
+
+    def test_sweep_is_placed_before_path_removal(self):
+        """The Wi-Fi handback must run while nmcli/NetworkManager state is still
+        addressable, i.e. before the uninstaller starts ripping out autostream's
+        own files."""
+        text = self._uninstall_text()
+        restore_idx = text.find("restore_wifi_profiles")
+        remove_idx = text.find('info "Removing autostream application files"')
+        assert restore_idx != -1 and remove_idx != -1
+        assert restore_idx < remove_idx
+
+    def test_sweep_is_best_effort_without_nmcli(self):
+        text = self._uninstall_text()
+        assert "command -v nmcli" in text, (
+            "uninstaller must guard the sweep with command -v nmcli so a missing "
+            "nmcli does not abort the uninstall"
+        )
+
+    @bash_capable
+    def test_bash_n_syntax(self):
+        result = subprocess.run(
+            ["bash", "-n", str(REPO_ROOT / "autostream_uninstall.sh")],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, (
+            f"bash -n failed for autostream_uninstall.sh:\n{result.stderr.strip()}"
+        )
 
 
 # ---------------------------------------------------------------------------

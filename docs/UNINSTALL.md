@@ -46,6 +46,10 @@ it should not be treated as a full system rollback.
   `/etc/nginx/sites-available/autostream-nginx.conf`,
   `/etc/nginx/conf.d/autostream-nginxd.conf`,
   and `/etc/nginx/conf.d/99-autostream-access-log.conf`.
+- Hands saved Wi-Fi profiles back to NetworkManager: restores
+  `connection.autoconnect yes` and clears any BSSID/interface-name pins on
+  client profiles, and deletes leftover AP-mode (`Hotspot`) profiles, so a
+  Wi-Fi-only device is not stranded after the wifi watcher is gone.
 - Removes the systemd unit files created by the installer for autostream.
 - Removes the sudoers snippets created by the installer.
 - Removes the journald storage drop-in
