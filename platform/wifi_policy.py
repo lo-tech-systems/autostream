@@ -128,6 +128,17 @@ class RecoveryFacts:
     # preferred USB is, by definition, not the healthy active client).
     # Default preserves existing positional/keyword RecoveryFacts constructions.
     failover_reset_spent: bool = False
+    # True when a condemned connectivity episode is open (STATE.conn_down_start
+    # is not None): set by the debounced down-timer entry
+    # (step_connection_reliability in wifi_loop.py, first_entry branch),
+    # cleared by the activation success tail (client_up_tail's
+    # clear_down_timers effect in wifi_activation.py) — absent at boot, so a
+    # freshly-activated, still-DHCP-settling client is never condemned.
+    client_condemned: bool = False
+    # True when the preferred USB's one-per-episode reactivate-first attempt
+    # (rung 1a) has already been spent this offline episode.  Keyed to
+    # preferred_usb_ifname, mirroring failover_reset_spent exactly.
+    wedged_reactivate_spent: bool = False
 
 
 class RecoveryKind(Enum):
@@ -196,27 +207,59 @@ def next_recovery_action(state, facts) -> "RecoveryAction":
         return RecoveryAction(RecoveryKind.ACTIVATE_USB, ifname=preferred_usb,
                               drop_hotspot=(preferred_usb == facts.hotspot_ifname),
                               reason="usb_preferred")
-    # (1b) USB is the active client but unhealthy with carrier (associating / no-IP):
-    #      hold — the no-IP ledger governs and promotes onboard once suppressed.
+    # (1a) The preferred USB carries a debounced wedged verdict — active or
+    #      not — and this offline episode has not yet spent its one
+    #      reactivate-first attempt: try a plain re-activation before any
+    #      hardware reset.  Re-activation is scan-informed (it scans before
+    #      "connection up"), so it cheaply distinguishes "pinned AP vanished /
+    #      association recoverable" (recovers, zero reset budget spent) from
+    #      "radio truly wedged" (scan empty, activation fails, falls through
+    #      to the reset rung below on a later pass).  Never fires for the
+    #      hotspot-hosting radio — same exclusion as the reset rung below; the
+    #      single-radio dead-PHY ladder owns that case.  Rung (1) above only
+    #      matches a *non*-wedged preferred USB, so a wedged preferred is
+    #      never reached by it and lands here instead, regardless of whether
+    #      it is currently the active client.
+    if (
+        usb_rf is not None
+        and usb_rf.wedged
+        and preferred_usb != facts.hotspot_ifname
+        and not facts.wedged_reactivate_spent
+    ):
+        return RecoveryAction(RecoveryKind.ACTIVATE_USB, ifname=preferred_usb,
+                              reason="usb_wedged_reactivate_first")
+    # (1b) USB is the active client but unhealthy with carrier (associating /
+    #      no-IP).  Not condemned (no debounced connectivity episode open —
+    #      e.g. still DHCP-settling right after activation): hold — the no-IP
+    #      ledger governs and promotes onboard once suppressed.  Condemned:
+    #      retry the same adapter in place instead of holding indefinitely.
+    #      No episode flag guards this rung — a failed reactivation records a
+    #      no-IP ledger entry whose immediate backoff excludes the adapter
+    #      from preferred_usb, so the next evaluation reaches the onboard
+    #      rung; that backoff is the anti-loop.
     if usb_has_carrier and active == preferred_usb:
+        if facts.client_condemned:
+            return RecoveryAction(RecoveryKind.ACTIVATE_USB, ifname=preferred_usb,
+                                  drop_hotspot=(preferred_usb == facts.hotspot_ifname),
+                                  reason="usb_active_reactivate")
         return RecoveryAction(RecoveryKind.HOLD, reason="usb_active_no_ip")
     # (1b') The active USB reads link-down but the dead-PHY debounce has not
     #      declared it wedged: hold.  Transient drops are owned by the
     #      reconnect machinery; a sustained failure accrues the wedged verdict
-    #      and proceeds to the reset rung below.
+    #      and is picked up by rung (1a) above on a later pass.
     if usb_rf is not None and active == preferred_usb and not usb_rf.wedged:
         return RecoveryAction(RecoveryKind.HOLD, reason="usb_link_down_debouncing")
 
-    # (1c) The preferred USB carries a debounced wedged verdict, is resettable,
-    #      still has reset budget, is not the adapter hosting the recovery
-    #      hotspot, and this offline episode has not already spent its one
-    #      budgeted reset -> reset it before falling to onboard (a successful
-    #      reset resumes on the same MAC/lease/IP; onboard failover changes
-    #      identity).  preferred_usb already excludes a quarantined/
-    #      suppressed/disabled adapter (see its selection above), so this rung
-    #      tests only the reset-specific facts.  Never fires for the
-    #      hotspot-hosting radio — the single-radio dead-PHY ladder owns that
-    #      case.
+    # (1c) The preferred USB carries a debounced wedged verdict whose
+    #      reactivate-first attempt (1a) has already been spent this episode,
+    #      is resettable, still has reset budget, and is not the adapter
+    #      hosting the recovery hotspot -> reset it before falling to onboard
+    #      (a successful reset resumes on the same MAC/lease/IP; onboard
+    #      failover changes identity).  preferred_usb already excludes a
+    #      quarantined/suppressed/disabled adapter (see its selection above),
+    #      so this rung tests only the reset-specific facts.  Never fires for
+    #      the hotspot-hosting radio — the single-radio dead-PHY ladder owns
+    #      that case.
     if (
         usb_rf is not None
         and usb_rf.wedged

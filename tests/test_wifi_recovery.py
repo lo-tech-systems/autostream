@@ -543,13 +543,63 @@ class TestAdapterOverlayEvents:
         enter.assert_called_once()
         assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
+    def test_wedged_usb_reactivate_first_submits_no_noip_and_marks_episode(self, watcher):
+        # Decision 3/4: a wedged preferred USB with its reactivate-first
+        # attempt unspent gets a plain re-activation (usb_wedged_reactivate_first)
+        # ahead of RESET_USB.  It must NOT record a no-IP failure (that would
+        # empty preferred_usb and skip RESET_USB entirely) but its own
+        # episode spend is marked on submission, mirroring is_reset_usb's
+        # locking exactly.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:73", is_usb=True)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
+        facts = _facts_for(watcher, [builtin, usb], None)
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
+                                     reason="dead_phy_quarantined", has_alt_path=True)
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths",
+                          side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
+        assert acted is True
+        submit.assert_called_once()
+        job = submit.call_args[0][0]
+        assert job.reset_before is False
+        assert job.ifname == "wlan1"
+        assert job.records_noip is False
+        assert usb.stable_id in watcher.RECOVERY_STATE.wedged_reactivate_done
+        assert usb.stable_id not in watcher.RECOVERY_STATE.failover_reset_done
+
+    def test_condemned_active_usb_reactivate_keeps_records_noip(self, watcher):
+        # Decision 2/4: the condemned active-USB reactivation
+        # (usb_active_reactivate) keeps records_noip=True — a genuinely
+        # broken USB must still back off out of preferred_usb.
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:74", is_usb=True)
+        watcher.STATE.conn_down_start = 500.0  # condemned connectivity episode open
+        facts = _facts_for(watcher, [usb], usb, now=1000.0)
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
+                                     reason="no_ip", has_alt_path=False)
+        with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job", return_value=True) as submit:
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
+        assert acted is True
+        submit.assert_called_once()
+        job = submit.call_args[0][0]
+        assert job.ifname == "wlan1"
+        assert job.records_noip is True
+
     def test_wedged_usb_submits_reset_before_job_and_marks_episode(self, watcher):
         # RF-2: a debounced-wedged, resettable, budget-ok preferred USB gets
-        # its one budgeted reset (RESET_USB) before onboard failover; the
-        # episode is marked on submission so a failed job cannot loop the rung.
+        # its one budgeted reset (RESET_USB) before onboard failover, once its
+        # reactivate-first attempt (rung 1a) is already spent this episode;
+        # the reset spend is marked on submission so a failed job cannot loop
+        # the rung.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:70", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         facts = _facts_for(watcher, [builtin, usb], None)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
                                      reason="dead_phy_quarantined", has_alt_path=True)
@@ -567,11 +617,13 @@ class TestAdapterOverlayEvents:
         assert usb.stable_id in watcher.RECOVERY_STATE.failover_reset_done
 
     def test_second_client_failed_same_episode_falls_through_to_onboard(self, watcher):
-        # A second ClientFailed within the same offline episode finds the
-        # reset already spent and goes straight to onboard.
+        # A second ClientFailed within the same offline episode finds both the
+        # reactivate-first attempt and the reset already spent and goes
+        # straight to onboard.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:71", is_usb=True)
         watcher.RECOVERY_STATE.failover_reset_done.add(usb.stable_id)
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         facts = _facts_for(watcher, [builtin, usb], None)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
@@ -854,6 +906,25 @@ class TestAdapterFaultStatePersistence:
         # ...but the episode-scoped spend marker does not: load_adapter_fault_state
         # never touches it, so it stays whatever the caller set it to.
         assert watcher.RECOVERY_STATE.failover_reset_done == set()
+
+    def test_wedged_reactivate_done_does_not_persist(self, watcher):
+        """wedged_reactivate_done mirrors failover_reset_done exactly: a
+        per-episode marker that must not round-trip through persist/load."""
+        wr = watcher.wifi_recovery
+        target = self._target(watcher, "usb-E")
+        wr.record_adapter_reset(watcher, target, now=1000.0)
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add("usb-E")
+        assert os.path.exists(watcher.ADAPTER_FAULT_STATE_PATH)
+        with open(watcher.ADAPTER_FAULT_STATE_PATH, "r", encoding="utf-8") as f:
+            on_disk = json.load(f)
+        assert "wedged_reactivate_done" not in on_disk
+
+        watcher.RECOVERY_STATE.adapter_noip_ledgers = {}
+        watcher.RECOVERY_STATE.adapter_reset_ledgers = {}
+        watcher.RECOVERY_STATE.wedged_reactivate_done = set()
+        wr.load_adapter_fault_state(watcher)
+        assert watcher.RECOVERY_STATE.adapter_reset_ledgers.get("usb-E") is not None
+        assert watcher.RECOVERY_STATE.wedged_reactivate_done == set()
 
 
 class TestManualAdapterControl:
@@ -1244,6 +1315,56 @@ class TestRecoveryFacts:
             rec = watcher.gather_recovery_facts(facts)
         assert rec.onboard_ifname == ""
 
+    def test_gather_client_condemned_false_when_conn_down_start_absent(self, watcher):
+        # client_condemned == (STATE.conn_down_start is not None).  The setter
+        # (debounced condemnation, step_connection_reliability's first_entry
+        # branch) is verified at tests/test_wifi_loop.py::
+        # test_step_connection_reliability_always_continue; the clearer (the
+        # activation success tail, client_up_tail's clear_down_timers effect)
+        # at tests/test_wifi_activation.py::test_clears_timers_and_onboard_bound.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.conn_down_start = None
+        facts = self._facts(watcher, [builtin])
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.client_condemned is False
+
+    def test_gather_client_condemned_true_when_conn_down_start_set(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        watcher.STATE.conn_down_start = 500.0
+        facts = self._facts(watcher, [builtin])
+        with patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.client_condemned is True
+
+    def test_gather_wedged_reactivate_spent_keyed_to_preferred_usb(self, watcher):
+        # Mirrors failover_reset_spent exactly: keyed to preferred_usb's
+        # stable_id, not the active client.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
+        facts = self._facts(watcher, [builtin, usb], active_client=usb)
+        with patch.object(watcher, "is_wifi_client_healthy",
+                          side_effect=lambda ifn, **k: ifn == "wlan0"), \
+             patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.preferred_usb_ifname == "wlan1"
+        assert rec.wedged_reactivate_spent is True
+
+    def test_gather_wedged_reactivate_spent_false_when_unmarked(self, watcher):
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        facts = self._facts(watcher, [builtin, usb], active_client=usb)
+        with patch.object(watcher, "is_wifi_client_healthy",
+                          side_effect=lambda ifn, **k: ifn == "wlan0"), \
+             patch.object(watcher.wifi_net, "read_link_down",
+                          side_effect=lambda ifn: ifn == "wlan1"):
+            rec = watcher.gather_recovery_facts(facts)
+        assert rec.wedged_reactivate_spent is False
+
 
 class TestResetBudgetStableIdParity:
     """RF-1: the stable-id-keyed budget check
@@ -1353,6 +1474,9 @@ class TestRecoveryExitEdge:
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         self._in_hotspot(watcher)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
+        # Reactivate-first (rung 1a) already spent this episode: exercises the
+        # fall-through to onboard specifically, not the reactivate-first rung.
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         facts = _facts_for(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "read_link_down",
                           side_effect=lambda ifn: ifn == "wlan1"), \

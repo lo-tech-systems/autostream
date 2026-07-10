@@ -615,9 +615,12 @@ class TestFieldLogRecoveryRegression:
 
     def test_boot_entry_recovers_on_onboard_without_hotspot(self, watcher):
         # WS1-WP3: boot entry submits the onboard client (not a hotspot on it).
+        # The wedged USB's reactivate-first attempt is already spent this
+        # episode, so the ladder falls through to onboard directly.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"  # declared wedged
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         watcher.STATE.boot_time = 300.0  # boot_age 700s at now=1000 (inside window)
         with patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as submit, \
              patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter, \
@@ -633,9 +636,12 @@ class TestFieldLogRecoveryRegression:
         assert action.ifname == "wlan0"
 
     def test_in_hotspot_climbs_to_onboard_not_dead_usb(self, watcher):
+        # The wedged USB's reactivate-first attempt is already spent this
+        # episode, so the ladder climbs to onboard rather than re-probing it.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"  # declared wedged
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         watcher.STATE.setup_mode = True
         watcher.STATE.hotspot = watcher.HotspotSession(
             purpose=watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=0.0)

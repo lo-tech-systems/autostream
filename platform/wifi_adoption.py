@@ -231,25 +231,34 @@ def _submit_client_activation(ctx: AdoptionContext, action: "RecoveryAction", fa
     is counted toward ONBOARD_ACTIVATION_MAX_FAILURES so the onboard eventually
     stops being offered and the ladder falls to the recovery hotspot.  RESET_USB is
     the same USB recovery job with a reset prefix (``reset_before``); its episode
-    spend is marked here, on submission, so a failed job cannot loop the rung.
+    spend is marked here, on submission, so a failed job cannot loop the rung.  The
+    wedged reactivate-first job (``usb_wedged_reactivate_first``) does NOT record a
+    no-IP failure — a recorded failure would back the adapter out of
+    preferred_usb and skip the RESET_USB rung entirely — but its own episode spend
+    is marked here on submission the same way, so a failed attempt falls through
+    to RESET_USB on the next pass rather than looping this rung.
     """
     ifname = action.ifname
     if not ifname:
         return False
 
     is_reset_usb = action.kind == wifi_policy.RecoveryKind.RESET_USB
+    is_wedged_reactivate = action.reason == "usb_wedged_reactivate_first"
     # Onboard counts as a fallback only when a USB path also exists (a broken
     # configured USB); a lone onboard client is not "degraded".
     usb_present = any(a.is_usb for a in facts.adapters)
     sets_fallback = action.kind == wifi_policy.RecoveryKind.ACTIVATE_ONBOARD and usb_present
-    # Record a no-IP failure only for USB targets (the ladder promotes the onboard
-    # once the USB budget is spent); onboard failures instead count toward the
-    # hotspot bound.
-    records_usb_noip = action.kind in (wifi_policy.RecoveryKind.ACTIVATE_USB,
-                                       wifi_policy.RecoveryKind.RESET_USB)
+    usb_target = action.kind in (wifi_policy.RecoveryKind.ACTIVATE_USB,
+                                 wifi_policy.RecoveryKind.RESET_USB)
+    # Record a no-IP failure for USB targets (the ladder promotes the onboard
+    # once the USB budget is spent) EXCEPT the wedged reactivate-first attempt,
+    # whose own episode-spend flag is the anti-loop instead (decision 4: a
+    # no-IP recording here would empty preferred_usb and skip RESET_USB).
+    # Onboard failures instead count toward the hotspot bound.
+    records_usb_noip = usb_target and not is_wedged_reactivate
     records_onboard = action.kind == wifi_policy.RecoveryKind.ACTIVATE_ONBOARD
     stable_id = None
-    if records_usb_noip:
+    if usb_target:
         adapter = wifi_net.find_adapter_by_ifname(facts.adapters, ifname)
         stable_id = adapter.stable_id if adapter is not None else ifname
 
@@ -271,6 +280,12 @@ def _submit_client_activation(ctx: AdoptionContext, action: "RecoveryAction", fa
             # locking exactly.
             with ctx.RECOVERY_CTX.state_lock:
                 ctx.RECOVERY_CTX.RECOVERY_STATE.failover_reset_done.add(stable_id)
+        if is_wedged_reactivate and stable_id:
+            # Mark the episode spend on submission (not success), identical
+            # locking to the is_reset_usb branch above: a failed reactivate
+            # job must not loop this rung.
+            with ctx.RECOVERY_CTX.state_lock:
+                ctx.RECOVERY_CTX.RECOVERY_STATE.wedged_reactivate_done.add(stable_id)
     return submitted
 
 

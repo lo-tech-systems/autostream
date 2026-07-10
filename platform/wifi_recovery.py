@@ -58,6 +58,12 @@ class RecoveryState:
     # healthy pass (fresh episode) and when client_up_tail's clear_dead_adapter
     # effect runs.
     failover_reset_done: set = field(default_factory=set)
+    # Stable-ids that already spent their one budgeted reactivate-first
+    # attempt at the wedged-USB ladder rung (1a) this offline episode.
+    # Mirrors failover_reset_done exactly: marked on submission (not
+    # success), not persisted (an offline episode never spans a reboot),
+    # cleared at the same episode boundaries.
+    wedged_reactivate_done: set = field(default_factory=set)
 
     # ---- Dead-PHY recovery ----
     dead_adapter_ifname: str = ""               # interface currently classed dead ("" = none)

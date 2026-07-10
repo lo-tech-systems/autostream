@@ -1510,6 +1510,12 @@ def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
         onboard_budget_spent = (
             STATE.onboard_activation_failures >= ONBOARD_ACTIVATION_MAX_FAILURES)
         failover_reset_done = set(RECOVERY_STATE.failover_reset_done)
+        wedged_reactivate_done = set(RECOVERY_STATE.wedged_reactivate_done)
+        # A condemned connectivity episode is open: set by the debounced
+        # down-timer entry (step_connection_reliability), cleared by the
+        # activation success tail (client_up_tail's clear_down_timers effect);
+        # absent at boot.
+        client_condemned = STATE.conn_down_start is not None
 
     preferred_usb = ""
     for a in usb:
@@ -1525,6 +1531,11 @@ def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
     failover_reset_spent = bool(
         preferred_usb_rf is not None and preferred_usb_rf.stable_id
         and preferred_usb_rf.stable_id in failover_reset_done)
+    # wedged_reactivate_spent mirrors failover_reset_spent exactly: keyed to
+    # preferred_usb specifically, not the active client.
+    wedged_reactivate_spent = bool(
+        preferred_usb_rf is not None and preferred_usb_rf.stable_id
+        and preferred_usb_rf.stable_id in wedged_reactivate_done)
 
     # The onboard is only offered as a client rung when it is actually usable
     # (managed, not quarantined, not no-IP-suppressed) — mirroring preferred_usb.
@@ -1551,6 +1562,8 @@ def gather_recovery_facts(facts: "Facts") -> "wifi_policy.RecoveryFacts":
         wired_ok=bool(facts.wired_ok),
         taken_at=now,
         failover_reset_spent=failover_reset_spent,
+        client_condemned=client_condemned,
+        wedged_reactivate_spent=wedged_reactivate_spent,
     )
 
 

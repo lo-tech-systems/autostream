@@ -338,6 +338,9 @@ class TestBootClientBringup:
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:09", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
+        # Reactivate-first (rung 1a) already spent this episode: exercises the
+        # RESET_USB rung (1c) specifically, same as a runtime pass.
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         fctx = self._fctx(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "usb_sysfs_paths",
                           side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
@@ -351,11 +354,13 @@ class TestBootClientBringup:
         assert action.ifname == "wlan1"
 
     def test_boot_window_episode_spent_falls_through_to_onboard(self, watcher):
-        # Once the episode reset is already spent, the boot rung falls through
-        # to onboard exactly as a runtime pass would.
+        # Once the episode's reactivate-first attempt AND its reset are both
+        # already spent, the boot rung falls through to onboard exactly as a
+        # runtime pass would.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:10", is_usb=True)
         watcher.RECOVERY_STATE.failover_reset_done.add(usb.permanent_mac)
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.permanent_mac)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         fctx = self._fctx(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "usb_sysfs_paths",
@@ -601,10 +606,13 @@ class TestBootEntryOnboardFirst:
     def test_wedged_usb_boot_entry_submits_onboard_not_hotspot(self, watcher):
         # Field-log shape: USB active but declared wedged (debounced dead-PHY
         # verdict), onboard idle. Boot-window entry must SUBMIT the client on
-        # the onboard (WS1-WP3) rather than open a hotspot.
+        # the onboard (WS1-WP3) rather than open a hotspot.  Reactivate-first
+        # already spent this episode -> exercises the fall-through to onboard
+        # specifically, not the reactivate-first rung ahead of it.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
+        watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         watcher.STATE.boot_time = 300.0  # now=1000 -> boot_age 700s, inside window
         with patch.object(watcher.LOOP_CTX, "submit_client_activation", return_value=True) as submit, \
              patch.object(watcher.LOOP_CTX, "enter_setup_mode") as enter, \
