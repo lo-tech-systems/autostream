@@ -370,13 +370,15 @@ class TestAdapterOverlayEvents:
         assert enter.call_args[0][0] is watcher.wifi_policy.HotspotPurpose.USB_LOSS_RECOVERY
 
     def test_active_usb_no_ip_retries_same_usb_not_onboard(self, watcher):
-        # An active USB with carrier but no IP yields a ladder
-        # HOLD("usb_active_no_ip").  apply_client_failed answers it by
-        # re-activating that SAME USB (records_noip job), not by demoting to
-        # onboard and not by entering the hotspot (real gather+ladder).
+        # An active, condemned USB with carrier but no IP yields the ladder's
+        # own ACTIVATE_USB("usb_active_reactivate") verdict (rung 1b).
+        # apply_client_failed executes it as-is: it re-activates that SAME
+        # USB (records_noip job), not onboard and not the hotspot (real
+        # gather+ladder, no overlay-side synthesis).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:50", is_usb=True)
-        facts = _facts_for(watcher, [builtin, usb], usb)  # USB is the active client
+        watcher.STATE.conn_down_start = 500.0  # condemned connectivity episode open
+        facts = _facts_for(watcher, [builtin, usb], usb, now=1000.0)  # USB is the active client
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:50",
                                      reason="unresponsive", has_alt_path=True)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
@@ -395,15 +397,25 @@ class TestAdapterOverlayEvents:
         assert job.stable_id == usb.stable_id
 
     def test_active_usb_no_ip_reactivation_action_shape(self, watcher):
-        # The synthesized retry is an ifname-pinned ACTIVATE_USB with the
-        # "usb_active_reactivate" reason (visible in the submission log line).
+        # The ladder's own condemned-active-USB verdict is an ifname-pinned
+        # ACTIVATE_USB with the "usb_active_reactivate" reason (visible in the
+        # submission log line); the object passed to _submit_client_activation
+        # IS the ladder's return value, not an overlay-built one.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:52", is_usb=True)
+        watcher.STATE.conn_down_start = 500.0  # condemned connectivity episode open
         facts = _facts_for(watcher, [builtin, usb], usb)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:52",
                                      reason="unresponsive", has_alt_path=True)
+        real_next_action = watcher.wifi_policy.next_recovery_action
+        seen = []
+        def _spy(state, rf):
+            action = real_next_action(state, rf)
+            seen.append(action)
+            return action
         with patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.wifi_policy, "next_recovery_action", side_effect=_spy), \
              patch.object(watcher.wifi_adoption, "_submit_client_activation", return_value=True) as ap:
             acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
         assert acted is True
@@ -413,6 +425,8 @@ class TestAdapterOverlayEvents:
         assert applied.ifname == "wlan1"
         assert applied.reason == "usb_active_reactivate"
         assert applied.drop_hotspot is False
+        assert len(seen) == 1
+        assert applied is seen[0]   # executed as-is, not rebuilt by the overlay
 
     def test_active_usb_link_down_debouncing_holds_no_action(self, watcher, caplog):
         # An active USB reading link-down without a declared wedged verdict
@@ -433,6 +447,29 @@ class TestAdapterOverlayEvents:
         submit.assert_not_called()
         enter.assert_not_called()
         assert any("ClientFailed overlay held (usb_link_down_debouncing)" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_active_usb_no_ip_not_condemned_holds_no_action(self, watcher, caplog):
+        # An active USB with carrier but no IP, with no condemned connectivity
+        # episode open (STATE.conn_down_start unset), yields the ladder's
+        # settling HOLD("usb_active_no_ip").  The executor takes no action —
+        # it does not synthesize its own retry — and logs the held decision.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:58", is_usb=True)
+        assert watcher.STATE.conn_down_start is None
+        facts = _facts_for(watcher, [builtin, usb], usb)
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:58",
+                                     reason="unresponsive", has_alt_path=True)
+        with caplog.at_level(logging.INFO, logger="wifi_watcher"), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
+             patch.object(watcher.ADOPTION_CTX, "submit_activation_job") as submit, \
+             patch.object(watcher.ADOPTION_CTX, "enter_setup_mode") as enter:
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
+        assert acted is False
+        submit.assert_not_called()
+        enter.assert_not_called()
+        assert any("ClientFailed overlay held (usb_active_no_ip)" in r.getMessage()
                    for r in caplog.records)
 
     def test_hold_other_reason_keeps_onboard_fallback(self, watcher):
@@ -459,11 +496,13 @@ class TestAdapterOverlayEvents:
         assert applied.reason == "usb_failure_onboard_fallback"
 
     def test_failed_reactivation_records_noip_failure(self, watcher):
-        # Async chain link: the reactivation job submitted for
-        # HOLD("usb_active_no_ip") records a no-IP ledger entry when it fails,
-        # feeding the backoff that later excludes the adapter.
+        # Async chain link: the reactivation job submitted for the ladder's
+        # condemned-active-USB verdict (usb_active_reactivate) records a
+        # no-IP ledger entry when it fails, feeding the backoff that later
+        # excludes the adapter.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:55", is_usb=True)
+        watcher.STATE.conn_down_start = 500.0  # condemned connectivity episode open
         facts = _facts_for(watcher, [builtin, usb], usb)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:55",
                                      reason="unresponsive", has_alt_path=True)
@@ -569,6 +608,36 @@ class TestAdapterOverlayEvents:
         assert job.ifname == "wlan1"
         assert job.records_noip is False
         assert usb.stable_id in watcher.RECOVERY_STATE.wedged_reactivate_done
+        assert usb.stable_id not in watcher.RECOVERY_STATE.failover_reset_done
+
+    def test_wedged_reactivate_ap_swap_no_reset_recorded_in_ledger(self, watcher):
+        # Field scenario: a wedged verdict on a pinned-AP swap where the
+        # committed SSID is still scannable (a new BSSID broadcasts it).  The
+        # ladder submits the reactivate-first job (rung 1a); the pin re-scans
+        # and the re-activation succeeds, so no in-job implicated-failure
+        # reset ever fires — the reset ledger stays empty and no reset is
+        # counted against the budget.
+        builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:75", is_usb=True)
+        watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
+        facts = _facts_for(watcher, [builtin, usb], None)
+        event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac=usb.permanent_mac,
+                                     reason="dead_phy_quarantined", has_alt_path=True)
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths",
+                          side_effect=lambda ifname: {"interface_id": "1-1"} if ifname == "wlan1" else None), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True), \
+             patch.object(watcher, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_activation, "_activate_committed_on", return_value=True):
+            acted = watcher.wifi_adoption.apply_client_failed(watcher.ADOPTION_CTX, event, facts)
+            assert acted is True
+            job = watcher.wifi_activation._activation_job_queue.get_nowait()
+            assert job.ifname == "wlan1"
+            assert job.reset_before is False
+            assert job.records_noip is False
+            result = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+        assert result.ok is True
+        assert all(led.get("total_resets", 0) == 0 and not led.get("recent_resets")
+                   for led in watcher.RECOVERY_STATE.adapter_reset_ledgers.values())
         assert usb.stable_id not in watcher.RECOVERY_STATE.failover_reset_done
 
     def test_condemned_active_usb_reactivate_keeps_records_noip(self, watcher):

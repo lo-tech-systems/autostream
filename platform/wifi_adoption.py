@@ -134,30 +134,28 @@ def handle_usb_failure_fallback(ctx: AdoptionContext, hctx: "HealthContext") -> 
 
 
 def apply_client_failed(ctx: AdoptionContext, event, facts: "Facts") -> bool:
-    """Apply an overlay ClientFailed event through the single recovery decider.
+    """Execute an overlay ClientFailed event's verdict from the single recovery decider.
 
     The USB-failure fallback ranks client paths via next_recovery_action (the one
-    priority ladder) and engages one via a submitted activation job.  A
-    quarantined / no-IP-suppressed onboard is not blindly engaged — the ladder /
-    gather_recovery_facts gate onboard usability, so a demoted onboard is skipped
-    and we go to the recovery hotspot instead.
+    priority ladder); this handler is a pure executor of that verdict — it does not
+    rewrite or synthesize actions of its own.  A quarantined / no-IP-suppressed
+    onboard is not blindly engaged — the ladder / gather_recovery_facts gate onboard
+    usability, so a demoted onboard is skipped and we go to the recovery hotspot
+    instead.
 
-    A condemned active USB is retried in place before any demotion.  The ladder
-    returns HOLD("usb_active_no_ip") for an active preferred USB that still has
-    carrier but no usable IP; this handler answers it by submitting an
-    ifname-pinned re-activation of that same USB ("usb_active_reactivate"), not
-    the onboard fallback.  A transient blip re-activates and the client keeps
-    its identity; a genuine failure records a no-IP ledger entry (the job's
-    records_noip tail), whose escalating retry_after backoff excludes the
-    adapter from preferred_usb, so the next ClientFailed reaches the ladder's
-    onboard rung and demotes naturally — after NOIP_STOP_AFTER failures the
-    exclusion is indefinite.  HOLD("usb_link_down_debouncing") means the
-    dead-PHY debounce owns the adapter: no action this pass (a sustained
-    link-down accrues the wedged verdict and proceeds to the budgeted reset /
-    onboard rungs).  HOLDs with any other reason, and the ladder offering no
-    client path, still try a *usable* onboard (one the gate did not exclude)
-    before the USB_LOSS_RECOVERY hotspot; the ladder may also pick ACTIVATE_USB
-    (re-activate) itself for an NM-dropped-but-present USB.
+    ACTIVATE_USB / RESET_USB / ACTIVATE_ONBOARD verdicts are submitted as-is via
+    _submit_client_activation.  This covers the ladder's reactivate-first rungs
+    (a condemned active preferred USB, or a wedged USB with its reactivate budget
+    unspent) as well as the budgeted RESET_USB and onboard-demotion rungs — the
+    ladder alone decides which applies.  HOLD("usb_active_no_ip") means the ladder
+    is deliberately holding a not-yet-condemned active USB steady while it settles
+    (e.g. still-DHCP-settling after boot); this handler takes no action and logs the
+    held decision.  HOLD("usb_link_down_debouncing") means the dead-PHY debounce
+    owns the adapter: no action this pass (a sustained link-down accrues the wedged
+    verdict and proceeds to the reactivate/reset/onboard rungs on a later pass).
+    HOLDs with any other reason, and the ladder offering no client path, still try a
+    *usable* onboard (one the gate did not exclude) before the USB_LOSS_RECOVERY
+    hotspot.
 
     The chosen activation is *submitted* to the worker (non-blocking) and owns the
     pass; its result is applied at the next pass top, and the ladder
@@ -175,21 +173,22 @@ def apply_client_failed(ctx: AdoptionContext, event, facts: "Facts") -> bool:
                         wifi_policy.RecoveryKind.ACTIVATE_ONBOARD):
         if _submit_client_activation(ctx, raction, facts):
             return True
-    # The active preferred USB has carrier but no usable IP: retry the same
-    # adapter in place instead of demoting to onboard.  The re-activation job
-    # records a no-IP failure on failure, so a genuinely broken USB backs off
-    # out of preferred_usb and the next ClientFailed demotes via the ladder.
+    # The active preferred USB has carrier but no usable IP and is not yet
+    # condemned: hold it steady instead of demoting to onboard.  A sustained
+    # failure eventually condemns the connectivity episode, and the ladder's
+    # next verdict is the reactivate-first rung, not this hold.
     elif (raction.kind == wifi_policy.RecoveryKind.HOLD
           and raction.reason == "usb_active_no_ip"):
-        retry = wifi_policy.RecoveryAction(
-            wifi_policy.RecoveryKind.ACTIVATE_USB, ifname=rf.preferred_usb_ifname,
-            drop_hotspot=(rf.preferred_usb_ifname == rf.hotspot_ifname),
-            reason="usb_active_reactivate",
+        ctx.log_on_change(
+            "client_failed_overlay_held", raction.reason,
+            f"ClientFailed overlay held ({raction.reason}); "
+            f"deferring to the connectivity debounce",
         )
-        return _submit_client_activation(ctx, retry, facts)
+        return False
     # The active USB reads link-down but the dead-PHY debounce has not declared
     # it wedged: take no action this pass.  A sustained link-down accrues the
-    # wedged verdict and proceeds to the reset/onboard rungs on a later pass.
+    # wedged verdict and proceeds to the reactivate/reset/onboard rungs on a
+    # later pass.
     elif (raction.kind == wifi_policy.RecoveryKind.HOLD
           and raction.reason == "usb_link_down_debouncing"):
         ctx.log_on_change(

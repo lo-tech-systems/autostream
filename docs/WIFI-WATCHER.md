@@ -250,16 +250,29 @@ when it reaches the final hold-back the watcher spends **one** budgeted USB rese
 adoption attempt. If that still fails, the hold-back proceeds — one reset per
 hold-back episode.
 
-**ClientFailed overlay HOLD handling / post-handover settling**: when the
-recovery ladder holds an active, carrier-up, unhealthy preferred USB
-(`usb_active_no_ip`), the ClientFailed overlay retries that same USB in place
-(an ifname-pinned re-activation) instead of falling back to onboard — a
-transient blip re-activates and the client keeps its identity, while a genuine
-failure records a no-IP ledger entry whose escalating backoff eventually
-excludes the adapter from `preferred_usb`, letting the next overlay pass demote
-through the ladder's own rung. `usb_link_down_debouncing` holds outright (the
-dead-PHY debounce owns that adapter); other HOLD reasons keep the existing
-onboard-fallback behaviour. Separately, for **45 s** after the active client
+**ClientFailed overlay HOLD handling / post-handover settling**: the recovery
+ladder now tries a plain re-activation (scan-informed via the activation pin
+step, which scans before bringing the connection up) before either a
+hardware reset or an onboard demotion — cheaply distinguishing a vanished/
+unrecoverable pinned AP, which recovers for free, from a genuinely wedged
+radio, which fails the reactivation and falls through to the budgeted reset
+on the next pass. The condemned fact that gates this (`usb_active_reactivate`
+for an active preferred USB, and the wedged reactivate-first rung ahead of
+`RESET_USB`) comes from the debounced connectivity verdict — a condemned
+connectivity episode open on the client — not a raw connectivity flag, so a
+freshly-activated, still-DHCP-settling client is never mistaken for
+condemned; the accepted trade-off is that a genuinely wedged radio now
+recovers one activation attempt slower (bounded by the activation timeout)
+before its budgeted reset fires. The ClientFailed overlay is a pure executor
+of the ladder's verdict — it submits whatever ACTIVATE_USB / RESET_USB /
+ACTIVATE_ONBOARD action the ladder returns and never rewrites it. When the
+ladder holds an active, carrier-up, unhealthy preferred USB that is not yet
+condemned (`usb_active_no_ip`), the overlay takes no action and logs the held
+decision; once the connectivity episode is condemned, the ladder's own
+reactivate-first rung takes over instead of this hold. `usb_link_down_debouncing`
+also holds outright (the dead-PHY debounce owns that adapter); other HOLD
+reasons keep the existing onboard-fallback behaviour. Separately, for **45 s**
+after the active client
 identity last changed (boot detection, adoption handover, or a recovery
 activation), a HARD connectivity verdict (active-client link-down, or no
 active client and no recorded USB left to reconnect to) is softened to the
