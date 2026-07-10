@@ -237,6 +237,57 @@ class TestNoIpLedgerAndDiagnosis:
         assert snap["device"]["state"] == "online"
 
 
+class TestActivationFailureLedger:
+    """S-1 — per-stable-id last-activation-failure record: helpers, pruning,
+    and threading into AdapterRecoveryFacts.  Not persisted (transient-only)."""
+
+    MAC = "bb:bb:bb:bb:bb:70"
+
+    def test_record_and_read_back(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_activation_failure(watcher, self.MAC, "no_ip_timeout", 0, 500.0)
+        rec = wr.activation_failure_record(watcher, self.MAC)
+        assert rec == {"reason": "no_ip_timeout", "rc": 0, "at": 500.0}
+
+    def test_record_overwrites_previous(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_activation_failure(watcher, self.MAC, "activation_failed", 1, 100.0)
+        wr.record_activation_failure(watcher, self.MAC, "network_not_visible", 4, 200.0)
+        rec = wr.activation_failure_record(watcher, self.MAC)
+        assert rec == {"reason": "network_not_visible", "rc": 4, "at": 200.0}
+
+    def test_no_stable_id_is_a_noop(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_activation_failure(watcher, "", "activation_failed", 1, 100.0)
+        assert watcher.RECOVERY_STATE.activation_failure_ledgers == {}
+        assert wr.activation_failure_record(watcher, "") is None
+
+    def test_clear_removes_the_record(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_activation_failure(watcher, self.MAC, "no_ip_timeout", 0, 500.0)
+        wr.clear_activation_failure(watcher, self.MAC)
+        assert wr.activation_failure_record(watcher, self.MAC) is None
+
+    def test_prune_drops_absent_stable_ids_keeps_present_ones(self, watcher):
+        wr = watcher.wifi_recovery
+        wr.record_activation_failure(watcher, self.MAC, "no_ip_timeout", 0, 500.0)
+        wr.record_activation_failure(watcher, "still-here", "activation_failed", 1, 500.0)
+        wr.prune_activation_failure_ledgers(watcher, {"still-here"})
+        assert wr.activation_failure_record(watcher, self.MAC) is None
+        assert wr.activation_failure_record(watcher, "still-here") is not None
+
+    def test_not_persisted_survives_out_of_persist_load_roundtrip(self, watcher):
+        # Decision 1: transient-only, never written to the adapter-fault-state
+        # file — a persist/load round-trip must not touch it.
+        wr = watcher.wifi_recovery
+        wr.record_activation_failure(watcher, self.MAC, "no_ip_timeout", 0, 500.0)
+        wr.persist_adapter_fault_state(watcher)
+        wr.load_adapter_fault_state(watcher)
+        assert wr.activation_failure_record(watcher, self.MAC) == {
+            "reason": "no_ip_timeout", "rc": 0, "at": 500.0,
+        }
+
+
 class TestAdapterOverlayEvents:
     """WP5a / C2-WP3 — the overlay is now a pure classifier over the debounced
     connectivity verdict (conn_ok): it fires ClientFailed only once the loop's
@@ -1422,6 +1473,22 @@ class TestRecoveryFacts:
             rec = watcher.gather_recovery_facts(facts)
         assert rec.preferred_usb_ifname == "wlan1"
         assert rec.wedged_reactivate_spent is True
+
+    def test_adapter_recovery_facts_threads_last_activation_failure(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:82", is_usb=True)
+        watcher.wifi_recovery.record_activation_failure(
+            watcher, usb.stable_id, "no_ip_timeout", 0, 1000.0)
+        with patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, usb, 1000.0)
+        assert rf.last_activation_failure == {"reason": "no_ip_timeout", "rc": 0, "at": 1000.0}
+
+    def test_adapter_recovery_facts_last_activation_failure_none_when_absent(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:83", is_usb=True)
+        with patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=True), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=False):
+            rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, usb, 1000.0)
+        assert rf.last_activation_failure is None
 
     def test_gather_wedged_reactivate_spent_false_when_unmarked(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)

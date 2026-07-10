@@ -301,6 +301,18 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
         is_no_ip = rf.is_no_ip
         noip_suppressed = rf.noip_suppressed
 
+        # Last activation-worker failure for this adapter, or None; age is
+        # computed fresh at snapshot build (same freshness convention as
+        # gateway.last_checked_at above, but expressed as an age in seconds
+        # since the record is a monotonic timestamp, not a wall clock one).
+        last_activation_failure = None
+        if rf.last_activation_failure:
+            last_activation_failure = {
+                "reason": rf.last_activation_failure["reason"],
+                "rc": rf.last_activation_failure["rc"],
+                "age_seconds": max(0.0, now_monotonic - rf.last_activation_failure["at"]),
+            }
+
         if is_hotspot:
             role = "hotspot"
         elif a.ifname == active_ifname or (active_mac and a.permanent_mac == active_mac):
@@ -396,6 +408,7 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
                 # published field directly; schema-additive.
                 "noip_failures": noip_count,
             },
+            "last_activation_failure": last_activation_failure,
         })
 
     client_ok = any_healthy

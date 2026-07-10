@@ -1022,3 +1022,88 @@ class TestPinScanDebugLogging:
         matches = [r for r in caplog.records if "BSSID scan on wlan1" in r.getMessage()]
         assert len(matches) == 1
         assert matches[0].getMessage().endswith("scan failed")
+
+
+class TestActivationFailureLedger:
+    """S-1 — per-stable-id last-activation-failure record: the failure tail
+    classifies a failed attempt from the same nmcli-result/wait-outcome
+    information _validate_activation already computes, and the success tail
+    clears it (mirroring the no-IP ledger's own clear-on-success)."""
+
+    def _run_real(self, watcher, *, ifname="wlan1", stable_id="mac-1", nm_result,
+                  wait_result=None, health_result=None, wait_for_validation=True):
+        """Run a job through the real activation core (not the
+        _activate_committed_on/_activate_profile_on seam) so _validate_activation
+        actually classifies the outcome."""
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="u1")
+        job = watcher.wifi_activation.ActivationJob(
+            epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
+            kind="activate_profile", ifname=ifname, profile=state,
+            wait_for_validation=wait_for_validation, stable_id=stable_id)
+        with patch.object(watcher.ACTIVATION_CTX, "_resolve_committed_uuid", return_value="u1"), \
+             patch.object(watcher.nm, "clear_restrictions"), \
+             patch.object(watcher.nm, "activate", return_value=nm_result), \
+             patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value=None), \
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=wait_result), \
+             patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=health_result):
+            return watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+
+    def test_network_absent_records_network_not_visible(self, watcher):
+        absent = MagicMock(returncode=4,
+                           stderr="Error: activation failed: The Wi-Fi network could not be found")
+        result = self._run_real(watcher, nm_result=absent)
+        assert result.ok is False
+        watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
+        led = watcher.RECOVERY_STATE.activation_failure_ledgers["mac-1"]
+        assert led["reason"] == "network_not_visible"
+        assert led["rc"] == 4
+        assert isinstance(led["at"], float)
+
+    def test_no_ip_timeout_records_no_ip_timeout(self, watcher):
+        activated = MagicMock(returncode=0, stderr="")
+        result = self._run_real(watcher, nm_result=activated, wait_result=False, health_result=False)
+        assert result.ok is False
+        watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
+        led = watcher.RECOVERY_STATE.activation_failure_ledgers["mac-1"]
+        assert led["reason"] == "no_ip_timeout"
+        assert led["rc"] == 0
+
+    def test_other_nonzero_rc_records_activation_failed(self, watcher):
+        other = MagicMock(returncode=1, stderr="Error: something else")
+        result = self._run_real(watcher, nm_result=other, wait_result=False, health_result=False)
+        assert result.ok is False
+        watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
+        led = watcher.RECOVERY_STATE.activation_failure_ledgers["mac-1"]
+        assert led["reason"] == "activation_failed"
+        assert led["rc"] == 1
+
+    def test_job_level_failure_before_validation_records_activation_failed(self, watcher):
+        # A job that never reaches the activation core (no ifname) still gets a
+        # ledger entry so the status snapshot has something to show.
+        job = watcher.wifi_activation.ActivationJob(
+            epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
+            kind="activate_committed", ifname="", stable_id="mac-empty")
+        result = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
+        assert result.ok is False and result.error == "no_ifname"
+        watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
+        led = watcher.RECOVERY_STATE.activation_failure_ledgers["mac-empty"]
+        assert led["reason"] == "activation_failed"
+        assert led["rc"] == 0
+
+    def test_success_clears_the_record_other_adapters_survive(self, watcher):
+        watcher.RECOVERY_STATE.activation_failure_ledgers["mac-1"] = {
+            "reason": "no_ip_timeout", "rc": 0, "at": 1.0,
+        }
+        watcher.RECOVERY_STATE.activation_failure_ledgers["mac-other"] = {
+            "reason": "network_not_visible", "rc": 4, "at": 2.0,
+        }
+        target = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:aa", is_usb=True)
+        job = watcher.wifi_activation.ActivationJob(
+            epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX),
+            kind="activate_committed", ifname="wlan1", stable_id="mac-1")
+        result = watcher.wifi_activation.ActivationResult(job.epoch, True, "wlan1", job)
+        with patch.object(watcher.wifi_net, "find_adapter_by_ifname", return_value=target), \
+             patch.object(watcher.ACTIVATION_CTX, "verify_avahi_after_handover"):
+            watcher.wifi_activation.apply_activation_result(watcher.ACTIVATION_CTX, result)
+        assert "mac-1" not in watcher.RECOVERY_STATE.activation_failure_ledgers
+        assert "mac-other" in watcher.RECOVERY_STATE.activation_failure_ledgers

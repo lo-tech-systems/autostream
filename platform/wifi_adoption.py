@@ -660,6 +660,7 @@ def update_known_adapters(ctx: AdoptionContext, adapters: list) -> None:
     # ledger would be dropped every pass.
     present_stable_ids = {a.stable_id for a in adapters if a.stable_id}
     wifi_recovery.prune_noip_ledgers(ctx.RECOVERY_CTX, present_stable_ids)
+    wifi_recovery.prune_activation_failure_ledgers(ctx.RECOVERY_CTX, present_stable_ids)
 
 
 # ---- USB BSSID survey + gated roam ----

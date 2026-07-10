@@ -77,6 +77,8 @@ class ActivationContext:
     record_noip_failure: Callable
     clear_pending_adoption: Callable
     advance_reconnect_episode: Callable
+    record_activation_failure: Callable
+    clear_activation_failure: Callable
 
 
 def _activation_network_absent(result) -> bool:
@@ -175,6 +177,41 @@ def _activate_profile_on(ctx: ActivationContext, ifname: str, state: "wifi_net.N
     return ok
 
 
+# Last nmcli activation attempt's outcome, for the worker's failure tail to
+# classify without re-deriving it: {"network_absent": bool, "rc": int,
+# "waited": bool}.  Set by _validate_activation, read (and reset) by
+# _run_activation_job.  Safe as module state because the worker processes one
+# job at a time (single-slot queue) and reads it before the next job starts.
+_last_activation_probe: "Optional[dict]" = None
+
+
+def _record_activation_probe(network_absent: bool, rc: int, waited: bool) -> None:
+    global _last_activation_probe
+    _last_activation_probe = {"network_absent": network_absent, "rc": rc, "waited": waited}
+
+
+def _classify_activation_failure() -> "tuple[str, int]":
+    """Classify the just-finished job's failure from the last validation probe.
+
+    "network_not_visible" when nmcli reported the SSID absent (rc=4 path);
+    "activation_failed" when the activation command itself returned nonzero
+    for any other reason (carries that rc); "no_ip_timeout" when the command
+    succeeded (rc=0) but the interface never validated (associated, no usable
+    IP).  Falls back to "activation_failed" when no probe was recorded (the
+    job never reached validation, e.g. no_ifname/reset_no_reappear are
+    classified by their own callers).
+    """
+    probe = _last_activation_probe or {}
+    rc = int(probe.get("rc", 0))
+    if probe.get("network_absent"):
+        return "network_not_visible", rc
+    if rc != 0:
+        return "activation_failed", rc
+    if probe.get("waited"):
+        return "no_ip_timeout", rc
+    return "activation_failed", rc
+
+
 def _validate_activation(ctx: ActivationContext, ifname: str, activation_result,
                          *, wait_for_validation: bool = True) -> bool:
     """Shared post-activation validation tail (net-absent -> IPv4 -> gateway).
@@ -185,16 +222,22 @@ def _validate_activation(ctx: ActivationContext, ifname: str, activation_result,
     interface becomes a healthy, non-AP client; when ``wait_for_validation`` is
     False it is fire-and-forget (True iff the activation command succeeded).
     """
+    rc = int(getattr(activation_result, "returncode", 0) or 0)
     # Probe-patience: a "network not found" activation cannot yield an IP, so
     # skip the IPv4 wait and fail fast (frees the ladder to climb sooner).
     if _activation_network_absent(activation_result):
         ctx.logger.info("Network not visible on %s; skipping IPv4 wait", ifname)
+        _record_activation_probe(True, rc, False)
         return False
     if not wait_for_validation:
-        return getattr(activation_result, "returncode", 1) == 0
-    return (ctx.wait_for_connection(ifname, timeout=ctx.WAIT_FOR_CONNECTION_TIMEOUT,
-                                    interval=ctx.WAIT_FOR_CONNECTION_INTERVAL)
-            and ctx.is_wifi_client_healthy(ifname))
+        ok = getattr(activation_result, "returncode", 1) == 0
+        _record_activation_probe(False, rc, False)
+        return ok
+    ok = (ctx.wait_for_connection(ifname, timeout=ctx.WAIT_FOR_CONNECTION_TIMEOUT,
+                                  interval=ctx.WAIT_FOR_CONNECTION_INTERVAL)
+          and ctx.is_wifi_client_healthy(ifname))
+    _record_activation_probe(False, rc, True)
+    return ok
 
 
 # ---- Off-thread activation worker — job/result types + the worker half ----
@@ -245,6 +288,12 @@ class ActivationResult:
     ifname: str
     job: "ActivationJob"
     error: str = ""
+    # Failure classification for the activation-failure status ledger:
+    # "network_not_visible" (rc=4, SSID not visible), "no_ip_timeout"
+    # (activated but never got a usable IP), or "activation_failed" (any other
+    # failure).  "" when ok is True.
+    failure_reason: str = ""
+    failure_rc: int = 0
 
 
 _activation_epoch_counter: int = 0
@@ -334,6 +383,9 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     across the blocking nmcli/wait calls.  Returns the outcome; the loop applies
     the tail.
     """
+    global _last_activation_probe
+    _last_activation_probe = None
+
     if job.kind == "apply_credentials":
         # The credential-apply transaction runs the rollback-safe candidate
         # sequence itself (scan -> ordered targets -> commit-on-success); the loop
@@ -348,7 +400,8 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
         return ActivationResult(job.epoch, ok, ifname, job, error="" if ok else "nmcli-failed")
 
     if not job.ifname:
-        return ActivationResult(job.epoch, False, "", job, error="no_ifname")
+        return ActivationResult(job.epoch, False, "", job, error="no_ifname",
+                                failure_reason="activation_failed", failure_rc=0)
 
     target_ifname = job.ifname
     already_reset = False
@@ -367,7 +420,8 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
         if not target_ifname:
             ctx.logger.warning(
                 "USB reset before failover: %s did not reappear", job.ifname)
-            return ActivationResult(job.epoch, False, job.ifname, job, error="reset_no_reappear")
+            return ActivationResult(job.epoch, False, job.ifname, job, error="reset_no_reappear",
+                                    failure_reason="activation_failed", failure_rc=0)
 
     dropped_ap = False
     if job.drop_hotspot:
@@ -396,8 +450,13 @@ def _run_activation_job(ctx: ActivationContext, job: "ActivationJob") -> "Activa
     if not ok and dropped_ap:
         ctx.hotspot_controller.rebuild()
 
+    failure_reason, failure_rc = "", 0
+    if not ok:
+        failure_reason, failure_rc = _classify_activation_failure()
+
     return ActivationResult(job.epoch, ok, result_ifname, job,
-                            error="" if ok else "activation_failed")
+                            error="" if ok else "activation_failed",
+                            failure_reason=failure_reason, failure_rc=failure_rc)
 
 
 # ---- Worker thread: single-slot job queue + result slot ----
@@ -478,7 +537,8 @@ def _activation_worker_loop(ctx: ActivationContext) -> None:
         except Exception as e:  # never let the worker thread die silently
             ctx.logger.exception("activation worker: job failed")
             result = ActivationResult(job.epoch, False, job.ifname, job,
-                                      error=f"worker_exception: {e}")
+                                      error=f"worker_exception: {e}",
+                                      failure_reason="activation_failed", failure_rc=0)
         _post_activation_result(result)
 
 
@@ -576,6 +636,7 @@ def client_up_tail(ctx: ActivationContext, adapter,
         ctx.nm.disconnect_device(spec.disconnect_builtin_ifname)
     if spec.clear_noip_stable_id:
         ctx.clear_noip_failures(spec.clear_noip_stable_id)
+        ctx.clear_activation_failure(spec.clear_noip_stable_id)
     with ctx.state_lock:
         ctx.ADOPTION_STATE.last_roam_or_activation = time.monotonic()
         if spec.set_builtin_fallback is not None:
@@ -675,6 +736,15 @@ def apply_activation_result(ctx: ActivationContext, result: "ActivationResult",
         # present-but-failing onboard eventually yields to the hotspot.
         with ctx.state_lock:
             ctx.STATE.onboard_activation_failures += 1
+    # Record why this attempt failed for the status snapshot; uses only what
+    # is already resolved (job.stable_id or the caller-supplied adapter) so a
+    # bare ifname is the identity when neither is known — no adapter lookup.
+    activation_record_id = job.stable_id
+    if activation_record_id is None:
+        activation_record_id = adapter.stable_id if adapter is not None else result.ifname
+    ctx.record_activation_failure(
+        activation_record_id, result.failure_reason or "activation_failed",
+        result.failure_rc, time.monotonic())
     if job.records_noip:
         record_id = job.stable_id
         if record_id is None:

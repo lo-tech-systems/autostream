@@ -1977,6 +1977,12 @@ def build_contexts() -> None:
     def record_noip_failure_closure(record_id, at: float) -> int:
         return wifi_recovery.record_noip_failure(RECOVERY_CTX, record_id, at)
 
+    def record_activation_failure_closure(stable_id, reason: str, rc: int, at: float) -> None:
+        wifi_recovery.record_activation_failure(RECOVERY_CTX, stable_id, reason, rc, at)
+
+    def clear_activation_failure_closure(stable_id) -> None:
+        wifi_recovery.clear_activation_failure(RECOVERY_CTX, stable_id)
+
     # The activation context: the worker and loop-tail helpers thread this
     # ctx through every call.
     ACTIVATION_CTX = wifi_activation.ActivationContext(
@@ -2007,6 +2013,8 @@ def build_contexts() -> None:
         record_noip_failure=record_noip_failure_closure,
         clear_pending_adoption=clear_pending_adoption_closure,
         advance_reconnect_episode=advance_reconnect_episode_closure,
+        record_activation_failure=record_activation_failure_closure,
+        clear_activation_failure=clear_activation_failure_closure,
     )
 
     # The adoption context: the fallback/adoption/reconnect-episode helpers

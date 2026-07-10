@@ -42,6 +42,13 @@ class RecoveryState:
     # ---- "Associated but no IP" / adoption-failure ledger ----
     # stable_id -> {"count": int, "retry_after": float}.
     adapter_noip_ledgers: dict = field(default_factory=dict)
+    # Per-adapter record of the most recent activation-worker failure, so the
+    # status snapshot can show why the last attempt failed.  stable_id ->
+    # {"reason": str, "rc": int, "at": float monotonic}.  Transient only: never
+    # persisted (stale after a restart by definition), cleared on the next
+    # successful activation of that adapter, and pruned when the adapter
+    # disappears.
+    activation_failure_ledgers: dict = field(default_factory=dict)
     # Stable-ids an operator has manually disabled via the control API; a disabled
     # adapter is never offered as a client rung, adopted, or reset until it is
     # re-enabled.  Persisted with the fault ledgers so it survives a restart.
@@ -285,6 +292,49 @@ def prune_noip_ledgers(ctx, present_stable_ids: set) -> None:
         for sid in list(ctx.RECOVERY_STATE.noip_holdback_reset_done):
             if sid not in present_stable_ids:
                 ctx.RECOVERY_STATE.noip_holdback_reset_done.discard(sid)
+
+
+# ---- Last-activation-failure ledger (status-only, not persisted) ----
+#
+# Records why the most recent activation-worker attempt for an adapter failed
+# so the status snapshot can show a reason instead of a bare "disconnected".
+# Separate from the no-IP ledger: this is a single last-attempt record, not an
+# accumulating failure count, and it never survives a restart.
+
+def record_activation_failure(ctx, stable_id: str, reason: str, rc: int, at: float) -> None:
+    """Record the most recent activation failure for *stable_id* (overwrites)."""
+    if not stable_id:
+        return
+    with ctx.state_lock:
+        ctx.RECOVERY_STATE.activation_failure_ledgers[stable_id] = {
+            "reason": reason, "rc": rc, "at": at,
+        }
+
+
+def clear_activation_failure(ctx, stable_id: str) -> None:
+    """Clear the activation-failure record for *stable_id* (a fresh success)."""
+    if not stable_id:
+        return
+    with ctx.state_lock:
+        ctx.RECOVERY_STATE.activation_failure_ledgers.pop(stable_id, None)
+
+
+def activation_failure_record(ctx, stable_id: str) -> Optional[dict]:
+    """Return a copy of the pending activation-failure record for *stable_id*,
+    or None when there is none."""
+    if not stable_id:
+        return None
+    with ctx.state_lock:
+        rec = ctx.RECOVERY_STATE.activation_failure_ledgers.get(stable_id)
+        return dict(rec) if rec else None
+
+
+def prune_activation_failure_ledgers(ctx, present_stable_ids: set) -> None:
+    """Drop activation-failure records for adapters that are no longer present."""
+    with ctx.state_lock:
+        for sid in list(ctx.RECOVERY_STATE.activation_failure_ledgers):
+            if sid not in present_stable_ids:
+                ctx.RECOVERY_STATE.activation_failure_ledgers.pop(sid, None)
 
 
 # ---- Manual adapter enable/disable + fault clearing (control API) ----
@@ -836,6 +886,9 @@ class AdapterRecoveryFacts:
     # adapter (no sysfs work is performed for the onboard).
     resettable: bool
     reset_budget_ok: bool
+    # Most recent activation-worker failure for this adapter, or None; cleared
+    # on the next successful activation.  Status-only (not used by the ladder).
+    last_activation_failure: Optional[dict]
 
 
 def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> AdapterRecoveryFacts:
@@ -913,6 +966,7 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
         wedged=wedged,
         resettable=resettable,
         reset_budget_ok=reset_budget_ok,
+        last_activation_failure=activation_failure_record(ctx, a.stable_id),
     )
 
 

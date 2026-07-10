@@ -377,6 +377,22 @@ class TestBuildNetworkStatusSnapshot:
             snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=False, wired_ok=False)
         assert snap["roaming"] == {"managed": True}
 
+    def test_last_activation_failure_null_when_none(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0, healthy=False)
+        rec = snap["adapters"][0]
+        assert rec["last_activation_failure"] is None
+
+    def test_last_activation_failure_present_with_correct_age(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.wifi_recovery.record_activation_failure(
+            watcher, self.MAC, "network_not_visible", 4, 940.0)
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0, healthy=False)
+        rec = snap["adapters"][0]
+        assert rec["last_activation_failure"] == {
+            "reason": "network_not_visible", "rc": 4, "age_seconds": 60.0,
+        }
+
     def test_publish_stores_latest_snapshot_in_memory(self, watcher):
         # publish_network_status takes the narrowed STATUS_CTX directly — patch
         # the fact helper on the context.
