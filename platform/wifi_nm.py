@@ -17,10 +17,32 @@ functions this client calls.  Deployed beside the watcher on the system Python.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from autostream_sysutils import run_cmd
 import autostream_wifi_network as wifi_net
+
+logger = logging.getLogger(__name__)
+
+
+def _run_teardown(cmd: list, benign_substring: str, timeout: float):
+    """Run an idempotent nmcli teardown command (delete/disconnect).
+
+    A nonzero exit whose stderr contains *benign_substring* means the goal
+    state already holds (connection absent / device inactive) — logged at
+    DEBUG, not as a failure.  Any other nonzero exit keeps the usual WARNING.
+    """
+    r = run_cmd(cmd, timeout=timeout, warn_on_failure=False)
+    if r.returncode != 0:
+        stderr = (r.stderr or "").strip()
+        if benign_substring in stderr:
+            logger.debug(
+                "Teardown already satisfied: %s (rc=%s)", " ".join(cmd), r.returncode)
+        else:
+            logger.warning(
+                "Command failed: %s (rc=%s, stderr=%s)", " ".join(cmd), r.returncode, stderr)
+    return r
 
 
 class NMClient:
@@ -77,14 +99,16 @@ class NMClient:
     # ---- deletion ----
 
     def delete_connection(self, ident: str):
-        """Delete a saved connection by bare name or uuid."""
-        return run_cmd(["nmcli", "connection", "delete", ident],
-                       timeout=self._quick_timeout)
+        """Delete a saved connection by bare name or uuid (idempotent:
+        an already-absent connection is the goal state, not a failure)."""
+        return _run_teardown(["nmcli", "connection", "delete", ident],
+                             "unknown connection", self._quick_timeout)
 
     def delete_by_uuid(self, uuid: str):
-        """Delete a saved connection explicitly by uuid."""
-        return run_cmd(wifi_net.delete_connection_cmd(uuid),
-                       timeout=self._quick_timeout)
+        """Delete a saved connection explicitly by uuid (idempotent, as
+        ``delete_connection``)."""
+        return _run_teardown(wifi_net.delete_connection_cmd(uuid),
+                             "unknown connection", self._quick_timeout)
 
     # ---- candidate profile setup ----
 
@@ -95,9 +119,11 @@ class NMClient:
     # ---- device disconnect ----
 
     def disconnect_device(self, ifname: str):
-        """`nmcli device disconnect <ifname>`."""
-        return run_cmd(["nmcli", "device", "disconnect", ifname],
-                       timeout=self._quick_timeout)
+        """`nmcli device disconnect <ifname>` (idempotent: NM may already
+        have deactivated the device, e.g. when the single client profile was
+        re-activated on another adapter — "not active" is the goal state)."""
+        return _run_teardown(["nmcli", "device", "disconnect", ifname],
+                             "not active", self._quick_timeout)
 
     # ---- AP lifecycle ----
 

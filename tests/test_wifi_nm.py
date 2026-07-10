@@ -132,6 +132,66 @@ class TestNMClientBounds:
             assert call.kwargs.get("timeout") is not None
 
 
+class TestTeardownTolerance:
+    """Idempotent teardown commands (delete/disconnect) treat the goal state
+    already holding as benign (DEBUG), while real failures keep the WARNING."""
+
+    def test_disconnect_already_inactive_is_debug_not_warning(self, nm, caplog):
+        result = MagicMock(
+            returncode=6,
+            stderr="Error: Device 'wlan0' disconnecting failed: This device is not active\n",
+        )
+        with patch.object(wifi_nm, "run_cmd", return_value=result) as rc:
+            with caplog.at_level("DEBUG", logger=wifi_nm.logger.name):
+                r = nm.disconnect_device("wlan0")
+        assert r is result
+        assert rc.call_args.kwargs["warn_on_failure"] is False
+        assert not [rec for rec in caplog.records if rec.levelname == "WARNING"]
+        assert any("already satisfied" in rec.getMessage() for rec in caplog.records)
+
+    def test_delete_unknown_connection_is_debug_not_warning(self, nm, caplog):
+        result = MagicMock(
+            returncode=10,
+            stderr="Error: unknown connection 'Hotspot'.\n",
+        )
+        with patch.object(wifi_nm, "run_cmd", return_value=result):
+            with caplog.at_level("DEBUG", logger=wifi_nm.logger.name):
+                nm.delete_connection("Hotspot")
+        assert not [rec for rec in caplog.records if rec.levelname == "WARNING"]
+        assert any("already satisfied" in rec.getMessage() for rec in caplog.records)
+
+    def test_delete_by_uuid_unknown_connection_is_debug_not_warning(self, nm, caplog):
+        result = MagicMock(
+            returncode=10,
+            stderr="Error: unknown connection 'uuid-1'.\n",
+        )
+        with patch.object(wifi_nm, "run_cmd", return_value=result):
+            with caplog.at_level("DEBUG", logger=wifi_nm.logger.name):
+                nm.delete_by_uuid("uuid-1")
+        assert not [rec for rec in caplog.records if rec.levelname == "WARNING"]
+        assert any("already satisfied" in rec.getMessage() for rec in caplog.records)
+
+    def test_other_teardown_failure_still_warns(self, nm, caplog):
+        result = MagicMock(
+            returncode=1,
+            stderr="Error: NetworkManager is not running.\n",
+        )
+        with patch.object(wifi_nm, "run_cmd", return_value=result):
+            with caplog.at_level("DEBUG", logger=wifi_nm.logger.name):
+                nm.disconnect_device("wlan0")
+        warnings = [rec for rec in caplog.records if rec.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "Command failed" in warnings[0].getMessage()
+        assert "NetworkManager is not running" in warnings[0].getMessage()
+
+    def test_teardown_success_logs_nothing(self, nm, caplog):
+        with patch.object(wifi_nm, "run_cmd", return_value=MagicMock(returncode=0)):
+            with caplog.at_level("DEBUG", logger=wifi_nm.logger.name):
+                nm.disconnect_device("wlan0")
+                nm.delete_connection("Hotspot")
+        assert not caplog.records
+
+
 class TestNMClientBssidPin:
     def test_set_bssid_uses_quick_timeout(self, nm):
         with patch.object(wifi_nm, "run_cmd", return_value=MagicMock(returncode=0)) as rc:
