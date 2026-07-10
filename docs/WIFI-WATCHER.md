@@ -224,6 +224,18 @@ scan) logs one compact line — ifname, rescan flag, purpose, and the strongest
 BSSID/signal rows for the committed SSID; `info` and above stay quiet about
 scans.
 
+**Roaming management preference**: whether the watcher pins BSSIDs, runs the
+survey/roam machinery, and tracks per-BSSID quarantine described above is
+gated by a global, user-facing opt-in preference (default off — unmanaged,
+NM/firmware roaming). Enabling it turns on BSSID pinning, the survey/roam
+loop, and per-BSSID quarantine; disabling it clears any existing pin and
+resets the in-memory roam state. The adapter fault ladder — dead-PHY/wedge
+detection, empty-scan remediation, no-IP backoff, budgeted resets, and the
+24 h quarantine — runs identically in both modes, since it keys off link
+state and scan results, not pins. The one behaviour scoped to the managed
+case is the pin-implicated retry heuristic, which only fires when an
+activation failure can be attributed to a stale BSSID pin.
+
 **Persistent fault state**: the per-adapter no-IP and reset/quarantine ledgers are
 persisted to `/var/lib/autostream/adapter-fault-state.json` (wall-clock
 timestamps, translated back to the monotonic clock and pruned by the rolling

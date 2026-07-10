@@ -27,6 +27,7 @@ if _CORE not in sys.path:
 from autostream_webui_api import (
     build_network_card_presentation,
     get_wifi_watcher_version,
+    send_network_roaming_json,
     send_network_setup_json,
     send_network_status_json,
 )
@@ -502,6 +503,138 @@ class TestSendNetworkSetupJson:
 
 
 # ---------------------------------------------------------------------------
+# send_network_roaming_json()
+# ---------------------------------------------------------------------------
+
+class TestSendNetworkRoamingJson:
+    def _call(self, body, watcher_status: int = 200, watcher_data: dict | None = None):
+        if watcher_data is None:
+            watcher_data = {"ok": True}
+        handler = _make_handler()
+        captured = {}
+
+        def fake_send_json(h, code, data):
+            captured["code"] = code
+            captured["data"] = data
+
+        def fake_error(h, code, msg):
+            captured["code"] = code
+            captured["error"] = msg
+
+        with patch("autostream_webui_api._watcher_request", return_value=(watcher_status, watcher_data)), \
+             patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+            send_network_roaming_json(handler, body)
+
+        return captured
+
+    def test_managed_true_forwards_exact_action_shape(self):
+        forwarded = {}
+
+        def fake_request(method, path, body=None):
+            forwarded["method"] = method
+            forwarded["path"] = path
+            forwarded["body"] = body
+            return 200, {"ok": True}
+
+        handler = _make_handler()
+        with patch("autostream_webui_api._watcher_request", side_effect=fake_request), \
+             patch("autostream_webui_api.send_json"):
+            send_network_roaming_json(handler, {"managed": True, "csrf_token": "tok"})
+
+        assert forwarded["method"] == "POST"
+        assert forwarded["path"] == "/network_control"
+        assert forwarded["body"] == {"action": "set_roaming_management", "managed": True}
+
+    def test_managed_false_forwards_exact_action_shape(self):
+        forwarded = {}
+
+        def fake_request(method, path, body=None):
+            forwarded["body"] = body
+            return 200, {"ok": True}
+
+        handler = _make_handler()
+        with patch("autostream_webui_api._watcher_request", side_effect=fake_request), \
+             patch("autostream_webui_api.send_json"):
+            send_network_roaming_json(handler, {"managed": False})
+
+        assert forwarded["body"] == {"action": "set_roaming_management", "managed": False}
+
+    def test_success_response_shape(self):
+        result = self._call({"managed": True})
+        assert result["code"] == 200
+        assert result["data"]["ok"] is True
+
+    def test_missing_managed_rejected_without_forwarding(self):
+        with patch("autostream_webui_api._watcher_request") as request:
+            result = self._call({})
+        assert result["code"] == 400
+        request.assert_not_called()
+
+    def test_non_bool_managed_rejected_without_forwarding(self):
+        for bad in ("true", 1, None, [], {}):
+            with patch("autostream_webui_api._watcher_request") as request:
+                result = self._call({"managed": bad})
+            assert result["code"] == 400
+            request.assert_not_called()
+
+    def test_extra_fields_rejected(self):
+        with patch("autostream_webui_api._watcher_request") as request:
+            result = self._call({"managed": True, "extra": "bad"})
+        assert result["code"] == 400
+        request.assert_not_called()
+
+    def test_not_dict_rejected(self):
+        handler = _make_handler()
+        captured = {}
+
+        def fake_error(h, code, msg):
+            captured["code"] = code
+
+        with patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error), \
+             patch("autostream_webui_api._watcher_request") as request:
+            send_network_roaming_json(handler, "not a dict")  # type: ignore[arg-type]
+
+        assert captured["code"] == 400
+        request.assert_not_called()
+
+    def test_csrf_token_stripped_before_forward(self):
+        forwarded = {}
+
+        def fake_request(method, path, body=None):
+            forwarded["body"] = body
+            return 200, {"ok": True}
+
+        handler = _make_handler()
+        with patch("autostream_webui_api._watcher_request", side_effect=fake_request), \
+             patch("autostream_webui_api.send_json"):
+            send_network_roaming_json(handler, {"managed": True, "csrf_token": "tok"})
+
+        assert "csrf_token" not in (forwarded.get("body") or {})
+
+    def test_watcher_failure_returns_graceful_error(self):
+        result = self._call({"managed": True}, watcher_status=503)
+        assert result["code"] == 503
+
+    def test_watcher_ok_false_returns_graceful_error(self):
+        result = self._call({"managed": True}, watcher_status=200, watcher_data={"ok": False})
+        assert result["code"] == 503
+
+    def test_transport_exception_returns_503(self):
+        handler = _make_handler()
+        captured = {}
+
+        def fake_error(h, code, msg):
+            captured["code"] = code
+
+        with patch("autostream_webui_api._watcher_request", side_effect=OSError("refused")), \
+             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+            send_network_roaming_json(handler, {"managed": True})
+
+        assert captured["code"] == 503
+
+
+# ---------------------------------------------------------------------------
 # get_wifi_watcher_version()
 # ---------------------------------------------------------------------------
 
@@ -606,6 +739,10 @@ class TestRouteWiring:
         from autostream_webui_api import build_network_card_presentation
         assert callable(build_network_card_presentation)
 
+    def test_send_network_roaming_json_importable(self):
+        from autostream_webui_api import send_network_roaming_json
+        assert callable(send_network_roaming_json)
+
 
 # ---------------------------------------------------------------------------
 # UI — confirm network card HTML and JS are present in the page source
@@ -687,3 +824,24 @@ class TestSetupPageNetworkCard:
 
     def test_open_panel_calls_refresh_on_system(self):
         assert "refreshNetworkAdapterInfo" in self.PAGE_SRC
+
+    def test_roaming_checkbox_present_with_exact_label(self):
+        assert 'id="networkRoamingManaged"' in self.PAGE_SRC
+        assert "Manage USB adapter roaming" in self.PAGE_SRC
+
+    def test_roaming_hint_text_present(self):
+        assert "This may improve connection stability for some USB adapters." in self.PAGE_SRC
+
+    def test_roaming_checkbox_onchange_calls_new_endpoint_not_settings_save(self):
+        assert 'onchange="setRoamingManagement(this.checked)"' in self.PAGE_SRC
+
+    def test_roaming_checked_state_follows_status_snapshot(self):
+        assert "roamingEl.checked = !!(j.roaming && j.roaming.managed)" in self.PAGE_SRC
+
+    def test_roaming_endpoint_fetch_js_present(self):
+        assert "/api/network/roaming" in self.PAGE_SRC
+
+    def test_roaming_degrades_gracefully_on_failure_without_new_error_ui(self):
+        assert "setRoamingManagement" in self.PAGE_SRC
+        # Failure path re-syncs from status rather than inventing new error UI.
+        assert self.PAGE_SRC.count("refreshNetworkAdapterInfo()") >= 2

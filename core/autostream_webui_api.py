@@ -2514,6 +2514,29 @@ def send_network_setup_json(handler, json_obj: dict) -> None:
     send_browser_api_error(handler, 503, "Network service unavailable")
 
 
+def send_network_roaming_json(handler, json_obj: dict) -> None:
+    """POST /api/network/roaming — proxy the USB roaming-management preference to the watcher."""
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    managed = json_obj.get("managed")
+    extra = set(json_obj.keys()) - {"managed", "csrf_token"}
+    if not isinstance(managed, bool) or extra:
+        send_browser_api_error(handler, 400, "Invalid request")
+        return
+    try:
+        status, data = _watcher_request(
+            "POST", "/network_control", {"action": "set_roaming_management", "managed": managed}
+        )
+    except Exception:
+        send_browser_api_error(handler, 503, "Network service unavailable")
+        return
+    if status == 200 and isinstance(data, dict) and data.get("ok"):
+        send_json(handler, 200, {"ok": True, "managed": managed})
+        return
+    send_browser_api_error(handler, 503, "Network service unavailable")
+
+
 def send_playing_status_json(handler) -> None:
     """GET /api/playing-status — return whether the appliance is streaming.
 

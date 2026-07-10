@@ -684,6 +684,14 @@ def send_setup_page(
             <p id="networkWarning" style="display:none;margin:0.25rem 0 0;font-size:0.8rem;font-weight:600;"></p>
             <p id="networkSupportDetail" style="display:none;margin:0.15rem 0 0.5rem;font-size:0.75rem;color:var(--color-text-muted,#888);"></p>
             <p id="networkUsbPending" style="display:none;margin:0.25rem 0 0.5rem;font-size:0.8rem;color:var(--color-text-muted,#888);">autostream will switch to the USB adapter when playback stops. You will need to close and re-open the autostream app to reconnect.</p>
+            <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
+              <label class="output-toggle" style="margin:0;">
+                <input type="checkbox" name="network_roaming_managed" id="networkRoamingManaged" onchange="setRoamingManagement(this.checked)">
+                <span class="switch"></span>
+              </label>
+              <span>Manage USB adapter roaming</span>
+            </div>
+            <div style="font-size:0.75rem;color:#888;margin-top:0.25rem;">This may improve connection stability for some USB adapters.</div>
             <button type="button" class="pill-btn small" style="width:100%;margin-top:0.5rem;" onclick="changeWifiNetwork()">Change Wi-Fi Network</button>
             <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
           </div>
@@ -2566,6 +2574,7 @@ def send_setup_page(
           var supportEl = document.getElementById('networkSupportDetail');
           var titleEl = document.getElementById('networkCardTitle');
           var pendingEl = document.getElementById('networkUsbPending');
+          var roamingEl = document.getElementById('networkRoamingManaged');
           function networkStatusFailed() {{
             if (titleEl) titleEl.textContent = 'Network';
             if (adapterEl) {{
@@ -2629,6 +2638,7 @@ def send_setup_page(
               }}
             }}
             if (pendingEl) pendingEl.style.display = j.usb_adoption_pending ? '' : 'none';
+            if (roamingEl) roamingEl.checked = !!(j.roaming && j.roaming.managed);
             if (j.ap_ssid) {{
               var ssidEl = document.getElementById('wifiHotspotSsid');
               if (ssidEl) ssidEl.textContent = j.ap_ssid;
@@ -2637,6 +2647,26 @@ def send_setup_page(
         }}
         refreshNetworkAdapterInfo();
         setInterval(refreshNetworkAdapterInfo, 5000);
+
+        async function setRoamingManagement(managed) {{
+          try {{
+            var r = await fetch('/api/network/roaming', {{
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: {{
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': (window.__CSRF || '')
+              }},
+              body: JSON.stringify({{ managed: managed, csrf_token: (window.__CSRF || '') }})
+            }});
+            var j = await r.json().catch(function() {{ return {{}}; }});
+            if (!r.ok || !j || j.ok !== true) {{
+              refreshNetworkAdapterInfo();
+            }}
+          }} catch (e) {{
+            refreshNetworkAdapterInfo();
+          }}
+        }}
 
         function changeWifiNetwork() {{
           var modal = document.getElementById('wifiHotspotModal');

@@ -88,6 +88,7 @@ from autostream_webui_api import (
     send_log_level_put_json,
     send_network_setup_json,
     send_network_status_json,
+    send_network_roaming_json,
     send_playing_status_json,
 )
 import autostream_federation
@@ -954,6 +955,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             send_network_setup_json(self, json_obj)
+
+        elif path == "/api/network/roaming":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_network_roaming_json(self, json_obj)
 
         else:
             self.send_error(404, "Not found")
