@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,6 +98,32 @@ def _usb_adapter(*, warning: str = "", quarantined: bool = False,
             "reset_budget_24h": budget,
             "noip_failures": noip_failures,
         },
+    }
+
+
+def _no_ip_adapter(*, kind: str = "builtin_wifi", ifname: str = "wlan2",
+                   role: str = "idle", health_state: str = "idle",
+                   warning: str = "", quarantined: bool = False,
+                   next_action_after: float | None = None,
+                   held_back: bool = False, noip_failures: int = 0,
+                   empty_scan_count: int = 0, empty_scan_threshold: int = 3,
+                   last_activation_failure: dict | None = None) -> dict:
+    """A watcher adapter record with no IP, for the status label-map tests."""
+    return {
+        "kind": kind,
+        "ifname": ifname,
+        "role": role,
+        "facts": {"ipv4": []},
+        "health": {"state": health_state},
+        "policy": {
+            "warning": warning,
+            "quarantined": quarantined,
+            "next_action_after": next_action_after,
+            "held_back": held_back,
+            "noip_failures": noip_failures,
+            "empty_scan_streak": {"count": empty_scan_count, "threshold": empty_scan_threshold},
+        },
+        "last_activation_failure": last_activation_failure,
     }
 
 
@@ -326,6 +353,131 @@ class TestBuildNetworkCardPresentation:
             assert result["support_detail"] == (
                 f"Adapter: wlan1 | Reset attempts: {resets} in 24h (normal budget: 2)"
             )
+
+    def test_onboard_adapter_produces_warning_banner(self):
+        adapter = {
+            "kind": "builtin_wifi", "ifname": "wlan0", "role": "client",
+            "facts": {"ipv4": []}, "health": {"state": "resetting"},
+            "policy": {"warning": "resetting", "quarantined": False,
+                       "resets_24h": 1, "reset_budget_24h": 2, "noip_failures": 0},
+        }
+        s = _with_device(_ok_status({"adapters": [adapter]}),
+                         primary_kind="builtin_wifi", primary_ifname="wlan0", primary_ssid="MyNetwork")
+        result = build_network_card_presentation(s)
+        assert result["warning"] == "On-board WiFi adapter is being reset. Network connection may be unstable for a minute."
+        assert result["warning_severity"] == "warning"
+        assert result["support_detail"] == "Adapter: wlan0 | Reset attempts: 1 in 24h (normal budget: 2)"
+
+    def test_onboard_held_back_warning_does_not_claim_fallback_to_itself(self):
+        # Rank 1's USB copy says "running on on-board WiFi" — that framing is
+        # nonsensical when the held-back adapter is the on-board radio itself.
+        adapter = {
+            "kind": "builtin_wifi", "ifname": "wlan0", "role": "spare",
+            "facts": {"ipv4": []}, "health": {"state": "no_ip_held_back"},
+            "policy": {"warning": "no_ip_held_back", "quarantined": False, "held_back": True,
+                       "resets_24h": 0, "reset_budget_24h": 2, "noip_failures": 5},
+        }
+        s = _ok_status({"adapters": [adapter]})
+        result = build_network_card_presentation(s)
+        assert result["warning"] == "On-board WiFi adapter held back after repeated failures. Replace the adapter if this keeps happening."
+        assert "running on on-board WiFi" not in result["warning"]
+        assert result["warning_severity"] == "danger"
+
+
+# ---------------------------------------------------------------------------
+# _network_interface_lines() label map for adapters without an IP
+# ---------------------------------------------------------------------------
+
+class TestNoIpStatusLabels:
+    def _line(self, adapter: dict) -> str:
+        s = _ok_status({"adapters": [adapter]})
+        result = build_network_card_presentation(s)
+        assert len(result["interface_lines"]) == 1
+        return result["interface_lines"][0]
+
+    def test_association_failed_network_not_visible(self):
+        adapter = _no_ip_adapter(last_activation_failure={
+            "reason": "network_not_visible", "rc": 4, "age_seconds": 125,
+        })
+        assert self._line(adapter) == "On-board WiFi: Association failed — network not visible (2m ago)"
+
+    def test_association_failed_other_reason(self):
+        adapter = _no_ip_adapter(last_activation_failure={
+            "reason": "activation_failed", "rc": 1, "age_seconds": 61,
+        })
+        assert self._line(adapter) == "On-board WiFi: Association failed (1m ago)"
+
+    def test_empty_scan_streak_accruing(self):
+        adapter = _no_ip_adapter(empty_scan_count=2, empty_scan_threshold=5)
+        assert self._line(adapter) == "On-board WiFi: Recovering — radio check in progress"
+
+    def test_reset_pending(self):
+        adapter = _no_ip_adapter(warning="resetting")
+        assert self._line(adapter) == "On-board WiFi: Recovering (reset pending)"
+
+    def test_reset_pending_via_dead_phy_state(self):
+        adapter = _no_ip_adapter(health_state="dead_phy")
+        assert self._line(adapter) == "On-board WiFi: Recovering (reset pending)"
+
+    def test_quarantined(self):
+        adapter = _no_ip_adapter(quarantined=True, next_action_after=time.monotonic() + 2 * 3600 + 30)
+        assert self._line(adapter) == "On-board WiFi: Quarantined (auto-retry in 2h)"
+
+    def test_held_back(self):
+        adapter = _no_ip_adapter(health_state="no_ip_held_back")
+        assert self._line(adapter) == "On-board WiFi: Held back after repeated failures"
+
+    def test_reconnect_backoff(self):
+        adapter = _no_ip_adapter(health_state="degraded_no_ip", noip_failures=3)
+        assert self._line(adapter) == "On-board WiFi: Reconnect backoff (attempt 3)"
+
+    def test_connecting(self):
+        adapter = _no_ip_adapter(health_state="connecting")
+        assert self._line(adapter) == "On-board WiFi: Connecting…"
+
+    def test_disconnected_fallback(self):
+        adapter = _no_ip_adapter(health_state="idle")
+        assert self._line(adapter) == "On-board WiFi: Disconnected"
+
+    def test_precedence_quarantined_wins_over_all_others(self):
+        adapter = _no_ip_adapter(
+            health_state="connecting",
+            warning="resetting",
+            quarantined=True,
+            next_action_after=time.monotonic() + 3 * 3600 + 1,
+            held_back=True,
+            noip_failures=4,
+            empty_scan_count=2,
+            last_activation_failure={
+                "reason": "network_not_visible", "rc": 4, "age_seconds": 10,
+            },
+        )
+        assert self._line(adapter) == "On-board WiFi: Quarantined (auto-retry in 3h)"
+
+    def test_stale_activation_failure_falls_through(self):
+        adapter = _no_ip_adapter(
+            health_state="connecting",
+            last_activation_failure={
+                "reason": "network_not_visible", "rc": 4, "age_seconds": 900,
+            },
+        )
+        assert self._line(adapter) == "On-board WiFi: Connecting…"
+
+    def test_ip_present_adapter_unaffected_by_no_ip_label_map(self):
+        # Regression guard: an adapter with an IP keeps today's line untouched,
+        # even when policy fields that would otherwise drive the label map
+        # (quarantine, held-back, etc.) are also set.
+        adapter = _usb_adapter(
+            ipv4=[{"family": "ipv4", "address": "192.168.1.38", "prefixlen": 24, "scope": "global"}],
+        )
+        adapter["policy"]["quarantined"] = True
+        adapter["policy"]["next_action_after"] = time.monotonic() + 3600
+        s = _with_device(
+            _ok_status({"adapters": [adapter]}),
+            primary_kind="usb_wifi", primary_ifname="wlan1", primary_ssid="MyNetwork",
+        )
+        result = build_network_card_presentation(s)
+        assert result["interface_lines"] == ["USB WiFi: MyNetwork - 192.168.1.38/24"]
 
 
 # ---------------------------------------------------------------------------

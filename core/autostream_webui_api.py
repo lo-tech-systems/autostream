@@ -2296,6 +2296,76 @@ def _network_adapter_label(adapter: dict) -> str:
     return ""
 
 
+def _network_quarantine_retry_label(next_action_after) -> str:
+    """Render the quarantine retry label from the watcher's monotonic deadline.
+
+    The webui and watcher run on the same host, so their CLOCK_MONOTONIC
+    values are directly comparable without any timestamp translation.
+    """
+    remaining_seconds = 0.0
+    if isinstance(next_action_after, (int, float)) and not isinstance(next_action_after, bool):
+        remaining_seconds = max(0.0, next_action_after - time.monotonic())
+    hours = max(1, round(remaining_seconds / 3600))
+    return f"Quarantined (auto-retry in {hours}h)"
+
+
+def _network_activation_failure_label(last_activation_failure: dict) -> Optional[str]:
+    """Render the association-failure label, or None when the record is stale."""
+    age_seconds = last_activation_failure.get("age_seconds")
+    if not isinstance(age_seconds, (int, float)) or isinstance(age_seconds, bool):
+        return None
+    if age_seconds >= 900:
+        return None
+    minutes = int(age_seconds // 60)
+    reason = str(last_activation_failure.get("reason") or "").strip()
+    if reason == "network_not_visible":
+        return f"Association failed — network not visible ({minutes}m ago)"
+    return f"Association failed ({minutes}m ago)"
+
+
+def _network_no_ip_status_label(adapter: dict) -> str:
+    """Map an adapter with no IP to a truthful status label from health/policy.
+
+    Checked in order of specificity (first match wins): quarantined, reset
+    pending, radio-check recovery, a recent association failure, held back,
+    reconnect backoff, actively connecting, else disconnected.
+    """
+    health = adapter.get("health") if isinstance(adapter.get("health"), dict) else {}
+    policy = adapter.get("policy") if isinstance(adapter.get("policy"), dict) else {}
+    state = str(health.get("state") or "").strip()
+    warning = str(policy.get("warning") or "").strip()
+
+    if policy.get("quarantined") is True:
+        return _network_quarantine_retry_label(policy.get("next_action_after"))
+
+    if warning == "resetting" or state == "dead_phy":
+        return "Recovering (reset pending)"
+
+    empty_scan_streak = policy.get("empty_scan_streak")
+    empty_scan_count = empty_scan_streak.get("count") if isinstance(empty_scan_streak, dict) else 0
+    if isinstance(empty_scan_count, (int, float)) and not isinstance(empty_scan_count, bool) and empty_scan_count > 0:
+        return "Recovering — radio check in progress"
+
+    last_activation_failure = adapter.get("last_activation_failure")
+    if isinstance(last_activation_failure, dict):
+        failure_label = _network_activation_failure_label(last_activation_failure)
+        if failure_label is not None:
+            return failure_label
+
+    if state == "no_ip_held_back" or policy.get("held_back") is True:
+        return "Held back after repeated failures"
+
+    noip_failures = policy.get("noip_failures")
+    has_noip_failures = isinstance(noip_failures, (int, float)) and not isinstance(noip_failures, bool) and noip_failures > 0
+    if state == "degraded_no_ip" or has_noip_failures:
+        return f"Reconnect backoff (attempt {int(noip_failures or 0)})"
+
+    if state == "connecting":
+        return "Connecting…"
+
+    return "Disconnected"
+
+
 def _network_interface_lines(status: dict) -> list[str]:
     device = status.get("device") if isinstance(status.get("device"), dict) else {}
     lines: list[str] = []
@@ -2322,7 +2392,7 @@ def _network_interface_lines(status: dict) -> list[str]:
     for _sort_kind, _ifname, _idx, label, adapter in sorted(wifi_rows):
         ip_text = _network_adapter_ipv4_text(adapter, device)
         if not ip_text:
-            lines.append(f"{label}: Disconnected")
+            lines.append(f"{label}: {_network_no_ip_status_label(adapter)}")
             continue
 
         ssid_text = ""
@@ -2368,33 +2438,38 @@ def _network_warning_fields(adapter: dict) -> dict:
     ifname = str(adapter.get("ifname") or "").strip() or "Unknown"
 
     role = str(adapter.get("role") or "").strip()
+    label = _network_adapter_label(adapter) or "WiFi"
 
     if rank == 0:
         if role == "client":
-            warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+            warning = f"Warning: the {label} adapter has needed repeated resets and may be faulty."
         else:
-            warning = "USB WiFi adapter held back after repeated failures. Replace the adapter if this keeps happening."
+            warning = f"{label} adapter held back after repeated failures. Replace the adapter if this keeps happening."
         severity = "danger"
     elif rank == 1:
         # C-WP4: no-IP-suppressed / demoted spare — the "held back" copy now
         # covers no-IP suppression (previously wired only to quarantine), and
-        # notes the device fell back to the on-board radio.
-        warning = ("USB WiFi adapter held back after repeated failures — running on on-board WiFi. "
-                   "Replace the adapter if this keeps happening.")
+        # notes the device fell back to the on-board radio. That fallback
+        # framing only fits a non-onboard adapter being held back.
+        if label == "On-board WiFi":
+            warning = f"{label} adapter held back after repeated failures. Replace the adapter if this keeps happening."
+        else:
+            warning = (f"{label} adapter held back after repeated failures — running on on-board WiFi. "
+                       "Replace the adapter if this keeps happening.")
         severity = "danger"
     elif rank == 2:
-        warning = "Warning: the USB WiFi adapter has needed repeated resets and may be faulty."
+        warning = f"Warning: the {label} adapter has needed repeated resets and may be faulty."
         severity = "danger"
     elif rank == 3:
-        warning = ("USB WiFi adapter detected but could not get a network address — "
+        warning = (f"{label} adapter detected but could not get a network address — "
                    "check the network's DHCP, the adapter's band, or the dongle.")
         severity = "warning"
     elif rank == 4:
-        warning = "USB WiFi adapter is being reset. Network connection may be unstable for a minute."
+        warning = f"{label} adapter is being reset. Network connection may be unstable for a minute."
         severity = "warning"
     elif rank == 5:
         reset_text = "1 reset" if resets == 1 else f"{resets} resets"
-        warning = f"Warning: the USB WiFi adapter has needed {reset_text} in the last 24 hours."
+        warning = f"Warning: the {label} adapter has needed {reset_text} in the last 24 hours."
         severity = "warning"
     else:
         return {}
@@ -2448,21 +2523,21 @@ def build_network_card_presentation(status: dict) -> dict:
     }
 
     adapters = status.get("adapters") if isinstance(status.get("adapters"), list) else []
-    usb_adapters = [
+    wifi_adapters = [
         a for a in adapters
-        if isinstance(a, dict) and str(a.get("kind") or "").strip() == "usb_wifi"
+        if isinstance(a, dict) and str(a.get("kind") or "").strip() in ("usb_wifi", "builtin_wifi")
     ]
-    active_usb = [
-        a for a in usb_adapters
+    active_wifi = [
+        a for a in wifi_adapters
         if str(a.get("ifname") or "").strip() == primary_ifname or str(a.get("role") or "").strip() == "client"
     ]
-    for adapter in active_usb:
+    for adapter in active_wifi:
         if _network_warning_rank(adapter) is not None:
             result.update(_network_warning_fields(adapter))
             return result
 
     ranked = [
-        (rank, adapter) for adapter in usb_adapters
+        (rank, adapter) for adapter in wifi_adapters
         for rank in [_network_warning_rank(adapter)]
         if rank is not None
     ]

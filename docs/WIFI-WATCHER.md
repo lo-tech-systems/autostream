@@ -66,6 +66,18 @@ NM-disconnected-but-still-present USB) must persist **2 passes** before the path
 is declared down; *hard* failures (nothing configured, NO-CARRIER, no client and
 no present USB) condemn immediately. Slow to condemn, quick to forgive.
 
+Each `/network_status` adapter record also publishes `last_activation_failure`
+(`{reason, rc, age_seconds}`, or `null` when the adapter's last activation
+attempt succeeded or none has run), `policy.empty_scan_streak`
+(`{count, threshold}`, the consecutive-empty-scan progress toward the shared
+unusable-USB remediation), and `policy.quarantine_reason` (the failure mode
+that triggered the current quarantine, empty when not quarantined). The web
+UI's network card derives each adapter's status line from these `health.*`
+and `policy.*` fields rather than from IP presence alone, so an adapter with
+no IP address shows why (association failure, recovery in progress,
+quarantined, held back, backing off, connecting) instead of a bare
+"Disconnected".
+
 ## Startup sequence
 
 On startup the watcher clears stale hotspot state, runs first-boot import if its
