@@ -145,7 +145,10 @@ class TestNoIpLedgerAndDiagnosis:
         assert usb.stable_id == "wlan7"
         watcher.wifi_recovery.record_noip_failure(watcher, usb.stable_id, now=100.0)
         addrs = {}
-        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+        # Pin the clock past the single-failure back-off window so the adapter
+        # is degraded_no_ip rather than no_ip_held_back regardless of host uptime.
+        with patch("time.monotonic", return_value=1000.0), \
+             patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
@@ -200,7 +203,10 @@ class TestNoIpLedgerAndDiagnosis:
         usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
         watcher.wifi_recovery.record_noip_failure(watcher, usb.permanent_mac, now=100.0)
         addrs = {}
-        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
+        # Pin the clock past the single-failure back-off window so the adapter
+        # is degraded_no_ip rather than no_ip_held_back regardless of host uptime.
+        with patch("time.monotonic", return_value=1000.0), \
+             patch.object(watcher.wifi_net, "list_interface_addresses", return_value=addrs), \
              patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
              patch.object(watcher.wifi_net, "read_operstate", return_value="up"), \
              patch.object(watcher.wifi_net, "default_gateway_ipv4", return_value=""), \
