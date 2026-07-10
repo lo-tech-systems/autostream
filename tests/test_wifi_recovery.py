@@ -1027,6 +1027,63 @@ class TestAdapterFaultStatePersistence:
         # never touches it, so it stays whatever the caller set it to.
         assert watcher.RECOVERY_STATE.failover_reset_done == set()
 
+    def test_quarantine_reason_round_trips(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher, "usb-Q")
+        with patch("time.monotonic", return_value=1000.0), \
+             patch("time.time", return_value=5000.0):
+            wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        watcher.RECOVERY_STATE.adapter_reset_ledgers = {}
+        with patch("time.monotonic", return_value=1000.0), \
+             patch("time.time", return_value=5000.0 + 10):
+            wr.load_adapter_fault_state(watcher)
+        led = watcher.RECOVERY_STATE.adapter_reset_ledgers.get("usb-Q")
+        assert led is not None
+        assert led["quarantined_until"] is not None
+        assert led["quarantined_reason"] == "empty_scan"
+
+    def test_quarantine_reason_dropped_once_quarantine_expires_during_downtime(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher, "usb-Q2")
+        with patch("time.monotonic", return_value=1000.0), \
+             patch("time.time", return_value=5000.0):
+            wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        watcher.RECOVERY_STATE.adapter_reset_ledgers = {}
+        # Reload long after the quarantine window has elapsed; no reset was
+        # ever recorded, so nothing is left to round-trip (the reason must
+        # not outlive the quarantine it describes).
+        with patch("time.monotonic", return_value=100.0), \
+             patch("time.time", return_value=5000.0 + watcher.USB_RESET_WINDOW + 3600):
+            wr.load_adapter_fault_state(watcher)
+        assert watcher.RECOVERY_STATE.adapter_reset_ledgers.get("usb-Q2") is None
+
+    def test_old_fault_state_file_without_reason_key_loads(self, watcher):
+        """A file persisted before this field existed must still load: the
+        absent key is treated as an empty reason."""
+        wr = watcher.wifi_recovery
+        data = {
+            "schema_version": wr.ADAPTER_FAULT_STATE_SCHEMA,
+            "saved_at": 5000.0,
+            "noip_ledgers": {},
+            "reset_ledgers": {
+                "usb-Old": {
+                    "recent_resets": [],
+                    "total_resets": 1,
+                    "quarantined_until": 5000.0 + 3600,
+                },
+            },
+            "disabled_adapters": [],
+        }
+        with open(watcher.ADAPTER_FAULT_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        with patch("time.monotonic", return_value=1000.0), \
+             patch("time.time", return_value=5000.0):
+            wr.load_adapter_fault_state(watcher)
+        led = watcher.RECOVERY_STATE.adapter_reset_ledgers.get("usb-Old")
+        assert led is not None
+        assert led["quarantined_until"] is not None
+        assert led["quarantined_reason"] == ""
+
     def test_wedged_reactivate_done_does_not_persist(self, watcher):
         """wedged_reactivate_done mirrors failover_reset_done exactly: a
         per-episode marker that must not round-trip through persist/load."""
@@ -1276,6 +1333,30 @@ class TestQuarantineAdapter:
         assert len(matches) == 1
         assert _ledger(watcher, target.stable_id)["quarantined_until"] == expiry + 1.0 + watcher.USB_RESET_WINDOW
 
+    def test_stores_reason_alongside_deadline(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        assert _ledger(watcher, target.stable_id)["quarantined_reason"] == "empty_scan"
+
+    def test_reason_not_replaced_while_active(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        wr.quarantine_adapter(watcher, target, now=1100.0,
+                              reason="dead_phy_reset_budget_exhausted")
+        # Idempotent: neither the deadline nor the original reason is replaced.
+        assert _ledger(watcher, target.stable_id)["quarantined_reason"] == "empty_scan"
+
+    def test_reason_cleared_when_quarantine_expires(self, watcher):
+        wr = watcher.wifi_recovery
+        target = self._target(watcher)
+        wr.quarantine_adapter(watcher, target, now=1000.0, reason="empty_scan")
+        expiry = _ledger(watcher, target.stable_id)["quarantined_until"]
+        snapshot = wr.adapter_reset_ledger_snapshot(watcher, target, now=expiry + 1.0)
+        assert snapshot["quarantined_until"] is None
+        assert snapshot["quarantined_reason"] == ""
+
 
 class TestRemediateUnusableUsb:
     """remediate_unusable_usb: budgeted reset while budget remains, else
@@ -1355,6 +1436,28 @@ class TestRecoveryFacts:
              patch.object(watcher.wifi_net, "read_link_down", return_value=True):
             rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, usb, 1000.0)
         assert rf.wedged is True
+
+    def test_adapter_recovery_facts_quarantine_reason_threaded(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:90", is_usb=True)
+        target = watcher.wifi_recovery.TargetAdapter(
+            ifname="wlan1", stable_id=usb.stable_id, kind="usb_wifi", is_usb=True,
+            is_builtin=False, present_in_nm=True, present_in_sysfs=True,
+            resettable_usb=True)
+        watcher.wifi_recovery.quarantine_adapter(
+            watcher, target, now=1000.0, reason="dead_phy_reset_budget_exhausted")
+        with patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, usb, 1000.0)
+        assert rf.quarantined is True
+        assert rf.quarantined_reason == "dead_phy_reset_budget_exhausted"
+
+    def test_adapter_recovery_facts_quarantine_reason_empty_when_not_quarantined(self, watcher):
+        usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:91", is_usb=True)
+        with patch.object(watcher.RECOVERY_CTX, "is_wifi_client_healthy", return_value=False), \
+             patch.object(watcher.wifi_net, "read_link_down", return_value=True):
+            rf = watcher.wifi_recovery.adapter_recovery_facts(watcher.RECOVERY_CTX, usb, 1000.0)
+        assert rf.quarantined is False
+        assert rf.quarantined_reason == ""
 
     def test_adapter_recovery_facts_stable_id_alone_is_not_wedged(self, watcher):
         # A populated dead_adapter_stable_id with dead_adapter_ifname still

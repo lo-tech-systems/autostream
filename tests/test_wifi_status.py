@@ -393,6 +393,42 @@ class TestBuildNetworkStatusSnapshot:
             "reason": "network_not_visible", "rc": 4, "age_seconds": 60.0,
         }
 
+    def test_empty_scan_streak_zero_when_absent(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0, healthy=False)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["empty_scan_streak"] == {
+            "count": 0, "threshold": watcher.EMPTY_SCAN_RESET_STREAK,
+        }
+
+    def test_empty_scan_streak_reflects_adoption_state(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.ADOPTION_STATE.empty_scan_streaks[self.MAC] = 1
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0, healthy=False)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["empty_scan_streak"] == {
+            "count": 1, "threshold": watcher.EMPTY_SCAN_RESET_STREAK,
+        }
+
+    def test_quarantine_reason_empty_when_not_quarantined(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0, healthy=False)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["quarantined"] is False
+        assert rec["policy"]["quarantine_reason"] == ""
+
+    def test_quarantine_reason_published_when_quarantined(self, watcher):
+        usb = _adapter(watcher, "wlan0", self.MAC, is_usb=True)
+        watcher.RECOVERY_STATE.adapter_reset_ledgers[self.MAC] = {
+            "recent_resets": [], "total_resets": 3,
+            "quarantined_until": 2000.0,
+            "quarantined_reason": "dead_phy_reset_budget_exhausted",
+        }
+        snap = self._snapshot_for_usb(watcher, usb, now=1000.0, healthy=False)
+        rec = snap["adapters"][0]
+        assert rec["policy"]["quarantined"] is True
+        assert rec["policy"]["quarantine_reason"] == "dead_phy_reset_budget_exhausted"
+
     def test_publish_stores_latest_snapshot_in_memory(self, watcher):
         # publish_network_status takes the narrowed STATUS_CTX directly — patch
         # the fact helper on the context.

@@ -536,7 +536,8 @@ def _clear_active_dead_tracking_locked(ctx) -> None:
 
 
 def _new_adapter_ledger() -> dict:
-    return {"recent_resets": [], "total_resets": 0, "quarantined_until": None}
+    return {"recent_resets": [], "total_resets": 0, "quarantined_until": None,
+            "quarantined_reason": ""}
 
 
 def _adapter_ledger_locked(ctx, target: Optional[TargetAdapter], create: bool = True) -> Optional[dict]:
@@ -570,8 +571,10 @@ def _prune_adapter_ledgers_locked(ctx, now: float) -> None:
             and now >= quarantined_until
         ):
             ledger["quarantined_until"] = None
+            ledger["quarantined_reason"] = ""
         elif not isinstance(quarantined_until, (int, float)) or isinstance(quarantined_until, bool):
             ledger["quarantined_until"] = None
+            ledger["quarantined_reason"] = ""
         total = int(ledger.get("total_resets", 0) or 0)
         if not ledger["recent_resets"] and ledger.get("quarantined_until") is None and total == 0:
             expired.append(stable_id)
@@ -590,6 +593,7 @@ def adapter_reset_ledger_snapshot(ctx, target: Optional[TargetAdapter], now: flo
             "recent_resets": list(ledger.get("recent_resets", [])),
             "total_resets": int(ledger.get("total_resets", 0) or 0),
             "quarantined_until": ledger.get("quarantined_until"),
+            "quarantined_reason": ledger.get("quarantined_reason", ""),
         }
 
 
@@ -751,11 +755,14 @@ def quarantine_adapter(ctx, target: Optional[TargetAdapter], now: float, reason:
     """Apply the one quarantine flag for *target* in the reset ledger.
 
     The single writer of ``quarantined_until``: sets the deadline to
-    ``now + USB_RESET_WINDOW``, persists the fault-state file immediately (so
-    the quarantine is never lost to a crash before some later ledger event
-    happens to flush it), and logs one WARNING naming the adapter and the
-    failure-mode *reason*.  Idempotent while a quarantine is already active —
-    a repeat call neither re-logs nor extends the deadline.
+    ``now + USB_RESET_WINDOW``, stores the failure-mode *reason* alongside it
+    (cleared automatically when the quarantine expires — see
+    ``_prune_adapter_ledgers_locked``), persists the fault-state file
+    immediately (so the quarantine is never lost to a crash before some later
+    ledger event happens to flush it), and logs one WARNING naming the
+    adapter and the reason.  Idempotent while a quarantine is already active —
+    a repeat call neither re-logs, extends the deadline, nor replaces the
+    stored reason.
     """
     with ctx.state_lock:
         _prune_adapter_ledgers_locked(ctx, now)
@@ -770,6 +777,7 @@ def quarantine_adapter(ctx, target: Optional[TargetAdapter], now: float, reason:
         )
         if not already_active:
             ledger["quarantined_until"] = now + ctx.USB_RESET_WINDOW
+            ledger["quarantined_reason"] = reason
     if already_active:
         return
     persist_adapter_fault_state(ctx)
@@ -869,6 +877,7 @@ class AdapterRecoveryFacts:
     carrier: bool
     quarantined_until: Optional[float]
     quarantined: bool
+    quarantined_reason: str
     recent_reset_count: int
     total_reset_count: int
     budget_exhausted: bool
@@ -920,6 +929,7 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
     )
     ledger = adapter_reset_ledger_snapshot(ctx, target, now_monotonic)
     quarantined_until = adapter_quarantined_until(ctx, target, now_monotonic)
+    quarantined_reason = ledger.get("quarantined_reason", "") if quarantined_until is not None else ""
     # Same source the status snapshot uses for its dead_phy state: only a
     # *declared* dead_adapter_ifname counts.  A populated dead_adapter_stable_id
     # with dead_adapter_ifname still empty means the debounce is merely in
@@ -953,6 +963,7 @@ def adapter_recovery_facts(ctx, a, now_monotonic: float, health_fn=None) -> Adap
         carrier=carrier,
         quarantined_until=quarantined_until,
         quarantined=quarantined_until is not None,
+        quarantined_reason=quarantined_reason,
         recent_reset_count=recent,
         total_reset_count=total,
         budget_exhausted=budget_exhausted,
@@ -1100,6 +1111,7 @@ def persist_adapter_fault_state(ctx) -> None:
                 ],
                 "total_resets": int(led.get("total_resets", 0) or 0),
                 "quarantined_until": _mono_to_wall(led.get("quarantined_until"), now_mono, now_wall),
+                "quarantined_reason": led.get("quarantined_reason", "") or "",
             }
     with ctx.state_lock:
         disabled = sorted(str(s) for s in ctx.RECOVERY_STATE.disabled_adapters)
@@ -1165,11 +1177,15 @@ def load_adapter_fault_state(ctx) -> None:
             q = _wall_to_mono(led.get("quarantined_until"), now_mono, now_wall)
             if q is not None and q != float("inf") and now_mono >= q:
                 q = None
+            # Absent in older files (schema-additive key); the reason never
+            # outlives its quarantine, so it is dropped whenever q is.
+            reason = str(led.get("quarantined_reason", "") or "") if q is not None else ""
             if recent or total or q is not None:
                 reset_out[sid] = {
                     "recent_resets": recent,
                     "total_resets": total,
                     "quarantined_until": q,
+                    "quarantined_reason": reason,
                 }
 
     disabled_in = data.get("disabled_adapters")

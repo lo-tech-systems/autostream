@@ -2060,6 +2060,7 @@ def build_contexts() -> None:
         NO_ACTIVE_PATH_REBOOT_AFTER=NO_ACTIVE_PATH_REBOOT_AFTER,
         USB_MAX_RESETS_PER_WINDOW=USB_MAX_RESETS_PER_WINDOW,
         RESET_ATTEMPT_INTERVAL=RESET_ATTEMPT_INTERVAL,
+        EMPTY_SCAN_RESET_STREAK=EMPTY_SCAN_RESET_STREAK,
         is_wired_connected=is_wired_connected,
         any_wired_path_healthy=any_wired_path_healthy,
         is_gateway_reachable=is_gateway_reachable,

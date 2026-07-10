@@ -55,6 +55,7 @@ class StatusContext:
     NO_ACTIVE_PATH_REBOOT_AFTER: float
     USB_MAX_RESETS_PER_WINDOW: int
     RESET_ATTEMPT_INTERVAL: float
+    EMPTY_SCAN_RESET_STREAK: int
     # Fact helpers
     is_wired_connected: Callable
     any_wired_path_healthy: Callable
@@ -260,6 +261,7 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
         active_mac = ctx.STATE.active_client_mac
         using_fallback = ctx.ADOPTION_STATE.using_builtin_fallback
         roaming_managed = ctx.ADOPTION_STATE.roaming_managed
+        empty_scan_streaks = dict(ctx.ADOPTION_STATE.empty_scan_streaks)
         in_setup = ctx.STATE.setup_mode
         dead_ifname = ctx.RECOVERY_STATE.dead_adapter_ifname
         dead_since = ctx.RECOVERY_STATE.dead_adapter_since
@@ -407,6 +409,18 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
                 # ledger ("resets_24h") never ticks.  The web card renders this
                 # published field directly; schema-additive.
                 "noip_failures": noip_count,
+                # Empty adoption-scan streak: how many consecutive scans of an
+                # idle USB candidate returned zero rows, and the threshold at
+                # which the shared unusable-USB remediation fires.  Count is 0
+                # when the adapter has no streak recorded.
+                "empty_scan_streak": {
+                    "count": empty_scan_streaks.get(a.stable_id, 0),
+                    "threshold": ctx.EMPTY_SCAN_RESET_STREAK,
+                },
+                # Failure-mode reason passed to quarantine_adapter; "" when not
+                # currently quarantined (cleared alongside quarantined_until on
+                # expiry, so it never outlives the quarantine it describes).
+                "quarantine_reason": rf.quarantined_reason if quarantined else "",
             },
             "last_activation_failure": last_activation_failure,
         })
