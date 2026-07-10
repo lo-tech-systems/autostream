@@ -68,8 +68,13 @@ def old_updater_source(tmp_path_factory) -> Path:
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
-        check=True,
     )
+    if result.returncode != 0:
+        pytest.fail(
+            f"could not extract the 0.3.0 updater: commit {OLD_UPDATER_COMMIT} "
+            "is not present in this clone (shallow checkout? use fetch-depth: 0 "
+            f"in CI, or `git fetch --unshallow`): {result.stderr.strip()}"
+        )
     src_path.write_text(result.stdout, encoding="utf-8")
     return src_path
 
