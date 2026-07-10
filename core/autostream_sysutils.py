@@ -192,7 +192,18 @@ def prime_gateway(gw: str, ifname: str, min_interval: float = 5.0) -> None:
         last = _last_prime.get(key, 0.0)
         if now - last < min_interval:
             return
-        run_cmd(["ping", "-I", ifname, "-c", "1", "-W", "1", gw], timeout=2)
+        # A no-reply exit (ping rc=1) is an expected outcome for a best-effort
+        # nudge, not a command failure, so it must not log a WARNING; the
+        # health verdict comes from the neighbour-table state afterwards.
+        result = run_cmd(
+            ["ping", "-I", ifname, "-c", "1", "-W", "1", gw],
+            timeout=2, warn_on_failure=False,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "Gateway prime ping got no reply on %s (gw=%s, rc=%s)",
+                ifname, gw, result.returncode,
+            )
         _last_prime[key] = now
     except Exception:
         # Never fail hard due to priming; it's a best-effort nudge.
