@@ -120,7 +120,11 @@ class AdoptionState:
     wifi_recovery to attribute an absent active client).  ``empty_scan_streaks``
     counts consecutive adoption scans that succeeded with zero rows per
     stable_id (a wedged idle-spare radio); entries are dropped once the
-    candidate is no longer the current adoption candidate.
+    candidate is no longer the current adoption candidate.  ``roaming_managed``
+    is the global "manage USB adapter roaming" preference that gates BSSID
+    pin/survey/roam and per-BSSID accounting; loaded from the persisted
+    network state at startup and updated by the ``set_roaming_management``
+    control action.
     """
     using_builtin_fallback: bool = False
     pending_usb_adoption_mac: Optional[str] = None
@@ -134,6 +138,7 @@ class AdoptionState:
     last_adoption_scan: Optional[float] = None
     known_usb_macs: set = field(default_factory=set)
     empty_scan_streaks: dict = field(default_factory=dict)
+    roaming_managed: bool = False
 
 
 @dataclass

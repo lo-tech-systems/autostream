@@ -96,14 +96,19 @@ def _activation_network_absent(result) -> bool:
 def _pin_usb_bssid(ctx: ActivationContext, ifname: str, uuid: str, exclude: str = "") -> str:
     """Pin the best BSSID for a USB target before activation; "" leaves it unpinned.
 
-    Non-USB targets, and USB targets whose scan fails or yields no selectable
-    candidate, are explicitly unpinned (the scan must never become a new way
-    for activation to fail).  Records the pin (or its absence) on
+    Non-USB targets, USB targets whose scan fails or yields no selectable
+    candidate, and every target when roaming management is off, are
+    explicitly unpinned (the scan must never become a new way for activation
+    to fail).  Unmanaged activation always takes this unpinned branch, so any
+    stale pin left in the profile by a previous managed run is cleared as a
+    side effect of activating.  Records the pin (or its absence) on
     ``ADOPTION_STATE.last_bssid_pin`` for the reset/retry gate.  ``exclude``
     skips a BSSID (the one a just-failed pinned attempt used) so a retry
     selects a different candidate.
     """
-    if wifi_net.usb_sysfs_paths(ifname) is None:
+    with ctx.state_lock:
+        managed = ctx.ADOPTION_STATE.roaming_managed
+    if not managed or wifi_net.usb_sysfs_paths(ifname) is None:
         ctx.nm.set_bssid(uuid, "")
         with ctx.state_lock:
             ctx.ADOPTION_STATE.last_bssid_pin = {}

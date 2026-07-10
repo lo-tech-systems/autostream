@@ -1133,6 +1133,106 @@ class TestCommitNetworkStateClearsBssidState:
         assert watcher.ADOPTION_STATE.last_bssid_pin == {}
         assert watcher.ADOPTION_STATE.bssid_roam_candidate == {}
 
+    def test_commit_preserves_current_roaming_managed_preference(self, watcher):
+        # A successful reconfiguration must not silently reset the persisted
+        # roaming-management preference back to its default.
+        watcher.ADOPTION_STATE.roaming_managed = True
+        saved = {}
+        with patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-new"), \
+             patch.object(watcher.wifi_net, "save_network_state",
+                          side_effect=lambda state, **kw: saved.__setitem__("state", state)):
+            watcher._commit_network_state("NewHome", "uuid-new")
+        assert saved["state"].roaming_managed is True
+
+
+class TestSetRoamingManagement:
+    """R-1 design item 4 — the set_roaming_management control action."""
+
+    def test_apply_on_sets_state_persists_no_pin_clear(self, watcher):
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="uuid-1",
+                                              roaming_managed=False)
+        saved = {}
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher.wifi_net, "save_network_state",
+                          side_effect=lambda s, **kw: saved.__setitem__("state", s)), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            watcher.process_control_action("set_roaming_management", {"managed": True})
+        assert watcher.ADOPTION_STATE.roaming_managed is True
+        assert saved["state"].roaming_managed is True
+        assert saved["state"].connection_name == "Home"
+        set_bssid.assert_not_called()
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
+
+    def test_apply_off_clears_pin_and_resets_roam_state(self, watcher):
+        watcher.ADOPTION_STATE.bssid_tables["wlan1"] = {"AA:AA:AA:AA:AA:AA": {"ssid": "Home"}}
+        watcher.ADOPTION_STATE.last_bssid_pin = {
+            "ifname": "wlan1", "bssid": "AA:AA:AA:AA:AA:AA", "signal": 70, "at": 0.0,
+        }
+        watcher.ADOPTION_STATE.bssid_roam_candidate = {
+            "ifname": "wlan1", "bssid": "AA:AA:AA:AA:AA:AA", "count": 2, "last_seen": 0.0,
+        }
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="uuid-1",
+                                              roaming_managed=True)
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher.wifi_net, "save_network_state") as save, \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            watcher.process_control_action("set_roaming_management", {"managed": False})
+        assert watcher.ADOPTION_STATE.roaming_managed is False
+        assert watcher.ADOPTION_STATE.bssid_tables == {}
+        assert watcher.ADOPTION_STATE.last_bssid_pin == {}
+        assert watcher.ADOPTION_STATE.bssid_roam_candidate == {}
+        set_bssid.assert_called_once_with("uuid-1", "")
+        save.assert_called_once()
+        assert save.call_args[0][0].roaming_managed is False
+
+    def test_apply_off_without_committed_uuid_skips_pin_clear(self, watcher):
+        state = watcher.wifi_net.NetworkState(connection_name="", connection_uuid="",
+                                              roaming_managed=True)
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher.wifi_net, "save_network_state"), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            watcher.process_control_action("set_roaming_management", {"managed": False})
+        set_bssid.assert_not_called()
+
+    def test_persist_failure_still_applies_in_memory(self, watcher):
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="uuid-1")
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher.wifi_net, "save_network_state", side_effect=OSError("disk full")), \
+             patch.object(watcher.nm, "set_bssid"):
+            watcher.process_control_action("set_roaming_management", {"managed": True})
+        assert watcher.ADOPTION_STATE.roaming_managed is True
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
+
+
+class TestRoamingManagementStartupReconciliation:
+    """R-1 design item 5 — startup load + one-time pin reconciliation."""
+
+    def test_unmanaged_with_committed_uuid_clears_pin_once(self, watcher):
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="uuid-1",
+                                              roaming_managed=False)
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            watcher.load_roaming_management_at_startup()
+        assert watcher.ADOPTION_STATE.roaming_managed is False
+        set_bssid.assert_called_once_with("uuid-1", "")
+
+    def test_managed_does_not_touch_pin(self, watcher):
+        state = watcher.wifi_net.NetworkState(connection_name="Home", connection_uuid="uuid-1",
+                                              roaming_managed=True)
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            watcher.load_roaming_management_at_startup()
+        assert watcher.ADOPTION_STATE.roaming_managed is True
+        set_bssid.assert_not_called()
+
+    def test_unmanaged_without_committed_uuid_skips_pin_clear(self, watcher):
+        state = watcher.wifi_net.NetworkState(connection_name="", connection_uuid="",
+                                              roaming_managed=False)
+        with patch.object(watcher, "get_configured_network_state", return_value=state), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid:
+            watcher.load_roaming_management_at_startup()
+        set_bssid.assert_not_called()
+
 
 class TestModuleSplit:
     def test_recovery_and_status_modules_import(self, watcher):

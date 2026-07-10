@@ -45,6 +45,7 @@ class LoopContext:
     APPLY_STATE: object
     CONTROL_STATE: object
     RECOVERY_STATE: object
+    ADOPTION_STATE: object
     state_lock: object
     logger: logging.Logger
     Verdict: object
@@ -524,8 +525,9 @@ def step_bssid_survey(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
     """Periodic USB BSSID survey and gated roam (USB client adapters only).
 
     Skips entirely outside the narrow window where a survey is meaningful:
-    setup mode and an in-flight activation both defer to their own ladders, and
-    an onboard or unhealthy active client is out of scope (the recovery ladder
+    roaming management off (the pin/survey/roam machinery is opt-in), setup
+    mode and an in-flight activation both defer to their own ladders, and an
+    onboard or unhealthy active client is out of scope (the recovery ladder
     owns an unhealthy client, never this survey).
     """
     facts = hctx.facts
@@ -533,6 +535,9 @@ def step_bssid_survey(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
     with ctx.state_lock:
         in_setup = ctx.STATE.setup_mode
         transitioning = ctx.STATE.transitioning
+        managed = ctx.ADOPTION_STATE.roaming_managed
+    if not managed:
+        return ctx.Verdict.CONTINUE
     if in_setup or transitioning:
         return ctx.Verdict.CONTINUE
     if active is None or not active.is_usb or not hctx.client_ok:

@@ -363,6 +363,20 @@ class TestBuildNetworkStatusSnapshot:
         assert snap["logging"]["temporary_level_expires_at"] is None
         assert snap["device"]["state"] == "offline"
 
+    def test_roaming_block_reflects_unmanaged(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = False
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=False, wired_ok=False)
+        assert snap["roaming"] == {"managed": False}
+
+    def test_roaming_block_reflects_managed(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
+        with patch.object(watcher.wifi_net, "list_interface_addresses", return_value={}), \
+             patch.object(watcher.STATUS_CTX, "resolve_hotspot_adapter", return_value=None):
+            snap = watcher.wifi_status.build_network_status_snapshot(watcher.STATUS_CTX, [], wired_connected=False, wired_ok=False)
+        assert snap["roaming"] == {"managed": True}
+
     def test_publish_stores_latest_snapshot_in_memory(self, watcher):
         # publish_network_status takes the narrowed STATUS_CTX directly — patch
         # the fact helper on the context.

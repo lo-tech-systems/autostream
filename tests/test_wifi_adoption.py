@@ -200,7 +200,18 @@ class TestStepBssidSurvey:
             fctx, health_ifname="wlan1", wifi_connected=True, client_ok=client_ok,
             conn_ok=client_ok, active_path_ok=client_ok)
 
+    def test_unmanaged_skips_before_scan(self, watcher):
+        # roaming_managed defaults False: the survey/roam machinery is opt-in,
+        # so the gate returns CONTINUE before any of the other checks run.
+        usb = self._usb(watcher)
+        hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
+            v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
+        assert v is watcher.Verdict.CONTINUE
+        survey.assert_not_called()
+
     def test_setup_mode_skips(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         watcher.STATE.setup_mode = True
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
@@ -210,6 +221,7 @@ class TestStepBssidSurvey:
         survey.assert_not_called()
 
     def test_transitioning_skips(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         watcher.STATE.transitioning = True
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
@@ -219,6 +231,7 @@ class TestStepBssidSurvey:
         survey.assert_not_called()
 
     def test_onboard_active_skips(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         hctx = self._hctx(watcher, _facts_for(watcher, [builtin], builtin))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
@@ -227,6 +240,7 @@ class TestStepBssidSurvey:
         survey.assert_not_called()
 
     def test_no_active_client_skips(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         hctx = self._hctx(watcher, _facts_for(watcher, [], None))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
             v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
@@ -234,6 +248,7 @@ class TestStepBssidSurvey:
         survey.assert_not_called()
 
     def test_unhealthy_client_skips(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb), client_ok=False)
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam") as survey:
@@ -242,6 +257,7 @@ class TestStepBssidSurvey:
         survey.assert_not_called()
 
     def test_healthy_usb_delegates_and_owns_pass_on_roam(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
         with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam", return_value=True) as survey:
@@ -250,11 +266,13 @@ class TestStepBssidSurvey:
         survey.assert_called_once_with(hctx)
 
     def test_healthy_usb_no_roam_continues(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         usb = self._usb(watcher)
         hctx = self._hctx(watcher, _facts_for(watcher, [usb], usb))
-        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam", return_value=False):
+        with patch.object(watcher.LOOP_CTX, "bssid_survey_and_roam", return_value=False) as survey:
             v = watcher.wifi_loop.step_bssid_survey(watcher.LOOP_CTX, hctx)
         assert v is watcher.Verdict.CONTINUE
+        survey.assert_called_once_with(hctx)
 
 
 class TestBssidSurveyAndRoam:
@@ -853,7 +871,13 @@ class TestEmptyScanStreakRemediation:
 
     # ---- Streak reaches threshold: reset, then quarantine on exhaustion (tests 6-7) ----
 
-    def test_streak_threshold_resets_and_clears_adoption_rate_gate(self, watcher):
+    @pytest.mark.parametrize("roaming_managed", [False, True])
+    def test_streak_threshold_resets_and_clears_adoption_rate_gate(self, watcher, roaming_managed):
+        # The empty-scan streak -> remediate_unusable_usb path keys off scan
+        # results and the adoption ledger, not BSSID pins, so it must behave
+        # identically whether roaming management is on or off (fault-ladder
+        # invariance).
+        watcher.ADOPTION_STATE.roaming_managed = roaming_managed
         builtin, usb = self._builtin_and_usb(watcher)
         adapters = [builtin, usb]
         self._prime_to_gate(watcher, usb)
@@ -1132,7 +1156,21 @@ class TestPinUsbBssid:
         scan.assert_not_called()
         assert watcher.ADOPTION_STATE.last_bssid_pin == {}
 
+    def test_unmanaged_usb_target_clears_bssid_without_scanning(self, watcher):
+        # roaming_managed defaults False: a USB target takes the same unpinned
+        # branch as a non-USB target — no scan, pin cleared — so a stale pin
+        # left by a previous managed run self-heals on the next activation.
+        with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
+             patch.object(watcher.nm, "set_bssid") as set_bssid, \
+             patch.object(watcher.nm, "wifi_bssid_scan") as scan:
+            result = watcher.wifi_activation._pin_usb_bssid(watcher.ACTIVATION_CTX, "wlan1", "uuid-1")
+        assert result == ""
+        set_bssid.assert_called_once_with("uuid-1", "")
+        scan.assert_not_called()
+        assert watcher.ADOPTION_STATE.last_bssid_pin == {}
+
     def test_usb_target_pins_from_scan(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=self._rows()), \
@@ -1146,6 +1184,7 @@ class TestPinUsbBssid:
         assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["AA:BB:CC:DD:EE:FF"]["ssid"] == "Home"
 
     def test_scan_failure_falls_back_to_unpinned(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=None), \
@@ -1157,6 +1196,7 @@ class TestPinUsbBssid:
 
     def test_no_candidate_falls_back_to_unpinned(self, watcher):
         # Scan succeeds but yields no row for the committed SSID.
+        watcher.ADOPTION_STATE.roaming_managed = True
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=[]), \
@@ -1166,6 +1206,7 @@ class TestPinUsbBssid:
         set_bssid.assert_called_once_with("uuid-1", "")
 
     def test_success_accounting_reaches_table(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan1", {})["AA:BB:CC:DD:EE:FF"] = {
             "ssid": "Home", "signal": 70, "last_seen": 100.0,
             "fail_count": 2, "quarantined_until": None,
@@ -1185,6 +1226,7 @@ class TestPinUsbBssid:
         assert watcher.ADOPTION_STATE.bssid_tables["wlan1"]["AA:BB:CC:DD:EE:FF"]["fail_count"] == 0
 
     def test_failure_accounting_reaches_table(self, watcher):
+        watcher.ADOPTION_STATE.roaming_managed = True
         with patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
              patch.object(watcher.wifi_net, "resolve_connection_uuid_for_name", return_value="uuid-1"), \
              patch.object(watcher.wifi_net, "get_connection_ssid", return_value="Home"), \

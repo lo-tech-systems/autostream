@@ -118,6 +118,61 @@ def test_atomic_save_writes_schema_and_fields(paths):
 
 
 # ---------------------------------------------------------------------------
+# roaming_managed persistence: absent key -> False, round-trips both ways
+# ---------------------------------------------------------------------------
+
+def test_roaming_managed_absent_key_defaults_false(paths):
+    _write(paths["state_path"], json.dumps({
+        "schema_version": 1, "connection_name": "Home", "connection_uuid": "u-1",
+    }))
+    state = wifi_net.load_network_state(**paths)
+    assert state.roaming_managed is False
+
+
+def test_roaming_managed_round_trips_true(paths):
+    wifi_net.save_network_state(
+        wifi_net.NetworkState(connection_name="Home", connection_uuid="u-1",
+                              roaming_managed=True),
+        **paths,
+    )
+    data = json.loads(Path(paths["state_path"]).read_text(encoding="utf-8"))
+    assert data["roaming_managed"] is True
+    state = wifi_net.load_network_state(**paths)
+    assert state.roaming_managed is True
+
+
+def test_roaming_managed_round_trips_false(paths):
+    wifi_net.save_network_state(
+        wifi_net.NetworkState(connection_name="Home", connection_uuid="u-1",
+                              roaming_managed=False),
+        **paths,
+    )
+    data = json.loads(Path(paths["state_path"]).read_text(encoding="utf-8"))
+    assert data["roaming_managed"] is False
+    state = wifi_net.load_network_state(**paths)
+    assert state.roaming_managed is False
+
+
+def test_roaming_managed_non_bool_value_treated_as_false(paths):
+    _write(paths["state_path"], json.dumps({
+        "schema_version": 1, "connection_name": "Home", "connection_uuid": "u-1",
+        "roaming_managed": "yes",
+    }))
+    state = wifi_net.load_network_state(**paths)
+    assert state.roaming_managed is False
+
+
+def test_save_always_writes_roaming_managed_key(paths):
+    wifi_net.save_network_state(
+        wifi_net.NetworkState(connection_name="Home", connection_uuid="u-1"),
+        **paths,
+    )
+    data = json.loads(Path(paths["state_path"]).read_text(encoding="utf-8"))
+    assert "roaming_managed" in data
+    assert data["roaming_managed"] is False
+
+
+# ---------------------------------------------------------------------------
 # 6. Successful connection updates both files
 # ---------------------------------------------------------------------------
 

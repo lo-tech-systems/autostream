@@ -270,6 +270,7 @@ def _resolve_committed_uuid(ctx: ConfigContext, state: "wifi_net.NetworkState") 
             wifi_net.NetworkState(
                 connection_name=state.connection_name,
                 connection_uuid=resolved,
+                roaming_managed=state.roaming_managed,
             ),
             state_path=ctx.NETWORK_STATE_PATH,
             legacy_path=ctx.CONFIGURED_SSID,

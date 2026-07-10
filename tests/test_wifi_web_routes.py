@@ -567,3 +567,87 @@ class TestSetLogLevelControlRoute:
             environ_base={"REMOTE_ADDR": "127.0.0.1"},
         )
         assert rv.status_code == 400
+
+
+class TestSetRoamingManagementControlRoute:
+    def test_accepts_managed_true(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.control_in_progress = False
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_roaming_management", "managed": True},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        assert mod.CONTROL_STATE.pending_control_action == "set_roaming_management"
+        assert mod.CONTROL_STATE.pending_control_params == {"managed": True}
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_params = {}
+        mod.control_action_event.clear()
+
+    def test_accepts_managed_false(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.control_in_progress = False
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_roaming_management", "managed": False},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 200
+        assert mod.CONTROL_STATE.pending_control_params == {"managed": False}
+        mod.CONTROL_STATE.pending_control_action = ""
+        mod.CONTROL_STATE.pending_control_params = {}
+        mod.control_action_event.clear()
+
+    def test_rejects_missing_managed(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        mod.CONTROL_STATE.pending_control_action = ""
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_roaming_management"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_rejects_non_bool_managed(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        mod.CONTROL_STATE.pending_control_action = ""
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_roaming_management", "managed": "yes"},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_rejects_extra_fields(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        mod.CONTROL_STATE.pending_control_action = ""
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_roaming_management", "managed": True, "evil": 1},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert rv.status_code == 400
+
+    def test_rejects_non_loopback(self, flask_client):
+        client, mod = flask_client
+        mod.wifi_web._control_token = "tok"
+        rv = client.post(
+            "/network_control",
+            json={"action": "set_roaming_management", "managed": True},
+            headers={mod.wifi_web.CONTROL_TOKEN_HEADER: "tok"},
+            environ_base={"REMOTE_ADDR": "10.0.0.5"},
+        )
+        assert rv.status_code == 403

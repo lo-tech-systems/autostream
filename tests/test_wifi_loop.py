@@ -326,10 +326,15 @@ class TestBootClientBringup:
         assert v is watcher.Verdict.CONTINUE
         apply.assert_not_called()
 
-    def test_boot_window_resets_wedged_usb_before_onboard(self, watcher):
+    @pytest.mark.parametrize("roaming_managed", [False, True])
+    def test_boot_window_resets_wedged_usb_before_onboard(self, watcher, roaming_managed):
         # A dongle already declared dead-PHY-wedged (debounce completed
         # earlier, e.g. across a watcher restart) gets its one budgeted reset
         # before onboard/hotspot (RF-2 boot-window parity with runtime).
+        # The RESET_USB rung keys off link state and dead-PHY bookkeeping, not
+        # BSSID pins, so it must fire identically whether roaming management
+        # is on or off (fault-ladder invariance).
+        watcher.ADOPTION_STATE.roaming_managed = roaming_managed
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "cc:dd:ee:ff:00:09", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
@@ -768,6 +773,23 @@ class TestLoopHandlers:
             v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
         assert v is watcher.Verdict.OWN_PASS
         assert not watcher.control_action_event.is_set()
+
+    def test_set_roaming_management_is_non_disruptive(self, watcher):
+        # Like set_log_level, set_roaming_management touches no connectivity/AP
+        # state: it is applied immediately, never deferred, and never owns the
+        # pass, even while an activation is in flight.
+        watcher.STATE.transitioning = True
+        watcher.CONTROL_STATE.pending_control_action = "set_roaming_management"
+        watcher.CONTROL_STATE.pending_control_params = {"managed": True}
+        watcher.control_action_event.set()
+        with patch.object(watcher, "get_configured_network_state",
+                          return_value=watcher.wifi_net.NetworkState()), \
+             patch.object(watcher.wifi_net, "save_network_state"):
+            v = watcher.wifi_loop.step_control_action(watcher.LOOP_CTX, self._pre(watcher))
+        assert v is watcher.Verdict.CONTINUE
+        assert not watcher.control_action_event.is_set()
+        assert watcher.ADOPTION_STATE.roaming_managed is True
+        assert watcher.CONTROL_STATE.last_control_result == "ok"
 
     def test_manual_ap_control_action_deferred_while_transitioning(self, watcher):
         watcher.STATE.transitioning = True

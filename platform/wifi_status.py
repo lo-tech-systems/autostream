@@ -259,6 +259,7 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
         active_ifname = ctx.STATE.active_client_ifname
         active_mac = ctx.STATE.active_client_mac
         using_fallback = ctx.ADOPTION_STATE.using_builtin_fallback
+        roaming_managed = ctx.ADOPTION_STATE.roaming_managed
         in_setup = ctx.STATE.setup_mode
         dead_ifname = ctx.RECOVERY_STATE.dead_adapter_ifname
         dead_since = ctx.RECOVERY_STATE.dead_adapter_since
@@ -526,6 +527,9 @@ def build_network_status_snapshot(ctx, adapters: Optional[list] = None,
             "effective_level": _effective_log_level_name(ctx),
             "default_level": default_level or "info",
             "temporary_level_expires_at": temp_expires,
+        },
+        "roaming": {
+            "managed": bool(roaming_managed),
         },
         "adapters": adapter_records,
     }

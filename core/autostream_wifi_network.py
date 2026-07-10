@@ -86,10 +86,14 @@ class NetworkState:
     """Resolved, validated configured-network identity.
 
     ``connection_name`` empty means the appliance is unconfigured.  The state
-    never contains credentials.
+    never contains credentials.  ``roaming_managed`` is the global "manage USB
+    adapter roaming" preference (BSSID pin/survey/roam); default False means
+    NetworkManager/firmware roaming.  Absent in older files, which resolve to
+    False.
     """
     connection_name: str = ""
     connection_uuid: str = ""
+    roaming_managed: bool = False
 
     @property
     def is_configured(self) -> bool:
@@ -197,7 +201,10 @@ def _parse_network_json(raw: str) -> Optional[NetworkState]:
     uuid = obj.get("connection_uuid", "")
     if not isinstance(name, str) or not isinstance(uuid, str):
         return None
-    return NetworkState(connection_name=name.strip(), connection_uuid=uuid.strip())
+    roaming_raw = obj.get("roaming_managed", False)
+    roaming_managed = roaming_raw if isinstance(roaming_raw, bool) else False
+    return NetworkState(connection_name=name.strip(), connection_uuid=uuid.strip(),
+                        roaming_managed=roaming_managed)
 
 
 def load_network_state(
@@ -261,6 +268,7 @@ def save_network_state(
         "schema_version": SCHEMA_VERSION,
         "connection_name": state.connection_name,
         "connection_uuid": state.connection_uuid,
+        "roaming_managed": state.roaming_managed,
     }
     _atomic_write(sp, json.dumps(payload, indent=2) + "\n", mode=0o644)
 

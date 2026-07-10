@@ -1024,6 +1024,13 @@ def build_app(ctx) -> Flask:
             if not isinstance(adapter, str) or not adapter.strip():
                 return jsonify({"ok": False, "error": "invalid_adapter"}), 400
             params = {"adapter": adapter.strip()}
+        elif action == "set_roaming_management":
+            if keys != {"action", "managed"}:
+                return jsonify({"ok": False, "error": "invalid_action"}), 400
+            managed = payload.get("managed")
+            if not isinstance(managed, bool):
+                return jsonify({"ok": False, "error": "invalid_managed"}), 400
+            params = {"managed": managed}
         else:
             return jsonify({"ok": False, "error": "invalid_action"}), 400
 

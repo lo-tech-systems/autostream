@@ -920,6 +920,7 @@ class TestPinAccountingInterfaceScoping:
     def test_pin_selects_only_from_target_interface_table(self, watcher):
         # A stronger candidate seeded in wlan0's table must never be selected
         # when pinning for wlan1 -- wlan1's scan is the only source consulted.
+        watcher.ADOPTION_STATE.roaming_managed = True
         watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan0", {})["11:22:33:44:55:66"] = {
             "ssid": "Home", "signal": 95, "last_seen": 100.0,
             "fail_count": 0, "quarantined_until": None,
@@ -938,6 +939,7 @@ class TestPinAccountingInterfaceScoping:
     def test_failure_accounting_touches_only_target_interface_table(self, watcher):
         # Seed the SAME bssid in wlan0's table to prove a wlan1 pin failure
         # cannot bleed fail_count into another interface's observations.
+        watcher.ADOPTION_STATE.roaming_managed = True
         watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan0", {})["AA:BB:CC:DD:EE:FF"] = {
             "ssid": "Home", "signal": 70, "last_seen": 100.0,
             "fail_count": 0, "quarantined_until": None,
@@ -962,6 +964,7 @@ class TestPinAccountingInterfaceScoping:
         # wlan1's table and an identically-shaped one in wlan0's table. A
         # successful pin on wlan1 must quarantine only wlan1's entry.
         seeded_at = time.monotonic()
+        watcher.ADOPTION_STATE.roaming_managed = True
         watcher.ADOPTION_STATE.bssid_tables.setdefault("wlan1", {})["11:22:33:44:55:66"] = {
             "ssid": "Home", "signal": 40, "last_seen": seeded_at,
             "fail_count": watcher.wifi_policy.BSSID_QUARANTINE_FAILS, "quarantined_until": None,
@@ -993,6 +996,7 @@ class TestPinScanDebugLogging:
     nothing about scans is logged at INFO."""
 
     def test_pin_scan_logs_one_debug_line(self, watcher, caplog):
+        watcher.ADOPTION_STATE.roaming_managed = True
         rows = [{"in_use": False, "bssid": "AA:BB:CC:DD:EE:FF", "ssid": "Home", "signal": 70}]
         with caplog.at_level(logging.DEBUG, logger="wifi_watcher"), \
              patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
@@ -1009,6 +1013,7 @@ class TestPinScanDebugLogging:
                        for r in caplog.records)
 
     def test_pin_scan_failure_logs_failure_form(self, watcher, caplog):
+        watcher.ADOPTION_STATE.roaming_managed = True
         with caplog.at_level(logging.DEBUG, logger="wifi_watcher"), \
              patch.object(watcher.wifi_net, "usb_sysfs_paths", return_value={"driver": "rtl8xxxu"}), \
              patch.object(watcher.nm, "wifi_bssid_scan", return_value=None), \

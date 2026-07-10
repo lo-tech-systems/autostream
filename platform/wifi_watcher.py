@@ -299,6 +299,7 @@ LOG_LEVEL_TTL_MAX = 3600
 # applied immediately (never deferred while transitioning, never own the pass).
 _NON_DISRUPTIVE_ACTIONS = {
     "set_log_level", "clear_adapter", "disable_adapter", "enable_adapter",
+    "set_roaming_management",
 }
 
 
@@ -869,9 +870,12 @@ def _commit_network_state(conn_name: str, conn_uuid: str = "") -> None:
             conn_uuid = wifi_net.resolve_connection_uuid_for_name(conn_name)
         except Exception:
             conn_uuid = ""
+    with state_lock:
+        roaming_managed = ADOPTION_STATE.roaming_managed
     try:
         wifi_net.save_network_state(
-            wifi_net.NetworkState(connection_name=conn_name, connection_uuid=conn_uuid),
+            wifi_net.NetworkState(connection_name=conn_name, connection_uuid=conn_uuid,
+                                  roaming_managed=roaming_managed),
             state_path=NETWORK_STATE_PATH,
             legacy_path=CONFIGURED_SSID,
         )
@@ -1276,6 +1280,53 @@ def revert_expired_log_level(now: Optional[float] = None) -> None:
     logger.warning("Runtime log level reverted to %s", default)
 
 
+def _set_roaming_management(managed: bool) -> None:
+    """Apply and persist a new roaming-management preference.
+
+    Turning OFF clears the committed profile's pin (best-effort, only when a
+    committed uuid exists) and resets the in-memory BSSID roam state so no
+    stale observation from the managed machinery survives into the unmanaged
+    mode.  Turning ON takes effect at the next activation; nothing is pinned
+    immediately.
+    """
+    state = get_configured_network_state()
+    with state_lock:
+        ADOPTION_STATE.roaming_managed = managed
+        if not managed:
+            wifi_policy.clear_bssid_tables(ADOPTION_STATE.bssid_tables)
+            ADOPTION_STATE.last_bssid_pin = {}
+            ADOPTION_STATE.bssid_roam_candidate = {}
+    try:
+        wifi_net.save_network_state(
+            wifi_net.NetworkState(connection_name=state.connection_name,
+                                  connection_uuid=state.connection_uuid,
+                                  roaming_managed=managed),
+            state_path=NETWORK_STATE_PATH,
+            legacy_path=CONFIGURED_SSID,
+        )
+    except Exception as e:
+        logger.error("Could not persist roaming-management preference: %s", e)
+    if not managed and state.connection_uuid:
+        nm.set_bssid(state.connection_uuid, "")
+    logger.info("Roaming management set to %s", managed)
+
+
+def load_roaming_management_at_startup() -> None:
+    """Load the roaming-management preference before the monitor loop starts.
+
+    Runs before anything else touches ADOPTION_STATE.roaming_managed or
+    persists network state (first-boot import, the autoconnect sweep).  When
+    unmanaged and a committed profile exists, clears its BSSID pin once:
+    dev units in the field may carry a pin from a previous managed run and
+    must not stay locked to one AP.
+    """
+    state = get_configured_network_state()
+    with state_lock:
+        ADOPTION_STATE.roaming_managed = state.roaming_managed
+    if not state.roaming_managed and state.connection_uuid:
+        nm.set_bssid(state.connection_uuid, "")
+
+
 def process_control_action(action: str, params: Optional[dict] = None) -> None:
     """Consume one queued control action in the monitor loop."""
     params = params or {}
@@ -1314,6 +1365,9 @@ def process_control_action(action: str, params: Optional[dict] = None) -> None:
             result = "ok"
         elif action == "enable_adapter":
             wifi_recovery.enable_adapter(RECOVERY_CTX, params.get("adapter", ""))
+            result = "ok"
+        elif action == "set_roaming_management":
+            _set_roaming_management(bool(params.get("managed")))
             result = "ok"
         else:
             result = "failed"
@@ -2049,6 +2103,7 @@ def build_contexts() -> None:
         APPLY_STATE=APPLY_STATE,
         CONTROL_STATE=CONTROL_STATE,
         RECOVERY_STATE=RECOVERY_STATE,
+        ADOPTION_STATE=ADOPTION_STATE,
         state_lock=state_lock,
         logger=logger,
         Verdict=Verdict,
@@ -2118,6 +2173,14 @@ if __name__ == "__main__":
         )
     except Exception as e:
         logger.warning("Legacy network-state migration failed: %s", e)
+
+    # Load the roaming-management preference and reconcile a stale pin before
+    # anything else touches network state (first-boot import, the
+    # autoconnect sweep) or the monitor loop starts.
+    try:
+        load_roaming_management_at_startup()
+    except Exception as e:
+        logger.warning("Could not reconcile roaming-management preference at startup: %s", e)
 
     # First, remove any lingering Hotspot connection and stale nginx flag that
     # would otherwise force the Pi to setup mode even though the WiFi is probably
