@@ -123,6 +123,57 @@ not present in `dials.json`.
 
 ---
 
+### `POST /api/dial/mute`
+
+UUID-in-body auth. Must be routed **before** `validate_csrf()` — no session or CSRF token
+required. Same authorization check as `POST /api/dial/volume`.
+
+Toggles mute across all currently selected OwnTone outputs. A snapshot of pre-mute volumes
+is kept so the restore action can return each output to its original level; the pending
+action (mute or restore) survives partial failures so a retry press completes the
+interrupted operation rather than toggling back too early.
+
+**Request body:**
+```json
+{"dial_id": "<id>"}
+```
+
+| Field | Type | Constraints |
+|---|---|---|
+| `dial_id` | string | Dial identity (20 lowercase hex chars); must be present in `dials.json` |
+
+**Success response (200) — muted:**
+```json
+{"ok": true, "muted": true}
+```
+
+**Success response (200) — restored:**
+```json
+{"ok": true, "muted": false}
+```
+
+**Partial success (200):**
+```json
+{"ok": true, "muted": true, "partial": true}
+```
+
+Some outputs updated successfully; others failed. Not all outputs failed. (`muted` reflects
+the action that was in progress — `true` while muting, `false` while restoring.)
+
+**Failure responses (200 body, not HTTP error):**
+
+| `error` | Meaning |
+|---|---|
+| `"config_error"` | Appliance configuration could not be loaded |
+| `"backend_unavailable"` | OwnTone unreachable or returned an error |
+| `"no_active_outputs"` | No outputs currently selected |
+| `"all_outputs_failed"` | Every per-output update call failed |
+
+**Authorization failure: 403** (empty body). Returned when `dial_id` is absent, empty, or
+not present in `dials.json`. Matches `POST /api/dial/volume` behavior.
+
+---
+
 ### `POST /api/dial/status`
 
 UUID-in-body auth. Must be routed **before** `validate_csrf()` — no session or CSRF token
@@ -300,8 +351,12 @@ Returns current dial settings.
 
 **Response:**
 ```json
-{"step_percent": 2, "pin_set": true, "name": "Hallway Dial", "version": "1.0.0", "auto_update": false}
+{"step_percent": 2, "pin_set": true, "name": "Hallway Dial", "version": "1.0.0", "auto_update": false, "update_channel": "stable"}
 ```
+
+| Field | Type | Notes |
+|---|---|---|
+| `update_channel` | string | `"stable"` or `"dev"`. `stable` considers only full GitHub releases; `dev` considers the most recent release including pre-releases. PIN-gated when set via `POST /configure` (same protection as `name`, `step_percent`, `auto_update`). |
 
 ### `GET /recovery_status`
 
@@ -327,6 +382,40 @@ Triggers a firmware update. Returns immediately:
 
 `state` is one of `"idle"`, `"running"`, `"complete"`, `"failed"`.
 
+### `GET /update/check`
+
+Checks GitHub for an available update on the dial's configured `update_channel`, without
+staging or applying anything. Delegates to `autostream_dial_updater check` and returns its
+JSON output verbatim (wrapped as HTTP `200` even on failure).
+
+**Response (update information available):**
+```json
+{
+  "ok": true,
+  "installed": "1.0.0",
+  "candidate": "1.1.0",
+  "update_available": true,
+  "channel": "stable",
+  "release_notes": "..."
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `installed` | string | Currently installed version, or `"unknown"` if it could not be determined |
+| `candidate` | string | Latest release tag on the configured channel, or `"unknown"` if none was found |
+| `update_available` | bool | `true` if `candidate` is newer than `installed` |
+| `channel` | string | The channel the check was performed against (`"stable"` or `"dev"`) |
+| `release_notes` | string | Present only when `update_available` is `true` and notes exist |
+
+**Failure response (200 body):**
+```json
+{"ok": false, "error": "GitHub API not reachable (network or HTTP error)"}
+```
+
+Also returns `{"ok": false, "error": "check_failed"}` if the underlying updater command
+fails to run or produces unparseable output.
+
 ---
 
 ### `GET /screen/settings`
@@ -348,7 +437,9 @@ copy and always reads current values from this endpoint.
     "backend_loaded": false,
     "showing": "noop",
     "last_error": "",
-    "last_error_at": null
+    "last_error_at": null,
+    "display_sleeping": false,
+    "display_idle_seconds": 0
   }
 }
 ```
@@ -363,6 +454,8 @@ copy and always reads current values from this endpoint.
 | `runtime.showing` | string | One of `logo`, `artwork`, or `noop` |
 | `runtime.last_error` | string | Last non-fatal display/fetch/render error identifier, or `""` |
 | `runtime.last_error_at` | number\|null | Unix timestamp for `last_error`, or `null` |
+| `runtime.display_sleeping` | bool | `true` once the display has been idle for `display_idle_seconds` and the backend has blanked/slept it |
+| `runtime.display_idle_seconds` | int | Seconds since idling began, capped at the 15-minute sleep threshold; resets to `0` while showing content |
 
 Never returns secrets or provider artwork URLs.
 
@@ -396,7 +489,9 @@ Successful response:
     "backend_loaded": false,
     "showing": "noop",
     "last_error": "",
-    "last_error_at": null
+    "last_error_at": null,
+    "display_sleeping": false,
+    "display_idle_seconds": 0
   },
   "restart_required": false
 }
@@ -428,6 +523,12 @@ or stopping the current display provider internally.
 | `dial_api=v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
 | `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
 | `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
+
+`POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same
+UUID-in-body authorization as `POST /api/dial/volume` and was added to the appliance API
+without a new mDNS indicator, in the same manner as the `track_id` extension to
+`dial_status=v1` (see §2). A dial firmware built against this protocol version can assume
+`/api/dial/mute` is present; there is no runtime way to detect its absence via mDNS.
 
 Breaking changes (new `v2`):
 - Any change to request/response schema that removes or renames required fields.

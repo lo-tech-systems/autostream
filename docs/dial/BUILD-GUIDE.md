@@ -102,63 +102,70 @@ for the Pi itself, but follow local electrical codes for in-wall installations.
 
 ## OS Preparation
 
-1. Flash **Raspberry Pi OS Lite (Trixie, 32-bit)** to a microSD card using
-   Raspberry Pi Imager. Use 32-bit for Pi Zero W (ARMv6); 32-bit also runs
-   correctly on Zero 2W.
+The dial's own Wi-Fi management (including the setup hotspot) is installed by the dial
+software in the next section — a stock Raspberry Pi OS Lite image has none of it yet. Get
+the Pi reachable over SSH first so the installer can be run; the simplest way is to
+pre-configure your home Wi-Fi in the Imager.
+
+1. Flash **Raspberry Pi OS Lite (Trixie)** to a microSD card using
+   Raspberry Pi Imager. Use 32-bit for Pi Zero W (ARMv6).
 2. In Imager's advanced settings:
    - Set hostname (e.g. `dial-hallway`)
-   - Enable SSH with your public key
-   - Do **not** pre-configure WiFi — the dial's AP mode handles first-time setup
-3. Insert the card, connect power, and wait ~30 seconds for first boot.
-4. The dial broadcasts an access point: `autostream-dial_SETUP`
-
----
-
-## First-Boot WiFi Setup
-
-1. Connect your phone or laptop to `autostream-dial_SETUP`.
-   The hotspot is open (no password required).
-2. A captive-portal page opens automatically (or browse to `http://192.168.4.1`).
-3. Enter your home WiFi credentials and tap **Save**.
-4. The dial reboots, joins your home network, and announces
-   `_autostream-dial._tcp` via mDNS.
-
-After WiFi setup, the dial is reachable at `http://dial-hallway.local` (or
-whatever hostname you chose) from any device on the same network.
+   - Enable SSH
+   - Pre-configure your home WiFi credentials, so the Pi joins your network on first boot
+     and is reachable for installation
+3. Insert the card, connect power, and wait ~30 seconds for first boot. The Pi should now
+   be reachable via ssh, e.g. `ssh pi@dial-hallway.local` (using the username you set in
+   Imager and whatever hostname you chose).
 
 ---
 
 ## Installing the Dial Software
 
 The software is installed by the autostream dial installer. On a freshly
-flashed Pi Zero W (after OS prep above):
+flashed Pi Zero W (after OS prep above), SSH in and run the one-line
+bootstrap — it downloads the latest release and starts the installer:
 
 ```bash
-# Copy the release archive to the Pi
-scp autostream-dial-vX.Y.Z.tar.gz pi@dial-hallway.local:~
-
-# SSH in and run the installer
-ssh pi@dial-hallway.local
-tar xzf autostream-dial-*.tar.gz
-cd autostream-dial-*/
-sudo bash autostream_dial_install.sh
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/dial_bootstrap.sh | sudo bash
 ```
 
 The installer:
 - Creates the `autostream` service user
-- Installs OS packages (`avahi-daemon`, `nginx`, `dnsmasq`, `gpiozero`, etc.)
+- Installs OS packages (`avahi-daemon`, `nginx`, `dnsmasq`, etc.) and `gpiozero` into
+  the dial's Python venv
 - Deploys the dial Python application to `/opt/autostream/`
 - Derives a stable 20-character hex identity and writes `/etc/autostream/autostream-dial.json`
 - Configures systemd, nginx, logrotate, and sudoers
-- Starts the `autostream-dial` service
+- Starts the `autostream_dial` service, which brings up the dial's own Wi-Fi management
+  (including the setup hotspot fallback described below)
 
-Installation takes approximately 5 minutes on a Pi Zero W.
+Installation will take 5-10 minutes.
+
+---
+
+## Wi-Fi Setup and Hotspot Fallback
+
+Once the dial software is installed and running, it manages its own Wi-Fi connection and
+falls back to a setup hotspot whenever it cannot join a known network — for example if you
+skipped Wi-Fi configuration in the Imager, or later move the dial to a new location.
+
+1. Connect your phone or laptop to the `autostream-dial_XXXX` hotspot, where `XXXX` is the
+   last four hex digits (uppercase) of the AP interface's MAC address
+   (`autostream-dial_SETUP` is used only as a fallback if the MAC cannot be read). The
+   hotspot is open (no password required).
+2. A captive-portal page opens automatically (or browse to `http://192.168.4.1`).
+3. Enter your WiFi credentials and tap **Save**.
+4. The dial reboots, joins the network, and announces `_autostream-dial._tcp` via mDNS.
+
+After Wi-Fi setup, the dial is reachable at `http://dial-hallway.local` (or
+whatever hostname you chose) from any device on the same network.
 
 ---
 
 ## Optional: USB Wi-Fi Adapter
 
-autostream dial can use a USB Wi-Fi adapter for improved range or 5 GHz access.
+autostream dial, like autostream, can use a USB Wi-Fi adapter for improved range or 5 GHz access. However the bandwidth requirements are minimum and on-board Wi-Fi is likely to be adequate in most cases.
 
 **Requirements:**
 
@@ -189,4 +196,6 @@ avahi-browse -t _autostream-dial._tcp
 curl http://localhost/configure
 ```
 
-The setup page is available at `http://<hostname>.local/` from your browser.
+The dial itself has no browser-facing setup page — it serves only the JSON endpoints above
+on port 7842 (anything else 404s). Configure the dial from the main autostream appliance's
+web UI instead: Setup page → Dials panel. See `docs/dial/SETUP.md` for details.

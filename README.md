@@ -6,11 +6,14 @@
 
 **autostream** connects classic Hi-Fi gear to wireless multi-room speakers, making vinyl records and CDs play through AirPlay and AirPlay 2 speakers anywhere in your home. No apps to install. No complex configuration. Just press play.
 
-> License: Source-available. Free for personal use.
-
-One-line install on **Raspberry Pi OS Lite (Trixie, 32-bit)**:
+One-line install on **Raspberry Pi OS Lite (Trixie)**:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
+```
+
+One-line install on **Raspberry Pi OS Lite (Trixie)** for the companion **autostream dial**:
+```sh
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/dial_bootstrap.sh | sudo bash
 ```
 
 See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions and install options.
@@ -59,8 +62,8 @@ Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example,
 
 ## Platform & Requirements
 
-* **Raspberry Pi** — Pi Zero W is the minimum; Zero 2W is recommended. 8GB microSD card.
-* **OS** — **Raspberry Pi OS Lite (Trixie, 32-bit)**. Both autostream host and dial are tested on 32-bit Trixie; 64-bit is untested.
+* **Raspberry Pi** — Pi Zero 2W minimum for autostream; Zero W minimum for dial. 8GB+ microSD card.
+* **OS** — **Raspberry Pi OS Lite (Trixie)**. Use 64-bit for autostream, unless deploying on Pi Zero W.
 * **USB audio input**, for example:
   * USB turntable (e.g. Audio-Technica AT-LP60XUSBGM)
   * USB ADC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
@@ -73,9 +76,9 @@ Power consumption on a Pi Zero W or Zero 2W: under 2 Watts.
 
 ---
 
-## Getting Started
+## Getting Started (autostream)
 
-1. Flash **Raspberry Pi OS Lite (Trixie, 32-bit)** using Raspberry Pi Imager, boot, and SSH in.
+1. Flash **Raspberry Pi OS Lite (Trixie)** using Raspberry Pi Imager, boot, and SSH in.
 2. Run the one-line installer above.
 3. Connect one or two audio sources.
 4. Reboot, then open Safari on iPhone and browse to `http://autostream.local/` (replace `autostream` with your Pi's hostname if you changed it).
@@ -84,6 +87,17 @@ Power consumption on a Pi Zero W or Zero 2W: under 2 Watts.
 From there, just drop the needle or press play. **autostream** will do the rest.
 
 See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for detailed setup instructions.
+
+---
+
+## Getting Started (dial)
+
+1. Install autostream on another Raspberry Pi (sharing one Pi for autostream and dial is not supported)
+2. Flash **Raspberry Pi OS Lite (Trixie)** using Raspberry Pi Imager, boot, and SSH in.
+3. Run the dial one-line installer above.
+4. Reboot, then continue setup from the autostream web app (Setup → Dials)
+
+See [SETUP.md](docs/dial/SETUP.md) for detailed setup instructions and [BUILD-GUIDE.md](docs/dial/BUILD-GUIDE.md) for hardware build instructions.
 
 ---
 

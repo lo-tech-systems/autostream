@@ -3,67 +3,93 @@
 ## Prerequisites
 
 - autostream dial hardware installed and powered on (see BUILD-GUIDE.md)
-- Dial has joined your home WiFi (first-boot AP mode complete)
+- Dial has joined your home WiFi (first-boot hotspot setup complete)
 - At least one autostream appliance on the same network
 
 ---
 
-## Opening the Setup Page
+## Where Setup Happens
 
-Browse to `http://<hostname>.local/` (e.g. `http://dial-hallway.local/`) from
-any device on your home network. If mDNS is unavailable, use the dial's IP
-address directly.
+The dial does **not** serve a setup page of its own. All dial configuration is
+done from the **main autostream appliance's web interface**:
+
+1. Open the autostream web UI (e.g. `http://autostream.local/`).
+2. Go to **Setup** and open the **Dials** panel.
+
+Each dial discovered on the network appears as a card in this panel, showing
+its name, identity, online status, and firmware version. The panel header
+summarizes the fleet (e.g. *2 authorized · 1 online*).
+
+Browsing to the dial's own address (`http://<dial-hostname>.local/`) only
+reaches its recovery pages (see *Recovery Pages* below) — there is no
+browser-facing setup UI on the dial itself.
 
 ---
 
 ## Authorizing the Dial
 
-Before the dial can control an autostream appliance, it must be authorized from
-the **autostream web interface** (not from the dial's own setup page):
+Before the dial can control an autostream appliance, it must be authorized:
 
-1. Open the autostream web UI (e.g. `http://autostream.local/`).
-2. Go to **Setup** and open the **Dials** panel.
-3. The dial appears under *Discovered dials* with its identity.
-4. Enter a friendly name (e.g. "Hallway") and tick **Allow control**.
-5. Click **Save**.
+1. In the **Dials** panel, find the new dial's card — it appears under its
+   identity when first discovered.
+2. Tick **Allow control**.
+
+Until the dial is authorized, the rest of its settings are hidden — **Allow
+control** is the only action available on a new dial's card. Unticking it
+(after a confirmation prompt) revokes the dial's access.
 
 The dial's identity is a 20-character hexadecimal value broadcast in the mDNS
 TXT record — it is stable across reboots and firmware updates.
 
 ---
 
-## Configuring Name and Step Size
+## Configuring the Dial
 
-On the dial's setup page (`http://<hostname>.local/`):
+All of the following settings live on the dial's card in the **Dials** panel.
+If a PIN is set, the card's settings section is locked — click the padlock
+next to **Settings** and enter the PIN to unlock it. The section re-locks
+automatically when you click away from it.
 
-**Name** — A friendly display name shown in the autostream UI and mDNS
-discovery. Printable ASCII; maximum 64 characters. Semicolons and pipe
-characters are not permitted.
+**Name** — Click **Change Dial Name** to open the rename dialog. A friendly
+display name shown in the autostream UI and mDNS discovery. Printable ASCII;
+maximum 64 characters. Semicolons and pipe characters are not permitted.
 
-**Step** — Volume change per encoder click, 1–10%. Default: 2%.
+**Step** — A slider setting the volume change per encoder click, 1–10%.
+Default: 2%. Saves automatically when changed.
 
-Both settings auto-save when you leave the field (blur). If a PIN is set, you
-will be prompted to enter it before changes are applied.
+**Auto-update** — Toggle for weekly automatic firmware updates (see *Firmware
+Updates* below). Saves automatically when changed.
+
+**Pre-release updates** — Toggle for the dial's update channel (see *Update
+Channels* below). Saves automatically when changed.
+
+**Has Screen Fitted** — Toggle for the optional display module (see *Display
+Screen* below). Saves automatically when changed.
 
 ---
 
 ## Setting a PIN
 
 A PIN prevents unauthorized users from changing the dial's settings. The PIN
-protects: name, step size, auto-update toggle, and PIN itself.
+protects: name, step size, auto-update toggle, pre-release toggle, screen
+setting, and the PIN itself.
 
 Volume control is **not** PIN-protected — the dial still adjusts volume without
 any PIN.
 
-To set a PIN:
-1. Click **Change PIN** on the setup page.
+To set a PIN, on the dial's card in the **Dials** panel:
+1. Click **Change Dial PIN**.
 2. Leave *Current PIN* blank (no existing PIN).
 3. Enter a 4–8 digit PIN in *New PIN*.
-4. Click **Set PIN**.
+4. Confirm.
 
 To change the PIN: enter the current PIN, then the new PIN.
 
-To remove the PIN: enter the current PIN, leave *New PIN* blank, click **Remove PIN**.
+To remove the PIN: enter the current PIN and leave *New PIN* blank.
+
+PIN attempts are rate-limited by the dial: after 5 failed attempts, further
+attempts are delayed with an increasing backoff (5 seconds, doubling up to
+5 minutes).
 
 ---
 
@@ -74,23 +100,26 @@ If the PIN is forgotten, it can be reset via physical access to the dial.
 The 10-minute recovery window opens automatically each time the dial service
 starts (when a PIN is set). To recover:
 
-1. **Restart the dial service** (or reboot the Pi) to open a fresh 10-minute window.
-2. **Turn the dial clockwise** at least once. This physically confirms your
-   presence at the device. Playback is NOT required.
-3. On the autostream setup page, click **Reset lost PIN** on the dial's card.
+1. **Restart the dial service** (or reboot / power-cycle the Pi) to open a
+   fresh 10-minute window.
+2. On the dial's card in the **Dials** panel, click **Reset Lost PIN**.
+3. **Turn the dial clockwise** at least once. This physically confirms your
+   presence at the device. Playback is NOT required. The dialog polls the
+   dial and unlocks the new-PIN entry once the turn is detected.
 4. Enter and confirm your new PIN.
-5. Click **Save**.
 
 The recovery window expires after 10 minutes. If it expires, restart the
 service and repeat from step 2.
 
 ---
 
-## Offline Recovery
+## Recovery Pages
 
-If the dial's main service (`autostream_dial`) is unavailable — due to a crash,
-an in-progress firmware update, or a reboot triggered from the setup page — the
-browser shows a branded **offline recovery page** instead of an error.
+The dial's web server hosts a small set of **recovery pages** at
+`http://<dial-hostname>.local/offline/`. These are served independently of the
+main dial service, so they remain reachable even when the service has crashed,
+is mid-update, or is rebooting. If the dial service is unavailable, any request
+to the dial is automatically redirected to the recovery page.
 
 The recovery page offers four actions:
 
@@ -104,31 +133,27 @@ The recovery page offers four actions:
 ### During a firmware update
 
 While a firmware update is in progress, the browser is automatically redirected
-to an **updating** page that polls the update state and shows progress. The page
-redirects back to the setup page automatically once the update completes and the
-service restarts.
+to an **updating** page that polls the update state and shows progress until
+the update completes and the service restarts.
 
 ---
 
 ## Firmware Updates
 
-The **Firmware** card on the setup page shows the installed version and lets you
-check for and install updates.
+The dial's card in the **Dials** panel shows the installed firmware version.
 
 **Manual update:**
-1. Click **Check for update** — the dial contacts GitHub and reports whether
-   an update is available.
-2. If an update is available, an **Install update** button appears. Click it
-   to begin. The page polls for progress.
-3. The dial service restarts automatically when the update completes.
+When a newer release is available for the dial's channel and the dial is
+online, an **Update firmware** button appears on the card. Click it to begin;
+the dial service restarts automatically when the update completes.
 
 **Automatic updates (opt-in):**
-On the autostream setup page, navigate to the dial's card and enable
-**Auto-update**. The dial checks for updates every Monday at ~03:30 and
+Enable **Auto-update** on the dial's card. The dial then checks for updates
+every Monday at ~03:30 (with a randomized delay of up to 30 minutes) and
 installs them automatically.
 
 Updates require an active internet connection. The dial cannot update while in
-AP mode (WiFi setup).
+hotspot (WiFi setup) mode.
 
 ---
 
@@ -274,21 +299,22 @@ playback on the network, not whether volume is changing.
 - Check `journalctl -u autostream_dial` on the Pi for startup errors.
 
 **Volume commands not taking effect:**
-- Ensure the dial is authorized in the autostream UI (Settings → Dials).
+- Ensure the dial is authorized in the autostream UI (Setup → Dials).
 - Check that the autostream appliance is announcing playback
   (`avahi-browse -t _autostream-playing._tcp`).
 - Verify the autostream service is running and OwnTone is playing.
 
-**Setup page unreachable:**
+**Dial unreachable:**
 - Check service status: `systemctl status autostream_dial`.
 - Check nginx: `systemctl status nginx`.
 - Verify the dial's IP with `avahi-browse -a` or your router's DHCP table.
+- Try the recovery page directly: `http://<dial-hostname>.local/offline/`.
 
 **Forgot WiFi credentials / need to re-run setup:**
 ```bash
 sudo systemctl start autostream_dial_wifi_watcher
 ```
-Connect to `autostream-dial_SETUP` and enter the new credentials.
+Connect to the `autostream-dial_XXXX` hotspot and enter the new credentials.
 
 ---
 
@@ -316,7 +342,7 @@ If the active USB adapter is removed or becomes unreachable:
 
 When the active interface or IP address changes, the `_autostream-dial._tcp` mDNS service may briefly disappear and reappear. The main appliance's discovery registry handles transient removals; the dial reappears within a few seconds of the new interface becoming stable.
 
-Note: there is no Network card in the dial management UI in this release. Factory reset deletes the saved Wi-Fi connection (`/etc/autostream-network.json` and `/opt/autostream/ssid`).
+Note: there is no Network card in the dial management UI in this release. Factory reset deletes the dial's saved settings (`/var/lib/autostream/dial-settings.json`) and Wi-Fi connection (`/etc/autostream-network.json` and `/opt/autostream/ssid`); the hardware config and identity in `/etc/autostream/autostream-dial.json` are preserved.
 
 ---
 
@@ -393,13 +419,10 @@ Each dial has its own update channel setting — it is independent of the main a
 
 ### Changing the channel
 
-You can change the dial's update channel in two ways:
-
-**From the dial's own Setup page:**
-Open `http://<dial-hostname>.local/` in a browser, scroll to the **Device** card, and toggle **Pre-release updates**. Tap **Save**.
-
-**From the main appliance Setup page:**
-Open the main autostream Setup page, find the online dial card, and toggle **Pre-release updates** for that dial. The change is saved through the same PIN-protected configuration flow used for all other dial settings.
+Open the main autostream Setup page, find the online dial's card in the
+**Dials** panel, and toggle **Pre-release updates**. The change is saved
+through the same PIN-protected configuration flow used for all other dial
+settings, and saves automatically when toggled.
 
 ### Behaviour
 
