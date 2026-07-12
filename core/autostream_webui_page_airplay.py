@@ -203,7 +203,7 @@ def send_airplay_page(
         # went wrong - then reboot the system. This code serves only inline code in case the file
         # system is dead (which is likely). Reboot may therefore also fail.
         body = (
-            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<title>System Error</title>"
             "<style>body{font-family:system-ui,sans-serif;margin:2rem;}</style>"

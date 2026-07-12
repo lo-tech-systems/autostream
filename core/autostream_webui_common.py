@@ -484,7 +484,7 @@ def build_page_html(
     body_cls = ' class="has-bottom-nav"' if show_nav else ""
     theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
     return (
-        f'<!DOCTYPE html><html{theme_attr}>'
+        f'<!DOCTYPE html><html lang="en"{theme_attr}>'
         f'<head><meta charset="utf-8">{VIEWPORT_META}'
         f'<title>{html.escape(title)}</title>'
         f'<style>{style}</style>'

@@ -159,7 +159,7 @@ def render_setup_page(error_code: str = "", show_reconnect: bool = False) -> str
         """
 
     return f"""<!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
         <meta charset="utf-8">
         <title>Network Setup</title>
@@ -592,7 +592,7 @@ def render_wait_page(ctx, selected_ssid: str = "") -> str:
         )
 
     return f"""<!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
         <meta charset="utf-8">
         <title>Joining network…</title>
@@ -654,7 +654,7 @@ def _captive_response(html: str):
     return resp
 
 CAPTIVE_LANDING = """<!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">

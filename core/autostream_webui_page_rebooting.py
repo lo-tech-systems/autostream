@@ -34,7 +34,7 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
     )
 
     body = f"""<!doctype html>
-      <html>
+      <html lang="en">
       <head>
         <meta charset="utf-8">{VIEWPORT_META}
         <title>Rebooting\u2026</title>

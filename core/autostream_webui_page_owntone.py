@@ -174,7 +174,7 @@ def send_owntone_restarting_page(handler, state) -> None:
     next_path_js = json.dumps(next_path)  # safe for embedding in a JS string literal
 
     body = f"""<!doctype html>
-      <html>
+      <html lang="en">
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
