@@ -25,8 +25,9 @@ DEFAULT_HINTS_PATH = "/etc/autostream/nowplaying_hints.json"
 PIPE_METADATA_ENV = "AUTOSTREAM_ENABLE_PIPE_METADATA"
 
 # Must not exceed PIPE_PICTURE_SIZE_MAX in OwnTone's src/inputs/pipe.c: it
-# discards a metadata bundle whose picture is larger than this.
-MAX_PICTURE_BYTES = 1024 * 1024
+# discards a metadata bundle whose picture is larger than this. The two are
+# raised together; owntone-mini carries the matching 2MB limit.
+MAX_PICTURE_BYTES = 2 * 1024 * 1024
 
 
 @dataclass

@@ -84,6 +84,9 @@ fi
 install -m 0644 "$DEPLOY/core/autostream_rpi.py"      /opt/autostream/autostream_rpi.py
 install -m 0644 "$DEPLOY/core/autostream_sysutils.py" /opt/autostream/autostream_sysutils.py
 install -m 0644 "$DEPLOY/core/autostream_mdns.py"     /opt/autostream/autostream_mdns.py
+# dial_display imports the shared artwork fetch from here; without it the dial
+# cannot start on a dial-only install.
+install -m 0644 "$DEPLOY/core/autostream_artwork.py"  /opt/autostream/autostream_artwork.py
 # Dedicated Wi-Fi recovery helper — deployed alongside the watcher (root:root
 # 0644) so the recovery executable's import resolves on every install/update.
 install -m 0644 -o root -g root "$DEPLOY/core/autostream_wifi_network.py" \
