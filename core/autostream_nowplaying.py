@@ -24,6 +24,10 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_HINTS_PATH = "/etc/autostream/nowplaying_hints.json"
 PIPE_METADATA_ENV = "AUTOSTREAM_ENABLE_PIPE_METADATA"
 
+# Must not exceed PIPE_PICTURE_SIZE_MAX in OwnTone's src/inputs/pipe.c: it
+# discards a metadata bundle whose picture is larger than this.
+MAX_PICTURE_BYTES = 1024 * 1024
+
 
 @dataclass
 class NowPlayingMetadata:
@@ -237,11 +241,21 @@ class OwntoneMetadataPipePublisher:
         if meta.artwork_path:
             try:
                 art_path = Path(meta.artwork_path)
-                if art_path.exists() and art_path.is_file():
+                if not (art_path.exists() and art_path.is_file()):
+                    LOGGER.info("Pipe metadata: artwork %s is missing, publishing without it", art_path)
+                else:
                     art_payload = art_path.read_bytes()
-                    if len(art_payload) > 1024 * 1024:
+                    if len(art_payload) > MAX_PICTURE_BYTES:
+                        # OwnTone rejects a picture larger than this outright
+                        # (PIPE_PICTURE_SIZE_MAX in its inputs/pipe.c), so
+                        # sending it would cost us the whole metadata bundle.
+                        LOGGER.warning(
+                            "Pipe metadata: artwork %s is %d bytes, over the %d byte limit; publishing without it",
+                            art_path, len(art_payload), MAX_PICTURE_BYTES,
+                        )
                         art_payload = None
-            except Exception:
+            except Exception as e:
+                LOGGER.warning("Pipe metadata: could not read artwork %s: %s", meta.artwork_path, e)
                 art_payload = None
 
         if art_payload:

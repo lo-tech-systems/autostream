@@ -21,6 +21,12 @@ RestartSec=5
 # Environment (optional – make sure arecord & python3 are in PATH)
 Environment=PYTHONUNBUFFERED=1
 
+# Publish now-playing metadata (title/artist/album and cover art) to OwnTone
+# over the <audio_fifo>.metadata pipe, so AirPlay receivers such as an Apple TV
+# can show what is playing. Without this the pipe is never created and OwnTone
+# logs that it cannot open it.
+Environment=AUTOSTREAM_ENABLE_PIPE_METADATA=1
+
 # Let script handle its own logging, but also capture stdout/stderr in journal
 StandardOutput=journal
 StandardError=journal

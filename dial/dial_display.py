@@ -16,15 +16,12 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import ipaddress
 import logging
+import os
+import sys
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
-from urllib.parse import urlparse
 
 from dial_display_image import (
     MAX_ARTWORK_RESPONSE_BYTES,
@@ -34,14 +31,29 @@ from dial_display_image import (
 )
 from dial_target_status import fetch_target_status
 
+# The artwork fetch is shared with the OwnTone metadata publisher, which also
+# turns provider URLs into images. It faces the open internet, so it lives in
+# one place rather than being copied here (see core/autostream_artwork.py).
+# The dial deployment copies core modules alongside the dial package; in the
+# repo they live in core/, which may or may not be on sys.path.
+try:
+    from autostream_artwork import artwork_url_eligible, fetch_artwork
+except ImportError:
+    _core = os.path.join(os.path.dirname(__file__), '..', 'core')
+    sys.path.insert(0, os.path.abspath(_core))
+    from autostream_artwork import artwork_url_eligible, fetch_artwork
+
 DEFAULT_DISPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-centred-dark.png"
 
 DISPLAY_POLL_INTERVAL_SECONDS = 6
 DIAL_STATUS_TIMEOUT_SECONDS = 2.0
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
 DISPLAY_IDLE_SLEEP_SECONDS = 15 * 60
-_MAX_ARTWORK_REDIRECTS = 2
-_ARTWORK_CONTENT_TYPES = ("image/jpeg", "image/png", "image/webp")
+
+
+def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
+    """Fetch artwork for the panel, at the dial's own size ceiling."""
+    return fetch_artwork(url, timeout, MAX_ARTWORK_RESPONSE_BYTES)
 
 
 # ---------------------------------------------------------------------------
@@ -75,103 +87,6 @@ class _RateLimitedLogger:
 def _url_log_key(url: str) -> str:
     """Short, non-reversible identifier for a provider URL, safe at INFO/WARNING."""
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
-
-
-# ---------------------------------------------------------------------------
-# Artwork URL eligibility (stricter than general Track ID provider URL rules)
-# ---------------------------------------------------------------------------
-
-def _is_ip_literal(hostname: str) -> bool:
-    try:
-        ipaddress.ip_address(hostname.strip("[]"))
-        return True
-    except ValueError:
-        return False
-
-
-def artwork_url_eligible(url: str) -> bool:
-    """https-only, DNS hostname, no IP literal, no .local, no explicit non-default port."""
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False
-    if parsed.scheme != "https":
-        return False
-    hostname = parsed.hostname
-    if not hostname:
-        return False
-    if hostname.endswith(".local"):
-        return False
-    if _is_ip_literal(hostname):
-        return False
-    if parsed.port is not None and parsed.port != 443:
-        return False
-    return True
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
-def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
-    """Fetch one provider artwork URL with explicit, revalidated redirects.
-
-    Returns (data, error). error is "" on success. Redirect targets are
-    revalidated against the same eligibility rules; a chain longer than two
-    hops is treated as a fetch failure.
-    """
-    opener = urllib.request.build_opener(_NoRedirectHandler)
-    current_url = url
-
-    for _ in range(_MAX_ARTWORK_REDIRECTS + 1):
-        if not artwork_url_eligible(current_url):
-            return None, "ineligible_url"
-
-        logging.debug("dial display: fetching artwork %s", current_url)
-        req = urllib.request.Request(current_url, headers={"User-Agent": "autostream-dial"})
-        try:
-            resp = opener.open(req, timeout=timeout)
-        except urllib.error.HTTPError as e:
-            # _NoRedirectHandler.redirect_request() returning None does not
-            # stop urllib from raising HTTPError for 3xx responses — it still
-            # surfaces as an exception here rather than a plain response, so
-            # redirects must be handled in this branch too.
-            if 300 <= e.code < 400:
-                location = e.headers.get("Location") if e.headers else None
-                if not location:
-                    return None, "redirect_no_location"
-                current_url = urllib.parse.urljoin(current_url, location)
-                continue
-            return None, f"http_{e.code}"
-        except Exception as e:
-            return None, type(e).__name__
-
-        try:
-            status = getattr(resp, "status", None) or resp.getcode()
-            if 300 <= status < 400:
-                location = resp.headers.get("Location")
-                if not location:
-                    return None, "redirect_no_location"
-                current_url = urllib.parse.urljoin(current_url, location)
-                continue
-
-            if status != 200:
-                return None, f"http_{status}"
-
-            content_type = resp.headers.get("Content-Type", "")
-            ct_base = content_type.split(";")[0].strip().lower()
-            if ct_base not in _ARTWORK_CONTENT_TYPES:
-                return None, "unsupported_content_type"
-
-            data = resp.read(MAX_ARTWORK_RESPONSE_BYTES + 1)
-            if len(data) > MAX_ARTWORK_RESPONSE_BYTES:
-                return None, "oversized"
-            return data, ""
-        finally:
-            resp.close()
-
-    return None, "too_many_redirects"
 
 
 # ---------------------------------------------------------------------------

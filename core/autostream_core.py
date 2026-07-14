@@ -37,7 +37,9 @@ from autostream_config import (
     python_log_level_value,
     unconfigured,
 )
+from autostream_artwork import ArtworkFileCache
 from autostream_nowplaying import (
+    MAX_PICTURE_BYTES,
     NowPlayingMetadata,
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
@@ -1353,6 +1355,12 @@ class AudioMonitor:
         # --- Now-playing metadata helpers ---
         self._nowplaying_cache = PersistentNowPlayingCache()
         self._nowplaying_publisher = OwntoneMetadataPipePublisher(fifo_path)
+        # Track ID gives us an artwork URL, but the metadata pipe publishes
+        # artwork as bytes read from a file, so the URL has to be fetched to
+        # disk before OwnTone can carry it to the speakers. Cap the download at
+        # what the pipe can actually carry; a larger image would be fetched
+        # only to be dropped at publish time.
+        self._artwork_cache = ArtworkFileCache(max_bytes=MAX_PICTURE_BYTES)
         self._current_nowplaying = (
             self._nowplaying_cache.get_manual_hint(input_device)
             or NowPlayingMetadata(
@@ -1770,10 +1778,19 @@ class AudioMonitor:
                 )
                 self._ti_last_identified_at = now
                 if result.title or result.artist:
+                    # Fall back to the previous artwork rather than the hint's
+                    # badge: an identified track with the wrong cover is worse
+                    # than an identified track with the cover we already had.
+                    artwork_url = result.artwork.url if result.artwork else ""
+                    artwork_path = (
+                        self._artwork_cache.get_path(artwork_url)
+                        or self._current_nowplaying.artwork_path
+                    )
                     new_meta = NowPlayingMetadata(
                         title=result.title or self._current_nowplaying.title,
                         artist=result.artist or self._current_nowplaying.artist,
                         album=result.album or self._current_nowplaying.album,
+                        artwork_path=artwork_path,
                     )
                     if new_meta != self._current_nowplaying:
                         self._current_nowplaying = new_meta
