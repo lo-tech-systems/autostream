@@ -30,10 +30,13 @@ from autostream_config import (
     VALID_MAINTENANCE_LIFE_HOURS,
     VALID_BEARING_LIFE_HOURS,
     VALID_MAINTENANCE_LIFE_YEARS,
+    TURNTABLE_SILENCE_THRESHOLD_DBFS,
+    LINE_LEVEL_SILENCE_THRESHOLD_DBFS,
     normalize_stylus_life_hours,
     normalize_maintenance_life_hours,
     normalize_bearing_life_hours,
     normalize_maintenance_life_years,
+    suggested_silence_threshold_dbfs,
 )
 from autostream_sysutils import atomic_write_file
 
@@ -50,9 +53,6 @@ DEFAULT_PLAYBACK_STATS_PATH = Path(
         "/var/lib/autostream/playback_stats.json",
     )
 ).expanduser()
-
-TURNTABLE_SILENCE_THRESHOLD_DBFS = -45.0
-LINE_LEVEL_SILENCE_THRESHOLD_DBFS = -60.0
 
 STYLUS_WARNING_HOURS = 10.0
 STYLUS_WARNING_SECONDS = int(STYLUS_WARNING_HOURS * 3600)
@@ -88,15 +88,6 @@ def get_bearing_life_hours_options() -> tuple[int, ...]:
 def get_maintenance_life_years_options() -> tuple[int, ...]:
     """Return the supported maintenance elapsed-time options for UI dropdowns."""
     return VALID_MAINTENANCE_LIFE_YEARS
-
-
-def suggested_silence_threshold_dbfs(is_turntable: bool) -> float:
-    """Return the recommended silence threshold preset for the input type."""
-    return (
-        TURNTABLE_SILENCE_THRESHOLD_DBFS
-        if bool(is_turntable)
-        else LINE_LEVEL_SILENCE_THRESHOLD_DBFS
-    )
 
 
 def input_label(input_index: int) -> str:

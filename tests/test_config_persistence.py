@@ -234,6 +234,22 @@ class TestParseConfigAudio:
         cfg = c.parse_config({"audio1": {"eq_8khz_db": 1.5, "eq_10khz_db": 9.9}})
         assert cfg.audio1.eq_8khz_db == 1.5
 
+    def test_turntable_without_explicit_threshold_gets_turntable_preset(self):
+        cfg = c.parse_config({"audio1": {"turntable": True}})
+        assert cfg.audio1.silence_threshold_dbfs == c.TURNTABLE_SILENCE_THRESHOLD_DBFS
+
+    def test_line_level_without_explicit_threshold_gets_line_level_preset(self):
+        cfg = c.parse_config({"audio1": {"turntable": False}})
+        assert cfg.audio1.silence_threshold_dbfs == c.LINE_LEVEL_SILENCE_THRESHOLD_DBFS
+
+    def test_explicit_threshold_is_not_clobbered_by_derivation(self):
+        cfg = c.parse_config({"audio1": {"turntable": True, "silence_threshold": -30.0}})
+        assert cfg.audio1.silence_threshold_dbfs == -30.0
+
+    def test_stored_zero_threshold_is_preserved(self):
+        cfg = c.parse_config({"audio1": {"turntable": False, "silence_threshold": 0.0}})
+        assert cfg.audio1.silence_threshold_dbfs == 0.0
+
 
 class TestParseConfigOwntone:
     def test_output_offsets_parsed(self):
@@ -395,3 +411,15 @@ class TestLoadAndParse:
         cp.write_text("{bad}")
         with pytest.raises(ValueError):
             c.load_and_parse(str(cp))
+
+
+# ---------------------------------------------------------------------------
+# autostream_playback_stats re-exports
+# ---------------------------------------------------------------------------
+
+class TestPlaybackStatsReexports:
+    def test_reexported_objects_are_the_same_as_config(self):
+        import autostream_playback_stats as ps
+        assert ps.TURNTABLE_SILENCE_THRESHOLD_DBFS is c.TURNTABLE_SILENCE_THRESHOLD_DBFS
+        assert ps.LINE_LEVEL_SILENCE_THRESHOLD_DBFS is c.LINE_LEVEL_SILENCE_THRESHOLD_DBFS
+        assert ps.suggested_silence_threshold_dbfs is c.suggested_silence_threshold_dbfs

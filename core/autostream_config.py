@@ -77,6 +77,12 @@ VALID_MAINTENANCE_LIFE_HOURS = (0, 1000, 2000, 3000)        # drive belt
 VALID_BEARING_LIFE_HOURS = (0, 200, 500, 1000, 2000)        # main bearing oil
 VALID_MAINTENANCE_LIFE_YEARS = (0, 1, 2, 3, 4, 5)
 
+# Silence-detection presets by input type. Turntable ADC noise floors sit
+# well above line-level sources, so a turntable input needs a less sensitive
+# (higher) threshold to avoid reading its own noise as continuous playback.
+TURNTABLE_SILENCE_THRESHOLD_DBFS = -45.0
+LINE_LEVEL_SILENCE_THRESHOLD_DBFS = -60.0
+
 
 def normalize_stylus_life_hours(
     value: object,
@@ -122,6 +128,15 @@ def normalize_bearing_life_hours(value: object, default: int = 0) -> int:
 def normalize_maintenance_life_years(value: object, default: int = 0) -> int:
     """Return a valid elapsed-time threshold in years, or 0 (disabled)."""
     return _normalize_choice(value, VALID_MAINTENANCE_LIFE_YEARS, default)
+
+
+def suggested_silence_threshold_dbfs(is_turntable: bool) -> float:
+    """Return the recommended silence threshold preset for the input type."""
+    return (
+        TURNTABLE_SILENCE_THRESHOLD_DBFS
+        if bool(is_turntable)
+        else LINE_LEVEL_SILENCE_THRESHOLD_DBFS
+    )
 
 
 _PYTHON_LOG_LEVELS = {
@@ -484,10 +499,15 @@ class AutostreamConfig:
 
 def _parse_audio_input_config(section: dict) -> AudioInputConfig:
     """Parse a single audio section dict into an AudioInputConfig."""
+    is_turntable = bool(section.get("turntable", False))
+    raw_threshold = section.get("silence_threshold")
     return AudioInputConfig(
         capture_device=str(section.get("capture_device", "") or "").strip(),
-        silence_threshold_dbfs=float(section.get("silence_threshold", -66.0) or -66.0),
-        is_turntable=bool(section.get("turntable", False)),
+        silence_threshold_dbfs=(
+            float(raw_threshold) if raw_threshold is not None
+            else suggested_silence_threshold_dbfs(is_turntable)
+        ),
+        is_turntable=is_turntable,
         stylus_life_hours=normalize_stylus_life_hours(
             section.get("stylus_life_hours", DEFAULT_STYLUS_LIFE_HOURS),
             default=DEFAULT_STYLUS_LIFE_HOURS,
