@@ -44,6 +44,7 @@ SETTING_PIPE_AUTOSTART = "pipe_autostart"
 SETTING_PIPE_PATH = "pipe_path"
 SETTING_START_BUFFER_MS = "start_buffer_ms"
 SETTING_UNCOMPRESSED_ALAC = "uncompressed_alac"
+SETTING_BUFFERED_AUDIO_ENABLED = "buffered_audio_enabled"
 SETTING_IPV6 = "ipv6"
 SETTING_DEVICE_REMOVAL_GRACE_PERIOD = "device_removal_grace_period"
 

@@ -82,6 +82,7 @@ from autostream_webui_api import (
     send_owntone_output_mode_json,
     send_owntone_output_offset_json,
     send_owntone_uncompressed_json,
+    send_owntone_buffered_audio_json,
     send_owntone_start_buffer_json,
     send_owntone_grace_period_json,
     send_log_level_get_json,
@@ -877,6 +878,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/owntone/uncompressed-audio":
             if not AUTH.require_authenticated_if_pin_enabled(self): return
             send_owntone_uncompressed_json(self, STATE, body_str)
+
+        elif path == "/api/owntone/buffered-audio":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_owntone_buffered_audio_json(self, STATE, body_str)
 
         elif path == "/api/owntone/start-buffer":
             if not AUTH.require_authenticated_if_pin_enabled(self): return

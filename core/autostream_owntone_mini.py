@@ -33,6 +33,7 @@ from autostream_players import (
     SaveSettingResult,
     SettingDescriptor,
     SettingValueResult,
+    SETTING_BUFFERED_AUDIO_ENABLED,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
     SETTING_IPV6,
     SETTING_LOG_LEVEL,
@@ -115,6 +116,12 @@ _SETTING_SPECS: dict[str, _MiniSettingSpec] = {
         requires_restart_on_change=False,
         min_value=60,
         max_value=900,
+    ),
+    SETTING_BUFFERED_AUDIO_ENABLED: _MiniSettingSpec(
+        category="player",
+        option="buffered_audio_enabled",
+        value_type="bool",
+        requires_restart_on_change=False,
     ),
 }
 
@@ -577,6 +584,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             SETTING_UNCOMPRESSED_ALAC: "Uncompressed ALAC",
             SETTING_IPV6: "IPv6",
             SETTING_DEVICE_REMOVAL_GRACE_PERIOD: "mDNS Grace Period",
+            SETTING_BUFFERED_AUDIO_ENABLED: "AirPlay 2 Buffered Audio",
         }
         return labels.get(key, key)
 
