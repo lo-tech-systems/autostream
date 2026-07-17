@@ -609,6 +609,13 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
                     error_code="pin_required",
                     detail=(resp.text or "").strip(),
                 )
+        if resp is not None and resp.status_code == 503 and "encoder_capacity" in ((resp.text or "")):
+            return ActionResult(
+                ok=False,
+                error="Output declined: appliance CPU cannot encode another stream",
+                error_code="encoder_capacity",
+                detail=(resp.text or "").strip(),
+            )
         if resp is not None and resp.status_code != 204:
             return ActionResult(
                 ok=False,

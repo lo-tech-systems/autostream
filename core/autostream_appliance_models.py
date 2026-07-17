@@ -491,7 +491,9 @@ def apply_output_mutation(
     cache is checked before enabling. If the name cannot be resolved the check is
     skipped (fail-open) and a debug message is logged.
 
-    Returns a result dict with keys: ok, id, and optional error/pin_required/pin_invalid.
+    Returns a result dict with keys: ok, id, and optional
+    error/pin_required/pin_invalid (error is "encoder_capacity" when the
+    appliance's buffered-encode admission control declines the enable).
     """
     op = (body.get("op") or "").strip().lower()
     out_id_text = str(out_id or "").strip()
@@ -557,6 +559,9 @@ def apply_output_mutation(
                 "output_name": str(body.get("name") or ""),
                 "error": update_result.message,
             }
+        if not update_result.ok and update_result.error_code == "encoder_capacity":
+            # Output was NOT enabled; cached selection state is unchanged.
+            return {"ok": False, "id": out_id_text, "error": "encoder_capacity"}
         if not update_result.ok:
             # OwnTone rejected; state uncertain — expire cache so next call re-fetches.
             _invalidate_output_info_cache(owntone_base_url)

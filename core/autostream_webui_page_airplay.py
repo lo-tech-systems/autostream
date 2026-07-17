@@ -63,10 +63,11 @@ function _applyMasterScale(newMaster){var snaps=window.__MASTER_DRAG_SNAPSHOTS||
 function onMasterVolumeInput(v){_applyMasterScale(v);}
 function onMasterVolumeChange(v){_applyMasterScale(v);var snaps=window.__MASTER_DRAG_SNAPSHOTS||{};Object.keys(snaps).forEach(function(id){sendUpdate(id);});window.__MASTER_DRAG_SNAPSHOTS={};}
 function showPinModal(outputName){return new Promise(function(resolve){var m=document.getElementById('pinModal');var input=document.getElementById('pinModalInput');var btnOk=document.getElementById('pinModalOk');var btnCancel=document.getElementById('pinModalCancel');if(!m||!input||!btnOk||!btnCancel){var v=window.prompt('Enter PIN'+(outputName?' ('+outputName+')':'')+':','');resolve(v&&String(v).trim()?String(v).trim():null);return;}if(outputName)document.getElementById('pinModalTitle').textContent='Enter PIN for '+outputName;input.value='';m.classList.add('show');setTimeout(function(){try{input.focus();}catch(e){}},60);var cleanup=function(val){m.classList.remove('show');btnOk.onclick=null;btnCancel.onclick=null;input.onkeydown=null;resolve(val);};btnCancel.onclick=function(){cleanup(null);};btnOk.onclick=function(){var v=(input.value||'').trim();cleanup(v?v:null);};input.onkeydown=function(ev){if(ev.key==='Enter'){ev.preventDefault();btnOk.click();}else if(ev.key==='Escape'){ev.preventDefault();btnCancel.click();}};});}
+function showInfoModal(title,message){return new Promise(function(resolve){var m=document.getElementById('infoModal');var titleEl=document.getElementById('infoModalTitle');var msgEl=document.getElementById('infoModalMessage');var btnOk=document.getElementById('infoModalOk');if(!m||!titleEl||!msgEl||!btnOk){window.alert(title+': '+message);resolve();return;}titleEl.textContent=title;msgEl.textContent=message;m.classList.add('show');var cleanup=function(){m.classList.remove('show');btnOk.onclick=null;document.removeEventListener('keydown',onKey);resolve();};var onKey=function(ev){if(ev.key==='Escape'){ev.preventDefault();cleanup();}};btnOk.onclick=function(){cleanup();};document.addEventListener('keydown',onKey);});}
 function handleHomeSessionRejected(response){var status=Number(response&&response.status);if(status!==401&&status!==403)return false;if(window.__HOME_SESSION_REFRESHING)return true;window.__HOME_SESSION_REFRESHING=true;window.location.reload();return true;}
 async function postOutputUpdate(id,selected,volume){var r=await fetch(window.__OUTPUT_URL,{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(5000),headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},body:JSON.stringify({id:id,selected:!!selected,volume:parseInt(volume||0,10)||0,csrf_token:window.__CSRF||''})});if(handleHomeSessionRejected(r))return{ok:false,_http:r.status,session_rejected:true};var j=null;try{j=await r.json();}catch(e){j={ok:r.ok};}j._http=r.status;return j;}
 async function postPinOnly(id,pin){var r=await fetch(window.__OUTPUT_URL,{method:'POST',credentials:'same-origin',signal:AbortSignal.timeout(5000),headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},body:JSON.stringify({op:'pin',id:id,pin:String(pin||'').trim(),csrf_token:window.__CSRF||''})});if(handleHomeSessionRejected(r))return{ok:false,_http:r.status,session_rejected:true};var j=null;try{j=await r.json();}catch(e){j={ok:r.ok};}j._http=r.status;return j;}
-async function sendUpdate(id){var c=document.getElementById('output_enabled_'+id),s=document.getElementById('vol_slider_'+id);if(c&&c.disabled)return;var selected=c?c.checked:false;var volume=s?normalizeVolume(parseInt(s.value,10)):0;window.__PENDING_OUTPUTS.add(String(id));try{var j=null;try{j=await postOutputUpdate(id,selected,volume);}catch(e){return;}if(selected&&j&&j.error==='output_in_use'){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}if(selected&&j&&j.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}var nm='';try{var card=c?c.closest('.output-card'):null;var label=card?card.querySelector('.output-card-name'):null;nm=label?(label.textContent||'').trim():'';}catch(e){}while(true){var pin=await showPinModal(nm||'this speaker');if(!pin)return;var jpin=null;try{jpin=await postPinOnly(id,pin);}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}if(jpin&&jpin.ok){try{var jen=await postOutputUpdate(id,true,volume);if(jen&&jen.ok){if(c){c.checked=true;updateOutputStateVisual(String(id),true);}return;}if(jen&&jen.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}continue;}}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}return;}if(jpin&&jpin.pin_invalid)continue;return;}}}finally{window.__PENDING_OUTPUTS.delete(String(id));}}
+async function sendUpdate(id){var c=document.getElementById('output_enabled_'+id),s=document.getElementById('vol_slider_'+id);if(c&&c.disabled)return;var selected=c?c.checked:false;var volume=s?normalizeVolume(parseInt(s.value,10)):0;window.__PENDING_OUTPUTS.add(String(id));try{var j=null;try{j=await postOutputUpdate(id,selected,volume);}catch(e){return;}if(selected&&j&&j.error==='output_in_use'){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}var nm='';try{var card=c?c.closest('.output-card'):null;var label=card?card.querySelector('.output-card-name'):null;nm=label?(label.textContent||'').trim():'';}catch(e){}if(selected&&j&&j.error==='encoder_capacity'){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}showInfoModal('CPU limit reached','Unable to enable '+(nm||'this output')+': the appliance\\'s CPU cannot encode another stream at the selected quality. Disable another output or choose a lighter audio mode.');return;}if(selected&&j&&j.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}while(true){var pin=await showPinModal(nm||'this speaker');if(!pin)return;var jpin=null;try{jpin=await postPinOnly(id,pin);}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}if(jpin&&jpin.ok){try{var jen=await postOutputUpdate(id,true,volume);if(jen&&jen.ok){if(c){c.checked=true;updateOutputStateVisual(String(id),true);}return;}if(jen&&jen.pin_required){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}continue;}}catch(e){if(c){c.checked=false;updateOutputStateVisual(String(id),false);}return;}return;}if(jpin&&jpin.pin_invalid)continue;return;}}}finally{window.__PENDING_OUTPUTS.delete(String(id));}}
 function onToggleOutput(id){var cb=document.getElementById('output_enabled_'+id);if(cb&&cb.disabled)return;if(cb)updateOutputStateVisual(String(id),!!cb.checked);if(cb&&cb.checked){var sl=document.getElementById('vol_slider_'+id);if(sl){sl.value=String(window.__PRESET_VOLUME||20);updateVolumeLabel(id,sl.value);}}reorderOutputCards();updateMasterVolumeCard();sendUpdate(id);}
 function onVolumeChange(id,v){updateVolumeLabel(id,v);if(document.activeElement!==document.getElementById('master_vol_slider'))updateMasterVolumeCard();sendUpdate(id);}
 var VU_THRESHOLDS=[-60,-48,-36,-24,-12,-6,-3];var VU_COLORS=['#2196F3','#2196F3','#2196F3','#2196F3','#f0ad4e','#fd7e14','#dc3545'];var VU_BIN_MS=100;var VU_DELAY_BINS=Math.max(1,Math.round((window.__VU_DELAY_MS||2250)/VU_BIN_MS));
@@ -532,6 +533,36 @@ def send_airplay_page(
           }});
         }}
 
+        function showInfoModal(title, message){{
+          return new Promise((resolve) => {{
+            const m = document.getElementById('infoModal');
+            const titleEl = document.getElementById('infoModalTitle');
+            const msgEl = document.getElementById('infoModalMessage');
+            const btnOk = document.getElementById('infoModalOk');
+            if (!m || !titleEl || !msgEl || !btnOk) {{
+              // Fallback to native alert if our modal is missing for any reason.
+              window.alert(title + ': ' + message);
+              resolve();
+              return;
+            }}
+            titleEl.textContent = title;
+            msgEl.textContent = message;
+            m.classList.add('show');
+
+            const cleanup = () => {{
+              m.classList.remove('show');
+              btnOk.onclick = null;
+              document.removeEventListener('keydown', onKey);
+              resolve();
+            }};
+            const onKey = (ev) => {{
+              if (ev.key === 'Escape') {{ ev.preventDefault(); cleanup(); }}
+            }};
+            btnOk.onclick = () => cleanup();
+            document.addEventListener('keydown', onKey);
+          }});
+        }}
+
         function computeMasterVolume(){{
           var sum=0, count=0;
           document.querySelectorAll('.output-card').forEach(function(card){{
@@ -667,6 +698,21 @@ def send_airplay_page(
               return;
             }}
 
+            // Output card name, shared by the encoder-capacity and PIN branches below.
+            let nm = '';
+            try {{
+              const card = c ? c.closest('.output-card') : null;
+              const label = card ? card.querySelector('.output-card-name') : null;
+              nm = label ? (label.textContent || '').trim() : '';
+            }} catch (e) {{}}
+
+            if (selected && j && j.error === 'encoder_capacity') {{
+              if (c) {{ c.checked = false; updateOutputStateVisual(String(id), false); }}
+              showInfoModal('CPU limit reached',
+                'Unable to enable ' + (nm || 'this output') + ': the appliance\\'s CPU cannot encode another stream at the selected quality. Disable another output or choose a lighter audio mode.');
+              return;
+            }}
+
             // If OwnTone requires a PIN, prompt and do PIN-only verification.
             // On wrong PIN (still 400), re-prompt; on success, retry the original enable.
             if (selected && j && j.pin_required) {{
@@ -675,13 +721,6 @@ def send_airplay_page(
                 c.checked = false;
                 updateOutputStateVisual(String(id), false);
               }}
-
-              let nm = '';
-              try {{
-                const card = c ? c.closest('.output-card') : null;
-                const label = card ? card.querySelector('.output-card-name') : null;
-                nm = label ? (label.textContent || '').trim() : '';
-              }} catch (e) {{}}
 
               while (true) {{
                 const pin = await showPinModal(nm || 'this speaker');
@@ -1243,6 +1282,17 @@ def send_airplay_page(
       <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">OK</button>
     </div>
   </div>
+</div>
+<div id="infoModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="infoModalTitle">Notice</div>
+    <div class="bd modal-bd">
+      <p id="infoModalMessage"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-primary" id="infoModalOk">OK</button>
+    </div>
+  </div>
 </div>"""
 
     # Top controls row: refresh button + optional hostname/selector.
@@ -1454,6 +1504,17 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     <div class="ft modal-ft">
       <button type="button" class="btn modal-btn modal-btn-secondary" id="pinModalCancel">Cancel</button>
       <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">OK</button>
+    </div>
+  </div>
+</div>
+<div id="infoModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="infoModalTitle">Notice</div>
+    <div class="bd modal-bd">
+      <p id="infoModalMessage"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-primary" id="infoModalOk">OK</button>
     </div>
   </div>
 </div>"""

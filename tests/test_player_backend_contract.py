@@ -353,6 +353,24 @@ class TestPutOutputFields:
         assert result.ok is False
         assert result.error_code == "pin_invalid"
 
+    def test_503_encoder_capacity_returns_encoder_capacity(self):
+        b = self._b()
+        r = _resp(status=503, content=b'{"error":"encoder_capacity"}')
+        r.text = '{"error":"encoder_capacity"}'
+        with patch("autostream_players.requests.put", return_value=r):
+            result = b._put_output_fields("abc", {"selected": True})
+        assert result.ok is False
+        assert result.error_code == "encoder_capacity"
+
+    def test_503_unrelated_body_returns_http_error(self):
+        b = self._b()
+        r = _resp(status=503, content=b"upstream unavailable")
+        r.text = "upstream unavailable"
+        with patch("autostream_players.requests.put", return_value=r):
+            result = b._put_output_fields("abc", {"selected": True})
+        assert result.ok is False
+        assert result.error_code == "http_error"
+
     def test_missing_output_id_returns_error(self):
         b = self._b()
         result = b._put_output_fields("", {"selected": True})

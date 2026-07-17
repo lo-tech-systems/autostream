@@ -1511,6 +1511,28 @@ class TestOutputMutationOccupancyProtection:
         assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
         assert _am._OUTPUT_INFO_CACHE_TIME.get(url) == stamp, "cache timestamp must not change"
 
+    def test_encoder_capacity_maps_to_error_and_leaves_cache_unchanged(self, tmp_path):
+        """Encoder-capacity rejection maps to {ok:False, error:"encoder_capacity"} (output not enabled)."""
+        import time as _time
+        url = "http://localhost:3689"
+        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", False)}
+        stamp = _time.monotonic()
+        _am._OUTPUT_INFO_CACHE_TIME[url] = stamp
+
+        capacity_err = _make_result_err("encoder_capacity", "Output declined: appliance CPU cannot encode another stream")
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.list_outputs",
+                   return_value=_make_list_outputs_ok([_make_fake_output("42", "Kitchen")])), \
+             patch("autostream_appliance_models.update_output", return_value=capacity_err), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
+             patch("autostream_output_usage.usage_for_output", return_value=None):
+            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+
+        assert result == {"ok": False, "id": "42", "error": "encoder_capacity"}
+        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
+        assert _am._OUTPUT_INFO_CACHE_TIME.get(url) == stamp, "cache timestamp must not change"
+
     def test_subsequent_enable_after_disable_blocked_when_occupied(self, tmp_path):
         """Disable then re-enable: occupancy check fires because disable set selected=False."""
         import time as _time
