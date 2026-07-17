@@ -269,10 +269,9 @@ def _parse_hidden_outputs(raw: str) -> list[str]:
 
 
 def _build_audio_section(cfg: configparser.ConfigParser, section: str) -> dict:
-    return {
+    out = {
         "capture_device":    _ini_str(cfg, section, "capture_device", ""),
         "turntable":         _ini_bool(cfg, section, "turntable", False),
-        "silence_threshold": _ini_float(cfg, section, "silence_threshold", -66.0),
         "gain_db":           _ini_float(cfg, section, "gain_db", 0.0),
         "eq_40hz_db":        _ini_float(cfg, section, "eq_40hz_db", 0.0),
         "eq_100hz_db":       _ini_float(cfg, section, "eq_100hz_db", 0.0),
@@ -287,6 +286,12 @@ def _build_audio_section(cfg: configparser.ConfigParser, section: str) -> dict:
         "bearing_life_hours": _ini_int(cfg, section, "bearing_life_hours", 0),
         "bearing_life_years": _ini_int(cfg, section, "bearing_life_years", 0),
     }
+    # Only carry an explicit INI value across. Omitting the key when the source
+    # has none lets parse-time derivation pick the threshold from the
+    # `turntable` flag instead of freezing in a migrator-invented default.
+    if cfg.has_option(section, "silence_threshold"):
+        out["silence_threshold"] = _ini_float(cfg, section, "silence_threshold", 0.0)
+    return out
 
 
 def _ini_to_config_json(cfg: configparser.ConfigParser) -> dict:

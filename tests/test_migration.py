@@ -284,3 +284,96 @@ class TestAutoStreamMigration:
 
         assert not cfg_path.exists()
         assert not state_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# silence_threshold: omitted when the source INI has none, carried across
+# when the source INI has an explicit value
+# ---------------------------------------------------------------------------
+
+class TestSilenceThresholdMigration:
+
+    def test_absent_in_ini_is_absent_in_json(self, tmp_path, stub_system):
+        """No silence_threshold in the source INI → key omitted from the migrated JSON."""
+        cfg = configparser.ConfigParser()
+        cfg["general"] = {
+            "log_file": "/var/log/autostream/autostream.log",
+            "silence_seconds": "30",
+            "fifo_path": "/tmp/autostream-pipes/autostream.fifo",
+        }
+        cfg["audio1"] = {
+            "capture_device": "hw:1,0",
+            "turntable": "yes",
+            "gain_db": "0",
+        }
+        old_ini = tmp_path / "autostream.ini"
+        with old_ini.open("w") as f:
+            cfg.write(f)
+        cfg_path = tmp_path / "autostream.json"
+        state_path = tmp_path / "autostream-state.json"
+
+        with patch.multiple(m,
+                _OLD_INI=old_ini,
+                _NEW_CFG=cfg_path,
+                _NEW_STATE=state_path,
+                _DATA_FILES=[],
+                _OLD_HINTS=tmp_path / "hints.json"):
+            m._migrate_autostream(dry_run=False)
+
+        migrated = json.loads(cfg_path.read_text())
+        assert "silence_threshold" not in migrated["audio1"]
+
+    def test_explicit_value_carried_across_unchanged(self, tmp_path, stub_system):
+        """An explicit silence_threshold in the source INI is a deliberate choice and
+        must survive migration unchanged, not be replaced by a derived default."""
+        old_ini = _write_minimal_ini(tmp_path / "autostream.ini")  # audio1.silence_threshold = -66
+        cfg_path = tmp_path / "autostream.json"
+        state_path = tmp_path / "autostream-state.json"
+
+        with patch.multiple(m,
+                _OLD_INI=old_ini,
+                _NEW_CFG=cfg_path,
+                _NEW_STATE=state_path,
+                _DATA_FILES=[],
+                _OLD_HINTS=tmp_path / "hints.json"):
+            m._migrate_autostream(dry_run=False)
+
+        migrated = json.loads(cfg_path.read_text())
+        assert migrated["audio1"]["silence_threshold"] == -66.0
+
+    def test_migrated_turntable_config_derives_threshold_end_to_end(self, tmp_path, stub_system):
+        """A migrated turntable input with no source silence_threshold resolves to the
+        turntable preset when parsed by the config layer, not a stale hardcoded default."""
+        cfg = configparser.ConfigParser()
+        cfg["general"] = {
+            "log_file": "/var/log/autostream/autostream.log",
+            "silence_seconds": "30",
+            "fifo_path": "/tmp/autostream-pipes/autostream.fifo",
+        }
+        cfg["audio1"] = {
+            "capture_device": "hw:1,0",
+            "turntable": "yes",
+            "gain_db": "0",
+        }
+        old_ini = tmp_path / "autostream.ini"
+        with old_ini.open("w") as f:
+            cfg.write(f)
+        cfg_path = tmp_path / "autostream.json"
+        state_path = tmp_path / "autostream-state.json"
+
+        with patch.multiple(m,
+                _OLD_INI=old_ini,
+                _NEW_CFG=cfg_path,
+                _NEW_STATE=state_path,
+                _DATA_FILES=[],
+                _OLD_HINTS=tmp_path / "hints.json"):
+            m._migrate_autostream(dry_run=False)
+
+        _core = str(REPO_ROOT / "core")
+        if _core not in sys.path:
+            sys.path.insert(0, _core)
+        import autostream_config as config_module
+
+        migrated = json.loads(cfg_path.read_text())
+        parsed = config_module.parse_config(migrated)
+        assert parsed.audio1.silence_threshold_dbfs == -45.0
