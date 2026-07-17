@@ -127,7 +127,7 @@ class TestParseConfigDefaults:
         cfg = c.parse_config({})
         assert cfg.general.log_level == "info"
         assert cfg.general.silence_seconds == 30
-        assert cfg.general.fifo_path == "/tmp/autostream-pipes/autostream.fifo"
+        assert cfg.general.fifo_path == c.FIFO_PATH
         assert cfg.owntone.base_url == "http://localhost:3689"
         assert cfg.owntone.volume_percent == 20
         assert cfg.audio1.is_turntable is False
@@ -135,6 +135,12 @@ class TestParseConfigDefaults:
         assert cfg.audio2_enabled is False
         assert cfg.updates.auto_update is False
         assert cfg.updates.update_channel == "stable"
+
+    def test_stored_fifo_path_is_ignored(self):
+        # The FIFO is a fixed appliance path, so a path carried by an older
+        # config must not win: it may point into /tmp, which gets cleaned.
+        cfg = c.parse_config({"general": {"fifo_path": "/tmp/autostream-pipes/autostream.fifo"}})
+        assert cfg.general.fifo_path == c.FIFO_PATH
 
     def test_audio1_eq_and_gain_defaults(self):
         cfg = c.parse_config({})

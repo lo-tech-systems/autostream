@@ -23,6 +23,9 @@ REPO_ROOT = Path(__file__).parent.parent
 _tools = str(REPO_ROOT / "tools")
 if _tools not in sys.path:
     sys.path.insert(0, _tools)
+_core = str(REPO_ROOT / "core")
+if _core not in sys.path:
+    sys.path.insert(0, _core)
 
 # pwd and grp are Unix-only; stub them before importing the migration script
 # so tests run on any platform (the real calls are patched out in fixtures).
@@ -174,7 +177,11 @@ class TestAutoStreamMigration:
     def test_already_migrated_is_noop(self, tmp_path, stub_system):
         """New JSON exists, old INI absent — function returns without changing anything."""
         cfg_path = tmp_path / "autostream.json"
-        cfg_path.write_text('{"general": {"silence_seconds": 42, "mdns_grace_period_seconds": 180}}')
+        cfg_path.write_text(json.dumps({"general": {
+            "silence_seconds": 42,
+            "mdns_grace_period_seconds": 180,
+            "fifo_path": m._FIFO_PATH,
+        }}))
         state_path = tmp_path / "autostream-state.json"
         state_path.write_text('{"auth": {}}')
         cfg_before = cfg_path.read_text()
@@ -204,6 +211,37 @@ class TestAutoStreamMigration:
 
         cfg = json.loads(cfg_path.read_text())
         assert cfg["general"]["mdns_grace_period_seconds"] == 300
+
+    def test_fifo_path_matches_the_config_layer(self):
+        """autostream_migrate.py is installed standalone and cannot import the
+        core config module, so it carries its own copy of the path. The two must
+        agree or migration writes a path the app then ignores."""
+        import autostream_config
+
+        assert m._FIFO_PATH == autostream_config.FIFO_PATH
+
+    def test_already_migrated_rewrites_fifo_path_off_tmp(self, tmp_path, stub_system):
+        """An install carrying the old /tmp FIFO path is moved to the canonical
+        path: under /tmp the FIFO is deleted by age-based cleanup once the
+        appliance sits idle, and playback then never starts."""
+        cfg_path = tmp_path / "autostream.json"
+        cfg_path.write_text(json.dumps({"general": {
+            "mdns_grace_period_seconds": 120,
+            "fifo_path": "/tmp/autostream-pipes/autostream.fifo",
+        }}))
+        state_path = tmp_path / "autostream-state.json"
+        state_path.write_text('{"auth": {}}')
+
+        with patch.multiple(m,
+                _OLD_INI=tmp_path / "autostream.ini",  # absent
+                _NEW_CFG=cfg_path,
+                _NEW_STATE=state_path,
+                _DATA_FILES=[]):
+            m._migrate_autostream(dry_run=False)
+
+        cfg = json.loads(cfg_path.read_text())
+        assert cfg["general"]["fifo_path"] == m._FIFO_PATH
+        assert not cfg["general"]["fifo_path"].startswith("/tmp/")
 
     def test_pin_preserved_in_state_file(self, tmp_path, stub_system):
         """PIN from INI [auth] section is written into the state file, not the config."""

@@ -108,7 +108,7 @@ if conf.exists():
 else:
     text = ""
 
-line = 'directories = { "/tmp/autostream-pipes" }'
+line = 'directories = { "/run/autostream-pipes" }'
 lib = re.search(r'(?ms)^\s*library\s*\{.*?^\s*\}', text)
 if lib:
     block = lib.group(0)

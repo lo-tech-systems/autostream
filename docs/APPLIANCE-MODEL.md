@@ -77,7 +77,9 @@ time. Core always-running units:
 helpers), `/var/log/autostream/` (logs).
 
 Runtime: `/tmp/autostream_monitor.sock`, `/tmp/vibra-mini.sock`,
-`/tmp/autostream-pipes/autostream.fifo`.
+`/run/autostream-pipes/autostream.fifo` (created at boot from
+`/usr/lib/tmpfiles.d/autostream.conf`; it lives under `/run` rather than `/tmp`
+because `/tmp` is subject to age-based cleanup).
 
 ---
 

@@ -54,6 +54,11 @@ _DEFAULT_MDNS_GRACE_PERIOD_SECONDS = 120
 _MIN_MDNS_GRACE_PERIOD_SECONDS = 60
 _MAX_MDNS_GRACE_PERIOD_SECONDS = 900
 
+# Keep in step with FIFO_PATH in autostream_config.py. The FIFO moved off /tmp,
+# where it was subject to age-based cleanup, so any path an existing config
+# carries is replaced rather than preserved.
+_FIFO_PATH = "/run/autostream-pipes/autostream.fifo"
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -161,6 +166,15 @@ def _ensure_mdns_grace_period(config_data: dict) -> bool:
         )
         return general["mdns_grace_period_seconds"] != before
     general["mdns_grace_period_seconds"] = _read_backend_grace_period_seconds(config_data)
+    return True
+
+
+def _ensure_fifo_path(config_data: dict) -> bool:
+    """Force general.fifo_path to the canonical path. Returns True if changed."""
+    general = config_data.setdefault("general", {})
+    if general.get("fifo_path") == _FIFO_PATH:
+        return False
+    general["fifo_path"] = _FIFO_PATH
     return True
 
 
@@ -318,7 +332,7 @@ def _ini_to_config_json(cfg: configparser.ConfigParser) -> dict:
         "general": {
             "log_file":        _ini_str(cfg, "general", "log_file", "/var/log/autostream/autostream.log"),
             "log_level":       _ini_str(cfg, "general", "log_level", "info"),
-            "fifo_path":       _ini_str(cfg, "general", "fifo_path", "/tmp/autostream-pipes/autostream.fifo"),
+            "fifo_path":       _FIFO_PATH,
             "silence_seconds": _ini_int(cfg, "general", "silence_seconds", 30),
         },
         "audio1": _build_audio_section(cfg, "audio1"),
@@ -393,7 +407,12 @@ def _migrate_autostream(dry_run: bool) -> None:
         LOG.info("Fresh install (no INI, no JSON config) — creating empty skeleton files.")
         _ensure_dir(Path("/etc/autostream"), uid, gid, 0o755, dry_run)
         _ensure_dir(Path("/var/lib/autostream"), uid, gid, 0o750, dry_run)
-        fresh_config = {"general": {"mdns_grace_period_seconds": _DEFAULT_MDNS_GRACE_PERIOD_SECONDS}}
+        fresh_config = {
+            "general": {
+                "mdns_grace_period_seconds": _DEFAULT_MDNS_GRACE_PERIOD_SECONDS,
+                "fifo_path": _FIFO_PATH,
+            }
+        }
         _atomic_write_json(_NEW_CFG, fresh_config, dry_run)
         if not dry_run and _NEW_CFG.exists():
             _set_ownership_mode(_NEW_CFG, uid, gid, 0o600, dry_run=False)
@@ -408,11 +427,15 @@ def _migrate_autostream(dry_run: bool) -> None:
                 config_data = json.load(f)
             if not isinstance(config_data, dict):
                 config_data = {}
-            if _ensure_mdns_grace_period(config_data):
+            changed = _ensure_mdns_grace_period(config_data)
+            if _ensure_fifo_path(config_data):
+                LOG.info("Set general.fifo_path to %s in %s", _FIFO_PATH, _NEW_CFG)
+                changed = True
+            if changed:
                 _replace_json(_NEW_CFG, config_data, dry_run)
         except Exception as exc:
-            LOG.warning("Could not seed mDNS grace period in %s: %s", _NEW_CFG, exc)
-        LOG.info("Already migrated (new JSON config exists, old INI absent) — nothing to do.")
+            LOG.warning("Could not seed general settings in %s: %s", _NEW_CFG, exc)
+        LOG.info("Already migrated (new JSON config exists, old INI absent) — no layout change needed.")
         return
 
     if old_exists and new_exists:

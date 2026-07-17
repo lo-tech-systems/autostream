@@ -267,7 +267,7 @@ Sets the named pipe path used for output.
 Request:
 
 ```json
-{"type":"set_fifo","path":"/tmp/autostream-pipes/autostream.fifo"}
+{"type":"set_fifo","path":"/run/autostream-pipes/autostream.fifo"}
 ```
 
 Validation:

@@ -197,8 +197,8 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             if not str(general.get("log_file", "") or "").strip():
                 general["log_file"] = p.general.log_file
 
-            if not str(general.get("fifo_path", "") or "").strip():
-                general["fifo_path"] = p.general.fifo_path
+            # Fixed appliance path, so correct it rather than only filling it in.
+            general["fifo_path"] = p.general.fifo_path
 
             # Track identification settings — only saved when sentinel is present.
             _track_id_changed = False

@@ -26,6 +26,14 @@ from typing import Optional
 # Import this constant rather than hardcoding the path at call sites.
 STATE_PATH = "/var/lib/autostream/autostream-state.json"
 
+# Canonical path for the audio FIFO that the monitor writes and the playback
+# backend reads. Import this constant rather than hardcoding the path at call
+# sites. It lives under /run because everything below /tmp is subject to
+# age-based cleanup: the FIFO would be deleted after a long idle period, and the
+# backend would keep reading the deleted FIFO rather than the one we recreate.
+# /run/autostream-pipes is created at boot by system/tmpfiles.d/autostream.conf.
+FIFO_PATH = "/run/autostream-pipes/autostream.fifo"
+
 DEFAULT_LOG_LEVEL = "info"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 DEFAULT_MDNS_GRACE_PERIOD_SECONDS = 120
@@ -559,7 +567,9 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         log_file=str(general_d.get("log_file", "/var/log/autostream/autostream.log") or ""),
         log_level=normalize_log_level(general_d.get("log_level", DEFAULT_LOG_LEVEL)),
         silence_seconds=int(general_d.get("silence_seconds", 30) or 30),
-        fifo_path=str(general_d.get("fifo_path", "/tmp/autostream-pipes/autostream.fifo") or ""),
+        # Fixed appliance path: any value carried in the config is ignored, and
+        # autostream_migrate.py rewrites it. See FIFO_PATH.
+        fifo_path=FIFO_PATH,
         mdns_grace_period_seconds=normalize_mdns_grace_period_seconds(
             general_d.get("mdns_grace_period_seconds", DEFAULT_MDNS_GRACE_PERIOD_SECONDS)
         ),

@@ -212,6 +212,8 @@ main() {
   remove_path /etc/sudoers.d/autostream_admin
 
   info "Removing other autostream-managed files we can identify confidently"
+  remove_path /usr/lib/tmpfiles.d/autostream.conf
+  remove_path /run/autostream-pipes
   remove_path /etc/avahi/services/autostream.service
   remove_path /etc/logrotate.d/autostream
   remove_path /etc/dnsmasq.d/autostream-setup.conf
