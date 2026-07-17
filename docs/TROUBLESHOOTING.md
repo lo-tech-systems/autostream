@@ -620,7 +620,9 @@ autostream runs a **storage guard** service once a day (04:00, ± 30 min jitter)
 
 #### What it cleans up
 
-The guard uses a conservative, allowlist-based cleanup sequence. It only ever removes **rotated archive files** — numbered (`logfile.1`, `logfile.2.gz`) or dated (`logfile-20260601.gz`) copies of known base log files. It never touches current log files, application data, configuration, databases, or files outside `/var/log`.
+The guard uses a conservative, allowlist-based cleanup sequence. Of the files it deletes *itself*, it only ever removes **rotated archive files** — numbered (`logfile.1`, `logfile.2.gz`) or dated (`logfile-20260601.gz`) copies of known base log files. It never touches current log files, application data, configuration, or databases.
+
+Some steps below delegate to system tools that have a reach of their own: `tmpfiles.d` cleanup applies the distribution's age rules to `/tmp` and `/var/tmp`, so it can delete idle files there that Autostream did not create. Nothing runs while storage is in the `normal` state — cleanup only starts at `warning`.
 
 Cleanup steps (escalating with state severity):
 

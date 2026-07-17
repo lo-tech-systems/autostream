@@ -93,9 +93,6 @@ LARGE_FILE_SCAN_ROOTS = (
 LARGE_FILE_REPORT_MAX = 20
 DELETED_OPEN_MIN_BYTES = 64 * 1024 ** 2
 
-# Tmpfiles once-per-24h guard key
-TMPFILES_INTERVAL_HOURS = 24
-
 # ---------------------------------------------------------------------------
 # Archive allowlist
 # ---------------------------------------------------------------------------
@@ -1167,7 +1164,6 @@ def run_cleanup(
     actions: list,
     root_dev: int,
     guard_state: dict,
-    now: datetime,
     emergency: bool = False,
 ) -> str:
     """Run cleanup stages appropriate for the given initial_state.
@@ -1185,13 +1181,10 @@ def run_cleanup(
     current_state = initial_state
 
     if current_state == "normal":
-        # Only run tmpfiles at most once per 24h.
-        last_tmpfiles = guard_state.get("last_tmpfiles_run_at")
-        last_dt = _parse_utc_ts(last_tmpfiles)
-        should_run = last_dt is None or (now - last_dt) >= timedelta(hours=TMPFILES_INTERVAL_HOURS)
-        if should_run:
-            action_tmpfiles_clean(actions)
-            guard_state["last_tmpfiles_run_at"] = _utc_now_str()
+        # Storage is fine, so there is nothing to reclaim. Cleanup only runs
+        # from "warning" up, because it is not free: systemd-tmpfiles --clean
+        # applies the distribution's age rules to /tmp and /var/tmp, deleting
+        # idle runtime files that belong to whoever created them.
         return "normal"
 
     # Warning+ cleanup
@@ -1373,7 +1366,6 @@ def main() -> int:
             actions=actions,
             root_dev=root_dev,
             guard_state=guard_state,
-            now=now,
             emergency=(initial_state == "emergency"),
         )
 
