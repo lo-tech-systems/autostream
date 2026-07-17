@@ -44,6 +44,7 @@ SETTING_PIPE_AUTOSTART = "pipe_autostart"
 SETTING_PIPE_PATH = "pipe_path"
 SETTING_START_BUFFER_MS = "start_buffer_ms"
 SETTING_UNCOMPRESSED_ALAC = "uncompressed_alac"
+SETTING_BUFFERED_AUDIO_ENABLED = "buffered_audio_enabled"
 SETTING_IPV6 = "ipv6"
 SETTING_DEVICE_REMOVAL_GRACE_PERIOD = "device_removal_grace_period"
 
@@ -64,6 +65,9 @@ SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES = 2
 OUTPUT_MODE_AUTO = "auto"
 OUTPUT_MODE_AIRPLAY1 = "airplay1"
 OUTPUT_MODE_AIRPLAY2 = "airplay2"
+OUTPUT_MODE_AIRPLAY2_BUFFERED = "airplay2_buffered"
+OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO = "airplay2_surround_stereo"
+OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX = "airplay2_surround_upmix"
 
 
 @dataclass(frozen=True)

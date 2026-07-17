@@ -1760,7 +1760,14 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
         send_json(handler, 400, {"ok": False, "error": "output_id required"})
         return
     mode_raw = str(payload.get("mode") or DEFAULT_AIRPLAY_MODE).strip().lower()
-    valid_modes = {DEFAULT_AIRPLAY_MODE, "raop", "airplay2"}
+    valid_modes = {
+        DEFAULT_AIRPLAY_MODE,
+        "raop",
+        "airplay2",
+        "airplay2_buffered",
+        "airplay2_surround_stereo",
+        "airplay2_surround_upmix",
+    }
     if mode_raw not in valid_modes:
         send_json(handler, 400, {"ok": False, "error": f"mode must be one of {sorted(valid_modes)}"})
         return
@@ -1953,6 +1960,24 @@ def send_owntone_uncompressed_json(handler, state: WebUIState, body: str) -> Non
         send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
     _send_owntone_native_setting_json(handler, state, SETTING_UNCOMPRESSED_ALAC, value)
+
+
+def send_owntone_buffered_audio_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/buffered-audio — toggle AirPlay 2 buffered audio preference.
+
+    Body: {"value": true|false}
+    """
+    from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+    value = payload.get("value")
+    if not isinstance(value, bool):
+        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        return
+    _send_owntone_native_setting_json(handler, state, SETTING_BUFFERED_AUDIO_ENABLED, value)
 
 
 def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> None:

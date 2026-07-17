@@ -31,6 +31,7 @@ from autostream_config import (
     parse_config,
 )
 from autostream_players import (
+    SETTING_BUFFERED_AUDIO_ENABLED,
     SETTING_START_BUFFER_MS,
     SETTING_START_BUFFER_MS_DEFAULT,
     SETTING_START_BUFFER_MS_MAX,
@@ -323,6 +324,14 @@ def send_owntone_setup_page(
     uncompressed_supported = bool(uncompressed_result.ok)
     uncompressed = bool(uncompressed_result.value) if uncompressed_result.ok else False
 
+    buffered_audio_result = get_setting(
+        parsed.owntone.base_url,
+        SETTING_BUFFERED_AUDIO_ENABLED,
+        timeout=3,
+    )
+    buffered_audio_supported = bool(buffered_audio_result.ok)
+    buffered_audio_enabled = bool(buffered_audio_result.value) if buffered_audio_result.ok else False
+
     start_buffer_result = get_setting(
         parsed.owntone.base_url,
         SETTING_START_BUFFER_MS,
@@ -413,6 +422,12 @@ def send_owntone_setup_page(
                     label = "AirPlay"
                 elif supported_mode == "airplay2":
                     label = "AirPlay 2"
+                elif supported_mode == "airplay2_buffered":
+                    label = "AirPlay 2 (buffered)"
+                elif supported_mode == "airplay2_surround_stereo":
+                    label = "AirPlay 2 (stereo for 5.1 systems)"
+                elif supported_mode == "airplay2_surround_upmix":
+                    label = "AirPlay 2 (5.1 upmix)"
                 mode_options += (
                     f'<option value="{supported_mode}"'
                     f'{" selected" if current_mode == supported_mode else ""}>{label}</option>'
@@ -473,6 +488,24 @@ def send_owntone_setup_page(
         f"{_uncomp_onchange_attr}>"
     )
 
+    # Buffered audio: only rendered at all when the backend exposes the setting.
+    _buffered_audio_html = ""
+    if buffered_audio_supported:
+        _ba_oc = "if(liveEnabled) settingsTransact('/api/owntone/buffered-audio', {value: this.checked});"
+        _buffered_audio_input = (
+            f"<input type='checkbox' name='buffered_audio_enabled' {'checked' if buffered_audio_enabled else ''}"
+            f" onchange='{html.escape(_ba_oc)}'>"
+        )
+        _buffered_audio_html = (
+            "<div style='display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;'>"
+            f"<label class='output-toggle' style='margin:0;'>"
+            + _buffered_audio_input
+            + "<span class='switch'></span>"
+            + "</label>"
+            + "<span>Enable AirPlay 2 Buffered Audio</span>"
+            + "</div>"
+        )
+
     # Start buffer: autosave (debounced) in configured mode
     _buf_oninput = (
         f"document.getElementById('start_buffer_val').textContent=this.value+' ms';"
@@ -501,6 +534,7 @@ def send_owntone_setup_page(
         + f"<div>"
         + speakers_html
         + f"<fieldset><legend>Audio</legend>"
+        + _buffered_audio_html
         + f"<div style='display:flex;align-items:center;gap:0.75rem;'>"
         + f"<label class='output-toggle' style='margin:0;'>"
         + _uncomp_input

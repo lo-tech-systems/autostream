@@ -23,6 +23,9 @@ from autostream_players import (
     OUTPUT_MODE_AUTO,
     OUTPUT_MODE_AIRPLAY1,
     OUTPUT_MODE_AIRPLAY2,
+    OUTPUT_MODE_AIRPLAY2_BUFFERED,
+    OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO,
+    OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
     OutputInfo,
     PlaybackMetadata,
     OwnToneHttpBackendBase,
@@ -30,6 +33,7 @@ from autostream_players import (
     SaveSettingResult,
     SettingDescriptor,
     SettingValueResult,
+    SETTING_BUFFERED_AUDIO_ENABLED,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
     SETTING_IPV6,
     SETTING_LOG_LEVEL,
@@ -49,6 +53,9 @@ _MINI_SERVER_TO_BACKEND_MODE: dict[str, str] = {
     "auto": OUTPUT_MODE_AUTO,
     "raop": OUTPUT_MODE_AIRPLAY1,
     "airplay2": OUTPUT_MODE_AIRPLAY2,
+    "airplay2_buffered": OUTPUT_MODE_AIRPLAY2_BUFFERED,
+    "airplay2_surround_stereo": OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO,
+    "airplay2_surround_upmix": OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
 }
 
 
@@ -109,6 +116,12 @@ _SETTING_SPECS: dict[str, _MiniSettingSpec] = {
         requires_restart_on_change=False,
         min_value=60,
         max_value=900,
+    ),
+    SETTING_BUFFERED_AUDIO_ENABLED: _MiniSettingSpec(
+        category="player",
+        option="buffered_audio_enabled",
+        value_type="bool",
+        requires_restart_on_change=False,
     ),
 }
 
@@ -359,7 +372,14 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             # Server:   "auto" | "raop"     | "airplay2"
             mode_text = str(mode).strip().lower()
             mini_mode = "raop" if mode_text == "airplay1" else mode_text
-            if mini_mode in ("auto", "raop", "airplay2"):
+            if mini_mode in (
+                "auto",
+                "raop",
+                "airplay2",
+                "airplay2_buffered",
+                "airplay2_surround_stereo",
+                "airplay2_surround_upmix",
+            ):
                 payload["mode"] = mini_mode
             else:
                 LOG.info(
@@ -564,6 +584,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             SETTING_UNCOMPRESSED_ALAC: "Uncompressed ALAC",
             SETTING_IPV6: "IPv6",
             SETTING_DEVICE_REMOVAL_GRACE_PERIOD: "mDNS Grace Period",
+            SETTING_BUFFERED_AUDIO_ENABLED: "AirPlay 2 Buffered Audio",
         }
         return labels.get(key, key)
 

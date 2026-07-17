@@ -20,6 +20,9 @@ from autostream_players import (
     ListOutputsResult,
     OUTPUT_MODE_AIRPLAY1,
     OUTPUT_MODE_AIRPLAY2,
+    OUTPUT_MODE_AIRPLAY2_BUFFERED,
+    OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO,
+    OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
     OUTPUT_MODE_AUTO,
     OutputInfo,
     PlaybackMetadata,
@@ -622,6 +625,12 @@ def config_airplay_mode_to_backend(mode: object) -> str:
         return OUTPUT_MODE_AIRPLAY1
     if text == "airplay2":
         return OUTPUT_MODE_AIRPLAY2
+    if text == OUTPUT_MODE_AIRPLAY2_BUFFERED:
+        return OUTPUT_MODE_AIRPLAY2_BUFFERED
+    if text == OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO:
+        return OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO
+    if text == OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX:
+        return OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX
     return OUTPUT_MODE_AUTO
 
 
@@ -631,6 +640,12 @@ def backend_output_mode_to_config(mode: object) -> str:
         return "raop"
     if text == OUTPUT_MODE_AIRPLAY2:
         return "airplay2"
+    if text == OUTPUT_MODE_AIRPLAY2_BUFFERED:
+        return OUTPUT_MODE_AIRPLAY2_BUFFERED
+    if text == OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO:
+        return OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO
+    if text == OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX:
+        return OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX
     return "default"
 
 
