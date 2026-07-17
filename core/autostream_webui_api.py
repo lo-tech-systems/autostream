@@ -1760,7 +1760,14 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
         send_json(handler, 400, {"ok": False, "error": "output_id required"})
         return
     mode_raw = str(payload.get("mode") or DEFAULT_AIRPLAY_MODE).strip().lower()
-    valid_modes = {DEFAULT_AIRPLAY_MODE, "raop", "airplay2"}
+    valid_modes = {
+        DEFAULT_AIRPLAY_MODE,
+        "raop",
+        "airplay2",
+        "airplay2_buffered",
+        "airplay2_surround_stereo",
+        "airplay2_surround_upmix",
+    }
     if mode_raw not in valid_modes:
         send_json(handler, 400, {"ok": False, "error": f"mode must be one of {sorted(valid_modes)}"})
         return

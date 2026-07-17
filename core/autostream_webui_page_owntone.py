@@ -413,6 +413,12 @@ def send_owntone_setup_page(
                     label = "AirPlay"
                 elif supported_mode == "airplay2":
                     label = "AirPlay 2"
+                elif supported_mode == "airplay2_buffered":
+                    label = "AirPlay 2 (buffered)"
+                elif supported_mode == "airplay2_surround_stereo":
+                    label = "AirPlay 2 (stereo for 5.1 systems)"
+                elif supported_mode == "airplay2_surround_upmix":
+                    label = "AirPlay 2 (5.1 upmix)"
                 mode_options += (
                     f'<option value="{supported_mode}"'
                     f'{" selected" if current_mode == supported_mode else ""}>{label}</option>'

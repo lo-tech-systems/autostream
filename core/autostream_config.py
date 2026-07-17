@@ -67,7 +67,14 @@ TRACK_ID_ERROR_RETRY_SECONDS = 30
 TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS = 120
 TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS = 300
 DEFAULT_AIRPLAY_MODE = "default"
-VALID_AIRPLAY_MODES = ("default", "raop", "airplay2")
+VALID_AIRPLAY_MODES = (
+    "default",
+    "raop",
+    "airplay2",
+    "airplay2_buffered",
+    "airplay2_surround_stereo",
+    "airplay2_surround_upmix",
+)
 DEFAULT_STYLUS_LIFE_HOURS = 0  # 0 = tracking disabled ("Don't track usage")
 VALID_STYLUS_LIFE_HOURS = (100, 250, 500, 750, 1000)
 

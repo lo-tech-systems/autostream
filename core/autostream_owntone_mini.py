@@ -23,6 +23,9 @@ from autostream_players import (
     OUTPUT_MODE_AUTO,
     OUTPUT_MODE_AIRPLAY1,
     OUTPUT_MODE_AIRPLAY2,
+    OUTPUT_MODE_AIRPLAY2_BUFFERED,
+    OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO,
+    OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
     OutputInfo,
     PlaybackMetadata,
     OwnToneHttpBackendBase,
@@ -49,6 +52,9 @@ _MINI_SERVER_TO_BACKEND_MODE: dict[str, str] = {
     "auto": OUTPUT_MODE_AUTO,
     "raop": OUTPUT_MODE_AIRPLAY1,
     "airplay2": OUTPUT_MODE_AIRPLAY2,
+    "airplay2_buffered": OUTPUT_MODE_AIRPLAY2_BUFFERED,
+    "airplay2_surround_stereo": OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO,
+    "airplay2_surround_upmix": OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
 }
 
 
@@ -359,7 +365,14 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             # Server:   "auto" | "raop"     | "airplay2"
             mode_text = str(mode).strip().lower()
             mini_mode = "raop" if mode_text == "airplay1" else mode_text
-            if mini_mode in ("auto", "raop", "airplay2"):
+            if mini_mode in (
+                "auto",
+                "raop",
+                "airplay2",
+                "airplay2_buffered",
+                "airplay2_surround_stereo",
+                "airplay2_surround_upmix",
+            ):
                 payload["mode"] = mini_mode
             else:
                 LOG.info(
