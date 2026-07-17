@@ -30,6 +30,7 @@ from autostream_commissioning import (
     is_technically_complete,
     mark_commissioning_complete,
 )
+from autostream_core import request_config_reload, update_playback_input_config
 from autostream_player_service import list_outputs, output_supported_config_modes
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from autostream_webui_api import send_json
@@ -367,6 +368,27 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             error="Configuration is still incomplete after save. Please check all required fields."
         )
         return
+
+    # Push the newly saved input config to the monitor. Commissioning always
+    # represents a change, so the push is unconditional; a failure here must
+    # not block commissioning since the config is already persisted and will
+    # be picked up on the coordinator's next start regardless.
+    try:
+        update_playback_input_config(
+            1,
+            enabled=True,
+            is_turntable=audio1_turntable,
+            stylus_life_hours=snap.audio1.stylus_life_hours,
+            belt_life_hours=snap.audio1.belt_life_hours,
+            belt_life_years=snap.audio1.belt_life_years,
+            bearing_life_hours=snap.audio1.bearing_life_hours,
+            bearing_life_years=snap.audio1.bearing_life_years,
+        )
+        request_config_reload()
+    except Exception:
+        logging.warning(
+            "handle_first_boot_finish_post: failed to push live config to monitor"
+        )
 
     # Mark commissioning complete (race-safe)
     try:

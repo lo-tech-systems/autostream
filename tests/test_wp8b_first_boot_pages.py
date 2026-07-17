@@ -390,3 +390,46 @@ class TestFirstBootFinishPost:
         assert snap.audio1.is_turntable is True
         assert snap.audio1.silence_threshold_dbfs == -45.0
         assert snap.owntone.volume_percent == 40
+
+    def test_finish_pushes_live_config_to_monitor(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        from urllib.parse import urlencode
+        body = urlencode({
+            "audio1_capture_device": VALID_ALSA,
+            "audio1_turntable": "on",
+            "volume_percent": "20",
+            "hostname": "autostream",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
+             patch("autostream_webui_page_first_boot.mark_configured"), \
+             patch("autostream_webui_page_first_boot.update_playback_input_config") as m_update, \
+             patch("autostream_webui_page_first_boot.request_config_reload") as m_reload:
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        m_update.assert_called_once()
+        assert m_update.call_args[0][0] == 1
+        assert m_update.call_args[1]["is_turntable"] is True
+        m_reload.assert_called_once()
+
+    def test_finish_push_failure_does_not_break_commissioning(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
+             patch("autostream_webui_page_first_boot.mark_configured"), \
+             patch(
+                 "autostream_webui_page_first_boot.update_playback_input_config",
+                 side_effect=RuntimeError("boom"),
+             ):
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, self._valid_body())
+        m_mark.assert_called_once_with(state.state_path)
+        handler.send_response.assert_called_with(303)
