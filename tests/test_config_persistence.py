@@ -251,6 +251,27 @@ class TestParseConfigAudio:
         assert cfg.audio1.silence_threshold_dbfs == 0.0
 
 
+class TestSetInputMode:
+    def test_turntable_true_writes_both_keys_and_returns_threshold(self):
+        raw = {}
+        result = c.set_input_mode(raw, 1, True)
+        assert raw["audio1"]["turntable"] is True
+        assert raw["audio1"]["silence_threshold"] == c.TURNTABLE_SILENCE_THRESHOLD_DBFS
+        assert result == c.TURNTABLE_SILENCE_THRESHOLD_DBFS
+
+    def test_turntable_false_writes_line_level_preset(self):
+        raw = {}
+        result = c.set_input_mode(raw, 2, False)
+        assert raw["audio2"]["turntable"] is False
+        assert raw["audio2"]["silence_threshold"] == c.LINE_LEVEL_SILENCE_THRESHOLD_DBFS
+        assert result == c.LINE_LEVEL_SILENCE_THRESHOLD_DBFS
+
+    def test_preserves_other_keys_in_section(self):
+        raw = {"audio1": {"capture_device": "hw:0,0"}}
+        c.set_input_mode(raw, 1, True)
+        assert raw["audio1"]["capture_device"] == "hw:0,0"
+
+
 class TestParseConfigOwntone:
     def test_output_offsets_parsed(self):
         cfg = c.parse_config({"owntone": {"offsets": {"Living Room": 100, "Kitchen": -50}}})

@@ -49,8 +49,8 @@ from autostream_config import (
     parse_config,
     save_config,
     save_state,
+    set_input_mode,
 )
-from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_dials import is_dial_authorized
 from autostream_core import (
     any_monitor_capturing,
@@ -1475,15 +1475,13 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         return
 
     def _mutator(raw: dict) -> None:
+        if field in ("audio1.turntable", "audio2.turntable"):
+            set_input_mode(raw, int(section[-1]), bool(normalized))
+            return
         raw.setdefault(section, {})[key] = normalized
         # Turning off hostname display also forces control_other_appliances off.
         if field == "webui.show_hostname_on_home" and not normalized:
             raw.setdefault("webui", {})["control_other_appliances"] = False
-        # Turntable mode implies a derived silence threshold — keep them in sync.
-        if field in ("audio1.turntable", "audio2.turntable"):
-            raw.setdefault(section, {})["silence_threshold"] = (
-                suggested_silence_threshold_dbfs(bool(normalized))
-            )
 
     try:
         settings.update(_mutator)

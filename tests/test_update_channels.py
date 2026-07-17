@@ -718,7 +718,6 @@ class TestPostHandlerChannel:
         update_playback_input_config=MagicMock(),
         update_live_silence_seconds=MagicMock(return_value=True),
         request_config_reload=MagicMock(),
-        suggested_silence_threshold_dbfs=MagicMock(return_value=-40.0),
         _set_flash_cookie=MagicMock(),
         send_setup_page=MagicMock(),
         build_top_banner_html=MagicMock(return_value=("", "")),

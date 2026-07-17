@@ -388,4 +388,5 @@ class TestFirstBootFinishPost:
         snap = store.snapshot()
         assert snap.audio1.capture_device == VALID_ALSA
         assert snap.audio1.is_turntable is True
+        assert snap.audio1.silence_threshold_dbfs == -45.0
         assert snap.owntone.volume_percent == 40

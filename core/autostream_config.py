@@ -524,6 +524,19 @@ def _parse_audio_input_config(section: dict) -> AudioInputConfig:
     )
 
 
+def set_input_mode(raw: dict, index: int, is_turntable: bool) -> float:
+    """Set an input's turntable flag and its derived silence threshold together.
+
+    Returns the threshold that was written, so callers can compare it against
+    the previously stored value without recomputing it.
+    """
+    section = raw.setdefault(f"audio{index}", {})
+    section["turntable"] = bool(is_turntable)
+    threshold = suggested_silence_threshold_dbfs(is_turntable)
+    section["silence_threshold"] = threshold
+    return threshold
+
+
 def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
     """Parse a config dict (and optional state dict) into typed dataclasses.
 

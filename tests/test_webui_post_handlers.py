@@ -632,6 +632,22 @@ class TestSetupPost:
         assert "audio1" in saved
         assert "audio2" in saved
 
+    def test_turntable_flag_and_threshold_agree_on_save(self, tmp_path):
+        form = {
+            "audio_capture_device": "hw:0,0",
+            "audio_turntable": "on",
+            "audio2_capture_device": "hw:1,0",
+            "silence_seconds": "10",
+            "owntone_output_name": "Speaker",
+            "owntone_volume_percent": "50",
+        }
+        result = _call_setup_post(form, tmp_path)
+        saved = result["saved"][0]
+        assert saved["audio1"]["turntable"] is True
+        assert saved["audio1"]["silence_threshold"] == -45.0
+        assert saved["audio2"]["turntable"] is False
+        assert saved["audio2"]["silence_threshold"] == -60.0
+
     def test_removes_legacy_eq_10khz_key_from_audio1(self, tmp_path):
         form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
                 "owntone_output_name": "S", "owntone_volume_percent": "50"}

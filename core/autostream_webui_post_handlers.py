@@ -29,6 +29,7 @@ from autostream_config import (
     mark_configured,
     parse_config,
     save_config,
+    set_input_mode,
 )
 from autostream_core import (
     apply_track_id_config_live,
@@ -40,7 +41,6 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_player_service import config_airplay_mode_to_backend
-from autostream_playback_stats import suggested_silence_threshold_dbfs
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 
 from autostream_webui_common import (
@@ -110,8 +110,6 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             new_audio2_enabled   = "audio2_enabled" in form
             new_audio1_turntable = "audio_turntable" in form
             new_audio2_turntable = "audio2_turntable" in form
-            new_audio1_threshold = suggested_silence_threshold_dbfs(new_audio1_turntable)
-            new_audio2_threshold = suggested_silence_threshold_dbfs(new_audio2_turntable)
 
             # Hostname
             old_hn = get_system_hostname()
@@ -123,8 +121,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             # Config updates
             a1 = cfg.setdefault("audio1", {})
             a1["capture_device"] = fld("audio_capture_device", p.audio1.capture_device)
-            a1["silence_threshold"] = new_audio1_threshold
-            a1["turntable"] = bool(new_audio1_turntable)
+            new_audio1_threshold = set_input_mode(cfg, 1, new_audio1_turntable)
             a1["gain_db"] = float(fld("audio1_gain_db", str(p.audio1.gain_db)))
             a1["eq_40hz_db"] = float(fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
             a1["eq_100hz_db"] = float(fld("audio1_eq_100hz_db", str(p.audio1.eq_100hz_db)))
@@ -134,8 +131,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             a2 = cfg.setdefault("audio2", {})
             a2["enabled"] = bool(new_audio2_enabled)
             a2["capture_device"] = fld("audio2_capture_device", p.audio2.capture_device)
-            a2["silence_threshold"] = new_audio2_threshold
-            a2["turntable"] = bool(new_audio2_turntable)
+            new_audio2_threshold = set_input_mode(cfg, 2, new_audio2_turntable)
             a2["gain_db"] = float(fld("audio2_gain_db", str(p.audio2.gain_db)))
             a2["eq_40hz_db"] = float(fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
             a2["eq_100hz_db"] = float(fld("audio2_eq_100hz_db", str(p.audio2.eq_100hz_db)))

@@ -261,7 +261,7 @@ def _run_setup_post(form_fields: dict, tmp_path: Path, extra_cfg: dict | None = 
         patch.object(ph, "set_system_hostname"),
         patch.object(ph, "update_live_owntone_runtime"),
         patch.object(ph, "update_playback_input_config"),
-        patch.object(ph, "suggested_silence_threshold_dbfs", return_value=-60.0),
+        patch.object(cfg_mod, "suggested_silence_threshold_dbfs", return_value=-60.0),
         patch.object(ph, "request_config_reload") as mock_reload,
         patch.object(ph, "apply_track_id_config_live") as mock_live_apply,
         patch.object(ph, "update_live_silence_seconds", return_value=True),

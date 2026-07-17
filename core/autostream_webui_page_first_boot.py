@@ -24,6 +24,7 @@ from autostream_config import (
     load_state,
     mark_configured,
     parse_config,
+    set_input_mode,
 )
 from autostream_commissioning import (
     is_technically_complete,
@@ -319,7 +320,7 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     try:
         def _mutator(raw: dict) -> None:
             raw.setdefault("audio1", {})["capture_device"] = audio1_dev
-            raw["audio1"]["turntable"] = audio1_turntable
+            set_input_mode(raw, 1, audio1_turntable)
             raw.setdefault("owntone", {})["volume_percent"] = volume_percent
             # Ensure FIFO path has a default
             if not str(raw.setdefault("general", {}).get("fifo_path", "") or "").strip():
