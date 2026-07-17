@@ -786,6 +786,12 @@ configure_phase() {
   info "Running config layout migration (idempotent)"
   python3 "${LIBEXEC_DIR}/autostream_migrate.py"
 
+  # Must be in place before OwnTone is provisioned and (re)started below, so
+  # that the FIFO it watches already exists.
+  info "Configuring the audio FIFO runtime directory"
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/tmpfiles.d/autostream.conf" /usr/lib/tmpfiles.d/autostream.conf
+  systemd-tmpfiles --create /usr/lib/tmpfiles.d/autostream.conf || warn "Could not create /run/autostream-pipes now; it will be created on next boot"
+
   provision_owntone "${INSTALL_MODE}"
   update_progress "Configuring system services..." 78
 

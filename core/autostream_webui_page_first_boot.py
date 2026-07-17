@@ -21,6 +21,7 @@ from typing import Optional
 
 from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
+    FIFO_PATH,
     load_state,
     mark_configured,
     parse_config,
@@ -42,8 +43,6 @@ from autostream_webui_common import (
     send_hostname_changed_page,
 )
 from autostream_webui_state import WebUIState
-
-_DEFAULT_FIFO_PATH = "/tmp/autostream-pipes/autostream.fifo"
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +322,8 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             raw.setdefault("audio1", {})["capture_device"] = audio1_dev
             set_input_mode(raw, 1, audio1_turntable)
             raw.setdefault("owntone", {})["volume_percent"] = volume_percent
-            # Ensure FIFO path has a default
-            if not str(raw.setdefault("general", {}).get("fifo_path", "") or "").strip():
-                raw["general"]["fifo_path"] = _DEFAULT_FIFO_PATH
+            # Fixed appliance path, not something first boot can choose
+            raw.setdefault("general", {})["fifo_path"] = FIFO_PATH
         _store.update(_mutator)
     except Exception as exc:
         logging.exception("handle_first_boot_finish_post: store update failed")
