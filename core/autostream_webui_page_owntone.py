@@ -457,6 +457,8 @@ def send_owntone_setup_page(
         """
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
+    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
+    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
 
     page_heading_html = "<h1>Owntone Setup</h1>"
 
@@ -512,6 +514,7 @@ def send_owntone_setup_page(
         + f"</div>"
     )
     _body_suffix = f"""\
+{AUTOSAVE_JS}
 <script>
   const liveEnabled = true;
   function onShowToggle(i, checked) {{
@@ -540,6 +543,7 @@ def send_owntone_setup_page(
         show_nav=True,
         active_tab="setup",
         dark_mode=parsed.webui.dark_mode,
+        head_extra=csrf_meta,
     )
     body_bytes = html_body.encode("utf-8")
     handler.send_response(200)
