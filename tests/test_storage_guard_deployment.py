@@ -110,6 +110,14 @@ def test_journald_dropin_journal_section():
     assert "[Journal]" in text
 
 
+def test_journald_dropin_storage_persistent():
+    # Raspberry Pi OS ships a vendor drop-in with Storage=volatile; without an
+    # explicit override the retention bounds below apply to a journal that is
+    # discarded on every reboot.
+    text = _read("system/journald/99-autostream-storage.conf")
+    assert "Storage=persistent" in text
+
+
 def test_journald_dropin_compress():
     text = _read("system/journald/99-autostream-storage.conf")
     assert "Compress=yes" in text
