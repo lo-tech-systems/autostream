@@ -1,0 +1,56 @@
+# Changelog
+
+## Version 0.5.0-alpha.1
+
+- new: "Enable AirPlay 2 Buffered Audio" toggle — surfaces buffered/surround
+  output modes from owntone-mini end-to-end
+- fix: audio FIFO moved from `/tmp` to `/run` — the daily storage-guard
+  cleanup could delete an idle FIFO out from under OwnTone, silently killing
+  autostart playback until a manual restart ([#15](https://github.com/lo-tech-systems/autostream/issues/15))
+- fix: storage-guard no longer runs `tmpfiles --clean` when storage isn't
+  actually under pressure
+- fix: Owntone Setup page settings (including the new buffered-audio toggle)
+  now actually autosave — a missing script injection meant every toggle on
+  that page silently failed to persist
+
+## Version 0.4.0 - 2026-07-10
+
+- new: track identification showing current playback details on the home page
+- new: multi-unit control — control other appliances from one WebUI
+- new: beta support for the Autostream Dial volume control
+- improved: reorganized Setup interface
+- improved: updater now supports a pre-release channel
+- new: experimental support for USB Wi-Fi adapters
+
+## Version 0.3.0 - 2026-06-07
+
+- improved: home page now live-updates and ignores brief network glitches
+
+## Version 0.2.2 - 2026-06-05
+
+- improved: network connection health monitoring
+
+## Version 0.2.1 - 2026-05-10
+
+- fix: various bug fixes
+- new: factory PIN usable for 30 minutes after boot if the user-set PIN is
+  forgotten
+
+## Version 0.2.0 - 2026-05-03
+
+- new: output equalizer
+- improved: general UI improvements
+- improved: update process
+
+## Version 0.1.1 - 2026-04-25
+
+- improved: WebUI layout, with optional dark mode
+- new: optional master volume control on the home page
+- improved: stylus wear tracking reorganized into a Service page
+- improved: update process
+
+## Version 0.0.4 - 2026-04-19
+
+- new: initial release — web-based UI, C++ audio monitor with clock-drift
+  compensation, AirPlay output, stylus tracking, per-input equalizer, WiFi
+  hotspot recovery interface
