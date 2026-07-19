@@ -64,9 +64,9 @@ install_owntone_mini_from_source() {
 
   local tmpdir
   tmpdir="$(mktemp -d)"
-  git clone --branch minimal --single-branch https://github.com/lo-tech-systems/owntone-server.git "${tmpdir}/owntone-server"
+  git clone --branch minimal --single-branch https://github.com/lo-tech-systems/owntone-mini.git "${tmpdir}/owntone-mini"
   (
-    cd "${tmpdir}/owntone-server"
+    cd "${tmpdir}/owntone-mini"
     autoreconf -i
     ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --enable-install-user --enable-chromecast
     update_progress "Building OwnTone..." 71

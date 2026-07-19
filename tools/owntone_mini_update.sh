@@ -33,7 +33,7 @@ BRANCH="minimal"
 SSH_USER="pi"
 HOST=""
 
-OWNTONE_REPO="https://github.com/lo-tech-systems/owntone-server.git"
+OWNTONE_REPO="https://github.com/lo-tech-systems/owntone-mini.git"
 
 #############################################
 # Usage
@@ -51,7 +51,7 @@ Arguments:
   HOST                    Hostname or IP of the appliance (required).
 
 Options:
-  --branch BRANCH         owntone-server branch to build (default: minimal).
+  --branch BRANCH         owntone-mini branch to build (default: minimal).
                            Use this to test an unreleased branch.
   --user USER             SSH user on the appliance (default: pi).
   --help, -h              Show this help.
@@ -127,7 +127,7 @@ if [[ "${BRANCH}" != "minimal" ]]; then
 fi
 
 info "Target appliance: ${SSH_USER}@${HOST}"
-info "owntone-server branch: ${BRANCH}"
+info "owntone-mini branch: ${BRANCH}"
 info "This can take around 10 minutes to build on a Raspberry Pi..."
 
 #############################################
@@ -168,8 +168,8 @@ echo "[REMOTE] Building in \${TMPDIR_BUILD}..."
 
 cd "\${TMPDIR_BUILD}"
 echo "[REMOTE] Cloning \${OWNTONE_REPO} (branch \${BRANCH})..."
-git clone --branch "\${BRANCH}" --single-branch "\${OWNTONE_REPO}" owntone-server
-cd owntone-server
+git clone --branch "\${BRANCH}" --single-branch "\${OWNTONE_REPO}" owntone-mini
+cd owntone-mini
 echo "[REMOTE] autoreconf..."
 autoreconf -i
 echo "[REMOTE] configure..."
