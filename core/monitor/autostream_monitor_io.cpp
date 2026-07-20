@@ -1270,8 +1270,52 @@ void InputChannel::process_thread_func()
     // Anchor the first VU bin to the moment the process thread starts.
     _vu_bin_start_time = get_monotonic_time();
 
+    // Periodic (30 s) buffer/drift diagnostics for the cumulative-dropout hunt.
+    // Comparing SRC input vs output frame rates over time reveals whether the
+    // drift-compensated FIFO output stays locked to the nominal output rate
+    // across long playback, or slowly walks off (the suspected dropout cause).
+    double   stats_last_log_time = get_monotonic_time();
+    uint64_t stats_in_frames     = 0;   // SRC input frames consumed since last log
+    uint64_t stats_out_frames    = 0;   // SRC output frames produced since last log
+
     while (_running.load(std::memory_order_relaxed))
     {
+        // ── Periodic buffer/drift diagnostics (every 30 s) ───────────────────
+        {
+            double stats_now = get_monotonic_time();
+            double stats_dt  = stats_now - stats_last_log_time;
+            if (stats_dt >= 30.0)
+            {
+                double nominal_out = static_cast<double>(AudioMonitor::output_rate_hz());
+                double out_rate    = stats_out_frames / stats_dt;
+                double in_rate     = stats_in_frames  / stats_dt;
+                double out_dev     = out_rate - nominal_out;
+                if (out_dev < 0.0) out_dev = -out_dev;
+
+                // The drift-compensated output should stay locked to nominal_out.
+                // A short source-silence gap is passed through as silence at the
+                // nominal rate, so it does NOT trip this; only a real stall/runaway
+                // (capture gating on long silence, resampler fault) pushes the
+                // window rate >0.5% off nominal. Routine lines stay at DEBUG;
+                // a deviation escalates to WARN so it stands out in the log.
+                // Guard on stats_out_frames > 0 so an idle/stopped window (nothing
+                // playing, out=0) is NOT a fault and stays at DEBUG; a capture-stop
+                // that lands mid-window still emits partial output and is caught.
+                if (stats_out_frames > 0 && out_dev > 0.005 * nominal_out)
+                    LOG_WARN("[stats] input%d est_in=%.2fHz ratio=%.6f in=%.1ff/s out=%.1ff/s nominal_out=%.0f over %.1fs  <-- OUT RATE OFF NOMINAL",
+                             _index, _rate_estimator.estimated_input_rate(), _rate_estimator.src_ratio(),
+                             in_rate, out_rate, nominal_out, stats_dt);
+                else
+                    LOG_DEBUG("[stats] input%d est_in=%.2fHz ratio=%.6f in=%.1ff/s out=%.1ff/s nominal_out=%.0f over %.1fs",
+                              _index, _rate_estimator.estimated_input_rate(), _rate_estimator.src_ratio(),
+                              in_rate, out_rate, nominal_out, stats_dt);
+
+                stats_in_frames     = 0;
+                stats_out_frames    = 0;
+                stats_last_log_time = stats_now;
+            }
+        }
+
         // ── Close any elapsed VU bins ─────────────────────────────────────────
         // Runs every iteration (including idle iterations after the condition-
         // variable sleep) so silence bins are produced even when the channel
@@ -1472,6 +1516,10 @@ void InputChannel::process_thread_func()
 
             in_ptr      += src_data.input_frames_used * 2;  // stereo
             frames_left -= static_cast<int>(src_data.input_frames_used);
+
+            // Accumulate for the periodic [stats] diagnostics above.
+            stats_in_frames  += static_cast<uint64_t>(src_data.input_frames_used);
+            stats_out_frames += static_cast<uint64_t>(src_data.output_frames_gen > 0 ? src_data.output_frames_gen : 0);
 
             if (src_data.output_frames_gen <= 0)
                 continue;   // no output this iteration; keep consuming input
