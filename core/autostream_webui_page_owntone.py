@@ -509,7 +509,14 @@ def send_owntone_setup_page(
     if buffered_audio_supported or buffered_audio_unavailable:
         _ba_onchange_attr = ""
         if buffered_audio_supported:
-            _ba_oc = "if(liveEnabled) settingsTransact('/api/owntone/buffered-audio', {value: this.checked});"
+            # Reload on success: the per-output mode selects were rendered against
+            # the previous state, so they still offer (or still omit) the buffered
+            # modes until the page is rebuilt.
+            _ba_oc = (
+                "if(liveEnabled) settingsTransact('/api/owntone/buffered-audio',"
+                " {value: this.checked},"
+                " {onSuccess: function(){ window.location.reload(); }});"
+            )
             _ba_onchange_attr = f" onchange='{html.escape(_ba_oc)}'"
         _buffered_audio_input = (
             f"<input type='checkbox' name='buffered_audio_enabled' {'checked' if buffered_audio_enabled else ''}"

@@ -34,6 +34,7 @@ import time
 from typing import Optional
 
 from autostream_config import (
+    BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
@@ -1773,6 +1774,16 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
         return
     mode = normalize_airplay_mode(mode_raw)
 
+    # A page rendered while buffered audio was on keeps offering the buffered
+    # modes until it is reloaded, so refuse them here rather than trusting the
+    # form's option list to still be current.
+    if mode in BUFFERED_AIRPLAY_MODES and not _buffered_audio_is_enabled(state):
+        send_json(handler, 200, {
+            "ok": False,
+            "error": "Buffered audio is disabled — enable it before selecting this mode",
+        })
+        return
+
     from autostream_settings import SettingsStore as _SettingsStore
     _store = getattr(state, "settings", None)
     if not isinstance(_store, _SettingsStore):
@@ -2013,6 +2024,26 @@ def send_owntone_buffered_audio_json(handler, state: WebUIState, body: str) -> N
     })
 
 
+def _buffered_audio_is_enabled(state: WebUIState) -> bool:
+    """Report whether the backend currently has buffered audio switched on.
+
+    Backends that do not expose the setting cannot serve buffered modes either,
+    so an unreadable or unsupported result counts as off.
+    """
+    from autostream_player_service import get_setting
+    from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+
+    try:
+        parsed = _config_snapshot(state)
+        result = get_setting(
+            parsed.owntone.base_url, SETTING_BUFFERED_AUDIO_ENABLED, timeout=3,
+        )
+    except Exception:
+        logging.debug("buffered-audio probe failed", exc_info=True)
+        return False
+    return bool(result.ok and result.value)
+
+
 def _reset_buffered_output_modes(state: WebUIState) -> list[str]:
     """Fall outputs saved as a buffered-transport mode back to the default mode.
 
@@ -2021,7 +2052,6 @@ def _reset_buffered_output_modes(state: WebUIState) -> list[str]:
     mode if the setting were later turned back on, or when an undiscovered
     speaker reappears. Returns the output ids that were changed.
     """
-    from autostream_config import BUFFERED_AIRPLAY_MODES, DEFAULT_AIRPLAY_MODE
     from autostream_settings import SettingsStore as _SettingsStore
 
     _store = getattr(state, "settings", None)

@@ -207,6 +207,130 @@ class TestOutputMode:
         m_live.assert_called_once()
 
 
+# ── Output mode: buffered-audio guard ─────────────────────────────────────────
+
+class TestBufferedModeGuard:
+    """A buffered/surround mode can only be set while the backend's buffered-audio
+    preference is on; a stale page (rendered while it was on) that still posts a
+    buffered selection must be refused, not silently written."""
+
+    _BUFFERED_MODES = ("airplay2_buffered", "airplay2_surround_stereo", "airplay2_surround_upmix")
+    _NON_BUFFERED_MODES = ("default", "raop", "airplay2")
+
+    def test_buffered_modes_rejected_when_buffered_audio_off(self, tmp_path):
+        from autostream_webui_api import send_owntone_output_mode_json
+        for mode in self._BUFFERED_MODES:
+            config_path = _make_config(str(tmp_path))
+            state_path = _make_state_file(str(tmp_path))
+            store = _make_store(config_path)
+            state = _make_state(config_path, state_path, store)
+            handler, sent = _make_handler()
+            body = json.dumps({"output_id": "42", "mode": mode})
+            with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=False), \
+                 patch("autostream_webui_api.update_live_owntone_runtime") as m_live:
+                send_owntone_output_mode_json(handler, state, body)
+            assert sent["code"] == 200
+            assert sent["body"]["ok"] is False
+            assert "Buffered audio is disabled" in sent["body"]["error"]
+            m_live.assert_not_called()
+            snap = store.snapshot()
+            assert "42" not in (snap.owntone.output_airplay_modes or {})
+
+    def test_buffered_modes_succeed_when_buffered_audio_on(self, tmp_path):
+        from autostream_webui_api import send_owntone_output_mode_json
+        for mode in self._BUFFERED_MODES:
+            config_path = _make_config(str(tmp_path))
+            state_path = _make_state_file(str(tmp_path))
+            store = _make_store(config_path)
+            state = _make_state(config_path, state_path, store)
+            handler, sent = _make_handler()
+            body = json.dumps({"output_id": "42", "mode": mode})
+            with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=True), \
+                 patch("autostream_webui_api.update_live_owntone_runtime"):
+                send_owntone_output_mode_json(handler, state, body)
+            assert sent["body"]["ok"] is True
+            snap = store.snapshot()
+            assert snap.owntone.output_airplay_modes.get("42") == mode
+
+    def test_non_buffered_modes_unaffected_regardless_of_buffered_audio_state(self, tmp_path):
+        from autostream_webui_api import send_owntone_output_mode_json
+        for mode in self._NON_BUFFERED_MODES:
+            for buffered_state in (False, True):
+                config_path = _make_config(str(tmp_path))
+                state_path = _make_state_file(str(tmp_path))
+                store = _make_store(config_path)
+                state = _make_state(config_path, state_path, store)
+                handler, sent = _make_handler()
+                body = json.dumps({"output_id": "42", "mode": mode})
+                with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=buffered_state) as m_guard, \
+                     patch("autostream_webui_api.update_live_owntone_runtime"):
+                    send_owntone_output_mode_json(handler, state, body)
+                assert sent["body"]["ok"] is True
+                m_guard.assert_not_called()  # `mode in BUFFERED_AIRPLAY_MODES` short-circuits before the probe
+
+    def test_non_buffered_mode_does_not_probe_buffered_audio(self, tmp_path):
+        """The guard checks `mode in BUFFERED_AIRPLAY_MODES` first, so a non-buffered
+        mode must never trigger the (network-bound) buffered-audio probe."""
+        from autostream_webui_api import send_owntone_output_mode_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"output_id": "42", "mode": "raop"})
+        with patch("autostream_player_service.get_setting") as m_get, \
+             patch("autostream_webui_api.update_live_owntone_runtime"):
+            send_owntone_output_mode_json(handler, state, body)
+        assert sent["body"]["ok"] is True
+        m_get.assert_not_called()
+
+
+# ── _buffered_audio_is_enabled helper ─────────────────────────────────────────
+
+class TestBufferedAudioIsEnabledHelper:
+    """_buffered_audio_is_enabled must be conservative: only True when the probe
+    both succeeds and reports a truthy value; anything else (exception, ok=False,
+    falsey value) counts as off."""
+
+    def _state(self, tmp_path):
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        return _make_state(config_path, state_path, _make_store(config_path))
+
+    def test_false_on_exception(self, tmp_path):
+        from autostream_webui_api import _buffered_audio_is_enabled
+        state = self._state(tmp_path)
+        with patch("autostream_webui_api._config_snapshot", side_effect=RuntimeError("boom")):
+            assert _buffered_audio_is_enabled(state) is False
+
+    def test_false_when_result_not_ok(self, tmp_path):
+        from autostream_webui_api import _buffered_audio_is_enabled
+        state = self._state(tmp_path)
+        with patch("autostream_webui_api._config_snapshot") as m_snap, \
+             patch("autostream_player_service.get_setting") as m_get:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_get.return_value = MagicMock(ok=False, value=True)
+            assert _buffered_audio_is_enabled(state) is False
+
+    def test_false_when_value_falsey(self, tmp_path):
+        from autostream_webui_api import _buffered_audio_is_enabled
+        state = self._state(tmp_path)
+        with patch("autostream_webui_api._config_snapshot") as m_snap, \
+             patch("autostream_player_service.get_setting") as m_get:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_get.return_value = MagicMock(ok=True, value=False)
+            assert _buffered_audio_is_enabled(state) is False
+
+    def test_true_when_ok_and_value(self, tmp_path):
+        from autostream_webui_api import _buffered_audio_is_enabled
+        state = self._state(tmp_path)
+        with patch("autostream_webui_api._config_snapshot") as m_snap, \
+             patch("autostream_player_service.get_setting") as m_get:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_get.return_value = MagicMock(ok=True, value=True)
+            assert _buffered_audio_is_enabled(state) is True
+
+
 # ── Output offset ─────────────────────────────────────────────────────────────
 
 class TestOutputOffset:
@@ -668,6 +792,23 @@ class TestBufferedAudioToggle:
         attrs = self._input_attrs(html)
         assert "disabled" not in attrs
         assert "checked" not in attrs
+
+    def test_toggle_onchange_reloads_page_on_success(self, tmp_path):
+        """Flipping buffered audio changes which modes the per-output <select>
+        should offer, so a successful toggle must reload the page rather than
+        just patching the checkbox in place."""
+        from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: self._result(ok=True, value=True)},
+        )
+        idx = html.index(self._NAME_ATTR)
+        tag_start = html.rindex("<input", 0, idx)
+        tag_end = html.index(">", idx)
+        tag = html[tag_start:tag_end + 1]
+        assert "/api/owntone/buffered-audio" in tag
+        assert "onSuccess" in tag
+        assert "window.location.reload()" in tag
 
 
 # ── Buffered-mode filtering in the per-speaker mode <select> ─────────────────
