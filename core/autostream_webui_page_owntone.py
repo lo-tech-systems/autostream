@@ -330,6 +330,12 @@ def send_owntone_setup_page(
         timeout=3,
     )
     buffered_audio_supported = bool(buffered_audio_result.ok)
+    # Hide the toggle only when the backend genuinely lacks the setting. A transient
+    # read failure (timeout, connection refused) must not make the control silently
+    # vanish, or a momentary outage looks identical to "your backend can't do this".
+    buffered_audio_unavailable = bool(
+        not buffered_audio_result.ok and not buffered_audio_result.unsupported
+    )
     buffered_audio_enabled = bool(buffered_audio_result.value) if buffered_audio_result.ok else False
 
     start_buffer_result = get_setting(
@@ -488,13 +494,18 @@ def send_owntone_setup_page(
         f"{_uncomp_onchange_attr}>"
     )
 
-    # Buffered audio: only rendered at all when the backend exposes the setting.
+    # Buffered audio: omitted entirely when the backend does not expose the setting,
+    # but rendered disabled-with-a-note when the read merely failed (see above).
     _buffered_audio_html = ""
-    if buffered_audio_supported:
-        _ba_oc = "if(liveEnabled) settingsTransact('/api/owntone/buffered-audio', {value: this.checked});"
+    if buffered_audio_supported or buffered_audio_unavailable:
+        _ba_onchange_attr = ""
+        if buffered_audio_supported:
+            _ba_oc = "if(liveEnabled) settingsTransact('/api/owntone/buffered-audio', {value: this.checked});"
+            _ba_onchange_attr = f" onchange='{html.escape(_ba_oc)}'"
         _buffered_audio_input = (
             f"<input type='checkbox' name='buffered_audio_enabled' {'checked' if buffered_audio_enabled else ''}"
-            f" onchange='{html.escape(_ba_oc)}'>"
+            f"{' disabled' if not buffered_audio_supported else ''}"
+            f"{_ba_onchange_attr}>"
         )
         _buffered_audio_html = (
             "<div style='display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;'>"
@@ -505,6 +516,11 @@ def send_owntone_setup_page(
             + "<span>Enable AirPlay 2 Buffered Audio</span>"
             + "</div>"
         )
+        if buffered_audio_unavailable:
+            _buffered_audio_html += (
+                '<div class="storage-meta">Could not read the buffered-audio setting '
+                'from the backend just now. Refresh to try again.</div>'
+            )
 
     # Start buffer: autosave (debounced) in configured mode
     _buf_oninput = (

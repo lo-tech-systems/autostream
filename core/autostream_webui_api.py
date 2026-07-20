@@ -1840,14 +1840,20 @@ def _send_owntone_native_setting_json(
     setting_key: str,
     value: object,
     restart_threshold_s: float = 0.75,
+    reject_unsupported: bool = False,
 ) -> None:
     """Shared implementation for native OwnTone settings (uncompressed, buffer, grace).
 
     Posts to OwnTone API and optionally triggers an async restart.
     Returns {"ok": true, "restart_required": true|false}.
+
+    Pass reject_unsupported=True for settings whose UI control is hidden on
+    backends that lack them: there, a write can only arrive from a stale page or
+    a direct call, and reporting success for a no-op would be a lie.
     """
     ok, restart_needed, error = _push_owntone_native_setting(
-        state, setting_key, value, restart_threshold_s=restart_threshold_s
+        state, setting_key, value, restart_threshold_s=restart_threshold_s,
+        reject_unsupported=reject_unsupported,
     )
     if not ok:
         send_json(handler, 200, {"ok": False, "error": error or "OwnTone API error"})
@@ -1861,8 +1867,15 @@ def _push_owntone_native_setting(
     setting_key: str,
     value: object,
     restart_threshold_s: float = 0.75,
+    reject_unsupported: bool = False,
 ) -> tuple[bool, bool, str]:
-    """Push a native setting to the configured OwnTone-compatible backend."""
+    """Push a native setting to the configured OwnTone-compatible backend.
+
+    Unsupported settings are tolerated by default: best-effort pushes such as the
+    mDNS grace period fire against whatever backend is configured (including none,
+    in dial mode) and must not surface an error. Callers driving a user-visible,
+    backend-gated control pass reject_unsupported=True to get a real failure.
+    """
     try:
         parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url
@@ -1870,6 +1883,10 @@ def _push_owntone_native_setting(
         return False, False, f"Config unavailable: {exc}"
 
     result = save_setting(base_url, setting_key, value, timeout=5.0)
+    if result.unsupported and reject_unsupported:
+        return False, False, (
+            result.message or "This backend does not support that setting"
+        )
     if not result.ok and not result.unsupported:
         return False, False, result.message or "OwnTone API error"
 
@@ -1977,7 +1994,10 @@ def send_owntone_buffered_audio_json(handler, state: WebUIState, body: str) -> N
     if not isinstance(value, bool):
         send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
-    _send_owntone_native_setting_json(handler, state, SETTING_BUFFERED_AUDIO_ENABLED, value)
+    _send_owntone_native_setting_json(
+        handler, state, SETTING_BUFFERED_AUDIO_ENABLED, value,
+        reject_unsupported=True,
+    )
 
 
 def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> None:

@@ -374,11 +374,52 @@ class TestNativeOwntoneSettings:
         m_restart.assert_not_called()
         assert sent["body"]["ok"] is True
 
+    def test_buffered_audio_unsupported_returns_ok_false(self, tmp_path):
+        """reject_unsupported=True: a write against an unsupported backend must fail,
+        not report the fake success that the uncompressed-setting path tolerates."""
+        from autostream_webui_api import send_owntone_buffered_audio_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": True})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap, \
+             patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result(ok=False, unsupported=True)
+            send_owntone_buffered_audio_json(handler, state, body)
+        m_restart.assert_not_called()
+        assert sent["body"]["ok"] is False
+
+    def test_buffered_audio_succeeds_when_supported(self, tmp_path):
+        from autostream_webui_api import send_owntone_buffered_audio_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": True})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result(ok=True)
+            send_owntone_buffered_audio_json(handler, state, body)
+        assert sent["body"]["ok"] is True
+
 
 # ── Setup page rendering ──────────────────────────────────────────────────────
 
 class TestOwntoneSetupPage:
-    def _render_page(self, tmp_path):
+    def _render_page(self, tmp_path, setting_results: dict | None = None):
+        """Render the OwnTone setup page with get_setting mocked per setting key.
+
+        `setting_results` maps a setting key (e.g. SETTING_BUFFERED_AUDIO_ENABLED)
+        to the object get_setting() should return for that key. Keys not present
+        default to the "genuinely unsupported" result (ok=False, unsupported=True)
+        that existing callers of this helper relied on.
+        """
         from autostream_webui_page_owntone import send_owntone_setup_page
         from autostream_players import SaveSettingResult, SettingValueResult
         config_path = _make_config(str(tmp_path))
@@ -401,13 +442,18 @@ class TestOwntoneSetupPage:
         _cap.can_set_output_mode = False
         _cap.can_set_output_offset = False
 
-        _sett_result = MagicMock()
-        _sett_result.ok = False
-        _sett_result.unsupported = True
+        _default_result = MagicMock()
+        _default_result.ok = False
+        _default_result.unsupported = True
+
+        _results_by_key = dict(setting_results or {})
+
+        def _fake_get_setting(base_url, setting_key, timeout=3):
+            return _results_by_key.get(setting_key, _default_result)
 
         with patch("autostream_webui_page_owntone.list_outputs", return_value=_list_result), \
              patch("autostream_webui_page_owntone.get_capabilities", return_value=_cap), \
-             patch("autostream_webui_page_owntone.get_setting", return_value=_sett_result), \
+             patch("autostream_webui_page_owntone.get_setting", side_effect=_fake_get_setting), \
              patch("autostream_webui_page_owntone.load_state", return_value={}):
             send_owntone_setup_page(handler, state, auth)
 
@@ -444,6 +490,83 @@ class TestOwntoneSetupPage:
         assert 'name="device_removal_grace_period_minutes"' not in html
         assert "mDNS Grace Period" not in html
         assert "/api/owntone/grace-period" not in html
+
+
+# ── Buffered-audio toggle rendering ────────────────────────────────────────────
+
+class TestBufferedAudioToggle:
+    """Buffered-audio control has three render states driven by get_setting():
+
+    - genuinely unsupported (ok=False, unsupported=True): control omitted entirely
+    - transient read failure (ok=False, unsupported=False): disabled control + note
+    - supported (ok=True): enabled control, checked state mirrors the value
+    """
+
+    def _result(self, ok, value=None, unsupported=False):
+        r = MagicMock()
+        r.ok = ok
+        r.value = value
+        r.unsupported = unsupported
+        return r
+
+    _NAME_ATTR = "name='buffered_audio_enabled'"
+
+    def _input_attrs(self, html: str) -> str:
+        """Return the buffered-audio <input>'s attribute list, excluding its
+        onchange JS body (which contains the literal substring "checked" as
+        part of "this.checked" and would otherwise produce false positives)."""
+        idx = html.index(self._NAME_ATTR)
+        tag_start = html.rindex("<input", 0, idx)
+        tag_end = html.index(">", idx)
+        tag = html[tag_start:tag_end + 1]
+        return tag.split("onchange=")[0]
+
+    def test_toggle_absent_when_genuinely_unsupported(self, tmp_path):
+        from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: self._result(ok=False, unsupported=True)},
+        )
+        assert self._NAME_ATTR not in html
+        assert "Enable AirPlay 2 Buffered Audio" not in html
+        assert "Could not read the buffered-audio setting" not in html
+
+    def test_toggle_present_but_disabled_on_read_failure(self, tmp_path):
+        from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: self._result(ok=False, unsupported=False)},
+        )
+        assert self._NAME_ATTR in html
+        assert "Enable AirPlay 2 Buffered Audio" in html
+        assert "Could not read the buffered-audio setting" in html
+        # Isolate the buffered-audio input tag's attributes and confirm disabled.
+        attrs = self._input_attrs(html)
+        assert "disabled" in attrs
+
+    def test_toggle_enabled_and_checked_when_value_true(self, tmp_path):
+        from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: self._result(ok=True, value=True)},
+        )
+        assert self._NAME_ATTR in html
+        assert "Could not read the buffered-audio setting" not in html
+        attrs = self._input_attrs(html)
+        assert "disabled" not in attrs
+        assert "checked" in attrs
+
+    def test_toggle_enabled_and_unchecked_when_value_false(self, tmp_path):
+        from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: self._result(ok=True, value=False)},
+        )
+        assert self._NAME_ATTR in html
+        assert "Could not read the buffered-audio setting" not in html
+        attrs = self._input_attrs(html)
+        assert "disabled" not in attrs
+        assert "checked" not in attrs
 
 
 # ---------------------------------------------------------------------------
