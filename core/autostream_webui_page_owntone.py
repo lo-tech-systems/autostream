@@ -26,6 +26,7 @@ from typing import Optional
 from urllib.parse import parse_qs, quote, urlparse
 
 from autostream_config import (
+    BUFFERED_AIRPLAY_MODES,
     DEFAULT_AIRPLAY_MODE,
     load_state,
     parse_config,
@@ -370,6 +371,14 @@ def send_owntone_setup_page(
             if output is not None and out_id
             else (DEFAULT_AIRPLAY_MODE,)
         )
+        # Buffered-transport modes are only selectable while buffered audio is on.
+        # Dropping them here also coerces an output still saved as one back to Auto
+        # for display, via the unsupported-mode fallback below.
+        if not buffered_audio_enabled:
+            supported_config_modes = tuple(
+                mode for mode in supported_config_modes
+                if mode not in BUFFERED_AIRPLAY_MODES
+            ) or (DEFAULT_AIRPLAY_MODE,)
 
         mode_note_html = ""
         current_mode = saved_runtime_mode or DEFAULT_AIRPLAY_MODE

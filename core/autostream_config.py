@@ -83,6 +83,15 @@ VALID_AIRPLAY_MODES = (
     "airplay2_surround_stereo",
     "airplay2_surround_upmix",
 )
+# Modes carried over the AirPlay 2 buffered transport, including the surround
+# variants that depend on it. They are selectable only while the backend's
+# buffered-audio setting is on; when it goes off, outputs using one fall back to
+# DEFAULT_AIRPLAY_MODE.
+BUFFERED_AIRPLAY_MODES = (
+    "airplay2_buffered",
+    "airplay2_surround_stereo",
+    "airplay2_surround_upmix",
+)
 DEFAULT_STYLUS_LIFE_HOURS = 0  # 0 = tracking disabled ("Don't track usage")
 VALID_STYLUS_LIFE_HOURS = (100, 250, 500, 750, 1000)
 

@@ -1994,10 +1994,60 @@ def send_owntone_buffered_audio_json(handler, state: WebUIState, body: str) -> N
     if not isinstance(value, bool):
         send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
-    _send_owntone_native_setting_json(
-        handler, state, SETTING_BUFFERED_AUDIO_ENABLED, value,
-        reject_unsupported=True,
+
+    ok, restart_needed, error = _push_owntone_native_setting(
+        state, SETTING_BUFFERED_AUDIO_ENABLED, value, reject_unsupported=True,
     )
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": error or "OwnTone API error"})
+        return
+
+    reset_outputs: list[str] = []
+    if not value:
+        reset_outputs = _reset_buffered_output_modes(state)
+
+    send_json(handler, 200, {
+        "ok": True,
+        "restart_required": restart_needed,
+        "reset_outputs": reset_outputs,
+    })
+
+
+def _reset_buffered_output_modes(state: WebUIState) -> list[str]:
+    """Fall outputs saved as a buffered-transport mode back to the default mode.
+
+    Called when buffered audio is switched off: those modes are no longer
+    selectable, so leaving them persisted would silently reapply an unavailable
+    mode if the setting were later turned back on, or when an undiscovered
+    speaker reappears. Returns the output ids that were changed.
+    """
+    from autostream_config import BUFFERED_AIRPLAY_MODES, DEFAULT_AIRPLAY_MODE
+    from autostream_settings import SettingsStore as _SettingsStore
+
+    _store = getattr(state, "settings", None)
+    if not isinstance(_store, _SettingsStore):
+        logging.warning("buffered-audio off: settings store unavailable, modes not reset")
+        return []
+
+    changed: list[str] = []
+
+    def _mutator(raw: dict) -> None:
+        changed.clear()  # keep the tally accurate if the store reapplies the mutator
+        modes = raw.setdefault("owntone", {}).setdefault("airplay_modes", {})
+        for output_id, mode in list(modes.items()):
+            if str(mode or "").strip().lower() in BUFFERED_AIRPLAY_MODES:
+                modes[output_id] = DEFAULT_AIRPLAY_MODE
+                changed.append(str(output_id))
+
+    try:
+        _store.update(_mutator)
+    except Exception:
+        logging.exception("buffered-audio off: failed to reset output modes")
+        return []
+
+    if changed:
+        _owntone_update_live_runtime(state)
+    return changed
 
 
 def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> None:

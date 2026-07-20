@@ -409,20 +409,121 @@ class TestNativeOwntoneSettings:
         assert sent["body"]["ok"] is True
 
 
+# ── Buffered-audio toggle: resetting stored buffered/surround modes ─────────
+
+class TestBufferedAudioResetOutputs:
+    """Turning buffered audio off must fall any output saved as a buffered or
+    surround-over-buffered mode back to the default mode, and report the
+    changed output ids; turning it on must never touch stored modes."""
+
+    def _make_save_result(self, ok=True, restart_required=False, unsupported=False):
+        from autostream_players import SaveSettingResult
+        return SaveSettingResult(
+            ok=ok,
+            restart_required=restart_required,
+            unsupported=unsupported,
+            error="" if ok else "owntone_error",
+        )
+
+    def test_turning_off_resets_buffered_and_surround_modes(self, tmp_path):
+        from autostream_webui_api import send_owntone_buffered_audio_json
+        config_path = _make_config(str(tmp_path), extra={"owntone": {"airplay_modes": {
+            "1": "airplay2_buffered",
+            "2": "airplay2_surround_stereo",
+            "3": "airplay2_surround_upmix",
+            "4": "raop",
+            "5": "airplay2",
+            "6": "default",
+        }}})
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": False})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap, \
+             patch("autostream_webui_api.update_live_owntone_runtime"):
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result(ok=True)
+            send_owntone_buffered_audio_json(handler, state, body)
+        assert sent["body"]["ok"] is True
+        assert set(sent["body"]["reset_outputs"]) == {"1", "2", "3"}
+        snap = store.snapshot()
+        assert snap.owntone.output_airplay_modes["1"] == "default"
+        assert snap.owntone.output_airplay_modes["2"] == "default"
+        assert snap.owntone.output_airplay_modes["3"] == "default"
+        # Untouched: not a buffered-transport mode.
+        assert snap.owntone.output_airplay_modes["4"] == "raop"
+        assert snap.owntone.output_airplay_modes["5"] == "airplay2"
+        assert snap.owntone.output_airplay_modes["6"] == "default"
+
+    def test_turning_on_does_not_reset_stored_modes(self, tmp_path):
+        from autostream_webui_api import send_owntone_buffered_audio_json
+        config_path = _make_config(str(tmp_path), extra={"owntone": {"airplay_modes": {
+            "1": "airplay2_buffered",
+        }}})
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": True})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap, \
+             patch("autostream_webui_api.update_live_owntone_runtime") as m_live:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result(ok=True)
+            send_owntone_buffered_audio_json(handler, state, body)
+        assert sent["body"]["ok"] is True
+        assert sent["body"]["reset_outputs"] == []
+        m_live.assert_not_called()
+        snap = store.snapshot()
+        assert snap.owntone.output_airplay_modes["1"] == "airplay2_buffered"
+
+    def test_reset_skipped_gracefully_when_store_unavailable(self, tmp_path):
+        from autostream_webui_api import send_owntone_buffered_audio_json
+        config_path = _make_config(str(tmp_path), extra={"owntone": {"airplay_modes": {
+            "1": "airplay2_buffered",
+        }}})
+        state_path = _make_state_file(str(tmp_path))
+        state = _make_state(config_path, state_path, None)  # no settings store
+        handler, sent = _make_handler()
+        body = json.dumps({"value": False})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result(ok=True)
+            send_owntone_buffered_audio_json(handler, state, body)
+        assert sent["code"] == 200
+        assert sent["body"]["ok"] is True
+        assert sent["body"]["reset_outputs"] == []
+
+
 # ── Setup page rendering ──────────────────────────────────────────────────────
 
 class TestOwntoneSetupPage:
-    def _render_page(self, tmp_path, setting_results: dict | None = None):
+    def _render_page(
+        self,
+        tmp_path,
+        setting_results: dict | None = None,
+        outputs: list | None = None,
+        can_set_output_mode: bool = False,
+        config_extra: dict | None = None,
+    ):
         """Render the OwnTone setup page with get_setting mocked per setting key.
 
         `setting_results` maps a setting key (e.g. SETTING_BUFFERED_AUDIO_ENABLED)
         to the object get_setting() should return for that key. Keys not present
         default to the "genuinely unsupported" result (ok=False, unsupported=True)
         that existing callers of this helper relied on.
+
+        `outputs` is a list of OutputInfo instances returned as discovered speakers;
+        `can_set_output_mode` toggles capabilities.can_set_output_mode so the mode
+        <select> is rendered instead of a hidden input; `config_extra` is passed
+        through to `_make_config` (e.g. to pre-seed `owntone.airplay_modes`).
         """
         from autostream_webui_page_owntone import send_owntone_setup_page
         from autostream_players import SaveSettingResult, SettingValueResult
-        config_path = _make_config(str(tmp_path))
+        config_path = _make_config(str(tmp_path), extra=config_extra)
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
         state = _make_state(config_path, state_path, store)
@@ -436,10 +537,10 @@ class TestOwntoneSetupPage:
 
         _list_result = MagicMock()
         _list_result.ok = True
-        _list_result.outputs = []
+        _list_result.outputs = outputs or []
 
         _cap = MagicMock()
-        _cap.can_set_output_mode = False
+        _cap.can_set_output_mode = can_set_output_mode
         _cap.can_set_output_offset = False
 
         _default_result = MagicMock()
@@ -567,6 +668,77 @@ class TestBufferedAudioToggle:
         attrs = self._input_attrs(html)
         assert "disabled" not in attrs
         assert "checked" not in attrs
+
+
+# ── Buffered-mode filtering in the per-speaker mode <select> ─────────────────
+
+class TestBufferedModeFiltering:
+    """BUFFERED_AIRPLAY_MODES are only offered in the mode <select> while the
+    backend's buffered-audio preference is on; otherwise they're filtered out
+    and a saved buffered/surround selection displays as Auto."""
+
+    def _output(self, out_id="42", modes=None):
+        from autostream_players import (
+            OUTPUT_MODE_AIRPLAY2,
+            OUTPUT_MODE_AIRPLAY2_BUFFERED,
+            OUTPUT_MODE_AUTO,
+            OutputInfo,
+        )
+        return OutputInfo(
+            id=out_id,
+            name="Kitchen",
+            supported_modes=modes or (OUTPUT_MODE_AUTO, OUTPUT_MODE_AIRPLAY2, OUTPUT_MODE_AIRPLAY2_BUFFERED),
+        )
+
+    def _select_html(self, html: str, index: int = 0) -> str:
+        marker = f'name="mode_{index}"'
+        start = html.index(marker)
+        tag_open_start = html.rindex("<select", 0, start)
+        end = html.index("</select>", start) + len("</select>")
+        return html[tag_open_start:end]
+
+    def test_buffered_off_hides_buffered_options_and_selects_auto(self, tmp_path):
+        from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+        result = TestBufferedAudioToggle()._result(ok=True, value=False)
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: result},
+            outputs=[self._output()],
+            can_set_output_mode=True,
+            config_extra={"owntone": {"airplay_modes": {"42": "airplay2_buffered"}}},
+        )
+        select_html = self._select_html(html)
+        assert "airplay2_buffered" not in select_html
+        assert "airplay2_surround_stereo" not in select_html
+        assert "airplay2_surround_upmix" not in select_html
+        assert '<option value="default" selected>Auto</option>' in select_html
+
+    def test_buffered_on_shows_buffered_options_and_selects_saved_mode(self, tmp_path):
+        from autostream_players import SETTING_BUFFERED_AUDIO_ENABLED
+        result = TestBufferedAudioToggle()._result(ok=True, value=True)
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: result},
+            outputs=[self._output()],
+            can_set_output_mode=True,
+            config_extra={"owntone": {"airplay_modes": {"42": "airplay2_buffered"}}},
+        )
+        select_html = self._select_html(html)
+        assert '<option value="airplay2_buffered" selected>' in select_html
+        assert '<option value="default" selected>' not in select_html
+
+    def test_filtering_to_empty_falls_back_to_default_only(self, tmp_path):
+        from autostream_players import OUTPUT_MODE_AIRPLAY2_BUFFERED, SETTING_BUFFERED_AUDIO_ENABLED
+        result = TestBufferedAudioToggle()._result(ok=True, value=False)
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_BUFFERED_AUDIO_ENABLED: result},
+            outputs=[self._output(modes=(OUTPUT_MODE_AIRPLAY2_BUFFERED,))],
+            can_set_output_mode=True,
+        )
+        select_html = self._select_html(html)
+        assert select_html.count("<option") == 1
+        assert '<option value="default" selected>Auto</option>' in select_html
 
 
 # ---------------------------------------------------------------------------
