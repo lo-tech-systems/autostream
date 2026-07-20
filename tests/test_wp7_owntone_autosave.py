@@ -716,6 +716,16 @@ class TestOwntoneSetupPage:
         assert "mDNS Grace Period" not in html
         assert "/api/owntone/grace-period" not in html
 
+    def test_audio_fieldset_rendered_before_speaker_cards(self, tmp_path):
+        """The Audio fieldset (buffered audio / uncompressed / start buffer) must
+        render above the per-speaker cards, not below them."""
+        from autostream_players import OutputInfo
+        output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
+        html = self._render_page(str(tmp_path), outputs=[output])
+        audio_idx = html.index("<legend>Audio</legend>")
+        speaker_idx = html.index('id="spk_settings_0"')
+        assert audio_idx < speaker_idx
+
 
 # ── Buffered-audio toggle rendering ────────────────────────────────────────────
 

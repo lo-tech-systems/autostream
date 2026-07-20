@@ -556,16 +556,11 @@ def send_owntone_setup_page(
         'This backend does not currently expose start-buffer control.</div>'
     )
 
-    _body_html = (
-        page_heading_html
-        + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
-        + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
-        + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
-        + f"<a href='/owntone-setup' class='pill-btn small' style='font-weight:500;border:1px solid #ccc;'>\u21bb Refresh</a>"
-        + f"</p>"
-        + f"<div>"
-        + speakers_html
-        + f"<fieldset><legend>Audio</legend>"
+    # Audio leads the page: buffered audio and start buffer are the settings a
+    # user comes here to change, and buffered audio also governs which modes the
+    # per-speaker cards below are allowed to offer.
+    _audio_fieldset_html = (
+        f"<fieldset><legend>Audio</legend>"
         + _buffered_audio_html
         + f"<div style='display:flex;align-items:center;gap:0.75rem;'>"
         + f"<label class='output-toggle' style='margin:0;'>"
@@ -577,6 +572,18 @@ def send_owntone_setup_page(
         + ('<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else '')
         + _buf_html
         + f"</fieldset>"
+    )
+
+    _body_html = (
+        page_heading_html
+        + (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
+        + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
+        + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
+        + f"<a href='/owntone-setup' class='pill-btn small' style='font-weight:500;border:1px solid #ccc;'>\u21bb Refresh</a>"
+        + f"</p>"
+        + f"<div>"
+        + _audio_fieldset_html
+        + speakers_html
         + f"</div>"
     )
     _body_suffix = f"""\
