@@ -257,7 +257,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"</p>"
         f"<p style='margin:0.5rem 0 0.85rem;color:var(--color-text-secondary);font-size:0.95rem;'>"
         f"autostream includes third-party and separately licensed components, including "
-        f"ALSA, owntone-mini, and vibra-mini."
+        f"various open-source libraries, ALSA, FFmpeg, owntone-mini, and vibra-mini."
         f"</p>"
         f"<ul style='margin:0.25rem 0 0.85rem 1.2rem;color:var(--color-text-secondary);font-size:0.95rem;'>"
         f"<li>OwnTone Server: https://github.com/owntone/owntone-server</li>"
