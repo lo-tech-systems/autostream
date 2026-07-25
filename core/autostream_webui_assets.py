@@ -670,6 +670,20 @@ button[type=submit]:active {
   opacity: 0.5;
 }
 
+/* Repeat button (home page top controls row) -- small pill-btn styled like
+   the appliance-selector button; blue accent outline when armed/replaying,
+   reusing the same active-card treatment as .output-card-on/.now-playing-card.
+   Border is always reserved (transparent) so the active outline doesn't shift
+   layout when toggled. */
+.repeat-btn {
+  border: 2px solid transparent;
+}
+.repeat-btn.active {
+  border-color: var(--color-accent);
+  background: var(--color-surface-selected);
+  color: var(--color-text);
+}
+
 /* iOS-style storage bar */
 .storage-bar {
   width: 100%;

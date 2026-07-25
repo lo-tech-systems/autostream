@@ -147,6 +147,8 @@ def _audio_controls_card_html(
         </div>
       </div>
     """
+    # The recorder tap sits PRE-DSP and replay applies the origin
+    # input's LIVE gain/EQ, so these controls are never locked during replay.
     return settings_card_html(inner_html)
 
 
@@ -670,6 +672,15 @@ def send_setup_page(
           <input type="hidden" id="owntone_volume_percent" name="owntone_volume_percent" value="{parsed.owntone.volume_percent}"></label>
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
+          <div class="setup-customise-row" style="margin-top:0.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="repeat_enabled" id="repeat_enabled"{'  checked' if parsed.repeat.enabled else ''} onchange="settingsSaveField('repeat.enabled', this.checked)">
+              <span class="switch"></span>
+            </label>
+            <span>Enable repeat playback</span>
+          </div>
+          <div class="helptext" id="repeat-max-time-note">Max buffer time: —</div>
+          <div class="helptext" id="repeat-unavailable-note" style="display:none;color:var(--color-status-danger);"></div>
           {owntone_button_html}
         """
     playback_fieldset_html = settings_card_html(playback_inner_html, margin_top="0")
@@ -1802,6 +1813,31 @@ def send_setup_page(
           if (track) track.classList.add('panel-open');
           window.scrollTo(0, 0);
           if (id === 'system') refreshNetworkAdapterInfo();
+          if (id === 'playback') refreshRepeatSetupNote();
+        }}
+        async function refreshRepeatSetupNote() {{
+          var noteEl = document.getElementById('repeat-max-time-note');
+          var unavailEl = document.getElementById('repeat-unavailable-note');
+          try {{
+            var r = await fetch('/api/status', {{ cache: 'no-store' }});
+            var d = await r.json();
+            var repeat = (d && d.repeat) || null;
+            if (!repeat) return;  // absent on old monitor binaries -- feature unsupported
+            var maxSecs = Number(repeat.max_recording_seconds);
+            if (noteEl && Number.isFinite(maxSecs) && maxSecs > 0) {{
+              noteEl.textContent = 'Max buffer time: ' + Math.round(maxSecs / 60) + ' minutes';
+            }}
+            var reason = repeat.recording && repeat.recording.unavailable_reason;
+            if (unavailEl) {{
+              if (reason) {{
+                unavailEl.textContent = 'Repeat unavailable: insufficient free memory';
+                unavailEl.style.display = '';
+              }} else {{
+                unavailEl.style.display = 'none';
+                unavailEl.textContent = '';
+              }}
+            }}
+          }} catch (e) {{}}
         }}
         function onHostnameToggle(checked) {{
           var cb = document.getElementById('webui_control_other_appliances');
@@ -2566,7 +2602,7 @@ def send_setup_page(
         }});
       </script>
       <script>
-        // ── Network adapter status and Change Wi-Fi (WP7) ─────────────────
+        // ── Network adapter status and Change Wi-Fi ─────────────────
         async function refreshNetworkAdapterInfo() {{
           var adapterEl = document.getElementById('networkAdapterInfo');
           var addressEl = document.getElementById('networkAddressInfo');

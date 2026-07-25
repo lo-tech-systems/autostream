@@ -248,7 +248,12 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
         "</div>"
     )
 
-    return page_header + eq_card + gain_card
+    # The recorder tap sits PRE-DSP, so replay applies the origin
+    # input's LIVE gain/EQ plus this page's own output EQ/gain via the shared
+    # OutputProcessor -- these controls are never locked during replay.
+    eq_panes = f"{eq_card}{gain_card}"
+
+    return page_header + eq_panes
 
 
 # -----------------------------------------------------------------------------
@@ -513,7 +518,9 @@ document.addEventListener('DOMContentLoaded', function() {
   setInterval(function(){if(!document.hidden)refreshApplianceSelector();}, 15000);
   document.addEventListener('visibilitychange', function(){
     if (!document.hidden) { _pollFullEqState(); refreshApplianceSelector(); }
-    else { if (_eqPollTimer) { clearTimeout(_eqPollTimer); _eqPollTimer = null; } }
+    else {
+      if (_eqPollTimer) { clearTimeout(_eqPollTimer); _eqPollTimer = null; }
+    }
   });
   _pollFullEqState();
 });

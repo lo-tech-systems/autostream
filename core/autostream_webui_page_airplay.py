@@ -82,11 +82,17 @@ function renderHomeState(data){
   var playback=(data&&data.playback)||{};var levels=(data&&data.input_levels)||[];var inputs=playback.inputs||{};
   var isPlaying=false,activeLevel=null,activeIdx=0;
   for(var i=0;i<levels.length;i++){if(levels[i]&&levels[i].is_above_threshold){isPlaying=true;activeLevel=levels[i];activeIdx=i;break;}}
+  // Mirror updateNowPlayingCard's session-aware active flag
+  // so replay (no input above the live-level threshold) still reports as
+  // playing and reaches the track-identification render block below.
+  var session=(data&&data.session)||null;var sessionActive=(session&&typeof session.active==='boolean')?!!session.active:null;var sessionSource=(session&&typeof session.source==='string')?session.source:null;var active=(sessionActive!==null)?sessionActive:isPlaying;
   var card=document.getElementById('now-playing-card');var hdrEl=document.getElementById('np-hdr');
-  if(card)card.classList.toggle('np-ready',!isPlaying);if(hdrEl)hdrEl.textContent=(isPlaying?'Now Playing':'Ready')+' \\u00b7 '+(window.__REMOTE_HOSTNAME||'');
-  if(!isPlaying){_vuActiveIdx=-1;_vuQueue={};updateVuBars(-90,-90);}else{
+  if(card)card.classList.toggle('np-ready',!active);if(hdrEl)hdrEl.textContent=(active?(sessionSource==='replay'?'REPEAT PLAYBACK':'Now Playing'):'Ready')+' \\u00b7 '+(window.__REMOTE_HOSTNAME||'');
+  if(!active){_vuActiveIdx=-1;_vuQueue={};updateVuBars(-90,-90);}else{
+    var usingReplayOrigin=false;
+    if(!activeLevel&&sessionSource==='replay'){var repeat=(data&&data.repeat)||{};var recording=repeat.recording||{};var originInput=Number.isFinite(Number(recording.origin_input))?Number(recording.origin_input):null;if(originInput!==null){var originIdx=originInput-1;activeLevel=levels[originIdx]||{label:'Input '+originInput,dbfs:-90,detected_hz:0,is_above_threshold:false};activeIdx=originIdx;usingReplayOrigin=true;}}
     if(!activeLevel&&levels.length>0){activeLevel=levels[0];activeIdx=0;}
-    if(activeLevel){var inputSnap=inputs[String(activeIdx+1)]||{};var isTurntable=!!inputSnap.is_turntable;var label=String(activeLevel.label||('Input '+(activeIdx+1)));var hz=Number(activeLevel.detected_hz||0);var nameEl=document.getElementById('np-name');var signalEl=document.getElementById('np-signal');var iconEl=document.getElementById('np-icon');var ti=(data&&data.track_identification)||{};var tiEnabled=!!(ti&&ti.enabled);var tiState=String((ti&&ti.state)||'');var tiIdentified=tiEnabled&&tiState==='identified';var tiTitle=String((ti&&ti.title)||'');var tiArtist=String((ti&&ti.artist)||'');var tiArtUrl=String((ti&&ti.artwork_url)||'');if(tiIdentified){if(nameEl)nameEl.textContent=tiTitle||'Unknown';if(signalEl)signalEl.textContent=tiArtist;if(iconEl){var artKey='art:'+tiArtUrl;if(iconEl.getAttribute('data-np-icon-key')!==artKey){iconEl.setAttribute('data-np-icon-key',artKey);if(tiArtUrl){var artImg=new Image();artImg.onload=function(){if(iconEl.getAttribute('data-np-icon-key')===artKey){iconEl.innerHTML='<img src="'+tiArtUrl+'" alt="">';iconEl.classList.add('np-icon-art');}};artImg.src=tiArtUrl;}else{iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}}}else if(tiEnabled){var inputPrefix=isTurntable?'Vinyl':'Line In';var suffix;if(tiState==='error'){suffix='Track ID function not available';}else if(tiState==='not_found'){suffix='Unknown track';}else{suffix='Identifying Track\\u2026';}if(nameEl)nameEl.textContent=inputPrefix+' \\u2013 '+suffix;if(signalEl)signalEl.textContent='';var svgKey='svg:'+String(isTurntable);if(iconEl&&iconEl.getAttribute('data-np-icon-key')!==svgKey){iconEl.setAttribute('data-np-icon-key',svgKey);iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}else{if(nameEl)nameEl.textContent=label+' \\u00b7 '+(isTurntable?'Turntable':'Line Level');if(signalEl){var sp=[];if(window.__SHOW_INPUT_DETAIL&&Number.isFinite(hz)&&hz>0){sp.push('Locked');sp.push(Math.round(hz/1000)+' kHz');}signalEl.textContent=sp.join(' \\u00b7 ');}var svgKey2='svg:'+String(isTurntable);if(iconEl&&iconEl.getAttribute('data-np-icon-key')!==svgKey2){iconEl.setAttribute('data-np-icon-key',svgKey2);iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}vuIngestHistory(activeIdx,activeLevel.vu_history);}
+    if(activeLevel){var inputSnap=inputs[String(activeIdx+1)]||{};var isTurntable=!!inputSnap.is_turntable;var label=String(activeLevel.label||('Input '+(activeIdx+1)));var hz=Number(activeLevel.detected_hz||0);var nameEl=document.getElementById('np-name');var signalEl=document.getElementById('np-signal');var iconEl=document.getElementById('np-icon');var ti=(data&&data.track_identification)||{};var tiEnabled=!!(ti&&ti.enabled);var tiState=String((ti&&ti.state)||'');var tiIdentified=tiEnabled&&tiState==='identified';var tiTitle=String((ti&&ti.title)||'');var tiArtist=String((ti&&ti.artist)||'');var tiArtUrl=String((ti&&ti.artwork_url)||'');if(tiIdentified){if(nameEl)nameEl.textContent=tiTitle||'Unknown';if(signalEl)signalEl.textContent=tiArtist;if(iconEl){var artKey='art:'+tiArtUrl;if(iconEl.getAttribute('data-np-icon-key')!==artKey){iconEl.setAttribute('data-np-icon-key',artKey);if(tiArtUrl){var artImg=new Image();artImg.onload=function(){if(iconEl.getAttribute('data-np-icon-key')===artKey){iconEl.innerHTML='<img src="'+tiArtUrl+'" alt="">';iconEl.classList.add('np-icon-art');}};artImg.src=tiArtUrl;}else{iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}}}else if(tiEnabled){var inputPrefix=isTurntable?'Vinyl':'Line In';var suffix;if(tiState==='error'){suffix='Track ID function not available';}else if(tiState==='not_found'){suffix='Unknown track';}else{suffix='Identifying Track\\u2026';}if(nameEl)nameEl.textContent=inputPrefix+' \\u2013 '+suffix;if(signalEl)signalEl.textContent='';var svgKey='svg:'+String(isTurntable);if(iconEl&&iconEl.getAttribute('data-np-icon-key')!==svgKey){iconEl.setAttribute('data-np-icon-key',svgKey);iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}else{if(nameEl)nameEl.textContent=label+' \\u00b7 '+(isTurntable?'Turntable':'Line Level');if(signalEl){var sp=[];if(window.__SHOW_INPUT_DETAIL&&Number.isFinite(hz)&&hz>0){sp.push('Locked');sp.push(Math.round(hz/1000)+' kHz');}signalEl.textContent=sp.join(' \\u00b7 ');}var svgKey2='svg:'+String(isTurntable);if(iconEl&&iconEl.getAttribute('data-np-icon-key')!==svgKey2){iconEl.setAttribute('data-np-icon-key',svgKey2);iconEl.innerHTML=isTurntable?window.__ICON_TURNTABLE:window.__ICON_LINE_LEVEL;iconEl.classList.remove('np-icon-art');}}if(!usingReplayOrigin)vuIngestHistory(activeIdx,activeLevel.vu_history);}
   }
   var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
   var outputs=Array.isArray(data.outputs)?data.outputs:[];
@@ -876,15 +882,50 @@ def send_airplay_page(
               isPlaying = true; activeLevel = levels[i]; activeIdx = i; break;
             }}
           }}
+          // Authoritative playing/active state: prefer d.session.active (the
+          // coordinator's unified session flag -- true during buffered
+          // AirPlay/AAC playback AND repeat replay, neither of which trips
+          // the input-level threshold above); fall back to the legacy
+          // level-based isPlaying when talking to an older backend with no
+          // session block.
+          var session = (data && data.session) || null;
+          var sessionActive = (session && typeof session.active === 'boolean') ? !!session.active : null;
+          var sessionSource = (session && typeof session.source === 'string') ? session.source : null;
+          var active = (sessionActive !== null) ? sessionActive : isPlaying;
           var card = document.getElementById('now-playing-card');
           var hdrEl = document.getElementById('np-hdr');
-          if (card) card.classList.toggle('np-ready', !isPlaying);
-          if (hdrEl) hdrEl.textContent = isPlaying ? 'Now Playing' : 'Ready';
-          if (!isPlaying) {{
+          if (card) card.classList.toggle('np-ready', !active);
+          if (hdrEl) hdrEl.textContent = active ? (sessionSource === 'replay' ? 'REPEAT PLAYBACK' : 'Now Playing') : 'Ready';
+          if (!active) {{
             _vuActiveIdx = -1;
             _vuQueue = {{}};
             updateVuBars(-90, -90);
             return;
+          }}
+          // During replay no input trips the live-level threshold (the
+          // origin input is not "capturing"), so activeLevel is still null
+          // here even though session.active is true and the origin monitor's
+          // track-identification snapshot is live (server-side fix in
+          // get_active_track_identification_snapshot). Resolve the origin
+          // input from repeat.recording.origin_input -- present verbatim
+          // whenever sessionSource === 'replay' -- so the icon/label reflect
+          // the actual replaying input rather than an arbitrary levels[0]
+          // guess. Not a genuine live level, so vuIngestHistory is skipped
+          // for it below.
+          var usingReplayOrigin = false;
+          if (!activeLevel && sessionSource === 'replay') {{
+            var repeat = (data && data.repeat) || {{}};
+            var recording = repeat.recording || {{}};
+            var originInput = Number.isFinite(Number(recording.origin_input))
+              ? Number(recording.origin_input) : null;
+            if (originInput !== null) {{
+              var originIdx = originInput - 1;
+              activeLevel = levels[originIdx] || {{
+                label: 'Input ' + originInput, dbfs: -90, detected_hz: 0, is_above_threshold: false,
+              }};
+              activeIdx = originIdx;
+              usingReplayOrigin = true;
+            }}
           }}
           if (!activeLevel && levels.length > 0) {{ activeLevel = levels[0]; activeIdx = 0; }}
           if (!activeLevel) return;
@@ -959,11 +1000,12 @@ def send_airplay_page(
               iconEl.classList.remove('np-icon-art');
             }}
           }}
-          vuIngestHistory(activeIdx, activeLevel.vu_history);
+          if (!usingReplayOrigin) vuIngestHistory(activeIdx, activeLevel.vu_history);
         }}
         function refreshStatus(){{
           fetch('/api/status', {{ cache: 'no-store' }}).then(r=>r.json()).then(d=>{{
             updateNowPlayingCard(d);
+            updateRepeatButton(d);
             ['stylus', 'belt', 'bearing'].forEach(function(item) {{
               var el = document.getElementById(item + '-warning-banner');
               if (!el) return;
@@ -972,6 +1014,100 @@ def send_airplay_page(
               el.style.display = txt ? 'block' : 'none';
               el.textContent = txt;
             }});
+          }});
+        }}
+        function _fmtRepeatTime(s){{
+          s = Math.max(0, Math.round(Number(s) || 0));
+          var m = Math.floor(s / 60), r = s % 60;
+          return m + ':' + (r < 10 ? '0' : '') + r;
+        }}
+        var __repeatOptimistic = null;
+        function updateRepeatButton(d){{
+          var btn = document.getElementById('repeat-btn');
+          if (!btn) return;
+          var repeat = (d && d.repeat) || null;
+          if (!repeat || !repeat.enabled) {{ btn.hidden = true; return; }}
+          btn.hidden = false;
+          var recording = repeat.recording || {{}};
+          var replay = repeat.replay || {{}};
+          var armed = !!repeat.armed;
+          var replaying = !!replay.active;
+          var hasBuffer = Number(recording.bytes || 0) > 0;
+          var polledOn = replaying || armed;
+          var session = (d && d.session) || null;
+          var sessionActive = (session && typeof session.active === 'boolean') ? !!session.active : null;
+
+          // Optimistic-click reconciliation: hold the click's immediate
+          // visual state until the polled truth agrees with it, or ~5 s
+          // elapse -- the 1.5 s stop/start fade means polled state lags the
+          // click, and without this the button would flicker back mid-fade.
+          var on = polledOn;
+          var state = replaying ? 'repeating' : (armed ? 'armed' : 'off');
+          if (__repeatOptimistic) {{
+            var agrees = (__repeatOptimistic.active === polledOn);
+            var expired = (Date.now() - __repeatOptimistic.ts) >= 5000;
+            if (agrees || expired) {{
+              __repeatOptimistic = null;
+            }} else {{
+              on = __repeatOptimistic.active;
+              state = on ? (replaying ? 'repeating' : 'armed') : 'off';
+            }}
+          }}
+          btn.setAttribute('data-state', state);
+          btn.classList.toggle('active', on);
+          btn.disabled = (!hasBuffer && !replaying && !on);
+
+          // 'Replay Last' only makes sense when nothing is authoritatively
+          // playing right now: with a session block, gate it on
+          // !sessionActive too so it never flashes while a live source (e.g.
+          // a CD) is already playing at start-up. Legacy backends with no
+          // session block keep the pre-existing gating.
+          var showReplayLast = (sessionActive === null)
+            ? (!on && hasBuffer)
+            : (!sessionActive && !on && hasBuffer && !armed && !replaying);
+          btn.textContent = showReplayLast ? '↻ Replay Last' : '↻ Repeat Play';
+
+          if (!__repeatOptimistic) {{
+            var title = '';
+            if (replaying) {{
+              var pos = _fmtRepeatTime(replay.position_seconds), dur = _fmtRepeatTime(replay.duration_seconds);
+              title = pos + ' / ' + dur;
+              if (recording.truncated_head) title += ' · tail only';
+            }} else if (armed) {{
+              title = recording.active ? 'Buffering…' : 'Waiting for playback';
+            }}
+            btn.title = title;
+          }}
+        }}
+        function onRepeatButtonClick(){{
+          var btn = document.getElementById('repeat-btn');
+          if (!btn || btn.disabled) return;
+          var wasActive = btn.classList.contains('active');
+          var state = btn.getAttribute('data-state');
+          // repeating -> stop replay; armed -> disarm; off -> arm (starts replay
+          // immediately if idle with a buffer, or arms for stream-end if playing live).
+          var newArmed = (state === 'repeating' || state === 'armed') ? false : true;
+          // Apply the optimistic visual state immediately: don't wait for the
+          // POST to resolve before flipping the class/title, so the click
+          // feels instant even though the 1.5 s fade means the polled truth
+          // will lag behind for a while.
+          __repeatOptimistic = {{ active: newArmed, ts: Date.now() }};
+          btn.classList.toggle('active', newArmed);
+          btn.setAttribute('data-state', newArmed ? 'armed' : 'off');
+          btn.title = newArmed ? 'Starting…' : 'Stopping…';
+          fetch('/api/repeat', {{
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {{ 'Content-Type': 'application/json', 'X-CSRF-Token': window.__CSRF || '' }},
+            body: JSON.stringify({{ armed: newArmed }})
+          }}).then(function(r){{ return r.json(); }}).then(function(d){{
+            if (!d || !d.ok) {{
+              __repeatOptimistic = null;
+              btn.classList.toggle('active', wasActive);
+            }}
+          }}).catch(function(){{
+            __repeatOptimistic = null;
+            btn.classList.toggle('active', wasActive);
           }});
         }}
         function isActiveControl(el) {{
@@ -1295,11 +1431,22 @@ def send_airplay_page(
   </div>
 </div>"""
 
-    # Top controls row: refresh button + optional hostname/selector.
+    # Repeat control -- small pill-style button rendered only when repeat.enabled,
+    # styled like the appliance-selector button. Wired into
+    # the existing 1.5 s refreshStatus() poll; click -> POST /api/repeat.
+    # data-state attr: off / armed / repeating (used only for click-intent logic;
+    # visual "active" treatment reuses the same accent-border/selected-surface
+    # look as .output-card-on / .now-playing-card).
+    _repeat_btn_html = (
+        '<button type="button" class="pill-btn small repeat-btn" id="repeat-btn"'
+        ' data-state="off" disabled'
+        ' onclick="onRepeatButtonClick()">\u21bb Repeat Play</button>'
+    ) if parsed.repeat.enabled else ""
+
+    # Top controls row: repeat button + optional hostname/selector.
     _top_controls_html = (
         f"<div class='airplay-top-controls'>"
-        f"<button type='button' class='pill-btn small' onclick='location.reload();'"
-        f" title='Reload page to refresh speakers'>\u21bb Refresh</button>"
+        f"{_repeat_btn_html}"
         + _top_right_html
         + f"</div>"
     )
@@ -1366,7 +1513,7 @@ def send_airplay_page(
     _body_html = (
         # Full-width logo
         f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
-        # Refresh button + optional hostname pill
+        # Repeat button + optional hostname pill
         + _top_controls_html
         # Now Playing card (contains master volume when enabled)
         + _now_playing_card_html
