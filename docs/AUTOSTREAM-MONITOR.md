@@ -48,6 +48,20 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     file on demand; controlled via the same socket API
   - completely isolated from normal FIFO delivery; uses a bounded SPSC ring so
     the audio thread never blocks on disk I/O
+- `RepeatController` / `RepeatRecorder` / `ReplayEngine`
+  - "repeat" feature: records the streamed audio into an in-RAM buffer while
+    a capture session is active, and loops it back into the same FIFO once
+    armed, until disarmed or new live audio interrupts it (crossfades out on
+    interrupt)
+  - `RepeatRecorder` uses the same SPSC-ring + low-priority-worker-thread
+    pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16
+    depending on free RAM. The sliding window has no fixed-duration target --
+    it is bounded ONLY by a 64 MiB free-RAM floor and the codec ladder,
+    buffering as much as current free RAM allows for as long as it allows it
+  - `ReplayEngine` is a dedicated I/O-bound thread that decodes (libmpg123 for
+    the MP2 tier) and paces playback via the reader's own consumption of the
+    FIFO, looping until stopped; see `set_repeat_enabled`, `set_repeat_armed`,
+    and the `repeat` status block below
 - `EqChain` and `BiquadFilter`
   - implement the parametric EQ system
 - `RateEstimator`
@@ -612,6 +626,82 @@ Typical errors:
 - `parent directory is not writable: ...`
 - `failed to open output file: ...`
 
+### `set_repeat_enabled`
+
+Global enable + codec policy for the "repeat" feature (record the streamed
+audio into an in-RAM buffer, and loop it back once armed -- see
+`set_repeat_armed` below). A live setter, not a debounced reload.
+
+Request:
+
+```json
+{"type":"set_repeat_enabled","enabled":true,"codec":"auto"}
+```
+
+Request fields:
+
+- `enabled`
+  - `true` to record every capture session; `false` to disable
+- `codec`
+  - one of `auto` (codec ladder picks a tier from free RAM at each recording
+    start), `mp2_160`, `mp2_192`, `mp2_224`, or `pcm` (pinned; still subject to
+    the base 110 MiB availability gate and the 64 MiB floor/sliding window)
+  - defaults to `auto` if omitted or empty
+
+Behavior:
+
+- turning `enabled` **on** takes effect at the next capture session; a
+  session already in progress when this arrives is not retroactively recorded
+- turning `enabled` **off** stops any in-progress recording and frees the
+  buffer immediately (a finished-but-unreplayed recording is freed too)
+- changing `codec` while `enabled` stays `true` does not affect a
+  recording already in progress; it is read fresh at the next session start
+
+Success response:
+
+```json
+{"type":"ack","command":"set_repeat_enabled","ok":true}
+```
+
+Typical errors:
+
+- `codec must be one of auto|mp2_160|mp2_192|mp2_224|pcm`
+
+- turning `enabled` **off** while replay is active hard-aborts it (no fade)
+  and frees the buffer, since the feature itself is going away
+
+### `set_repeat_armed`
+
+Session arm/disarm for the "repeat" feature's replay path. Not persisted;
+process-global (visible to all connected browsers) and reset by a daemon
+restart.
+
+Request:
+
+```json
+{"type":"set_repeat_armed","armed":true}
+```
+
+Behavior:
+
+- `armed:true` while a finished recording is sitting idle (no capture session
+  in progress) starts replay **immediately**
+- `armed:true` while a capture session is still recording takes effect at
+  that session's capture-stop: replay begins right away, in the same status
+  update that reports the session as stopped (no snapshot ever shows
+  `is_capturing:false` with `repeat.armed:true` and non-zero recorded bytes
+  but `repeat.replay.active:false`)
+- `armed:false` while replay is active starts a 1.5 s fade-out; once complete,
+  replay stops and the recording is retained (re-armable) rather than freed
+- `armed:false` at any other time is just a flag clear (nothing to interrupt)
+
+Success response (always `"ok":true` -- there is no rejectable input beyond
+the boolean itself):
+
+```json
+{"type":"ack","command":"set_repeat_armed","ok":true}
+```
+
 ### `stop_output_dump`
 
 Stops the current recording, flushes buffered data, patches the WAV header with
@@ -720,6 +810,30 @@ Success response:
     "frames_written":0,
     "dropped_frames":0
   },
+  "fifo":{
+    "stalled_seconds":0.0
+  },
+  "repeat":{
+    "enabled":true,
+    "armed":true,
+    "codec":"auto",
+    "max_recording_seconds":20340,
+    "recording":{
+      "active":false,
+      "seconds":812.4,
+      "bytes":19496448,
+      "truncated_head":false,
+      "origin_input":1,
+      "dropped_frames":0,
+      "unavailable_reason":null
+    },
+    "replay":{
+      "active":true,
+      "position_seconds":34.2,
+      "duration_seconds":812.4,
+      "loop_count":0
+    }
+  },
   "inputs":[
     {
       "index":1,
@@ -779,6 +893,66 @@ Top-level fields:
   - `frames_written`: stereo frames written to disk so far (or in the last
     completed recording)
   - `dropped_frames`: stereo frames dropped because the ring buffer was full
+- `fifo`
+  - `stalled_seconds`: seconds the CURRENT active FIFO writer (the live
+    capturing input, or ReplayEngine while it owns the pipe) has been
+    continuously failing/dropping writes -- no reader attached (`ENXIO`),
+    reader not draining (`EAGAIN`/poll timeout), or a broken pipe
+    (`EPIPE`/`EBADF`)
+  - `0.0` whenever the last write succeeded, or whenever nothing is currently
+    trying to write (no input capturing and no active replay) -- this is a
+    "is the downstream reader (e.g. OwnTone) actually keeping up" signal, not
+    a general daemon-health signal
+  - intended as an owntone-hang watchdog input for the Python side: a large,
+    growing value with an active capture/replay session means bytes are not
+    reaching the reader even though the monitor itself is alive and
+    responding to `get_status`
+- `repeat`
+  - snapshot of the "repeat" feature's state (record + replay + the
+    live-interrupt crossfade trigger)
+  - `enabled`: current `set_repeat_enabled` policy
+  - `armed`: current session-arm flag (`set_repeat_armed`); process-global,
+    not persisted, reset by a daemon restart
+  - `codec`: current codec policy (`auto`|`mp2_160`|`mp2_192`|`mp2_224`|`pcm`)
+  - `max_recording_seconds`: sliding-window size in seconds, computed from free
+    RAM and the resolved codec tier's byte rate -- there is no fixed-duration
+    target any more (the window is bounded only by the 64 MiB free-RAM floor
+    + codec ladder). Available whenever `enabled` is `true`, not just while a
+    recording is active: while recording, this is the value computed when
+    that session started; while enabled but idle/holding, it is computed on
+    demand from a periodically-refreshed free-RAM reading, reflecting what a
+    session started right now would get (using the ladder's pick for the
+    *current* free RAM when `codec == "auto"`). `0` only when genuinely
+    unavailable: `enabled` is `false`, or no free-RAM reading has landed yet
+    (a brief window right after daemon startup or re-enabling)
+  - `recording.active`: `true` while a recording is in progress (`false`
+    while `replay.active` is `true` -- recording and replay are never both
+    active at once; recording while replaying is out of scope)
+  - `recording.seconds`: approximate recorded duration (`bytes / byte_rate`
+    for the resolved codec)
+  - `recording.bytes`: bytes currently held in the recording buffer
+  - `recording.truncated_head`: `true` once the sliding window has dropped at
+    least one chunk from the head under memory pressure or the target-length
+    cap; replay only ever plays the retained tail in that case
+  - `recording.origin_input`: input index (`1` or `2`) that produced the
+    recording; `0` if none
+  - `recording.dropped_frames`: frames dropped by the recorder's encode ring
+    since the current/most recent recording began (ring overrun, e.g. under
+    CPU starvation); the live FIFO path is never affected by this
+  - `recording.unavailable_reason`: `null` normally; `"insufficient_memory"`
+    when a capture session started with `enabled:true` but free RAM was below
+    the 110 MiB minimum, so no recording was started for that session;
+    `"encoder_init_failed"` on the (defensive, should not occur) case where
+    codec encoder construction itself fails
+  - `replay.active`: `true` while the recording is looping back into the FIFO
+    (including the disarm fade-out window -- see `set_repeat_armed`)
+  - `replay.position_seconds` / `replay.duration_seconds`: playback position
+    within the current loop and the recording's total duration
+  - `replay.loop_count`: number of times playback has looped back to the
+    start since replay began (`0` during the first pass)
+  - while `replay.active` is `true`, the origin input's `track_change_seq` in
+    the `inputs[]` array below (and its `get_id_snapshot` response) are
+    served from the replay path's own tap, not the (now-silent) InputChannel
 
 Per-input fields:
 

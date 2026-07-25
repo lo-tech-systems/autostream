@@ -27,5 +27,8 @@ StandardError=append:/var/log/autostream/autostream_monitor.log
 
 TimeoutStopSec=10
 
+# Prefer killing this daemon over other processes in a worst-case OOM (auto-restarts in 5s)
+OOMScoreAdjust=200
+
 [Install]
 WantedBy=multi-user.target

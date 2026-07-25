@@ -46,6 +46,12 @@ def _load_retry(tmp_path: Path) -> ModuleType:
     mod.UPDATING_FLAG = tmp_path / "autostream-updating"
     mod.LOG_PATH = tmp_path / "update.log"
     mod.UPDATE_LOCK_FILE = tmp_path / "update.lock"
+    # Stub the pre-update teardown helpers by default so tests that reach the
+    # scheduling step do not make real HTTP/socket calls; the dedicated
+    # TestRetryPreUpdateTeardown class below overrides these per-test to
+    # exercise the actual call sites.
+    mod.stop_owntone_playback = lambda *a, **kw: (True, "test-stub")
+    mod.free_repeat_buffer = lambda *a, **kw: (True, "test-stub")
     return mod
 
 

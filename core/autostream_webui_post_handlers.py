@@ -33,6 +33,7 @@ from autostream_config import (
 )
 from autostream_core import (
     apply_track_id_config_live,
+    note_user_output_action,
     request_config_reload,
     set_live_input_eq,
     set_live_input_gain,
@@ -64,6 +65,14 @@ def _fld(form: dict, n: str, d: str = "") -> str:
 # -----------------------------------------------------------------------------
 
 def handle_output_update(handler, state: WebUIState, body: str) -> None:
+    # Record that a user-initiated output change happened, so the
+    # coordinator's OwnTone-restart reconcile (autostream_core.py,
+    # _OwntoneReconcileTracker) can tell "OwnTone forgot everything" apart
+    # from "the user deselected everything on purpose". Recorded
+    # unconditionally (including "pin" ops) since a false-conservative
+    # widening of the suppression window is harmless; only a missed marker
+    # would matter.
+    note_user_output_action()
     try:
         payload = json.loads(body)
         out_id = str(payload.get("id") or "").strip()

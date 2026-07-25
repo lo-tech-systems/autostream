@@ -69,6 +69,7 @@ from autostream_playback_stats import (
 from autostream_sysutils import (
     audit_static_system_facts,
     get_install_state,
+    run_admin_cmd,
     write_avahi_playing_service,
     remove_avahi_playing_service,
 )
@@ -356,6 +357,58 @@ def get_session_state() -> dict:
     """Return the most recently computed {"active", "source"} session state."""
     with _session_state_lock:
         return dict(_session_state)
+
+
+# ── User-initiated output action marker ──────────────────────────────────────
+# The Web UI's POST /api/output handler (autostream_webui_post_handlers.py)
+# calls note_user_output_action() whenever the user toggles an output,
+# independently of the coordinator thread. _OwntoneReconcileTracker consults
+# this timestamp so a user manually deselecting every output mid-session is
+# not mistaken for OwnTone restarting and forgetting everything: recent user
+# activity suppresses an auto-reconcile that would otherwise fight the
+# user's own action.
+
+_last_user_output_action_lock = threading.Lock()
+_last_user_output_action_at: float = 0.0
+
+
+def note_user_output_action(now: Optional[float] = None) -> None:
+    """Record that a user-initiated output change (POST /api/output) occurred."""
+    global _last_user_output_action_at
+    with _last_user_output_action_lock:
+        _last_user_output_action_at = float(now) if now is not None else time.time()
+
+
+def _get_last_user_output_action_at() -> float:
+    with _last_user_output_action_lock:
+        return _last_user_output_action_at
+
+
+# ── OwnTone-restart reconcile + hang-watchdog status cache ──────────────────
+# Exposed via /api/status (autostream_webui_api.py) for observability; never
+# authoritative for coordinator decisions (that state lives on the tracker
+# instances themselves, which are coordinator-thread-only).
+
+_owntone_selfheal_state_lock = threading.Lock()
+_owntone_selfheal_state: dict = {
+    "reconcile_fired_count": 0,
+    "reconcile_last_fired_at": 0.0,
+    "watchdog_armed": False,
+    "watchdog_restart_count": 0,
+    "watchdog_last_restart_at": 0.0,
+}
+
+
+def _set_owntone_selfheal_state(**fields) -> None:
+    global _owntone_selfheal_state
+    with _owntone_selfheal_state_lock:
+        _owntone_selfheal_state = {**_owntone_selfheal_state, **fields}
+
+
+def get_owntone_selfheal_state() -> dict:
+    """Return the latest reconcile/watchdog counters for /api/status passthrough."""
+    with _owntone_selfheal_state_lock:
+        return dict(_owntone_selfheal_state)
 
 
 def _replay_origin_input(repeat_status: Optional[dict]) -> Optional[int]:
@@ -845,6 +898,312 @@ def _dispatch_session_event(
         new_monitor._arm_track_identification_for_replay()
 
 
+# ── OwnTone-restart reconcile (mechanism 1) ─────────────────────────────────
+#
+# OwnTone can restart mid-session (forced by the hang watchdog below, or by
+# anything else -- a manual `systemctl restart owntone@...`, an OOM kill,
+# etc.) and come back with ALL outputs deselected. session_started is
+# one-shot (it only fires on the {input, replay} source *vector*
+# transitioning from idle to active -- see _SessionTracker above), so a
+# still-active session that loses its outputs mid-flight never re-triggers
+# the new-session output-enable path and nothing else is watching for it.
+#
+# Detection: alternatives considered were (a) an OwnTone uptime/start-time
+# field -- not exposed by either backend's API surface
+# (autostream_owntone.py / autostream_owntone_mini.py have no such field) --
+# and (b) diffing the coordinator's own last-applied output set against
+# OwnTone's current one. (b) is what this implements: every poll cycle, while
+# a session is active, fetch OwnTone's currently-selected outputs and count
+# them. Zero selected outputs sustained for _OwntoneReconcileTracker.
+# ZERO_POLL_THRESHOLD consecutive checks (~3, i.e. a small multiple of
+# POLL_INTERVAL -- long enough to not fire on a single transient empty
+# response, short enough to recover quickly) re-arms the existing
+# _maybe_retry_owntone rate-limited retry machinery (by resetting
+# _owntone_enabled_ok/_owntone_last_attempt on the session's monitor), rather
+# than duplicating its enable-default/apply-selection logic.
+#
+# User-deselect edge: autostream_webui_post_handlers.py's
+# handle_output_update (POST /api/output) applies per-output toggles with no
+# guard against reaching zero selected outputs mid-playback -- i.e. the UI
+# *does* allow a user to manually deselect every output during an active
+# session, so "zero selected" alone cannot distinguish "OwnTone forgot
+# everything" from "the user turned everything off on purpose". This tracker
+# resolves the ambiguity by suppressing a would-be fire for
+# USER_ACTION_GRACE_SECONDS after the most recent note_user_output_action()
+# call (see that function's docstring): a fresh user action means the zero
+# state is presumed intentional and is left alone. This is a heuristic, not a
+# proof of intent -- if a user deselects everything and leaves a session
+# "playing" with no outputs for longer than the grace window, the next
+# reconcile will re-enable the default output, overriding them. This is a
+# deliberate tradeoff (documented rather than solved with a full
+# per-output-id provenance ledger, which would require instrumenting the Web
+# UI POST path more invasively than this single marker call).
+class _OwntoneReconcileTracker:
+    """Detects "OwnTone restarted/lost state mid-session" and re-arms retry.
+
+    Coordinator-thread only, one instance per run_autostream() invocation
+    (recreated on reload, .reset() on reconnect/resync -- same lifecycle as
+    _SessionTracker). update() is pure (no I/O, no logging) so it can be
+    exercised directly in unit tests with synthetic (selected_count, now,
+    last_user_action_at) sequences; the poll loop is responsible for the
+    actual outputs fetch and for applying the effect when update() returns
+    True (see _reconcile_owntone_outputs_if_wiped()).
+    """
+
+    ZERO_POLL_THRESHOLD = 3
+    USER_ACTION_GRACE_SECONDS = 30.0
+
+    def __init__(self) -> None:
+        self._consecutive_zero = 0
+        self._armed = True  # may fire again once a fresh zero-streak starts
+
+    def reset(self) -> None:
+        self._consecutive_zero = 0
+        self._armed = True
+
+    def update(
+        self,
+        *,
+        session_active: bool,
+        selected_count: Optional[int],
+        now: float,
+        last_user_action_at: float,
+    ) -> bool:
+        """Advance one check. Returns True iff reconcile should fire now.
+
+        *selected_count* is None when the outputs API could not be reached
+        this cycle (owntone unreachable/erroring) -- treated the same as "no
+        session" for counting purposes: it must never itself count toward
+        the zero streak, since an unreachable API is not evidence of a
+        wiped-outputs restart (and is already handled by the existing
+        owntone-down retry machinery elsewhere).
+        """
+        if not session_active or selected_count is None:
+            self._consecutive_zero = 0
+            self._armed = True
+            return False
+
+        if selected_count > 0:
+            self._consecutive_zero = 0
+            self._armed = True
+            return False
+
+        # selected_count == 0 while a session is active.
+        self._consecutive_zero += 1
+        if self._consecutive_zero < self.ZERO_POLL_THRESHOLD:
+            return False
+        if not self._armed:
+            # Already fired for this zero-streak; wait for a nonzero
+            # observation (handled above) before it can fire again.
+            return False
+        if (now - last_user_action_at) < self.USER_ACTION_GRACE_SECONDS:
+            # Recent user output action: presume the zero state is
+            # intentional and do not fire, but keep counting/re-checking so
+            # a genuine restart-wipe that happens to follow closely on a
+            # user toggle is still caught once the grace window elapses.
+            return False
+
+        self._armed = False
+        return True
+
+
+def _reconcile_owntone_outputs_if_wiped(
+    tracker: "_OwntoneReconcileTracker",
+    monitor: Optional["AudioMonitor"],
+    session_active: bool,
+    now: float,
+) -> None:
+    """Poll-loop wiring for _OwntoneReconcileTracker: fetch outputs, decide,
+    act.
+
+    Called once per poll cycle regardless of session state so the tracker's
+    internal counters reset cleanly when a session ends, matching
+    _SessionTracker.reset()'s discipline. No-ops (fetches nothing) when there
+    is no active session or no monitor/base_url to check.
+    """
+    selected_count: Optional[int] = None
+    if session_active and monitor is not None and monitor.owntone_base_url:
+        outputs = monitor._get_owntone_outputs()
+        if outputs is not None:
+            selected_count = sum(1 for o in outputs if o.selected)
+
+    should_fire = tracker.update(
+        session_active=session_active,
+        selected_count=selected_count,
+        now=now,
+        last_user_action_at=_get_last_user_output_action_at(),
+    )
+    if not should_fire:
+        return
+
+    logging.warning(
+        "OwnTone-restart reconcile: session active with zero selected outputs "
+        "for %d consecutive checks; re-arming output-enable retry for input %s.",
+        tracker.ZERO_POLL_THRESHOLD,
+        monitor.input_index if monitor is not None else "?",
+    )
+    state = get_owntone_selfheal_state()
+    _set_owntone_selfheal_state(
+        reconcile_fired_count=int(state.get("reconcile_fired_count", 0)) + 1,
+        reconcile_last_fired_at=now,
+    )
+    if monitor is not None:
+        monitor._owntone_enabled_ok = False
+        monitor._owntone_last_attempt = 0.0
+
+
+# ── OwnTone-hang watchdog (mechanism 2) ─────────────────────────────────────
+#
+# When the monitor daemon is deadlocked, the coordinator never enables
+# outputs, OwnTone's buffer fills and it stops draining, and the FIFO writer
+# keeps writing into a full pipe indefinitely (no data edge -- the writer
+# never closes the FIFO), so OwnTone never notices anything is wrong and
+# needs a manual restart. The daemon reports a top-level "fifo":
+# {"stalled_seconds": float} block in get_status(): continuous FIFO
+# write-failure seconds while a source wants to write, 0.0 when healthy. This
+# watchdog requests an OwnTone restart via the supervisor (autostream_admin
+# restart-owntone, the same path the Web UI's owntone-setup restart button
+# uses -- see autostream_webui_page_owntone.py's _restart_owntone_worker) when
+# the pipe is stuck long enough that OwnTone itself is very unlikely to
+# recover unaided.
+#
+# owntone_reachable is deliberately part of the gate: a stalled FIFO write
+# with OwnTone *unreachable* means OwnTone is down, which existing machinery
+# (fifo_result.ok gating in _maybe_retry_owntone, reconcile_fifo_with_backend)
+# already retries; this watchdog exists specifically for OwnTone being up but
+# wedged on a stuck pipe consumer, so firing it when OwnTone cannot even be
+# reached would be at best redundant and at worst issue a restart command to
+# a backend that a moment later comes back on its own.
+#
+# The "fifo" block being absent entirely (old daemon binary, or a daemon that
+# doesn't yet know about the field) disarms the watchdog silently -- no
+# warnings, no restart -- for backward compatibility with older monitor
+# binaries.
+class _OwntoneHangWatchdog:
+    """Decides when a stuck OwnTone pipe consumer warrants a forced restart.
+
+    Coordinator-thread only, pure decision logic (no I/O, no subprocess
+    calls) so it is unit-testable with synthetic status sequences. The poll
+    loop supplies an owntone_reachable_fn so the (cheap but non-zero cost)
+    reachability probe is only ever made when the stall threshold has
+    already been exceeded, not on every poll.
+    """
+
+    STALL_THRESHOLD_SECONDS = 20.0
+    RESTART_RATE_LIMIT_SECONDS = 600.0  # once per 10 minutes, hard
+
+    def __init__(self) -> None:
+        self._last_restart_at = float("-inf")  # never restarted yet: rate limit vacuously satisfied
+        self.restart_count = 0
+
+    def reset(self) -> None:
+        self._last_restart_at = float("-inf")  # never restarted yet: rate limit vacuously satisfied
+        self.restart_count = 0
+
+    def maybe_fire(
+        self,
+        *,
+        session_active: bool,
+        fifo_status,
+        now: float,
+        owntone_reachable_fn,
+    ) -> bool:
+        """Returns True iff a restart should be requested now (and records
+        the rate-limit bookkeeping for that decision -- callers must not
+        call this speculatively without acting on a True result)."""
+        if not session_active:
+            return False
+        if not isinstance(fifo_status, dict):
+            return False  # absent block: old daemon binary, disarmed silently
+        try:
+            stalled_seconds = float(fifo_status.get("stalled_seconds", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        if stalled_seconds <= self.STALL_THRESHOLD_SECONDS:
+            return False
+        if (now - self._last_restart_at) < self.RESTART_RATE_LIMIT_SECONDS:
+            return False
+        if not owntone_reachable_fn():
+            # OwnTone is down, not hung -- existing owntone-down machinery
+            # already handles recovery; this watchdog stands down.
+            return False
+
+        self._last_restart_at = now
+        self.restart_count += 1
+        return True
+
+
+def _fire_owntone_hang_restart(base_url: str, stalled_seconds: float) -> None:
+    """Background (non-blocking) autostream_admin restart-owntone request.
+
+    Runs run_admin_cmd() in a daemon thread -- the same "sudo -n
+    autostream_admin restart-owntone" invocation the Web UI's owntone-setup
+    restart button uses (autostream_webui_page_owntone.py's
+    _restart_owntone_worker) -- so the coordinator poll loop (0.5 s cadence)
+    is never blocked on the up-to-20 s subprocess call. Mechanism 1
+    (_reconcile_owntone_outputs_if_wiped) picks up the resulting
+    zero-selected-outputs state on a later poll and re-enables outputs; this
+    function does not attempt to re-enable anything itself.
+    """
+    logging.warning(
+        "OwnTone-hang watchdog: FIFO stalled for %.1fs with OwnTone reachable; "
+        "requesting a supervised restart.",
+        stalled_seconds,
+    )
+
+    def _worker() -> None:
+        try:
+            p = run_admin_cmd(["restart-owntone"], timeout=20.0)
+            if p.returncode != 0:
+                logging.error(
+                    "OwnTone-hang watchdog: restart-owntone failed (rc=%s): %s",
+                    p.returncode, (p.stderr or "").strip(),
+                )
+            else:
+                logging.warning("OwnTone-hang watchdog: restart-owntone requested.")
+        except Exception:
+            logging.exception("OwnTone-hang watchdog: restart-owntone raised")
+
+    threading.Thread(target=_worker, name="owntone-hang-watchdog-restart", daemon=True).start()
+
+
+def _maybe_run_owntone_hang_watchdog(
+    watchdog: "_OwntoneHangWatchdog",
+    status: dict,
+    session_active: bool,
+    owntone_base_url: str,
+    now: float,
+) -> None:
+    """Poll-loop wiring for _OwntoneHangWatchdog: check, and act if it fires."""
+    fifo_status = status.get("fifo") if isinstance(status, dict) else None
+
+    def _reachable() -> bool:
+        if not owntone_base_url:
+            return False
+        return bool(list_outputs(owntone_base_url, timeout=2).ok)
+
+    should_fire = watchdog.maybe_fire(
+        session_active=session_active,
+        fifo_status=fifo_status,
+        now=now,
+        owntone_reachable_fn=_reachable,
+    )
+    _set_owntone_selfheal_state(
+        watchdog_armed=isinstance(fifo_status, dict),
+        watchdog_restart_count=watchdog.restart_count,
+        watchdog_last_restart_at=watchdog._last_restart_at,
+    )
+    if not should_fire:
+        return
+    stalled_seconds = 0.0
+    if isinstance(fifo_status, dict):
+        try:
+            stalled_seconds = float(fifo_status.get("stalled_seconds", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            stalled_seconds = 0.0
+    _fire_owntone_hang_restart(owntone_base_url, stalled_seconds)
+
+
 def handle_signal(signum, frame):
     stop_flag.set()
 
@@ -898,15 +1257,34 @@ def setup_logging(log_file: str, log_level: str) -> None:
     log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
+    # Route all records through a QueueHandler so no caller thread ever
+    # performs file I/O under the logging handler lock. A slow SD write
+    # (e.g. during logrotate's compression pass) would otherwise block
+    # whichever thread was logging while every other logging thread queued
+    # on the shared handler lock -- the same structural wedge the C++
+    # daemon's logger avoids. The QueueListener's single background thread
+    # owns the blocking writes instead.
+    import queue as _queue
+    from logging.handlers import QueueHandler, QueueListener
+
+    sink_handlers = [
+        logging.FileHandler(log_file),
+        logging.StreamHandler(sys.stdout),
+    ]
+    log_queue: _queue.Queue = _queue.Queue(maxsize=1000)
     logging.basicConfig(
         level=python_log_level_value(normalized),
         format="%(asctime)s: %(message)s",
         datefmt="%d-%b-%y %H:%M:%S",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout),
-        ],
+        handlers=[QueueHandler(log_queue)],
     )
+    listener = QueueListener(log_queue, *sink_handlers, respect_handler_level=False)
+    listener.daemon = True
+    listener.start()
+    # Flush queued records on interpreter exit (best-effort; daemon thread
+    # otherwise dies with the process mid-write).
+    import atexit
+    atexit.register(listener.stop)
     _live_platform_log_level = normalized
 
 
@@ -3051,6 +3429,12 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # pre-reload/pre-reconnect source can never manufacture a spurious
         # event once polling resumes.
         session_tracker = _SessionTracker()
+        # OwnTone-restart reconcile + hang watchdog: same fresh-per-(re)start
+        # / .reset()-on-reconnect lifecycle as session_tracker above -- a
+        # stale pre-reload/pre-reconnect streak or rate-limit window must
+        # never carry across a resync.
+        owntone_reconcile_tracker = _OwntoneReconcileTracker()
+        owntone_hang_watchdog = _OwntoneHangWatchdog()
 
         try:
             while not stop_flag.is_set():
@@ -3112,6 +3496,13 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                         m._owntone_enabled_ok = False
                         m._owntone_last_attempt = 0.0
                     session_tracker.reset()
+                    # Reconcile's zero-selected-outputs streak is meaningless
+                    # across a resync (session state itself just got reset
+                    # above); the hang watchdog's 10-minute restart rate limit
+                    # is intentionally NOT reset here -- it is a hard global
+                    # safety limit that must survive a flapping daemon
+                    # connection, not something a reconnect should clear.
+                    owntone_reconcile_tracker.reset()
 
                 status = client.get_status()
                 if status is None:
@@ -3201,6 +3592,24 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     cfg.owntone.base_url, new_source=session_source,
                 )
                 _set_session_state(session_source is not None, session_source)
+
+                # ── OwnTone-restart reconcile + hang watchdog ──────────────────
+                # Both run every cycle (not gated on started/stopped/session
+                # events above) so a mid-session state loss on an otherwise
+                # steady-state "still playing" cycle is still caught.
+                _reconcile_owntone_outputs_if_wiped(
+                    owntone_reconcile_tracker,
+                    session_new_monitor,
+                    session_source is not None,
+                    time.time(),
+                )
+                _maybe_run_owntone_hang_watchdog(
+                    owntone_hang_watchdog,
+                    status,
+                    session_source is not None,
+                    cfg.owntone.base_url,
+                    time.time(),
+                )
 
                 # ── Multi-input coordination ──────────────────────────────────
                 if len(monitors) == 1:

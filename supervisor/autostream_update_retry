@@ -18,7 +18,11 @@ On recovery:
   2. Increment retry_count in the staging dir
   3. Write update-result.env with a "Retrying update (attempt N of MAX)" message
      so the progress page shows meaningful status
-  4. Schedule autostream_install.sh --update via systemd-run (same mechanism
+  4. Best-effort: stop OwnTone playback and free the autostream_monitor repeat
+     buffer before scheduling the heavy installer work (same helpers used by
+     autostream_updater cmd_apply; typically a no-op here since this runs at
+     boot before autostream_monitor.service and autostream.service start)
+  5. Schedule autostream_install.sh --update via systemd-run (same mechanism
      used by autostream_updater for normal updates)
 
 The installer's on_exit trap removes /tmp/autostream-updating on completion
@@ -44,6 +48,7 @@ if _HERE not in sys.path:
 from autostream_update_support import (
     FLOCK_BIN,
     _find_systemd_run, _read_env_file, _run,
+    free_repeat_buffer, stop_owntone_playback,
 )
 
 # ---- Paths / constants -------------------------------------------------------
@@ -212,7 +217,26 @@ def main() -> int:
         run_at,
     )
 
-    # 8. Schedule the installer as a transient systemd unit (same pattern as
+    # 8. Best-effort pre-update teardown: stop playback and free the repeat
+    #    buffer before scheduling the installer's heavy work, mirroring
+    #    autostream_updater cmd_apply's same call (see autostream_update_support
+    #    for the shared implementation).  At boot, before autostream_monitor.
+    #    service starts, OwnTone and the monitor are typically not even up yet,
+    #    so these calls are expected to no-op via their "socket/service
+    #    unavailable" paths most of the time -- harmless, never fatal.
+    try:
+        ok, msg = stop_owntone_playback()
+        _log(f"pre-update playback stop {'ok' if ok else 'failed (continuing)'}: {msg}")
+    except Exception as e:
+        _log(f"pre-update playback stop raised unexpectedly (continuing): {e}")
+
+    try:
+        ok, msg = free_repeat_buffer()
+        _log(f"pre-update repeat-buffer free {'ok' if ok else 'failed (continuing)'}: {msg}")
+    except Exception as e:
+        _log(f"pre-update repeat-buffer free raised unexpectedly (continuing): {e}")
+
+    # 9. Schedule the installer as a transient systemd unit (same pattern as
     #    autostream_updater cmd_apply).
     systemd_run = _find_systemd_run()
     if systemd_run is None:

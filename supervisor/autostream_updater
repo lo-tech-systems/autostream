@@ -23,6 +23,12 @@ NOTES
 - This helper does not write install-state.env or update-result.env directly.
 - Staging location: /var/lib/autostream/update-staging/  (root-owned, cleaned
   at the start of each apply run so stale extracts do not accumulate).
+- Immediately before scheduling the installer, cmd_apply best-effort stops
+  OwnTone playback and frees the autostream_monitor repeat buffer (up to
+  ~120 MiB+) so that RAM is available for the installer's heavy work (apt +
+  OwnTone build, 40+ min on SD).  Both steps log-and-continue on failure and
+  are never fatal to the update; see autostream_update_support.
+  stop_owntone_playback / free_repeat_buffer.
 """
 
 from __future__ import annotations
@@ -45,7 +51,8 @@ from autostream_update_support import (
     FLOCK_BIN, RELEASES_HTML,
     _find_systemd_run, _github_latest_release,
     _normalise_update_channel, _read_env_file, _version_key,
-    is_active_transient_unit, schedule_locked_installer, stage_release,
+    free_repeat_buffer, is_active_transient_unit, schedule_locked_installer,
+    stage_release, stop_owntone_playback,
 )
 
 # ---- Paths / constants ----
@@ -297,6 +304,28 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         except Exception as e:
             _log(f"apply: staging failed: {e}")
             return {"ok": False, "error": "Release staging failed", "details": str(e)}
+
+        # Best-effort pre-update teardown: stop playback and free the repeat
+        # buffer *before* scheduling the installer's heavy work (apt +
+        # OwnTone build, 40+ min on SD), so that RAM freed here is actually
+        # available during that window rather than still held by a stopped-
+        # but-not-yet-reaped OwnTone process or a live repeat recording.
+        # This is the single choke point both the manual/admin apply path and
+        # the weekly autostream_updater.timer path pass through (both call
+        # this same cmd_apply); autostream_update_retry has its own copy of
+        # this call since it schedules the installer independently after a
+        # watchdog-interrupted update.  Never fatal to the update itself.
+        try:
+            ok, msg = stop_owntone_playback()
+            _log(f"apply: pre-update playback stop {'ok' if ok else 'failed (continuing)'}: {msg}")
+        except Exception as e:
+            _log(f"apply: pre-update playback stop raised unexpectedly (continuing): {e}")
+
+        try:
+            ok, msg = free_repeat_buffer()
+            _log(f"apply: pre-update repeat-buffer free {'ok' if ok else 'failed (continuing)'}: {msg}")
+        except Exception as e:
+            _log(f"apply: pre-update repeat-buffer free raised unexpectedly (continuing): {e}")
 
         # Schedule the installer as a transient systemd unit so it runs outside
         # the autostream.service cgroup (same pattern as factory-reset).

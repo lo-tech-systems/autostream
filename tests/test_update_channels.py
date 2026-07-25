@@ -603,6 +603,8 @@ class TestMainUpdaterApplySingleLookup:
              patch.object(mod, "_update_unit_active", return_value=False), \
              patch.object(_sup, "_download_file", side_effect=fake_download), \
              patch.object(mod, "_find_systemd_run", return_value="/fake/systemd-run"), \
+             patch.object(mod, "stop_owntone_playback", return_value=(True, "test-stub")), \
+             patch.object(mod, "free_repeat_buffer", return_value=(True, "test-stub")), \
              patch.object(_sup, "_run", side_effect=fake_run):
             result = mod.cmd_apply()
 

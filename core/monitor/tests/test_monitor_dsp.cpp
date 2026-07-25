@@ -501,6 +501,11 @@ int main()
     test_output_processor_flat_input_produces_no_clip();
     test_output_processor_clip_detected_for_over_unity();
 
+    // logger_init() above started the dedicated logging thread;
+    // it must be stopped before main() returns or the std::thread
+    // destructor at static-destruction time aborts via std::terminate().
+    logger_shutdown();
+
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);
         return 0;

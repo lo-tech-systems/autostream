@@ -854,6 +854,15 @@ Persistent 403 or 406 responses indicate Shazam has rejected the request. autost
 
 ---
 
+### Repeat
+
+* **"Repeat unavailable"**: free RAM was below the 110 MiB minimum when the last capture session started. Close other apps/services on the Pi, or wait for RAM to free up, then start a new source to retry.
+* **Replay plays a "tail only" marker**: memory pressure trimmed the oldest audio from the sliding-window buffer; only the retained tail is played back. This is expected under sustained low-RAM conditions, not a bug.
+* **Replay won't start**: check, in order — repeat is enabled globally (Setup → Repeat), the repeat button on the Home screen is armed, and a repeat buffer actually exists (a capture session has run to completion since the last enable/reboot).
+* **EQ changes during replay**: output EQ and per-input gain/EQ apply live during replay, the same as during normal playback, since replay shares the live signal chain.
+
+---
+
 ## Advanced
 
 ### Downloading logs

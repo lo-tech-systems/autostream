@@ -1,5 +1,22 @@
 # Changelog
 
+## Version 0.6.0-alpha.1
+
+- new: "Repeat" — buffers the current source into RAM and loops it back
+  seamlessly once the source stops, with a codec ladder (MP2/PCM) sized to
+  available memory
+- new: live-audio interrupt crossfades out of a repeat loop the moment the
+  source starts playing again
+- new: Repeat controls in the web UI (Setup toggle, small repeat button on the
+  Home screen)
+- new: monitor now depends on `libtwolame` and `libmpg123` for repeat's
+  MP2 encode/decode
+- improved: `autostream_monitor.service` sets `OOMScoreAdjust=200` so the
+  monitor is preferred over other processes in a worst-case OOM
+- fix: Setup page's "Max buffer time" note no longer sticks at "—"
+  forever until buffering actually starts — it now shows an estimate
+  as soon as repeat is enabled
+
 ## Version 0.5.0-alpha.1
 
 - new: "Enable AirPlay 2 Buffered Audio" toggle — surfaces buffered/surround

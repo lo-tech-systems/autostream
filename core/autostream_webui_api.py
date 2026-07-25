@@ -60,6 +60,7 @@ from autostream_core import (
     apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
+    get_owntone_selfheal_state,
     get_playback_snapshot,
     get_repeat_status,
     get_session_state,
@@ -337,6 +338,13 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         repeat_status = None
     if repeat_status is not None:
         response["repeat"] = repeat_status
+    # Reconcile/watchdog counters, always present (coordinator-owned
+    # state, not a daemon-optional block like "repeat") -- lets the Web UI or
+    # support tooling see that self-healing fired without grepping logs.
+    try:
+        response["owntone_selfheal"] = get_owntone_selfheal_state()
+    except Exception:
+        pass
     send_json(handler, 200, response)
 
 

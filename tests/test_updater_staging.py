@@ -85,6 +85,11 @@ def _load_host(tmp_path: Path) -> ModuleType:
     mod.APMODE_FLAG = tmp_path / "_apmode_absent"
     mod.PLAYING_SERVICE = tmp_path / "_playing_absent"
     mod.CONFIG_PATH = tmp_path / "autostream.json"
+    # Stub the pre-update teardown helpers by default so tests that reach the
+    # scheduling step do not make real HTTP/socket calls; test_pre_update_teardown.py
+    # exercises the actual call sites and the helpers themselves.
+    mod.stop_owntone_playback = lambda *a, **kw: (True, "test-stub")
+    mod.free_repeat_buffer = lambda *a, **kw: (True, "test-stub")
     return mod
 
 

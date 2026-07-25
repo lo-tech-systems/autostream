@@ -31,6 +31,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 * 6-band output equaliser and per-input 3-band equaliser
 * Stylus, belt, and bearing maintenance tracking for turntable inputs
 * Optional track identification — shows artist, title, album, and artwork on the Home screen; reacts to likely track changes automatically (powered by Shazam via the vibra-mini daemon; no API key required)
+* Repeat — loop the last ~74 minutes of buffered audio (in-RAM) back to your speakers when the source stops
 * Control multiple autostream appliances from a single iOS Home Screen application
 * About > System Info page shows build versions, service health, CPU temperature, and storage status
 

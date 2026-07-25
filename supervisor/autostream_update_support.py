@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tarfile
 import urllib.error
@@ -323,3 +324,146 @@ def schedule_locked_installer(
     ]
     cmd.extend(installer_args)
     return _run(cmd, timeout=15)
+
+
+# ---- Pre-update teardown (host only: stop playback, free repeat buffer) -----
+#
+# Host-only helpers.  autostream_dial_updater does not call these -- the dial
+# product has no OwnTone backend and no autostream_monitor daemon, so there is
+# nothing to stop or free there.  See the host callers (autostream_updater
+# cmd_apply, autostream_update_retry) for the single choke point each host
+# update path passes through before scheduling the installer's heavy work
+# (apt + OwnTone build).
+
+OWNTONE_BASE_URL = "http://localhost:3689"
+MONITOR_SOCKET_PATH = "/tmp/autostream_monitor.sock"
+
+
+def _http_put(
+    url: str, payload: Optional[dict], ua: str, timeout: float = 3.0
+) -> Tuple[int, bytes]:
+    data = None
+    headers = {"User-Agent": ua}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method="PUT")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return getattr(resp, "status", 200), resp.read()
+
+
+def stop_owntone_playback(
+    base_url: str = OWNTONE_BASE_URL,
+    ua: str = "autostream-updater/1.0",
+    timeout: float = 3.0,
+) -> Tuple[bool, str]:
+    """Best-effort: stop playback and deselect all OwnTone outputs.
+
+    Mirrors autostream_core.stop_and_disable_all's two calls (PUT
+    /api/player/stop, then PUT /api/outputs/set with an empty outputs list)
+    using plain urllib rather than importing core/, since these updater
+    scripts are intentionally self-contained (installed outside /opt/autostream
+    so they survive a broken or in-progress web-app update).  Never raises --
+    callers should log-and-continue on failure (OwnTone may simply be down).
+    """
+    errors = []
+
+    try:
+        status, _body = _http_put(base_url.rstrip("/") + "/api/player/stop", None, ua, timeout)
+        if status not in (200, 204):
+            errors.append(f"stop returned HTTP {status}")
+    except urllib.error.HTTPError as e:
+        errors.append(f"stop failed: HTTP {e.code}")
+    except Exception as e:
+        errors.append(f"stop failed: {e}")
+
+    try:
+        status, _body = _http_put(
+            base_url.rstrip("/") + "/api/outputs/set", {"outputs": []}, ua, timeout
+        )
+        if status not in (200, 204):
+            errors.append(f"disable-outputs returned HTTP {status}")
+    except urllib.error.HTTPError as e:
+        errors.append(f"disable-outputs failed: HTTP {e.code}")
+    except Exception as e:
+        errors.append(f"disable-outputs failed: {e}")
+
+    if errors:
+        return False, "; ".join(errors)
+    return True, "playback stopped and outputs deselected"
+
+
+def _monitor_socket_request(
+    sock_path: str, request: dict, timeout: float = 3.0
+) -> Tuple[bool, Optional[dict], str]:
+    """Send one newline-delimited JSON request to the monitor control socket.
+
+    Returns (sent_ok, response_dict_or_None, error).  sent_ok is False only
+    when the socket itself could not be reached (absent, refused, timed out);
+    a malformed/rejecting response from a reachable daemon still returns
+    sent_ok=True with the parsed ack (so callers can distinguish "monitor not
+    running" from "old binary rejected the command").
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(sock_path)
+            sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+            buf = b""
+            while b"\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+    except (OSError, socket.timeout) as e:
+        return False, None, str(e)
+
+    line = buf.split(b"\n", 1)[0]
+    try:
+        resp = json.loads(line.decode("utf-8", errors="replace"))
+    except Exception as e:
+        return True, None, f"invalid response: {e}"
+    if not isinstance(resp, dict):
+        return True, None, "unexpected response shape"
+    return True, resp, ""
+
+
+def free_repeat_buffer(
+    sock_path: str = MONITOR_SOCKET_PATH, timeout: float = 3.0
+) -> Tuple[bool, str]:
+    """Best-effort: disarm and disable the "repeat" feature on the live daemon.
+
+    Frees the in-RAM recording buffer (up to ~120 MiB+) before the update's
+    heavy work (apt + OwnTone build, 40+ minutes on SD) runs, so that memory
+    is available.  This intentionally does NOT touch the persisted
+    repeat.enabled value in /etc/autostream/autostream.json -- the coordinator
+    re-pushes that persisted value to the monitor on every startup and on every
+    post-disconnect reconnect (see autostream_core._push_repeat_policy callers),
+    so the live daemon's repeat policy is restored automatically once services
+    resume after the update, without this script needing to read or write JSON
+    config.
+
+    Tolerates the socket being absent (monitor stopped) and an old monitor
+    binary predating this feature rejecting either command -- both are
+    logged by the caller and never fatal to the update.  Never raises.
+    """
+    results = []
+    for request in (
+        {"type": "set_repeat_armed", "armed": False},
+        {"type": "set_repeat_enabled", "enabled": False, "codec": "auto"},
+    ):
+        cmd = request["type"]
+        try:
+            sent, resp, err = _monitor_socket_request(sock_path, request, timeout)
+        except Exception as e:
+            results.append(f"{cmd}: unexpected error: {e}")
+            continue
+        if not sent:
+            results.append(f"{cmd}: socket unavailable: {err}")
+        elif not (resp or {}).get("ok", False):
+            results.append(f"{cmd}: rejected: {(resp or {}).get('error', err or 'unknown error')}")
+        else:
+            results.append(f"{cmd}: ok")
+
+    ok_overall = all(r.endswith(": ok") for r in results)
+    return ok_overall, "; ".join(results)
