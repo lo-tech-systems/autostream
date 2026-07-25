@@ -58,7 +58,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.7";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.8";
 
 
 // =============================================================================

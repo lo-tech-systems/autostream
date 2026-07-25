@@ -1127,6 +1127,10 @@ This ordering matters:
 - `output_auto_trim_db` is always reported (even when auto-trim is disabled) so
   that polling clients can display the current effective gain without needing to
   track whether auto-trim is on or off.
+- Shutdown: the control server must `shutdown()` its listening socket before
+  `close()` — on Linux, `close()` alone does not wake a thread blocked in
+  `accept()`. Without this, a SIGTERM stop hangs until systemd escalates to
+  SIGKILL after its stop timeout.
 
 ### Atomics and lock-freedom
 

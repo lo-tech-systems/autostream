@@ -426,9 +426,15 @@ void ControlServer::stop()
         return;
 
     // Step 1 — Unblock accept().
-    // Closing the server socket causes any pending accept() call to return -1.
+    // shutdown(SHUT_RDWR) on the listening socket wakes a thread blocked in
+    // accept() (it returns -1 with EINVAL). close() alone does NOT do this
+    // on Linux -- a blocked accept() keeps sleeping after another thread
+    // closes the fd, which leaves _accept_thread.join() below hanging
+    // forever: every SIGTERM stop of the daemon (including systemd's) hangs
+    // until SIGKILL. See docs/AUTOSTREAM-MONITOR.md "Notes And Caveats".
     if (_server_fd >= 0)
     {
+        ::shutdown(_server_fd, SHUT_RDWR);
         ::close(_server_fd);
         _server_fd = -1;
     }
