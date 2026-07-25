@@ -91,6 +91,7 @@ from autostream_webui_api import (
     send_network_status_json,
     send_network_roaming_json,
     send_playing_status_json,
+    send_repeat_post_json,
 )
 import autostream_federation
 from autostream_webui_dials import (
@@ -807,6 +808,14 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Missing request body")
                 return
             handle_live_input_gain_update(self, STATE, body_str)
+
+        elif path == "/api/repeat":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            if not body_str:
+                self.send_error(400, "Missing request body")
+                return
+            send_repeat_post_json(self, STATE, body_str)
 
         elif path == "/setup":
             if is_commissioning_required(STATE.config_path, STATE.state_path):

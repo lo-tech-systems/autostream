@@ -43,6 +43,8 @@ from autostream_nowplaying import (
     NowPlayingMetadata,
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
+    get_shared_metadata_publisher,
+    release_shared_metadata_publisher,
 )
 from autostream_player_service import (
     config_airplay_mode_to_backend,
@@ -183,16 +185,29 @@ def get_track_identification_snapshot(input_index: int):
 
 
 def get_active_track_identification_snapshot():
-    """Return track identification state for the currently capturing monitor.
+    """Return track identification state for the monitor actively sourcing audio.
 
-    Returns the snapshot for whichever monitor is capturing, or a disabled
-    snapshot when nothing is active.  If the service is configured but no
-    input is capturing, returns a waiting snapshot.  Never blocks.
+    "Actively sourcing" means capturing, OR being the replay-origin
+    input of a currently replaying recording -- the same actively-sourcing
+    definition used by _ingest_status()/maybe_trigger_track_identification()
+    (see monitor._replay_origin, refreshed each poll cycle from the
+    coordinator's _replay_origin_input()). Without the replay-origin check,
+    /api/status.track_identification would fall back to waiting_snapshot()
+    during replay even though the origin monitor's _ti_snapshot already holds
+    a live match -- the daemon confirms vibra keeps matching tracks during
+    replay, only the surfaced snapshot was wrong. Capturing is checked first
+    so a live capture on another input always takes priority over a
+    concurrently-replaying recording. Returns a waiting snapshot when the
+    service is configured but nothing is actively sourcing, or a disabled
+    snapshot when the service itself is off. Never blocks.
     """
     with _monitors_lock:
         monitors = list(all_monitors)
     for m in monitors:
         if m.is_capturing:
+            return m._ti_snapshot  # atomic under GIL
+    for m in monitors:
+        if m._replay_origin:
             return m._ti_snapshot  # atomic under GIL
     from track_id.models import disabled_snapshot, waiting_snapshot
     if _track_id_service is not None:
@@ -297,6 +312,71 @@ def get_monitor_runtime_info() -> MonitorRuntimeInfo:
     """Return the latest cached top-level runtime metadata from the monitor."""
     with _monitor_runtime_info_lock:
         return _monitor_runtime_info
+
+
+# ── Repeat status cache ───────────────────────────────────────────
+# Cached verbatim from the most recent get_status() poll's top-level "repeat"
+# block, so /api/status can pass it through without a second daemon round trip.
+# None means either the feature has never reported (old binary / not yet
+# polled) -- Python treats an absent block as feature-unsupported.
+
+_repeat_status_lock = threading.Lock()
+_repeat_status: Optional[dict] = None
+
+
+def _set_repeat_status(status: Optional[dict]) -> None:
+    global _repeat_status
+    with _repeat_status_lock:
+        _repeat_status = status if isinstance(status, dict) else None
+
+
+def get_repeat_status() -> Optional[dict]:
+    """Return the most recently polled daemon "repeat" status block, or None."""
+    with _repeat_status_lock:
+        return _repeat_status
+
+
+# ── Unified playback-session state cache ─────────────────────────────────────
+# Cached each poll cycle by the coordinator's single _SessionTracker call site
+# so /api/status can expose "session" alongside the existing "repeat"
+# passthrough, without a second daemon round trip. Same cache pattern as
+# _repeat_status above.
+
+_session_state_lock = threading.Lock()
+_session_state: dict = {"active": False, "source": None}
+
+
+def _set_session_state(active: bool, source: Optional[str]) -> None:
+    global _session_state
+    with _session_state_lock:
+        _session_state = {"active": bool(active), "source": source}
+
+
+def get_session_state() -> dict:
+    """Return the most recently computed {"active", "source"} session state."""
+    with _session_state_lock:
+        return dict(_session_state)
+
+
+def _replay_origin_input(repeat_status: Optional[dict]) -> Optional[int]:
+    """Return the input index replay is attributed to, or None if not replaying.
+
+    Replay is only a "source" while repeat.replay.active is
+    true, and it is attributed to repeat.recording.origin_input (the daemon
+    guarantees capture-stop -> replay-start is atomic within one snapshot, so
+    there is never a poll where an input is still "capturing" for the same
+    recording that is also replaying).
+    """
+    if not isinstance(repeat_status, dict):
+        return None
+    replay = repeat_status.get("replay")
+    if not (isinstance(replay, dict) and bool(replay.get("active"))):
+        return None
+    recording = repeat_status.get("recording")
+    if not isinstance(recording, dict):
+        return None
+    origin = recording.get("origin_input")
+    return origin if isinstance(origin, int) else None
 
 
 def _empty_playback_snapshot() -> PlaybackSnapshot:
@@ -565,6 +645,204 @@ def _stop_and_disable_owntone(base_url: str, reason: str) -> None:
         reason,
         result.message or "unknown error",
     )
+
+
+# ── Unified playback-session tracker ─────────────────────────────────────────
+#
+# A single source-vector session model drives idle-stop gating and
+# replay-end/OwnTone-stop handling uniformly: each poll cycle,
+# the coordinator derives which of {input1, input2, replay} is the audible
+# source from the SAME status snapshot already ingested, and diffs it
+# against the previous cycle's source. Exactly one of three events results:
+#
+#   session_started  (no source -> a source)       -- new-session output path
+#   session_ended     (a source -> no source)       -- stop-and-disable path
+#   source_changed    (a source -> a *different*     -- no output/volume
+#                      source)                          action whatsoever
+#
+# source_changed covers live-interrupt-of-replay, capture-end -> replay
+# handoff, and input1 <-> input2 handoff: in each case OwnTone's selected
+# outputs/volume are already correct for the still-active session and must
+# be left alone.
+#
+# Coordinator-thread only: one _SessionTracker instance per run_autostream()
+# invocation (recreated on each reload), one update() call per poll cycle.
+# No new threads or locks are introduced by the tracker itself.
+
+def _current_source_monitor(monitors, source: Optional[str], origin_input: Optional[int]):
+    """Resolve a vector key ("input1"/"input2"/"replay") to its AudioMonitor.
+
+    *origin_input* is the already-computed _replay_origin_input() for the
+    SAME snapshot the vector was built from -- resolving "replay" any other
+    way would risk reading a later, possibly-stale repeat_status.
+    """
+    if source is None:
+        return None
+    if source == "replay":
+        idx = origin_input
+    else:
+        try:
+            idx = int(source[len("input"):])
+        except (ValueError, IndexError):
+            return None
+    return next((m for m in monitors if m.input_index == idx), None)
+
+
+class _SessionTracker:
+    """Diffs the {input1, input2, replay} source vector between poll cycles.
+
+    See module comment above for the event semantics. Resolves the AudioMonitor
+    for both the previous and new source at update() time (while the snapshot
+    driving them is fresh) rather than re-deriving it later from status that
+    may have moved on by the time the caller acts on the event.
+    """
+
+    def __init__(self) -> None:
+        self._source: Optional[str] = None
+        self._source_monitor = None  # AudioMonitor or None
+
+    def reset(self) -> None:
+        """Clear tracked state so the next update() cannot manufacture a
+        spurious event by diffing against stale pre-reset state.
+
+        Called on coordinator reconnect/resync:
+        if a session is genuinely still active across the resync, the next
+        cycle reports it as a fresh session_started, which is intentional --
+        reconnect already forces a full OwnTone output re-validation for
+        every monitor (existing _owntone_enabled_ok reset), so re-running the
+        new-session output path is consistent with that, not spurious. If
+        nothing was active, both sides of the next diff are None and no
+        event fires.
+        """
+        self._source = None
+        self._source_monitor = None
+
+    @property
+    def active_source(self) -> Optional[str]:
+        return self._source
+
+    def update(self, monitors, repeat_status: Optional[dict]):
+        """Advance one poll cycle.
+
+        Returns (event, prev_monitor, new_monitor, new_source) where event is
+        one of "session_started" / "session_ended" / "source_changed" / None.
+        """
+        origin_input = _replay_origin_input(repeat_status)
+        vector = {f"input{m.input_index}": bool(m.is_capturing) for m in monitors}
+        vector["replay"] = origin_input is not None
+
+        # Mutual exclusion between a capturing input and replay for the same
+        # recording is a daemon invariant (see _replay_origin_input); prefer
+        # "replay" if it's ever violated since it is the rarer, more specific
+        # state to surface.
+        active = [k for k, v in vector.items() if v]
+        new_source = "replay" if vector["replay"] else (active[0] if active else None)
+        new_monitor = _current_source_monitor(monitors, new_source, origin_input)
+
+        prev_source = self._source
+        prev_monitor = self._source_monitor
+
+        if prev_source is None and new_source is not None:
+            event = "session_started"
+        elif prev_source is not None and new_source is None:
+            event = "session_ended"
+        elif prev_source is not None and new_source is not None and prev_source != new_source:
+            event = "source_changed"
+        else:
+            event = None
+
+        self._source = new_source
+        self._source_monitor = new_monitor
+        return event, prev_monitor, new_monitor, new_source
+
+
+def _start_session_owntone(monitor: "AudioMonitor") -> None:
+    """New-session OwnTone output-enable path (session_started event).
+
+    Equivalent to a capture-start-from-idle output-enable, but
+    driven through whichever AudioMonitor is the session's source -- for a
+    replay-sourced start that is the origin input's AudioMonitor, not the one
+    (if any) that happens to be capturing, so replay start-from-idle reuses
+    the existing _owntone_enabled_ok / _maybe_retry_owntone machinery instead
+    of duplicating it (this is the fix for the "replay start never enables
+    outputs" symptom).
+    """
+    monitor._owntone_enabled_ok = False
+    monitor._owntone_last_attempt = 0.0
+    if monitor.owntone_base_url:
+        _stop_and_disable_owntone(monitor.owntone_base_url, "session start")
+    # replay_origin=True unconditionally: harmless for an input-sourced start
+    # (is_capturing already satisfies the guard) and required for a
+    # replay-sourced start (the origin input's is_capturing is False).
+    monitor._maybe_retry_owntone(time.time(), replay_origin=True)
+
+
+def _session_nowplaying_start(monitor: Optional["AudioMonitor"]) -> None:
+    if monitor is None:
+        return
+    monitor._nowplaying_publisher.publish_start(monitor._current_nowplaying)
+
+
+def _session_nowplaying_end(monitor: Optional["AudioMonitor"]) -> None:
+    if monitor is None:
+        return
+    try:
+        monitor._nowplaying_publisher.publish_end()
+    except Exception as e:
+        # Must be logged, not swallowed silently -- same as the publisher's own
+        # start/refresh/end write-failure path (_run()'s except).
+        logging.debug(
+            "now-playing publish_end failed for input %d: %s",
+            monitor.input_index, e,
+        )
+
+
+def _dispatch_session_event(
+    event: Optional[str],
+    prev_monitor: Optional["AudioMonitor"],
+    new_monitor: Optional["AudioMonitor"],
+    owntone_base_url: str,
+    new_source: Optional[str] = None,
+) -> None:
+    """Apply the session-level side effects for one _SessionTracker event.
+
+    - session_started: OwnTone new-session output-enable path (via
+      new_monitor, see _start_session_owntone) + now-playing publish_start.
+    - session_ended: OwnTone stop-and-disable (the existing
+      _stop_and_disable_owntone path) + now-playing publish_end.
+    - source_changed: now-playing publish_end(prev) + publish_start(new)
+      only -- NO output/volume action whatsoever. Applies to
+      live-interrupt-of-replay, capture-end -> replay handoff, and
+      input1 <-> input2 handoff: OwnTone's selected outputs/volume are
+      already correct for the still-active session.
+    - None: no event this cycle, nothing to do.
+
+    *new_source* is the same _SessionTracker.update() call's vector key
+    ("input1"/"input2"/"replay"/None) for new_monitor. When a
+    session_started or source_changed event lands on "replay",
+    this also arms new_monitor's identification cycle: is_capturing never
+    transitions to True for the replay origin input, so _on_capture_started
+    -- the only other place that arms it -- would otherwise never fire for a
+    replay-sourced session. See _arm_track_identification_for_replay().
+    """
+    if event == "session_started":
+        _session_nowplaying_start(new_monitor)
+        if new_monitor is not None:
+            _start_session_owntone(new_monitor)
+    elif event == "session_ended":
+        _session_nowplaying_end(prev_monitor)
+        if owntone_base_url:
+            _stop_and_disable_owntone(owntone_base_url, "session ended")
+    elif event == "source_changed":
+        _session_nowplaying_end(prev_monitor)
+        _session_nowplaying_start(new_monitor)
+
+    if (
+        event in ("session_started", "source_changed")
+        and new_source == "replay"
+        and new_monitor is not None
+    ):
+        new_monitor._arm_track_identification_for_replay()
 
 
 def handle_signal(signum, frame):
@@ -866,6 +1144,37 @@ def set_live_input_gain(
                     if mon.input_index == input_index:
                         mon.gain_db = float(gain_db)
         return ok
+
+
+def set_live_repeat_enabled(
+    enabled: bool,
+    codec: str,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Push the global repeat enable/codec policy immediately to autostream_monitor.
+
+    Live setter -- must NOT trigger a coordinator reload; this
+    persists no state of its own and is safe to call at any time.
+    """
+    with _connected_monitor(socket_path) as client:
+        if client is None:
+            return False
+        return client.set_repeat_enabled(bool(enabled), str(codec))
+
+
+def set_live_repeat_armed(
+    armed: bool,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Arm/disarm repeat replay immediately on autostream_monitor.
+
+    Session arm is runtime-only: no settings write accompanies
+    this call. Disarming during replay triggers the daemon's fade-out.
+    """
+    with _connected_monitor(socket_path) as client:
+        if client is None:
+            return False
+        return client.set_repeat_armed(bool(armed))
 
 
 def build_output_eq_bands(
@@ -1207,6 +1516,27 @@ class MonitorClient:
             resp = self._command({"type": "set_output_auto_trim", "enabled": enabled})
             return bool(resp and resp.get("ok"))
 
+    def set_repeat_enabled(self, enabled: bool, codec: str) -> bool:
+        """Push the global repeat-recording enable/codec policy.
+
+        Tolerated to fail silently (returns False, no exception) against an
+        old binary that does not recognise the command -- callers must not
+        let this break startup/resync/reload.
+        """
+        with self._lock:
+            resp = self._command({
+                "type": "set_repeat_enabled",
+                "enabled": bool(enabled),
+                "codec": str(codec),
+            })
+            return bool(resp and resp.get("ok"))
+
+    def set_repeat_armed(self, armed: bool) -> bool:
+        """Arm/disarm session replay. See set_repeat_enabled re: old binaries."""
+        with self._lock:
+            resp = self._command({"type": "set_repeat_armed", "armed": bool(armed)})
+            return bool(resp and resp.get("ok"))
+
     def set_log_level(self, log_level: str) -> bool:
         with self._lock:
             normalized = normalize_log_level(log_level)
@@ -1354,7 +1684,12 @@ class AudioMonitor:
 
         # --- Now-playing metadata helpers ---
         self._nowplaying_cache = PersistentNowPlayingCache()
-        self._nowplaying_publisher = OwntoneMetadataPipePublisher(fifo_path)
+        # Shared per fifo_path: two AudioMonitors pointing at
+        # the same physical FIFO (e.g. input1/input2 on one OwnTone pipe
+        # input) must publish through one queue+thread, or their bundles can
+        # interleave mid-stream during a cross-monitor source_changed
+        # dispatch. Paired with release_shared_metadata_publisher() in stop().
+        self._nowplaying_publisher = get_shared_metadata_publisher(fifo_path)
         # Track ID gives us an artwork URL, but the metadata pipe publishes
         # artwork as bytes read from a file, so the URL has to be fetched to
         # disk before OwnTone can carry it to the speakers. Cap the download at
@@ -1388,6 +1723,12 @@ class AudioMonitor:
         self.detected_hz: float = 0.0
         self.is_silent: bool = True
         self.is_capturing: bool = False
+        # Set each poll cycle from the coordinator's _replay_origin_input():
+        # True while this input is the origin of a currently
+        # replaying recording, i.e. it is the session's audible source even
+        # though it is not itself "capturing". See _ingest_status() and
+        # maybe_trigger_track_identification()'s actively-sourcing gate.
+        self._replay_origin: bool = False
         self._last_active_time: Optional[float] = None
         self._tracker_playback_active: bool = False
         self.track_change_seq: int = 0           # last seq from daemon; monotonically increasing
@@ -1431,20 +1772,38 @@ class AudioMonitor:
             return float("inf")
         return time.time() - self._last_active_time
 
-    def _ingest_status(self, status_entry: dict) -> str:
+    def _ingest_status(self, status_entry: dict, replay_origin: bool = False) -> str:
         """Update fields from a get_status() entry without firing callbacks.
 
         Returns 'started', 'stopped', or '' to indicate the capturing
         transition so the coordinator can fire callbacks in a second pass,
         after all monitors have been updated.
+
+        *replay_origin* is this same poll cycle's _replay_origin_input()
+        result compared against self.input_index: True while
+        this input is the origin of a currently-replaying recording, so it
+        is "actively sourcing" the session even though is_capturing is False.
+        track_change_seq advances are daemon-routed under origin_input during
+        replay, so the steady-state seq check below must key off
+        actively-sourcing, not is_capturing alone, or replay-driven track
+        changes are silently dropped. The transition into/out of
+        replay-sourcing itself is NOT handled here -- since is_capturing does
+        not change when replay starts/stops, there is no "started"/"stopped"
+        edge to return; the seq baseline + identification-cycle arming for
+        that transition is handled by _dispatch_session_event() ->
+        _arm_track_identification_for_replay(), which runs after this method
+        for the whole monitor set (mirrors _on_capture_started, which arms
+        the same cycle for a real capturing transition).
         """
         was_capturing = self.is_capturing
+        was_actively_sourcing = was_capturing or self._replay_origin
 
         self.level_dbfs      = float(status_entry.get("level_dbfs", -90.0))
         self.poll_peak_dbfs  = float(status_entry.get("poll_peak_dbfs", -90.0))
         self.detected_hz     = float(status_entry.get("detected_hz", 0.0))
         self.is_silent       = bool(status_entry.get("silent", True))
         self.is_capturing    = bool(status_entry.get("capturing", False))
+        self._replay_origin  = bool(replay_origin)
         raw_tcs = status_entry.get("track_change_seq")
         if isinstance(raw_tcs, int) and raw_tcs >= 0:
             self.track_change_seq = raw_tcs
@@ -1455,14 +1814,20 @@ class AudioMonitor:
         if not self.is_silent:
             self._last_active_time = time.time()
 
+        is_actively_sourcing = self.is_capturing or self._replay_origin
+
         if self.is_capturing and not was_capturing:
             self._track_change_seq_baseline = self.track_change_seq
             return "started"
         if not self.is_capturing and was_capturing:
             return "stopped"
 
-        # Already capturing: check for track-change events.
-        if was_capturing and self.is_capturing:
+        # No capturing transition this cycle: check for track-change events
+        # whenever actively-sourcing on both sides of this ingest (a fresh
+        # transition into replay-sourcing is armed by _dispatch_session_event
+        # instead, after this same poll cycle's baseline would otherwise be
+        # stale/unset).
+        if was_actively_sourcing and is_actively_sourcing:
             if self.track_change_seq != self._track_change_seq_baseline:
                 self._on_possible_track_change(self.track_change_seq)
 
@@ -1497,18 +1862,39 @@ class AudioMonitor:
         """Release resources (call at shutdown)."""
         self._tracker_playback_active = False
         try:
-            self._nowplaying_publisher.close()
+            # Release this monitor's reference to the shared publisher
+            # rather than closing it directly: another
+            # AudioMonitor on the same fifo_path may still be using it. The
+            # registry only actually closes the underlying thread once the
+            # last referencing monitor has released it.
+            release_shared_metadata_publisher(self.fifo_path)
         except Exception:
             pass
 
-    def _sync_playback_tracker_state(self) -> None:
-        """Keep playback-hour tracking aligned to audible activity."""
+    def _sync_playback_tracker_state(self, repeat_status: Optional[dict] = None) -> None:
+        """Keep playback-hour tracking aligned to audible activity.
+
+        *repeat_status* is the same-poll top-level "repeat" block:
+        while repeat.replay.active, the origin input's recording is audibly
+        playing even though that input itself is not capturing, so hours must
+        keep accruing against repeat.recording.origin_input. Track-ID/now-
+        playing metadata are unaffected here -- they keep flowing from the
+        daemon's replay-path track-change events independently.
+        """
         tracker = _playback_tracker
         if tracker is None:
             self._tracker_playback_active = False
             return
 
-        playback_active = self.is_capturing and not self.is_silent
+        replaying_this_input = False
+        if isinstance(repeat_status, dict):
+            replay = repeat_status.get("replay")
+            if isinstance(replay, dict) and bool(replay.get("active")):
+                recording = repeat_status.get("recording")
+                origin_input = recording.get("origin_input") if isinstance(recording, dict) else None
+                replaying_this_input = origin_input == self.input_index
+
+        playback_active = (self.is_capturing and not self.is_silent) or replaying_this_input
         if playback_active == self._tracker_playback_active:
             return
 
@@ -1520,18 +1906,18 @@ class AudioMonitor:
 
     # ── Capture transitions ──────────────────────────────────────────────────
 
-    def _on_capture_started(self, was_idle: bool) -> None:
-        """Called when the daemon transitions this channel to capturing."""
-        self._owntone_enabled_ok = False
-        self._owntone_last_attempt = 0.0   # force immediate attempt
+    def _on_capture_started(self) -> None:
+        """Called when the daemon transitions this channel to capturing.
 
-        # If transitioning from fully idle, clear previous output selection
-        # so we start from a known state.
-        if self.owntone_base_url and was_idle:
-            _stop_and_disable_owntone(self.owntone_base_url, "capture start")
-
-        self._maybe_retry_owntone(time.time())
-
+        Per-input duties only: track-ID scheduling and logging.
+        Session-level duties -- OwnTone output-enable/default-volume and
+        now-playing publish_start -- are not fired unconditionally on
+        every capture-start transition, since a replay-sourced session start
+        never transitions any input to capturing at all. They run from the
+        coordinator's _SessionTracker session_started event via
+        _start_session_owntone() / _session_nowplaying_start(), see the poll
+        loop in run_autostream().
+        """
         self._ti_generation += 1  # invalidate any worker queued before capture started
         self._ti_inflight = False
         self._ti_inflight_token = None
@@ -1552,17 +1938,73 @@ class AudioMonitor:
             from track_id.models import disabled_snapshot
             self._ti_snapshot = disabled_snapshot()
 
-        self._nowplaying_publisher.publish_start(self._current_nowplaying)
-
         logging.info(
             "Input %d (%s): capture started.",
             self.input_index, self.input_device,
         )
 
-    def _on_capture_stopped(self, client: "MonitorClient") -> None:
-        """Called when the daemon transitions this channel out of capturing."""
-        self._owntone_enabled_ok = False
+    def _arm_track_identification_for_replay(self) -> None:
+        """Arm the identification cycle for a replay-sourced session.
 
+        Mirrors _on_capture_started()'s track-ID setup (reset generation,
+        invalidate in-flight state, schedule the initial attempt), but is
+        invoked directly by _dispatch_session_event() for a session_started
+        or source_changed event landing on the "replay" source. is_capturing
+        never transitions to True in that case (the origin input isn't
+        capturing while its recording replays), so _on_capture_started would
+        otherwise never fire and this input's identification cycle would stay
+        parked at whatever state it was in before replay began: the daemon
+        serves replay-tap snapshots under origin_input, so the Python side
+        only needs to schedule attempts, not gate on is_capturing.
+
+        Also baselines track_change_seq here, since _ingest_status()'s
+        steady-state seq check requires actively-sourcing on BOTH sides of
+        an ingest and so deliberately does not fire (and does not baseline)
+        on the same cycle this transition is first observed.
+        """
+        self._track_change_seq_baseline = self.track_change_seq
+        self._ti_generation += 1  # invalidate any worker queued before replay sourcing began
+        self._ti_inflight = False
+        self._ti_inflight_token = None
+        self._ti_next_attempt = 0.0
+        self._ti_next_attempt_reason = ""
+        self._ti_last_identified_at = 0.0
+        if _track_id_service is not None:
+            svc = _track_id_service
+            delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
+            self._schedule_track_id_after(time.time(), delay, "initial")
+            logging.debug(
+                "track_id[%d]: initial attempt scheduled in %.0fs (replay-sourced session; "
+                "lead-in=%.0fs window=%.0fs).",
+                self.input_index, delay, svc.analysis_lead_in_seconds, svc.snapshot_seconds,
+            )
+            from track_id.models import waiting_snapshot
+            self._ti_snapshot = waiting_snapshot()
+        else:
+            from track_id.models import disabled_snapshot
+            self._ti_snapshot = disabled_snapshot()
+
+        logging.info(
+            "Input %d (%s): identification armed for replay-sourced session.",
+            self.input_index, self.input_device,
+        )
+
+    def _on_capture_stopped(
+        self,
+        client: "MonitorClient",
+    ) -> None:
+        """Called when the daemon transitions this channel out of capturing.
+
+        Per-input duties only: track-ID state invalidation and
+        logging. Session-level duties -- the OwnTone idle-stop and
+        now-playing publish_end -- are not fired here: the coordinator's
+        _SessionTracker source vector treats a capture-stop immediately
+        followed by a replay-start as a source_changed event with no
+        OwnTone-level capture-stop in between, so per-input teardown must
+        stay silent on the session-level effects. The session-level stop
+        runs from the tracker's session_ended event, see the poll loop in
+        run_autostream().
+        """
         # Invalidate any running worker and clear scheduled deadlines so a
         # worker that completes after capture stops cannot overwrite the
         # waiting/disabled snapshot below or leave a stale _ti_next_attempt.
@@ -1577,14 +2019,6 @@ class AudioMonitor:
         else:
             from track_id.models import disabled_snapshot
             self._ti_snapshot = disabled_snapshot()
-
-        try:
-            self._nowplaying_publisher.publish_end()
-        except Exception:
-            pass
-
-        if self.owntone_base_url and not any_monitor_capturing():
-            self._request_owntone_stop("capture stop")
 
         logging.info(
             "Input %d (%s): capture stopped.",
@@ -1633,12 +2067,28 @@ class AudioMonitor:
         """Set the next attempt deadline to `now + delay`."""
         self._schedule_track_id_attempt(now + delay, reason)
 
-    def maybe_trigger_track_identification(self, client: "MonitorClient", now: float) -> None:
-        """Dispatch an identification worker if the deadline has elapsed and conditions allow."""
+    def maybe_trigger_track_identification(
+        self, client: "MonitorClient", now: float, replay_origin: bool = False,
+    ) -> None:
+        """Dispatch an identification worker if the deadline has elapsed and conditions allow.
+
+        *replay_origin* is this poll cycle's _replay_origin_input() result
+        compared against self.input_index: an input replaying
+        its own recording is "actively sourcing" the session even though
+        is_capturing is False, and the daemon already serves replay-tap
+        snapshots for it under origin_input, so
+        identification must run for it too. The is_silent check only applies
+        to live capture -- a replay-sourced input is silent by definition
+        (it isn't capturing anything), so gating on it here would make
+        replay-sourced identification permanently dead.
+        """
         svc = _track_id_service
         if svc is None:
             return
-        if not self.is_capturing or self.is_silent:
+        actively_sourcing = self.is_capturing or replay_origin
+        if not actively_sourcing:
+            return
+        if self.is_capturing and self.is_silent:
             return
         if self._ti_inflight:
             return
@@ -1652,7 +2102,7 @@ class AudioMonitor:
             return
 
         # Gate acquired.  Recheck critical preconditions after acquiring.
-        if not self.is_capturing or _track_id_service is not svc:
+        if not actively_sourcing or _track_id_service is not svc:
             _track_id_request_gate.release()
             return
 
@@ -1794,7 +2244,11 @@ class AudioMonitor:
                     )
                     if new_meta != self._current_nowplaying:
                         self._current_nowplaying = new_meta
-                        self._nowplaying_publisher.publish_start(new_meta)
+                        # publish_refresh(), not publish_start(): this fires
+                        # mid-session (track-ID match landing after the
+                        # session's pbeg already went out), so it must not
+                        # emit a second pbeg.
+                        self._nowplaying_publisher.publish_refresh(new_meta)
                 self._ti_snapshot = TrackIdentificationSnapshot(
                     enabled=True,
                     state=STATE_IDENTIFIED,
@@ -1881,13 +2335,16 @@ class AudioMonitor:
 
     # ── OwnTone helpers ──────────────────────────────────────────────────────
 
-    def _request_owntone_stop(self, reason: str) -> None:
-        """Send a player stop command to OwnTone."""
-        _stop_and_disable_owntone(self.owntone_base_url, reason)
+    def _maybe_retry_owntone(self, now: float, replay_origin: bool = False) -> None:
+        """Periodically retry refreshing currently selected OwnTone outputs.
 
-    def _maybe_retry_owntone(self, now: float) -> None:
-        """Periodically retry refreshing currently selected OwnTone outputs."""
-        if not self.is_capturing:
+        *replay_origin* is True when this monitor's input is the current
+        replay's origin_input: this input isn't "capturing" while
+        replay plays its buffer, but it is still the session's audible
+        source, so the retry must not bail out as if idle. Defaults to False
+        so existing capture-driven call sites are unaffected.
+        """
+        if not self.is_capturing and not replay_origin:
             return
         if not self.owntone_base_url:
             return
@@ -2128,12 +2585,37 @@ class AudioMonitor:
 # Top-level entry points                                                       #
 # --------------------------------------------------------------------------- #
 
+def _push_repeat_policy(
+    client: MonitorClient,
+    enabled: bool,
+    codec: str,
+    context: str,
+) -> None:
+    """Push the persisted repeat enabled/codec policy to the daemon.
+
+    Tolerant of rejection (F-C): an older monitor binary that does not
+    recognise set_repeat_enabled, or a transient failure, must never fail the
+    caller (startup / reconnect resync) -- it is only logged, and repeat state
+    simply re-syncs on the next successful reconnect or settings change.
+    `context` names the call site for the log line, e.g. "after reconnect" or
+    "during startup".
+    """
+    if not client.set_repeat_enabled(enabled, codec):
+        logging.info(
+            "set_repeat_enabled(%r, %r) not accepted %s "
+            "(older monitor binary, or a transient failure).",
+            enabled, codec, context,
+        )
+
+
 def _resync_monitor_daemon(
     client: MonitorClient,
     monitors: list["AudioMonitor"],
     fifo_path: str,
     owntone_base_url: str,
     output_eq: OutputEqConfig,
+    repeat_enabled: bool = False,
+    repeat_codec: str = "auto",
 ) -> bool:
     """Re-send the full daemon state after reconnect.
 
@@ -2141,6 +2623,10 @@ def _resync_monitor_daemon(
     fails for any configured monitor, the whole resync is treated as failed so
     the coordinator does not continue with Python-side monitor objects that do
     not exist in the daemon.
+
+    set_repeat_enabled is the one exception: an old binary that does not
+    recognise the command must not fail the whole resync, so its result is
+    logged but not treated as fatal.
     """
     fifo_result = reconcile_fifo_with_backend(
         owntone_base_url,
@@ -2245,6 +2731,8 @@ def _resync_monitor_daemon(
         logging.warning("Output EQ config failed after reconnect; will retry full resync.")
         client.close()
         return False
+
+    _push_repeat_policy(client, repeat_enabled, repeat_codec, "after reconnect")
 
     return True
 
@@ -2383,6 +2871,12 @@ def _configure_startup_monitors(
     if not _apply_output_eq_config(client, cfg.output_eq):
         logging.warning("Output EQ config failed during startup; will retry.")
         return None
+
+    # Push the persisted repeat policy so a freshly (re)started daemon
+    # reflects it immediately, not only after the next settings change or
+    # reconnect resync. Tolerated to fail against an older monitor binary --
+    # this must never block startup.
+    _push_repeat_policy(client, cfg.repeat.enabled, cfg.repeat.codec, "during startup")
 
     return monitors
 
@@ -2551,6 +3045,12 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         current: Optional[AudioMonitor] = None
         reconnect_at: float = 0.0
         _reloading = False
+        # Unified playback-session tracker: fresh instance
+        # each time this point is reached (startup and every config reload),
+        # and explicitly .reset() on reconnect/resync below, so a stale
+        # pre-reload/pre-reconnect source can never manufacture a spurious
+        # event once polling resumes.
+        session_tracker = _SessionTracker()
 
         try:
             while not stop_flag.is_set():
@@ -2588,6 +3088,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                         fifo_path,
                         cfg.owntone.base_url,
                         cfg.output_eq,
+                        cfg.repeat.enabled,
+                        cfg.repeat.codec,
                     ):
                         _set_monitor_runtime_info(connected=False)
                         reconnect_at = time.time() + 5.0
@@ -2609,6 +3111,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     for m in monitors:
                         m._owntone_enabled_ok = False
                         m._owntone_last_attempt = 0.0
+                    session_tracker.reset()
 
                 status = client.get_status()
                 if status is None:
@@ -2628,17 +3131,36 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     e["index"]: e for e in status.get("inputs", [])
                 }
 
+                # Cache the top-level "repeat" block from this same snapshot
+                # for /api/status passthrough and take a local copy
+                # so the transition/gating/tracker logic below all reason
+                # about the one poll cycle's view, not a value that could be
+                # overwritten by a later poll before this cycle finishes.
+                repeat_status = status.get("repeat")
+                repeat_status = repeat_status if isinstance(repeat_status, dict) else None
+                _set_repeat_status(repeat_status)
+
+                # Computed once per poll cycle from this same snapshot
+                # and reused below for _ingest_status()'s
+                # actively-sourcing seq check, the OwnTone retry replay_origin
+                # gate, and the track-ID actively-sourcing gate -- all must
+                # agree on which input (if any) is the replay origin for THIS
+                # cycle, not a later, possibly-stale repeat_status.
+                replay_origin_idx = _replay_origin_input(repeat_status)
+
                 # Two-pass update so that callbacks see the final state of ALL
                 # monitors, not a partially-updated snapshot.  This prevents
                 # spurious OwnTone stop/disable when one input hands off to
                 # another in the same poll cycle.
-                was_any_capturing = any_monitor_capturing()
                 started: list[AudioMonitor] = []
                 stopped: list[AudioMonitor] = []
 
                 for m in monitors:
                     if m.input_index in status_by_index:
-                        transition = m._ingest_status(status_by_index[m.input_index])
+                        transition = m._ingest_status(
+                            status_by_index[m.input_index],
+                            replay_origin=(m.input_index == replay_origin_idx),
+                        )
                         if transition == "started":
                             started.append(m)
                         elif transition == "stopped":
@@ -2648,18 +3170,37 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # activity, rather than the broader capture window that
                 # includes the silence timeout used to detect playback end.
                 for m in monitors:
-                    m._sync_playback_tracker_state()
+                    m._sync_playback_tracker_state(repeat_status)
 
-                # Fire stopped callbacks first so any_monitor_capturing() is
+                # Per-input duties only (track-ID scheduling + logging); see
+                # _on_capture_started/_on_capture_stopped docstrings. Fire
+                # stopped callbacks first so any_monitor_capturing() is
                 # already correct when started callbacks check it.
                 for m in stopped:
                     m._on_capture_stopped(client)
-                was_idle = not was_any_capturing
                 for m in started:
-                    m._on_capture_started(was_idle)
+                    m._on_capture_started()
 
                 if started or stopped:
                     _sync_playing_announcement(monitors, version)
+
+                # ── Unified playback-session tracker ───────────────────────────
+                # Single call site: derives the {input1, input2, replay}
+                # source vector from this SAME snapshot and fires exactly one
+                # of session_started / session_ended / source_changed / None,
+                # dispatched by _dispatch_session_event(). This is the sole
+                # place session-level OwnTone output-enable/stop and
+                # now-playing publish_start/publish_end run -- see
+                # _SessionTracker's module comment for the full event
+                # semantics.
+                session_event, session_prev_monitor, session_new_monitor, session_source = (
+                    session_tracker.update(monitors, repeat_status)
+                )
+                _dispatch_session_event(
+                    session_event, session_prev_monitor, session_new_monitor,
+                    cfg.owntone.base_url, new_source=session_source,
+                )
+                _set_session_state(session_source is not None, session_source)
 
                 # ── Multi-input coordination ──────────────────────────────────
                 if len(monitors) == 1:
@@ -2703,11 +3244,15 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                             logging.info("No active input selected.")
 
                 # ── Flush pending allow_capture changes and OwnTone retries ───
+                # replay_origin_idx was already computed above from this same
+                # snapshot, before the ingest loop.
                 now = time.time()
                 for m in monitors:
                     m.apply_allow_capture(client)
-                    m._maybe_retry_owntone(now)
-                    m.maybe_trigger_track_identification(client, now)
+                    m._maybe_retry_owntone(now, replay_origin=(m.input_index == replay_origin_idx))
+                    m.maybe_trigger_track_identification(
+                        client, now, replay_origin=(m.input_index == replay_origin_idx),
+                    )
 
                 tracker = _playback_tracker
                 if tracker is not None:
@@ -2731,6 +3276,14 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     teardown_owntone_base_url,
                     "coordinator teardown",
                 )
+            # Disarm repeat before stop_input below: the
+            # daemon also discards the buffer on stop_input of the origin
+            # input, so this is belt-and-braces, and its failure (old binary,
+            # or the socket already being gone) must never break teardown.
+            try:
+                client.set_repeat_armed(False)
+            except Exception:
+                logging.debug("set_repeat_armed(False) during teardown failed", exc_info=True)
             for m in monitors:
                 if tracker is not None:
                     tracker.on_playback_stopped(m.input_index)

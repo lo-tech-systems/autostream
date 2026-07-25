@@ -427,6 +427,30 @@ class UpdatesConfig:
     update_channel: str
 
 
+REPEAT_CODEC_CHOICES = ("auto", "mp2_160", "mp2_192", "mp2_224", "pcm")
+REPEAT_CODEC_DEFAULT = "auto"
+
+
+def normalize_repeat_codec(value: object) -> str:
+    """Return *value* if it is a recognised repeat codec choice, else the default.
+
+    Valid choices: auto|mp2_160|mp2_192|mp2_224|pcm.
+    """
+    v = str(value or "").strip().lower()
+    return v if v in REPEAT_CODEC_CHOICES else REPEAT_CODEC_DEFAULT
+
+
+@dataclass(frozen=True)
+class RepeatConfig:
+    """Repeat-recording feature settings (JSON section repeat).
+
+    Both fields are live-applied
+    (set_repeat_enabled) rather than driving a coordinator reload.
+    """
+    enabled: bool
+    codec: str
+
+
 def _normalize_track_id_int(value: object, default: int, lo: int, hi: int) -> int:
     """Clamp a track-ID integer setting to [lo, hi]; use default for invalid input."""
     try:
@@ -519,6 +543,7 @@ class AutostreamConfig:
     output_eq: OutputEqConfig
     updates: UpdatesConfig
     track_identification: TrackIdentificationConfig
+    repeat: RepeatConfig
 
 
 def _parse_audio_input_config(section: dict) -> AudioInputConfig:
@@ -696,6 +721,12 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         providers=providers,
     )
 
+    repeat_d = data.get("repeat") or {}
+    repeat = RepeatConfig(
+        enabled=bool(repeat_d.get("enabled", False)),
+        codec=normalize_repeat_codec(repeat_d.get("codec", REPEAT_CODEC_DEFAULT)),
+    )
+
     return AutostreamConfig(
         general=general,
         audio1=audio1,
@@ -706,6 +737,7 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         output_eq=output_eq,
         updates=updates,
         track_identification=track_identification,
+        repeat=repeat,
     )
 
 

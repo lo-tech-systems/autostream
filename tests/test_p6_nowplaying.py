@@ -40,6 +40,9 @@ from autostream_nowplaying import (
     NowPlayingMetadata,
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
+    get_shared_metadata_publisher,
+    release_shared_metadata_publisher,
+    _publisher_registry,
 )
 
 
@@ -506,3 +509,218 @@ class TestEmitBundles:
         xml = self._capture(pub, meta=None)
         pbeg_hex = OwntoneMetadataPipePublisher._tag_hex("pbeg")
         assert pbeg_hex not in xml
+
+
+# ---------------------------------------------------------------------------
+# Shared publisher per fifo_path
+# ---------------------------------------------------------------------------
+
+class TestSharedMetadataPublisher:
+    """get_shared_metadata_publisher()/release_shared_metadata_publisher():
+    one queue+thread per physical FIFO path, refcounted so a config reload's
+    stop()/re-create cycle only tears down the thread once the last
+    referencing monitor has released it."""
+
+    def teardown_method(self, method):
+        # Defensive: a failed assertion mid-test could leave an entry
+        # dangling and bleed into the next test's path (paths are
+        # tmp_path-scoped so collisions are unlikely, but keep it clean).
+        _publisher_registry.clear()
+
+    def test_same_path_returns_same_instance(self, tmp_path):
+        path = str(tmp_path / "shared.fifo")
+        pub1 = get_shared_metadata_publisher(path)
+        pub2 = get_shared_metadata_publisher(path)
+        try:
+            assert pub1 is pub2
+        finally:
+            release_shared_metadata_publisher(path)
+            release_shared_metadata_publisher(path)
+
+    def test_different_paths_return_different_instances(self, tmp_path):
+        path_a = str(tmp_path / "a.fifo")
+        path_b = str(tmp_path / "b.fifo")
+        pub_a = get_shared_metadata_publisher(path_a)
+        pub_b = get_shared_metadata_publisher(path_b)
+        try:
+            assert pub_a is not pub_b
+        finally:
+            release_shared_metadata_publisher(path_a)
+            release_shared_metadata_publisher(path_b)
+
+    def test_release_does_not_close_while_other_monitor_still_referencing(self, tmp_path):
+        """Two AudioMonitors on the same path (the exact bug scenario): the
+        first monitor's stop() must not tear down the publisher the second
+        monitor is still using."""
+        path = str(tmp_path / "shared.fifo")
+        pub = get_shared_metadata_publisher(path)   # monitor 1 acquires
+        get_shared_metadata_publisher(path)          # monitor 2 acquires (refcount=2)
+        with patch.object(pub, "close") as close_mock:
+            release_shared_metadata_publisher(path)  # monitor 1 releases
+            close_mock.assert_not_called()
+            release_shared_metadata_publisher(path)  # monitor 2 releases (refcount=0)
+            close_mock.assert_called_once()
+
+    def test_release_unknown_path_is_a_noop(self, tmp_path):
+        # Must not raise even if never acquired (e.g. double-release).
+        release_shared_metadata_publisher(str(tmp_path / "never-acquired.fifo"))
+
+    def test_acquire_after_full_release_creates_fresh_instance(self, tmp_path):
+        path = str(tmp_path / "shared.fifo")
+        pub1 = get_shared_metadata_publisher(path)
+        release_shared_metadata_publisher(path)
+        pub2 = get_shared_metadata_publisher(path)
+        try:
+            assert pub1 is not pub2
+        finally:
+            release_shared_metadata_publisher(path)
+
+    def test_two_monitors_serialize_bundles_through_one_queue(self, tmp_path):
+        """The core correctness property fix 1a exists for: two 'monitors'
+        sharing a path publish through the same queue, so a start from one
+        and an end from the other cannot interleave -- they're just two
+        items processed one at a time by the single writer thread."""
+        path = str(tmp_path / "shared.fifo")
+        with patch.dict(os.environ, {"AUTOSTREAM_ENABLE_PIPE_METADATA": "1"}), \
+             patch("threading.Thread"):
+            pub_for_input1 = get_shared_metadata_publisher(path)
+            pub_for_input2 = get_shared_metadata_publisher(path)
+        try:
+            assert pub_for_input1 is pub_for_input2
+            assert pub_for_input1._queue is pub_for_input2._queue
+        finally:
+            release_shared_metadata_publisher(path)
+            release_shared_metadata_publisher(path)
+
+
+# ---------------------------------------------------------------------------
+# Session-begin vs metadata-refresh bundle framing
+# ---------------------------------------------------------------------------
+
+class TestBundleFraming:
+    """publish_start() must emit pbeg exactly once per session; a mid-session
+    metadata refresh (publish_refresh()) must emit mdst..mden WITHOUT a
+    second pbeg, and publish_end() must emit pend exactly once."""
+
+    def _make_publisher(self, tmp_path):
+        pub = OwntoneMetadataPipePublisher.__new__(OwntoneMetadataPipePublisher)
+        pub._enabled = False
+        pub.audio_fifo_path = str(tmp_path / "fifo")
+        pub.metadata_fifo_path = str(tmp_path / "fifo.metadata")
+        pub._session_open = False
+        return pub
+
+    def _capture_bundle(self, write_fn) -> str:
+        buf = io.BytesIO()
+
+        class _Out:
+            def write(self, data):
+                buf.write(data if isinstance(data, bytes) else data.encode())
+
+        write_fn(_Out())
+        return buf.getvalue().decode("ascii")
+
+    def _run_dispatch(self, pub, kind, meta):
+        """Reproduce _run()'s per-item dispatch (the "start"/"refresh"/"end"
+        branch) directly against a captured buffer, without a real fifo/
+        thread -- mirrors how TestEmitBundles exercises the bundle emitters
+        in isolation."""
+        return self._capture_bundle(
+            lambda out: self._dispatch_one(pub, out, kind, meta)
+        )
+
+    @staticmethod
+    def _dispatch_one(pub, out, kind, meta):
+        if kind == "start" and meta is not None:
+            pub._emit_start_bundle(out, meta)
+            pub._session_open = True
+        elif kind == "refresh" and meta is not None:
+            if pub._session_open:
+                pub._emit_metadata_refresh_bundle(out, meta)
+            else:
+                pub._emit_start_bundle(out, meta)
+                pub._session_open = True
+        elif kind == "end":
+            if pub._session_open:
+                pub._emit_end_bundle(out)
+            pub._session_open = False
+
+    def test_session_begin_emits_pbeg_once(self, tmp_path):
+        pub = self._make_publisher(tmp_path)
+        meta = NowPlayingMetadata(title="T", artist="A", album="B")
+        xml = self._run_dispatch(pub, "start", meta)
+        pbeg_hex = OwntoneMetadataPipePublisher._tag_hex("pbeg")
+        assert xml.count(pbeg_hex) == 1
+        assert pub._session_open is True
+
+    def test_refresh_after_start_does_not_emit_second_pbeg(self, tmp_path):
+        pub = self._make_publisher(tmp_path)
+        meta1 = NowPlayingMetadata(title="T1", artist="A", album="B")
+        meta2 = NowPlayingMetadata(title="T2", artist="A", album="B")
+        xml_start = self._run_dispatch(pub, "start", meta1)
+        xml_refresh = self._run_dispatch(pub, "refresh", meta2)
+
+        pbeg_hex = OwntoneMetadataPipePublisher._tag_hex("pbeg")
+        mdst_hex = OwntoneMetadataPipePublisher._tag_hex("mdst")
+        mden_hex = OwntoneMetadataPipePublisher._tag_hex("mden")
+
+        assert pbeg_hex in xml_start
+        assert pbeg_hex not in xml_refresh  # the bug this fix closes
+        assert mdst_hex in xml_refresh
+        assert mden_hex in xml_refresh
+
+    def test_refresh_still_carries_new_metadata(self, tmp_path):
+        import base64
+        pub = self._make_publisher(tmp_path)
+        pub._session_open = True  # already mid-session
+        meta = NowPlayingMetadata(title="RefreshedTitle", artist="A", album="B")
+        xml_refresh = self._run_dispatch(pub, "refresh", meta)
+        assert base64.b64encode(b"RefreshedTitle").decode("ascii") in xml_refresh
+
+    def test_refresh_with_no_open_session_falls_back_to_session_begin(self, tmp_path):
+        """Defensive fallback: a refresh with no open session (should not
+        happen in normal operation) still emits valid pbeg/mdst/mden framing
+        rather than a dangling mdst."""
+        pub = self._make_publisher(tmp_path)
+        assert pub._session_open is False
+        meta = NowPlayingMetadata(title="T", artist="A", album="B")
+        xml = self._run_dispatch(pub, "refresh", meta)
+        pbeg_hex = OwntoneMetadataPipePublisher._tag_hex("pbeg")
+        assert pbeg_hex in xml
+        assert pub._session_open is True
+
+    def test_end_after_start_emits_pend_once(self, tmp_path):
+        pub = self._make_publisher(tmp_path)
+        meta = NowPlayingMetadata(title="T", artist="A", album="B")
+        self._run_dispatch(pub, "start", meta)
+        xml_end = self._run_dispatch(pub, "end", None)
+        pend_hex = OwntoneMetadataPipePublisher._tag_hex("pend")
+        assert xml_end.count(pend_hex) == 1
+        assert pub._session_open is False
+
+    def test_end_with_no_open_session_emits_nothing(self, tmp_path):
+        """publish_end() with no open session (e.g. a duplicate/late end)
+        must not emit a dangling pend."""
+        pub = self._make_publisher(tmp_path)
+        xml_end = self._run_dispatch(pub, "end", None)
+        assert xml_end == ""
+
+    def test_full_session_lifecycle_pbeg_once_mdst_mden_pairs_pend_once(self, tmp_path):
+        """One begin, two refreshes, one end: exactly one pbeg, exactly one
+        pend, and one mdst/mden pair per bundle."""
+        pub = self._make_publisher(tmp_path)
+        meta = NowPlayingMetadata(title="T", artist="A", album="B")
+        whole = (
+            self._run_dispatch(pub, "start", meta)
+            + self._run_dispatch(pub, "refresh", meta)
+            + self._run_dispatch(pub, "refresh", meta)
+            + self._run_dispatch(pub, "end", None)
+        )
+        pbeg_hex = OwntoneMetadataPipePublisher._tag_hex("pbeg")
+        pend_hex = OwntoneMetadataPipePublisher._tag_hex("pend")
+        mdst_hex = OwntoneMetadataPipePublisher._tag_hex("mdst")
+        mden_hex = OwntoneMetadataPipePublisher._tag_hex("mden")
+        assert whole.count(pbeg_hex) == 1
+        assert whole.count(pend_hex) == 1
+        assert whole.count(mdst_hex) == 3  # begin + 2 refreshes
+        assert whole.count(mden_hex) == 3

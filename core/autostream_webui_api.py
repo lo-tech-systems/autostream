@@ -39,10 +39,12 @@ from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
+    REPEAT_CODEC_CHOICES,
     load_config,
     load_state,
     normalize_airplay_mode,
     normalize_output_usage_poll_interval,
+    normalize_repeat_codec,
     normalize_track_id_analysis_lead_in_seconds,
     normalize_track_id_refresh_seconds,
     normalize_track_id_track_change_silence_seconds,
@@ -59,6 +61,8 @@ from autostream_core import (
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
+    get_repeat_status,
+    get_session_state,
     request_config_reload,
     reset_input_belt,
     reset_input_bearing,
@@ -68,6 +72,8 @@ from autostream_core import (
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
+    set_live_repeat_armed,
+    set_live_repeat_enabled,
     update_live_owntone_runtime,
     update_live_silence_seconds,
     update_playback_input_config,
@@ -297,8 +303,18 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
             ti_dict = get_active_track_identification_snapshot().to_public_dict()
         except Exception:
             ti_dict = {}
-    is_playing = any_monitor_capturing()
-    send_json(handler, 200, {
+    # Unified playback-session state: the authoritative
+    # "playing" signal is session.active, not a raw is_capturing check,
+    # so replay (daemon-side, no input is "capturing") correctly reports as
+    # playing. Falls back to any_monitor_capturing() only if the session
+    # cache is unavailable for some reason -- keeps this endpoint's existing
+    # never-raise contract.
+    try:
+        session_state = get_session_state()
+    except Exception:
+        session_state = {"active": any_monitor_capturing(), "source": None}
+    is_playing = bool(session_state.get("active"))
+    response = {
         "playing": is_playing,
         "status_text": _status_text_for_home(is_playing, input_levels),
         "status_class": "playing" if is_playing else "waiting",
@@ -308,7 +324,20 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         "belt_banner_text": warnings.get("belt"),
         "bearing_banner_text": warnings.get("bearing"),
         "track_identification": ti_dict,
-    })
+        # Always present (unlike "repeat" below): the session tracker runs
+        # regardless of whether the repeat feature/block exists at all.
+        "session": session_state,
+    }
+    # Pass the daemon's "repeat" status block through verbatim when present.
+    # An old binary that never reports it means the key is
+    # omitted entirely -- no KeyError, feature-unsupported by absence.
+    try:
+        repeat_status = get_repeat_status()
+    except Exception:
+        repeat_status = None
+    if repeat_status is not None:
+        response["repeat"] = repeat_status
+    send_json(handler, 200, response)
 
 
 def send_service_config_json(handler, state: WebUIState, body: str) -> None:
@@ -1222,6 +1251,33 @@ def _live_silence(state: object, value: object) -> bool:
     return bool(update_live_silence_seconds(int(value)))
 
 
+def _validate_repeat_codec(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"Value must be one of {', '.join(REPEAT_CODEC_CHOICES)}")
+    v = value.strip().lower()
+    if v not in REPEAT_CODEC_CHOICES:
+        raise ValueError(f"Value must be one of {', '.join(REPEAT_CODEC_CHOICES)}")
+    return normalize_repeat_codec(v)
+
+
+def _live_repeat_enabled(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(set_live_repeat_enabled(bool(value), snap.repeat.codec))
+
+
+def _live_repeat_codec(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(set_live_repeat_enabled(snap.repeat.enabled, str(value)))
+
+
 # ---------------------------------------------------------------------------
 # WP4B — validators, debounce helpers, and live functions
 # ---------------------------------------------------------------------------
@@ -1412,6 +1468,10 @@ _SETTINGS_FIELDS: dict = {
     "track_identification.analysis_lead_in_seconds": ("track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id),
     "track_identification.refresh_seconds":     ("track_identification", "refresh_seconds",        _validate_track_id_refresh,       _live_track_id),
     "track_identification.track_change_silence_seconds": ("track_identification", "track_change_silence_seconds", _validate_track_id_silence, _live_track_id),
+    # Repeat recording (live: monitor daemon; NOT _debounce_coordinator_reload
+    # -- toggling this must not tear down the playback it governs)
+    "repeat.enabled":                           ("repeat",  "enabled",                            _validate_bool,                   _live_repeat_enabled),
+    "repeat.codec":                             ("repeat",  "codec",                              _validate_repeat_codec,           _live_repeat_codec),
 }
 
 
@@ -1430,6 +1490,8 @@ def send_settings_get_json(handler, state) -> None:
         "webui.control_other_appliances":          parsed.webui.control_other_appliances,
         "webui.output_usage_poll_interval_seconds": parsed.webui.output_usage_poll_interval_seconds,
         "updates.update_channel":                  parsed.updates.update_channel,
+        "repeat.enabled":                          parsed.repeat.enabled,
+        "repeat.codec":                            parsed.repeat.codec,
     }
     send_json(handler, 200, {"ok": True, "values": values})
 
@@ -1502,6 +1564,47 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         if not live_ok:
             resp["live_error"] = "Live effect could not be applied"
     send_json(handler, 200, resp)
+
+
+def send_repeat_post_json(handler, state, body: str) -> None:
+    """POST /api/repeat — arm/disarm repeat-recording replay.
+
+    Request: {"armed": bool}
+
+    Session arm is runtime-only: no settings write accompanies
+    this call, and current armed/replay state is read back from /api/status
+    (the daemon is the single source of truth -- no WebUIState mirror).
+
+    Success (HTTP 200):  {"ok": true, "armed": <bool>}
+    Validation failure (HTTP 400): {"ok": false, "error": "..."}
+    Live-apply failure (HTTP 200, ok:false): daemon rejected/unreachable
+        (e.g. an older monitor binary that does not support the command).
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    if not isinstance(payload, dict):
+        send_json(handler, 400, {"ok": False, "error": "JSON object required"})
+        return
+
+    if "armed" not in payload:
+        send_json(handler, 400, {"ok": False, "error": "armed is required"})
+        return
+
+    armed = payload["armed"]
+    if not isinstance(armed, bool):
+        send_json(handler, 400, {"ok": False, "error": "armed must be true or false"})
+        return
+
+    ok = bool(set_live_repeat_armed(armed))
+    if not ok:
+        send_json(handler, 200, {"ok": False, "armed": armed, "error": "Could not update repeat arm state"})
+        return
+
+    send_json(handler, 200, {"ok": True, "armed": armed})
 
 
 # -----------------------------------------------------------------------------
@@ -2173,7 +2276,7 @@ def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Log-level and playing-status APIs (WP2)
+# Log-level and playing-status APIs
 # ---------------------------------------------------------------------------
 
 # Fields the PUT /api/log-level body is allowed to contain.
@@ -2233,7 +2336,7 @@ def send_log_level_put_json(
 
 
 # ---------------------------------------------------------------------------
-# Network status / setup — bounded proxy to the root watcher (WP7)
+# Network status / setup — bounded proxy to the root watcher
 # ---------------------------------------------------------------------------
 
 # The watcher's localhost control interface.  The normal Web UI never executes

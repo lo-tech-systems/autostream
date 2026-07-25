@@ -29,6 +29,52 @@ PIPE_METADATA_ENV = "AUTOSTREAM_ENABLE_PIPE_METADATA"
 # raised together; owntone-mini carries the matching 2MB limit.
 MAX_PICTURE_BYTES = 2 * 1024 * 1024
 
+# ── Shared-publisher registry ─────────────────────────────────
+#
+# Each AudioMonitor sharing a physical FIFO path must NOT construct its own
+# OwntoneMetadataPipePublisher: two monitors can point at the SAME physical FIFO
+# (e.g. input1/input2 sharing one OwnTone pipe input). Two independent
+# publishers each running their own queue+thread can then interleave partial
+# multi-item bundles on the wire during a same-poll-cycle handoff (a
+# source_changed dispatch firing publish_end() on one monitor's publisher
+# concurrently with publish_start() on the other's). Routing every monitor
+# for the same path through one shared instance makes each bundle atomic
+# relative to the others, since the single writer thread only ever processes
+# one queued item (one full open->write->close cycle) at a time.
+#
+# Refcounted so config-reload teardown (AudioMonitor.stop() -> release) tears
+# down the underlying thread only once the last referencing monitor for that
+# path has released it, and a fresh acquire() after that creates a new
+# instance -- matching the per-monitor create/close lifecycle.
+_publisher_registry_lock = threading.Lock()
+_publisher_registry: dict[str, list] = {}  # path -> [OwntoneMetadataPipePublisher, refcount]
+
+
+def get_shared_metadata_publisher(audio_fifo_path: str) -> "OwntoneMetadataPipePublisher":
+    """Return the single publisher instance for *audio_fifo_path*, creating it
+    on first use. Pair every call with release_shared_metadata_publisher()."""
+    with _publisher_registry_lock:
+        entry = _publisher_registry.get(audio_fifo_path)
+        if entry is None:
+            pub = OwntoneMetadataPipePublisher(audio_fifo_path)
+            _publisher_registry[audio_fifo_path] = [pub, 1]
+            return pub
+        entry[1] += 1
+        return entry[0]
+
+
+def release_shared_metadata_publisher(audio_fifo_path: str) -> None:
+    """Release one reference to the publisher for *audio_fifo_path*, closing
+    and dropping it once the last referencing caller has released it."""
+    with _publisher_registry_lock:
+        entry = _publisher_registry.get(audio_fifo_path)
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] <= 0:
+            del _publisher_registry[audio_fifo_path]
+            entry[0].close()
+
 
 @dataclass
 class NowPlayingMetadata:
@@ -111,6 +157,11 @@ class OwntoneMetadataPipePublisher:
 
         self._queue: queue.Queue[tuple[str, Optional[NowPlayingMetadata]]] = queue.Queue()
         self._stop = threading.Event()
+        # Bundle framing state: touched only from within _run(),
+        # the single consumer thread, so it needs no separate lock. True from
+        # the moment a session-begin ("pbeg") bundle has been emitted until a
+        # matching session-end ("pend") bundle is emitted.
+        self._session_open = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -121,9 +172,25 @@ class OwntoneMetadataPipePublisher:
         self._queue.put(("stop", None))
 
     def publish_start(self, meta: NowPlayingMetadata) -> None:
+        """Begin a new play session: emits pbeg once, then a mdst..mden
+        metadata bundle. Must be paired with a later publish_end(); for a
+        metadata-only update to an already-open session use publish_refresh()
+        instead (Shairport-sync convention: pbeg/pend delimit the session,
+        mdst/mden delimit each metadata update within it)."""
         if not self._enabled:
             return
         self._queue.put(("start", meta))
+
+    def publish_refresh(self, meta: NowPlayingMetadata) -> None:
+        """Publish updated metadata mid-session (e.g. a track-ID match
+        landing after the session already began): emits a mdst..mden bundle
+        only, WITHOUT a second pbeg. If no session is
+        currently open (defensive fallback -- should not happen in normal
+        operation), falls back to a full session-begin bundle so the wire
+        framing stays valid."""
+        if not self._enabled:
+            return
+        self._queue.put(("refresh", meta))
 
     def publish_end(self) -> None:
         if not self._enabled:
@@ -208,8 +275,25 @@ class OwntoneMetadataPipePublisher:
                 with os.fdopen(fd, "wb", buffering=0) as out:
                     if kind == "start" and meta is not None:
                         self._emit_start_bundle(out, meta)
+                        self._session_open = True
+                    elif kind == "refresh" and meta is not None:
+                        if self._session_open:
+                            self._emit_metadata_refresh_bundle(out, meta)
+                        else:
+                            # No open session to refresh -- fall back to a
+                            # full session-begin so we still emit valid
+                            # pbeg/mdst.../mden framing rather than a
+                            # dangling mdst with no bracketing pbeg.
+                            LOGGER.debug(
+                                "Metadata refresh requested with no open session; "
+                                "emitting a session-begin bundle instead.",
+                            )
+                            self._emit_start_bundle(out, meta)
+                            self._session_open = True
                     elif kind == "end":
-                        self._emit_end_bundle(out)
+                        if self._session_open:
+                            self._emit_end_bundle(out)
+                        self._session_open = False
             except Exception as e:
                 LOGGER.info("Metadata publish failed: %s", e)
 
@@ -227,10 +311,10 @@ class OwntoneMetadataPipePublisher:
 
         out.write(xml.encode("ascii"))
 
-    def _emit_start_bundle(self, out, meta: NowPlayingMetadata) -> None:
-        self._write_item(out, "ssnc", "pbeg")
-        self._write_item(out, "ssnc", "mdst")
-
+    def _write_metadata_items(self, out, meta: NowPlayingMetadata) -> None:
+        """Write the asar/asal/minm/artwork items shared by both the
+        session-begin and metadata-refresh bundles (the mdst/mden bracket
+        and any pbeg/pend framing are the caller's responsibility)."""
         if meta.artist:
             self._write_item(out, "core", "asar", meta.artist.encode("utf-8", errors="replace"))
         if meta.album:
@@ -264,6 +348,20 @@ class OwntoneMetadataPipePublisher:
             self._write_item(out, "ssnc", "PICT", art_payload)
             self._write_item(out, "ssnc", "pcen")
 
+    def _emit_start_bundle(self, out, meta: NowPlayingMetadata) -> None:
+        """Session-begin bundle: pbeg once, then one mdst..mden metadata
+        update. Only ever emitted for a "start" queue item (a fresh
+        session_started/source_changed dispatch) -- see publish_start()."""
+        self._write_item(out, "ssnc", "pbeg")
+        self._write_item(out, "ssnc", "mdst")
+        self._write_metadata_items(out, meta)
+        self._write_item(out, "ssnc", "mden")
+
+    def _emit_metadata_refresh_bundle(self, out, meta: NowPlayingMetadata) -> None:
+        """Metadata-only update within an already-open session: mdst..mden,
+        no pbeg (Shairport-sync convention -- see publish_refresh())."""
+        self._write_item(out, "ssnc", "mdst")
+        self._write_metadata_items(out, meta)
         self._write_item(out, "ssnc", "mden")
 
     def _emit_end_bundle(self, out) -> None:

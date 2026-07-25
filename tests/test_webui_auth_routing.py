@@ -112,6 +112,7 @@ _PROTECTED = [
     ("/api/factory-reset",  "autostream_webui.handle_factory_reset_post"),
     ("/api/settings/mdns-grace-period", "autostream_webui.send_settings_mdns_grace_period_json"),
     ("/api/dial/authorize", "autostream_webui.dispatch_dial_management_post"),
+    ("/api/repeat",         "autostream_webui.send_repeat_post_json"),
 ]
 
 # Public: an unauthenticated request with a valid CSRF token MUST reach the

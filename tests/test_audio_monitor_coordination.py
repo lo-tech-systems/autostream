@@ -44,9 +44,14 @@ def _make_monitor(**overrides) -> AudioMonitor:
     defaults.update(overrides)
 
     with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.OwntoneMetadataPipePublisher") as mock_pub_cls:
+         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
-        mock_pub_cls.return_value = MagicMock()
+        # Fresh MagicMock per call (not a shared return_value): the real
+        # get_shared_metadata_publisher() would hand out the SAME instance
+        # for the same fifo_path, but most tests using this
+        # helper construct independent monitors and don't want that coupling
+        # unless they opt in explicitly.
+        mock_get_pub.side_effect = lambda path: MagicMock()
         mon = AudioMonitor(**defaults)
 
     return mon
@@ -386,12 +391,16 @@ class TestSyncPlaybackTrackerState:
 # ---------------------------------------------------------------------------
 
 class TestStop:
-    def test_stop_calls_publisher_close(self):
+    def test_stop_releases_shared_publisher(self):
+        """stop() releases this monitor's reference to the shared publisher rather than closing it directly -- another monitor on
+        the same fifo_path may still be using it. See
+        TestSharedMetadataPublisher for the registry's own refcount/close
+        behaviour in autostream_nowplaying.py."""
         with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-             patch("autostream_core.OwntoneMetadataPipePublisher") as mock_pub_cls:
+             patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub, \
+             patch("autostream_core.release_shared_metadata_publisher") as mock_release:
             mock_cache_cls.return_value.get_manual_hint.return_value = None
-            mock_publisher = MagicMock()
-            mock_pub_cls.return_value = mock_publisher
+            mock_get_pub.side_effect = lambda path: MagicMock()
             mon = AudioMonitor(
                 input_index=1,
                 input_device="hw:0,0",
@@ -403,8 +412,11 @@ class TestStop:
                 owntone_volume_percent=50,
             )
 
-        mon.stop()
-        mock_publisher.close.assert_called_once()
+            # release_shared_metadata_publisher is looked up as a
+            # module-level name in autostream_core at call time, so the
+            # patch must still be active when stop() runs.
+            mon.stop()
+        mock_release.assert_called_once_with("/tmp/test.fifo")
 
     def test_stop_sets_tracker_inactive(self):
         mon = _make_monitor()
@@ -917,73 +929,52 @@ class TestAutoSelectDefaultOutput:
 # ---------------------------------------------------------------------------
 
 class TestCaptureStartOrdering:
-    def test_started_from_idle_calls_stop_then_retry(self):
-        mon = _make_monitor(owntone_base_url="http://localhost:3689")
-        order = []
-        mock_client = MagicMock(spec=MonitorClient)
-
-        with patch.object(core, "_stop_and_disable_owntone",
-                          side_effect=lambda url, reason: order.append("stop")), \
-             patch.object(mon, "_maybe_retry_owntone",
-                          side_effect=lambda now: order.append("retry")):
-            mon._on_capture_started(was_idle=True)
-
-        assert order.index("stop") < order.index("retry"), \
-            "_stop_and_disable_owntone must be called before _maybe_retry_owntone"
-
-    def test_started_not_idle_skips_stop(self):
-        mon = _make_monitor(owntone_base_url="http://localhost:3689")
-        stop_called = []
-        with patch.object(core, "_stop_and_disable_owntone",
-                          side_effect=lambda url, reason: stop_called.append(True)), \
-             patch.object(mon, "_maybe_retry_owntone"):
-            mon._on_capture_started(was_idle=False)
-        assert not stop_called
+    """_on_capture_started is per-input (track-ID + logging) only;
+    the was_idle OwnTone output-enable path lives in the session tracker's
+    session_started event (_start_session_owntone), covered in
+    tests/test_repeat_api.py's TestSessionTracker classes."""
 
     def test_started_resets_ti_state(self):
         mon = _make_monitor()
         mon._ti_inflight = True
         mon._ti_next_attempt = 999.0
-        with patch.object(mon, "_maybe_retry_owntone"):
-            mon._on_capture_started(was_idle=False)
+        mon._on_capture_started()
         assert mon._ti_inflight is False
         assert mon._ti_next_attempt == 0.0
 
+    def test_started_does_not_touch_owntone(self):
+        """No OwnTone output action of any kind fires from this per-input callback."""
+        mon = _make_monitor(owntone_base_url="http://localhost:3689")
+        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+             patch.object(mon, "_maybe_retry_owntone") as retry_mock:
+            mon._on_capture_started()
+        stop_mock.assert_not_called()
+        retry_mock.assert_not_called()
+
 
 class TestCaptureStopOrdering:
-    def test_stopped_calls_publish_end(self):
+    """_on_capture_stopped is per-input (track-ID + logging) only;
+    the OwnTone idle-stop and now-playing publish_end live in the session
+    tracker's session_ended event, covered in tests/test_repeat_api.py's
+    TestSessionTracker classes."""
+
+    def test_stopped_does_not_touch_owntone_or_nowplaying(self):
         mon = _make_monitor(owntone_base_url="http://localhost:3689")
         mock_client = MagicMock(spec=MonitorClient)
-
-        with patch.object(core, "_stop_and_disable_owntone"), \
+        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
              patch.object(core, "any_monitor_capturing", return_value=False):
             mon._on_capture_stopped(mock_client)
+        stop_mock.assert_not_called()
+        mon._nowplaying_publisher.publish_end.assert_not_called()
 
-        mon._nowplaying_publisher.publish_end.assert_called_once()
-
-    def test_stopped_requests_owntone_stop_when_no_other_capturing(self):
+    def test_stopped_resets_ti_state(self):
         mon = _make_monitor(owntone_base_url="http://localhost:3689")
         mock_client = MagicMock(spec=MonitorClient)
-        stop_calls = []
-
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone",
-                          side_effect=lambda url, reason: stop_calls.append(url)):
-            mon._on_capture_stopped(mock_client)
-
-        assert stop_calls, "OwnTone stop must be requested when no other monitor is capturing"
-
-    def test_stopped_skips_owntone_stop_when_another_is_capturing(self):
-        mon = _make_monitor(owntone_base_url="http://localhost:3689")
-        mock_client = MagicMock(spec=MonitorClient)
-        stop_calls = []
-
-        with patch.object(core, "any_monitor_capturing", return_value=True), \
-             patch.object(core, "_stop_and_disable_owntone",
-                          side_effect=lambda url, reason: stop_calls.append(url)):
-            mon._on_capture_stopped(mock_client)
-
-        assert not stop_calls, "OwnTone stop must be skipped when another monitor is still capturing"
+        mon._ti_next_attempt = 999.0
+        mon._track_change_seq_baseline = 42
+        mon._on_capture_stopped(mock_client)
+        assert mon._ti_next_attempt == 0.0
+        assert mon._track_change_seq_baseline == 0
 
 
 # ---------------------------------------------------------------------------

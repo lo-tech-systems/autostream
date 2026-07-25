@@ -55,9 +55,11 @@ def _make_monitor(**overrides) -> AudioMonitor:
     )
     defaults.update(overrides)
     with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.OwntoneMetadataPipePublisher") as mock_pub_cls:
+         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
-        mock_pub_cls.return_value = MagicMock()
+        # Fresh MagicMock per call: see test_audio_monitor_coordination.py's
+        # _make_monitor for why this doesn't just use a shared return_value.
+        mock_get_pub.side_effect = lambda path: MagicMock()
         mon = AudioMonitor(**defaults)
     return mon
 
@@ -195,26 +197,26 @@ class TestInitialState:
         mon = _active_monitor()
         core._track_id_service = svc
         before = time.time()
-        mon._on_capture_started(was_idle=False)
+        mon._on_capture_started()
         assert mon._ti_next_attempt >= before + 19
 
     def test_capture_start_without_service_does_not_set_future_next_attempt(self):
         core._track_id_service = None
         mon = _active_monitor()
-        mon._on_capture_started(was_idle=False)
+        mon._on_capture_started()
         assert mon._ti_next_attempt == 0.0
 
     def test_capture_start_sets_waiting_snapshot_when_service_present(self):
         svc = _make_service()
         mon = _active_monitor()
         core._track_id_service = svc
-        mon._on_capture_started(was_idle=False)
+        mon._on_capture_started()
         assert mon._ti_snapshot.state == STATE_WAITING
 
     def test_capture_start_sets_disabled_snapshot_when_no_service(self):
         core._track_id_service = None
         mon = _active_monitor()
-        mon._on_capture_started(was_idle=False)
+        mon._on_capture_started()
         assert mon._ti_snapshot.state == STATE_DISABLED
 
     def test_capture_start_clears_inflight_token(self):
@@ -223,7 +225,7 @@ class TestInitialState:
         core._track_id_service = svc
         mon._ti_inflight = True
         mon._ti_inflight_token = object()
-        mon._on_capture_started(was_idle=False)
+        mon._on_capture_started()
         assert mon._ti_inflight is False
         assert mon._ti_inflight_token is None
 
@@ -571,11 +573,15 @@ class TestWorkerIdentified:
         assert mon._ti_inflight_token is None
 
     def test_identified_publishes_nowplaying(self):
+        """A match landing mid-session must go through publish_refresh(), not
+        publish_start(): the worker fires well after the session's pbeg
+        already went out, so it must not emit a second one."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
         core._track_id_service = svc
         _run_worker_sync(mon)
-        mon._nowplaying_publisher.publish_start.assert_called()
+        mon._nowplaying_publisher.publish_refresh.assert_called()
+        mon._nowplaying_publisher.publish_start.assert_not_called()
 
     def test_identified_does_not_publish_when_nowplaying_unchanged(self):
         from autostream_core import NowPlayingMetadata
@@ -585,9 +591,9 @@ class TestWorkerIdentified:
         mon._current_nowplaying = NowPlayingMetadata(
             title="Test Title", artist="Test Artist", album="Test Album"
         )
-        mon._nowplaying_publisher.publish_start.reset_mock()
+        mon._nowplaying_publisher.publish_refresh.reset_mock()
         _run_worker_sync(mon)
-        mon._nowplaying_publisher.publish_start.assert_not_called()
+        mon._nowplaying_publisher.publish_refresh.assert_not_called()
 
     def test_identified_sets_last_identified_at(self):
         svc = _make_service(matched=True)
@@ -640,9 +646,9 @@ class TestWorkerNotFound:
         svc = _make_service(matched=False)
         mon = _active_monitor()
         core._track_id_service = svc
-        mon._nowplaying_publisher.publish_start.reset_mock()
+        mon._nowplaying_publisher.publish_refresh.reset_mock()
         _run_worker_sync(mon)
-        mon._nowplaying_publisher.publish_start.assert_not_called()
+        mon._nowplaying_publisher.publish_refresh.assert_not_called()
 
     def test_configuration_error_sets_error_state(self):
         svc = MagicMock()
@@ -1536,6 +1542,211 @@ class TestTrackChangeScheduling:
         }
         mon._ingest_status(status)
         assert mon._ti_next_attempt_reason == "match"  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# Track identification during replay
+# ---------------------------------------------------------------------------
+#
+# The origin input isn't "capturing" while its recording replays, so track
+# identification must key off an "actively-sourcing" gate (is_capturing OR
+# replay_origin) rather than a raw is_capturing check, everywhere that would
+# otherwise leave identification permanently dead for a replay-sourced
+# session:
+#   - maybe_trigger_track_identification() checks actively-sourcing, not
+#     "is_capturing" alone
+#   - _ingest_status()'s track_change_seq check runs "if was actively-sourcing
+#     and is actively-sourcing"
+#   - the identification cycle is armed from _dispatch_session_event() for a
+#     replay-sourced session_started/source_changed, not only from
+#     _on_capture_started
+# These tests exercise that "actively-sourcing" gate.
+
+class TestTrackIdentificationDuringReplay:
+
+    def test_maybe_trigger_fires_during_replay_despite_not_capturing(self):
+        """The core fix: replay_origin=True must let dispatch proceed even
+        though is_capturing is False (previously a hard bail-out)."""
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        mon.is_silent = True  # replay input is silent by definition
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0  # past deadline
+
+        mon.maybe_trigger_track_identification(client, time.time(), replay_origin=True)
+        client.get_id_snapshot.assert_called_once()
+
+    def test_maybe_trigger_does_not_fire_when_not_actively_sourcing(self):
+        """Neither capturing nor the replay origin: still gated (e.g. an
+        idle input, or an input that was replaying but the recording has
+        since stopped)."""
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        mon.is_silent = True
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        mon.maybe_trigger_track_identification(client, time.time(), replay_origin=False)
+        client.get_id_snapshot.assert_not_called()
+
+    def test_silent_gate_still_applies_to_live_capture(self):
+        """Regression guard: a genuinely silent LIVE capture (not replay)
+        must remain gated -- only the replay case bypasses is_silent."""
+        svc = _make_service()
+        mon = _active_monitor()
+        mon.is_silent = True
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        mon.maybe_trigger_track_identification(client, time.time(), replay_origin=False)
+        client.get_id_snapshot.assert_not_called()
+
+    def test_live_capture_behaviour_unchanged_when_not_replaying(self):
+        """Sanity check: a normal live, non-silent capture with
+        replay_origin=False (the default) triggers identification normally."""
+        svc = _make_service()
+        mon = _active_monitor()
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 1.0
+
+        mon.maybe_trigger_track_identification(client, time.time())
+        client.get_id_snapshot.assert_called_once()
+
+    def test_ingest_status_seq_advance_during_replay_triggers_track_change(self):
+        """track_change_seq advances are daemon-routed under origin_input
+        during replay; _ingest_status must detect them even though
+        is_capturing is False on both sides of the ingest, as long as
+        replay_origin is True on both sides (steady-state replay)."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_monitor()
+        mon.is_capturing = False
+        mon._replay_origin = True  # was actively-sourcing via replay last cycle
+        mon.track_change_seq = 0
+        mon._track_change_seq_baseline = 0
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        before = time.time()
+        status = {
+            "capturing": False, "silent": True,
+            "level_dbfs": -90.0, "poll_peak_dbfs": -90.0,
+            "detected_hz": 0.0, "track_change_seq": 2,
+        }
+        transition = mon._ingest_status(status, replay_origin=True)
+        assert transition == ""  # no capturing transition
+        assert mon._track_change_seq_baseline == 2
+        assert mon._ti_next_attempt_reason == "track_change"
+        assert mon._ti_next_attempt >= before + 19
+
+    def test_ingest_status_replay_transition_cycle_does_not_baseline_or_fire(self):
+        """On the very cycle replay-sourcing BEGINS (was_actively_sourcing
+        False -> True), _ingest_status must not itself baseline the seq or
+        fire a track-change: that transition is armed by
+        _dispatch_session_event -> _arm_track_identification_for_replay()
+        after this same poll cycle, mirroring _on_capture_started."""
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        mon._replay_origin = False  # not actively-sourcing before this cycle
+        mon.track_change_seq = 0
+        mon._track_change_seq_baseline = 0
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        gen_before = mon._ti_generation
+
+        status = {
+            "capturing": False, "silent": True,
+            "level_dbfs": -90.0, "poll_peak_dbfs": -90.0,
+            "detected_hz": 0.0, "track_change_seq": 7,  # daemon already bumped it
+        }
+        mon._ingest_status(status, replay_origin=True)  # transition cycle
+        # No track-change fired: baseline left at its old (now stale) value
+        # and generation untouched -- _arm_track_identification_for_replay()
+        # is responsible for re-baselining once the session tracker sees it.
+        assert mon._ti_generation == gen_before
+        assert mon._replay_origin is True  # field itself does update
+
+    def test_arm_track_identification_for_replay_baselines_seq(self):
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_monitor()
+        mon.is_capturing = False
+        mon.track_change_seq = 9
+        mon._track_change_seq_baseline = 0
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        before = time.time()
+        mon._arm_track_identification_for_replay()
+
+        assert mon._track_change_seq_baseline == 9
+        assert mon._ti_next_attempt_reason == "initial"
+        assert mon._ti_next_attempt >= before + 19  # lead-in(5)+snapshot(15)
+
+    def test_arm_track_identification_for_replay_resets_generation_and_inflight(self):
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        gen_before = mon._ti_generation
+        mon._ti_inflight = True
+        mon._ti_inflight_token = object()
+
+        mon._arm_track_identification_for_replay()
+
+        assert mon._ti_generation == gen_before + 1
+        assert mon._ti_inflight is False
+        assert mon._ti_inflight_token is None
+
+    def test_arm_track_identification_for_replay_sets_waiting_snapshot(self):
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        mon._arm_track_identification_for_replay()
+        assert mon._ti_snapshot.state == STATE_WAITING
+
+    def test_arm_track_identification_for_replay_disabled_service_sets_disabled_snapshot(self):
+        mon = _make_monitor()
+        mon.is_capturing = False
+        core._track_id_service = None
+
+        mon._arm_track_identification_for_replay()
+        assert mon._ti_snapshot.state == STATE_DISABLED
+
+    def test_session_started_replay_source_arms_via_dispatch(self):
+        """End-to-end through _dispatch_session_event(): a session_started
+        event landing on the replay source arms the origin monitor's
+        identification cycle."""
+        from autostream_core import _dispatch_session_event
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        origin_mon = _make_monitor(input_index=1)
+        origin_mon.is_capturing = False  # replay, not live capture
+        origin_mon.track_change_seq = 4
+        origin_mon._track_change_seq_baseline = 0
+        core._track_id_service = svc
+        origin_mon._apply_track_id_service(svc)
+
+        with patch.object(core, "_start_session_owntone"), \
+             patch.object(origin_mon, "_nowplaying_publisher"):
+            _dispatch_session_event(
+                "session_started", None, origin_mon, "", new_source="replay",
+            )
+
+        assert origin_mon._track_change_seq_baseline == 4
+        assert origin_mon._ti_next_attempt_reason == "initial"
 
 
 # ---------------------------------------------------------------------------
