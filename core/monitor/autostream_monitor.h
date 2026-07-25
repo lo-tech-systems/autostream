@@ -8,7 +8,7 @@
 // This native daemon replaces the previous Python AudioMonitor/sounddevice/
 // ffmpeg pipeline.  It runs as a long-lived service, captures from up to two
 // ALSA USB inputs, performs silence detection, rate correction, EQ/gain
-// processing, and writes a 44.1 kHz stereo PCM stream to a named FIFO.
+// processing, and writes a 48 kHz stereo PCM stream to a named FIFO.
 //
 // Python remains responsible for higher-level orchestration, UI, settings, and
 // playback-backend control.  At runtime it configures and polls the daemon via
@@ -38,6 +38,7 @@
 #include "autostream_id_tap.h"
 #include "autostream_spsc_ring.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <array>
@@ -60,7 +61,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.14";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.18";
 
 
 // =============================================================================
@@ -441,7 +442,11 @@ private:
 // AlsaCapture
 //
 // Wraps a single ALSA PCM capture device.  Configured for:
-//   - S16_LE format (signed 16-bit little-endian)
+//   - S32_LE format (signed 32-bit little-endian) requested first; falls
+//     back to S16_LE if the device does not support 32-bit. read() always
+//     hands back samples in the monitor's common 32-bit
+//     internal representation regardless of which format was negotiated --
+//     see read()'s comment for the widening convention.
 //   - Interleaved stereo (2 channels)
 //   - Highest available capture rate not exceeding 48000 Hz
 //   - Hardware period of approximately 1024 frames
@@ -455,17 +460,29 @@ public:
 
     // Open the device and configure hardware parameters.
     // Automatically selects the highest available capture rate <= 48000 Hz.
+    // Requests SND_PCM_FORMAT_S32_LE first; falls back to SND_PCM_FORMAT_S16_LE
+    // if the device rejects 32-bit. captured_as_s32() reports which one won.
     // Returns true on success; logs and returns false on any ALSA error.
     bool open(const std::string& hw_device, int channels = 2);
 
     // Close the device and release the ALSA handle.
     void close();
 
-    // Read up to n_frames frames into buf (interleaved int16, n_frames * channels values).
+    // Read up to n_frames frames into buf (interleaved int32, n_frames * channels
+    // values), always in the monitor's common 32-bit internal representation:
+    // samples occupy the full 32-bit dynamic range (matches what libsamplerate's
+    // src_int_to_float_array/src_float_to_int_array assume, i.e. AV_SAMPLE_FMT_S32-
+    // style "24-in-32 left-justified" scaling). If the hardware negotiated
+    // SND_PCM_FORMAT_S32_LE, ALSA already presents samples at this scale and
+    // they are copied through unchanged. If it fell back to SND_PCM_FORMAT_S16_LE,
+    // each 16-bit sample is left-shifted by 16 bits here (on the capture thread,
+    // integer-only, no allocation once the internal scratch buffer has grown to
+    // its steady-state size) so a downstream consumer never needs to know which
+    // format was actually negotiated.
     // Returns the number of frames read (may be less than n_frames).
     // Returns 0 if an xrun (overrun) occurred but was successfully recovered.
     // Returns -1 on an unrecoverable error; caller should close and reopen.
-    int read(int16_t* buf, int n_frames);
+    int read(int32_t* buf, int n_frames);
 
     // The period size that ALSA negotiated with the hardware.
     // Acquires _read_mutex; safe to call from any thread.
@@ -475,6 +492,11 @@ public:
     // Valid only while is_open() is true; returns 0 after close().
     // Acquires _read_mutex; safe to call from any thread.
     int  actual_rate()   const;
+
+    // True if the hardware negotiated SND_PCM_FORMAT_S32_LE; false if capture
+    // fell back to SND_PCM_FORMAT_S16_LE. Valid only while is_open() is true.
+    // Acquires _read_mutex; safe to call from any thread.
+    bool captured_as_s32() const;
 
     // Acquires _read_mutex; safe to call from any thread.
     bool is_open()       const;
@@ -491,6 +513,17 @@ private:
     snd_pcm_t* _pcm           = nullptr;
     int        _period_frames = 0;
     int        _actual_rate   = 0;
+    int        _channels      = 2;
+    bool       _captured_s32  = false;
+
+    // Scratch buffer used only when the device negotiated S16_LE, to hold the
+    // raw 16-bit read before widening into the caller's int32 buffer. Grown
+    // (never shrunk) by read() itself, on the capture thread -- same
+    // resize-if-needed pattern InputChannel::capture_thread_func() already
+    // uses for its own period buffer: the size is stable after the first call
+    // for the lifetime of an open session, so this is not a steady-state
+    // allocation.
+    std::vector<int16_t> _s16_scratch;
 };
 
 
@@ -577,7 +610,7 @@ private:
 //
 // Signal tap point: inside InputChannel::process_thread_func(), immediately
 // after _output_processor.apply() and src_float_to_short_array() — the first
-// point where the signal is complete 44.1 kHz stereo s16le after all SRC,
+// point where the signal is complete 48 kHz stereo s16le after all SRC,
 // per-input gain/EQ, output EQ, output gain, and auto-trim.  The tap is gated
 // by the _allow_capture flag, so the WAV reflects only the active FIFO-feeding
 // input.  Pre-fill frames (the initial 0.5 s buffer accumulated before the
@@ -614,9 +647,11 @@ public:
     OutputDumpWriter();
     ~OutputDumpWriter();
 
-    // Open path and begin recording.  Writes a 44-byte WAV placeholder header
-    // (sizes are patched on stop()).  Returns "" on success or a non-empty
-    // error string on failure.  Must not be called while a dump is already active.
+    // Open path and begin recording.  Writes a 44-byte WAV header built from
+    // AudioMonitor::OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS via the shared
+    // build_wav_header() helper (sizes are placeholders, patched on stop()).
+    // Returns "" on success or a non-empty error string on failure.  Must
+    // not be called while a dump is already active.
     // overwrite: if false, rejects the call when a file already exists at path.
     std::string start(const std::string& path, bool overwrite);
 
@@ -625,10 +660,14 @@ public:
     // in progress before this call.  Called automatically by ~OutputDumpWriter().
     void stop(bool* was_active_out = nullptr);
 
-    // Submit out_frames stereo s16le samples for recording.
+    // Submit out_frames stereo samples for recording, in the monitor's
+    // current output container width (int32_t -- see
+    // AudioMonitor::OUTPUT_BITS).  The WAV header written by start()
+    // describes this same format, so the file is
+    // self-describing end to end.
     // Called from the audio process thread under AudioMonitor::_fifo_mutex.
     // Non-blocking: drops and counts frames when the ring is full.
-    void submit_block(const int16_t* samples, int out_frames);
+    void submit_block(const int32_t* samples, int out_frames);
 
     // True while a dump is in progress.  Safe to call from any thread.
     bool is_active() const { return _active.load(std::memory_order_relaxed); }
@@ -639,19 +678,20 @@ public:
 private:
     void writer_thread_func();
 
-    // SPSC ring buffer: 2^18 stereo s16le samples ≈ 2.97 s at 44.1 kHz.
-    // submit_block() is the single producer; writer_thread_func() is the
-    // single consumer. See autostream_spsc_ring.h for the SPSC proof this
-    // relies on.
+    // SPSC ring buffer: 2^18 stereo int32 samples ≈ 2.73 s at 48 kHz (the
+    // ring holds 1 MiB; element COUNT mirrors _pcm_out/FifoWriter's payload
+    // width). submit_block() is the single producer; writer_thread_func() is
+    // the single consumer. See autostream_spsc_ring.h for the SPSC proof
+    // this relies on.
     static constexpr size_t DUMP_RING_SAMPLES = 1u << 18;   // 262144
 
-    SpscRing<int16_t>       _ring{DUMP_RING_SAMPLES};
+    SpscRing<int32_t>       _ring{DUMP_RING_SAMPLES};
 
     // Scratch buffer for writer_thread_func()'s drain: sized once here (never
     // grown on the writer thread) so read()-into-buffer-then-fwrite adds no
     // allocation. Holds at most one drain's worth of samples, which can be up
     // to the full ring.
-    std::vector<int16_t>    _read_scratch = std::vector<int16_t>(DUMP_RING_SAMPLES);
+    std::vector<int32_t>    _read_scratch = std::vector<int32_t>(DUMP_RING_SAMPLES);
 
     std::thread             _writer_thread;
     std::mutex              _cv_mutex;
@@ -1157,7 +1197,7 @@ private:
     // after it wakes (no concurrent writer while a session is active, since
     // RepeatController only calls request_start() from Hold/Idle).
     CodecChoice          _session_codec = CodecChoice::Unavailable;
-    int                  _session_rate_hz = 44100;
+    int                  _session_rate_hz = 48000;
     const RepeatBuffer*  _session_buffer = nullptr;
     int                  _session_origin_input = 0;
     int                  _session_silence_threshold_sample = 0;
@@ -1871,7 +1911,7 @@ public:
     {
         float gain_linear = 1.0f;
         std::shared_ptr<const std::vector<EqBand>> eq_bands;
-        float eq_sample_rate = 44100.0f;
+        float eq_sample_rate = 48000.0f;
     };
     void set_live_dsp_query(std::function<LiveDspParams(int)> query)
     {
@@ -2244,7 +2284,7 @@ public:
     void set_allow_capture(bool allow);
 
     // Replace the EQ band list for this input.
-    // Applied on the resampled output (44100 Hz) in the process thread.
+    // Applied on the resampled output (48000 Hz) in the process thread.
     // Safe to call while running.
     void set_eq(const std::vector<EqBand>& bands);
 
@@ -2274,9 +2314,23 @@ public:
     // RepeatController::notify_capture_started() at the start of a recording
     // session and held for the lifetime of that recording/replay, so replay
     // never needs to reach back into a possibly-stopped InputChannel.
+    //
+    // Deliberate boundary conversion: the live path's internal threshold
+    // is in the float domain (linear amplitude, 0.0..1.0 -- see
+    // _silence_threshold_sample / compute_peak_sample()'s comments), but
+    // ReplayEngine's own TrackGapDetector (autostream_repeat.cpp,
+    // replay_peak_sample()) stays entirely in the legacy int16-scale
+    // (0..32768) domain by design: replay stays int16 internally. This
+    // accessor is the single seam between the two
+    // domains -- it converts the internal linear threshold back to the
+    // legacy int16-equivalent scale here, once, so every consumer on the
+    // replay side keeps working against the same int scale it always has,
+    // unaware that the live path's internal representation changed at all.
     int silence_threshold_sample() const
     {
-        return _silence_threshold_sample.load(std::memory_order_relaxed);
+        float linear = _silence_threshold_sample.load(std::memory_order_relaxed);
+        int   scaled = static_cast<int>(linear * 32768.0f);
+        return std::max(1, std::min(32767, scaled));
     }
 
     float track_change_silence_seconds() const
@@ -2380,17 +2434,21 @@ private:
 
     // Peak-level metering for the block just read by drain_capture_ring():
     // compute_peak_sample(), _current_peak_sample, the _poll_peak_sample CAS
-    // loop, and _session_raw_peak_sample. Returns the raw peak sample.
-    int update_metering(int frames_in);
+    // loop, and _session_raw_peak_sample. Returns the raw peak sample as a
+    // linear amplitude in [0.0, 1.0] -- see compute_peak_sample()'s comment
+    // (the float domain).
+    float update_metering(int frames_in);
 
     // Silence/activity state machine: updates _last_above_threshold_time and
     // derives is_above_threshold / should_capture (activity threshold x
     // _allow_capture gate, unchanged). Also returns the config snapshot
     // (silence_threshold_sample, track_change_silence_seconds) the caller and
     // handle_session_edges() need, read exactly once per iteration as today.
-    bool update_silence_state(int     peak_sample,
+    // peak_sample/silence_threshold_sample are linear amplitudes in
+    // [0.0, 1.0], not int16-scale sample counts -- see compute_peak_sample().
+    bool update_silence_state(float   peak_sample,
                                double  now,
-                               int&    silence_threshold_sample,
+                               float&  silence_threshold_sample,
                                bool&   is_above_threshold,
                                float&  track_change_silence_seconds);
 
@@ -2403,8 +2461,8 @@ private:
     // change how often it fires whenever a block spans more than one
     // src_process() call.
     void handle_session_edges(bool   should_capture,
-                               int    peak_sample,
-                               int    silence_threshold_sample,
+                               float  peak_sample,
+                               float  silence_threshold_sample,
                                double now,
                                float  track_change_silence_seconds);
 
@@ -2414,11 +2472,11 @@ private:
     // apply_output_chain(), and deliver_output() in that order -- identical
     // to today's single nested block. Only called when _capturing and
     // _src_state are both set, exactly as today.
-    void resample_block(int frames_in, int peak_sample, int silence_threshold_sample);
+    void resample_block(int frames_in, float peak_sample, float silence_threshold_sample);
 
     // Post-SRC, pre-gain, pre-EQ taps for one produced chunk: the shared
     // IdTapResampler snapshot ring and the RepeatController recorder tap.
-    void tap_for_id_and_repeat(int out_frames, int peak_sample, int silence_threshold_sample);
+    void tap_for_id_and_repeat(int out_frames, float peak_sample, float silence_threshold_sample);
 
     // Per-input gain/fade-in ramp and EQ for one produced chunk (lock-free;
     // runs before the _fifo_mutex section in deliver_output()).
@@ -2434,14 +2492,23 @@ private:
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    // Returns the peak absolute sample value (0..32768) across all channels.
-    // Note: INT16_MIN (-32768) negated as int yields 32768, so the range
-    // is 0..32768, not 0..32767.
-    // Pure integer arithmetic -- no float.  The dBFS conversion is deferred to
-    // get_status() so that log10 stays off the hot path.
-    int compute_peak_sample(const int16_t* samples,
-                             int            n_frames,
-                             int            n_channels) const;
+    // Returns the peak absolute sample value across all channels as a linear
+    // amplitude in [0.0, 1.0].
+    // The float domain: rather than re-parameterising the old int16-scale
+    // peak (0..32768) for a bit depth
+    // that can now be 16 or 32 depending on what AlsaCapture negotiated, this
+    // normalises against the full 32-bit container scale unconditionally --
+    // eliminating the 32767/32768 constants entirely instead of replacing
+    // them with a second bit-depth-dependent constant. samples must already
+    // be in the monitor's common 32-bit internal representation (the same
+    // scale AlsaCapture::read() widens 16-bit captures to), so this is
+    // correct regardless of which format the hardware actually negotiated.
+    // Integer accumulation (int64_t, to avoid INT32_MIN overflow on abs()),
+    // one float divide at the end -- the dBFS conversion itself is still
+    // deferred to get_status() so log10 stays off the hot path.
+    float compute_peak_sample(const int32_t* samples,
+                               int            n_frames,
+                               int            n_channels) const;
 
     // ── Identity ─────────────────────────────────────────────────────────────
     int         _index;
@@ -2469,15 +2536,20 @@ private:
     mutable std::mutex _config_mutex;
     InputConfig        _config;
     bool               _config_valid            = false;
-    std::atomic<int>   _silence_threshold_sample{0};  // pre-computed from config.silence_threshold_dbfs
+    // Float domain: linear amplitude threshold in [0.0, 1.0],
+    // pre-computed from config.silence_threshold_dbfs. See
+    // compute_peak_sample()'s comment and the silence_threshold_sample()
+    // accessor above for the deliberate boundary conversion back to the
+    // legacy int16 scale for replay's own domain.
+    std::atomic<float> _silence_threshold_sample{0.0f};
 
     // ── ALSA capture ─────────────────────────────────────────────────────────
     AlsaCapture _alsa;
 
     // ── libsamplerate state (created in start(), freed in stop()) ────────────
-    SRC_STATE*    _src_state    = nullptr;  // main stereo SRC (ALSA rate → 44100 Hz)
+    SRC_STATE*    _src_state    = nullptr;  // main stereo SRC (ALSA rate → 48000 Hz)
 
-    // ID-tap resampler (44100 Hz mono → 16000 Hz, SRC_SINC_FASTEST).
+    // ID-tap resampler (48000 Hz mono → 16000 Hz, SRC_SINC_FASTEST).
     // Constructed in start(), destroyed (reset to nullptr) in stop(),
     // exactly the same lifetime _id_src_state had.
     std::unique_ptr<IdTapResampler> _id_tap;
@@ -2486,12 +2558,14 @@ private:
     RateEstimator _rate_estimator;
 
     // ── SPSC ring buffer between capture thread and process thread ────────────
-    // Stores interleaved stereo int16 samples. At 48000 Hz stereo, this holds
-    // approximately 2.7 seconds of audio. See autostream_spsc_ring.h for the
-    // SPSC proof this relies on.
+    // Stores interleaved stereo samples in the monitor's common 32-bit
+    // internal representation (widened from int16_t -- element COUNT is
+    // unchanged, so this ring holds 1 MiB instead of 512 KiB). At 48000 Hz
+    // stereo, this holds approximately 2.7 seconds of audio. See
+    // autostream_spsc_ring.h for the SPSC proof this relies on.
     static constexpr size_t RING_BUF_SAMPLES = 1u << 18;  // 262144
 
-    SpscRing<int16_t> _ring_buf{RING_BUF_SAMPLES};
+    SpscRing<int32_t> _ring_buf{RING_BUF_SAMPLES};
 
     // Condition variable used by the process thread to sleep until data is
     // available without busy-waiting.  The capture thread calls notify_one()
@@ -2522,14 +2596,15 @@ private:
 
     // ── FIFO pre-fill buffer (process thread only) ────────────────────────────
     // At the start of each capture session, PREFILL_DURATION_FRAMES of
-    // post-gain/EQ/ramp int16 samples are accumulated here before any data is
+    // post-gain/EQ/ramp samples (in the monitor's output container width --
+    // int32_t) are accumulated here before any data is
     // written to the FIFO.  Once the threshold is reached the buffer is flushed
     // in a single write (giving OwnTone a full pipe buffer to start from) and
     // subsequent blocks are written directly.
     // _prefill_frames_remaining counts down from PREFILL_DURATION_FRAMES to 0;
     // while it is > 0 we are in the accumulation phase.
     int                  _prefill_frames_remaining{0};
-    std::vector<int16_t> _prefill_buf;
+    std::vector<int32_t> _prefill_buf;
 
     // ── process_thread_func() constants and scratch buffers ──────────────────
     // Formerly local to process_thread_func(): a std::vector(size) local is
@@ -2542,10 +2617,12 @@ private:
     static constexpr int      MAX_SRC_OUTPUT = 4096;   // maximum output frames from libsamplerate
     static constexpr unsigned MIN_SAMPLES    = 512;    // minimum samples to accumulate before processing
 
-    std::vector<int16_t> _pcm_in;    // interleaved int16, sized MAX_FRAMES*2
+    // _pcm_in/_pcm_out are int32_t (the monitor's common 32-bit internal
+    // representation / OUTPUT_BITS container).
+    std::vector<int32_t> _pcm_in;    // interleaved int32, sized MAX_FRAMES*2
     std::vector<float>   _float_in;  // interleaved float, sized MAX_FRAMES*2
     std::vector<float>   _float_out; // post-SRC float, sized MAX_SRC_OUTPUT*2
-    std::vector<int16_t> _pcm_out;   // final int16, sized MAX_SRC_OUTPUT*2
+    std::vector<int32_t> _pcm_out;   // final int32, sized MAX_SRC_OUTPUT*2
 
     // Ramp/pre-fill DURATIONS (as opposed to _ramp_frames_remaining /
     // _prefill_frames_remaining above, which count down within a session).
@@ -2569,10 +2646,15 @@ private:
 
     // ── Level metering ────────────────────────────────────────────────────────
     // Written by the process thread every block; read by get_status().
-    // Stored as integer / linear float so the process thread never calls log10.
-    std::atomic<int>   _current_peak_sample{0};        // current-block raw peak (0..32768)
-    mutable std::atomic<int> _poll_peak_sample{0};    // max raw peak since last get_status() call; mutable so exchange(0) is callable from const get_status()
-    std::atomic<int>   _session_raw_peak_sample{0};     // session max raw peak
+    // The float domain (linear amplitude, 0.0..1.0) rather than
+    // re-parameterising the old int16-scale (0..32768) peak for 32-bit
+    // samples -- see compute_peak_sample()'s comment for the full trace of
+    // why this is the eliminate-the-32767-constant option rather than a
+    // bit-depth-aware rescale. Stored as linear float so the process thread
+    // never calls log10 -- that conversion still happens only in get_status().
+    std::atomic<float> _current_peak_sample{0.0f};        // current-block raw peak, linear (0..1)
+    mutable std::atomic<float> _poll_peak_sample{0.0f};    // max raw peak since last get_status() call, linear (0..1); mutable so exchange(0) is callable from const get_status()
+    std::atomic<float> _session_raw_peak_sample{0.0f};     // session max raw peak, linear (0..1)
     std::atomic<float> _session_effective_peak_linear{0.0f}; // session max effective peak (linear, >=0)
 
     // ── Stereo VU history (100 ms bins, post-output-processing tap) ───────────
@@ -2630,14 +2712,14 @@ private:
     // A separate rolling buffer that accumulates mono s16le audio at 16000 Hz
     // for Shazam-based track identification via the Vibra daemon.
     //
-    // Tap point: post-main-SRC (44100 Hz stereo float), pre-gain/pre-EQ.
+    // Tap point: post-main-SRC (48000 Hz stereo float), pre-gain/pre-EQ.
     //   - Post-SRC: uses a stable, device-independent rate.
     //   - Pre-gain/pre-EQ: captures uncolored audio; user gain and EQ reflect
     //     personal preference and would skew frequency-domain fingerprints.
     //   - Gated by _capturing: fills only during active audio sessions.
     //
     // Downsampling: _id_tap (IdTapResampler, autostream_id_tap.h) downmixes
-    // and converts the 44100 Hz stereo float signal to 16000 Hz mono using
+    // and converts the 48000 Hz stereo float signal to 16000 Hz mono using
     // SRC_SINC_FASTEST, giving the tap an anti-aliasing filter (the prior
     // SRC_LINEAR converter had none, so content above 8 kHz folded back into
     // the fingerprint signal).
@@ -2744,6 +2826,27 @@ public:
 
     static constexpr int output_rate_hz() { return OUTPUT_RATE; }
 
+    // Bits per sample / channel count for the output pipe wire format.
+    // Public for the same reason as output_rate_hz()/output_bytes_per_frame()
+    // above: OutputDumpWriter's WAV header builder and both FIFO
+    // writers need these without becoming AudioMonitor members.
+    static constexpr int output_bits_per_sample() { return OUTPUT_BITS; }
+    static constexpr int output_channels() { return OUTPUT_CHANNELS; }
+
+    // Bytes per interleaved output frame (all channels), derived from the
+    // OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS descriptor. Public (unlike the
+    // descriptor constants themselves) so both FIFO writers -- the live
+    // path's FifoWriter (InputChannel, this file) and the replay path's
+    // ReplayEngine (autostream_repeat.cpp), neither of which is a member of
+    // AudioMonitor -- share this single source of truth for the wire
+    // format's byte width, instead of hand-rolling
+    // "* 2 * sizeof(int16_t)"-style literals that silently go stale if
+    // OUTPUT_BITS changes.
+    static constexpr int output_bytes_per_frame()
+    {
+        return OUTPUT_CHANNELS * (OUTPUT_BITS / 8);
+    }
+
     // Test-only: true when the daemon was launched with --test-hooks.
     bool test_hooks_enabled() const { return _test_hooks_enabled; }
 
@@ -2849,7 +2952,25 @@ private:
     bool stop_input_with_teardown(int i);
 
     static constexpr int NUM_INPUTS  = 2;
-    static constexpr int OUTPUT_RATE = 44100;
+
+    // Output pipe format descriptor. This is the compile-time source of
+    // truth for the FIFO wire format written by both FifoWriter (live path)
+    // and ReplayEngine (replay path, see autostream_repeat.cpp). Reported at
+    // runtime via api_get_status() so the Python layer reads it instead of
+    // assuming it.
+    //
+    // OUTPUT_RATE is 48000 and OUTPUT_BITS is 32; the two are independently
+    // revertable descriptor fields. output_bytes_per_frame() itself lives in
+    // the public section above (next to output_rate_hz()) so both live-path
+    // (FifoWriter) and
+    // replay-path (ReplayEngine, autostream_repeat.cpp) FIFO writers, which
+    // are not members of AudioMonitor, can call it as the one shared source
+    // of truth instead of hand-rolling "* 2 * sizeof(int16_t)"-style
+    // literals -- being a member function, it still has access to these
+    // private constants regardless of declaration order within the class.
+    static constexpr int OUTPUT_RATE     = 48000;
+    static constexpr int OUTPUT_BITS     = 32;
+    static constexpr int OUTPUT_CHANNELS = 2;
 
     // Back-off interval (seconds) before retrying a failed auto-restart.
     static constexpr double RESTART_BACKOFF_SECONDS = 5.0;

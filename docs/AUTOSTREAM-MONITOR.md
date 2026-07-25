@@ -18,7 +18,7 @@ It is responsible for:
 - estimating real input sample rate and correcting drift with libsamplerate
 - applying per-input EQ and gain
 - applying shared output EQ
-- writing a 44.1 kHz stereo PCM stream to a named FIFO for the playback backend
+- writing a 48 kHz stereo PCM stream to a named FIFO for the playback backend
 - exposing a local control API over a Unix domain socket
 - serving short mono audio snapshots for identification/fingerprinting
 
@@ -399,7 +399,7 @@ Request:
 Behavior:
 
 - applied after sample-rate conversion
-- applied at the fixed output rate of 44.1 kHz
+- applied at the fixed output rate of 48 kHz
 - affects only the selected input
 
 Success response:
@@ -836,6 +836,9 @@ Success response:
   "type":"status",
   "monitor_build":"0.2.0",
   "log_level":"warning",
+  "output_rate":48000,
+  "output_bits":32,
+  "output_channels":2,
   "output_clip_dbfs":0.0,
   "output_gain_db":0.0,
   "output_auto_trim_enabled":true,
@@ -904,6 +907,16 @@ Top-level fields:
     rebuild or redeploy failed
 - `log_level`
   - current runtime log level
+- `output_rate` / `output_bits` / `output_channels`
+  - the wire format of the PCM stream written to the FIFO, compiled into the
+    monitor binary (`AudioMonitor::OUTPUT_RATE` / `OUTPUT_BITS` /
+    `OUTPUT_CHANNELS`) and reported here at runtime rather than assumed by
+    the Python layer
+  - same format for both FIFO writers (the live `FifoWriter` path and the
+    `ReplayEngine` replay path) -- they share one compile-time source of
+    truth
+  - `48000` / `32` / `2`; samples are a 32-bit left-justified container -- an
+    s16 source occupies the top 16 bits
 - `output_clip_dbfs`
   - maximum post-EQ, post-gain overshoot above 0 dBFS since the previous
     `get_status` call
@@ -1064,7 +1077,7 @@ Behavior:
 - values higher than `20` are clamped to `20`
 - audio format is mono `s16le` at `16000 Hz`
 - the snapshot is taken from a rolling ID buffer populated via a dedicated
-  `libsamplerate` (SRC_LINEAR) conversion from 44100 Hz to 16000 Hz, before
+  `libsamplerate` (SRC_LINEAR) conversion from 48000 Hz to 16000 Hz, before
   gain and EQ
 
 Success response:
@@ -1092,7 +1105,7 @@ Typical errors:
 For an input that is actively feeding the FIFO, the signal path is:
 
 1. ALSA capture
-2. sample-rate conversion to `44100 Hz` stereo
+2. sample-rate conversion to `48000 Hz` stereo
 3. identification snapshot tap
 4. per-input gain
 5. per-input EQ
@@ -1136,7 +1149,7 @@ This ordering matters:
 
 Requires `--test-hooks`; rejected at startup otherwise. Pins the SRC ratio to
 the nominal value published at capture start (exactly 1.0 on a loopback whose
-capture rate equals the 44100 Hz output rate), disabling rate-drift
+capture rate equals the 48000 Hz output rate), disabling rate-drift
 correction entirely. This makes the whole audio pipeline a pure function of
 the input samples, which golden-reference byte-compare testing depends on —
 without it, the `RateEstimator`'s timing-adaptive ratio makes output

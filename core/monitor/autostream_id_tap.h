@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 //
-// IdTapResampler: the mono downmix + 44100 Hz -> 16000 Hz resample + clamp
+// IdTapResampler: the mono downmix + 48000 Hz -> 16000 Hz resample + clamp
 // shared by the two track-ID taps (live capture, InputChannel::
 // process_thread_func() in autostream_monitor_io.cpp; replay,
 // ReplayEngine::init_session()/process_slice() -- called from
@@ -52,7 +52,7 @@
 class IdTapResampler
 {
 public:
-    // input_rate_hz / output_rate_hz: e.g. 44100 -> 16000. max_block_frames
+    // input_rate_hz / output_rate_hz: e.g. 48000 -> 16000. max_block_frames
     // must be >= the largest `frames` ever passed to process() (the live
     // path's MAX_SRC_OUTPUT, the replay path's kSliceFrames -- both 4096
     // today); output scratch is sized generously at max_block_frames + 16 to

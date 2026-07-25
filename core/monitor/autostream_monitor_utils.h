@@ -9,9 +9,59 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+
+
+// =============================================================================
+// Audio format math
+//
+// Pure, header/format-agnostic helpers extracted so they can be exercised by
+// tests that link only autostream_monitor_utils.cpp (no ALSA/libsamplerate,
+// no AudioMonitor instance). Kept behaviourally identical to the code they
+// were extracted from -- see the .cpp for provenance notes.
+// =============================================================================
+
+// Convert a dBFS threshold to the equivalent linear amplitude threshold, in
+// [0.0, 1.0]. 0 dBFS and above clamp to 1.0; the result is floored at
+// 1/32768 (the smallest representable step for a 16-bit source) so a very
+// negative dBFS threshold never collapses to a threshold of exactly 0.0.
+float dbfs_to_linear_threshold(float dbfs);
+
+// Convert a linear float peak amplitude (expected range [0.0, 1.0], but not
+// clamped on input) to dBFS. Silence (<= 0.0) maps to -90.0 dBFS, which is
+// also the floor applied to any quieter-than-that positive result.
+float linear_to_dbfs(float peak_linear);
+
+// Build a standard 44-byte canonical PCM WAV header (RIFF/WAVE, one "fmt "
+// sub-chunk of 16 bytes, audio_format = 1 i.e. WAVE_FORMAT_PCM) for the
+// given format. data_bytes is the size of the eventual "data" sub-chunk;
+// pass 0 for a placeholder header whose size fields get patched later (the
+// RIFF and data chunk-size fields are the only ones that depend on
+// data_bytes -- every other field is a pure function of rate/bits/channels).
+//
+// byte_rate and block_align are derived from bits/channels, never hardcoded,
+// so the header can never drift from the actual wire format it describes.
+std::array<std::uint8_t, 44> build_wav_header(int rate,
+                                               int bits,
+                                               int channels,
+                                               std::uint32_t data_bytes = 0);
+
+// The monitor's S16 -> S32 widening convention: left-justify the 16-bit
+// sample into the top of a 32-bit word by shifting
+// left 16 bits. This places an S16_LE fallback capture's samples at the
+// same full-scale dynamic range a native S32_LE capture already occupies,
+// so downstream DSP (which only ever sees the widened int32 stream) cannot
+// tell the two capture paths apart. Used by AlsaCapture::read()'s S16
+// fallback loop (autostream_monitor_io.cpp); extracted here as a pure,
+// header-inline function purely so the convention itself is unit-testable
+// without an ALSA device.
+inline constexpr std::int32_t widen_s16_to_s32(std::int16_t sample)
+{
+    return static_cast<std::int32_t>(sample) << 16;
+}
 
 
 // =============================================================================

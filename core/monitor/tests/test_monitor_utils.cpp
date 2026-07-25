@@ -15,11 +15,14 @@
 
 #include "autostream_monitor_utils.h"
 
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -215,6 +218,116 @@ static void pipe_drain_loop(int read_fd, std::atomic<bool>* stop_flag)
                 break;  // pipe closed or genuine error
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// build_wav_header replaces OutputDumpWriter's old
+// hardcoded 44.1 kHz/16-bit WAV_PLACEHOLDER_HEADER byte array with a header
+// derived from the monitor's actual output format descriptor.
+// ---------------------------------------------------------------------------
+
+static std::uint32_t read_u32(const std::array<std::uint8_t, 44>& h, std::size_t off)
+{
+    return static_cast<std::uint32_t>(h[off])
+         | (static_cast<std::uint32_t>(h[off + 1]) << 8)
+         | (static_cast<std::uint32_t>(h[off + 2]) << 16)
+         | (static_cast<std::uint32_t>(h[off + 3]) << 24);
+}
+
+static std::uint16_t read_u16(const std::array<std::uint8_t, 44>& h, std::size_t off)
+{
+    return static_cast<std::uint16_t>(h[off] | (h[off + 1] << 8));
+}
+
+static void test_build_wav_header_fields_at_48k_32bit_stereo()
+{
+    // The monitor's current compile-time output format (AudioMonitor::
+    // OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS).
+    auto h = build_wav_header(48000, 32, 2, /*data_bytes=*/0);
+
+    CHECK(h.size() == 44, "header is exactly 44 bytes (canonical PCM WAV)");
+    CHECK(std::memcmp(&h[0], "RIFF", 4) == 0, "RIFF magic");
+    CHECK(std::memcmp(&h[8], "WAVE", 4) == 0, "WAVE magic");
+    CHECK(std::memcmp(&h[12], "fmt ", 4) == 0, "fmt chunk id");
+    CHECK(read_u32(h, 16) == 16, "fmt sub-chunk size is 16 (canonical PCM)");
+    CHECK(read_u16(h, 20) == 1, "audio_format is 1 (WAVE_FORMAT_PCM)");
+    CHECK(read_u16(h, 22) == 2, "channels is 2");
+    CHECK(read_u32(h, 24) == 48000, "sample_rate is 48000");
+    CHECK(read_u32(h, 28) == 48000u * 2u * 4u, "byte_rate is rate*channels*(bits/8) = 384000");
+    CHECK(read_u16(h, 32) == 2 * 4, "block_align is channels*(bits/8) = 8");
+    CHECK(read_u16(h, 34) == 32, "bits_per_sample is 32");
+    CHECK(std::memcmp(&h[36], "data", 4) == 0, "data chunk id");
+    CHECK(read_u32(h, 4) == 36, "placeholder RIFF chunk size is 36 + 0 data bytes");
+    CHECK(read_u32(h, 40) == 0, "placeholder data chunk size is 0");
+}
+
+static void test_build_wav_header_size_fields_reflect_data_bytes()
+{
+    auto h = build_wav_header(48000, 32, 2, /*data_bytes=*/1000);
+    CHECK(read_u32(h, 4) == 1036, "RIFF chunk size is 36 + data_bytes");
+    CHECK(read_u32(h, 40) == 1000, "data chunk size is data_bytes");
+}
+
+static void test_build_wav_header_legacy_44100_16bit_stereo_unchanged()
+{
+    // Sanity: the generalised builder reproduces the exact byte values the
+    // old hardcoded WAV_PLACEHOLDER_HEADER array used for the legacy
+    // 44100 Hz / 16-bit / stereo format, so the header math itself is
+    // trustworthy independent of which format the monitor currently ships.
+    auto h = build_wav_header(44100, 16, 2, /*data_bytes=*/0);
+    CHECK(read_u32(h, 24) == 44100u, "legacy sample_rate 44100");
+    CHECK(read_u32(h, 28) == 176400u, "legacy byte_rate 176400 (44100*2*2)");
+    CHECK(read_u16(h, 32) == 4, "legacy block_align 4");
+    CHECK(read_u16(h, 34) == 16, "legacy bits_per_sample 16");
+}
+
+// ---------------------------------------------------------------------------
+// dbfs_to_linear_threshold / linear_to_dbfs: float-domain dBFS<->linear
+// round-trip.
+// ---------------------------------------------------------------------------
+
+static void test_dbfs_linear_round_trip_across_range()
+{
+    // 0 dBFS and above clamp to full scale (1.0).
+    CHECK(dbfs_to_linear_threshold(0.0f) == 1.0f, "0 dBFS clamps to 1.0 linear");
+    CHECK(dbfs_to_linear_threshold(6.0f) == 1.0f, "positive dBFS clamps to 1.0 linear");
+
+    // Round-trip at a handful of representative points across the range.
+    float dbfs_points[] = { -1.0f, -6.0f, -20.0f, -40.0f, -60.0f, -80.0f };
+    for (float dbfs : dbfs_points)
+    {
+        float linear = dbfs_to_linear_threshold(dbfs);
+        CHECK(linear > 0.0f && linear <= 1.0f, "linear threshold stays in (0, 1]");
+
+        float round_tripped = linear_to_dbfs(linear);
+        CHECK(std::fabs(round_tripped - dbfs) < 0.05f,
+              "linear_to_dbfs(dbfs_to_linear_threshold(x)) recovers x within 0.05 dB");
+    }
+
+    // Floor behaviour: very negative dBFS never collapses to exactly 0.0
+    // linear (would make silence and the loudest possible sample compare
+    // equal), and floors at 1/32768.
+    float floor_linear = dbfs_to_linear_threshold(-200.0f);
+    CHECK(floor_linear == 1.0f / 32768.0f, "extremely negative dBFS floors at 1/32768");
+
+    // Silence and non-finite/negative peaks floor at -90 dBFS.
+    CHECK(linear_to_dbfs(0.0f) == -90.0f, "zero peak maps to -90 dBFS floor");
+    CHECK(linear_to_dbfs(-1.0f) == -90.0f, "negative peak maps to -90 dBFS floor");
+}
+
+// ---------------------------------------------------------------------------
+// widen_s16_to_s32: the S16 -> S32 left-shift widening convention used by
+// AlsaCapture::read()'s S16 fallback path.
+// ---------------------------------------------------------------------------
+
+static void test_widen_s16_to_s32_left_justifies()
+{
+    CHECK(widen_s16_to_s32(0) == 0, "zero widens to zero");
+    CHECK(widen_s16_to_s32(1) == (1 << 16), "smallest positive step lands at bit 16");
+    CHECK(widen_s16_to_s32(-1) == (-1 << 16), "smallest negative step lands at bit 16");
+    CHECK(widen_s16_to_s32(32767) == (32767 << 16), "int16 max widens by <<16");
+    CHECK(widen_s16_to_s32(-32768) == (static_cast<std::int32_t>(-32768) << 16),
+          "int16 min widens by <<16");
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +575,18 @@ int main()
     test_protocol_log_level_name();
     test_get_monotonic_time();
     test_logger_set_get_level();
+
+    // build_wav_header
+    test_build_wav_header_fields_at_48k_32bit_stereo();
+    test_build_wav_header_size_fields_reflect_data_bytes();
+    test_build_wav_header_legacy_44100_16bit_stereo_unchanged();
+
+    // dbfs_to_linear_threshold / linear_to_dbfs
+    test_dbfs_linear_round_trip_across_range();
+
+    // widen_s16_to_s32
+    test_widen_s16_to_s32_left_justifies();
+
     test_logger_ordering_and_format();
     test_logger_drop_counting();
     test_logger_stall_does_not_block_producer();

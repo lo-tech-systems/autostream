@@ -9,12 +9,15 @@
 
 #include "autostream_monitor_utils.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <sstream>
@@ -22,6 +25,82 @@
 #include <thread>
 #include <vector>
 #include <time.h>
+
+
+// =============================================================================
+// Audio format math
+//
+// dbfs_to_linear_threshold()/linear_to_dbfs(): the float-domain level/peak
+// conversion that replaced the old 32767/32768 int16-scale constants. They
+// live here rather than in autostream_monitor_io.cpp so the dBFS<->linear
+// math is reachable from a test binary that links only this translation
+// unit (no ALSA/libsamplerate).
+// =============================================================================
+
+float dbfs_to_linear_threshold(float dbfs)
+{
+    if (dbfs >= 0.0f)
+        return 1.0f;
+    float linear = std::pow(10.0f, dbfs / 20.0f);
+    return std::max(1.0f / 32768.0f, std::min(1.0f, linear));
+}
+
+float linear_to_dbfs(float peak_linear)
+{
+    if (peak_linear <= 0.0f)
+        return -90.0f;
+    return std::max(-90.0f, 20.0f * std::log10(peak_linear));
+}
+
+// Replaces OutputDumpWriter's hardcoded 44.1 kHz/16-bit WAV_PLACEHOLDER_HEADER
+// byte array (autostream_monitor_io.cpp)
+// with a header derived from the monitor's actual output format descriptor
+// (AudioMonitor::OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS). Pure function of
+// its arguments so it can be unit-tested without any monitor/ALSA state.
+std::array<std::uint8_t, 44> build_wav_header(int rate,
+                                               int bits,
+                                               int channels,
+                                               std::uint32_t data_bytes)
+{
+    std::array<std::uint8_t, 44> header{};
+
+    const std::uint32_t block_align = static_cast<std::uint32_t>(channels)
+                                     * static_cast<std::uint32_t>(bits / 8);
+    const std::uint32_t byte_rate   = static_cast<std::uint32_t>(rate) * block_align;
+
+    const std::uint32_t riff_size = 36u + data_bytes;  // 36 = 44-byte header minus 8 for "RIFF"+size
+
+    auto put_u32 = [&header](std::size_t offset, std::uint32_t val)
+    {
+        header[offset + 0] = static_cast<std::uint8_t>(val);
+        header[offset + 1] = static_cast<std::uint8_t>(val >> 8);
+        header[offset + 2] = static_cast<std::uint8_t>(val >> 16);
+        header[offset + 3] = static_cast<std::uint8_t>(val >> 24);
+    };
+    auto put_u16 = [&header](std::size_t offset, std::uint16_t val)
+    {
+        header[offset + 0] = static_cast<std::uint8_t>(val);
+        header[offset + 1] = static_cast<std::uint8_t>(val >> 8);
+    };
+
+    std::memcpy(&header[0], "RIFF", 4);
+    put_u32(4, riff_size);
+    std::memcpy(&header[8], "WAVE", 4);
+
+    std::memcpy(&header[12], "fmt ", 4);
+    put_u32(16, 16);                                          // fmt sub-chunk size
+    put_u16(20, 1);                                            // audio_format = PCM
+    put_u16(22, static_cast<std::uint16_t>(channels));
+    put_u32(24, static_cast<std::uint32_t>(rate));
+    put_u32(28, byte_rate);
+    put_u16(32, static_cast<std::uint16_t>(block_align));
+    put_u16(34, static_cast<std::uint16_t>(bits));
+
+    std::memcpy(&header[36], "data", 4);
+    put_u32(40, data_bytes);
+
+    return header;
+}
 
 
 // =============================================================================

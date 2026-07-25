@@ -3,16 +3,17 @@
 
 Stands in for OwnTone's pipe reader during daemon integration tests.
 Opens a FIFO for reading, drains it at a
-fixed real-time pace (default: 44100 Hz stereo s16le -> 176400 B/s, matching
-the monitor's OUTPUT_RATE), and logs occupancy (via FIONREAD) plus running
-byte counts to stdout as newline-delimited JSON, one line per poll interval.
+fixed real-time pace (default: 48000 Hz stereo 32-bit -> 384000 B/s, matching
+the monitor's OUTPUT_RATE/OUTPUT_BITS), and logs occupancy (via FIONREAD)
+plus running byte counts to stdout as newline-delimited JSON, one line per
+poll interval.
 
 This is a dev-only tool -- not installed, not referenced by the production
 daemon or installer.
 
 Usage:
     python3 fifo_reader_stub.py --path /run/user/1000/repeat_test.fifo \
-        [--rate 176400] [--duration 60] [--log-interval 0.5]
+        [--rate 384000] [--duration 60] [--log-interval 0.5]
 
 SILENCE RULE reminder: this tool
 reads a *test* FIFO created for a standalone test daemon instance -- never the
@@ -40,8 +41,9 @@ def fionread(fd: int) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--path", required=True, help="FIFO path to read")
-    ap.add_argument("--rate-bytes-per-sec", type=int, default=176400,
-                     help="Pace to drain at, in bytes/sec (default: 44.1kHz stereo s16le)")
+    ap.add_argument("--rate-bytes-per-sec", type=int, default=384000,
+                     help="Pace to drain at, in bytes/sec (default: 48kHz stereo 32-bit, "
+                          "the monitor's wire format since the 48k/32-bit IPC flip)")
     ap.add_argument("--duration", type=float, default=0.0,
                      help="Stop after this many seconds (0 = run until Ctrl-C)")
     ap.add_argument("--log-interval", type=float, default=0.5,
@@ -49,7 +51,7 @@ def main() -> int:
     ap.add_argument("--chunk-ms", type=float, default=20.0,
                      help="Read chunk size in milliseconds of audio at rate-bytes-per-sec")
     ap.add_argument("--dump-path", default=None,
-                     help="Also write every byte read to this raw s16le file "
+                     help="Also write every byte read to this raw PCM file "
                           "(truncated at start), for offline envelope/interleave analysis "
                           "of the live-interrupt crossfade (repeat_test_driver.py scenario_d4). "
                           "Omit for scenarios that only need the existing occupancy telemetry.")

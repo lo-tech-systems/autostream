@@ -270,8 +270,10 @@ void OutputProcessor::apply(float* samples, int n_frames)
 
     // ── Clip scan: always runs (reflects the true final level after gain) ─────
     // Scan the post-EQ, post-gain float data for the maximum absolute value.
-    // Values > 1.0 will be clamped to ±32767 by src_float_to_short_array(),
-    // so we measure the true overshoot here, in float, before the conversion.
+    // Values > 1.0 will be clamped to full-scale by the downstream
+    // float->int conversion (src_float_to_int_array on the live path,
+    // src_float_to_short_array on the replay path), so we measure the true
+    // overshoot here, in float, before either conversion.
     int   total_samples = n_frames * 2;   // interleaved stereo
     float peak          = 0.0f;
     for (int i = 0; i < total_samples; ++i)
@@ -379,13 +381,13 @@ OutputGainState OutputProcessor::get_gain_state() const
 
 RateEstimator::RateEstimator()
     : _input_rate(48000)
-    , _output_rate(44100)
+    , _output_rate(48000)
     , _smoothed_rate(48000.0)
     , _window_start_time(0.0)
     , _window_frame_count(0)
     , _initialised(false)
     , _adjustment_count(0)
-    , _published_ratio(44100.0 / 48000.0)
+    , _published_ratio(48000.0 / 48000.0)
     , _published_rate(48000.0)
 {
 }

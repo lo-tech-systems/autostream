@@ -145,12 +145,30 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
         goto fail;
     }
 
-    err = snd_pcm_hw_params_set_format(_pcm, hw_params, SND_PCM_FORMAT_S16_LE);
+    // Request S32_LE first (24-in-32 / full-32-bit-scale
+    // container -- see AudioMonitor::OUTPUT_BITS); many current USB ADCs are
+    // 16-bit-only, so fall back to S16_LE on rejection rather than failing
+    // open() outright. read() hides the distinction from callers by always
+    // widening S16 samples up to the same 32-bit scale a native S32 capture
+    // already uses.
+    err = snd_pcm_hw_params_set_format(_pcm, hw_params, SND_PCM_FORMAT_S32_LE);
     if (err < 0)
     {
-        LOG_WARN("[alsa] Cannot set S16_LE format for '%s': %s",
+        LOG_INFO("[alsa] S32_LE not supported for '%s' (%s); falling back to S16_LE",
                  hw_device.c_str(), snd_strerror(err));
-        goto fail;
+
+        err = snd_pcm_hw_params_set_format(_pcm, hw_params, SND_PCM_FORMAT_S16_LE);
+        if (err < 0)
+        {
+            LOG_WARN("[alsa] Cannot set S16_LE format for '%s': %s",
+                     hw_device.c_str(), snd_strerror(err));
+            goto fail;
+        }
+        _captured_s32 = false;
+    }
+    else
+    {
+        _captured_s32 = true;
     }
 
     err = snd_pcm_hw_params_set_channels(_pcm, hw_params,
@@ -161,6 +179,7 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
                  channels, hw_device.c_str(), snd_strerror(err));
         goto fail;
     }
+    _channels = channels;
 
     {
         unsigned int rate_max = AUTO_CAPTURE_RATE_MAX_HZ;
@@ -227,8 +246,9 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
         goto fail;
     }
 
-    LOG_INFO("[alsa] Opened '%s': selected=%d Hz, negotiated=%d Hz, %d ch, period=%d frames",
-             hw_device.c_str(), selected_rate_hz, _actual_rate, channels, _period_frames);
+    LOG_INFO("[alsa] Opened '%s': selected=%d Hz, negotiated=%d Hz, %d ch, %s, period=%d frames",
+             hw_device.c_str(), selected_rate_hz, _actual_rate, channels,
+             _captured_s32 ? "S32_LE" : "S16_LE (fallback)", _period_frames);
     return true;
 
 fail:
@@ -253,9 +273,10 @@ void AlsaCapture::close()
     }
     _period_frames = 0;
     _actual_rate   = 0;
+    _captured_s32  = false;
 }
 
-int AlsaCapture::read(int16_t* buf, int n_frames)
+int AlsaCapture::read(int32_t* buf, int n_frames)
 {
     // Hold _read_mutex for the duration of the check + snd_pcm_readi call.
     // This prevents close() from setting _pcm = nullptr between the guard
@@ -267,7 +288,45 @@ int AlsaCapture::read(int16_t* buf, int n_frames)
     if (!_pcm)
         return -1;
 
-    snd_pcm_sframes_t frames_read = snd_pcm_readi(_pcm, buf, n_frames);
+    snd_pcm_sframes_t frames_read;
+
+    if (_captured_s32)
+    {
+        // Hardware negotiated S32_LE: ALSA already presents samples at the
+        // full 32-bit dynamic range this monitor's internal representation
+        // uses, so read straight into the caller's
+        // buffer with no conversion.
+        frames_read = snd_pcm_readi(_pcm, buf, n_frames);
+    }
+    else
+    {
+        // Fallback path: hardware only supports S16_LE. Read into a
+        // pre-grown scratch buffer, then widen each sample up to the common
+        // 32-bit scale by left-shifting 16 bits (int16's full range placed
+        // at the top of the 32-bit word) -- the same "left-justify the
+        // significant bits" convention a native S32 capture already
+        // satisfies, so downstream DSP (which only ever sees the widened
+        // int32 stream) cannot tell the two apart.
+        //
+        // _s16_scratch.resize() only reallocates the first time it is
+        // called with a larger n_frames than seen before; period_frames()
+        // (and hence n_frames here) does not change during an open session,
+        // so this is not a steady-state allocation on the capture thread --
+        // the same tolerance InputChannel::capture_thread_func() already
+        // relies on for its own period buffer.
+        size_t needed = static_cast<size_t>(n_frames) * static_cast<size_t>(_channels);
+        if (_s16_scratch.size() < needed)
+            _s16_scratch.resize(needed);
+
+        frames_read = snd_pcm_readi(_pcm, _s16_scratch.data(), n_frames);
+
+        if (frames_read > 0)
+        {
+            size_t n = static_cast<size_t>(frames_read) * static_cast<size_t>(_channels);
+            for (size_t i = 0; i < n; ++i)
+                buf[i] = widen_s16_to_s32(_s16_scratch[i]);
+        }
+    }
 
     if (frames_read >= 0)
         return static_cast<int>(frames_read);
@@ -284,6 +343,12 @@ int AlsaCapture::read(int16_t* buf, int n_frames)
 
     LOG_WARN("[alsa] Unrecoverable read error: %s", snd_strerror(err));
     return -1;
+}
+
+bool AlsaCapture::captured_as_s32() const
+{
+    std::lock_guard<std::mutex> lock(_read_mutex);
+    return _captured_s32;
 }
 
 bool AlsaCapture::is_open() const
@@ -468,35 +533,20 @@ void FifoWriter::close()
 // OutputDumpWriter
 // =============================================================================
 
-// Placeholder WAV header written at start(); sizes patched to final values at stop().
-// Format: PCM 44100 Hz, 2 channels, signed 16-bit little-endian.
-// Header layout (44 bytes):
-//   Offset  0: "RIFF"
-//   Offset  4: RIFF chunk size = 36 + data_bytes  (patched at offset  4)
-//   Offset  8: "WAVE"
-//   Offset 12: "fmt " + 16 (sub-chunk size)
-//   Offset 20: audio_format=1, channels=2, sample_rate=44100
-//   Offset 28: byte_rate=176400, block_align=4, bits_per_sample=16
-//   Offset 36: "data"
-//   Offset 40: data chunk size = frames * 4        (patched at offset 40)
-static const uint8_t WAV_PLACEHOLDER_HEADER[44] = {
-    // RIFF chunk descriptor
-    'R','I','F','F',
-    0,0,0,0,           // RIFF chunk size — patched on stop
-    'W','A','V','E',
-    // "fmt " sub-chunk (16 bytes)
-    'f','m','t',' ',
-    16,0,0,0,          // sub-chunk size
-    1,0,               // audio format = PCM
-    2,0,               // channels = 2
-    0x44,0xAC,0,0,     // sample rate = 44100 (0x0000AC44)
-    0x10,0xB1,2,0,     // byte rate  = 176400 (0x0002B110)
-    4,0,               // block align = 4 bytes
-    16,0,              // bits per sample = 16
-    // "data" sub-chunk header
-    'd','a','t','a',
-    0,0,0,0            // data chunk size — patched on stop
-};
+// Placeholder WAV header written at start(); sizes patched to final values
+// at stop() (see patch_u32() there). Built from
+// AudioMonitor::OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS via the shared
+// build_wav_header() helper (autostream_monitor_utils.{h,cpp}) instead of a
+// hardcoded 44.1 kHz/16-bit byte array, so it can never drift from the
+// format the ring/submit_block()/writer thread above actually move.
+//
+// Container choice: WAVE_FORMAT_PCM with a 32-bit integer container (not
+// IEEE float, not a narrowing 32->16 down-convert). The samples reaching
+// submit_block() are already full-scale 32-bit integers (24-in-32, per
+// the monitor's capture/FIFO convention) by the time they get here, so a
+// 32-bit PCM container is a byte-for-byte tap of the exact wire format with
+// zero extra conversion work on the hot path -- matching the "widen the tap
+// to match _pcm_out exactly" choice already made for the ring itself.
 
 OutputDumpWriter::OutputDumpWriter()
 {
@@ -529,9 +579,15 @@ std::string OutputDumpWriter::start(const std::string& path, bool overwrite)
         return std::string("fdopen failed: ") + strerror(saved);
     }
 
-    // Write placeholder header; sizes will be patched in stop().
-    if (fwrite(WAV_PLACEHOLDER_HEADER, 1, sizeof(WAV_PLACEHOLDER_HEADER), f)
-            != sizeof(WAV_PLACEHOLDER_HEADER))
+    // Write placeholder header (data_bytes=0); sizes are patched in stop().
+    // bits is a hardcoded 32, NOT AudioMonitor::output_bits_per_sample()
+    // -- the dump is always a 32-bit container regardless of wire mode; see
+    // the class comment above.
+    std::array<uint8_t, 44> header = build_wav_header(
+        AudioMonitor::output_rate_hz(),
+        32,
+        AudioMonitor::output_channels());
+    if (fwrite(header.data(), 1, header.size(), f) != header.size())
     {
         fclose(f);
         return "failed to write WAV header";
@@ -580,7 +636,15 @@ void OutputDumpWriter::stop(bool* was_active_out)
     if (_file)
     {
         uint64_t frames       = _frames_written.load(std::memory_order_relaxed);
-        uint64_t data_bytes64 = frames * 4ull;  // stereo int16 = 4 bytes/frame
+        // frames * bytes/frame. Deliberately a FIXED 8 bytes/frame
+        // (AudioMonitor::output_channels() * sizeof(int32_t)), NOT
+        // AudioMonitor::output_bytes_per_frame() -- that descriptor varies
+        // with wire mode (4 in compatible) and would under-report this
+        // always-32-bit dump's data size by half. _frames_written itself
+        // already counts frames actually fwritten as int32 (see
+        // writer_thread_func()'s "written / 2u" below), so this stays a
+        // correct byte count in both output modes.
+        uint64_t data_bytes64 = frames * static_cast<uint64_t>(AudioMonitor::output_channels()) * sizeof(int32_t);
 
         // Clamp to uint32 max — the WAV data chunk is limited to ~4 GB
         // (~6.7 hours at 176400 bytes/s), which is far beyond engineering use.
@@ -619,7 +683,7 @@ void OutputDumpWriter::stop(bool* was_active_out)
     if (was_active_out) *was_active_out = true;
 }
 
-void OutputDumpWriter::submit_block(const int16_t* samples, int out_frames)
+void OutputDumpWriter::submit_block(const int32_t* samples, int out_frames)
 {
     if (!_active.load(std::memory_order_relaxed))
         return;
@@ -673,12 +737,14 @@ void OutputDumpWriter::writer_thread_func()
             _ring.read(_read_scratch.data(), avail);
 
             bool write_ok = true;
+            // sizeof(int32_t) -- see submit_block()'s comment on the
+            // dump ring's widened element type.
             size_t written = fwrite(_read_scratch.data(),
-                                    sizeof(int16_t), avail, _file);
+                                    sizeof(int32_t), avail, _file);
             if (written < avail)
                 write_ok = false;
 
-            // `written` is in int16 samples; stereo frames = samples / 2.
+            // `written` is in samples (int32); stereo frames = samples / 2.
             _frames_written.fetch_add(written / 2u, std::memory_order_relaxed);
 
             if (!write_ok)
@@ -715,35 +781,13 @@ OutputDumpWriter::Status OutputDumpWriter::get_status() const
 // InputChannel
 // =============================================================================
 
-// Convert a dBFS threshold to the equivalent integer sample amplitude (0..32767).
-// Computed once at configure() time so the hot path can use a plain integer compare.
-static int dbfs_to_sample_threshold(float dbfs)
-{
-    if (dbfs >= 0.0f)
-        return 32767;
-    float linear    = std::pow(10.0f, dbfs / 20.0f);
-    int   threshold = static_cast<int>(linear * 32768.0f);
-    return std::max(1, std::min(32767, threshold));
-}
-
-// Convert an integer sample amplitude back to dBFS for reporting.
-// Only called from get_status() (~10 times/second), not from the hot path.
-static float sample_to_dbfs(int peak)
-{
-    if (peak <= 0)
-        return -90.0f;
-    float ratio = static_cast<float>(peak) / 32768.0f;
-    return std::max(-90.0f, 20.0f * std::log10(ratio));
-}
-
-// Convert a linear float peak amplitude to dBFS.
-// Used for the effective peak, which lives in float domain after gain and EQ.
-static float linear_to_dbfs(float peak_linear)
-{
-    if (peak_linear <= 0.0f)
-        return -90.0f;
-    return std::max(-90.0f, 20.0f * std::log10(peak_linear));
-}
+// dbfs_to_linear_threshold()/linear_to_dbfs(): float-domain dBFS<->linear
+// conversions used throughout this file (silence threshold at configure()
+// time, and the level/peak dBFS fields in get_status()). Moved to
+// autostream_monitor_utils.{h,cpp} so they are linkable from a test binary
+// that doesn't pull in ALSA/libsamplerate; this is the float-domain version
+// that eliminated the old 32767/32768 int16-scale constants. See
+// autostream_monitor_utils.h for the declarations.
 
 InputChannel::InputChannel(int               index,
                            FifoWriter&       shared_fifo,
@@ -785,7 +829,7 @@ bool InputChannel::configure(const InputConfig& cfg)
 
     _config                   = cfg;
     _config_valid             = true;
-    _silence_threshold_sample.store(dbfs_to_sample_threshold(cfg.silence_threshold_dbfs),
+    _silence_threshold_sample.store(dbfs_to_linear_threshold(cfg.silence_threshold_dbfs),
                                     std::memory_order_relaxed);
     LOG_INFO("[input%d] Configured device='%s', silence_threshold=%.1f dBFS, silence_seconds=%d",
              _index, cfg.alsa_device.c_str(), cfg.silence_threshold_dbfs, cfg.silence_seconds);
@@ -858,7 +902,7 @@ bool InputChannel::start(std::string* error_out)
         return false;
     }
 
-    // Create the 44100 → 16000 Hz ID-tap resampler (shared, filtered
+    // Create the 48000 → 16000 Hz ID-tap resampler (shared, filtered
     // SRC_SINC_FASTEST helper -- see autostream_id_tap.h). MAX_SRC_OUTPUT
     // (process_thread_func()'s local constant, 4096) is the largest block
     // the process thread will ever hand it, so that is what pre-sizes its
@@ -1044,32 +1088,43 @@ InputChannelStatus InputChannel::get_status() const
         std::lock_guard<std::mutex> lock(_status_mutex);
         s = _status;
     }
-    s.level_dbfs             = sample_to_dbfs(_current_peak_sample.load(std::memory_order_relaxed));
-    s.poll_peak_dbfs         = sample_to_dbfs(_poll_peak_sample.exchange(0, std::memory_order_relaxed));
-    s.raw_peak_dbfs          = sample_to_dbfs(_session_raw_peak_sample.load(std::memory_order_relaxed));
+    // _current_peak_sample/_poll_peak_sample/_session_raw_peak_sample
+    // are now linear amplitudes in [0.0, 1.0] (see compute_peak_sample()'s
+    // comment), so linear_to_dbfs() -- already used for effective peak below
+    // -- converts them directly; the separate sample_to_dbfs() int16-scale
+    // helper is gone.
+    s.level_dbfs             = linear_to_dbfs(_current_peak_sample.load(std::memory_order_relaxed));
+    s.poll_peak_dbfs         = linear_to_dbfs(_poll_peak_sample.exchange(0.0f, std::memory_order_relaxed));
+    s.raw_peak_dbfs          = linear_to_dbfs(_session_raw_peak_sample.load(std::memory_order_relaxed));
     s.effective_peak_dbfs    = linear_to_dbfs(_session_effective_peak_linear.load(std::memory_order_relaxed));
     s.is_started             = _started.load(std::memory_order_relaxed);
     s.is_running             = _running.load(std::memory_order_relaxed);
     return s;
 }
 
-int InputChannel::compute_peak_sample(const int16_t* samples,
-                                       int            n_frames,
-                                       int            n_channels) const
+float InputChannel::compute_peak_sample(const int32_t* samples,
+                                         int            n_frames,
+                                         int            n_channels) const
 {
-    // Pure integer scan — no float arithmetic.
-    int peak = 0;
+    // Integer scan (int64_t accumulator -- abs(INT32_MIN) does not fit in
+    // int32_t, unlike an int16 accumulator where abs of the most negative
+    // value fits comfortably in an int), one float divide at
+    // the very end to normalise against the full 32-bit scale. samples are
+    // assumed already in the monitor's common 32-bit internal representation
+    // (see AlsaCapture::read()'s comment), so this is correct regardless of
+    // whether the hardware actually negotiated S32_LE or S16_LE-widened.
+    int64_t peak = 0;
     for (int frame = 0; frame < n_frames; ++frame)
     {
         for (int ch = 0; ch < n_channels; ++ch)
         {
-            int sample     = samples[frame * n_channels + ch];
-            int abs_sample = (sample < 0) ? -sample : sample;
+            int64_t sample     = samples[frame * n_channels + ch];
+            int64_t abs_sample = (sample < 0) ? -sample : sample;
             if (abs_sample > peak)
                 peak = abs_sample;
         }
     }
-    return peak;
+    return static_cast<float>(peak) / 2147483648.0f;  // 2^31, full int32 scale
 }
 
 unsigned InputChannel::get_id_snapshot(int16_t* out, unsigned max_frames) const
@@ -1105,15 +1160,18 @@ unsigned InputChannel::get_id_snapshot(int16_t* out, unsigned max_frames) const
 
 // ── Capture thread ────────────────────────────────────────────────────────────
 //
-// Reads hardware periods from ALSA and writes interleaved int16 stereo samples
-// into the ring buffer.  This thread runs at close to real time and should do
-// as little work as possible to avoid causing ALSA xruns.
+// Reads hardware periods from ALSA and writes interleaved stereo samples,
+// in the monitor's common 32-bit internal representation (widened from
+// int16_t; AlsaCapture::read() itself hides whether the hardware
+// actually negotiated S32_LE or fell back to S16_LE), into the ring buffer.
+// This thread runs at close to real time and should do as little work as
+// possible to avoid causing ALSA xruns.
 //
 void InputChannel::capture_thread_func()
 {
     // Size the local read buffer to one hardware period.
     // We re-read the period size after open; it will not change during a session.
-    std::vector<int16_t> period_buf;
+    std::vector<int32_t> period_buf;
 
     while (_running.load(std::memory_order_relaxed))
     {
@@ -1212,19 +1270,19 @@ void InputChannel::process_thread_func()
     // see the members' declaration comment in autostream_monitor.h for why
     // this introduces no new allocation). Sized once here, at thread entry,
     // exactly like the local std::vectors they replaced.
-    _pcm_in.resize(static_cast<size_t>(MAX_FRAMES) * 2);           // interleaved int16
+    _pcm_in.resize(static_cast<size_t>(MAX_FRAMES) * 2);           // interleaved int32
     _float_in.resize(static_cast<size_t>(MAX_FRAMES) * 2);         // interleaved float
     _float_out.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);    // post-SRC float
-    _pcm_out.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);      // final int16
+    _pcm_out.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);      // final int32
     // ID-tap scratch (downmix, resample, clamp) lives inside _id_tap
     // (IdTapResampler) -- pre-sized in start() from this same MAX_SRC_OUTPUT
     // bound.
 
-    // Duration of the fade-in ramp in output frames (one second at 44100 Hz).
+    // Duration of the fade-in ramp in output frames (one second at 48000 Hz).
     _ramp_duration_frames = AudioMonitor::output_rate_hz();
 
     // Number of output frames to accumulate before the first FIFO write.
-    // 0.5 s at 44100 Hz = 22050 frames = ~172 KB of int16 stereo data.
+    // 0.5 s at 48000 Hz = 24000 frames = ~188 KB of int32 stereo data.
     // This gives OwnTone a full initial buffer so it can start streaming
     // without the starvation-induced skips that occur when the pipe is
     // cold and the first few writes are each only a single period (~1024 frames).
@@ -1297,11 +1355,13 @@ void InputChannel::process_thread_func()
             continue;
 
         // ── Peak-level metering for the block just read ───────────────────────
-        int peak_sample = update_metering(frames_in);
+        // Linear amplitude in [0.0, 1.0], not an int16-scale sample
+        // count -- see compute_peak_sample()'s comment.
+        float peak_sample = update_metering(frames_in);
 
         // ── Silence state machine ─────────────────────────────────────────────
         double now = get_monotonic_time();
-        int   silence_threshold_sample = 0;
+        float silence_threshold_sample = 0.0f;
         bool  is_above_threshold = false;
         float track_change_silence_seconds = 0.0f;
         bool should_capture = update_silence_state(peak_sample, now,
@@ -1409,10 +1469,12 @@ bool InputChannel::drain_capture_ring(int& frames_in)
 // tap's above-threshold flag) can use the same value computed exactly once
 // per iteration, as today.
 //
-int InputChannel::update_metering(int frames_in)
+float InputChannel::update_metering(int frames_in)
 {
-    // ── Compute peak sample level (pure integer, no float) ───────────────
-    int peak_sample = compute_peak_sample(_pcm_in.data(), frames_in, /*channels=*/2);
+    // ── Compute peak sample level ─────────────────────────────────────────
+    // Linear amplitude in [0.0, 1.0]; see compute_peak_sample()'s
+    // comment. Still no log10 here -- that stays deferred to get_status().
+    float peak_sample = compute_peak_sample(_pcm_in.data(), frames_in, /*channels=*/2);
     _current_peak_sample.store(peak_sample, std::memory_order_relaxed);
 
     // Accumulate poll-window peak — reset by get_status() via exchange(0).
@@ -1420,16 +1482,16 @@ int InputChannel::update_metering(int frames_in)
     // if get_status() wins the exchange between our load and store, the CAS
     // fails, prev is updated to 0, and we retry to set peak_sample.
     {
-        int prev = _poll_peak_sample.load(std::memory_order_relaxed);
+        float prev = _poll_peak_sample.load(std::memory_order_relaxed);
         while (peak_sample > prev &&
                !_poll_peak_sample.compare_exchange_weak(
                    prev, peak_sample, std::memory_order_relaxed))
             ; // prev is updated on failure; retry with latest value
     }
 
-    // Accumulate session raw peak (no float / log10 — integer compare only).
+    // Accumulate session raw peak (plain float compare — no log10).
     {
-        int prev = _session_raw_peak_sample.load(std::memory_order_relaxed);
+        float prev = _session_raw_peak_sample.load(std::memory_order_relaxed);
         if (peak_sample > prev)
             _session_raw_peak_sample.store(peak_sample, std::memory_order_relaxed);
     }
@@ -1447,9 +1509,9 @@ int InputChannel::update_metering(int frames_in)
 // handle_session_edges() and the status-snapshot update need, read exactly
 // once per iteration as today.
 //
-bool InputChannel::update_silence_state(int     peak_sample,
+bool InputChannel::update_silence_state(float   peak_sample,
                                          double  now,
-                                         int&    silence_threshold_sample,
+                                         float&  silence_threshold_sample,
                                          bool&   is_above_threshold,
                                          float&  track_change_silence_seconds)
 {
@@ -1463,7 +1525,7 @@ bool InputChannel::update_silence_state(int     peak_sample,
     }
     silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
 
-    // Integer comparison — no float arithmetic on the hot path.
+    // Plain float comparison (still no log10/trig on this hot path).
     if (peak_sample >= silence_threshold_sample)
         _last_above_threshold_time = now;
 
@@ -1495,8 +1557,8 @@ bool InputChannel::update_silence_state(int     peak_sample,
 // relative position as before, preserves its exact firing cadence.
 //
 void InputChannel::handle_session_edges(bool   should_capture,
-                                         int    peak_sample,
-                                         int    silence_threshold_sample,
+                                         float  peak_sample,
+                                         float  silence_threshold_sample,
                                          double now,
                                          float  track_change_silence_seconds)
 {
@@ -1517,7 +1579,7 @@ void InputChannel::handle_session_edges(bool   should_capture,
         _prefill_buf.reserve(static_cast<size_t>(_prefill_duration_frames) * 2);
         _capturing.store(true);
         _repeat_controller.notify_capture_started(_index);
-        LOG_INFO("[input%d] Capture session started (peak=%d, threshold=%d)",
+        LOG_INFO("[input%d] Capture session started (peak=%.4f, threshold=%.4f)",
                  _index, peak_sample, silence_threshold_sample);
     }
     else if (!should_capture && _capturing.load())
@@ -1563,10 +1625,14 @@ void InputChannel::handle_session_edges(bool   should_capture,
 // today's single nested per-chunk block. Only called when _capturing and
 // _src_state are both set (checked by the caller), exactly as today.
 //
-void InputChannel::resample_block(int frames_in, int peak_sample, int silence_threshold_sample)
+void InputChannel::resample_block(int frames_in, float peak_sample, float silence_threshold_sample)
 {
-    // Convert int16 to float in the range [-1.0, +1.0].
-    src_short_to_float_array(_pcm_in.data(), _float_in.data(), frames_in * 2);
+    // Convert int32 (the monitor's common 32-bit internal
+    // representation) to float in the range [-1.0, +1.0]. libsamplerate's
+    // src_int_to_float_array assumes the full 32-bit dynamic range, matching
+    // the widening convention AlsaCapture::read() and convert_to_pipe_format()
+    // (autostream_repeat.cpp) both use.
+    src_int_to_float_array(_pcm_in.data(), _float_in.data(), frames_in * 2);
 
     // Resample in a loop.  libsamplerate may not consume all input frames
     // in a single call if the output buffer would overflow (this can happen
@@ -1622,12 +1688,12 @@ void InputChannel::resample_block(int frames_in, int peak_sample, int silence_th
 // Post-SRC, pre-gain, pre-EQ taps for one produced chunk: the shared
 // IdTapResampler snapshot ring and the RepeatController recorder tap.
 //
-void InputChannel::tap_for_id_and_repeat(int out_frames, int peak_sample, int silence_threshold_sample)
+void InputChannel::tap_for_id_and_repeat(int out_frames, float peak_sample, float silence_threshold_sample)
 {
     // ── ID snapshot tap (post-SRC, pre-gain, pre-EQ) ─────────
     // Tap here to capture uncolored audio: gain and EQ reflect
     // user preference and would skew Shazam's frequency-domain
-    // fingerprints if applied. Downmix, resample (44100 → 16000
+    // fingerprints if applied. Downmix, resample (48000 → 16000
     // Hz, filtered SRC_SINC_FASTEST), and clamp are all done by
     // _id_tap (IdTapResampler); this just writes its output into
     // _id_buf under the ring's own lock.
@@ -1661,7 +1727,7 @@ void InputChannel::tap_for_id_and_repeat(int out_frames, int peak_sample, int si
     // exactly the same stage as the ID tap just above (both explicitly
     // documented as "post-SRC, pre-gain, pre-EQ" -- see the ID tap's own
     // comment a few lines up and InputChannel::_id_buf's class-level
-    // comment, "Tap point: post-main-SRC (44100 Hz stereo float),
+    // comment, "Tap point: post-main-SRC (48000 Hz stereo float),
     // pre-gain/pre-EQ"), so replay's own TrackGapDetector/ID tap (fed from
     // the decoded recording, autostream_repeat.cpp) observes audio at the
     // identical DSP stage as the live ID tap, without any further change
@@ -1671,11 +1737,12 @@ void InputChannel::tap_for_id_and_repeat(int out_frames, int peak_sample, int si
     // RAW per-block peak test computed once per outer process_thread_func()
     // iteration (`peak_sample >= silence_threshold_sample`, passed down from
     // update_metering()/update_silence_state() via resample_block()'s
-    // parameters) on the int16 ring-buffer samples -- i.e. BEFORE even this
-    // SRC step, let alone gain. That flag was already computed upstream of
-    // every DSP stage, so it remains the right "was this block loud" signal
-    // for SilenceTrimAccountant regardless of where the recorder's audio tap
-    // itself sits.
+    // parameters) on the int32 ring-buffer samples (compute_peak_sample():
+    // linear float amplitude in [0.0, 1.0], not int16) -- i.e. BEFORE even
+    // this SRC step, let alone gain. That flag was already computed upstream
+    // of every DSP stage, so it remains the right "was this block loud"
+    // signal for SilenceTrimAccountant regardless of where the recorder's
+    // audio tap itself sits.
     //
     // Pre-fill gap-free capture: this tap fires for every processed block
     // from the very first block of a capture session, completely
@@ -1990,13 +2057,16 @@ void InputChannel::deliver_output(int out_frames)
 
     if (live_write_active)
     {
-        // Convert to int16.
-        src_float_to_short_array(_float_out.data(), _pcm_out.data(),
-                                 out_frames * 2);
+        // Convert to the monitor's common 32-bit internal / output
+        // container representation. src_float_to_int_array is libsamplerate's
+        // full-32-bit-scale counterpart to src_float_to_short_array -- see
+        // resample_block()'s matching src_int_to_float_array comment.
+        src_float_to_int_array(_float_out.data(), _pcm_out.data(),
+                                out_frames * 2);
 
         // ── Engineering output dump tap ───────────────────────
-        // First point where the signal is complete s16le after
-        // all SRC, per-input gain/EQ, output EQ, output gain,
+        // First point where the signal is complete (32-bit container)
+        // after all SRC, per-input gain/EQ, output EQ, output gain,
         // and auto-trim.  submit_block() is non-blocking: it
         // copies into a bounded SPSC ring or drops and counts
         // frames if the ring is full — never delays this thread.
@@ -2006,7 +2076,7 @@ void InputChannel::deliver_output(int out_frames)
         {
             // Accumulation phase: append to the pre-fill buffer.
             // Do not write to the FIFO yet.
-            const int16_t* src_ptr = _pcm_out.data();
+            const int32_t* src_ptr = _pcm_out.data();
             int to_add = std::min(out_frames, _prefill_frames_remaining);
             _prefill_buf.insert(_prefill_buf.end(),
                                 src_ptr,
@@ -2018,15 +2088,26 @@ void InputChannel::deliver_output(int out_frames)
                 // Pre-fill complete: flush the whole buffer in one
                 // write, then write any frames from this block that
                 // came after the pre-fill threshold.
+                // Byte counts derived from
+                // AudioMonitor::output_bytes_per_frame() (the shared
+                // rate/bits/channels descriptor) instead of a hand-rolled
+                // "* 2 * sizeof(int16_t)" literal, so a future OUTPUT_BITS
+                // change only has to happen in one place. The "/ 2" below is
+                // the channel count (interleaved stereo), matching the same
+                // literal already used throughout this file (e.g.
+                // compute_peak_sample()'s channels=2, capture_thread_func()'s
+                // "stereo" comment) -- AudioMonitor::OUTPUT_CHANNELS itself
+                // is private and not reachable from InputChannel.
+                size_t prefill_frames = _prefill_buf.size() / 2;
                 _shared_fifo.write(_prefill_buf.data(),
-                                   _prefill_buf.size() * sizeof(int16_t));
+                                   prefill_frames * AudioMonitor::output_bytes_per_frame());
                 _prefill_buf.clear();
                 _prefill_buf.shrink_to_fit();
 
                 int remainder = out_frames - to_add;
                 if (remainder > 0)
                     _shared_fifo.write(src_ptr + static_cast<size_t>(to_add) * 2,
-                                       static_cast<size_t>(remainder) * 2 * sizeof(int16_t));
+                                       static_cast<size_t>(remainder) * AudioMonitor::output_bytes_per_frame());
 
                 LOG_DEBUG("[input%d] Pre-fill complete; first FIFO write done",
                           _index);
@@ -2036,7 +2117,7 @@ void InputChannel::deliver_output(int out_frames)
         {
             // Normal phase: write directly to the FIFO.
             _shared_fifo.write(_pcm_out.data(),
-                               static_cast<size_t>(out_frames) * 2 * sizeof(int16_t));
+                               static_cast<size_t>(out_frames) * AudioMonitor::output_bytes_per_frame());
         }
     }
 }

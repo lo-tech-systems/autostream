@@ -55,7 +55,7 @@ static int g_failed = 0;
 // Helpers
 // ---------------------------------------------------------------------------
 
-static constexpr int kInputRate  = 44100;
+static constexpr int kInputRate  = 48000;   // native monitor capture rate
 static constexpr int kOutputRate = 16000;
 static constexpr int kMaxBlock   = 4096;   // matches both call sites' block cap
 
@@ -123,7 +123,9 @@ static std::vector<int16_t> run_tone(IdTapResampler& tap, double freq_hz,
 //
 // Development-time verification of the claim that this test fails against
 // SRC_LINEAR: with SRC_SINC_FASTEST (current code), a 10 kHz tone into a
-// 44100 -> 16000 Hz tap measured ~235 dB of attenuation relative to a 1 kHz
+// 44100 -> 16000 Hz tap (measured pre-flip; the qualitative stopband
+// behaviour is unchanged at the post-flip 48000 -> 16000 ratio) measured
+// ~235 dB of attenuation relative to a 1 kHz
 // in-band reference at the same amplitude (stopband RMS ~0.0 vs. passband
 // RMS ~0.566 -- effectively complete rejection), well past this test's 10 dB
 // bar. Manually swapping autostream_id_tap.h's src_new() call to SRC_LINEAR
@@ -313,8 +315,8 @@ static void test_oversize_block_is_guarded_not_overrun()
     const int16_t* out = tap.process(tone.data(), kOversizedFrames, &out_count);
 
     // Guarded to kSmallMax input frames; output frame count for a
-    // 44100->16000 conversion of kSmallMax input frames is at most
-    // ceil(kSmallMax * 16000/44100) + a small SINC lookahead margin.
+    // 48000->16000 conversion of kSmallMax input frames is at most
+    // ceil(kSmallMax * 16000/48000) + a small SINC lookahead margin.
     CHECK(out_count <= kSmallMax, "oversize: output count bounded by the guarded (not oversized) input length");
     (void)out;
 }

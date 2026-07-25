@@ -406,7 +406,7 @@ inline CodecChoice pick_codec(long available_mib)
 //
 // Test plan U10 checks byte_rate_for(codec, rate) * target_seconds against
 // the sizing table these constants are built from.
-inline long byte_rate_for(CodecChoice codec, long sample_rate_hz = 44100)
+inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
 {
     switch (codec)
     {
@@ -436,7 +436,7 @@ constexpr long kFreeRamFloorMib = 64;
 // happens right before drop_oldest_chunk() kicks in).
 inline long max_recording_seconds(CodecChoice codec, long available_mib,
                                    size_t held_bytes,
-                                   long sample_rate_hz = 44100)
+                                   long sample_rate_hz)
 {
     if (codec == CodecChoice::Unavailable)
         return 0;

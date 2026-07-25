@@ -1042,7 +1042,13 @@ std::string AudioMonitor::api_get_status()
         << json_escape(AUTOSTREAM_MONITOR_BUILD)
         << "\",\"log_level\":\""
         << protocol_log_level_name(logger_get_level())
-        << "\",\"output_clip_dbfs\":"           << clip_dbfs
+        // 48k/32-bit IPC design decision 3: the output pipe format is
+        // compile-time but reported at runtime so the Python layer reads it
+        // instead of assuming it (see docs/AUTOSTREAM-MONITOR.md).
+        << "\",\"output_rate\":"                << OUTPUT_RATE
+        << ",\"output_bits\":"                  << OUTPUT_BITS
+        << ",\"output_channels\":"              << OUTPUT_CHANNELS
+        << ",\"output_clip_dbfs\":"           << clip_dbfs
         << ",\"output_gain_db\":"               << gs.manual_gain_db
         << ",\"output_auto_trim_enabled\":"     << (gs.auto_trim_enabled ? "true" : "false")
         << ",\"output_auto_trim_db\":"          << gs.auto_trim_db

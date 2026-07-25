@@ -210,17 +210,19 @@ static void test_eq_chain_sample_rate_stored()
 
 static void test_rate_estimator_initial_ratio()
 {
+    // The native monitor capture rate makes the nominal input/output pair
+    // 48000/48000 (unity).
     RateEstimator est;
-    est.reset(48000, 44100);
+    est.reset(48000, 48000);
     double ratio = est.src_ratio();
-    double expected = 44100.0 / 48000.0;
+    double expected = 48000.0 / 48000.0;
     CHECK_CLOSE(ratio, expected, 1e-6, "initial src_ratio = output/input");
 }
 
 static void test_rate_estimator_initial_estimated_rate()
 {
     RateEstimator est;
-    est.reset(48000, 44100);
+    est.reset(48000, 48000);
     double rate = est.estimated_input_rate();
     // Before any windows complete the published rate stays at input_rate.
     CHECK_CLOSE(rate, 48000.0, 1.0, "initial estimated input rate close to input rate");
@@ -229,21 +231,21 @@ static void test_rate_estimator_initial_estimated_rate()
 static void test_rate_estimator_feed_updates_after_full_window()
 {
     RateEstimator est;
-    est.reset(44100, 44100);
+    est.reset(48000, 48000);
 
-    // Simulate one full 10 s window of accurate 44100 Hz audio.
+    // Simulate one full 10 s window of accurate 48000 Hz audio.
     // We feed 1024-frame blocks with monotonically advancing wall time.
     const int block = 1024;
     double t = 0.0;
-    const int n_blocks = static_cast<int>(10.0 * 44100.0 / block) + 1;
+    const int n_blocks = static_cast<int>(10.0 * 48000.0 / block) + 1;
     for (int i = 0; i < n_blocks; ++i) {
-        t += static_cast<double>(block) / 44100.0;
+        t += static_cast<double>(block) / 48000.0;
         est.feed(block, t);
     }
 
-    // After a full window the estimated rate should be close to 44100.
+    // After a full window the estimated rate should be close to 48000.
     double rate = est.estimated_input_rate();
-    CHECK(rate > 43000.0 && rate < 45000.0, "rate estimate in plausible range after full window");
+    CHECK(rate > 47000.0 && rate < 49000.0, "rate estimate in plausible range after full window");
 
     double ratio = est.src_ratio();
     CHECK(ratio > 0.9 && ratio < 1.1, "src_ratio in plausible range after full window");
@@ -460,6 +462,40 @@ static void test_eq_chain_sample_rate_change_recomputes_coefficients()
 }
 
 // ---------------------------------------------------------------------------
+// AudioMonitor::output_bytes_per_frame(): FIFO wire-format byte width,
+// derived from OUTPUT_CHANNELS * (OUTPUT_BITS / 8). This is the single
+// shared source of truth both FifoWriter (live path) and ReplayEngine
+// (replay path) use instead of hand-rolled "* 2 * sizeof(int16_t)" literals.
+// Requires autostream_monitor.h (ALSA/libsamplerate), hence tested here
+// rather than in test_monitor_utils.
+// ---------------------------------------------------------------------------
+
+static void test_output_bytes_per_frame_current_format()
+{
+    // Current compile-time format: 48000 Hz / 32-bit / stereo.
+    CHECK(AudioMonitor::output_rate_hz() == 48000, "output_rate_hz() is 48000");
+    CHECK(AudioMonitor::output_bits_per_sample() == 32, "output_bits_per_sample() is 32");
+    CHECK(AudioMonitor::output_channels() == 2, "output_channels() is 2");
+    CHECK(AudioMonitor::output_bytes_per_frame() == 8,
+          "32-bit stereo is 8 bytes/frame (2 channels * 4 bytes)");
+}
+
+static void test_output_bytes_per_frame_arithmetic_for_16bit_stereo()
+{
+    // AudioMonitor::output_bytes_per_frame() is compile-time-fixed to the
+    // current 32-bit format, so a legacy 16-bit/stereo pipe's byte width
+    // can't be asked of it directly. Exercise the same formula
+    // (channels * (bits/8)) it uses internally to confirm the arithmetic
+    // itself -- not just the current constant -- is right: 2 * (16/8) = 4.
+    constexpr int channels_16bit = 2;
+    constexpr int bits_16bit     = 16;
+    constexpr int bytes_per_frame_16bit = channels_16bit * (bits_16bit / 8);
+    CHECK(bytes_per_frame_16bit == 4, "16-bit stereo is 4 bytes/frame");
+    CHECK(bytes_per_frame_16bit == static_cast<int>(2 * sizeof(int16_t)),
+          "matches the 2 * sizeof(int16_t) literal for 16-bit stereo");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -500,6 +536,10 @@ int main()
     test_output_processor_reset_auto_trim();
     test_output_processor_flat_input_produces_no_clip();
     test_output_processor_clip_detected_for_over_unity();
+
+    // AudioMonitor output format descriptor
+    test_output_bytes_per_frame_current_format();
+    test_output_bytes_per_frame_arithmetic_for_16bit_stereo();
 
     // logger_init() above started the dedicated logging thread;
     // it must be stopped before main() returns or the std::thread

@@ -370,15 +370,26 @@ private:
 
 
 // =============================================================================
-// Pipe-format conversion (s16 passthrough today; kept as a single function
-// parameterised for the future 24-in-32 container).
+// Pipe-format conversion (single function parameterised so the widening
+// convention below lives in exactly one place)
 //
-// Today the monitor's pipe format is s16le at output_rate_hz(), identical to
-// what both the MP2 decoder (forced) and the PCM tier already produce, so
-// this is a passthrough. After the planned 48k/32-bit IPC flip
-// (autostream-48k-32bit-ipc-design.md), this is the single place that grows
-// an s16 -> 24-in-32 container expansion; every other part of ReplayEngine
-// stays s16 internally so the change stays localised here.
+// The live path's FifoWriter writes 32-bit-container frames
+// (autostream_monitor_io.cpp deliver_output()); this function is the
+// matching s16 -> 24-in-32 container expansion on the replay side, so the
+// live writer and the replay writer never disagree about the wire format
+// written to the same FIFO.
+//
+// Every OTHER part of ReplayEngine stays s16 internally -- dsp_pcm_buf, the
+// decoder output, the replay-side ID tap, and replay_peak_sample() all
+// operate in the int16 domain; only this one conversion, at the very edge
+// before the bytes go on the wire, changes.
+//
+// Widening convention: left-shift each s16 sample by 16 bits to occupy the
+// full 32-bit dynamic range -- the same "left-justify the significant bits"
+// scaling AlsaCapture::read() uses for its own S16_LE fallback path
+// (autostream_monitor_io.cpp), so a receiver reading the FIFO sees
+// bit-identical scaling regardless of which writer (live or replay) is
+// currently active.
 // =============================================================================
 
 namespace
@@ -386,8 +397,10 @@ namespace
 
 void convert_to_pipe_format(const int16_t* in_s16, size_t n_samples, std::vector<uint8_t>& out)
 {
-    out.resize(n_samples * sizeof(int16_t));
-    std::memcpy(out.data(), in_s16, n_samples * sizeof(int16_t));
+    out.resize(n_samples * sizeof(int32_t));
+    int32_t* out32 = reinterpret_cast<int32_t*>(out.data());
+    for (size_t i = 0; i < n_samples; ++i)
+        out32[i] = static_cast<int32_t>(in_s16[i]) << 16;
 }
 
 }   // namespace

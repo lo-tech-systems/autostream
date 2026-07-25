@@ -10,7 +10,7 @@ newline-delimited JSON protocol (docs/AUTOSTREAM-MONITOR.md).
 SILENCE RULE: this tool must only ever be pointed at a standalone test daemon
 instance with its own socket/FIFO. It must never enable a real owntone-mini
 output or write to the live FIFO. It plays only into the ALSA loopback
-("hw:Loopback,0,0"), which is not audible on any real device.
+("plughw:Loopback,0,0"), which is not audible on any real device.
 
 Usage examples (run on a Pi test device, as the autostream
 build/system user with passwordless sudo):
@@ -54,8 +54,45 @@ import wave
 
 
 DEFAULT_SOCKET = "/tmp/repeat_test.sock"
-SAMPLE_RATE = 44100
+
+# Default wire format. SAMPLE_RATE also
+# doubles as the default sample rate for the tone/silence WAVs this driver
+# GENERATES for aplay to play into the ALSA loopback's playback side -- that
+# is a capture-side concern, independent of the FIFO's wire format (the
+# daemon negotiates/resamples the capture device on its own), so reusing
+# this constant there is a convenience, not a format coupling. SAMPLE_BITS
+# is the FIFO container width (S32_LE, 24-in-32, left-justified);
+# the WAV-writing helpers below stay hardcoded to 16-bit regardless of this
+# constant, since that is the (unrelated) aplay-input side.
+#
+# Scenarios that parse raw bytes off the FIFO (r1, d4) should prefer
+# querying the LIVE daemon's actual format via _wire_format() below (reads
+# get_status()'s output_rate/output_bits/output_channels fields) rather
+# than trusting these module defaults, so this driver keeps
+# working unmodified against a differently-configured or older daemon.
+SAMPLE_RATE = 48000
+SAMPLE_BITS = 32
 CHANNELS = 2
+
+
+def _wire_format(client: "MonitorClient") -> tuple:
+    """Returns (rate, bits, channels) for the FIFO the daemon is currently
+    writing to, read from get_status()'s output_rate/output_bits/
+    output_channels fields. Falls back to the module defaults
+    (SAMPLE_RATE/SAMPLE_BITS/CHANNELS) if the daemon is unreachable, the
+    call fails, or it predates those status fields -- so scenarios calling
+    this at their own start still run (against the wrong assumed format, in
+    the worst case) rather than crashing outright."""
+    try:
+        st = client.get_status()
+        rate = int(st.get("output_rate", SAMPLE_RATE))
+        bits = int(st.get("output_bits", SAMPLE_BITS))
+        channels = int(st.get("output_channels", CHANNELS))
+        return rate, bits, channels
+    except Exception as e:
+        print(f"[_wire_format] could not read daemon output format ({e}); "
+              f"falling back to defaults {SAMPLE_RATE}/{SAMPLE_BITS}/{CHANNELS}")
+        return SAMPLE_RATE, SAMPLE_BITS, CHANNELS
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +265,7 @@ def gen_tone_wav(out_path: str, tone_seconds: float, silence_seconds: float,
     print(f"wrote {out_path}: {tone_seconds}s tone @ {freq_hz}Hz + {silence_seconds}s silence")
 
 
-def play_wav(wav_path: str, device: str = "hw:Loopback,0,0"):
+def play_wav(wav_path: str, device: str = "plughw:Loopback,0,0"):
     """Plays a WAV file into the loopback's playback side. The standalone
     test daemon must be configured to capture from the loopback's paired
     capture side (typically hw:Loopback,1,0)."""
@@ -240,7 +277,7 @@ def play_wav(wav_path: str, device: str = "hw:Loopback,0,0"):
 # ---------------------------------------------------------------------------
 
 def scenario_d7(socket_path: str, wav_path: str, input_index: int = 1,
-                 playback_device: str = "hw:Loopback,0,0"):
+                 playback_device: str = "plughw:Loopback,0,0"):
     """D7: 'set_repeat_enabled during active capture -> no recording this
     session; next session records. Disable mid-session -> recording.bytes ->
     0 immediately.'
@@ -323,7 +360,7 @@ def scenario_d7(socket_path: str, wav_path: str, input_index: int = 1,
 # All assume a standalone test daemon already configured+started against the
 # loopback capture device, with set_allow_capture(input_index, True) issued,
 # a test FIFO set via set_fifo, and repeat enabled (auto codec) unless the
-# scenario says otherwise. Play into --device (default hw:Loopback,0,0); the
+# scenario says otherwise. Play into --device (default plughw:Loopback,0,0); the
 # daemon must be configured to capture from its paired capture subdevice
 # (typically hw:Loopback,1,0). A fifo_reader_stub.py instance should be
 # reading the same test FIFO concurrently for D1-D3/D9/D10 (position/loop
@@ -344,7 +381,7 @@ def _wait_for(predicate, timeout: float, poll_interval: float = 0.25, desc: str 
 
 
 def scenario_d1_d3(socket_path: str, wav_path: str, input_index: int = 1,
-                    playback_device: str = "hw:Loopback,0,0",
+                    playback_device: str = "plughw:Loopback,0,0",
                     min_loops: int = 2):
     """D1 (record->trim->replay cycle, replay begins <1s after capture stop,
     envelope ~= source + ~1s pad) and D3 (loop seam ~= trim pad; loop_count
@@ -396,7 +433,7 @@ def scenario_d1_d3(socket_path: str, wav_path: str, input_index: int = 1,
 
 
 def scenario_d5_d6(socket_path: str, wav_path: str, input_index: int = 1,
-                    playback_device: str = "hw:Loopback,0,0"):
+                    playback_device: str = "plughw:Loopback,0,0"):
     """D5 (disarm during replay -> fade then stop; buffer retained/HOLD;
     re-armable) and D6 (arm while idle with a HOLD recording -> replay
     starts immediately)."""
@@ -459,7 +496,7 @@ def scenario_d5_d6(socket_path: str, wav_path: str, input_index: int = 1,
 
 
 def scenario_d9(socket_path: str, wav_path: str, input_index: int = 1,
-                playback_device: str = "hw:Loopback,0,0", poll_hz: float = 20.0):
+                playback_device: str = "plughw:Loopback,0,0", poll_hz: float = 20.0):
     """D9: poll get_status at ~20 Hz across the capture-stop -> replay-start
     transition; assert no snapshot shows all-inputs-idle AND armed AND
     bytes>0 AND replay.active=false (the daemon publishes this
@@ -539,7 +576,7 @@ def gen_multi_track_wav(out_path: str, n_tracks: int = 3, tone_seconds: float = 
 
 
 def scenario_d10(socket_path: str, wav_path: str, input_index: int = 1,
-                  playback_device: str = "hw:Loopback,0,0", expected_track_changes: int = 2):
+                  playback_device: str = "plughw:Loopback,0,0", expected_track_changes: int = 2):
     """D10: recording of N tone tracks with gaps: during replay,
     track_change_seq advances at each gap under origin_input; snapshot
     command returns replay-tap audio (non-silent)."""
@@ -583,7 +620,7 @@ def scenario_d10(socket_path: str, wav_path: str, input_index: int = 1,
 
 
 def scenario_d11(socket_path: str, wav_path: str, fifo_path: str, input_index: int = 1,
-                  playback_device: str = "hw:Loopback,0,0"):
+                  playback_device: str = "plughw:Loopback,0,0"):
     """D11: kill the reader stub mid-replay, then disarm: daemon unblocks
     cleanly (no hang), clean state; restart reader + re-arm works.
 
@@ -650,7 +687,7 @@ def scenario_d11(socket_path: str, wav_path: str, fifo_path: str, input_index: i
 
 
 def scenario_d12(socket_path: str, wav_path: str, input_index: int = 1,
-                  playback_device: str = "hw:Loopback,0,0"):
+                  playback_device: str = "plughw:Loopback,0,0"):
     """D12: stop_input on the origin input (as reload does) -> buffer
     discarded, replay cancelled."""
     c = MonitorClient(socket_path)
@@ -722,21 +759,36 @@ def _goertzel_mag(samples, freq_hz: float, sample_rate: int = SAMPLE_RATE) -> fl
     return math.sqrt(max(power, 0.0)) / n
 
 
-def _load_s16le_stereo_mono(path: str):
-    """Reads a raw s16le stereo dump (fifo_reader_stub.py --dump-path) and
-    returns a flat list of mono float samples in [-1, 1] (L+R averaged)."""
+def _load_pipe_stereo_mono(path: str, bits: int = SAMPLE_BITS):
+    """Reads a raw FIFO-wire-format stereo dump (fifo_reader_stub.py
+    --dump-path) and returns a flat list of mono float samples in [-1, 1]
+    (L+R averaged). `bits` selects the FIFO container width -- 16 (legacy
+    s16le) or 32 (S32_LE, 24-in-32, left-justified, matching
+    convert_to_pipe_format()'s / AlsaCapture's widening convention, so
+    dividing by 2**31 recovers the same normalised range the s16 path gets
+    from dividing by 2**15)."""
     with open(path, "rb") as f:
         raw = f.read()
-    n_frames = len(raw) // 4   # 2 channels * 2 bytes
-    samples = struct.unpack(f"<{n_frames * 2}h", raw[:n_frames * 4])
-    mono = [(samples[2 * i] + samples[2 * i + 1]) / 2.0 / 32768.0 for i in range(n_frames)]
+    if bits == 16:
+        n_frames = len(raw) // 4   # 2 channels * 2 bytes
+        samples = struct.unpack(f"<{n_frames * 2}h", raw[:n_frames * 4])
+        full_scale = 32768.0
+    elif bits == 32:
+        n_frames = len(raw) // 8   # 2 channels * 4 bytes
+        samples = struct.unpack(f"<{n_frames * 2}i", raw[:n_frames * 8])
+        full_scale = 2147483648.0
+    else:
+        raise ValueError(f"unsupported FIFO wire bit depth: {bits}")
+    mono = [(samples[2 * i] + samples[2 * i + 1]) / 2.0 / full_scale for i in range(n_frames)]
     return mono
 
 
-def _tone_envelope(mono, freq_hz: float, block_frames: int = 2205,
+def _tone_envelope(mono, freq_hz: float, block_frames: int = 2400,
                     sample_rate: int = SAMPLE_RATE):
-    """Splits mono into block_frames-sized windows (2205 = 50 ms @ 44.1 kHz)
-    and returns a list of (t_seconds, goertzel_magnitude_at_freq_hz)."""
+    """Splits mono into block_frames-sized windows (2400 = 50 ms @ 48 kHz,
+    the current default FIFO rate -- pass an explicit block_frames/
+    sample_rate pair for any other rate) and returns a list of
+    (t_seconds, goertzel_magnitude_at_freq_hz)."""
     out = []
     for i in range(0, len(mono) - block_frames, block_frames):
         block = mono[i:i + block_frames]
@@ -747,7 +799,7 @@ def _tone_envelope(mono, freq_hz: float, block_frames: int = 2205,
 
 def scenario_d4(socket_path: str, wav_a: str, wav_b: str, fifo_path: str,
                  input_a: int = 1, input_b: int = 2,
-                 device_a: str = "hw:Loopback,0,0", device_b: str = "hw:Loopback,0,1",
+                 device_a: str = "plughw:Loopback,0,0", device_b: str = "plughw:Loopback,0,1",
                  freq_a: float = 440.0, freq_b: float = 880.0,
                  dump_path: str = "/tmp/d4_fifo_dump.raw"):
     """D4: interrupt crossfade. wav_a (input_a) plays long enough to start a
@@ -834,12 +886,14 @@ def scenario_d4(socket_path: str, wav_a: str, wav_b: str, fifo_path: str,
         except subprocess.TimeoutExpired:
             proc_b.kill()
 
-        print(f"[d4] analysing FIFO dump {dump_path}")
-        mono = _load_s16le_stereo_mono(dump_path)
-        assert len(mono) > SAMPLE_RATE, f"D4 FAIL: dump too short ({len(mono)} frames)"
+        wire_rate, wire_bits, _wire_channels = _wire_format(c)
+        print(f"[d4] analysing FIFO dump {dump_path} (wire format: "
+              f"{wire_rate} Hz / {wire_bits}-bit)")
+        mono = _load_pipe_stereo_mono(dump_path, bits=wire_bits)
+        assert len(mono) > wire_rate, f"D4 FAIL: dump too short ({len(mono)} frames)"
 
-        env_a = _tone_envelope(mono, freq_a)
-        env_b = _tone_envelope(mono, freq_b)
+        env_a = _tone_envelope(mono, freq_a, sample_rate=wire_rate)
+        env_b = _tone_envelope(mono, freq_b, sample_rate=wire_rate)
 
         # Locate the fade: the last block where freq_a is clearly present
         # (above half its own early-replay level) before it drops away.
@@ -939,7 +993,7 @@ def scenario_d4(socket_path: str, wav_a: str, wav_b: str, fifo_path: str,
 
 def scenario_e1(socket_path: str, wav_a: str, wav_b: str,
                  input_a: int = 1, input_b: int = 2,
-                 device_a: str = "hw:Loopback,0,0", device_b: str = "hw:Loopback,0,1"):
+                 device_a: str = "plughw:Loopback,0,0", device_b: str = "plughw:Loopback,0,1"):
     """E1: input handoff mid-recording. Session A ends (capture
     stop); armed, so replay of A's recording begins; input B then interrupts
     it. Net effect must match "live playback wins": origin_input ends up B,
@@ -981,7 +1035,7 @@ def scenario_e1(socket_path: str, wav_a: str, wav_b: str,
 
 def scenario_e6(socket_path: str, wav_a: str, wav_b: str,
                  input_a: int = 1, input_b: int = 2,
-                 device_a: str = "hw:Loopback,0,0", device_b: str = "hw:Loopback,0,1"):
+                 device_a: str = "plughw:Loopback,0,0", device_b: str = "plughw:Loopback,0,1"):
     """E6: disarm arriving during FADING_OUT(live_interrupt) is a no-op for
     the fade itself -- it completes, and the new recording for input_b still
     proceeds (recording start does not consult _armed, only replay-start at
@@ -1026,7 +1080,7 @@ def scenario_e6(socket_path: str, wav_a: str, wav_b: str,
 
 def scenario_e11(socket_path: str, wav_a: str, wav_b: str,
                   input_a: int = 1, input_b: int = 2,
-                  device_a: str = "hw:Loopback,0,0", device_b: str = "hw:Loopback,0,1"):
+                  device_a: str = "plughw:Loopback,0,0", device_b: str = "plughw:Loopback,0,1"):
     """E11: disable arriving during a live-interrupt
     fade, immediately followed by a re-enable BEFORE the fade's terminal
     handler runs, must still honour the interrupt -- a new recording starts
@@ -1097,7 +1151,8 @@ def scenario_e11(socket_path: str, wav_a: str, wav_b: str,
 # ---------------------------------------------------------------------------
 
 def _paced_fifo_reader(fifo_path: str, stop_event: threading.Event,
-                        chunks: list, rate_bytes_per_sec: int = 176400,
+                        chunks: list,
+                        rate_bytes_per_sec: int = SAMPLE_RATE * (SAMPLE_BITS // 8) * CHANNELS,
                         chunk_ms: float = 20.0):
     """Drains fifo_path at a fixed real-time pace (mirrors fifo_reader_stub.py's
     main loop) so ReplayEngine's own pipe-backpressure pacing produces audio in
@@ -1133,18 +1188,29 @@ def _paced_fifo_reader(fifo_path: str, stop_event: threading.Event,
         os.close(fd)
 
 
-def _peak_amplitude_s16le_stereo(raw: bytes) -> float:
-    """Peak absolute amplitude (0..1, both channels) across a raw s16le
-    stereo blob. Returns 0.0 for an empty/odd-length blob."""
-    n_frames = len(raw) // 4
-    if n_frames == 0:
-        return 0.0
-    samples = struct.unpack(f"<{n_frames * 2}h", raw[:n_frames * 4])
-    return max(abs(s) for s in samples) / 32768.0
+def _peak_amplitude_pipe_stereo(raw: bytes, bits: int = SAMPLE_BITS) -> float:
+    """Peak absolute amplitude (0..1, both channels) across a raw
+    FIFO-wire-format stereo blob. `bits` selects the FIFO container width
+    -- 16 (legacy s16le) or 32 (S32_LE, 24-in-32). Returns 0.0 for
+    an empty/short blob."""
+    if bits == 16:
+        n_frames = len(raw) // 4
+        if n_frames == 0:
+            return 0.0
+        samples = struct.unpack(f"<{n_frames * 2}h", raw[:n_frames * 4])
+        return max(abs(s) for s in samples) / 32768.0
+    elif bits == 32:
+        n_frames = len(raw) // 8
+        if n_frames == 0:
+            return 0.0
+        samples = struct.unpack(f"<{n_frames * 2}i", raw[:n_frames * 8])
+        return max(abs(s) for s in samples) / 2147483648.0
+    else:
+        raise ValueError(f"unsupported FIFO wire bit depth: {bits}")
 
 
 def scenario_r1(socket_path: str, wav_path: str, fifo_path: str, input_index: int = 1,
-                 playback_device: str = "hw:Loopback,0,0",
+                 playback_device: str = "plughw:Loopback,0,0",
                  gain_before_db: float = 0.0, gain_after_db: float = -12.0):
     """r1: confirms live DSP applies DURING replay. Starts a
     recording+replay session, lets replay settle into steady looped playback,
@@ -1177,8 +1243,14 @@ def scenario_r1(socket_path: str, wav_path: str, fifo_path: str, input_index: in
         _wait_for(lambda: (lambda s: s["repeat"]["replay"]["active"] and s)(c.get_status()),
                   timeout=10, desc="replay to start")
 
+        wire_rate, wire_bits, wire_channels = _wire_format(c)
+        wire_bytes_per_sec = wire_rate * (wire_bits // 8) * wire_channels
+        print(f"[r1] FIFO wire format: {wire_rate} Hz / {wire_bits}-bit / "
+              f"{wire_channels}ch ({wire_bytes_per_sec} B/s)")
         reader_thread = threading.Thread(
-            target=_paced_fifo_reader, args=(fifo_path, stop_reader, chunks), daemon=True)
+            target=_paced_fifo_reader,
+            args=(fifo_path, stop_reader, chunks, wire_bytes_per_sec),
+            daemon=True)
         reader_thread.start()
 
         print(f"[r1] letting replay settle at gain={gain_before_db} dB before measuring baseline")
@@ -1215,8 +1287,8 @@ def scenario_r1(socket_path: str, wav_path: str, fifo_path: str, input_index: in
         assert before, "r1 FAIL: no FIFO data captured before the gain change"
         assert after, "r1 FAIL: no FIFO data captured in the post-change measurement window"
 
-        before_peak = max(_peak_amplitude_s16le_stereo(data) for _, data in before)
-        after_peak = max(_peak_amplitude_s16le_stereo(data) for _, data in after)
+        before_peak = max(_peak_amplitude_pipe_stereo(data, bits=wire_bits) for _, data in before)
+        after_peak = max(_peak_amplitude_pipe_stereo(data, bits=wire_bits) for _, data in after)
 
         expected_ratio = 10.0 ** ((gain_after_db - gain_before_db) / 20.0)
         ratio = (after_peak / before_peak) if before_peak > 0 else 0.0
@@ -1294,7 +1366,7 @@ def _burst_probe_status(socket_path: str, timeout: float = 2.0):
 
 def scenario_d15(socket_path: str, wav_path: str, fifo_path: str,
                   input_a: int = 1, input_b: int = 2,
-                  device_a: str = "hw:Loopback,0,0", device_b: str = "hw:Loopback,0,1",
+                  device_a: str = "plughw:Loopback,0,0", device_b: str = "plughw:Loopback,0,1",
                   n_iterations: int = 5):
     """d15: coordinator-restart burst fired against a HOLD
     recording (established via a genuine disarm-mid-replay), with both
@@ -1308,8 +1380,8 @@ def scenario_d15(socket_path: str, wav_path: str, fifo_path: str,
     own configure_input calls target the corresponding CAPTURE-side
     subdevices (card offset +1, matching every other two-input scenario in
     this file, e.g. scenario_d4)."""
-    capture_a = device_a.replace("hw:Loopback,0,", "hw:Loopback,1,")
-    capture_b = device_b.replace("hw:Loopback,0,", "hw:Loopback,1,")
+    capture_a = device_a.replace("plughw:", "hw:").replace("hw:Loopback,0,", "hw:Loopback,1,")
+    capture_b = device_b.replace("plughw:", "hw:").replace("hw:Loopback,0,", "hw:Loopback,1,")
 
     for n in range(1, n_iterations + 1):
         print(f"\n[d15] iteration {n}/{n_iterations}")
@@ -1453,7 +1525,7 @@ def _copytruncate_once(log_path: str, rotated_dir: str):
 def scenario_d15r(socket_path: str, wav_path: str, fifo_path: str, log_path: str,
                    mode: str = "burst",
                    input_a: int = 1, input_b: int = 2,
-                   device_a: str = "hw:Loopback,0,0", device_b: str = "hw:Loopback,0,1",
+                   device_a: str = "plughw:Loopback,0,0", device_b: str = "plughw:Loopback,0,1",
                    n_iterations: int = 5,
                    rotated_dir: str = "/tmp/d15r_rotated"):
     """d15r: d15's burst (or a steady recording, for
@@ -1467,8 +1539,8 @@ def scenario_d15r(socket_path: str, wav_path: str, fifo_path: str, log_path: str
     (truncate exactly between each burst command instead of a background
     loop), or "steady" (no burst -- just a recording session with rotation
     racing, to isolate logging+rotation alone)."""
-    capture_a = device_a.replace("hw:Loopback,0,", "hw:Loopback,1,")
-    capture_b = device_b.replace("hw:Loopback,0,", "hw:Loopback,1,")
+    capture_a = device_a.replace("plughw:", "hw:").replace("hw:Loopback,0,", "hw:Loopback,1,")
+    capture_b = device_b.replace("plughw:", "hw:").replace("hw:Loopback,0,", "hw:Loopback,1,")
 
     ct_stop = threading.Event()
 
@@ -1599,7 +1671,7 @@ def scenario_d15r(socket_path: str, wav_path: str, fifo_path: str, log_path: str
 # ---------------------------------------------------------------------------
 
 def scenario_d16(socket_path: str, wav_path: str, fifo_path: str,
-                  input_index: int = 1, device: str = "hw:Loopback,0,0",
+                  input_index: int = 1, device: str = "plughw:Loopback,0,0",
                   restart_timeout: float = 15.0):
     """d16: force the recording-origin input's capture thread to
     self-stop the way a real ALSA driver crash/USB-yank does, let the
@@ -1669,7 +1741,7 @@ def scenario_d16(socket_path: str, wav_path: str, fifo_path: str,
     scenario does so itself; on a binary that bypasses the shared teardown
     it stays true forever (the wedge this scenario detects).
     """
-    capture_device = device.replace("hw:Loopback,0,", "hw:Loopback,1,")
+    capture_device = device.replace("plughw:", "hw:").replace("hw:Loopback,0,", "hw:Loopback,1,")
 
     c = MonitorClient(socket_path)
     proc = None
@@ -1793,7 +1865,7 @@ def main() -> int:
 
     p_play = sub.add_parser("play", help="play a WAV into the loopback playback side")
     p_play.add_argument("--wav", required=True)
-    p_play.add_argument("--device", default="hw:Loopback,0,0")
+    p_play.add_argument("--device", default="plughw:Loopback,0,0")
 
     p_status = sub.add_parser("status", help="print one get_status response")
     p_status.add_argument("--socket", default=DEFAULT_SOCKET)
@@ -1807,7 +1879,7 @@ def main() -> int:
     p_d7.add_argument("--socket", default=DEFAULT_SOCKET)
     p_d7.add_argument("--wav", required=True)
     p_d7.add_argument("--input", type=int, default=1)
-    p_d7.add_argument("--device", default="hw:Loopback,0,0")
+    p_d7.add_argument("--device", default="plughw:Loopback,0,0")
 
     p_gen_multi = sub.add_parser("gen-multi-track", help="generate an N-track tone WAV for D10")
     p_gen_multi.add_argument("--out", required=True)
@@ -1827,14 +1899,14 @@ def main() -> int:
         p.add_argument("--socket", default=DEFAULT_SOCKET)
         p.add_argument("--wav", required=True)
         p.add_argument("--input", type=int, default=1)
-        p.add_argument("--device", default="hw:Loopback,0,0")
+        p.add_argument("--device", default="plughw:Loopback,0,0")
 
     p_d11 = sub.add_parser("d11", help="run the D11 reader-killed/disarm-unblocks scenario")
     p_d11.add_argument("--socket", default=DEFAULT_SOCKET)
     p_d11.add_argument("--wav", required=True)
     p_d11.add_argument("--fifo", required=True, help="test FIFO path (for pkill matching + reader restart)")
     p_d11.add_argument("--input", type=int, default=1)
-    p_d11.add_argument("--device", default="hw:Loopback,0,0")
+    p_d11.add_argument("--device", default="plughw:Loopback,0,0")
 
     p_d4 = sub.add_parser("d4", help="run the D4 live-interrupt crossfade scenario")
     p_d4.add_argument("--socket", default=DEFAULT_SOCKET)
@@ -1842,12 +1914,13 @@ def main() -> int:
     p_d4.add_argument("--wav-b", required=True, help="tone WAV for the interrupting session (input B)")
     p_d4.add_argument("--fifo", required=True, help="test FIFO path (informational; dump comes from --dump-path)")
     p_d4.add_argument("--dump-path", default="/tmp/d4_fifo_dump.raw",
-                       help="raw s16le FIFO dump written by a concurrent "
+                       help="raw FIFO-wire-format dump (16 or 32-bit stereo, per the daemon's "
+                            "current output format) written by a concurrent "
                             "fifo_reader_stub.py --dump-path run against --fifo")
     p_d4.add_argument("--input-a", type=int, default=1)
     p_d4.add_argument("--input-b", type=int, default=2)
-    p_d4.add_argument("--device-a", default="hw:Loopback,0,0")
-    p_d4.add_argument("--device-b", default="hw:Loopback,0,1")
+    p_d4.add_argument("--device-a", default="plughw:Loopback,0,0")
+    p_d4.add_argument("--device-b", default="plughw:Loopback,0,1")
     p_d4.add_argument("--freq-a", type=float, default=440.0)
     p_d4.add_argument("--freq-b", type=float, default=880.0)
 
@@ -1862,15 +1935,15 @@ def main() -> int:
         p.add_argument("--wav-b", required=True)
         p.add_argument("--input-a", type=int, default=1)
         p.add_argument("--input-b", type=int, default=2)
-        p.add_argument("--device-a", default="hw:Loopback,0,0")
-        p.add_argument("--device-b", default="hw:Loopback,0,1")
+        p.add_argument("--device-a", default="plughw:Loopback,0,0")
+        p.add_argument("--device-b", default="plughw:Loopback,0,1")
 
     p_r1 = sub.add_parser("r1", help="run the r1 live-DSP-during-replay scenario")
     p_r1.add_argument("--socket", default=DEFAULT_SOCKET)
     p_r1.add_argument("--wav", required=True)
     p_r1.add_argument("--fifo", required=True, help="test FIFO path (read directly, paced, by this scenario)")
     p_r1.add_argument("--input", type=int, default=1)
-    p_r1.add_argument("--device", default="hw:Loopback,0,0")
+    p_r1.add_argument("--device", default="plughw:Loopback,0,0")
     p_r1.add_argument("--gain-before-db", type=float, default=0.0)
     p_r1.add_argument("--gain-after-db", type=float, default=-12.0)
 
@@ -1880,8 +1953,8 @@ def main() -> int:
     p_d15.add_argument("--fifo", required=True, help="test FIFO path")
     p_d15.add_argument("--input-a", type=int, default=1)
     p_d15.add_argument("--input-b", type=int, default=2)
-    p_d15.add_argument("--device-a", default="hw:Loopback,0,0")
-    p_d15.add_argument("--device-b", default="hw:Loopback,0,1")
+    p_d15.add_argument("--device-a", default="plughw:Loopback,0,0")
+    p_d15.add_argument("--device-b", default="plughw:Loopback,0,1")
     p_d15.add_argument("--iterations", type=int, default=5)
 
     p_d15r = sub.add_parser("d15r", help="run the d15r coordinator-restart-burst plus copytruncate-rotation compound scenario")
@@ -1895,8 +1968,8 @@ def main() -> int:
     p_d15r.add_argument("--mode", choices=["burst", "between", "steady"], default="burst")
     p_d15r.add_argument("--input-a", type=int, default=1)
     p_d15r.add_argument("--input-b", type=int, default=2)
-    p_d15r.add_argument("--device-a", default="hw:Loopback,0,0")
-    p_d15r.add_argument("--device-b", default="hw:Loopback,0,1")
+    p_d15r.add_argument("--device-a", default="plughw:Loopback,0,0")
+    p_d15r.add_argument("--device-b", default="plughw:Loopback,0,1")
     p_d15r.add_argument("--iterations", type=int, default=5)
 
     p_d16 = sub.add_parser("d16", help="run the d16 watchdog-restart-through-blessed-stop-path scenario "
@@ -1905,7 +1978,7 @@ def main() -> int:
     p_d16.add_argument("--wav", required=True)
     p_d16.add_argument("--fifo", required=True, help="test FIFO path")
     p_d16.add_argument("--input", type=int, default=1)
-    p_d16.add_argument("--device", default="hw:Loopback,0,0")
+    p_d16.add_argument("--device", default="plughw:Loopback,0,0")
     p_d16.add_argument("--restart-timeout", type=float, default=15.0,
                         help="seconds to wait for the watchdog to restart the input after "
                              "debug_fail_input (generous margin over the 100ms poll interval "
