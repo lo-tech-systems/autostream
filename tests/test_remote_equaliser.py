@@ -358,4 +358,128 @@ class TestRemoteEqualiserPageContent:
     def test_page_active_tab_is_equaliser(self):
         html = self._render()
         assert "nav-tab-active" in html
+
+
+# ---------------------------------------------------------------------------
+# EQ curve sample rate sourced from the live monitor, not hardcoded.
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestEqualiserCurveSampleRate:
+    """_EQ_FS in the injected JS must track the monitor-reported output_rate,
+    falling back to 48000 when the monitor is unreachable -- never a
+    hand-synced 44100 constant."""
+
+    def test_curve_fs_uses_monitor_output_rate(self):
+        from autostream_webui_page_equaliser import _curve_fs
+
+        with patch(
+            "autostream_webui_page_equaliser.get_live_monitor_output_rate",
+            return_value=48000,
+        ) as stub:
+            assert _curve_fs() == 48000
+        # fallback must be threaded through as 48000, per design A7.
+        stub.assert_called_once_with(fallback=48000)
+
+    def test_curve_fs_falls_back_when_monitor_unreachable(self):
+        from autostream_webui_page_equaliser import (
+            _CURVE_FS_FALLBACK,
+            get_live_monitor_output_rate,
+        )
+
+        # get_live_monitor_output_rate itself owns the unreachable-monitor
+        # fallback logic (autostream_core._connected_monitor returns None);
+        # _curve_fs() must simply pass its own fallback through unchanged.
+        assert _CURVE_FS_FALLBACK == 48000
+        assert callable(get_live_monitor_output_rate)
+
+    def test_local_page_js_embeds_live_output_rate(self):
+        from autostream_webui_page_equaliser import send_equaliser_page
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+        handler = MagicMock()
+        written_chunks = []
+        handler.wfile.write = lambda data: written_chunks.append(data)
+        handler._csrf_token = "testcsrf"
+        handler._pending_set_cookies = []
+
+        parsed = MagicMock()
+        parsed.webui.dark_mode = False
+        parsed.webui.show_hostname_on_home = False
+        parsed.output_eq = SimpleNamespace(
+            gain_db=0.0, auto_trim_enabled=False,
+            peq1_db=0.0, peq2_db=0.0, peq3_db=0.0,
+            peq4_db=0.0, peq5_db=0.0, peq6_db=0.0,
+        )
+        with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
+             patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"), \
+             patch(
+                 "autostream_webui_page_equaliser.get_live_monitor_output_rate",
+                 return_value=96000,
+             ):
+            send_equaliser_page(handler, state)
+
+        html = b"".join(written_chunks).decode("utf-8", errors="replace")
+        assert "var _EQ_FS        = 96000;" in html
+        assert "var _EQ_FS        = 44100;" not in html
+
+    def test_remote_page_js_embeds_live_output_rate(self):
+        from autostream_webui_page_equaliser import send_remote_equaliser_page
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+        handler = MagicMock()
+        written_chunks = []
+        handler.wfile.write = lambda data: written_chunks.append(data)
+        handler._csrf_token = "testcsrf"
+        handler._pending_set_cookies = []
+
+        parsed = MagicMock()
+        parsed.webui.dark_mode = False
+        with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
+             patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"), \
+             patch(
+                 "autostream_webui_page_equaliser.get_live_monitor_output_rate",
+                 return_value=44100,
+             ):
+            send_remote_equaliser_page(handler, state, _REMOTE_ID)
+
+        html = b"".join(written_chunks).decode("utf-8", errors="replace")
+        assert "var _EQ_FS        = 44100;" in html
+
+    def test_page_falls_back_to_48000_when_monitor_unreachable(self):
+        from autostream_webui_page_equaliser import send_equaliser_page, _CURVE_FS_FALLBACK
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+        handler = MagicMock()
+        written_chunks = []
+        handler.wfile.write = lambda data: written_chunks.append(data)
+        handler._csrf_token = "testcsrf"
+        handler._pending_set_cookies = []
+
+        parsed = MagicMock()
+        parsed.webui.dark_mode = False
+        parsed.webui.show_hostname_on_home = False
+        parsed.output_eq = SimpleNamespace(
+            gain_db=0.0, auto_trim_enabled=False,
+            peq1_db=0.0, peq2_db=0.0, peq3_db=0.0,
+            peq4_db=0.0, peq5_db=0.0, peq6_db=0.0,
+        )
+        # No monitor patch here -- real get_live_monitor_output_rate() runs
+        # against a socket that doesn't exist in the test sandbox, exercising
+        # the actual unreachable-monitor fallback path end to end.
+        with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
+             patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"):
+            send_equaliser_page(handler, state)
+
+        html = b"".join(written_chunks).decode("utf-8", errors="replace")
+        assert f"var _EQ_FS        = {_CURVE_FS_FALLBACK};" in html
         assert "nav-tab-disabled" in html

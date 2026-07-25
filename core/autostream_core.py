@@ -51,7 +51,9 @@ from autostream_player_service import (
     ensure_pipe_source_ready,
     list_outputs,
     reconcile_fifo_with_backend,
+    reconcile_pipe_format_with_backend,
     refresh_runtime_state,
+    retry_pending_format_reconcile,
     set_selected_outputs,
     stop_and_disable_all,
     update_output,
@@ -1687,6 +1689,36 @@ def get_live_output_eq_status(
         return None
 
 
+def get_live_monitor_output_rate(
+    fallback: int = 48000,
+    socket_path: Optional[str] = None,
+) -> int:
+    """Return the monitor's live-reported output sample rate in Hz.
+
+    Reads the "output_rate" field from get_status() (added alongside
+    output_bits/output_channels for the 48k/32-bit IPC flip). Returns
+    *fallback* whenever the monitor is unreachable, the field is missing,
+    or the reported value is not a sane positive number -- callers must
+    never hardcode a rate assumption instead.
+    """
+    try:
+        with _connected_monitor(socket_path) as client:
+            if client is None:
+                return fallback
+            status = client.get_status()
+            if not status:
+                return fallback
+            rate = status.get("output_rate")
+            if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+                return fallback
+            if rate <= 0:
+                return fallback
+            return int(rate)
+    except Exception as e:
+        logging.warning("Could not get live monitor output rate: %s", e)
+        return fallback
+
+
 # --------------------------------------------------------------------------- #
 # MonitorClient                                                                #
 # --------------------------------------------------------------------------- #
@@ -2713,7 +2745,9 @@ class AudioMonitor:
 
     # ── OwnTone helpers ──────────────────────────────────────────────────────
 
-    def _maybe_retry_owntone(self, now: float, replay_origin: bool = False) -> None:
+    def _maybe_retry_owntone(
+        self, now: float, replay_origin: bool = False, monitor_status: Optional[dict] = None,
+    ) -> None:
         """Periodically retry refreshing currently selected OwnTone outputs.
 
         *replay_origin* is True when this monitor's input is the current
@@ -2721,6 +2755,14 @@ class AudioMonitor:
         replay plays its buffer, but it is still the session's audible
         source, so the retry must not bail out as if idle. Defaults to False
         so existing capture-driven call sites are unaffected.
+
+        *monitor_status* is the poll loop's most recent client.get_status()
+        result, if the caller has one in hand -- passed through to
+        retry_pending_format_reconcile() below. Callers
+        without a fresh status handy (e.g. the replay-session-start path)
+        may omit it: a pending format retry just waits for the next call
+        that does have one, which for the main poll-loop call site is at
+        most one poll interval away.
         """
         if not self.is_capturing and not replay_origin:
             return
@@ -2756,6 +2798,14 @@ class AudioMonitor:
                 "Skipping OwnTone selected-output refresh: outputs API unavailable.",
             )
             return
+
+        # outputs is not None: the outputs probe above just confirmed
+        # owntone-mini is reachable -- exactly the moment to retry a
+        # still-pending pipe-format reconcile, in case a
+        # startup/reconnect-time partial save is still waiting for the
+        # backend to come back. Cheap no-op (zero HTTP traffic) whenever
+        # nothing is pending, so this costs nothing in the steady state.
+        retry_pending_format_reconcile(self.owntone_base_url, monitor_status)
 
         if not self._has_any_selected_outputs(outputs):
             if not self._auto_select_default_output(now, outputs, reason="retry"):
@@ -3020,6 +3070,29 @@ def _resync_monitor_daemon(
         )
         client.close()
         return False
+
+    # Format reconcile: sequenced
+    # after the FIFO-path reconcile above, not before, because a monitor
+    # reconnect is exactly the moment the daemon's (compile-time) output
+    # format could have changed -- e.g. an upgraded monitor binary. Safe to
+    # run unconditionally: reconcile_pipe_format_with_backend() is a no-op
+    # whenever the monitor doesn't report output_rate/output_bits (older
+    # daemon build) and never fails the caller, matching set_repeat_enabled's
+    # "must not fail the whole resync" treatment above. No double-restart risk
+    # with fifo_result: reconcile_fifo_with_backend's own restart-coupled
+    # action (_request_library_update_with_retry) is a synchronous /api/update
+    # HTTP call, already complete by the time we get here -- it never invokes
+    # restart-owntone, so there is nothing in flight for the format reconcile's
+    # (possible) real process restart to race with.
+    format_status = client.get_status()
+    format_result = reconcile_pipe_format_with_backend(
+        owntone_base_url, format_status, timeout=3.0,
+    )
+    if format_result.error or format_result.error_code:
+        logging.debug(
+            "Pipe-format reconcile during monitor-daemon reconnect: %s",
+            format_result.message,
+        )
 
     if not client.set_fifo(fifo_path):
         logging.warning("set_fifo failed after reconnect; will retry.")
@@ -3371,6 +3444,23 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 time.sleep(5.0)
                 continue
 
+            # Format reconcile, same
+            # placement logic as the reconnect path in _resync_monitor_daemon:
+            # sequenced after the FIFO-path reconcile (whose own restart-
+            # coupled action is a synchronous /api/update call, already
+            # finished by now -- nothing for a real process restart to race
+            # with), and unconditionally non-fatal to startup, mirroring
+            # fifo_result's own soft-failure-tolerant siblings below.
+            format_status = client.get_status()
+            format_result = reconcile_pipe_format_with_backend(
+                cfg.owntone.base_url, format_status, timeout=3.0,
+            )
+            if format_result.error or format_result.error_code:
+                logging.debug(
+                    "Pipe-format reconcile during startup: %s",
+                    format_result.message,
+                )
+
             if not client.set_fifo(fifo_path):
                 logging.warning("set_fifo(%r) failed during startup; retrying in 5 s.", fifo_path)
                 client.close()
@@ -3658,7 +3748,11 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 now = time.time()
                 for m in monitors:
                     m.apply_allow_capture(client)
-                    m._maybe_retry_owntone(now, replay_origin=(m.input_index == replay_origin_idx))
+                    m._maybe_retry_owntone(
+                        now,
+                        replay_origin=(m.input_index == replay_origin_idx),
+                        monitor_status=status,
+                    )
                     m.maybe_trigger_track_identification(
                         client, now, replay_origin=(m.input_index == replay_origin_idx),
                     )

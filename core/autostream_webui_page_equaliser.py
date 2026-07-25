@@ -22,7 +22,7 @@ import math
 from typing import Optional
 
 from autostream_appliances import get_all_appliances
-from autostream_core import OUTPUT_PEQ_BANDS
+from autostream_core import OUTPUT_PEQ_BANDS, get_live_monitor_output_rate
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
 from autostream_webui_assets import APPLIANCE_SELECTOR_CSS
@@ -76,8 +76,19 @@ _CURVE_F_MIN    = 20.0     # left edge frequency (Hz)
 _CURVE_F_MAX    = 20000.0  # right edge frequency (Hz)
 _CURVE_DB_RANGE = 12.0     # ± dB range shown
 _CURVE_PAD_Y    = 3        # vertical padding (px) so ±12 dB paths aren't clipped
-_CURVE_FS       = 44100    # sample rate used by autostream_monitor OUTPUT_RATE
+_CURVE_FS_FALLBACK = 48000  # used only when the monitor is unreachable
 _CURVE_N_PTS    = 200      # number of log-spaced frequency points in the path
+
+
+def _curve_fs() -> int:
+    """Return the sample rate to use for the EQ curve's biquad math.
+
+    Sourced live from the monitor's get_status() "output_rate" field (see
+    autostream_core.get_live_monitor_output_rate()) so this stays in sync
+    with the daemon's actual OUTPUT_RATE instead of a hand-synced constant.
+    Falls back to _CURVE_FS_FALLBACK when the monitor is unreachable.
+    """
+    return get_live_monitor_output_rate(fallback=_CURVE_FS_FALLBACK)
 
 
 def _cx(f: float) -> float:
@@ -261,11 +272,16 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
 # -----------------------------------------------------------------------------
 # Uses f-string so _CURVE_* Python constants are embedded directly, keeping
 # the JS and Python geometry in sync without any runtime injection.
+# _EQ_FS is the one exception: it is fed from the live monitor-reported
+# output_rate (see _curve_fs()) rather than a fixed Python constant, so the
+# function below is called per-render with that resolved value.
 
-_EQUALISER_CURVE_JS = f"""
+def _equaliser_curve_js(fs: int) -> str:
+    """Return the EQ curve JS, with _EQ_FS bound to *fs* (Hz)."""
+    return f"""
 // ── EQ frequency-response curve ─────────────────────────────────────────────
 // Constants mirror the Python _CURVE_* values in this module.
-var _EQ_FS        = {_CURVE_FS};
+var _EQ_FS        = {fs};
 var _SVG_W        = {_CURVE_W};
 var _SVG_H        = {_CURVE_H};
 var _SVG_F_MIN    = {_CURVE_F_MIN};
@@ -650,7 +666,7 @@ def send_equaliser_page(
         f"{card_html}"
         f"<script>"
         f"{_eq_band_config_js()}"
-        f"{_EQUALISER_CURVE_JS}"
+        f"{_equaliser_curve_js(_curve_fs())}"
         f"{_EQUALISER_JS}"
         f"</script>"
     )
@@ -1087,7 +1103,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         + "<div class='eq-section' id='eq-gain-section'></div>"
         + "<p id='eq-loading-msg' style='text-align:center;"
         "color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>Connecting…</p>"
-        + f"<script>{_eq_band_config_js()}{_EQUALISER_CURVE_JS}</script>"
+        + f"<script>{_eq_band_config_js()}{_equaliser_curve_js(_curve_fs())}</script>"
     )
 
     page = build_page_html(

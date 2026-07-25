@@ -47,12 +47,25 @@ SETTING_UNCOMPRESSED_ALAC = "uncompressed_alac"
 SETTING_BUFFERED_AUDIO_ENABLED = "buffered_audio_enabled"
 SETTING_IPV6 = "ipv6"
 SETTING_DEVICE_REMOVAL_GRACE_PERIOD = "device_removal_grace_period"
+# Restart-required pipe-format keys: mirror owntone_config.c's flat
+# "pipe_sample_rate" / "pipe_bits_per_sample" keys exactly so the reconcile in
+# autostream_player_service.py can push the monitor's reported output format
+# straight through without a name translation layer.
+SETTING_PIPE_SAMPLE_RATE = "pipe_sample_rate"
+SETTING_PIPE_BITS_PER_SAMPLE = "pipe_bits_per_sample"
 
 # Valid range and UI step for SETTING_START_BUFFER_MS.
 SETTING_START_BUFFER_MS_MIN = 300
 SETTING_START_BUFFER_MS_MAX = 3500
 SETTING_START_BUFFER_MS_STEP = 50
 SETTING_START_BUFFER_MS_DEFAULT = 2250
+
+# Allowed value sets for the pipe-format settings, mirroring the validation
+# owntone-mini enforces at owntone_config.c ~730-738 (which itself mirrors
+# pipe.c's accepted sets at init) -- kept here so callers can pre-validate
+# without a round trip, though owntone-mini remains the source of truth.
+SETTING_PIPE_SAMPLE_RATE_ALLOWED = (44100, 48000, 88200, 96000)
+SETTING_PIPE_BITS_PER_SAMPLE_ALLOWED = (16, 32)
 
 # Valid range (in minutes) for SETTING_DEVICE_REMOVAL_GRACE_PERIOD UI control.
 # The API stores and accepts values in seconds; the UI presents minutes.

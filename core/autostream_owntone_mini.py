@@ -38,7 +38,9 @@ from autostream_players import (
     SETTING_IPV6,
     SETTING_LOG_LEVEL,
     SETTING_PIPE_AUTOSTART,
+    SETTING_PIPE_BITS_PER_SAMPLE,
     SETTING_PIPE_PATH,
+    SETTING_PIPE_SAMPLE_RATE,
     SETTING_START_BUFFER_MS,
     SETTING_UNCOMPRESSED_ALAC,
 )
@@ -122,6 +124,29 @@ _SETTING_SPECS: dict[str, _MiniSettingSpec] = {
         option="buffered_audio_enabled",
         value_type="bool",
         requires_restart_on_change=False,
+    ),
+    # Pipe-format keys: restart-required, same as SETTING_START_BUFFER_MS above --
+    # owntone-mini reads these once at pipe_setup() init, not on every
+    # settings write. min/max mirror owntone_config.c's accepted-set
+    # validation endpoints (44100/48000/88200/96000 and 16/32); the backend
+    # itself is authoritative and rejects anything outside its accepted set
+    # even within this clamp (e.g. 44800 would clamp-pass here but still be
+    # rejected server-side).
+    SETTING_PIPE_SAMPLE_RATE: _MiniSettingSpec(
+        category="player",
+        option="pipe_sample_rate",
+        value_type="int",
+        requires_restart_on_change=True,
+        min_value=44100,
+        max_value=96000,
+    ),
+    SETTING_PIPE_BITS_PER_SAMPLE: _MiniSettingSpec(
+        category="player",
+        option="pipe_bits_per_sample",
+        value_type="int",
+        requires_restart_on_change=True,
+        min_value=16,
+        max_value=32,
     ),
 }
 
@@ -585,6 +610,8 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             SETTING_IPV6: "IPv6",
             SETTING_DEVICE_REMOVAL_GRACE_PERIOD: "mDNS Grace Period",
             SETTING_BUFFERED_AUDIO_ENABLED: "AirPlay 2 Buffered Audio",
+            SETTING_PIPE_SAMPLE_RATE: "Pipe Sample Rate",
+            SETTING_PIPE_BITS_PER_SAMPLE: "Pipe Bit Depth",
         }
         return labels.get(key, key)
 

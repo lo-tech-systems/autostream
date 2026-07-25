@@ -318,14 +318,14 @@ class TestStartStopOutputDump:
     def test_stop_output_dump_returns_response_dict(self):
         payload = {
             "ok": True, "was_active": True,
-            "frames_written": 44100, "frames_dropped": 0,
+            "frames_written": 48000, "frames_dropped": 0,
         }
         c = _client(FakeSocket((json.dumps(payload) + "\n").encode()))
         result = c.stop_output_dump()
         assert result is not None
         assert result["ok"] is True
         assert result["was_active"] is True
-        assert result["frames_written"] == 44100
+        assert result["frames_written"] == 48000
 
     def test_stop_output_dump_returns_none_on_no_response(self):
         c = _client(FakeSocket())   # EOF

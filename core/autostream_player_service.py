@@ -28,12 +28,15 @@ from autostream_players import (
     PlaybackMetadata,
     SaveSettingResult,
     SETTING_LOG_LEVEL,
+    SETTING_PIPE_BITS_PER_SAMPLE,
     SETTING_PIPE_PATH,
+    SETTING_PIPE_SAMPLE_RATE,
     SettingDescriptor,
     SettingValueResult,
     create_backend,
     detect_backend,
 )
+from autostream_sysutils import run_admin_cmd
 
 
 _CACHE_LOCK = threading.Lock()
@@ -75,6 +78,30 @@ class FifoEnsureResult:
 @dataclass(frozen=True)
 class FifoReconcileResult:
     ok: bool
+    error: str = ""
+    error_code: str = ""
+    detail: str = ""
+
+    @property
+    def message(self) -> str:
+        return self.error or self.detail or self.error_code
+
+
+@dataclass(frozen=True)
+class FormatReconcileResult:
+    """Result of reconcile_pipe_format_with_backend().
+
+    ``ok`` follows reconcile_fifo_with_backend()'s convention: it reports
+    whether the reconcile *attempt itself* completed (no exception, no fatal
+    local error), not whether the backend actually ended up matching the
+    monitor's format. A rejected/unsaveable value or an unreachable monitor
+    are both non-fatal outcomes surfaced via error/error_code, same as the
+    FIFO-path reconcile above.
+    """
+
+    ok: bool
+    changed: bool = False
+    restart_requested: bool = False
     error: str = ""
     error_code: str = ""
     detail: str = ""
@@ -385,6 +412,380 @@ def reconcile_fifo_with_backend(
         error=warning_error,
         error_code=warning_error_code,
         detail=update_result.detail or warning_detail,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pipe-format reconcile
+# ---------------------------------------------------------------------------
+#
+# reconcile_fifo_with_backend() above reconciles the FIFO *path*; this
+# reconciles the FIFO *format* (sample rate / bit depth) the same way: read
+# the source of truth (there, the local filesystem; here, the monitor's
+# reported output format), compare with what owntone-mini currently has
+# persisted, and push+restart on mismatch.
+#
+# One structural difference from the path reconcile: this module has no
+# monitor socket access of its own (autostream_core.py, which owns
+# MonitorClient, already imports this module, so importing back would be
+# circular). The caller is therefore responsible for passing in the
+# monitor's status snapshot (whatever MonitorClient.get_status() returned on
+# the current poll) rather than this function fetching it itself -- mirrors
+# how reconcile_fifo_with_backend() is handed fifo_path instead of computing
+# it.
+_format_reconcile_state_lock = threading.Lock()
+_format_reconcile_state: dict[str, dict[str, Any]] = {}
+
+
+def _format_reconcile_state_for(base_url: str) -> dict[str, Any]:
+    with _format_reconcile_state_lock:
+        state = _format_reconcile_state.get(base_url)
+        if state is None:
+            state = {
+                "logged_no_monitor_info": False,
+                "last_logged_reject": None,
+                # Set whenever a pass ends without the backend fully matching
+                # wanted (partial or full save failure); cleared on a fully
+                # matching/synced pass. Read by retry_pending_format_reconcile()
+                # below so the periodic (per-poll, while-capturing) path can
+                # cheaply no-op in the steady state and only spend an HTTP
+                # round trip when there is actually something left to retry.
+                "needs_retry": False,
+            }
+            _format_reconcile_state[base_url] = state
+        return state
+
+
+def _extract_monitor_output_format(
+    monitor_status: Optional[dict],
+) -> tuple[Optional[int], Optional[int]]:
+    """Pull (output_rate, output_bits) out of a MonitorClient.get_status() dict.
+
+    Returns (None, None) for anything that isn't a well-formed pair of
+    positive integers -- including monitor_status being None/empty (monitor
+    unreachable) or an older monitor build that doesn't report these fields
+    yet. Both are meant to
+    be indistinguishable "no format info available" cases to the caller.
+    """
+    if not isinstance(monitor_status, dict):
+        return None, None
+    rate = monitor_status.get("output_rate")
+    bits = monitor_status.get("output_bits")
+    try:
+        rate_int = int(rate)
+        bits_int = int(bits)
+    except (TypeError, ValueError):
+        return None, None
+    if isinstance(rate, bool) or isinstance(bits, bool):
+        return None, None
+    if rate_int <= 0 or bits_int <= 0:
+        return None, None
+    return rate_int, bits_int
+
+
+def _restart_owntone_backend_async(base_url: str) -> None:
+    """Fire-and-forget owntone-mini process restart request.
+
+    Pipe-format settings are restart-required: owntone-mini reads
+    pipe_sample_rate/pipe_bits_per_sample once at pipe_setup() init, so a
+    settings-API write alone (which is all reconcile_fifo_with_backend's own
+    restart-coupled follow-up, _request_library_update_with_retry, does) is
+    not enough to make a format change take effect. Mirrors the coordinator's
+    OwnTone-hang-watchdog restart trigger (autostream_core.py
+    _fire_owntone_hang_restart) and the Web UI's owntone-setup restart button
+    (autostream_webui_page_owntone.py _restart_owntone_worker): both
+    ultimately run "sudo -n autostream_admin restart-owntone" via
+    run_admin_cmd(); this does the same directly, without depending on
+    WebUIState (out of scope for this module).
+    """
+    def _worker() -> None:
+        try:
+            p = run_admin_cmd(["restart-owntone"], timeout=20.0)
+            if p.returncode != 0:
+                LOG.error(
+                    "Pipe-format reconcile: restart-owntone failed (rc=%s) for %s: %s",
+                    p.returncode, base_url, (p.stderr or "").strip(),
+                )
+            else:
+                LOG.warning(
+                    "Pipe-format reconcile: restart-owntone requested for %s.",
+                    base_url,
+                )
+        except Exception:
+            LOG.exception(
+                "Pipe-format reconcile: restart-owntone raised for %s", base_url
+            )
+
+    threading.Thread(
+        target=_worker, name="owntone-format-reconcile-restart", daemon=True
+    ).start()
+
+
+def reconcile_pipe_format_with_backend(
+    base_url: str,
+    monitor_status: Optional[dict],
+    *,
+    timeout: float = 3.0,
+) -> FormatReconcileResult:
+    """Align owntone-mini's pipe format settings with the monitor's actual output.
+
+    *monitor_status* is whatever MonitorClient.get_status() most recently
+    returned (or None if the monitor is unreachable); the caller supplies it
+    since this module cannot query the monitor socket directly (see the
+    module comment above).
+
+    Guarantees:
+      - Idempotent: once the backend already matches, no get/save is
+        attempted beyond the read used to check (safe to call every poll).
+        A key that already matches is never re-saved even mid-recovery from
+        a previous partial failure (see below) -- each of the two keys is
+        only pushed when it individually still differs from wanted.
+      - Safe when the monitor is down or too old to report a format: a
+        single no-op with one throttled log line, not a warning per call.
+      - Safe when owntone-mini rejects a value:
+        never turns into a restart-request loop, because a restart is only
+        ever requested after BOTH keys have been confirmed saved (see
+        "changed"/reject_error handling below) -- a save failure of either
+        key unconditionally skips the restart for that pass.
+      - No indefinite torn-pair state: on a *partial* failure (one of the
+        two save_setting calls succeeds, the other fails -- e.g. a
+        transport blip or backend restart mid-reconcile), the previous
+        implementation cached the whole (rate, bits) pair as "rejected" and
+        then short-circuited every later attempt to retry it, including the
+        one key that had actually already failed to save -- so a torn
+        persisted pair (new rate + stale bits, a combination the monitor
+        never itself writes) could sit armed indefinitely until the
+        monitor's wanted format happened to change. Fixed: this function no
+        longer memoizes anything that would suppress a retry attempt.
+        SaveSettingResult's error_code cannot reliably distinguish a
+        deterministic value-level rejection (owntone-mini's config_set_int
+        validation failure surfaces as the same HTTP 500 / "http_error" as
+        an unrelated transient backend error) from a transport blip
+        ("request_failed"/"no_response" are unambiguous transport failures,
+        but "http_error" is not distinguishable from a real reject) -- see
+        the module-level investigation note above reconcile_pipe_format_
+        with_backend's call sites in autostream_core.py for the trace. Per
+        When the signal is ambiguous the safe default is to keep
+        retrying, not to keep suppressing: each
+        reconcile pass re-diffs backend vs. wanted per key (already-matching
+        keys are skipped, not re-saved -- see "Idempotent" above) and
+        attempts to save only the key(s) still out of sync, so a torn pair
+        self-heals on the very next pass once the transient condition
+        clears. What IS still memoized is purely for log-noise control (a
+        WARNING is logged once per distinct (wanted_format, error_code)
+        state, not once per poll) -- never for suppressing the underlying
+        retry.
+    """
+    base_url_text = str(base_url or "").strip()
+    if not base_url_text:
+        return FormatReconcileResult(ok=True)
+
+    state = _format_reconcile_state_for(base_url_text)
+
+    wanted_rate, wanted_bits = _extract_monitor_output_format(monitor_status)
+    if wanted_rate is None or wanted_bits is None:
+        with _format_reconcile_state_lock:
+            already_logged = state["logged_no_monitor_info"]
+            state["logged_no_monitor_info"] = True
+        if not already_logged:
+            LOG.info(
+                "Monitor did not report an output format (output_rate/output_bits) "
+                "in its status; skipping pipe-format reconcile for %s until it does.",
+                base_url_text,
+            )
+        return FormatReconcileResult(ok=True)
+
+    with _format_reconcile_state_lock:
+        state["logged_no_monitor_info"] = False
+
+    resolved = resolve_backend(base_url_text, timeout=timeout)
+    backend = resolved.backend
+
+    rate_result = backend.get_setting(SETTING_PIPE_SAMPLE_RATE)
+    bits_result = backend.get_setting(SETTING_PIPE_BITS_PER_SAMPLE)
+
+    if rate_result.unsupported or bits_result.unsupported:
+        LOG.debug(
+            "Playback backend %s does not expose pipe-format settings at %s; "
+            "skipping format reconcile.",
+            resolved.backend_id,
+            base_url_text,
+        )
+        # Retrying is futile while the backend doesn't expose these keys at
+        # all -- nothing for a periodic retry
+        # to accomplish, so don't leave it spinning on this base_url.
+        with _format_reconcile_state_lock:
+            state["needs_retry"] = False
+        return FormatReconcileResult(ok=True)
+
+    if not rate_result.ok or not bits_result.ok:
+        failed = rate_result if not rate_result.ok else bits_result
+        LOG.warning(
+            "Could not read playback backend %s pipe format at %s: %s",
+            resolved.backend_id,
+            base_url_text,
+            failed.message or "read failed",
+        )
+        # Couldn't even confirm the current state -- worth another look once
+        # the backend is reachable again (retry_pending_format_reconcile()).
+        with _format_reconcile_state_lock:
+            state["needs_retry"] = True
+        return FormatReconcileResult(
+            ok=True,
+            error=failed.error or "Failed to read backend pipe format",
+            error_code=failed.error_code or "read_failed",
+        )
+
+    try:
+        backend_rate = int(rate_result.value)
+    except (TypeError, ValueError):
+        backend_rate = None
+    try:
+        backend_bits = int(bits_result.value)
+    except (TypeError, ValueError):
+        backend_bits = None
+
+    if backend_rate == wanted_rate and backend_bits == wanted_bits:
+        LOG.debug(
+            "Playback backend %s pipe format already matches monitor output "
+            "(%d Hz / %d-bit) at %s.",
+            resolved.backend_id, wanted_rate, wanted_bits, base_url_text,
+        )
+        with _format_reconcile_state_lock:
+            state["last_logged_reject"] = None
+            state["needs_retry"] = False
+        return FormatReconcileResult(ok=True)
+
+    wanted_format = (wanted_rate, wanted_bits)
+
+    changed = False
+    reject_error = ""
+    reject_error_code = ""
+
+    if backend_rate != wanted_rate:
+        save_result = backend.save_setting(SETTING_PIPE_SAMPLE_RATE, wanted_rate)
+        if save_result.ok:
+            changed = True
+            LOG.info(
+                "Updated playback backend %s pipe_sample_rate from %r to %r at %s.",
+                resolved.backend_id, backend_rate, wanted_rate, base_url_text,
+            )
+        else:
+            reject_error = save_result.error or "Failed to save pipe_sample_rate"
+            reject_error_code = save_result.error_code or "save_failed"
+
+    # Skip the bits save this pass if rate already failed (keeps the two
+    # writes ordered rather than firing both in parallel), but this is only
+    # an ordering choice, not a correctness dependency -- a rate-only
+    # failure here still leaves bits to be retried (or matching, and thus
+    # skipped) on the very next reconcile pass regardless.
+    if backend_bits != wanted_bits and not reject_error:
+        save_result = backend.save_setting(SETTING_PIPE_BITS_PER_SAMPLE, wanted_bits)
+        if save_result.ok:
+            changed = True
+            LOG.info(
+                "Updated playback backend %s pipe_bits_per_sample from %r to %r at %s.",
+                resolved.backend_id, backend_bits, wanted_bits, base_url_text,
+            )
+        else:
+            reject_error = save_result.error or "Failed to save pipe_bits_per_sample"
+            reject_error_code = save_result.error_code or "save_failed"
+
+    if reject_error:
+        # Log-noise control ONLY: throttles the WARNING to once per distinct
+        # (wanted_format, error_code) state, never suppresses the retry
+        # itself -- see the "No indefinite torn-pair state" guarantee above.
+        # A partial failure here (one save ok, one failed) deliberately does
+        # NOT restart owntone-mini (falls through to the return below,
+        # before the restart trigger further down) so a torn persisted pair
+        # is never armed by a restart from this pass.
+        log_key = (wanted_format, reject_error_code)
+        with _format_reconcile_state_lock:
+            already_logged = state.get("last_logged_reject") == log_key
+            state["last_logged_reject"] = log_key
+            # A pending retry: picked up by retry_pending_format_reconcile()
+            # from the periodic (per-poll, while-capturing) path the moment
+            # owntone-mini is confirmed reachable again -- closes the gap
+            # where a transient partial-save failure at startup/resync time
+            # would otherwise only be revisited at the next monitor
+            # reconnect (which could be days away).
+            state["needs_retry"] = True
+        if not already_logged:
+            LOG.warning(
+                "Playback backend %s rejected pipe format %d Hz / %d-bit at %s: %s "
+                "(will retry on the next reconcile pass).",
+                resolved.backend_id, wanted_rate, wanted_bits, base_url_text,
+                reject_error,
+            )
+        return FormatReconcileResult(
+            ok=True,
+            changed=changed,
+            error=reject_error,
+            error_code=reject_error_code,
+        )
+
+    with _format_reconcile_state_lock:
+        state["last_logged_reject"] = None
+        state["needs_retry"] = False
+
+    if not changed:
+        return FormatReconcileResult(ok=True)
+
+    LOG.warning(
+        "Pipe format changed to %d Hz / %d-bit for %s; requesting OwnTone restart.",
+        wanted_rate, wanted_bits, base_url_text,
+    )
+    _restart_owntone_backend_async(base_url_text)
+    return FormatReconcileResult(ok=True, changed=True, restart_requested=True)
+
+
+def retry_pending_format_reconcile(
+    base_url: str,
+    monitor_status: Optional[dict],
+    *,
+    timeout: float = 3.0,
+) -> FormatReconcileResult:
+    """Retry a still-pending pipe-format reconcile, cheaply, from the
+    periodic path.
+
+    reconcile_pipe_format_with_backend() only runs at startup and monitor
+    reconnect. Its own retry-on-next-pass behaviour (the
+    torn-persisted-pair fix) therefore only actually gets a next pass at one
+    of those two moments -- fine for a monitor-side hiccup (a reconnect
+    follows shortly), but a *transport* failure talking to owntone-mini
+    (the backend itself down/restarting mid-save) recovers on its own
+    schedule, unrelated to the monitor's connection state. Without this,
+    a partial save from a startup-time transient could sit unresolved until
+    the next monitor reconnect, which may be days away.
+
+    This is a thin, cheap gate around the real reconcile: a NO-OP with zero
+    HTTP traffic whenever nothing is pending (the steady-state case, so
+    calling this every poll while capturing costs nothing) and a full
+    reconcile pass when something is. Callers should invoke this from
+    wherever owntone-mini's reachability has just been freshly confirmed
+    (e.g. right after a successful outputs probe), so the retry fires
+    exactly when the backend is actually back -- not on some fixed timer
+    that pings a backend known to still be down.
+
+    *monitor_status* is passed straight through to
+    reconcile_pipe_format_with_backend(); if the monitor itself is down (or
+    the caller has no fresher status handy), pass None or a stale dict --
+    the underlying no-format-info no-op path (logged once, not per call)
+    already covers that case, and the pending flag is left untouched so a
+    later call with real status still gets a chance to retry.
+    """
+    base_url_text = str(base_url or "").strip()
+    if not base_url_text:
+        return FormatReconcileResult(ok=True)
+
+    state = _format_reconcile_state_for(base_url_text)
+    with _format_reconcile_state_lock:
+        pending = bool(state.get("needs_retry"))
+    if not pending:
+        return FormatReconcileResult(ok=True)
+
+    return reconcile_pipe_format_with_backend(
+        base_url_text, monitor_status, timeout=timeout,
     )
 
 

@@ -804,6 +804,91 @@ class TestP6ResyncRepush:
             )
         assert ok is True, "an old binary rejecting set_repeat_enabled must not fail resync"
 
+    # ── Pipe-format reconcile wiring ────────────────────────────────────────
+    #
+    # reconcile_pipe_format_with_backend() (autostream_player_service.py) is
+    # sequenced right after reconcile_fifo_with_backend() inside
+    # _resync_monitor_daemon -- a monitor reconnect is exactly the moment the
+    # daemon's compile-time output format could have changed (upgraded
+    # binary), same reasoning as the FIFO-path reconcile it sits next to.
+
+    def test_resync_calls_format_reconcile_with_status_after_fifo_ok(self):
+        """Format reconcile is called with the base_url and the client's live
+        get_status() dict, only once the FIFO-path reconcile has succeeded."""
+        client = self._mock_client_for_resync()
+        status_dict = {"output_rate": 48000, "output_bits": 32}
+        client.get_status.return_value = status_dict
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True):
+            rf.return_value = MagicMock(ok=True, message="")
+            fmt.return_value = MagicMock(ok=True, error="", error_code="")
+            ok = _resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=True, repeat_codec="mp2_224",
+            )
+        assert ok is True
+        fmt.assert_called_once_with("http://localhost:3689", status_dict, timeout=3.0)
+        # Sequenced after the FIFO reconcile, not before.
+        assert rf.call_count == 1
+
+    def test_resync_format_reconcile_skipped_when_fifo_reconcile_fails(self):
+        """A failed FIFO-path reconcile must abort resync before the format
+        reconcile is ever attempted (mirrors the existing early-return)."""
+        client = self._mock_client_for_resync()
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt:
+            rf.return_value = MagicMock(ok=False, message="fifo down")
+            ok = _resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=False, repeat_codec="auto",
+            )
+        assert ok is False
+        fmt.assert_not_called()
+
+    def test_resync_format_reconcile_noop_when_monitor_status_unavailable(self):
+        """A monitor that fails get_status() (unreachable/EOF) must still
+        resolve to a clean no-op: resync proceeds, no exception, and the
+        (real, unmocked) reconcile function is handed None rather than being
+        skipped -- it owns the "no format info" no-op behaviour itself."""
+        client = self._mock_client_for_resync()
+        client.get_status.return_value = None
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True):
+            rf.return_value = MagicMock(ok=True, message="")
+            fmt.return_value = MagicMock(ok=True, error="", error_code="")
+            ok = _resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=False, repeat_codec="auto",
+            )
+        assert ok is True
+        fmt.assert_called_once_with("http://localhost:3689", None, timeout=3.0)
+
+    def test_resync_format_reconcile_real_function_noop_on_missing_status(self):
+        """End-to-end (unmocked reconcile_pipe_format_with_backend): a monitor
+        that can't report get_status() must not touch the playback backend at
+        all -- no resolve_backend/get_setting/save_setting call, and resync
+        still reports ok."""
+        client = self._mock_client_for_resync()
+        client.get_status.return_value = None
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True), \
+             patch("autostream_player_service.resolve_backend") as resolve_mock:
+            rf.return_value = MagicMock(ok=True, message="")
+            ok = _resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=False, repeat_codec="auto",
+            )
+        assert ok is True
+        resolve_mock.assert_not_called()
+
 
 
 # ── P7: Reload teardown ───────────────────────────────────────────────────────
