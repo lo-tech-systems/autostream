@@ -1454,6 +1454,7 @@ RepeatStatus RepeatController::get_status() const
         // Frozen at the value computed when this session started
         // (perform_pending_start()) -- unchanged pre-existing behaviour.
         s.max_recording_seconds = _max_recording_seconds;
+        s.effective_codec       = codec_choice_to_string(_active_codec);
     }
     else if (_enabled_cfg && _cached_available_mib >= 0)
     {
@@ -1462,13 +1463,34 @@ RepeatStatus RepeatController::get_status() const
         // maybe_refresh_idle_meminfo_cache() on the recorder worker thread --
         // this call must never itself touch /proc/meminfo (it can be called
         // under long-held locks elsewhere / on a hot poll path).
+        // Credit the HELD buffer back into the estimate: a new capture
+        // session frees the old recording BEFORE its own meminfo read
+        // (notify_capture_started's Hold->free precedes Pending /
+        // perform_pending_start), so RAM currently occupied by a held or
+        // replaying buffer IS available to the next session. Without this
+        // credit the reported estimate shrinks by exactly the held size
+        // after every recording (cold boot "100 min" would decay to
+        // "40 min" after holding a 60-minute CD), while the real next
+        // session would still get the full window. Chunks are 16 MiB
+        // mmap-class allocations, so freeing genuinely returns them to
+        // MemAvailable.
+        size_t held_bytes = _buffer.total_bytes();
+        long   credited_mib = _cached_available_mib
+                              + static_cast<long>(held_bytes >> 20);
         CodecChoice idle_codec = CodecChoice::Unavailable;
-        if (_cached_available_mib >= kMinAvailableMibForStart)
-            idle_codec = codec_choice_from_config(_codec_cfg, _cached_available_mib,
+        if (credited_mib >= kMinAvailableMibForStart)
+            idle_codec = codec_choice_from_config(_codec_cfg, credited_mib,
                                                    _target_minutes_cfg, _sample_rate_hz);
-        s.max_recording_seconds = (idle_codec != CodecChoice::Unavailable)
-            ? max_recording_seconds(idle_codec, _cached_available_mib, 0, _sample_rate_hz)
-            : 0;
+        if (idle_codec != CodecChoice::Unavailable)
+        {
+            s.max_recording_seconds = max_recording_seconds(idle_codec, _cached_available_mib,
+                                                             held_bytes, _sample_rate_hz);
+            s.effective_codec       = codec_choice_to_string(idle_codec);
+        }
+        else
+        {
+            s.max_recording_seconds = 0;
+        }
     }
     else
     {

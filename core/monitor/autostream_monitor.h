@@ -61,7 +61,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.22";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.24";
 
 
 // =============================================================================
@@ -1287,6 +1287,13 @@ struct RepeatStatus
     std::string codec                = "auto";   // configured policy: auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm
     int         target_minutes       = kDefaultRepeatTargetMinutes;   // target-duration goal
     long        max_recording_seconds = 0;
+    // The tier the estimate above actually assumes: the ACTIVE session's
+    // codec while Recording, else the tier a session started right now would
+    // get (same pick_codec_for_target() the idle estimate ran). Empty when
+    // the estimate is unavailable (disabled / no meminfo yet / refused) --
+    // the UI shows the number and this label together (setup page "Buffer:
+    // 84 mins (256Kbps MP2)").
+    std::string effective_codec;
 
     struct Recording
     {

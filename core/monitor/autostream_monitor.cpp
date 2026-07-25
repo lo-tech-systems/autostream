@@ -1092,6 +1092,7 @@ std::string AudioMonitor::api_get_status()
             << "\"codec\":\""              << json_escape(rs.codec)           << "\","
             << "\"target_minutes\":"      << rs.target_minutes               << ","
             << "\"max_recording_seconds\":" << rs.max_recording_seconds       << ","
+            << "\"effective_codec\":\""   << json_escape(rs.effective_codec) << "\","
             << "\"recording\":{"
             << "\"active\":"          << (rs.recording.active ? "true" : "false") << ","
             << "\"seconds\":"         << rs.recording.seconds                     << ","

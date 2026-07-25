@@ -679,7 +679,7 @@ def send_setup_page(
             </label>
             <span>Enable repeat playback</span>
           </div>
-          <div class="helptext" id="repeat-max-time-note">Max buffer time: —</div>
+          <div class="helptext" id="repeat-max-time-note">Buffer: —</div>
           <div class="helptext" id="repeat-unavailable-note" style="display:none;color:var(--color-status-danger);"></div>
           {owntone_button_html}
         """
@@ -1815,6 +1815,13 @@ def send_setup_page(
           if (id === 'system') refreshNetworkAdapterInfo();
           if (id === 'playback') refreshRepeatSetupNote();
         }}
+        function _repeatCodecLabel(codec) {{
+          if (!codec) return '';
+          var m = /^mp2_(\\d+)$/.exec(String(codec));
+          if (m) return m[1] + 'Kbps MP2';
+          if (codec === 'pcm' || codec === 'pcm_s16') return '16-bit PCM';
+          return String(codec);
+        }}
         async function refreshRepeatSetupNote() {{
           var noteEl = document.getElementById('repeat-max-time-note');
           var unavailEl = document.getElementById('repeat-unavailable-note');
@@ -1825,7 +1832,12 @@ def send_setup_page(
             if (!repeat) return;  // absent on old monitor binaries -- feature unsupported
             var maxSecs = Number(repeat.max_recording_seconds);
             if (noteEl && Number.isFinite(maxSecs) && maxSecs > 0) {{
-              noteEl.textContent = 'Max buffer time: ' + Math.round(maxSecs / 60) + ' minutes';
+              // effective_codec: the tier the estimate assumes (monitor
+              // status, e.g. "mp2_256" or "pcm"); absent/empty on older
+              // monitor builds -> omit the parenthetical.
+              var codecLabel = _repeatCodecLabel(repeat.effective_codec);
+              noteEl.textContent = 'Buffer: ' + Math.round(maxSecs / 60) + ' mins'
+                                   + (codecLabel ? ' (' + codecLabel + ')' : '');
             }}
             var reason = repeat.recording && repeat.recording.unavailable_reason;
             if (unavailEl) {{

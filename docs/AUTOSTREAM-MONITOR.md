@@ -912,6 +912,7 @@ Success response:
     "codec":"auto",
     "target_minutes":80,
     "max_recording_seconds":20340,
+    "effective_codec":"mp2_256",
     "recording":{
       "active":false,
       "seconds":812.4,
@@ -1039,6 +1040,11 @@ Top-level fields:
     *current* free RAM when `codec == "auto"`). `0` only when genuinely
     unavailable: `enabled` is `false`, or no free-RAM reading has landed yet
     (a brief window right after daemon startup or re-enabling)
+  - `effective_codec`: the tier `max_recording_seconds` assumes -- the active
+    session's codec while recording, else the tier a session started right
+    now would resolve to (e.g. `mp2_256`, `pcm`). Empty string when the
+    estimate is unavailable. The setup page renders the two together
+    ("Buffer: 84 mins (256Kbps MP2)").
   - `recording.active`: `true` while a recording is in progress (`false`
     while `replay.active` is `true` -- recording and replay are never both
     active at once; recording while replaying is out of scope)
