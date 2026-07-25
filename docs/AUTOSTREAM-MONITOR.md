@@ -106,13 +106,18 @@ The daemon listens on a Unix domain socket and speaks newline-delimited JSON.
 The daemon binary supports:
 
 ```text
-autostream_monitor [--socket PATH] [--log-level LEVEL]
+autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]
 ```
 
 - `--socket PATH`
   - override the Unix socket path
 - `--log-level LEVEL`
   - accepted values: `warn`, `warning`, `log`, `fatal`, `info`, `debug`, `spam`
+- `--test-hooks`
+  - **test-only, never set by the production systemd unit.** Enables the
+    `debug_fail_input` socket command (see below). Intended for a standalone
+    test-instance daemon driven by `tools/dev/repeat_test_driver.py`, never
+    the live daemon.
 
 ## General Response Shape
 
@@ -702,6 +707,38 @@ the boolean itself):
 {"type":"ack","command":"set_repeat_armed","ok":true}
 ```
 
+### `debug_fail_input` (test-only)
+
+**Test-only. Rejected unless the daemon was launched with `--test-hooks`
+(never true in production).** Arms a one-shot flag that makes the target
+input's capture thread take the exact same exit path as a genuine
+unrecoverable ALSA read error on its next loop iteration -- i.e. it self-stops
+(`is_started:true`, `is_running:false`), exactly the state the watchdog
+auto-restart loop in `AudioMonitor::run()` polls for. Everything downstream
+of that point (the watchdog's teardown-then-restart sequence, the repeat
+controller's `notify_input_stopped()` handling) runs completely unmodified;
+only the trigger is synthetic. This lets `tools/dev/repeat_test_driver.py`
+exercise the watchdog path deterministically -- unloading the ALSA loopback
+kernel module does not work because the daemon's own open PCM handle pins
+the module (`rmmod` fails with "module in use").
+
+Request:
+
+```json
+{"type":"debug_fail_input","input":1}
+```
+
+Success response:
+
+```json
+{"type":"ack","command":"debug_fail_input","input":1,"ok":true}
+```
+
+Typical errors:
+
+- `test hooks not enabled` (daemon was not launched with `--test-hooks`)
+- `input index must be 1 or 2`
+
 ### `stop_output_dump`
 
 Stops the current recording, flushes buffered data, patches the WAV header with
@@ -1090,6 +1127,21 @@ This ordering matters:
 - `output_auto_trim_db` is always reported (even when auto-trim is disabled) so
   that polling clients can display the current effective gain without needing to
   track whether auto-trim is on or off.
+
+### Atomics and lock-freedom
+
+The daemon uses `std::atomic<double>` in hot paths: the `RateEstimator`'s
+published ratio/rate (updated at most every 10 s) and the `_stall_since`
+stall trackers written once per audio block on the process thread. On
+32-bit ARMv6 these 8-byte atomics could fall back to a libatomic lock
+table — a hidden lock on the audio thread. This is closed as a non-issue
+by product policy: **the monitor only ships on 64-bit OS** (32-bit is
+supported solely for autostream-dial, which does not include
+`autostream_monitor`). Verified on aarch64 (Debian 13, g++ 14):
+`std::atomic<double>::is_always_lock_free == 1` and the linked binary
+carries no `libatomic` dependency. If a 32-bit monitor target is ever
+reintroduced, switch these fields to integer atomics
+(`std::atomic<int64_t>` milliseconds).
 
 ## Source Of Truth
 

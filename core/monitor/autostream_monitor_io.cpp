@@ -897,15 +897,19 @@ bool InputChannel::start(std::string* error_out)
         return false;
     }
 
-    // Create a dedicated single-channel SRC state for the 44100 → 16000 Hz ID tap.
-    int id_src_error = 0;
-    _id_src_state = src_new(SRC_LINEAR, /*channels=*/1, &id_src_error);
-    if (!_id_src_state)
+    // Create the 44100 → 16000 Hz ID-tap resampler (shared, filtered
+    // SRC_SINC_FASTEST helper -- see autostream_id_tap.h). MAX_SRC_OUTPUT
+    // (process_thread_func()'s local constant, 4096) is the largest block
+    // the process thread will ever hand it, so that is what pre-sizes its
+    // scratch.
+    _id_tap = std::make_unique<IdTapResampler>(
+        AudioMonitor::output_rate_hz(), static_cast<int>(ID_BUF_RATE), 4096);
+    if (!_id_tap->valid())
     {
-        LOG_WARN("[input%d] src_new (ID tap) failed: %s",
-                 _index, src_strerror(id_src_error));
+        LOG_WARN("[input%d] src_new (ID tap) failed", _index);
         src_delete(_src_state);
         _src_state = nullptr;
+        _id_tap.reset();
         _alsa.close();
         if (error_out)
             *error_out = "failed to initialise ID sample-rate converter";
@@ -993,11 +997,7 @@ bool InputChannel::start(std::string* error_out)
             src_delete(_src_state);
             _src_state = nullptr;
         }
-        if (_id_src_state)
-        {
-            src_delete(_id_src_state);
-            _id_src_state = nullptr;
-        }
+        _id_tap.reset();
         _started.store(false);
         LOG_WARN("[input%d] Thread creation failed: %s", _index, e.what());
         if (error_out)
@@ -1043,11 +1043,7 @@ void InputChannel::stop()
         src_delete(_src_state);
         _src_state = nullptr;
     }
-    if (_id_src_state)
-    {
-        src_delete(_id_src_state);
-        _id_src_state = nullptr;
-    }
+    _id_tap.reset();
 
     _capturing.store(false);
     _current_peak_sample.store(0, std::memory_order_relaxed);
@@ -1177,6 +1173,18 @@ void InputChannel::capture_thread_func()
 
         int frames_read = _alsa.read(period_buf.data(), period);
 
+        // Test-only (--test-hooks): debug_inject_capture_failure() arms this
+        // flag from the control thread. Consuming it here (check-and-clear,
+        // once per iteration) and forcing frames_read negative routes
+        // through EXACTLY the same unrecoverable-error exit path below as a
+        // genuine ALSA failure -- from this point on there is no difference
+        // between an injected and a real failure.
+        if (_debug_fail_injected.exchange(false, std::memory_order_relaxed))
+        {
+            LOG_WARN("[input%d] [test-hooks] injected capture failure", _index);
+            frames_read = -1;
+        }
+
         if (frames_read < 0)
         {
             // Unrecoverable ALSA error; stop the capture session.
@@ -1281,12 +1289,9 @@ void InputChannel::process_thread_func()
     std::vector<float>   float_in(MAX_FRAMES * 2);        // interleaved float
     std::vector<float>   float_out(MAX_SRC_OUTPUT * 2);   // post-SRC float
     std::vector<int16_t> pcm_out(MAX_SRC_OUTPUT * 2);     // final int16
-    // ID-tap scratch: mono float input to the ID SRC, its float output, and
-    // the final s16le frames.  MAX_SRC_OUTPUT frames is a safe upper bound for
-    // both the downmixed mono input and the 44100→16000 SRC output.
-    std::vector<float>   id_float_mono(MAX_SRC_OUTPUT);   // downmixed mono float
-    std::vector<float>   id_float_out(MAX_SRC_OUTPUT);    // 16 kHz mono float from SRC
-    std::vector<int16_t> id_tmp(MAX_SRC_OUTPUT);          // 16 kHz mono s16le
+    // ID-tap scratch (downmix, resample, clamp) lives inside _id_tap
+    // (IdTapResampler) -- pre-sized in start() from this same MAX_SRC_OUTPUT
+    // bound.
 
     // Minimum number of samples to accumulate before processing.
     // 512 samples = 256 stereo frames = ~5 ms at 48 kHz.
@@ -1466,6 +1471,12 @@ void InputChannel::process_thread_func()
         {
             if (_src_state)
                 src_reset(_src_state);
+            // Reset the ID-tap resampler alongside the main SRC state so a
+            // fresh capture session gets fresh interpolator state on BOTH
+            // paths -- otherwise only the main SRC gets reset here, letting
+            // the ID tap carry state across silence gaps.
+            if (_id_tap)
+                _id_tap->reset();
             _ramp_frames_remaining    = RAMP_DURATION_FRAMES;
             _prefill_frames_remaining = PREFILL_DURATION_FRAMES;
             _prefill_buf.clear();
@@ -1557,52 +1568,20 @@ void InputChannel::process_thread_func()
                 // ── ID snapshot tap (post-SRC, pre-gain, pre-EQ) ─────────
                 // Tap here to capture uncolored audio: gain and EQ reflect
                 // user preference and would skew Shazam's frequency-domain
-                // fingerprints if applied.
-                // Step 1: downmix the 44100 Hz stereo float block to mono.
-                // Step 2: run through _id_src_state (SRC_LINEAR, 1 ch) to
-                //         convert 44100 → 16000 Hz.
-                // Step 3: clamp and convert to s16le, then append to _id_buf.
-                if (!_id_buf.empty() && _id_src_state)
+                // fingerprints if applied. Downmix, resample (44100 → 16000
+                // Hz, filtered SRC_SINC_FASTEST), and clamp are all done by
+                // _id_tap (IdTapResampler); this just writes its output into
+                // _id_buf under the ring's own lock.
+                if (!_id_buf.empty() && _id_tap)
                 {
-                    // Downmix stereo → mono.
-                    for (int i = 0; i < out_frames; ++i)
+                    int id_count = 0;
+                    const int16_t* id_out = _id_tap->process(float_out.data(), out_frames, &id_count);
+                    if (id_out && id_count > 0)
                     {
-                        float L = float_out[i * 2];
-                        float R = float_out[i * 2 + 1];
-                        id_float_mono[i] = (L + R) * 0.5f;
-                    }
-
-                    // Resample 44100 → 16000 Hz.
-                    SRC_DATA id_src_data;
-                    memset(&id_src_data, 0, sizeof(id_src_data));
-                    id_src_data.data_in       = id_float_mono.data();
-                    id_src_data.input_frames  = out_frames;
-                    id_src_data.data_out      = id_float_out.data();
-                    id_src_data.output_frames = static_cast<long>(id_float_out.size());
-                    id_src_data.src_ratio     = static_cast<double>(ID_BUF_RATE) /
-                                                static_cast<double>(AudioMonitor::output_rate_hz());
-                    id_src_data.end_of_input  = 0;
-
-                    int id_err = src_process(_id_src_state, &id_src_data);
-                    if (id_err != 0)
-                    {
-                        LOG_WARN("[input%d] ID SRC error: %s",
-                                 _index, src_strerror(id_err));
-                    }
-                    else if (id_src_data.output_frames_gen > 0)
-                    {
-                        int id_count = static_cast<int>(id_src_data.output_frames_gen);
-                        for (int i = 0; i < id_count; ++i)
-                        {
-                            float s = id_float_out[i];
-                            if (s >  1.0f) s =  1.0f;
-                            if (s < -1.0f) s = -1.0f;
-                            id_tmp[i] = static_cast<int16_t>(s * 32767.0f);
-                        }
                         std::lock_guard<std::mutex> id_lock(_id_mutex);
                         unsigned wp = _id_write_pos;
                         for (int i = 0; i < id_count; ++i)
-                            _id_buf[(wp + static_cast<unsigned>(i)) & ID_BUF_MASK] = id_tmp[i];
+                            _id_buf[(wp + static_cast<unsigned>(i)) & ID_BUF_MASK] = id_out[i];
                         _id_write_pos    = wp + static_cast<unsigned>(id_count);
                         _id_frames_avail = std::min(
                             _id_frames_avail + static_cast<unsigned>(id_count),

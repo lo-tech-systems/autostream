@@ -765,6 +765,11 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         bool armed = json_get_bool(json_command, "armed", false);
         return _monitor.api_set_repeat_armed(armed);
     }
+    else if (type == "debug_fail_input")
+    {
+        int idx = json_get_int(json_command, "input", 0);
+        return _monitor.api_debug_fail_input(idx);
+    }
 #ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
     else if (type == "debug_dump_repeat_buffer")
     {
@@ -787,8 +792,9 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
 // AudioMonitor
 // =============================================================================
 
-AudioMonitor::AudioMonitor(const std::string& socket_path)
+AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabled)
     : _socket_path(socket_path)
+    , _test_hooks_enabled(test_hooks_enabled)
     , _repeat_controller(OUTPUT_RATE, _fifo_mutex, _output_processor)
     , _control_server(*this)
 {
@@ -896,7 +902,15 @@ void AudioMonitor::run()
 
             LOG_WARN("[monitor] Input %d stopped unexpectedly; attempting auto-restart",
                      i + 1);
-            _inputs[i]->stop();   // join threads and release ALSA/SRC resources
+            // stop_input_with_teardown() calls notify_input_stopped(), which
+            // can block up to kDrainTimeoutMs (250 ms) if the repeat
+            // controller is in the Recording state on this input,
+            // waiting for a bounded drain. Blocking here is acceptable: run()
+            // is the main thread (not audio/process/control), this restart
+            // path is already 5 s backoff-throttled, and self-stopped ALSA
+            // errors are rare. Teardown must complete before the start()
+            // retry below, exactly as it does on the api_stop_input() path.
+            stop_input_with_teardown(i);
 
             std::string err;
             if (_inputs[i]->start(&err))
@@ -958,6 +972,43 @@ InputChannel* AudioMonitor::get_input(int input_index)
     if (input_index < 1 || input_index > NUM_INPUTS)
         return nullptr;
     return _inputs[input_index - 1].get();
+}
+
+// ── stop_input_with_teardown ─────────────────────────────────────────────────
+//
+// Shared teardown sequence for stopping an input. `i` is the 0-based
+// _inputs[] index; caller must have already verified _inputs[i] is non-null.
+// This is the single blessed stop path: api_stop_input() and the watchdog
+// auto-restart loop in run() both call it, so there is exactly one place
+// that must stay correct instead of two hand-maintained copies.
+bool AudioMonitor::stop_input_with_teardown(int i)
+{
+    InputChannel* ch = _inputs[i].get();
+
+    // Read _allow_capture *before* stop() so we know whether this was the
+    // active FIFO writer.  stop() joins the process thread, which is safe to
+    // do with _allow_capture still set; the thread exits cleanly.  We must not
+    // reset the shared auto-trim for the inactive (monitoring-only) input,
+    // because doing so would discard the trim that was learned for the currently
+    // active input's session -- exactly the bug the fix is designed to prevent.
+    const bool was_active = ch->allow_capture_enabled();
+
+    // D12: stop_input on the repeat feature's current origin
+    // input discards the buffer and cancels any active replay, belt and
+    // braces alongside Python's own reload-path disarm+discard. No-op if
+    // this input is not the origin (RepeatController checks internally).
+    // notify_input_stopped() takes the 1-based input index.
+    _repeat_controller.notify_input_stopped(i + 1);
+
+    ch->stop();
+
+    // Reset auto-trim only when the stopped input was the one feeding the FIFO.
+    // Stopping the idle monitoring input must not disturb trim accumulated by
+    // the active session on the other input.
+    if (was_active)
+        _output_processor.reset_auto_trim();
+
+    return was_active;
 }
 
 
@@ -1386,27 +1437,7 @@ std::string AudioMonitor::api_stop_input(int input_index)
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
 
-    // Read _allow_capture *before* stop() so we know whether this was the
-    // active FIFO writer.  stop() joins the process thread, which is safe to
-    // do with _allow_capture still set; the thread exits cleanly.  We must not
-    // reset the shared auto-trim for the inactive (monitoring-only) input,
-    // because doing so would discard the trim that was learned for the currently
-    // active input's session — exactly the bug the fix is designed to prevent.
-    const bool was_active = ch->allow_capture_enabled();
-
-    // D12: stop_input on the repeat feature's current origin
-    // input discards the buffer and cancels any active replay, belt and
-    // braces alongside Python's own reload-path disarm+discard. No-op if
-    // this input is not the origin (RepeatController checks internally).
-    _repeat_controller.notify_input_stopped(input_index);
-
-    ch->stop();
-
-    // Reset auto-trim only when the stopped input was the one feeding the FIFO.
-    // Stopping the idle monitoring input must not disturb trim accumulated by
-    // the active session on the other input.
-    if (was_active)
-        _output_processor.reset_auto_trim();
+    const bool was_active = stop_input_with_teardown(input_index - 1);
 
     LOG_INFO("[monitor] stop_input(%d) completed (was_active=%s)",
              input_index, was_active ? "true" : "false");
@@ -1798,6 +1829,32 @@ std::string AudioMonitor::api_set_repeat_armed(bool armed)
     return "{\"type\":\"ack\",\"command\":\"set_repeat_armed\",\"ok\":true}";
 }
 
+std::string AudioMonitor::api_debug_fail_input(int input_index)
+{
+    if (!_test_hooks_enabled)
+    {
+        LOG_WARN("[monitor] debug_fail_input rejected: test hooks not enabled");
+        return "{\"type\":\"ack\",\"command\":\"debug_fail_input\","
+               "\"ok\":false,\"error\":\"test hooks not enabled\"}";
+    }
+
+    InputChannel* ch = get_input(input_index);
+    if (!ch)
+    {
+        LOG_WARN("[monitor] debug_fail_input rejected for invalid input index %d", input_index);
+        return "{\"type\":\"ack\",\"command\":\"debug_fail_input\","
+               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+    }
+
+    ch->debug_inject_capture_failure();
+    LOG_WARN("[monitor] [test-hooks] debug_fail_input(%d): injection armed", input_index);
+
+    std::ostringstream oss;
+    oss << "{\"type\":\"ack\",\"command\":\"debug_fail_input\","
+        << "\"input\":" << input_index << ",\"ok\":true}";
+    return oss.str();
+}
+
 #ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
 std::string AudioMonitor::api_debug_dump_repeat_buffer(const std::string& path)
 {
@@ -1824,9 +1881,10 @@ std::string AudioMonitor::api_debug_dump_repeat_buffer(const std::string& path)
 int main(int argc, char* argv[])
 {
     // Parse command-line arguments.
-    // Usage: autostream_monitor [--socket PATH] [--log-level LEVEL]
+    // Usage: autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]
     std::string socket_path = "/tmp/autostream_monitor.sock";
     std::string log_level_arg;
+    bool test_hooks_enabled = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1838,13 +1896,23 @@ int main(int argc, char* argv[])
         {
             log_level_arg = argv[++i];
         }
+        else if (strcmp(argv[i], "--test-hooks") == 0)
+        {
+            // Test-only: enables the debug_fail_input socket command (see
+            // AudioMonitor::api_debug_fail_input()). Never set by
+            // autostream_install.sh's production systemd unit -- only by
+            // dev/test harnesses running a standalone daemon instance.
+            test_hooks_enabled = true;
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
             fprintf(stdout,
-                    "Usage: autostream_monitor [--socket PATH] [--log-level LEVEL]\n"
+                    "Usage: autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]\n"
                     "\n"
                     "  --socket PATH   Unix domain socket path (default: %s)\n"
                     "  --log-level L   Override log level: warn|warning|info|debug|spam\n"
+                    "  --test-hooks    Enable test-only socket commands (debug_fail_input).\n"
+                    "                  Never used in production; dev/test harnesses only.\n"
                     "\n"
                     "The monitor starts with no audio device connected.\n"
                     "Configure it via the socket using JSON commands.\n"
@@ -1910,7 +1978,10 @@ int main(int argc, char* argv[])
              protocol_log_level_name(log_level),
              log_level_arg.empty() ? "default" : "command line");
 
-    AudioMonitor monitor(socket_path);
+    if (test_hooks_enabled)
+        LOG_WARN("[monitor] --test-hooks enabled: debug_fail_input is active (dev/test only)");
+
+    AudioMonitor monitor(socket_path, test_hooks_enabled);
     monitor.run();
     logger_shutdown();
 

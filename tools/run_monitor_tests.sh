@@ -46,6 +46,13 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     "$TEST_DIR/test_repeat_buffer.cpp" \
     -o "$BUILD_DIR/test_repeat_buffer"
 
+echo "=== Building test_id_tap (header-only, requires libsamplerate0-dev) ==="
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$MONITOR_DIR" \
+    "$TEST_DIR/test_id_tap.cpp" \
+    -lsamplerate \
+    -o "$BUILD_DIR/test_id_tap"
+
 echo ""
 echo "=== Running test_control_protocol (from repo root) ==="
 (cd "$REPO_ROOT" && "$BUILD_DIR/test_control_protocol")
@@ -61,6 +68,10 @@ echo "=== Running test_monitor_dsp ==="
 echo ""
 echo "=== Running test_repeat_buffer ==="
 "$BUILD_DIR/test_repeat_buffer"
+
+echo ""
+echo "=== Running test_id_tap ==="
+"$BUILD_DIR/test_id_tap"
 
 echo ""
 echo "All native monitor tests passed."

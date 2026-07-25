@@ -35,6 +35,7 @@
 #include "autostream_monitor_utils.h"
 #include "autostream_track_gap_detector.h"
 #include "autostream_repeat_buffer.h"
+#include "autostream_id_tap.h"
 
 #include <string>
 #include <vector>
@@ -57,7 +58,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.5";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.7";
 
 
 // =============================================================================
@@ -406,6 +407,12 @@ private:
     // updated ratio and rate.  All other internal state stays private above.
     // Note: std::atomic<double> may not be lock-free on ARMv6, but is correct
     // regardless; these values are updated at most once every 10 seconds.
+    // The monitor only ships on 64-bit OS (32-bit is supported solely for
+    // autostream-dial, which has no monitor), and on aarch64
+    // std::atomic<double> is is_always_lock_free (verified; the linked
+    // binary has no libatomic dependency). This also covers the per-block
+    // _stall_since atomics. See docs/AUTOSTREAM-MONITOR.md "Atomics and
+    // lock-freedom".
     std::atomic<double> _published_ratio;   // output_rate / smoothed_rate
     std::atomic<double> _published_rate;    // smoothed_rate (Hz)
 
@@ -1644,6 +1651,15 @@ public:
     // detect the crashed-but-not-cleaned-up state in api_start_input().
     bool is_started() const { return _started.load(); }
 
+    // Test-only (--test-hooks): arms a one-shot flag that makes the capture
+    // thread take the exact same exit path as a genuine unrecoverable ALSA
+    // read error on its next loop iteration (see capture_thread_func()).
+    // Gated at the command-dispatch level (ControlServer::dispatch_command()/
+    // AudioMonitor::api_debug_fail_input()) on AudioMonitor::test_hooks_enabled();
+    // this setter itself has no gate of its own, by design -- one gate,
+    // checked once, is simpler to audit than two.
+    void debug_inject_capture_failure() { _debug_fail_injected.store(true, std::memory_order_relaxed); }
+
     // Copy the most recent min(max_frames, ID_BUF_FRAMES) mono s16le 16000 Hz
     // frames into out[0..return_value-1], ordered oldest-first.  Returns the
     // number of frames actually copied (may be less than max_frames if the
@@ -1714,7 +1730,11 @@ private:
 
     // ── libsamplerate state (created in start(), freed in stop()) ────────────
     SRC_STATE*    _src_state    = nullptr;  // main stereo SRC (ALSA rate → 44100 Hz)
-    SRC_STATE*    _id_src_state = nullptr;  // ID-tap SRC (44100 Hz mono → 16000 Hz)
+
+    // ID-tap resampler (44100 Hz mono → 16000 Hz, SRC_SINC_FASTEST).
+    // Constructed in start(), destroyed (reset to nullptr) in stop(),
+    // exactly the same lifetime _id_src_state had.
+    std::unique_ptr<IdTapResampler> _id_tap;
 
     // ── Sample rate estimation ────────────────────────────────────────────────
     RateEstimator _rate_estimator;
@@ -1817,6 +1837,11 @@ private:
     // already stored _running = false and exited after an unrecoverable error.
     std::atomic<bool> _started{false};
 
+    // Test-only (--test-hooks): set by debug_inject_capture_failure(),
+    // consumed (checked-and-cleared) once per capture_thread_func() loop
+    // iteration. See that method's comment for the exact semantics.
+    std::atomic<bool> _debug_fail_injected{false};
+
     // ── Status snapshot (mutex-protected fields) ─────────────────────────────
     mutable std::mutex _status_mutex;
     InputChannelStatus _status;
@@ -1832,10 +1857,11 @@ private:
     //     personal preference and would skew frequency-domain fingerprints.
     //   - Gated by _capturing: fills only during active audio sessions.
     //
-    // Downsampling: a dedicated _id_src_state (SRC_LINEAR, 1 channel) converts
-    // the downmixed mono float signal from 44100 → 16000 Hz.  SRC_LINEAR is
-    // sufficient for Shazam's spectral peak fingerprinting; upgrade to
-    // SRC_SINC_FASTEST if profiling shows a measurable quality impact.
+    // Downsampling: _id_tap (IdTapResampler, autostream_id_tap.h) downmixes
+    // and converts the 44100 Hz stereo float signal to 16000 Hz mono using
+    // SRC_SINC_FASTEST, giving the tap an anti-aliasing filter (the prior
+    // SRC_LINEAR converter had none, so content above 8 kHz folded back into
+    // the fingerprint signal).
     //
     // Concurrency: _id_mutex is held by the process thread during each chunk
     // write (O(chunk_size) bytes, ~microseconds) and by the control thread for
@@ -1930,10 +1956,17 @@ private:
 class AudioMonitor
 {
 public:
-    explicit AudioMonitor(const std::string& socket_path);
+    // test_hooks_enabled: gates the debug_fail_input socket command (set via
+    // the --test-hooks command-line flag; see main()). Defaults to false so
+    // every other construction site (there is currently only the production
+    // one in main()) keeps today's behaviour without having to name it.
+    explicit AudioMonitor(const std::string& socket_path, bool test_hooks_enabled = false);
     ~AudioMonitor();
 
     static constexpr int output_rate_hz() { return OUTPUT_RATE; }
+
+    // Test-only: true when the daemon was launched with --test-hooks.
+    bool test_hooks_enabled() const { return _test_hooks_enabled; }
 
     // Start the control server, then block until stop() is called or a signal
     // is received.  Python polls status via the get_status socket command.
@@ -2006,6 +2039,16 @@ public:
     // Repeat feature: session arm/disarm.
     std::string api_set_repeat_armed(bool armed);
 
+    // Test-only socket command ({"type":"debug_fail_input","input":N}),
+    // gated at runtime by test_hooks_enabled() (--test-hooks), unlike the
+    // AUTOSTREAM_REPEAT_TEST_HOOKS block below which is a compile-time gate.
+    // Makes input N's capture thread take the same exit path as a genuine
+    // unrecoverable ALSA read error on its next loop iteration, so the
+    // watchdog auto-restart loop in run() can be exercised against a real
+    // self-stopped capture thread without kernel-level fault injection.
+    // Returns an error ack if test hooks are not enabled or input is invalid.
+    std::string api_debug_fail_input(int input_index);
+
 #ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
     // Test-only socket command ({"type":"debug_dump_repeat_buffer","path":...});
     // see RepeatController::debug_dump_buffer(). Never compiled into the
@@ -2018,6 +2061,14 @@ private:
     // or nullptr if the index is out of range.
     InputChannel* get_input(int input_index);
 
+    // Shared teardown sequence for stopping an input, used by both
+    // api_stop_input() (control-server thread) and the watchdog auto-restart
+    // loop in run() (main thread). `i` is the 0-based _inputs[] index.
+    // Caller must have already verified _inputs[i] is non-null. Returns
+    // was_active (whether this input was the active FIFO writer before
+    // stop()), so callers that need it for logging don't have to re-read it.
+    bool stop_input_with_teardown(int i);
+
     static constexpr int NUM_INPUTS  = 2;
     static constexpr int OUTPUT_RATE = 44100;
 
@@ -2025,6 +2076,11 @@ private:
     static constexpr double RESTART_BACKOFF_SECONDS = 5.0;
 
     std::string _socket_path;
+
+    // Test-only: set once at construction from the --test-hooks command-line
+    // flag; gates api_debug_fail_input(). Never mutated after construction,
+    // so no synchronisation is needed to read it from the control thread.
+    bool _test_hooks_enabled = false;
 
     FifoWriter       _fifo_writer;
     OutputDumpWriter _dump_writer;

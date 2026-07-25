@@ -138,6 +138,30 @@ static void test_ok_field_in_responses(const std::string& src)
 }
 
 // ---------------------------------------------------------------------------
+// Test: debug_fail_input test hook is dispatched AND runtime-gated
+//
+// debug_fail_input is deliberately NOT in EXPECTED_COMMANDS above: it is a
+// test-only command (docs/AUTOSTREAM-MONITOR.md), never sent by the
+// production Python client (core/autostream_core.py), so it must not be
+// asserted present there. This is a narrower, source-text-only check (no
+// ALSA link needed, matching this file's whole approach) that the command
+// exists in the dispatcher and that its runtime gate (--test-hooks /
+// test_hooks_enabled()) is present, rather than compile-time-only like
+// AUTOSTREAM_REPEAT_TEST_HOOKS's debug_dump_repeat_buffer (also
+// intentionally absent from EXPECTED_COMMANDS, for the same reason).
+// ---------------------------------------------------------------------------
+
+static void test_debug_fail_input_gated(const std::string& src)
+{
+    CHECK(contains(src, "\"debug_fail_input\""),
+          "dispatch_command handles command: debug_fail_input");
+    CHECK(contains(src, "test hooks not enabled"),
+          "api_debug_fail_input rejects when test hooks are not enabled");
+    CHECK(contains(src, "--test-hooks"),
+          "main() parses --test-hooks");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -166,6 +190,7 @@ int main(int argc, char** argv)
     test_all_commands_sent_by_python(python_src);
     test_length_header_in_dispatcher(dispatcher_src);
     test_ok_field_in_responses(dispatcher_src);
+    test_debug_fail_input_gated(dispatcher_src);
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);

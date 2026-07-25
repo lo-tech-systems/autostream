@@ -173,6 +173,15 @@ class MonitorClient:
         # Not part of the production daemon.
         return self.command({"type": "debug_dump_repeat_buffer", "path": path})
 
+    def debug_fail_input(self, input_index: int) -> dict:
+        # Test hook (docs/AUTOSTREAM-MONITOR.md "debug_fail_input").
+        # Rejected with ok=false unless the daemon was launched with
+        # --test-hooks; never available in production. Arms a one-shot flag
+        # that makes input_index's capture thread self-stop on its next loop
+        # iteration via the exact same code path as a genuine unrecoverable
+        # ALSA read error.
+        return self.command({"type": "debug_fail_input", "input": input_index})
+
 
 # ---------------------------------------------------------------------------
 # ALSA loopback setup
@@ -1573,6 +1582,202 @@ def scenario_d15r(socket_path: str, wav_path: str, fifo_path: str, log_path: str
     print(f"\n[d15r] ALL PASS (mode={mode}): no wedge across {n_iterations} iteration(s)")
 
 
+# ---------------------------------------------------------------------------
+# d16 -- watchdog auto-restart routed through the blessed stop path
+#
+# The watchdog auto-restart loop in AudioMonitor::run() and api_stop_input()
+# both route through one shared AudioMonitor::stop_input_with_teardown()
+# helper, so a self-stopped capture thread (is_started=true,
+# is_running=false after an unrecoverable ALSA error) always runs
+# RepeatController::notify_input_stopped() / reset_auto_trim() teardown
+# before the watchdog's start() retry. If the crashed input is the repeat
+# feature's recording origin and that teardown is skipped, the controller
+# never learns capture died: the recording session stays logically "active"
+# (or the origin stays pointed at a channel the watchdog is restarting from
+# scratch) instead of collapsing to a re-armable Idle state. This scenario
+# forces that self-stop and asserts the teardown ran.
+# ---------------------------------------------------------------------------
+
+def scenario_d16(socket_path: str, wav_path: str, fifo_path: str,
+                  input_index: int = 1, device: str = "hw:Loopback,0,0",
+                  restart_timeout: float = 15.0):
+    """d16: force the recording-origin input's capture thread to
+    self-stop the way a real ALSA driver crash/USB-yank does, let the
+    watchdog auto-restart loop in AudioMonitor::run() fire, and assert (a)
+    the watchdog teardown routed through notify_input_stopped() -- observed
+    via its one PERSISTENT effect, armed -> false (see the timing note
+    below for why the collapsed-recording snapshot itself cannot be polled
+    for) -- rather than leaving the controller wedged on the dead origin
+    input, and (b) a subsequent record/replay cycle on the same input
+    completes once the watchdog's own start() retry succeeds.
+
+    REQUIRES the standalone test daemon to be launched with --test-hooks
+    (docs/AUTOSTREAM-MONITOR.md "Command-Line Options" /
+    "debug_fail_input"). Never point this at the live daemon: --test-hooks
+    is never set by the production systemd unit, so debug_fail_input is
+    rejected there anyway, but this scenario should only ever run against a
+    standalone test instance regardless. Unlike every rmmod-based scenario
+    in this file, d16 needs no sudo.
+
+    Fault-injection mechanism (why this needed a daemon-side hook, unlike
+    every other scenario in this file):
+
+    The obvious approach -- `sudo rmmod snd_aloop` while the daemon has the
+    capture subdevice open -- does not work: the daemon's own open PCM
+    handle holds a kernel reference on the module, so `rmmod` (even
+    `rmmod -f`) fails deterministically with "module in use" and the
+    scenario never reaches its assertions on ANY binary, fixed or not. This
+    is a deterministic property of the kernel module reference, not a
+    matter of retrying or of `-f`.
+
+    There is no other externally-triggerable way to make autostream_monitor's
+    own ALSA read fail: the daemon owns the only PCM handle on the loopback
+    pair, and calling stop_input() would just exercise the (already-correct)
+    blessed path this test exists to route around, not the watchdog. So this
+    scenario uses the `debug_fail_input` socket command instead -- a minimal,
+    inert-unless-flagged daemon test hook, used because the sudo/rmmod
+    approach is impossible here, not skipped for convenience. It arms a
+    one-shot atomic flag on the target InputChannel;
+    capture_thread_func() checks it once per loop iteration at the exact spot
+    it already checks AlsaCapture::read()'s return value
+    (autostream_monitor_io.cpp, near the `frames_read < 0` branch) and, if
+    set, forces frames_read negative and clears the flag. From that single
+    branch point on, the code path is IDENTICAL to a genuine unrecoverable
+    ALSA error: same LOG_WARN, same `_running.store(false)`, same thread
+    exit, same is_started/is_running state the watchdog polls for, same
+    stop_input_with_teardown() call, same start() retry. Only the trigger
+    (an atomic flag instead of a real ALSA errno) is synthetic; everything
+    the watchdog and the repeat controller do in response is real,
+    unmodified production code.
+
+    Because the loopback device itself is never removed (no rmmod/modprobe
+    involved), the watchdog's start() retry should succeed on its first or
+    second 100ms poll -- there is no backoff-vs-module-reload race to
+    choreograph the way an rmmod-based approach would need, hence the
+    shorter default restart_timeout (kept generous, not tight, since this
+    is a real 100ms-poll daemon on a possibly loaded test host, not a
+    deterministic clock).
+
+    Timing note (why the teardown assertion keys on `armed`): on the test
+    host, the injected self-stop, the watchdog's teardown and its
+    successful start() retry all complete within ~100 ms -- and with aplay
+    still feeding the loopback, a fresh legitimate recording session can
+    begin within milliseconds of the restart. So both is_running=false and
+    recording.active=false are unobservable transients at any sane
+    status-poll rate. `armed` is the one persistent marker:
+    notify_input_stopped() clears it and nothing re-arms it until this
+    scenario does so itself; on a binary that bypasses the shared teardown
+    it stays true forever (the wedge this scenario detects).
+    """
+    capture_device = device.replace("hw:Loopback,0,", "hw:Loopback,1,")
+
+    c = MonitorClient(socket_path)
+    proc = None
+    try:
+        print("[d16] arming a fresh recording session")
+        c.set_fifo(fifo_path)
+        c.configure_input(input_index, capture_device,
+                           silence_threshold_dbfs=-66.0, silence_seconds=2)
+        c.start_input(input_index)
+        c.set_allow_capture(input_index, True)
+        c.set_repeat_enabled(True, "auto")
+        c.set_repeat_armed(True)
+
+        proc = subprocess.Popen(["aplay", "-D", device, wav_path])
+        _wait_for(lambda: (lambda s: s["repeat"]["recording"]["active"] and s)(c.get_status()),
+                  timeout=10, desc="recording to start")
+        st = c.get_status()
+        assert st["inputs"][input_index - 1]["started"] and st["inputs"][input_index - 1]["running"], (
+            f"d16 FAIL: input {input_index} not up before fault injection: {st['inputs'][input_index - 1]}")
+        print(f"[d16] Recording established: "
+              f"{st['repeat']['recording']['bytes']} bytes, origin_input="
+              f"{st['repeat']['recording']['origin_input']}")
+
+        print("[d16] injecting fault via debug_fail_input (simulated ALSA-crash "
+              "capture-thread self-stop; requires daemon started with --test-hooks)")
+        resp = c.debug_fail_input(input_index)
+        assert resp.get("ok"), (
+            f"d16 FAIL: debug_fail_input rejected -- was the daemon started with "
+            f"--test-hooks? response: {resp}")
+
+        # This is the actual regression assertion. The injected self-stop,
+        # the watchdog's teardown and its successful start() retry all
+        # complete within ~100 ms (measured on the test host), and with
+        # aplay still feeding
+        # the loopback a fresh legitimate recording session can begin within
+        # milliseconds of the restart -- so is_running=false and
+        # recording.active=false are unobservable transients at any sane
+        # poll interval. The one PERSISTENT effect of the teardown is
+        # notify_input_stopped() clearing `armed`; nothing re-arms it until
+        # this scenario does so itself. On a binary that calls
+        # _inputs[i]->stop() directly from the watchdog loop (bypassing the
+        # shared teardown), notify_input_stopped() is never called, so armed
+        # stays true and the recording stays "active" with its pre-crash
+        # byte count frozen -- the wedge this wait times out on.
+        pre_crash_bytes = st["repeat"]["recording"]["bytes"]
+        print("[d16] waiting for watchdog teardown: armed -> false (persistent "
+              "marker of notify_input_stopped(); transients are too fast to poll)")
+        st = _wait_for(lambda: (lambda s: (s["repeat"]["armed"] is False) and s)(c.get_status()),
+                        timeout=10,
+                        desc="armed to clear via watchdog teardown (a timeout here IS the wedge)")
+
+        # Belt and braces: armed cleared, so teardown ran; also show the
+        # session is not the stale pre-crash one. Either it is (still)
+        # collapsed, or a fresh session has started whose byte count moves --
+        # re-poll once so a coincidentally equal snapshot can't fail
+        # spuriously.
+        rec = st["repeat"]["recording"]
+        if rec["active"] and rec["bytes"] == pre_crash_bytes:
+            time.sleep(0.5)
+            rec = c.get_status()["repeat"]["recording"]
+            assert (not rec["active"]) or rec["bytes"] != pre_crash_bytes, (
+                f"d16 FAIL: armed cleared but recording is stale/frozen at "
+                f"pre-crash bytes={pre_crash_bytes}: {rec}")
+        print("[d16] PASS: watchdog teardown ran (armed cleared; no stale session)")
+
+        # aplay's own fd into the loopback playback side is orphaned once the
+        # daemon's capture side self-stops; it keeps writing into a device
+        # nobody drains but that's harmless here, just reap it.
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        proc = None
+
+        print(f"[d16] waiting up to {restart_timeout:.0f}s for the watchdog's restart to succeed "
+              "(loopback device itself was never removed, so no module-reload wait is needed)")
+        st = _wait_for(
+            lambda: (lambda s: (s["inputs"][input_index - 1]["started"]
+                                 and s["inputs"][input_index - 1]["running"]) and s)(c.get_status()),
+            timeout=restart_timeout, desc="watchdog to restart the input")
+        print(f"[d16] PASS: input {input_index} restarted by the watchdog: "
+              f"{st['inputs'][input_index - 1]}")
+
+        print("[d16] verifying a subsequent record cycle on the recovered input works")
+        c.set_repeat_armed(True)
+        proc = subprocess.Popen(["aplay", "-D", device, wav_path])
+        st = _wait_for(lambda: (lambda s: s["repeat"]["recording"]["active"] and s)(c.get_status()),
+                        timeout=15, desc="a fresh recording to start after recovery")
+        assert st["repeat"]["recording"]["origin_input"] == input_index, (
+            f"d16 FAIL: post-recovery recording has unexpected origin: {st['repeat']['recording']}")
+        # Must outlast the full WAV (default gen-tone: 10s tone + 5s silence).
+        proc.wait(timeout=30)
+        proc = None
+        st = _wait_for(lambda: (lambda s: s["repeat"]["replay"]["active"] and s)(c.get_status()),
+                        timeout=60, desc="post-recovery replay to start")
+        print(f"[d16] PASS: post-recovery record/replay cycle completed: {st['repeat']['replay']}")
+
+        print("\n[d16] ALL PASS")
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        c.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1694,6 +1899,19 @@ def main() -> int:
     p_d15r.add_argument("--device-b", default="hw:Loopback,0,1")
     p_d15r.add_argument("--iterations", type=int, default=5)
 
+    p_d16 = sub.add_parser("d16", help="run the d16 watchdog-restart-through-blessed-stop-path scenario "
+                                        "(requires the daemon to be started with --test-hooks)")
+    p_d16.add_argument("--socket", default=DEFAULT_SOCKET)
+    p_d16.add_argument("--wav", required=True)
+    p_d16.add_argument("--fifo", required=True, help="test FIFO path")
+    p_d16.add_argument("--input", type=int, default=1)
+    p_d16.add_argument("--device", default="hw:Loopback,0,0")
+    p_d16.add_argument("--restart-timeout", type=float, default=15.0,
+                        help="seconds to wait for the watchdog to restart the input after "
+                             "debug_fail_input (generous margin over the 100ms poll interval "
+                             "on a possibly loaded test host; the loopback device itself is "
+                             "never removed, so no RESTART_BACKOFF_SECONDS wait is expected)")
+
     args = ap.parse_args()
 
     if args.cmd == "setup-aloop":
@@ -1749,6 +1967,9 @@ def main() -> int:
     elif args.cmd == "d15r":
         scenario_d15r(args.socket, args.wav, args.fifo, args.log_path, args.mode,
                       args.input_a, args.input_b, args.device_a, args.device_b, args.iterations)
+    elif args.cmd == "d16":
+        scenario_d16(args.socket, args.wav, args.fifo, args.input, args.device,
+                     args.restart_timeout)
 
     return 0
 

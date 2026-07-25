@@ -1799,8 +1799,12 @@ void ReplayEngine::run_one_session()
     }
     _track_change_seq.store(0, std::memory_order_relaxed);
 
-    int id_err = 0;
-    SRC_STATE* id_src = src_new(SRC_LINEAR, 1, &id_err);
+    // ID-tap resampler (shared, filtered SRC_SINC_FASTEST helper -- see
+    // autostream_id_tap.h), constructed fresh per session, matching the
+    // per-session src_new()/src_delete() lifetime this replaced. kSliceFrames
+    // (4096) is the largest block a single iteration below ever hands it.
+    IdTapResampler id_tap(rate_hz, static_cast<int>(ID_BUF_RATE),
+                           static_cast<int>(kSliceFrames));
 
     _duration_seconds.store(duration, std::memory_order_relaxed);
     _position_seconds.store(0.0, std::memory_order_relaxed);
@@ -1814,9 +1818,7 @@ void ReplayEngine::run_one_session()
     std::vector<uint8_t>  raw_buf(65536);
     std::vector<int16_t>  pcm_staging;
     std::vector<uint8_t>  pipe_bytes;
-    std::vector<float>    id_float_mono;
-    std::vector<float>    id_float_out;
-    std::vector<int16_t>  id_tmp;
+    std::vector<float>    id_stereo_float;   // int16 slice -> normalised float, ID-tap input
 
     // DSP-chain scratch: float stage (gain/EQ/OutputProcessor) and the
     // requantised s16 result, reused across slices/iterations to avoid
@@ -1945,42 +1947,23 @@ void ReplayEngine::run_one_session()
                 _track_change_seq.fetch_add(1, std::memory_order_relaxed);
             }
 
-            if (id_src)
+            if (id_tap.valid())
             {
-                id_float_mono.resize(slice_frames);
-                for (size_t f = 0; f < slice_frames; ++f)
-                {
-                    float L = slice[f * 2]     / 32768.0f;
-                    float R = slice[f * 2 + 1] / 32768.0f;
-                    id_float_mono[f] = (L + R) * 0.5f;
-                }
-                size_t max_out = slice_frames + 16;
-                id_float_out.resize(max_out);
+                // Normalise the decoded int16 slice to float; id_tap does
+                // the downmix, resample, and clamp (autostream_id_tap.h).
+                id_stereo_float.resize(slice_samples);
+                for (size_t s = 0; s < slice_samples; ++s)
+                    id_stereo_float[s] = slice[s] / 32768.0f;
 
-                SRC_DATA sd;
-                std::memset(&sd, 0, sizeof(sd));
-                sd.data_in       = id_float_mono.data();
-                sd.input_frames  = static_cast<long>(slice_frames);
-                sd.data_out      = id_float_out.data();
-                sd.output_frames = static_cast<long>(max_out);
-                sd.src_ratio     = static_cast<double>(ID_BUF_RATE) / static_cast<double>(rate_hz);
-                sd.end_of_input  = 0;
-
-                if (src_process(id_src, &sd) == 0 && sd.output_frames_gen > 0)
+                int id_count = 0;
+                const int16_t* id_out = id_tap.process(
+                    id_stereo_float.data(), static_cast<int>(slice_frames), &id_count);
+                if (id_out && id_count > 0)
                 {
-                    size_t id_count = static_cast<size_t>(sd.output_frames_gen);
-                    id_tmp.resize(id_count);
-                    for (size_t i = 0; i < id_count; ++i)
-                    {
-                        float s = id_float_out[i];
-                        if (s >  1.0f) s =  1.0f;
-                        if (s < -1.0f) s = -1.0f;
-                        id_tmp[i] = static_cast<int16_t>(s * 32767.0f);
-                    }
                     std::lock_guard<std::mutex> id_lock(_id_mutex);
                     unsigned wp = _id_write_pos;
-                    for (size_t i = 0; i < id_count; ++i)
-                        _id_buf[(wp + static_cast<unsigned>(i)) & ID_BUF_MASK] = id_tmp[i];
+                    for (int i = 0; i < id_count; ++i)
+                        _id_buf[(wp + static_cast<unsigned>(i)) & ID_BUF_MASK] = id_out[i];
                     _id_write_pos    = wp + static_cast<unsigned>(id_count);
                     _id_frames_avail = std::min(_id_frames_avail + static_cast<unsigned>(id_count),
                                                  ID_BUF_FRAMES);
@@ -2067,8 +2050,8 @@ void ReplayEngine::run_one_session()
         ::close(_fd);
         _fd = -1;
     }
-    if (id_src)
-        src_delete(id_src);
+    // id_tap (IdTapResampler) is a session-local stack object; its destructor
+    // handles the src_delete() equivalent when run_one_session() returns.
 
     LOG_INFO("[repeat] Replay session ended (input %d)%s", origin,
              session_aborted ? " [aborted]" : " [fade complete]");
