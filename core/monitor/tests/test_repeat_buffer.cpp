@@ -7,7 +7,8 @@
 // autostream_repeat_buffer.h (RepeatBuffer/Reader, codec ladder,
 // max_recording_seconds, /proc/meminfo parse, silence-trim accounting).
 //
-// Test IDs correspond to the repeat feature's unit-test numbering (U1-U9, U12-U13).
+// Test IDs correspond to the repeat feature's unit-test numbering (U1-U9,
+// U12-U14).
 // No ALSA / libsamplerate / link deps — this is a pure C++17 standard-library
 // test, buildable with a bare g++.
 //
@@ -236,19 +237,120 @@ static void test_u5_reader_survives_drop()
 }
 
 // ---------------------------------------------------------------------------
-// U6 — Codec ladder boundaries
+// U6 — Target-duration codec selection (pick_codec_for_target())
 // ---------------------------------------------------------------------------
 
-static void test_u6_codec_ladder_boundaries()
+// Local test-side mirror of autostream_repeat.cpp's (impure-TU-private)
+// bitrate_kbps_for() -- that function isn't reachable from this pure,
+// zero-link-dep test binary, so this small helper reconstructs it from the
+// same byte_rate_for() this header already exposes (bitrate_kbps == byte_
+// rate*8/1000 for every MP2 tier); PcmS16/Unavailable return 0, same
+// contract as the original.
+static int bitrate_kbps_of(CodecChoice c)
 {
-    CHECK(pick_codec(109) == CodecChoice::Unavailable, "U6: 109 MiB -> Unavailable");
-    CHECK(pick_codec(110) == CodecChoice::Mp2_160,      "U6: 110 MiB -> Mp2_160");
-    CHECK(pick_codec(129) == CodecChoice::Mp2_160,      "U6: 129 MiB -> Mp2_160");
-    CHECK(pick_codec(130) == CodecChoice::Mp2_192,      "U6: 130 MiB -> Mp2_192");
-    CHECK(pick_codec(159) == CodecChoice::Mp2_192,      "U6: 159 MiB -> Mp2_192");
-    CHECK(pick_codec(160) == CodecChoice::Mp2_224,      "U6: 160 MiB -> Mp2_224");
-    CHECK(pick_codec(999) == CodecChoice::Mp2_224,      "U6: 999 MiB -> Mp2_224");
-    CHECK(pick_codec(1000) == CodecChoice::PcmS16,      "U6: 1000 MiB -> PcmS16");
+    long rate = byte_rate_for(c, 48000);   // MP2 byte rates are rate-independent
+    if (c == CodecChoice::PcmS16 || c == CodecChoice::Unavailable)
+        return 0;
+    return static_cast<int>(rate * 8 / 1000);
+}
+
+// Exact bytes an MP2 tier needs to hold target_minutes at kbps.
+static long long mp2_target_bytes(int kbps, int target_minutes)
+{
+    return (static_cast<long long>(kbps) * 1000 / 8) * (static_cast<long long>(target_minutes) * 60);
+}
+
+// Exact bytes PCM s16 stereo needs to hold target_minutes at sample_rate_hz.
+static long long pcm_target_bytes(long sample_rate_hz, int target_minutes)
+{
+    return static_cast<long long>(byte_rate_for(CodecChoice::PcmS16, sample_rate_hz))
+         * (static_cast<long long>(target_minutes) * 60);
+}
+
+// usable_mib the selection function derives internally from available_mib
+// (available_mib - kFreeRamFloorMib, floored at 0) -- tests work forward from
+// a target usable_mib to the available_mib that produces it, so each case's
+// intent ("usable RAM this big") stays legible without hand-adding 64 twice.
+static long available_for_usable(long usable_mib)
+{
+    return usable_mib + kFreeRamFloorMib;
+}
+
+static void test_u6_pick_codec_for_target()
+{
+    const int kTarget80 = 80;   // kDefaultRepeatTargetMinutes
+
+    // ── PCM gate at 48 kHz: usable RAM comfortably above PCM's 80 min footprint ──
+    {
+        long long pcm_bytes_48k = pcm_target_bytes(48000, kTarget80);
+        long usable_mib_generous = static_cast<long>(pcm_bytes_48k / (1024 * 1024)) + 100;
+        CHECK(pick_codec_for_target(available_for_usable(usable_mib_generous), kTarget80, 48000)
+                  == CodecChoice::PcmS16,
+              "U6: 48k, usable well above PCM's 80min footprint -> PcmS16");
+    }
+
+    // ── PCM gate at 44.1 kHz (--compatible mode): a smaller footprint than
+    //    48k, so a usable_mib that fits 44.1k PCM but not 48k PCM must still
+    //    select PCM at 44.1k -- proves the PCM math is genuinely rate-dependent. ──
+    {
+        long long pcm_bytes_44k = pcm_target_bytes(44100, kTarget80);
+        long long pcm_bytes_48k = pcm_target_bytes(48000, kTarget80);
+        CHECK(pcm_bytes_44k < pcm_bytes_48k, "U6: sanity -- 44.1k PCM footprint smaller than 48k's");
+
+        long usable_mib_between = static_cast<long>(pcm_bytes_44k / (1024 * 1024)) + 5;
+        CHECK(pick_codec_for_target(available_for_usable(usable_mib_between), kTarget80, 44100)
+                  == CodecChoice::PcmS16,
+              "U6: 44.1k, usable fits 44.1k's (smaller) PCM footprint -> PcmS16");
+    }
+
+    // ── MP2 ladder: usable RAM fits 256k's target footprint but not 320k's ──
+    {
+        long long bytes_256 = mp2_target_bytes(256, kTarget80);
+        long long bytes_320 = mp2_target_bytes(320, kTarget80);
+        long usable_mib = static_cast<long>(bytes_256 / (1024 * 1024)) + 1;
+        CHECK(static_cast<long long>(usable_mib) * 1024 * 1024 < bytes_320,
+              "U6: sanity -- chosen usable_mib is below 320k's footprint");
+        CHECK(pick_codec_for_target(available_for_usable(usable_mib), kTarget80, 48000)
+                  == CodecChoice::Mp2_256,
+              "U6: usable fits 256k but not 320k -> Mp2_256 (highest that fits)");
+    }
+
+    // ── Worked example: 246 MiB available, 80 min target, 48k. usable =
+    //    246-64 = 182 MiB; 384k needs ~220.5 MiB (no), 320k needs ~183.75 MiB
+    //    (no), 256k needs ~147 MiB (yes) -> Mp2_256. ──
+    {
+        CHECK(pick_codec_for_target(246, kTarget80, 48000) == CodecChoice::Mp2_256,
+              "U6: worked example -- 246 MiB available, 80 min target, 48k -> Mp2_256");
+    }
+
+    // ── 160 kbps hard floor: usable RAM too small even for 160k's target
+    //    footprint still selects Mp2_160 (goal, not an admission gate) ──
+    {
+        CHECK(pick_codec_for_target(available_for_usable(1), kTarget80, 48000) == CodecChoice::Mp2_160,
+              "U6: usable RAM far too small for even 160k's target footprint -> Mp2_160 floor");
+        CHECK(pick_codec_for_target(0, kTarget80, 48000) == CodecChoice::Mp2_160,
+              "U6: available_mib at/under the floor (usable clamped to 0) -> Mp2_160 floor");
+    }
+
+    // ── Never below the floor: an artificially tiny target can't push
+    //    selection below 160k either (the ladder simply stops walking down). ──
+    {
+        CHECK(pick_codec_for_target(available_for_usable(1), 10, 48000) == CodecChoice::Mp2_160,
+              "U6: even the smallest legal target_minutes never selects below Mp2_160");
+    }
+
+    // ── Larger target_minutes needs more usable RAM to reach the same tier:
+    //    a usable_mib that satisfies 256k at 80 min may not satisfy it at a
+    //    larger target, falling back to a lower (but still >=160k) tier. ──
+    {
+        long long bytes_256_at_80 = mp2_target_bytes(256, 80);
+        long usable_mib = static_cast<long>(bytes_256_at_80 / (1024 * 1024)) + 1;
+        CodecChoice at_80  = pick_codec_for_target(available_for_usable(usable_mib), 80, 48000);
+        CodecChoice at_600 = pick_codec_for_target(available_for_usable(usable_mib), 600, 48000);
+        CHECK(at_80 == CodecChoice::Mp2_256, "U6: sanity -- fits 256k at the 80 min target");
+        CHECK(at_600 != CodecChoice::PcmS16 && bitrate_kbps_of(at_600) <= bitrate_kbps_of(at_80),
+              "U6: same usable RAM, larger target_minutes -> same or lower (never higher) tier");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +405,41 @@ static void test_u7_max_recording_seconds()
     // Unavailable codec always yields zero regardless of headroom.
     long s_unavail = max_recording_seconds(CodecChoice::Unavailable, 2000, 0, 48000);
     CHECK(s_unavail == 0, "U7: Unavailable codec -> 0 seconds always");
+}
+
+// ---------------------------------------------------------------------------
+// U14 — byte_rate_for() for the new tiers (256/320/384 kbps)
+// ---------------------------------------------------------------------------
+
+static void test_u14_byte_rate_for_new_tiers()
+{
+    CHECK(byte_rate_for(CodecChoice::Mp2_256, 48000) == 256000 / 8, "U14: Mp2_256 byte rate");
+    CHECK(byte_rate_for(CodecChoice::Mp2_320, 48000) == 320000 / 8, "U14: Mp2_320 byte rate");
+    CHECK(byte_rate_for(CodecChoice::Mp2_384, 48000) == 384000 / 8, "U14: Mp2_384 byte rate");
+
+    // Rate-independent, exactly like the pre-existing MP2 tiers (bitrate/8
+    // regardless of sample_rate_hz).
+    CHECK(byte_rate_for(CodecChoice::Mp2_256, 44100) == byte_rate_for(CodecChoice::Mp2_256, 48000),
+          "U14: Mp2_256 byte rate is sample-rate-independent");
+    CHECK(byte_rate_for(CodecChoice::Mp2_384, 44100) == byte_rate_for(CodecChoice::Mp2_384, 48000),
+          "U14: Mp2_384 byte rate is sample-rate-independent");
+
+    // max_recording_seconds extends cleanly to the new tiers via the same
+    // headroom/rate formula as every other tier.
+    long rate320 = byte_rate_for(CodecChoice::Mp2_320, 48000);
+    long long expect = (936LL * 1024 * 1024) / rate320;
+    CHECK(max_recording_seconds(CodecChoice::Mp2_320, 1000, 0, 48000) == expect,
+          "U14: max_recording_seconds works for a new tier (Mp2_320)");
+
+    // codec_choice_for_bitrate_kbps round-trips through the legal table.
+    CHECK(codec_choice_for_bitrate_kbps(160) == CodecChoice::Mp2_160, "U14: 160 -> Mp2_160");
+    CHECK(codec_choice_for_bitrate_kbps(192) == CodecChoice::Mp2_192, "U14: 192 -> Mp2_192");
+    CHECK(codec_choice_for_bitrate_kbps(224) == CodecChoice::Mp2_224, "U14: 224 -> Mp2_224");
+    CHECK(codec_choice_for_bitrate_kbps(256) == CodecChoice::Mp2_256, "U14: 256 -> Mp2_256");
+    CHECK(codec_choice_for_bitrate_kbps(320) == CodecChoice::Mp2_320, "U14: 320 -> Mp2_320");
+    CHECK(codec_choice_for_bitrate_kbps(384) == CodecChoice::Mp2_384, "U14: 384 -> Mp2_384");
+    CHECK(codec_choice_for_bitrate_kbps(128) == CodecChoice::Unavailable,
+          "U14: a legal-but-below-floor MP2 bitrate is not in this ladder's table");
 }
 
 // ---------------------------------------------------------------------------
@@ -531,8 +668,9 @@ int main()
     test_u3_truncate_tail();
     test_u4_reader_sequential();
     test_u5_reader_survives_drop();
-    test_u6_codec_ladder_boundaries();
+    test_u6_pick_codec_for_target();
     test_u7_max_recording_seconds();
+    test_u14_byte_rate_for_new_tiers();
     test_u8_meminfo_parse();
     test_u9_silence_trim_accounting();
     test_u12_steal_chunks();

@@ -764,7 +764,11 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
     {
         bool enabled = json_get_bool(json_command, "enabled", false);
         std::string codec = json_get_string(json_command, "codec");
-        return _monitor.api_set_repeat_enabled(enabled, codec);
+        // Optional target-duration goal in minutes; -1 means "field
+        // omitted" (RepeatController::set_enabled() leaves the
+        // currently-configured value unchanged in that case).
+        int target_minutes = json_get_int(json_command, "target_minutes", -1);
+        return _monitor.api_set_repeat_enabled(enabled, codec, target_minutes);
     }
     else if (type == "set_repeat_armed")
     {
@@ -1086,6 +1090,7 @@ std::string AudioMonitor::api_get_status()
             << "\"enabled\":"              << (rs.enabled ? "true" : "false") << ","
             << "\"armed\":"                << (rs.armed   ? "true" : "false") << ","
             << "\"codec\":\""              << json_escape(rs.codec)           << "\","
+            << "\"target_minutes\":"      << rs.target_minutes               << ","
             << "\"max_recording_seconds\":" << rs.max_recording_seconds       << ","
             << "\"recording\":{"
             << "\"active\":"          << (rs.recording.active ? "true" : "false") << ","
@@ -1828,9 +1833,10 @@ std::string AudioMonitor::api_stop_output_dump()
 // disable/free path and at the next capture session for the enable path
 // (RepeatController::set_enabled()).
 //
-std::string AudioMonitor::api_set_repeat_enabled(bool enabled, const std::string& codec)
+std::string AudioMonitor::api_set_repeat_enabled(bool enabled, const std::string& codec,
+                                                  int target_minutes)
 {
-    std::string err = _repeat_controller.set_enabled(enabled, codec);
+    std::string err = _repeat_controller.set_enabled(enabled, codec, target_minutes);
     if (!err.empty())
     {
         LOG_WARN("[monitor] set_repeat_enabled rejected: %s", err.c_str());
@@ -1840,8 +1846,8 @@ std::string AudioMonitor::api_set_repeat_enabled(bool enabled, const std::string
         return oss.str();
     }
 
-    LOG_INFO("[monitor] set_repeat_enabled(enabled=%s, codec=%s) applied",
-             enabled ? "true" : "false", codec.c_str());
+    LOG_INFO("[monitor] set_repeat_enabled(enabled=%s, codec=%s, target_minutes=%d) applied",
+             enabled ? "true" : "false", codec.c_str(), target_minutes);
     return "{\"type\":\"ack\",\"command\":\"set_repeat_enabled\",\"ok\":true}";
 }
 

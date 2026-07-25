@@ -61,7 +61,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.20";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.21";
 
 
 // =============================================================================
@@ -807,7 +807,7 @@ public:
 // Constructs the encoder implementation for the given codec tier. Returns
 // nullptr for CodecChoice::Unavailable (callers must not reach this case --
 // RepeatController::notify_capture_started() refuses to begin a session when
-// pick_codec()/the pinned codec resolves to Unavailable).
+// pick_codec_for_target()/the pinned codec resolves to Unavailable).
 std::unique_ptr<RepeatEncoder> make_repeat_encoder(CodecChoice codec, int sample_rate_hz);
 
 
@@ -1284,7 +1284,8 @@ struct RepeatStatus
 {
     bool        enabled              = false;
     bool        armed                = false;    // session arm
-    std::string codec                = "auto";   // configured policy: auto|mp2_160|mp2_192|mp2_224|pcm
+    std::string codec                = "auto";   // configured policy: auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm
+    int         target_minutes       = kDefaultRepeatTargetMinutes;   // target-duration goal
     long        max_recording_seconds = 0;
 
     struct Recording
@@ -1936,12 +1937,19 @@ public:
     void set_fifo_path(const std::string& path);
 
     // {"type":"set_repeat_enabled",...} handler. codec_text must be one of
-    // auto|mp2_160|mp2_192|mp2_224|pcm ("" is treated as "auto"). Returns ""
-    // on success or a non-empty error string. Enabling takes effect
-    // at the next capture session (no special-casing needed -- begin_session
+    // auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm ("" is treated
+    // as "auto"). target_minutes is the target-duration goal (the socket
+    // API's optional "target_minutes" field): pass a negative value (the
+    // socket handler's json_get_int(..., -1) default) to mean "field
+    // omitted, leave whatever is already configured" -- it does NOT reset to
+    // kDefaultRepeatTargetMinutes on every call, only the first time this
+    // controller is ever constructed. A non-negative value is clamped to
+    // [kMinRepeatTargetMinutes, kMaxRepeatTargetMinutes]. Returns "" on
+    // success or a non-empty error string. Enabling takes effect at
+    // the next capture session (no special-casing needed -- begin_session
     // only runs at a should_capture edge); disabling frees any recording
     // (RECORDING or HOLD) immediately, and fades+frees an active replay.
-    std::string set_enabled(bool enabled, const std::string& codec_text);
+    std::string set_enabled(bool enabled, const std::string& codec_text, int target_minutes = -1);
 
     // {"type":"set_repeat_armed",...} handler. Setting armed=true
     // while HOLD (finished recording, idle) starts replay immediately.
@@ -2179,6 +2187,10 @@ private:
     bool          _pending_interrupt_restorable = false;
 
     std::string  _codec_cfg   = "auto";
+    // Target-duration goal in minutes for the codec-ladder selection
+    // (pick_codec_for_target()); see set_enabled()'s doc comment for the
+    // "field omitted" sentinel convention.
+    int          _target_minutes_cfg = kDefaultRepeatTargetMinutes;
     RepeatState  _state       = RepeatState::Idle;
     int          _origin_input = 0;
     CodecChoice  _active_codec = CodecChoice::Unavailable;
@@ -2956,9 +2968,9 @@ public:
     std::string api_start_output_dump(const std::string& path, bool overwrite);
     std::string api_stop_output_dump();
 
-    // Repeat feature: enabled/codec setting; codec
-    // must be auto|mp2_160|mp2_192|mp2_224|pcm.
-    std::string api_set_repeat_enabled(bool enabled, const std::string& codec);
+    // Repeat feature: enabled/codec/target_minutes setting; codec
+    // must be auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm.
+    std::string api_set_repeat_enabled(bool enabled, const std::string& codec, int target_minutes = -1);
 
     // Repeat feature: session arm/disarm.
     std::string api_set_repeat_armed(bool armed);

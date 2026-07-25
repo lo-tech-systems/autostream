@@ -37,7 +37,16 @@ import pytest
 # ── path setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
-from autostream_config import RepeatConfig, parse_config, normalize_repeat_codec, REPEAT_CODEC_CHOICES
+from autostream_config import (
+    RepeatConfig,
+    parse_config,
+    normalize_repeat_codec,
+    normalize_repeat_target_minutes,
+    REPEAT_CODEC_CHOICES,
+    REPEAT_TARGET_MINUTES_DEFAULT,
+    REPEAT_TARGET_MINUTES_MIN,
+    REPEAT_TARGET_MINUTES_MAX,
+)
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
@@ -151,6 +160,42 @@ class TestP1ConfigDefaults:
         assert normalize_repeat_codec("nonsense") == "auto"
         assert normalize_repeat_codec(None) == "auto"
 
+    @pytest.mark.parametrize("codec", ("mp2_256", "mp2_320", "mp2_384"))
+    def test_extended_mp2_tiers_are_valid_codec_choices(self, codec):
+        """The extended MP2 tiers must be accepted by both the choices tuple
+        and the normaliser."""
+        assert codec in REPEAT_CODEC_CHOICES
+        assert normalize_repeat_codec(codec) == codec
+
+
+class TestP1TargetMinutes:
+    """repeat.target_minutes -- config-level only, no web-UI control."""
+
+    def test_default_when_section_missing(self):
+        cfg = parse_config({})
+        assert cfg.repeat.target_minutes == REPEAT_TARGET_MINUTES_DEFAULT == 80
+
+    def test_reads_persisted_value(self):
+        cfg = parse_config({"repeat": {"target_minutes": 45}})
+        assert cfg.repeat.target_minutes == 45
+
+    def test_clamps_below_min(self):
+        cfg = parse_config({"repeat": {"target_minutes": 1}})
+        assert cfg.repeat.target_minutes == REPEAT_TARGET_MINUTES_MIN == 10
+
+    def test_clamps_above_max(self):
+        cfg = parse_config({"repeat": {"target_minutes": 100000}})
+        assert cfg.repeat.target_minutes == REPEAT_TARGET_MINUTES_MAX == 600
+
+    def test_defaults_on_garbage(self):
+        assert normalize_repeat_target_minutes("not-a-number") == REPEAT_TARGET_MINUTES_DEFAULT
+        assert normalize_repeat_target_minutes(None) == REPEAT_TARGET_MINUTES_DEFAULT
+
+    def test_not_in_browser_editable_settings_fields(self):
+        """Config-level only for now -- no Settings-page control, so it must
+        NOT appear in the browser-editable schema."""
+        assert "repeat.target_minutes" not in _SETTINGS_FIELDS
+
 
 class TestP1SettingsFieldsPresent:
     def test_enabled_and_codec_present(self):
@@ -218,7 +263,7 @@ class TestP2LiveApplyNotReload:
         state, _ = _make_state(str(tmp_path))
         with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.enabled", True)
-        m.assert_called_once_with(True, "auto")
+        m.assert_called_once_with(True, "auto", 80)
         assert resp["live"] is True
 
     def test_codec_calls_live_setter_with_current_enabled(self, tmp_path):
@@ -226,7 +271,7 @@ class TestP2LiveApplyNotReload:
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
-        m.assert_called_once_with(True, "pcm")
+        m.assert_called_once_with(True, "pcm", 80)
         assert resp["live"] is True
 
     def test_enabled_does_not_debounce_coordinator_reload(self, tmp_path):
@@ -787,7 +832,24 @@ class TestP6ResyncRepush:
                 MagicMock(), repeat_enabled=True, repeat_codec="mp2_224",
             )
         assert ok is True
-        client.set_repeat_enabled.assert_called_once_with(True, "mp2_224")
+        client.set_repeat_enabled.assert_called_once_with(True, "mp2_224", None)
+
+    def test_resync_pushes_target_minutes_through(self):
+        """repeat_target_minutes flows through _resync_monitor_daemon to
+        MonitorClient.set_repeat_enabled's target_minutes argument."""
+        client = self._mock_client_for_resync()
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True):
+            rf.return_value = MagicMock(ok=True, message="")
+            ok = _resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=True, repeat_codec="mp2_224",
+                repeat_target_minutes=45,
+            )
+        assert ok is True
+        client.set_repeat_enabled.assert_called_once_with(True, "mp2_224", 45)
 
     def test_resync_tolerates_old_binary_rejecting_repeat_command(self):
         """set_repeat_enabled failing (old binary) must not fail the whole resync."""
@@ -1110,7 +1172,16 @@ class TestLiveSetters:
             cm.return_value.__enter__.return_value = mock_client
             ok = set_live_repeat_enabled(True, "mp2_160")
         assert ok is True
-        mock_client.set_repeat_enabled.assert_called_once_with(True, "mp2_160")
+        mock_client.set_repeat_enabled.assert_called_once_with(True, "mp2_160", None)
+
+    def test_set_live_repeat_enabled_forwards_target_minutes(self):
+        mock_client = MagicMock()
+        mock_client.set_repeat_enabled.return_value = True
+        with patch("autostream_core._connected_monitor") as cm:
+            cm.return_value.__enter__.return_value = mock_client
+            ok = set_live_repeat_enabled(True, "mp2_160", 45)
+        assert ok is True
+        mock_client.set_repeat_enabled.assert_called_once_with(True, "mp2_160", 45)
 
     def test_set_live_repeat_enabled_no_client_returns_false(self):
         with patch("autostream_core._connected_monitor") as cm:

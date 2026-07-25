@@ -84,19 +84,26 @@ static MemInfo read_meminfo()
 // Codec <-> config-string mapping
 // =============================================================================
 
-static CodecChoice codec_choice_from_config(const std::string& codec_cfg, long available_mib)
+// "auto" resolves via pick_codec_for_target() (target-duration selection); a
+// pinned codec string bypasses the ladder outright, across all six tiers.
+static CodecChoice codec_choice_from_config(const std::string& codec_cfg, long available_mib,
+                                             int target_minutes, long sample_rate_hz)
 {
-    if (codec_cfg == "auto")     return pick_codec(available_mib);
+    if (codec_cfg == "auto")     return pick_codec_for_target(available_mib, target_minutes, sample_rate_hz);
     if (codec_cfg == "mp2_160")  return CodecChoice::Mp2_160;
     if (codec_cfg == "mp2_192")  return CodecChoice::Mp2_192;
     if (codec_cfg == "mp2_224")  return CodecChoice::Mp2_224;
+    if (codec_cfg == "mp2_256")  return CodecChoice::Mp2_256;
+    if (codec_cfg == "mp2_320")  return CodecChoice::Mp2_320;
+    if (codec_cfg == "mp2_384")  return CodecChoice::Mp2_384;
     if (codec_cfg == "pcm")      return CodecChoice::PcmS16;
     return CodecChoice::Unavailable;
 }
 
 static bool is_valid_codec_config_string(const std::string& s)
 {
-    return s == "auto" || s == "mp2_160" || s == "mp2_192" || s == "mp2_224" || s == "pcm";
+    return s == "auto" || s == "mp2_160" || s == "mp2_192" || s == "mp2_224"
+        || s == "mp2_256" || s == "mp2_320" || s == "mp2_384" || s == "pcm";
 }
 
 static const char* codec_choice_to_string(CodecChoice c)
@@ -106,6 +113,9 @@ static const char* codec_choice_to_string(CodecChoice c)
         case CodecChoice::Mp2_160: return "mp2_160";
         case CodecChoice::Mp2_192: return "mp2_192";
         case CodecChoice::Mp2_224: return "mp2_224";
+        case CodecChoice::Mp2_256: return "mp2_256";
+        case CodecChoice::Mp2_320: return "mp2_320";
+        case CodecChoice::Mp2_384: return "mp2_384";
         case CodecChoice::PcmS16:  return "pcm";
         case CodecChoice::Unavailable:
         default:                   return "unavailable";
@@ -119,6 +129,9 @@ static int bitrate_kbps_for(CodecChoice c)
         case CodecChoice::Mp2_160: return 160;
         case CodecChoice::Mp2_192: return 192;
         case CodecChoice::Mp2_224: return 224;
+        case CodecChoice::Mp2_256: return 256;
+        case CodecChoice::Mp2_320: return 320;
+        case CodecChoice::Mp2_384: return 384;
         default:                   return 0;
     }
 }
@@ -261,6 +274,9 @@ std::unique_ptr<RepeatEncoder> make_repeat_encoder(CodecChoice codec, int sample
         case CodecChoice::Mp2_160:
         case CodecChoice::Mp2_192:
         case CodecChoice::Mp2_224:
+        case CodecChoice::Mp2_256:
+        case CodecChoice::Mp2_320:
+        case CodecChoice::Mp2_384:
             return std::make_unique<Mp2Encoder>(sample_rate_hz, bitrate_kbps_for(codec));
         case CodecChoice::PcmS16:
             return std::make_unique<PcmS16Encoder>();
@@ -768,11 +784,12 @@ void RepeatController::set_fifo_path(const std::string& path)
     _fifo_path = path;
 }
 
-std::string RepeatController::set_enabled(bool enabled, const std::string& codec_text)
+std::string RepeatController::set_enabled(bool enabled, const std::string& codec_text,
+                                           int target_minutes)
 {
     std::string codec = codec_text.empty() ? "auto" : codec_text;
     if (!is_valid_codec_config_string(codec))
-        return "codec must be one of auto|mp2_160|mp2_192|mp2_224|pcm";
+        return "codec must be one of auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm";
 
     // Declared BEFORE the lock_guard below so it destructs (freeing
     // any actual chunk storage) AFTER the lock unlocks.
@@ -781,6 +798,21 @@ std::string RepeatController::set_enabled(bool enabled, const std::string& codec
 
     bool was_enabled = _enabled_cfg;
     _codec_cfg = codec;
+
+    // target_minutes < 0 is the "field omitted" sentinel (see the socket
+    // handler's json_get_int(..., -1) default) -- leave whatever is already
+    // stored (kDefaultRepeatTargetMinutes at first construction) unchanged
+    // rather than resetting it back to the default on every call that
+    // happens not to mention it. A provided value is clamped to
+    // [kMinRepeatTargetMinutes, kMaxRepeatTargetMinutes].
+    if (target_minutes >= 0)
+    {
+        int clamped = target_minutes;
+        if (clamped < kMinRepeatTargetMinutes) clamped = kMinRepeatTargetMinutes;
+        if (clamped > kMaxRepeatTargetMinutes) clamped = kMaxRepeatTargetMinutes;
+        _target_minutes_cfg = clamped;
+    }
+
     set_enabled_locked(enabled);   // single mutation choke point
 
     // Global enable turned OFF mid-stream: recording stops; buffer freed
@@ -900,7 +932,7 @@ void RepeatController::perform_pending_start()
     MemInfo mem = read_meminfo();
     CodecChoice codec = CodecChoice::Unavailable;
     if (mem.ok() && mem.available_mib >= kMinAvailableMibForStart)
-        codec = codec_choice_from_config(_codec_cfg, mem.available_mib);
+        codec = codec_choice_from_config(_codec_cfg, mem.available_mib, _target_minutes_cfg, _sample_rate_hz);
 
     std::unique_ptr<RepeatEncoder> encoder;
     if (codec != CodecChoice::Unavailable)
@@ -1415,6 +1447,7 @@ RepeatStatus RepeatController::get_status() const
     s.enabled = _enabled_cfg;
     s.armed   = _armed;
     s.codec   = _codec_cfg;
+    s.target_minutes = _target_minutes_cfg;
 
     if (_state == RepeatState::Recording)
     {
@@ -1431,7 +1464,8 @@ RepeatStatus RepeatController::get_status() const
         // under long-held locks elsewhere / on a hot poll path).
         CodecChoice idle_codec = CodecChoice::Unavailable;
         if (_cached_available_mib >= kMinAvailableMibForStart)
-            idle_codec = codec_choice_from_config(_codec_cfg, _cached_available_mib);
+            idle_codec = codec_choice_from_config(_codec_cfg, _cached_available_mib,
+                                                   _target_minutes_cfg, _sample_rate_hz);
         s.max_recording_seconds = (idle_codec != CodecChoice::Unavailable)
             ? max_recording_seconds(idle_codec, _cached_available_mib, 0, _sample_rate_hz)
             : 0;

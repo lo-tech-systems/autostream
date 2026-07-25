@@ -1301,7 +1301,7 @@ def _live_repeat_enabled(state: object, value: object) -> bool:
     if not isinstance(settings, _SettingsStore):
         return False
     snap = settings.snapshot()
-    return bool(set_live_repeat_enabled(bool(value), snap.repeat.codec))
+    return bool(set_live_repeat_enabled(bool(value), snap.repeat.codec, snap.repeat.target_minutes))
 
 
 def _live_repeat_codec(state: object, value: object) -> bool:
@@ -1310,7 +1310,7 @@ def _live_repeat_codec(state: object, value: object) -> bool:
     if not isinstance(settings, _SettingsStore):
         return False
     snap = settings.snapshot()
-    return bool(set_live_repeat_enabled(snap.repeat.enabled, str(value)))
+    return bool(set_live_repeat_enabled(snap.repeat.enabled, str(value), snap.repeat.target_minutes))
 
 
 # ---------------------------------------------------------------------------

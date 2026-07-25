@@ -1544,17 +1544,22 @@ def set_live_input_gain(
 def set_live_repeat_enabled(
     enabled: bool,
     codec: str,
+    target_minutes: Optional[int] = None,
     socket_path: Optional[str] = None,
 ) -> bool:
-    """Push the global repeat enable/codec policy immediately to autostream_monitor.
+    """Push the global repeat enable/codec/target-duration policy immediately
+    to autostream_monitor.
 
     Live setter -- must NOT trigger a coordinator reload; this
     persists no state of its own and is safe to call at any time.
+    target_minutes is the target-duration goal; None means "leave whatever
+    the daemon already has" (MonitorClient.set_repeat_enabled's own default
+    sentinel).
     """
     with _connected_monitor(socket_path) as client:
         if client is None:
             return False
-        return client.set_repeat_enabled(bool(enabled), str(codec))
+        return client.set_repeat_enabled(bool(enabled), str(codec), target_minutes)
 
 
 def set_live_repeat_armed(
@@ -1941,19 +1946,32 @@ class MonitorClient:
             resp = self._command({"type": "set_output_auto_trim", "enabled": enabled})
             return bool(resp and resp.get("ok"))
 
-    def set_repeat_enabled(self, enabled: bool, codec: str) -> bool:
-        """Push the global repeat-recording enable/codec policy.
+    def set_repeat_enabled(
+        self,
+        enabled: bool,
+        codec: str,
+        target_minutes: Optional[int] = None,
+    ) -> bool:
+        """Push the global repeat-recording enable/codec/target-duration
+        policy.
 
-        Tolerated to fail silently (returns False, no exception) against an
-        old binary that does not recognise the command -- callers must not
-        let this break startup/resync/reload.
+        target_minutes is the target-duration goal in minutes (10..600).
+        None omits the field entirely -- the daemon's own sentinel
+        (json_get_int(..., -1)) then leaves whatever it already has
+        configured unchanged (defaults to 80 the first time the daemon
+        starts). Tolerated to fail silently (returns False, no exception)
+        against an old binary that does not recognise the command -- callers
+        must not let this break startup/resync/reload.
         """
         with self._lock:
-            resp = self._command({
+            cmd: dict = {
                 "type": "set_repeat_enabled",
                 "enabled": bool(enabled),
                 "codec": str(codec),
-            })
+            }
+            if target_minutes is not None:
+                cmd["target_minutes"] = int(target_minutes)
+            resp = self._command(cmd)
             return bool(resp and resp.get("ok"))
 
     def set_repeat_armed(self, armed: bool) -> bool:
@@ -3033,21 +3051,26 @@ def _push_repeat_policy(
     enabled: bool,
     codec: str,
     context: str,
+    target_minutes: Optional[int] = None,
 ) -> None:
-    """Push the persisted repeat enabled/codec policy to the daemon.
+    """Push the persisted repeat enabled/codec/target-duration policy to the daemon.
 
-    Tolerant of rejection (F-C): an older monitor binary that does not
-    recognise set_repeat_enabled, or a transient failure, must never fail the
-    caller (startup / reconnect resync) -- it is only logged, and repeat state
+    target_minutes is the target-duration goal; pass the persisted
+    `repeat.target_minutes` setting so a freshly (re)started daemon or a
+    resync always reflects it, same as enabled/codec.
+
+    Tolerant of rejection: an older monitor binary that does not recognise
+    set_repeat_enabled, or a transient failure, must never fail the caller
+    (startup / reconnect resync) -- it is only logged, and repeat state
     simply re-syncs on the next successful reconnect or settings change.
     `context` names the call site for the log line, e.g. "after reconnect" or
     "during startup".
     """
-    if not client.set_repeat_enabled(enabled, codec):
+    if not client.set_repeat_enabled(enabled, codec, target_minutes):
         logging.info(
-            "set_repeat_enabled(%r, %r) not accepted %s "
+            "set_repeat_enabled(%r, %r, target_minutes=%r) not accepted %s "
             "(older monitor binary, or a transient failure).",
-            enabled, codec, context,
+            enabled, codec, target_minutes, context,
         )
 
 
@@ -3059,6 +3082,7 @@ def _resync_monitor_daemon(
     output_eq: OutputEqConfig,
     repeat_enabled: bool = False,
     repeat_codec: str = "auto",
+    repeat_target_minutes: Optional[int] = None,
 ) -> bool:
     """Re-send the full daemon state after reconnect.
 
@@ -3223,7 +3247,7 @@ def _resync_monitor_daemon(
         client.close()
         return False
 
-    _push_repeat_policy(client, repeat_enabled, repeat_codec, "after reconnect")
+    _push_repeat_policy(client, repeat_enabled, repeat_codec, "after reconnect", repeat_target_minutes)
 
     return True
 
@@ -3367,7 +3391,7 @@ def _configure_startup_monitors(
     # reflects it immediately, not only after the next settings change or
     # reconnect resync. Tolerated to fail against an older monitor binary --
     # this must never block startup.
-    _push_repeat_policy(client, cfg.repeat.enabled, cfg.repeat.codec, "during startup")
+    _push_repeat_policy(client, cfg.repeat.enabled, cfg.repeat.codec, "during startup", cfg.repeat.target_minutes)
 
     return monitors
 
@@ -3620,6 +3644,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                         cfg.output_eq,
                         cfg.repeat.enabled,
                         cfg.repeat.codec,
+                        cfg.repeat.target_minutes,
                     ):
                         _set_monitor_runtime_info(connected=False)
                         reconnect_at = time.time() + 5.0

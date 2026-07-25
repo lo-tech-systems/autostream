@@ -196,8 +196,11 @@ class MonitorClient:
     def set_gain(self, input_index: int, gain_db: float) -> dict:
         return self.command({"type": "set_gain", "input": input_index, "gain_db": gain_db})
 
-    def set_repeat_enabled(self, enabled: bool, codec: str = "auto") -> dict:
-        return self.command({"type": "set_repeat_enabled", "enabled": enabled, "codec": codec})
+    def set_repeat_enabled(self, enabled: bool, codec: str = "auto", target_minutes: int = None) -> dict:
+        cmd = {"type": "set_repeat_enabled", "enabled": enabled, "codec": codec}
+        if target_minutes is not None:
+            cmd["target_minutes"] = target_minutes
+        return self.command(cmd)
 
     def set_repeat_armed(self, armed: bool) -> dict:
         return self.command({"type": "set_repeat_armed", "armed": armed})
@@ -1874,6 +1877,8 @@ def main() -> int:
     p_enable.add_argument("--socket", default=DEFAULT_SOCKET)
     p_enable.add_argument("--enabled", type=lambda s: s.lower() in ("1", "true", "yes"), required=True)
     p_enable.add_argument("--codec", default="auto")
+    p_enable.add_argument("--target-minutes", type=int, default=None,
+                           help="Target-duration goal in minutes (10..600); omit to leave unchanged")
 
     p_d7 = sub.add_parser("d7", help="run the D7 enable/disable mid-session scenario")
     p_d7.add_argument("--socket", default=DEFAULT_SOCKET)
@@ -1999,7 +2004,7 @@ def main() -> int:
         c.close()
     elif args.cmd == "set-repeat-enabled":
         c = MonitorClient(args.socket)
-        print(json.dumps(c.set_repeat_enabled(args.enabled, args.codec)))
+        print(json.dumps(c.set_repeat_enabled(args.enabled, args.codec, args.target_minutes)))
         c.close()
     elif args.cmd == "d7":
         scenario_d7(args.socket, args.wav, args.input, args.device)

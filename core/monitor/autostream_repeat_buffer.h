@@ -7,8 +7,9 @@
 //
 //   - RepeatBuffer / RepeatBuffer::Reader — chunked in-RAM store for the
 //     recording, plus a sequential reader for replay.
-//   - CodecChoice / pick_codec() / byte_rate_for() — the codec ladder that
-//     picks recording quality from free RAM.
+//   - CodecChoice / pick_codec_for_target() / byte_rate_for() — the codec
+//     ladder that picks recording quality to guarantee a target duration in
+//     free RAM.
 //   - max_recording_seconds() — the sliding-window sizing formula.
 //   - parse_meminfo_text() — a pure parser for /proc/meminfo TEXT; the file
 //     I/O wrapper that reads the real file lives in the impure .cpp.
@@ -372,30 +373,53 @@ private:
 // Codec ladder and max_recording_seconds
 // =============================================================================
 
-// Recording quality tier, chosen from free RAM at each begin_session() when
-// the configured codec is "auto"; a pinned codec (config) skips the ladder
-// but still goes through max_recording_seconds() for the free-RAM-floor math.
+// Recording quality tier. The tier is chosen to GUARANTEE a target recording
+// duration (default 80 minutes -- RepeatController::_target_minutes_cfg /
+// the socket API's "target_minutes" field) in whatever free RAM is currently
+// usable, rather than from fixed free-RAM thresholds. See
+// pick_codec_for_target() below. A pinned codec (config) still skips the
+// ladder but goes through max_recording_seconds() for the free-RAM-floor
+// math exactly the same way.
 enum class CodecChoice
 {
-    Unavailable,  // < 110 MiB available: recording refused
-    Mp2_160,      // 110-129 MiB available
-    Mp2_192,      // 130-159 MiB available
-    Mp2_224,      // 160-999 MiB available
-    PcmS16,       // >= 1000 MiB available: raw PCM, no compression
+    Unavailable,
+    Mp2_160,
+    Mp2_192,
+    Mp2_224,
+    Mp2_256,
+    Mp2_320,
+    Mp2_384,
+    PcmS16,       // raw s16 PCM, no compression
 };
 
-// Ladder thresholds, evaluated against MemAvailable in MiB.
-inline CodecChoice pick_codec(long available_mib)
+// Legal MPEG-1 Layer II stereo bitrates this ladder is allowed to pick from,
+// ascending, restricted to the subset useful here (below 160 kbps stereo MP2
+// is poor enough quality that the feature's hard floor refuses to go there
+// even if it would buy extra duration). twolame/libtwolame supports all of
+// these at both 44100 Hz and 48000 Hz (MPEG-1 Layer II bitrates are
+// sample-rate-independent within the MPEG-1 family; the full legal table
+// also includes 32/48/56/64/80/96/112/128, all below the floor).
+inline constexpr int kMp2LegalBitratesKbps[] = { 160, 192, 224, 256, 320, 384 };
+inline constexpr int kMp2BitrateFloorKbps    = 160;   // hard floor: never select below this
+
+// Target-duration knob (RepeatController::_target_minutes_cfg / the
+// "target_minutes" field of {"type":"set_repeat_enabled",...}).
+inline constexpr int kDefaultRepeatTargetMinutes = 80;
+inline constexpr int kMinRepeatTargetMinutes     = 10;
+inline constexpr int kMaxRepeatTargetMinutes     = 600;
+
+inline CodecChoice codec_choice_for_bitrate_kbps(int kbps)
 {
-    if (available_mib < 110)
-        return CodecChoice::Unavailable;
-    if (available_mib < 130)
-        return CodecChoice::Mp2_160;
-    if (available_mib < 160)
-        return CodecChoice::Mp2_192;
-    if (available_mib < 1000)
-        return CodecChoice::Mp2_224;
-    return CodecChoice::PcmS16;
+    switch (kbps)
+    {
+        case 160: return CodecChoice::Mp2_160;
+        case 192: return CodecChoice::Mp2_192;
+        case 224: return CodecChoice::Mp2_224;
+        case 256: return CodecChoice::Mp2_256;
+        case 320: return CodecChoice::Mp2_320;
+        case 384: return CodecChoice::Mp2_384;
+        default:  return CodecChoice::Unavailable;
+    }
 }
 
 // Bytes/second the recorder appends to the buffer for a given codec choice.
@@ -403,9 +427,6 @@ inline CodecChoice pick_codec(long available_mib)
 // independent of sample rate). The PCM tier stores s16 stereo regardless of
 // the pipe's bit depth, so its byte rate does depend on the sample rate:
 // 2 channels * 2 bytes/sample * sample_rate_hz.
-//
-// Test plan U10 checks byte_rate_for(codec, rate) * target_seconds against
-// the sizing table these constants are built from.
 inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
 {
     switch (codec)
@@ -413,6 +434,9 @@ inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
         case CodecChoice::Mp2_160: return 160000 / 8;                  // 20,000 B/s
         case CodecChoice::Mp2_192: return 192000 / 8;                  // 24,000 B/s
         case CodecChoice::Mp2_224: return 224000 / 8;                  // 28,000 B/s
+        case CodecChoice::Mp2_256: return 256000 / 8;                  // 32,000 B/s
+        case CodecChoice::Mp2_320: return 320000 / 8;                  // 40,000 B/s
+        case CodecChoice::Mp2_384: return 384000 / 8;                  // 48,000 B/s
         case CodecChoice::PcmS16:  return sample_rate_hz * 2 /*ch*/ * 2 /*bytes*/;
         case CodecChoice::Unavailable:
         default:
@@ -426,6 +450,71 @@ inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
 // is bounded ONLY by this floor and the codec ladder -- it buffers as much
 // as it can, for as long as free RAM allows.
 constexpr long kFreeRamFloorMib = 64;
+
+// Target-duration codec selection.
+//
+// Aims to GUARANTEE target_minutes of recording in whatever RAM is
+// currently usable:
+//
+//   usable_mib = max(0, available_mib - kFreeRamFloorMib)   -- same floor/
+//     margin discipline apply_memory_guard_locked() already enforces during
+//     a live recording; this reuses it at the SELECTION step too, so the
+//     tier chosen at session start is never one that the guard would
+//     immediately start shrinking.
+//
+//   1. If PCM-s16's footprint for target_minutes fits usable_mib, choose PCM
+//      (best quality, no compression) -- footprint is sample-rate-dependent
+//      (byte_rate_for(PcmS16, sample_rate_hz) * target_seconds), so this
+//      naturally differs between the 48000 Hz native and 44100 Hz
+//      --compatible output rates.
+//   2. Else choose the HIGHEST legal MP2 stereo bitrate from
+//      kMp2LegalBitratesKbps whose target_minutes footprint
+//      (bitrate_kbps*1000/8 * target_seconds) fits usable_mib.
+//   3. HARD FLOOR: never select below kMp2BitrateFloorKbps (160 kbps). If
+//      even 160 kbps's target-duration footprint does not fit, the target
+//      is a GOAL, not an admission gate -- fall back to 160 kbps anyway
+//      (the recording still starts, it will just roll past target_minutes
+//      and truncate its head sooner under memory pressure, exactly as
+//      apply_memory_guard_locked() already handles for any tier).
+//
+// This function does not itself apply the base kMinAvailableMibForStart
+// admission gate (RepeatController::kMinAvailableMibForStart) -- callers
+// already check that separately before calling this, so this never has to
+// decide "refuse to record".
+inline CodecChoice pick_codec_for_target(long available_mib, int target_minutes,
+                                          long sample_rate_hz)
+{
+    long usable_mib = available_mib - kFreeRamFloorMib;
+    if (usable_mib < 0)
+        usable_mib = 0;
+    long long usable_bytes = static_cast<long long>(usable_mib) * 1024ll * 1024ll;
+
+    int clamped_target_minutes = target_minutes;
+    if (clamped_target_minutes < kMinRepeatTargetMinutes)
+        clamped_target_minutes = kMinRepeatTargetMinutes;
+    if (clamped_target_minutes > kMaxRepeatTargetMinutes)
+        clamped_target_minutes = kMaxRepeatTargetMinutes;
+    long long target_seconds = static_cast<long long>(clamped_target_minutes) * 60;
+
+    long long pcm_footprint_bytes =
+        static_cast<long long>(byte_rate_for(CodecChoice::PcmS16, sample_rate_hz)) * target_seconds;
+    if (pcm_footprint_bytes <= usable_bytes)
+        return CodecChoice::PcmS16;
+
+    for (int i = static_cast<int>(sizeof(kMp2LegalBitratesKbps) / sizeof(kMp2LegalBitratesKbps[0])) - 1;
+         i >= 0; --i)
+    {
+        int kbps = kMp2LegalBitratesKbps[i];
+        long long footprint_bytes = (static_cast<long long>(kbps) * 1000 / 8) * target_seconds;
+        if (footprint_bytes <= usable_bytes)
+            return codec_choice_for_bitrate_kbps(kbps);
+    }
+
+    // Even the floor bitrate's target footprint doesn't fit usable RAM:
+    // fall back to the floor anyway and let the sliding window (memory
+    // guard + head truncation) do its normal job during recording.
+    return codec_choice_for_bitrate_kbps(kMp2BitrateFloorKbps);
+}
 
 // max_recording_seconds = ((available_mib - 64 MiB) + held_bytes) / byte_rate
 //

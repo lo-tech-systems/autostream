@@ -427,28 +427,49 @@ class UpdatesConfig:
     update_channel: str
 
 
-REPEAT_CODEC_CHOICES = ("auto", "mp2_160", "mp2_192", "mp2_224", "pcm")
+REPEAT_CODEC_CHOICES = (
+    "auto", "mp2_160", "mp2_192", "mp2_224", "mp2_256", "mp2_320", "mp2_384", "pcm",
+)
 REPEAT_CODEC_DEFAULT = "auto"
+
+# Target-duration goal (minutes) the "auto" codec ladder tries to guarantee
+# in currently-usable RAM (core/monitor/autostream_repeat_buffer.h's
+# pick_codec_for_target(), kMinRepeatTargetMinutes/kMaxRepeatTargetMinutes).
+# Config-level only for now -- no Settings-page control yet.
+REPEAT_TARGET_MINUTES_DEFAULT = 80
+REPEAT_TARGET_MINUTES_MIN = 10
+REPEAT_TARGET_MINUTES_MAX = 600
 
 
 def normalize_repeat_codec(value: object) -> str:
     """Return *value* if it is a recognised repeat codec choice, else the default.
 
-    Valid choices: auto|mp2_160|mp2_192|mp2_224|pcm.
+    Valid choices: auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm.
     """
     v = str(value or "").strip().lower()
     return v if v in REPEAT_CODEC_CHOICES else REPEAT_CODEC_DEFAULT
+
+
+def normalize_repeat_target_minutes(value: object) -> int:
+    """Clamp the target-duration setting to [10, 600]; default 80 on invalid input."""
+    try:
+        v = int(float(str(value)))  # type: ignore[arg-type]
+    except Exception:
+        return REPEAT_TARGET_MINUTES_DEFAULT
+    return max(REPEAT_TARGET_MINUTES_MIN, min(REPEAT_TARGET_MINUTES_MAX, v))
 
 
 @dataclass(frozen=True)
 class RepeatConfig:
     """Repeat-recording feature settings (JSON section repeat).
 
-    Both fields are live-applied
-    (set_repeat_enabled) rather than driving a coordinator reload.
+    All three fields are live-applied (set_repeat_enabled) rather than
+    driving a coordinator reload. target_minutes is config-level only for
+    now -- no Settings-page control.
     """
     enabled: bool
     codec: str
+    target_minutes: int = REPEAT_TARGET_MINUTES_DEFAULT
 
 
 def _normalize_track_id_int(value: object, default: int, lo: int, hi: int) -> int:
@@ -725,6 +746,9 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
     repeat = RepeatConfig(
         enabled=bool(repeat_d.get("enabled", False)),
         codec=normalize_repeat_codec(repeat_d.get("codec", REPEAT_CODEC_DEFAULT)),
+        target_minutes=normalize_repeat_target_minutes(
+            repeat_d.get("target_minutes", REPEAT_TARGET_MINUTES_DEFAULT)
+        ),
     )
 
     return AutostreamConfig(

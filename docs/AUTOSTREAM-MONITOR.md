@@ -54,10 +54,18 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     armed, until disarmed or new live audio interrupts it (crossfades out on
     interrupt)
   - `RepeatRecorder` uses the same SPSC-ring + low-priority-worker-thread
-    pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16
-    depending on free RAM. The sliding window has no fixed-duration target --
-    it is bounded ONLY by a 64 MiB free-RAM floor and the codec ladder,
-    buffering as much as current free RAM allows for as long as it allows it
+    pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16.
+    The codec/bitrate tier is chosen to GUARANTEE a target recording
+    duration (`target_minutes`, default 80) in whatever RAM is usable
+    (available minus the 64 MiB free-RAM floor) -- PCM if it fits, else the
+    highest legal MP2 bitrate (160/192/224/256/320/384 kbps) that fits,
+    never below the 160 kbps floor. The sliding window itself still has no
+    hard cap: once recording, it is bounded ONLY by the 64 MiB free-RAM
+    floor and the chosen tier's byte rate -- `target_minutes` is a goal for
+    tier SELECTION, not an admission gate or a truncation point; a session
+    that can't even fit 160 kbps's target footprint still starts at 160 kbps
+    and simply rolls past target_minutes and truncates its head sooner under
+    memory pressure, same as any other tier
   - `ReplayEngine` is a dedicated I/O-bound thread that decodes (libmpg123 for
     the MP2 tier) and paces playback via the reader's own consumption of the
     FIFO, looping until stopped; see `set_repeat_enabled`, `set_repeat_armed`,
@@ -662,7 +670,7 @@ audio into an in-RAM buffer, and loop it back once armed -- see
 Request:
 
 ```json
-{"type":"set_repeat_enabled","enabled":true,"codec":"auto"}
+{"type":"set_repeat_enabled","enabled":true,"codec":"auto","target_minutes":80}
 ```
 
 Request fields:
@@ -670,10 +678,31 @@ Request fields:
 - `enabled`
   - `true` to record every capture session; `false` to disable
 - `codec`
-  - one of `auto` (codec ladder picks a tier from free RAM at each recording
-    start), `mp2_160`, `mp2_192`, `mp2_224`, or `pcm` (pinned; still subject to
-    the base 110 MiB availability gate and the 64 MiB floor/sliding window)
+  - one of `auto` (target-duration selection picks a tier from free RAM at
+    each recording start -- see below), `mp2_160`, `mp2_192`, `mp2_224`,
+    `mp2_256`, `mp2_320`, `mp2_384`, or `pcm` (pinned; still subject to the
+    base 110 MiB availability gate and the 64 MiB floor/sliding window)
   - defaults to `auto` if omitted or empty
+- `target_minutes` (optional, integer, 10..600)
+  - the recording duration the `auto` codec ladder tries to GUARANTEE in
+    currently-usable RAM (available MemAvailable minus the 64 MiB free-RAM
+    floor). Selection: PCM s16 if PCM's footprint for `target_minutes` fits
+    usable RAM; else the highest legal MP2 stereo bitrate
+    (160/192/224/256/320/384 kbps) whose footprint fits, never below
+    160 kbps. If omitted entirely, the currently-configured value is left
+    unchanged (defaults to 80 minutes the first time the daemon is started,
+    never reset back to 80 by a later call that simply doesn't mention it).
+    Out-of-range values are clamped to [10, 600]. `target_minutes` is a
+    SELECTION goal only, not an admission gate or a hard cap: once a session
+    starts, the sliding window still behaves exactly as before (bounded only
+    by the 64 MiB floor and the chosen tier's byte rate) -- a recording can
+    run past `target_minutes` if RAM allows, or fall short of it under
+    memory pressure (head truncation), and if even 160 kbps's target
+    footprint doesn't fit, the session still starts at 160 kbps rather than
+    being refused.
+  - **No web-UI control exists for this yet** -- config-level only (set via
+    the persisted `repeat.target_minutes` setting; see
+    `core/autostream_config.py`'s `RepeatConfig`).
 
 Behavior:
 
@@ -681,8 +710,9 @@ Behavior:
   session already in progress when this arrives is not retroactively recorded
 - turning `enabled` **off** stops any in-progress recording and frees the
   buffer immediately (a finished-but-unreplayed recording is freed too)
-- changing `codec` while `enabled` stays `true` does not affect a
-  recording already in progress; it is read fresh at the next session start
+- changing `codec` or `target_minutes` while `enabled` stays `true` does not
+  affect a recording already in progress; both are read fresh at the next
+  session start
 
 Success response:
 
@@ -692,7 +722,7 @@ Success response:
 
 Typical errors:
 
-- `codec must be one of auto|mp2_160|mp2_192|mp2_224|pcm`
+- `codec must be one of auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm`
 
 - turning `enabled` **off** while replay is active hard-aborts it (no fade)
   and frees the buffer, since the feature itself is going away
@@ -880,6 +910,7 @@ Success response:
     "enabled":true,
     "armed":true,
     "codec":"auto",
+    "target_minutes":80,
     "max_recording_seconds":20340,
     "recording":{
       "active":false,
@@ -992,11 +1023,15 @@ Top-level fields:
   - `enabled`: current `set_repeat_enabled` policy
   - `armed`: current session-arm flag (`set_repeat_armed`); process-global,
     not persisted, reset by a daemon restart
-  - `codec`: current codec policy (`auto`|`mp2_160`|`mp2_192`|`mp2_224`|`pcm`)
+  - `codec`: current codec policy (`auto`|`mp2_160`|`mp2_192`|`mp2_224`|
+    `mp2_256`|`mp2_320`|`mp2_384`|`pcm`)
+  - `target_minutes`: current target-duration goal (default 80; see
+    `set_repeat_enabled` above) -- what the `auto` ladder tries to
+    guarantee, not a hard cap on the sliding window
   - `max_recording_seconds`: sliding-window size in seconds, computed from free
-    RAM and the resolved codec tier's byte rate -- there is no fixed-duration
-    target any more (the window is bounded only by the 64 MiB free-RAM floor
-    + codec ladder). Available whenever `enabled` is `true`, not just while a
+    RAM and the resolved codec tier's byte rate -- the window itself still has
+    no fixed-duration cap (bounded only by the 64 MiB free-RAM floor + the
+    resolved tier's byte rate). Available whenever `enabled` is `true`, not just while a
     recording is active: while recording, this is the value computed when
     that session started; while enabled but idle/holding, it is computed on
     demand from a periodically-refreshed free-RAM reading, reflecting what a
