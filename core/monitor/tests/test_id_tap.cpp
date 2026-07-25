@@ -31,6 +31,7 @@
 
 #include "autostream_id_tap.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -172,12 +173,16 @@ static void test_anti_aliasing_attenuates_above_nyquist()
                   20.0 * std::log10((ref_rms > 1e-12 ? ref_rms : 1e-12) /
                                      (above_rms > 1e-12 ? above_rms : 1e-12)));
 
-    // SRC_SINC_FASTEST should attenuate a 10 kHz tone by tens of dB relative
-    // to the in-band reference. Require at least 10 dB (a conservative bar
-    // that SRC_LINEAR -- effectively no stopband -- cannot meet, per the
-    // dev-time measurement above) so this test is a real regression guard.
-    CHECK(above_rms < ref_rms * std::pow(10.0, -10.0 / 20.0),
-          "anti-alias: 10 kHz tone attenuated >= 10 dB relative to 1 kHz passband");
+    // kInputRate/kOutputRate is exactly 3:1 (48000/16000), so this exercises
+    // the FIR fast path (autostream_id_tap.h's design_fir_filter()), not
+    // SRC_SINC_FASTEST. The FIR is designed for >=70 dB stopband attenuation
+    // (10 kHz is well past its 8 kHz stopband edge); require at least 60 dB
+    // here -- demanding enough that it still fails hard against a
+    // no-stopband converter (SRC_LINEAR was ~1.4 dB, per the dev-time
+    // measurement above) while leaving headroom under the 70 dB design
+    // target for floating-point / windowing slack.
+    CHECK(above_rms < ref_rms * std::pow(10.0, -60.0 / 20.0),
+          "anti-alias: 10 kHz tone attenuated >= 60 dB relative to 1 kHz passband (FIR path)");
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +350,188 @@ static void test_invalid_arguments_return_no_output()
 }
 
 // ---------------------------------------------------------------------------
+// FIR fast path: split-block vs. single-block equivalence
+// ---------------------------------------------------------------------------
+//
+// process_fir()'s ring buffer / decimation-phase counter persist across
+// process() calls (autostream_id_tap.h's process_fir() comment). This test
+// asserts that promise directly: feeding the same signal through in small
+// chunks must produce bit-identical output to feeding it in one large chunk,
+// with no edge artefact at the chunk boundaries.
+static void test_split_block_matches_single_block_fir_path()
+{
+    const int kTotalFrames = 4000;   // < kMaxBlock, so the "single call" baseline below really is one call
+    auto tone = make_tone(1000.0, 0.6, kTotalFrames, kInputRate);
+
+    // Single call, whole block at once (kTotalFrames < kMaxBlock so this is
+    // one process() call).
+    IdTapResampler tap_single(kInputRate, kOutputRate, kMaxBlock);
+    CHECK(tap_single.valid(), "split-block: single-call tap constructs");
+    int count_single = 0;
+    const int16_t* out_single_ptr = tap_single.process(tone.data(), kTotalFrames, &count_single);
+    std::vector<int16_t> out_single(out_single_ptr, out_single_ptr + count_single);
+
+    // Same signal, split into irregular chunks (not multiples of 3, not
+    // multiples of each other) across several process() calls.
+    IdTapResampler tap_split(kInputRate, kOutputRate, kMaxBlock);
+    CHECK(tap_split.valid(), "split-block: split-call tap constructs");
+    std::vector<int16_t> out_split;
+    const int chunk_sizes[] = {1, 2, 5, 37, 500, 1000, 1000, 1455};   // sums to kTotalFrames
+    int consumed = 0;
+    for (int chunk : chunk_sizes)
+    {
+        int out_count = 0;
+        const int16_t* out = tap_split.process(tone.data() + consumed * 2, chunk, &out_count);
+        if (out && out_count > 0)
+            out_split.insert(out_split.end(), out, out + out_count);
+        consumed += chunk;
+    }
+    CHECK(consumed == kTotalFrames, "split-block: chunk sizes sum to the total frame count");
+
+    CHECK(out_single.size() == out_split.size(),
+          "split-block: single-call and split-call output sample counts match");
+    if (out_single.size() == out_split.size())
+    {
+        bool all_equal = true;
+        for (size_t i = 0; i < out_single.size(); ++i)
+        {
+            if (out_single[i] != out_split[i])
+            {
+                all_equal = false;
+                break;
+            }
+        }
+        CHECK(all_equal, "split-block: single-call and split-call output samples are bit-identical");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Non-3:1 rate: compatible mode (44100 -> 16000) still uses the SINC path
+// ---------------------------------------------------------------------------
+//
+// 44100/16000 = 2.75625..., not an integer ratio, so the FIR fast path must
+// not engage; this is a behaviour snapshot of the pre-existing
+// SRC_SINC_FASTEST path, confirming it is untouched by the 3:1 fast-path
+// addition.
+static void test_non_3to1_rate_uses_sinc_path()
+{
+    const int kCompatInputRate = 44100;
+    IdTapResampler tap(kCompatInputRate, kOutputRate, kMaxBlock);
+    CHECK(tap.valid(), "non-3:1: 44100->16000 tap constructs");
+
+    const double kAmplitude = 0.8;
+    const int    kFrames    = kCompatInputRate;   // 1 second
+
+    auto above_nyquist = run_tone(tap, 10000.0, kAmplitude, kFrames, kCompatInputRate);
+    CHECK(!above_nyquist.empty(), "non-3:1: 10 kHz tone produces output");
+
+    IdTapResampler ref_tap(kCompatInputRate, kOutputRate, kMaxBlock);
+    auto in_band = run_tone(ref_tap, 1000.0, kAmplitude, kFrames, kCompatInputRate);
+    CHECK(!in_band.empty(), "non-3:1: 1 kHz reference tone produces output");
+
+    auto steady = [](const std::vector<int16_t>& v) {
+        size_t skip = v.size() / 10;
+        return std::make_pair(v.data() + skip, static_cast<int>(v.size() - skip));
+    };
+    auto [above_data, above_n] = steady(above_nyquist);
+    auto [ref_data, ref_n]     = steady(in_band);
+
+    double above_rms = rms(above_data, above_n);
+    double ref_rms    = rms(ref_data, ref_n);
+
+    std::fprintf(stderr,
+                  "[test_id_tap] (non-3:1 SINC path) 10 kHz stopband RMS=%.6f, "
+                  "1 kHz passband RMS=%.6f, attenuation=%.1f dB\n",
+                  above_rms, ref_rms,
+                  20.0 * std::log10((ref_rms > 1e-12 ? ref_rms : 1e-12) /
+                                     (above_rms > 1e-12 ? above_rms : 1e-12)));
+
+    // Same 10 dB bar as the original (pre-FIR) anti-aliasing test -- this is
+    // the behaviour snapshot for the path this refactor must leave alone.
+    CHECK(above_rms < ref_rms * std::pow(10.0, -10.0 / 20.0),
+          "non-3:1: 10 kHz tone attenuated >= 10 dB relative to 1 kHz passband (SINC path)");
+}
+
+// ---------------------------------------------------------------------------
+// 3:1 output-count sanity: N input frames -> ~N/3 outputs cumulative
+// ---------------------------------------------------------------------------
+//
+// The FIR path emits one output every 3rd input sample once its history
+// ring is full (taps-1 samples of warm-up latency), so cumulative output
+// count trails N/3 by roughly (taps/3) samples and never exceeds N/3. The
+// exact tap count is an internal design choice (see design_fir_filter()),
+// so this asserts generous, design-agnostic bounds rather than an exact tap
+// count.
+static void test_3to1_output_count_sanity()
+{
+    IdTapResampler tap(kInputRate, kOutputRate, kMaxBlock);
+    CHECK(tap.valid(), "output-count: 3:1 tap constructs");
+
+    const int kFrames = kInputRate;   // 1 second = 48000 input frames
+    // Drive it through run_tone (kMaxBlock-sized chunks, matching how both
+    // real call sites feed process()) rather than one raw process() call --
+    // kFrames (48000) exceeds kMaxBlock (4096), and a single process() call
+    // silently clamps to max_block_frames (the oversize guard), which would
+    // undercount here for a reason unrelated to what this test checks.
+    auto out_v = run_tone(tap, 1000.0, 0.5, kFrames, kInputRate);
+    int out_count = static_cast<int>(out_v.size());
+
+    const int expected = kFrames / 3;   // 16000
+    CHECK(out_count <= expected,
+          "output-count: FIR cumulative output count never exceeds N/3");
+    // Generous warm-up margin: even a very long FIR (hundreds of taps) loses
+    // well under 1000 output samples (~3000 input samples) of latency.
+    CHECK(out_count >= expected - 1000,
+          "output-count: FIR cumulative output count is within warm-up latency of N/3");
+
+    std::fprintf(stderr,
+                  "[test_id_tap] 3:1 output-count sanity: %d input frames -> %d output samples "
+                  "(N/3 = %d)\n",
+                  kFrames, out_count, expected);
+}
+
+// ---------------------------------------------------------------------------
+// Optional: rough relative timing, FIR fast path vs. general SINC path.
+// Not a gated assertion -- just a report, relevant to CPU budget on
+// constrained hardware (the process thread's per-block cost).
+// ---------------------------------------------------------------------------
+static void report_fir_vs_sinc_timing()
+{
+    const int kFrames = kInputRate;   // 1 second of 48 kHz stereo per iteration
+    auto tone = make_tone(1000.0, 0.5, kFrames, kInputRate);
+    const int kIterations = 50;
+
+    IdTapResampler fir_tap(kInputRate, kOutputRate, kMaxBlock);          // 48000->16000, 3:1 FIR
+    IdTapResampler sinc_tap(44100, kOutputRate, kMaxBlock);              // 44100->16000, SINC
+    auto tone_compat = make_tone(1000.0, 0.5, 44100, 44100);
+
+    auto t0 = std::chrono::steady_clock::now();
+    for (int it = 0; it < kIterations; ++it)
+    {
+        int out_count = 0;
+        fir_tap.process(tone.data(), kFrames, &out_count);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    for (int it = 0; it < kIterations; ++it)
+    {
+        int out_count = 0;
+        sinc_tap.process(tone_compat.data(), 44100, &out_count);
+    }
+    auto t2 = std::chrono::steady_clock::now();
+
+    double fir_ms  = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    double sinc_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+
+    std::fprintf(stderr,
+                  "[test_id_tap] timing (informational, not gated): FIR 48000->16000 "
+                  "%.2f ms / %d iters (%.4f ms/iter) vs. SINC 44100->16000 %.2f ms / %d iters "
+                  "(%.4f ms/iter) -- ratio (SINC/FIR) = %.2fx\n",
+                  fir_ms, kIterations, fir_ms / kIterations,
+                  sinc_ms, kIterations, sinc_ms / kIterations,
+                  (fir_ms > 0.0) ? (sinc_ms / fir_ms) : 0.0);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -356,6 +543,10 @@ int main()
     test_clamp_out_of_range_samples();
     test_oversize_block_is_guarded_not_overrun();
     test_invalid_arguments_return_no_output();
+    test_split_block_matches_single_block_fir_path();
+    test_non_3to1_rate_uses_sinc_path();
+    test_3to1_output_count_sanity();
+    report_fir_vs_sinc_timing();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);
