@@ -6,7 +6,8 @@
 // IdTapResampler: the mono downmix + 44100 Hz -> 16000 Hz resample + clamp
 // shared by the two track-ID taps (live capture, InputChannel::
 // process_thread_func() in autostream_monitor_io.cpp; replay,
-// ReplayEngine::run_one_session() in autostream_repeat.cpp).
+// ReplayEngine::init_session()/process_slice() -- called from
+// run_one_session() -- in autostream_repeat.cpp).
 //
 // This header exists because hand-duplicating this logic at both call sites
 // creates two failure modes that a single shared, tested component avoids:

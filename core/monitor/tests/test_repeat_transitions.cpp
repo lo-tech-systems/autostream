@@ -1,0 +1,518 @@
+// =============================================================================
+// test_repeat_transitions.cpp
+//
+// Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+//
+// Unit tests for decide_repeat_transition() -- the pure decision core of
+// RepeatController's state machine. See the state x event matrix comment
+// above decide_repeat_transition() in autostream_monitor.h for the
+// authoritative table this test drives, cell by cell.
+//
+// Why a free function rather than a real RepeatController: RepeatController
+// pulls in libtwolame/libmpg123 (Mp2Encoder/Mp2Decoder), spins up two real
+// worker threads (RepeatRecorder, ReplayEngine), and does actual /proc/
+// meminfo file I/O in perform_pending_start() -- none of that is available
+// or desirable in a unit test. The (state, armed, enabled_cfg,
+// pending_action, pending_restorable, event, ctx) -> RepeatDecision decision
+// lives in decide_repeat_transition(), a pure function with no shared state,
+// no I/O, and no blocking, and defined it `inline` directly in
+// autostream_monitor.h precisely so it stays link-independent of libtwolame/
+// libmpg123 -- this test includes only the header, no autostream_repeat.cpp,
+// so it builds with the same bare `g++ -I core/monitor` every other
+// zero-dependency monitor test uses (autostream_repeat_buffer.h/
+// autostream_spsc_ring.h's pattern). RepeatController::handle_event_locked()
+// (autostream_repeat.cpp) is the only production caller of this function;
+// it is exercised indirectly by the D-suite / repeat_test_driver.py
+// scenarios, not here.
+//
+// Coverage: every (RepeatState, RepeatEvent) cell in the matrix, including
+// the PendingAction/armed/enabled_cfg/pending_restorable sub-branches that
+// make some cells fan out into more than one outcome, and the two
+// IMPOSSIBLE cells (PendingStartSucceeded/Failed outside Pending).
+//
+// Build (on Linux/WSL, from repo root):
+//   g++ -std=c++17 -Wall -Wextra -O2 -I core/monitor \
+//       core/monitor/tests/test_repeat_transitions.cpp \
+//       -o /tmp/test_repeat_transitions && /tmp/test_repeat_transitions
+// =============================================================================
+
+#include "autostream_monitor.h"
+
+#include <cstdio>
+#include <array>
+
+// ---------------------------------------------------------------------------
+// Minimal assertion harness (matches test_repeat_buffer.cpp / test_spsc_ring.cpp)
+// ---------------------------------------------------------------------------
+
+static int g_tests  = 0;
+static int g_failed = 0;
+
+#define CHECK(cond, msg) do { \
+    ++g_tests; \
+    if (!(cond)) { \
+        ++g_failed; \
+        std::fprintf(stderr, "FAIL [%s:%d] %s -- %s\n", \
+                     __FILE__, __LINE__, #cond, (msg)); \
+    } \
+} while (0)
+
+static const std::array<RepeatState, 6> kAllStates = {
+    RepeatState::Idle, RepeatState::Recording, RepeatState::Hold,
+    RepeatState::Replaying, RepeatState::FadingOut, RepeatState::Pending,
+};
+
+static const char* state_name(RepeatState s)
+{
+    switch (s)
+    {
+        case RepeatState::Idle:       return "Idle";
+        case RepeatState::Recording:  return "Recording";
+        case RepeatState::Hold:       return "Hold";
+        case RepeatState::Replaying:  return "Replaying";
+        case RepeatState::FadingOut:  return "FadingOut";
+        case RepeatState::Pending:    return "Pending";
+    }
+    return "?";
+}
+
+// ---------------------------------------------------------------------------
+// EnabledOn / EnabledOff
+// ---------------------------------------------------------------------------
+
+static void test_enabled_on_off()
+{
+    for (RepeatState s : kAllStates)
+    {
+        // EnabledOff: Idle -> NoOp; everything else -> Apply.
+        RepeatDecision off_default = decide_repeat_transition(
+            s, /*armed=*/false, /*enabled_cfg=*/false, PendingAction::None,
+            /*pending_restorable=*/false, RepeatEvent::EnabledOff, RepeatEventCtx{});
+        if (s == RepeatState::Idle)
+        {
+            CHECK(off_default.kind == RepeatDecision::Kind::NoOp, state_name(s));
+        }
+        else
+        {
+            CHECK(off_default.kind == RepeatDecision::Kind::Apply, state_name(s));
+            CHECK(off_default.log_tag == RepeatLogTag::DisabledMidState, state_name(s));
+            if (s == RepeatState::Replaying || s == RepeatState::FadingOut)
+            {
+                CHECK(off_default.do_request_abort, state_name(s));
+                CHECK(!off_default.do_free_recording, state_name(s));
+                CHECK(off_default.set_pending_action &&
+                      off_default.pending_action == PendingAction::Discard, state_name(s));
+            }
+            else
+            {
+                CHECK(off_default.do_free_recording, state_name(s));
+                CHECK(!off_default.do_request_abort, state_name(s));
+            }
+        }
+
+        // EnabledOff while Replaying/FadingOut: pending_restorable snapshot
+        // mirrors (pending_action == LiveInterrupt) at call time.
+        if (s == RepeatState::Replaying || s == RepeatState::FadingOut)
+        {
+            RepeatDecision off_li = decide_repeat_transition(
+                s, false, false, PendingAction::LiveInterrupt, false,
+                RepeatEvent::EnabledOff, RepeatEventCtx{});
+            CHECK(off_li.set_pending_restorable && off_li.pending_restorable, state_name(s));
+
+            RepeatDecision off_none = decide_repeat_transition(
+                s, false, false, PendingAction::None, false,
+                RepeatEvent::EnabledOff, RepeatEventCtx{});
+            CHECK(off_none.set_pending_restorable && !off_none.pending_restorable, state_name(s));
+        }
+
+        // EnabledOn: only Replaying/FadingOut with Discard+restorable applies.
+        RepeatDecision on_noop = decide_repeat_transition(
+            s, false, false, PendingAction::None, false,
+            RepeatEvent::EnabledOn, RepeatEventCtx{});
+        CHECK(on_noop.kind == RepeatDecision::Kind::NoOp, state_name(s));
+
+        if (s == RepeatState::Replaying || s == RepeatState::FadingOut)
+        {
+            RepeatDecision on_restore = decide_repeat_transition(
+                s, false, false, PendingAction::Discard, /*pending_restorable=*/true,
+                RepeatEvent::EnabledOn, RepeatEventCtx{});
+            CHECK(on_restore.kind == RepeatDecision::Kind::Apply, state_name(s));
+            CHECK(on_restore.set_pending_action &&
+                  on_restore.pending_action == PendingAction::LiveInterrupt, state_name(s));
+            CHECK(on_restore.set_pending_restorable && !on_restore.pending_restorable, state_name(s));
+            CHECK(on_restore.log_tag == RepeatLogTag::ReenabledRestoringLiveInterrupt, state_name(s));
+
+            // Discard but NOT restorable -> still NoOp.
+            RepeatDecision on_not_restorable = decide_repeat_transition(
+                s, false, false, PendingAction::Discard, /*pending_restorable=*/false,
+                RepeatEvent::EnabledOn, RepeatEventCtx{});
+            CHECK(on_not_restorable.kind == RepeatDecision::Kind::NoOp, state_name(s));
+
+            // LiveInterrupt already (nothing to restore) -> NoOp.
+            RepeatDecision on_live = decide_repeat_transition(
+                s, false, false, PendingAction::LiveInterrupt, true,
+                RepeatEvent::EnabledOn, RepeatEventCtx{});
+            CHECK(on_live.kind == RepeatDecision::Kind::NoOp, state_name(s));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CaptureStarted
+// ---------------------------------------------------------------------------
+
+static void test_capture_started()
+{
+    RepeatEventCtx ctx;
+    ctx.input_index = 1;
+
+    // Global !enabled_cfg guard: NoOp for every state.
+    for (RepeatState s : kAllStates)
+    {
+        RepeatDecision d = decide_repeat_transition(
+            s, false, /*enabled_cfg=*/false, PendingAction::None, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(d.kind == RepeatDecision::Kind::NoOp, state_name(s));
+    }
+
+    // Recording/Pending: defensive NoOp regardless of enabled_cfg.
+    for (RepeatState s : {RepeatState::Recording, RepeatState::Pending})
+    {
+        RepeatDecision d = decide_repeat_transition(
+            s, false, true, PendingAction::None, false, RepeatEvent::CaptureStarted, ctx);
+        CHECK(d.kind == RepeatDecision::Kind::NoOp, state_name(s));
+    }
+
+    // Idle: new Pending session.
+    {
+        RepeatDecision d = decide_repeat_transition(
+            RepeatState::Idle, false, true, PendingAction::None, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(d.kind == RepeatDecision::Kind::Apply, "Idle");
+        CHECK(!d.do_free_recording, "Idle");
+        CHECK(d.change_state && d.next_state == RepeatState::Pending, "Idle");
+        CHECK(d.set_origin && d.origin_input == 1, "Idle");
+        CHECK(d.do_request_pending_start, "Idle");
+    }
+
+    // Hold: frees the stale recording too.
+    {
+        RepeatDecision d = decide_repeat_transition(
+            RepeatState::Hold, false, true, PendingAction::None, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(d.kind == RepeatDecision::Kind::Apply, "Hold");
+        CHECK(d.do_free_recording, "Hold");
+        CHECK(d.change_state && d.next_state == RepeatState::Pending, "Hold");
+        CHECK(d.set_origin && d.origin_input == 1, "Hold");
+        CHECK(d.do_request_pending_start, "Hold");
+    }
+
+    // Replaying/FadingOut: the three sub-branches.
+    for (RepeatState s : {RepeatState::Replaying, RepeatState::FadingOut})
+    {
+        RepeatDecision ignored_li = decide_repeat_transition(
+            s, false, true, PendingAction::LiveInterrupt, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(ignored_li.kind == RepeatDecision::Kind::Ignored, state_name(s));
+        CHECK(ignored_li.log_tag == RepeatLogTag::CaptureStartIgnoredFadeInProgress, state_name(s));
+
+        RepeatDecision ignored_discard = decide_repeat_transition(
+            s, false, true, PendingAction::Discard, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(ignored_discard.kind == RepeatDecision::Kind::Ignored, state_name(s));
+        CHECK(ignored_discard.log_tag == RepeatLogTag::CaptureStartIgnoredDiscardPending, state_name(s));
+
+        RepeatDecision trigger = decide_repeat_transition(
+            s, false, true, PendingAction::None, false, RepeatEvent::CaptureStarted, ctx);
+        CHECK(trigger.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(trigger.set_pending_action &&
+              trigger.pending_action == PendingAction::LiveInterrupt, state_name(s));
+        CHECK(trigger.set_pending_interrupt_input &&
+              trigger.pending_interrupt_input == 1, state_name(s));
+        CHECK(trigger.set_pending_restorable && !trigger.pending_restorable, state_name(s));
+
+        if (s == RepeatState::Replaying)
+        {
+            CHECK(trigger.change_state && trigger.next_state == RepeatState::FadingOut, "Replaying");
+            CHECK(trigger.do_request_fade_out, "Replaying");
+            CHECK(trigger.log_tag == RepeatLogTag::LiveInterruptFadingOutReplay, "Replaying");
+        }
+        else
+        {
+            CHECK(!trigger.change_state, "FadingOut upgrade: no state change");
+            CHECK(!trigger.do_request_fade_out, "FadingOut upgrade: fade already running");
+            CHECK(trigger.log_tag == RepeatLogTag::LiveInterruptUpgradingDisarmFade, "FadingOut");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CaptureStopped
+// ---------------------------------------------------------------------------
+
+static void test_capture_stopped()
+{
+    for (RepeatState s : {RepeatState::Idle, RepeatState::Hold,
+                           RepeatState::Replaying, RepeatState::FadingOut})
+    {
+        RepeatDecision d = decide_repeat_transition(
+            s, false, true, PendingAction::None, false, RepeatEvent::CaptureStopped, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::NoOp, state_name(s));
+    }
+
+    RepeatDecision pending = decide_repeat_transition(
+        RepeatState::Pending, false, true, PendingAction::None, false,
+        RepeatEvent::CaptureStopped, RepeatEventCtx{});
+    CHECK(pending.kind == RepeatDecision::Kind::Apply, "Pending");
+    CHECK(pending.change_state && pending.next_state == RepeatState::Idle, "Pending");
+    CHECK(pending.set_origin && pending.origin_input == 0, "Pending");
+    CHECK(pending.log_tag == RepeatLogTag::CaptureStoppedPendingCancelled, "Pending");
+
+    RepeatDecision recording = decide_repeat_transition(
+        RepeatState::Recording, false, true, PendingAction::None, false,
+        RepeatEvent::CaptureStopped, RepeatEventCtx{});
+    CHECK(recording.kind == RepeatDecision::Kind::Apply, "Recording");
+    CHECK(recording.change_state && recording.next_state == RepeatState::Hold, "Recording");
+    CHECK(!recording.do_free_recording, "Recording -> Hold, not freed");
+}
+
+// ---------------------------------------------------------------------------
+// Armed / Disarmed
+// ---------------------------------------------------------------------------
+
+static void test_armed_disarmed()
+{
+    for (RepeatState s : kAllStates)
+    {
+        RepeatDecision armed = decide_repeat_transition(
+            s, false, true, PendingAction::None, false, RepeatEvent::Armed, RepeatEventCtx{});
+        if (s == RepeatState::Hold)
+        {
+            CHECK(armed.kind == RepeatDecision::Kind::Apply, "Hold armed");
+            CHECK(armed.do_begin_replay, "Hold armed -> BeginReplay");
+            CHECK(!armed.change_state, "begin_replay_locked() owns the state write");
+        }
+        else
+        {
+            CHECK(armed.kind == RepeatDecision::Kind::NoOp, state_name(s));
+        }
+
+        RepeatDecision disarmed = decide_repeat_transition(
+            s, true, true, PendingAction::None, false, RepeatEvent::Disarmed, RepeatEventCtx{});
+        if (s == RepeatState::Replaying)
+        {
+            CHECK(disarmed.kind == RepeatDecision::Kind::Apply, "Replaying disarmed");
+            CHECK(disarmed.change_state && disarmed.next_state == RepeatState::FadingOut, "Replaying disarmed");
+            CHECK(disarmed.do_request_fade_out, "Replaying disarmed");
+            CHECK(disarmed.log_tag == RepeatLogTag::DisarmDuringReplayFadingOut, "Replaying disarmed");
+        }
+        else
+        {
+            // Includes FadingOut: a disarm during an in-flight fade is
+            // a deliberate no-op -- the fade already running continues
+            // untouched, matching "No-op; fade completes".
+            CHECK(disarmed.kind == RepeatDecision::Kind::NoOp, state_name(s));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InputStopped
+// ---------------------------------------------------------------------------
+
+static void test_input_stopped()
+{
+    for (RepeatState s : {RepeatState::Idle, RepeatState::Recording,
+                           RepeatState::Hold, RepeatState::Pending})
+    {
+        RepeatDecision d = decide_repeat_transition(
+            s, false, true, PendingAction::None, false, RepeatEvent::InputStopped, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(d.do_free_recording, state_name(s));
+        CHECK(!d.do_request_abort, state_name(s));
+    }
+
+    for (RepeatState s : {RepeatState::Replaying, RepeatState::FadingOut})
+    {
+        RepeatDecision d = decide_repeat_transition(
+            s, false, true, PendingAction::None, false, RepeatEvent::InputStopped, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(!d.do_free_recording, state_name(s));
+        CHECK(d.do_request_abort, state_name(s));
+        CHECK(d.set_pending_action && d.pending_action == PendingAction::Discard, state_name(s));
+        // Never restorable: this cell must NOT touch pending_restorable.
+        CHECK(!d.set_pending_restorable, state_name(s));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReplaySessionEnded
+// ---------------------------------------------------------------------------
+
+static void test_replay_session_ended()
+{
+    for (RepeatState s : {RepeatState::Idle, RepeatState::Recording,
+                           RepeatState::Hold, RepeatState::Pending})
+    {
+        RepeatDecision d = decide_repeat_transition(
+            s, false, true, PendingAction::None, false,
+            RepeatEvent::ReplaySessionEnded, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::NoOp, state_name(s));
+    }
+
+    for (RepeatState s : {RepeatState::Replaying, RepeatState::FadingOut})
+    {
+        RepeatEventCtx ctx;
+        ctx.interrupting_input = 2;
+
+        // Discard wins.
+        RepeatDecision discard = decide_repeat_transition(
+            s, true, true, PendingAction::Discard, false,
+            RepeatEvent::ReplaySessionEnded, ctx);
+        CHECK(discard.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(discard.do_free_recording, state_name(s));
+        CHECK(!discard.change_state, state_name(s));
+        CHECK(discard.set_pending_action && discard.pending_action == PendingAction::None, state_name(s));
+        CHECK(discard.set_pending_restorable && !discard.pending_restorable, state_name(s));
+        CHECK(discard.log_tag == RepeatLogTag::ReplaySessionEndedDiscarded, state_name(s));
+
+        // LiveInterrupt, enabled -> free + new Pending session.
+        RepeatDecision li_enabled = decide_repeat_transition(
+            s, true, /*enabled_cfg=*/true, PendingAction::LiveInterrupt, false,
+            RepeatEvent::ReplaySessionEnded, ctx);
+        CHECK(li_enabled.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(li_enabled.do_free_recording, state_name(s));
+        CHECK(li_enabled.change_state && li_enabled.next_state == RepeatState::Pending, state_name(s));
+        CHECK(li_enabled.set_origin && li_enabled.origin_input == 2, state_name(s));
+        CHECK(li_enabled.do_request_pending_start, state_name(s));
+        CHECK(li_enabled.log_tag == RepeatLogTag::ReplaySessionEndedLiveInterruptFreed, state_name(s));
+
+        // LiveInterrupt, disabled -> free only, no new session.
+        RepeatDecision li_disabled = decide_repeat_transition(
+            s, true, /*enabled_cfg=*/false, PendingAction::LiveInterrupt, false,
+            RepeatEvent::ReplaySessionEnded, ctx);
+        CHECK(li_disabled.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(li_disabled.do_free_recording, state_name(s));
+        CHECK(!li_disabled.change_state, state_name(s));
+        CHECK(!li_disabled.do_request_pending_start, state_name(s));
+
+        // None, armed+enabled+bytes -> Hold + BeginReplay (restart).
+        RepeatEventCtx ctx_bytes;
+        ctx_bytes.has_hold_bytes = true;
+        RepeatDecision none_restart = decide_repeat_transition(
+            s, /*armed=*/true, /*enabled_cfg=*/true, PendingAction::None, false,
+            RepeatEvent::ReplaySessionEnded, ctx_bytes);
+        CHECK(none_restart.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(none_restart.change_state && none_restart.next_state == RepeatState::Hold, state_name(s));
+        CHECK(none_restart.do_begin_replay, state_name(s));
+        CHECK(none_restart.log_tag == RepeatLogTag::ReplaySessionEndedRetainedHold, state_name(s));
+
+        // None, but not armed -> Hold, no restart.
+        RepeatDecision none_no_restart = decide_repeat_transition(
+            s, /*armed=*/false, /*enabled_cfg=*/true, PendingAction::None, false,
+            RepeatEvent::ReplaySessionEnded, ctx_bytes);
+        CHECK(none_no_restart.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(none_no_restart.change_state && none_no_restart.next_state == RepeatState::Hold, state_name(s));
+        CHECK(!none_no_restart.do_begin_replay, state_name(s));
+
+        // None, armed+enabled but no bytes -> Hold, no restart.
+        RepeatEventCtx ctx_no_bytes;
+        ctx_no_bytes.has_hold_bytes = false;
+        RepeatDecision none_no_bytes = decide_repeat_transition(
+            s, /*armed=*/true, /*enabled_cfg=*/true, PendingAction::None, false,
+            RepeatEvent::ReplaySessionEnded, ctx_no_bytes);
+        CHECK(!none_no_bytes.do_begin_replay, state_name(s));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PendingStartSucceeded / PendingStartFailed
+// ---------------------------------------------------------------------------
+
+static void test_pending_start_outcomes()
+{
+    RepeatDecision ok = decide_repeat_transition(
+        RepeatState::Pending, false, true, PendingAction::None, false,
+        RepeatEvent::PendingStartSucceeded, RepeatEventCtx{});
+    CHECK(ok.kind == RepeatDecision::Kind::Apply, "Pending PendingStartSucceeded");
+    CHECK(ok.change_state && ok.next_state == RepeatState::Recording, "Pending PendingStartSucceeded");
+    CHECK(!ok.set_origin, "origin untouched on success");
+
+    RepeatDecision failed = decide_repeat_transition(
+        RepeatState::Pending, false, true, PendingAction::None, false,
+        RepeatEvent::PendingStartFailed, RepeatEventCtx{});
+    CHECK(failed.kind == RepeatDecision::Kind::Apply, "Pending PendingStartFailed");
+    CHECK(failed.change_state && failed.next_state == RepeatState::Idle, "Pending PendingStartFailed");
+    CHECK(failed.set_origin && failed.origin_input == 0, "Pending PendingStartFailed");
+
+    // Impossible cells: every state other than Pending, both events.
+    for (RepeatState s : kAllStates)
+    {
+        if (s == RepeatState::Pending)
+            continue;
+        RepeatDecision succ_bad = decide_repeat_transition(
+            s, false, true, PendingAction::None, false,
+            RepeatEvent::PendingStartSucceeded, RepeatEventCtx{});
+        CHECK(succ_bad.kind == RepeatDecision::Kind::Impossible, state_name(s));
+
+        RepeatDecision fail_bad = decide_repeat_transition(
+            s, false, true, PendingAction::None, false,
+            RepeatEvent::PendingStartFailed, RepeatEventCtx{});
+        CHECK(fail_bad.kind == RepeatDecision::Kind::Impossible, state_name(s));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Full-matrix smoke pass: every (state, event) combination must return a
+// well-defined Kind (nothing falls through to a garbage/default value) --
+// catches an event enumerator added later without a matching switch arm.
+// ---------------------------------------------------------------------------
+
+static void test_full_matrix_smoke()
+{
+    static const std::array<RepeatEvent, 10> kAllEvents = {
+        RepeatEvent::EnabledOn, RepeatEvent::EnabledOff, RepeatEvent::CaptureStarted,
+        RepeatEvent::CaptureStopped, RepeatEvent::Armed, RepeatEvent::Disarmed,
+        RepeatEvent::InputStopped, RepeatEvent::ReplaySessionEnded,
+        RepeatEvent::PendingStartSucceeded, RepeatEvent::PendingStartFailed,
+    };
+
+    for (RepeatState s : kAllStates)
+    {
+        for (RepeatEvent e : kAllEvents)
+        {
+            for (bool armed : {false, true})
+            {
+                for (bool enabled_cfg : {false, true})
+                {
+                    for (PendingAction pa : {PendingAction::None, PendingAction::Discard,
+                                              PendingAction::LiveInterrupt})
+                    {
+                        RepeatDecision d = decide_repeat_transition(
+                            s, armed, enabled_cfg, pa, false, e, RepeatEventCtx{});
+                        CHECK(d.kind == RepeatDecision::Kind::Apply ||
+                              d.kind == RepeatDecision::Kind::Ignored ||
+                              d.kind == RepeatDecision::Kind::NoOp ||
+                              d.kind == RepeatDecision::Kind::Impossible,
+                              "every cell returns a well-defined Kind");
+                    }
+                }
+            }
+        }
+    }
+}
+
+int main()
+{
+    test_enabled_on_off();
+    test_capture_started();
+    test_capture_stopped();
+    test_armed_disarmed();
+    test_input_stopped();
+    test_replay_session_ended();
+    test_pending_start_outcomes();
+    test_full_matrix_smoke();
+
+    std::printf("%d/%d tests passed\n", g_tests - g_failed, g_tests);
+    return g_failed == 0 ? 0 : 1;
+}

@@ -36,6 +36,7 @@
 #include "autostream_track_gap_detector.h"
 #include "autostream_repeat_buffer.h"
 #include "autostream_id_tap.h"
+#include "autostream_spsc_ring.h"
 
 #include <string>
 #include <vector>
@@ -50,6 +51,7 @@
 #include <memory>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <sys/time.h>      // struct timeval for SO_RCVTIMEO
 
 #include <alsa/asoundlib.h>
@@ -58,7 +60,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.10";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.14";
 
 
 // =============================================================================
@@ -639,14 +641,17 @@ private:
 
     // SPSC ring buffer: 2^18 stereo s16le samples ≈ 2.97 s at 44.1 kHz.
     // submit_block() is the single producer; writer_thread_func() is the
-    // single consumer.  Both positions are atomic to satisfy the C++ memory
-    // model for inter-thread reads.
-    static constexpr uint32_t DUMP_RING_SAMPLES = 1u << 18;   // 262144
-    static constexpr uint32_t DUMP_RING_MASK    = DUMP_RING_SAMPLES - 1u;
+    // single consumer. See autostream_spsc_ring.h for the SPSC proof this
+    // relies on.
+    static constexpr size_t DUMP_RING_SAMPLES = 1u << 18;   // 262144
 
-    std::vector<int16_t>    _ring;
-    std::atomic<uint32_t>   _ring_write_pos{0};  // written only by audio thread
-    std::atomic<uint32_t>   _ring_read_pos{0};   // written only by writer thread
+    SpscRing<int16_t>       _ring{DUMP_RING_SAMPLES};
+
+    // Scratch buffer for writer_thread_func()'s drain: sized once here (never
+    // grown on the writer thread) so read()-into-buffer-then-fwrite adds no
+    // allocation. Holds at most one drain's worth of samples, which can be up
+    // to the full ring.
+    std::vector<int16_t>    _read_scratch = std::vector<int16_t>(DUMP_RING_SAMPLES);
 
     std::thread             _writer_thread;
     std::mutex              _cv_mutex;
@@ -841,9 +846,7 @@ public:
     {
         auto ring_empty = [this]()
         {
-            uint32_t mw = _meta_write_pos.load(std::memory_order_acquire);
-            uint32_t mr = _meta_read_pos.load(std::memory_order_relaxed);
-            return (mw - mr) == 0u;
+            return _meta_ring.read_available() == 0;
         };
         if (ring_empty())
             return true;
@@ -857,13 +860,11 @@ public:
     // silently losing that tail. Exact regardless of block-size variation
     // (derived from the sample-domain ring position delta, not a per-block
     // frame sum). Never OVER-reports: the worker's own consumption only
-    // ever moves _ring_read_pos forward, so a concurrent drain can only
-    // shrink this value between the read here and the caller acting on it.
+    // ever moves the ring's read position forward, so a concurrent drain can
+    // only shrink this value between the read here and the caller acting on it.
     uint64_t queued_frames() const
     {
-        uint32_t sw = _ring_write_pos.load(std::memory_order_acquire);
-        uint32_t sr = _ring_read_pos.load(std::memory_order_relaxed);
-        return static_cast<uint64_t>(sw - sr) / 2u;   // interleaved stereo floats -> frames
+        return static_cast<uint64_t>(_ring.read_available()) / 2u;   // interleaved stereo floats -> frames
     }
 
     // Folds a drain-timeout's worth of still-queued frames into the
@@ -887,8 +888,8 @@ private:
 
     RepeatController& _owner;
 
-    // Sample ring: interleaved stereo float samples. 1<<19 floats --
-    // double the dump ring's seconds to give the nice'd encoder headroom.
+    // Sample ring: interleaved stereo float samples. 1<<19 floats (double
+    // the dump ring's seconds to give the nice'd encoder headroom).
     //
     // AUTOSTREAM_REPEAT_TEST_RING_FLOATS (test-only, must be a power of two)
     // overrides this to a tiny value so ring-overrun resilience can be
@@ -899,22 +900,17 @@ private:
     // actual thread suspension. Never defined by autostream_install.sh's
     // production build.
 #ifdef AUTOSTREAM_REPEAT_TEST_RING_FLOATS
-    static constexpr uint32_t RING_FLOATS = AUTOSTREAM_REPEAT_TEST_RING_FLOATS;
+    static constexpr size_t RING_FLOATS = AUTOSTREAM_REPEAT_TEST_RING_FLOATS;
 #else
-    static constexpr uint32_t RING_FLOATS = 1u << 19;   // 524288
+    static constexpr size_t RING_FLOATS = 1u << 19;   // 524288
 #endif
-    static constexpr uint32_t RING_MASK   = RING_FLOATS - 1u;
-    std::vector<float>    _ring;
-    std::atomic<uint32_t> _ring_write_pos{0};   // written only by the audio thread
-    std::atomic<uint32_t> _ring_read_pos{0};    // written only by the worker thread
+    // See autostream_spsc_ring.h for the SPSC proof this relies on.
+    SpscRing<float> _ring{RING_FLOATS};
 
     // Metadata ring: one entry per submit_block() call. Sized generously
     // relative to the sample ring's capacity in typical (small) audio blocks.
-    static constexpr uint32_t META_RING_SIZE = 4096;
-    static constexpr uint32_t META_RING_MASK = META_RING_SIZE - 1u;
-    std::vector<BlockMeta> _meta_ring;
-    std::atomic<uint32_t>  _meta_write_pos{0};
-    std::atomic<uint32_t>  _meta_read_pos{0};
+    static constexpr size_t META_RING_SIZE = 4096;
+    SpscRing<BlockMeta> _meta_ring{META_RING_SIZE};
 
     std::thread             _worker_thread;
     std::mutex               _cv_mutex;
@@ -955,10 +951,10 @@ private:
 // indefinitely if the reader stops draining without closing), each
 // slice write is preceded by a bounded poll(POLLOUT) so the abort/state flag
 // can be re-checked at least every ~100-200 ms even while nominally "blocked"
-// on the pipe. This still preserves the core pacing property of a literal
-// blocking write() (the kernel only reports writable once the reader has
-// drained space, so the reader's consumption clock still paces replay)
-// while keeping abort latency bounded.
+// on the pipe. This still yields the LLD's core pacing property (the kernel
+// only reports writable once the reader has drained space, so the reader's
+// consumption clock still paces replay) while keeping abort latency bounded
+// -- a deliberate deviation from a literal blocking write().
 //
 // Decode: libmpg123 for the MP2 tier (mpg123_open_feed/mpg123_decode, forced
 // output format s16/output_rate/stereo); the PCM tier is a raw copy (no
@@ -987,10 +983,12 @@ public:
     // linear fade shape in the slice path below -- only RepeatController's
     // POST-fade branching differs (autostream_repeat.cpp's single
     // _pending_action, consulted by on_replay_session_ended_locked_entry()).
-    // request_fade_out() takes no reason parameter: the fade shape itself
-    // never varies by reason, so the distinction the controller cares about
-    // is entirely captured by its own PendingAction, set by the caller
-    // BEFORE calling this.
+    // request_fade_out() therefore no longer takes a reason parameter (
+    // a former FadeReason enum was accepted here but never actually read by
+    // ReplayEngine -- a phantom API -- since the fade shape itself never
+    // varied by reason; the distinction the controller cares about is
+    // entirely captured by its own PendingAction, set by the caller BEFORE
+    // calling this).
     //
     // All three request_*() calls are called by RepeatController under
     // _repeat_mutex and only set atomics / notify a condition variable --
@@ -1040,16 +1038,94 @@ public:
     static constexpr unsigned ID_BUF_FRAMES = 1u << 19;   // 524288 ~= 32.8 s
 
 private:
+    // Per-session resources (fd, decoder, ID tap, fade state, scratch
+    // buffers -- everything run_one_session() used to hold as function-local
+    // variables) live in this RAII struct instead, so every exit path from a
+    // session -- including ones added in the future -- closes the fd and
+    // tears down the decoder/ID-tap by construction rather than by each exit
+    // point remembering to do so by hand. Defined in autostream_repeat.cpp
+    // (opaque here: the private methods below only take it by reference, and
+    // it is only ever constructed/destroyed inside that TU).
+    struct ReplaySessionCtx;
+
+    // Why the most recent session ended, decided by run_one_session()
+    // and consumed by thread_func() to make the single terminal-handler call
+    // (see below). Values map 1:1 onto today's four
+    // on_replay_session_ended_locked_entry() call sites:
+    //   AbortedBeforeOpen -- Abort/FadeOut/stop observed while still waiting
+    //                        for a FIFO reader in open_fifo_for_session()'s
+    //                        retry loop (no session state was ever set up).
+    //   OpenError         -- open() failed with something other than ENXIO.
+    //   DecoderInitFailed -- Mp2Decoder construction/format-negotiation failed.
+    //   Aborted           -- Abort/stop mid-session, a decode error, or a
+    //                        write error (write_slice_paced() returning
+    //                        false) -- today's single `session_aborted` bool
+    //                        covers exactly these three sub-cases with
+    //                        identical log text ("[aborted]"), so they share
+    //                        one reason value here too.
+    //   FadeComplete      -- the disarm fade envelope ran to completion (the
+    //                        only "successful" end of a session).
+    enum class SessionEndReason
+    {
+        AbortedBeforeOpen,
+        OpenError,
+        DecoderInitFailed,
+        Aborted,
+        FadeComplete,
+    };
+
+    // Outcome of one decode_next_slice() call, driving run_one_session()'s
+    // orchestration loop.
+    enum class SliceBatchOutcome
+    {
+        Ready,        // ctx.pcm_staging holds a non-empty decoded batch to slice/write
+        Retry,        // nothing to write yet (buffer-end wrap); loop again
+        Aborted,      // Abort/stop observed; end the session
+        DecodeError,  // codec decode failed; end the session (treated as Aborted)
+    };
+
     void thread_func();
-    void run_one_session();   // called on the replay thread once request_start() wakes it
 
-    // Writes data fully, in poll(POLLOUT)-gated chunks (see class comment
-    // above for why this is not a literal blocking write()). Returns false
-    // on any unrecoverable error (EPIPE/EBADF/POLLERR/POLLHUP) or if an
-    // abort/shutdown was observed while waiting.
-    bool write_slice_blocking(const std::vector<uint8_t>& data);
+    // Called on the replay thread once request_start() wakes it. Returns the
+    // reason the session ended; thread_func() is the sole caller of
+    // on_replay_session_ended_locked_entry(): every session-end path
+    // collapses to that one call at the caller.
+    SessionEndReason run_one_session();
 
-    // Records a write_slice_blocking() outcome into _stall_since
+    // ── run_one_session()'s extracted stages ────────────────────────────────
+    // Each takes the session ctx explicitly; no per-slice allocation, no new
+    // locks, same execution order as the pre-split function.
+
+    // The fd-open retry/abort-poll loop. Returns nullopt (ctx.fd is now a
+    // valid, open, O_WRONLY|O_NONBLOCK fd) on success, or the SessionEndReason
+    // to return from run_one_session() on failure/abort.
+    std::optional<SessionEndReason> open_fifo_for_session(ReplaySessionCtx& ctx,
+                                                            const std::string& path);
+
+    // Decoder construction, Reader/ID-tap setup, ID-buffer/track-change-seq
+    // reset -- everything that must happen once, after the fd is open, before
+    // the per-slice loop starts. Returns false (decoder init failed) or true.
+    bool init_session(ReplaySessionCtx& ctx, CodecChoice codec, int rate_hz,
+                       const RepeatBuffer& buffer);
+
+    // One reader.next() batch: abort/fade-start check, buffer-end loop-wrap
+    // handling, live gain/EQ pull, and codec decode/copy into
+    // ctx.pcm_staging.
+    SliceBatchOutcome decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec);
+
+    // One kSliceFrames-sized slice: track-gap detect -> ID tap -> gain -> EQ
+    // -> OutputProcessor -> fade envelope -> pipe-format conversion, in that
+    // order, writing the result into ctx.pipe_bytes.
+    void process_slice(ReplaySessionCtx& ctx, const int16_t* slice, size_t slice_samples,
+                        int rate_hz, int silence_threshold, double track_gap_seconds);
+
+    // Writes ctx.pipe_bytes fully, in poll(POLLOUT)-gated chunks (see class
+    // comment above for why this is not a literal blocking write()). Returns
+    // false on any unrecoverable error (EPIPE/EBADF/POLLERR/POLLHUP) or
+    // if an abort/shutdown was observed while waiting.
+    bool write_slice_paced(ReplaySessionCtx& ctx);
+
+    // Records a write_slice_paced() outcome into _stall_since
     // and returns `ok` unchanged, so call sites can wrap a return statement
     // with it (see the call sites' comment).
     bool track_stall_outcome(bool ok);
@@ -1067,12 +1143,14 @@ private:
 
     std::mutex               _cmd_mutex;
     std::condition_variable  _cmd_cv;
-    // Atomic (not just mutex-guarded) because run_one_session() polls/clears
-    // it directly from the replay thread without taking _cmd_mutex, for
-    // low-latency abort/fade-out checks between slices and inside
-    // write_slice_blocking()'s poll loop; request_*()/thread_func() still
-    // take _cmd_mutex around their read-modify-write + condition_variable
-    // signalling so the "wake the idle thread" path has no missed-wakeup race.
+    // Atomic (not just mutex-guarded) because open_fifo_for_session() and
+    // decode_next_slice() (both called from run_one_session()'s per-session
+    // loop) poll/clear it directly from the replay thread without
+    // taking _cmd_mutex, for low-latency abort/fade-out checks between
+    // slices and inside write_slice_paced()'s poll loop; request_*()/
+    // thread_func() still take _cmd_mutex around their read-modify-write +
+    // condition_variable signalling so the "wake the idle thread" path has
+    // no missed-wakeup race.
     std::atomic<Cmd>         _pending_cmd{Cmd::None};
 
     // Parameters captured by request_start(), read only by the replay thread
@@ -1100,7 +1178,10 @@ private:
     unsigned              _id_write_pos    = 0;
     unsigned              _id_frames_avail = 0;
 
-    int _fd = -1;   // blocking O_WRONLY fd on the FIFO, owned solely by the replay thread
+    // The O_WRONLY fd on the FIFO used to live here as a bare `int
+    // _fd`; it is now owned by the per-session ReplaySessionCtx (RAII-closed
+    // on every exit path), constructed/destroyed entirely within
+    // run_one_session()'s call graph in autostream_repeat.cpp.
 
     // Monotonic start of the current write-stall streak (poll
     // timeout / EPIPE / etc, see write_slice_blocking()); 0 = healthy. Only
@@ -1184,6 +1265,561 @@ struct RepeatStatus
     } replay;
 };
 
+// =============================================================================
+// Event-driven transition table for RepeatController's core state
+// machine (RepeatState x _armed x PendingAction x _pending_interrupt_restorable).
+// See the full state x event matrix comment above
+// RepeatController::handle_event_locked() in autostream_repeat.cpp for the
+// derivation. The types below live at namespace scope (rather than nested in
+// RepeatController) purely so decide_repeat_transition() -- the pure decision
+// core -- can be unit-tested (core/monitor/tests/test_repeat_transitions.cpp)
+// without constructing a real RepeatController, which pulls in libtwolame/
+// libmpg123 and spins up real worker threads.
+// =============================================================================
+
+// Single pending post-fade action for ReplayEngine's terminal handler
+// (on_replay_session_ended_locked_entry()), replacing the former
+// _pending_live_interrupt/_pending_discard_on_replay_end bool pair: a
+// Discard and a live-restart must never both be pending at once with no
+// defined precedence -- PendingAction enforces exactly one outcome per fade.
+// Moved here (out of RepeatController, unchanged in meaning) so
+// decide_repeat_transition() below can take it as a plain parameter.
+//
+//   None         -- default. Terminal handler falls to "-> Hold" (a plain
+//                    disarm fade completing, or a hard write error with
+//                    nothing else in flight).
+//   LiveInterrupt -- set by notify_capture_started() when a should_capture
+//                    edge arrives during Replaying/FadingOut; also
+//                    the "upgrade" target when a Disarm fade (_pending_action
+//                    == None, state == FadingOut) is hit by a live interrupt.
+//   Discard      -- set by set_enabled(false) or notify_input_stopped() while
+//                    Replaying/FadingOut. ALWAYS overwrites a pending
+//                    LiveInterrupt ("Discard wins" -- see RepeatController's
+//                    _pending_action member comment for the full precedence
+//                    writeup).
+enum class PendingAction { None, Discard, LiveInterrupt };
+
+// One value per real entry point into the six functions that are thin
+// wrappers around decide_repeat_transition() (set_enabled()/
+// notify_capture_started()/notify_capture_stopped()/set_armed()/
+// notify_input_stopped()/on_replay_session_ended_locked_entry()), plus
+// perform_pending_start()'s two outcomes (PendingStartSucceeded/Failed).
+// perform_pending_start() is not one of those six functions, but it is a
+// genuine Pending -> {Recording, Idle} mutation site with exactly the same
+// "decide, then commit under the lock" shape as the others -- folding it in
+// here is a deliberate scope extension, not a silent addition.
+enum class RepeatEvent
+{
+    EnabledOn,               // set_enabled(true), was disabled
+    EnabledOff,               // set_enabled(false), was enabled
+    CaptureStarted,           // notify_capture_started(input_index)
+    CaptureStopped,           // notify_capture_stopped(input_index), origin matched
+    Armed,                    // set_armed(true), was unarmed
+    Disarmed,                 // set_armed(false), was armed
+    InputStopped,             // notify_input_stopped(input_index), origin matched
+    ReplaySessionEnded,       // on_replay_session_ended_locked_entry()
+    PendingStartSucceeded,    // perform_pending_start(): codec/encoder construction ok
+    PendingStartFailed,       // perform_pending_start(): refused (mem/encoder init)
+};
+
+// Read-only, event-specific extra data decide_repeat_transition() needs
+// beyond the explicit (state, armed, enabled_cfg, pending_action,
+// pending_restorable) parameters. Kept separate from those (rather than
+// adding more positional parameters) because these vary per call, not per
+// (state, event) cell.
+struct RepeatEventCtx
+{
+    int  input_index         = 0;      // CaptureStarted
+    int  interrupting_input  = 0;      // ReplaySessionEnded: snapshot of
+                                        // _pending_interrupt_input taken by
+                                        // the caller before it clears it
+    bool has_hold_bytes      = false;  // ReplaySessionEnded: _buffer.total_bytes() > 0
+};
+
+// Which specific LOG_* call (if any) a decision corresponds to. Chosen by
+// decide_repeat_transition() (so the branching that picks the message lives
+// in exactly one place, the decision table) but actually printed by
+// RepeatController::handle_event_locked(), since decide_repeat_transition()
+// itself must stay pure (no I/O) to remain unit-testable without pulling in
+// the logging macros/real member state. Messages that need data only the
+// heavy, non-decision work computes (encoded codec, byte counts, trim
+// bytes...) are NOT covered here -- those stay exactly where they are today,
+// logged by the wrapper after handle_event_locked() returns.
+enum class RepeatLogTag
+{
+    None,
+    DisabledMidState,                    // EnabledOff, non-Idle non-fade states
+    ReenabledRestoringLiveInterrupt,      // EnabledOn, Discard+restorable
+    CaptureStartIgnoredFadeInProgress,    // CaptureStarted, Ignored (LiveInterrupt pending)
+    CaptureStartIgnoredDiscardPending,    // CaptureStarted, Ignored (Discard pending)
+    LiveInterruptFadingOutReplay,         // CaptureStarted, Replaying -> FadingOut
+    LiveInterruptUpgradingDisarmFade,     // CaptureStarted, FadingOut upgrade
+    CaptureStoppedPendingCancelled,       // CaptureStopped, Pending -> Idle
+    DisarmDuringReplayFadingOut,          // Disarmed, Replaying -> FadingOut
+    ReplaySessionEndedDiscarded,          // ReplaySessionEnded, Discard
+    ReplaySessionEndedLiveInterruptFreed, // ReplaySessionEnded, LiveInterrupt
+    ReplaySessionEndedRetainedHold,       // ReplaySessionEnded, None -> Hold
+};
+
+// Pure decision returned by decide_repeat_transition(): describes what
+// should change and which of the wrapper's existing side-effect calls
+// applies, but performs no mutation and no I/O itself -- the caller (the
+// locked wrapper via RepeatController::handle_event_locked(), or a test) is
+// responsible for actually writing the mirror fields (via
+// RepeatController::transition_locked()/set_origin_locked()) and invoking
+// the flagged side effects. Fields are additive flags, not a single variant,
+// because some real cells combine more than one (e.g. CaptureStarted while
+// Hold both frees the stale recording AND starts a new Pending session).
+struct RepeatDecision
+{
+    enum class Kind
+    {
+        Apply,        // valid transition/action; apply the fields below
+        Ignored,      // valid "nothing to do this time" cell (a fade or
+                      // discard is already in flight) -- logged at DEBUG in
+                      // the original code; kept distinct from NoOp so the
+                      // matrix comment can call it out explicitly
+        NoOp,         // valid, deliberately-defensive no-op cell (matches
+                      // today's code's silent `return`) -- NOT an error
+        Impossible,   // never reached in production (the wrapper's own
+                      // re-validation excludes it before the event is ever
+                      // raised); caller asserts-and-logs
+    };
+    Kind kind = Kind::NoOp;
+
+    bool        change_state = false;
+    RepeatState next_state    = RepeatState::Idle;
+
+    bool set_origin    = false;
+    int  origin_input   = 0;
+
+    bool          set_pending_action           = false;
+    PendingAction pending_action                = PendingAction::None;
+    bool          set_pending_interrupt_input   = false;
+    int           pending_interrupt_input       = 0;
+    bool          set_pending_restorable        = false;
+    bool          pending_restorable            = false;
+
+    // Which of the wrapper's existing helper calls this cell's original code
+    // issues, in addition to the plain field writes above. The wrapper still
+    // owns the actual call; this only says which one applies. Applied (by
+    // handle_event_locked()) in this fixed order, derived from the order the
+    // original code performed them in every cell that combines more than
+    // one: pending-bookkeeping fields, then do_free_recording, then
+    // change_state/set_origin, then do_request_abort, then
+    // do_request_fade_out, then do_begin_replay, then
+    // do_request_pending_start.
+    bool do_request_fade_out      = false;
+    bool do_request_abort         = false;
+    bool do_request_pending_start = false;
+    bool do_free_recording        = false;   // free_recording_locked()
+    bool do_begin_replay          = false;   // begin_replay_locked()
+
+    RepeatLogTag log_tag = RepeatLogTag::None;
+};
+
+// =============================================================================
+// The pure decision core + the RepeatState x RepeatEvent matrix it
+// implements. Reproduces, cell for cell, the behaviour that used to be
+// hand-coded across set_enabled()/notify_capture_started()/notify_capture_
+// stopped()/set_armed()/notify_input_stopped()/on_replay_session_ended_
+// locked_entry()/perform_pending_start(). Free function (not a
+// RepeatController member), defined `inline` right here (not in
+// autostream_repeat.cpp) so it stays link-independent of libtwolame/
+// libmpg123 (real deps of the rest of that TU) -- it takes every input
+// explicitly, touches no shared state, allocates nothing, blocks on
+// nothing, and does no I/O, so it can be driven directly, cell by cell, by
+// core/monitor/tests/test_repeat_transitions.cpp with a bare
+// `g++ -I core/monitor`, the same zero-dependency pattern
+// autostream_repeat_buffer.h/autostream_spsc_ring.h already use.
+// RepeatController::handle_event_locked() (autostream_repeat.cpp) is the
+// only production caller: it supplies the current locked state, applies the
+// returned RepeatDecision's field writes via the transition_locked()/
+// set_origin_locked() choke points, and runs the flagged side effects.
+//
+// Rows are RepeatState (declaration order: Idle, Recording, Hold, Replaying,
+// FadingOut, Pending); columns are RepeatEvent. Each cell is one of:
+//   Apply(...)    -- transition/action fires; "..." summarises the effect.
+//   NoOp          -- deliberate no-op in today's code (a silent early
+//                    `return`, e.g. a defensive "should not happen" guard).
+//                    Not an error -- preserved exactly, not tightened.
+//   Ignored(...)  -- a valid "nothing to do this time" cell today's code
+//                    logs at LOG_DEBUG (a retrigger while a fade is already
+//                    in flight); distinct from NoOp only for documentation.
+//   IMPOSSIBLE    -- decide_repeat_transition() asserts-and-logs (via
+//                    handle_event_locked()) rather than silently no-op'ing.
+//                    Only reached here if a caller's own re-validation
+//                    guard (which always runs first in production) is
+//                    itself buggy -- see PendingStartSucceeded/Failed below.
+//
+// EnabledOn and EnabledOff do not depend on `state` for their branch choice
+// except via the Replaying/FadingOut check baked into the cell text below
+// (their original code -- set_enabled() -- guards on _state but the guard's
+// *outcome* only really varies between "Idle" / "Replaying-or-FadingOut" /
+// "everything else"; written out per-state below for completeness).
+//
+// ┌────────────┬───────────────────────────────┬──────────────────────────────┐
+// │ state      │ EnabledOn                      │ EnabledOff                    │
+// ├────────────┼───────────────────────────────┼──────────────────────────────┤
+// │ Idle       │ NoOp                            │ NoOp (armed left untouched)   │
+// │ Recording  │ NoOp                            │ Apply: FreeRecording, armed=0 │
+// │ Hold       │ NoOp                            │ Apply: FreeRecording, armed=0 │
+// │ Pending    │ NoOp                            │ Apply: FreeRecording, armed=0 │
+// │ Replaying  │ Apply iff Discard+restorable:   │ Apply: pending=Discard        │
+// │            │   pending->LiveInterrupt        │   (snapshot restorable),      │
+// │            │ else NoOp                       │   RequestAbort, armed=0       │
+// │ FadingOut  │ (same as Replaying)             │ (same as Replaying)           │
+// └────────────┴───────────────────────────────┴──────────────────────────────┘
+//
+// ┌────────────┬────────────────────────────────────────────────────────────┐
+// │ state      │ CaptureStarted (input_index)                                │
+// ├────────────┼────────────────────────────────────────────────────────────┤
+// │ (any)      │ !enabled_cfg -> NoOp (checked before state, all rows)       │
+// │ Idle       │ Apply: origin=input, state->Pending, RequestPendingStart    │
+// │ Recording  │ NoOp ("should not happen"; single origin input, defensive)  │
+// │ Hold       │ Apply: FreeRecording, origin=input, state->Pending,         │
+// │            │   RequestPendingStart                                       │
+// │ Replaying  │ pending==LiveInterrupt -> Ignored (retrigger, already going)│
+// │            │ pending==Discard       -> Ignored (discard already pending) │
+// │            │ else -> Apply: pending->LiveInterrupt(input),               │
+// │            │   state->FadingOut, RequestFadeOut                          │
+// │ FadingOut  │ (same Ignored branches); else -> Apply: pending->            │
+// │            │   LiveInterrupt(input), NO state change, no RequestFadeOut  │
+// │            │   ("upgrade" -- the fade already running is untouched)      │
+// │ Pending    │ NoOp ("should not happen")                                  │
+// └────────────┴────────────────────────────────────────────────────────────┘
+//
+// ┌────────────┬────────────────────────────────────────────────────────────┐
+// │ state      │ CaptureStopped (input_index; wrapper already matched origin)│
+// ├────────────┼────────────────────────────────────────────────────────────┤
+// │ Idle       │ NoOp                                                        │
+// │ Recording  │ Apply: state->Hold (wrapper does the drain wait +           │
+// │            │   flush/trim/encoder-teardown around this call, unchanged) │
+// │ Hold       │ NoOp                                                        │
+// │ Replaying  │ NoOp                                                        │
+// │ FadingOut  │ NoOp                                                        │
+// │ Pending    │ Apply: state->Idle, origin=0 ("cancelled" before the        │
+// │            │   recorder worker even reached perform_pending_start())     │
+// └────────────┴────────────────────────────────────────────────────────────┘
+//
+// ┌────────────┬─────────────────────────────┬──────────────────────────────┐
+// │ state      │ Armed                        │ Disarmed                      │
+// ├────────────┼─────────────────────────────┼──────────────────────────────┤
+// │ Idle       │ NoOp                          │ NoOp                          │
+// │ Recording  │ NoOp (replay starts at the    │ NoOp                          │
+// │            │   next CaptureStopped)        │                                │
+// │ Hold       │ Apply: BeginReplay            │ NoOp                          │
+// │ Replaying  │ NoOp (already armed)          │ Apply: state->FadingOut,      │
+// │            │                                │   RequestFadeOut (D5)         │
+// │ FadingOut  │ NoOp                           │ NoOp (fade in flight          │
+// │            │                                │   continues untouched)        │
+// │ Pending    │ NoOp                           │ NoOp                          │
+// └────────────┴─────────────────────────────┴──────────────────────────────┘
+//
+// ┌────────────┬────────────────────────────────────────────────────────────┐
+// │ state      │ InputStopped (input_index; wrapper already matched origin)  │
+// ├────────────┼────────────────────────────────────────────────────────────┤
+// │ Idle       │ Apply: FreeRecording (matches free_recording_locked()'s own │
+// │ Hold       │   no-op-if-already-idle semantics)                          │
+// │ Pending    │ Apply: FreeRecording                                        │
+// │ Recording  │ Apply: FreeRecording (wrapper does the bounded drain wait   │
+// │            │   before calling this, unchanged)                           │
+// │ Replaying  │ Apply: pending->Discard, RequestAbort (never restorable --  │
+// │ FadingOut  │   _pending_interrupt_restorable deliberately left untouched)│
+// └────────────┴────────────────────────────────────────────────────────────┘
+//
+// ┌────────────┬────────────────────────────────────────────────────────────┐
+// │ state      │ ReplaySessionEnded (pending_action / interrupting_input /   │
+// │            │ has_hold_bytes come from ctx; see RepeatEventCtx)           │
+// ├────────────┼────────────────────────────────────────────────────────────┤
+// │ Idle/Hold/ │ NoOp ("already handled by a racing notify_input_stopped()/  │
+// │ Pending    │   set_enabled(false)")                                      │
+// │ Replaying  │ pending==Discard      -> Apply: FreeRecording               │
+// │ FadingOut  │ pending==LiveInterrupt-> Apply: FreeRecording; if enabled_cfg│
+// │ (identical)│   also origin=interrupting_input, state->Pending,           │
+// │            │   RequestPendingStart                                       │
+// │            │ pending==None         -> Apply: state->Hold; if armed &&    │
+// │            │   enabled_cfg && has_hold_bytes also BeginReplay            │
+// └────────────┴────────────────────────────────────────────────────────────┘
+//
+// ┌────────────┬───────────────────────────────┬────────────────────────────┐
+// │ state      │ PendingStartSucceeded          │ PendingStartFailed          │
+// ├────────────┼───────────────────────────────┼────────────────────────────┤
+// │ Pending    │ Apply: state->Recording        │ Apply: state->Idle, origin=0│
+// │ (other 5)  │ IMPOSSIBLE (wrapper's own       │ IMPOSSIBLE (same guard)     │
+// │            │   re-validation excludes this   │                              │
+// │            │   before raising the event)     │                              │
+// └────────────┴───────────────────────────────┴────────────────────────────┘
+//
+// No disagreement was found between the six functions' implied outcomes for
+// any (state, event) cell: each RepeatEvent maps 1:1 to exactly one of the
+// original six functions (plus perform_pending_start(), folded in above --
+// see RepeatEvent's declaration comment), so no two functions ever compete
+// to define the same cell.
+// =============================================================================
+
+inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bool enabled_cfg,
+                                                PendingAction pending_action, bool pending_restorable,
+                                                RepeatEvent event, const RepeatEventCtx& ctx)
+{
+    RepeatDecision d;
+
+    switch (event)
+    {
+        case RepeatEvent::EnabledOn:
+        {
+            if ((state == RepeatState::Replaying || state == RepeatState::FadingOut) &&
+                pending_action == PendingAction::Discard && pending_restorable)
+            {
+                d.kind = RepeatDecision::Kind::Apply;
+                d.set_pending_action = true;
+                d.pending_action = PendingAction::LiveInterrupt;
+                d.set_pending_restorable = true;
+                d.pending_restorable = false;
+                d.log_tag = RepeatLogTag::ReenabledRestoringLiveInterrupt;
+            }
+            else
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+            }
+            return d;
+        }
+
+        case RepeatEvent::EnabledOff:
+        {
+            if (state == RepeatState::Idle)
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+                return d;
+            }
+            d.kind = RepeatDecision::Kind::Apply;
+            d.log_tag = RepeatLogTag::DisabledMidState;
+            if (state == RepeatState::Replaying || state == RepeatState::FadingOut)
+            {
+                d.set_pending_restorable = true;
+                d.pending_restorable = (pending_action == PendingAction::LiveInterrupt);
+                d.set_pending_action = true;
+                d.pending_action = PendingAction::Discard;
+                d.do_request_abort = true;
+            }
+            else   // Recording, Hold, Pending
+            {
+                d.do_free_recording = true;
+            }
+            return d;
+        }
+
+        case RepeatEvent::CaptureStarted:
+        {
+            if (!enabled_cfg)
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+                return d;
+            }
+            if (state == RepeatState::Recording || state == RepeatState::Pending)
+            {
+                d.kind = RepeatDecision::Kind::NoOp;   // "should not happen"; defensive
+                return d;
+            }
+            if (state == RepeatState::Replaying || state == RepeatState::FadingOut)
+            {
+                if (pending_action == PendingAction::LiveInterrupt)
+                {
+                    d.kind = RepeatDecision::Kind::Ignored;
+                    d.log_tag = RepeatLogTag::CaptureStartIgnoredFadeInProgress;
+                    return d;
+                }
+                if (pending_action == PendingAction::Discard)
+                {
+                    d.kind = RepeatDecision::Kind::Ignored;
+                    d.log_tag = RepeatLogTag::CaptureStartIgnoredDiscardPending;
+                    return d;
+                }
+
+                d.kind = RepeatDecision::Kind::Apply;
+                d.set_pending_action = true;
+                d.pending_action = PendingAction::LiveInterrupt;
+                d.set_pending_interrupt_input = true;
+                d.pending_interrupt_input = ctx.input_index;
+                d.set_pending_restorable = true;
+                d.pending_restorable = false;
+
+                if (state == RepeatState::Replaying)
+                {
+                    d.change_state = true;
+                    d.next_state = RepeatState::FadingOut;
+                    d.do_request_fade_out = true;
+                    d.log_tag = RepeatLogTag::LiveInterruptFadingOutReplay;
+                }
+                else   // FadingOut: upgrade an in-flight disarm fade in place
+                {
+                    d.log_tag = RepeatLogTag::LiveInterruptUpgradingDisarmFade;
+                }
+                return d;
+            }
+
+            // Idle or Hold: new capture session.
+            d.kind = RepeatDecision::Kind::Apply;
+            if (state == RepeatState::Hold)
+                d.do_free_recording = true;
+            d.change_state = true;
+            d.next_state = RepeatState::Pending;
+            d.set_origin = true;
+            d.origin_input = ctx.input_index;
+            d.do_request_pending_start = true;
+            return d;
+        }
+
+        case RepeatEvent::CaptureStopped:
+        {
+            if (state == RepeatState::Pending)
+            {
+                d.kind = RepeatDecision::Kind::Apply;
+                d.change_state = true;
+                d.next_state = RepeatState::Idle;
+                d.set_origin = true;
+                d.origin_input = 0;
+                d.log_tag = RepeatLogTag::CaptureStoppedPendingCancelled;
+                return d;
+            }
+            if (state != RepeatState::Recording)
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+                return d;
+            }
+            d.kind = RepeatDecision::Kind::Apply;
+            d.change_state = true;
+            d.next_state = RepeatState::Hold;
+            return d;
+        }
+
+        case RepeatEvent::Armed:
+        {
+            if (state == RepeatState::Hold)
+            {
+                d.kind = RepeatDecision::Kind::Apply;
+                d.do_begin_replay = true;
+            }
+            else
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+            }
+            return d;
+        }
+
+        case RepeatEvent::Disarmed:
+        {
+            if (state == RepeatState::Replaying)
+            {
+                d.kind = RepeatDecision::Kind::Apply;
+                d.change_state = true;
+                d.next_state = RepeatState::FadingOut;
+                d.do_request_fade_out = true;
+                d.log_tag = RepeatLogTag::DisarmDuringReplayFadingOut;
+            }
+            else
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+            }
+            return d;
+        }
+
+        case RepeatEvent::InputStopped:
+        {
+            d.kind = RepeatDecision::Kind::Apply;
+            if (state == RepeatState::Replaying || state == RepeatState::FadingOut)
+            {
+                d.set_pending_action = true;
+                d.pending_action = PendingAction::Discard;
+                d.do_request_abort = true;
+            }
+            else   // Idle, Recording, Hold, Pending
+            {
+                d.do_free_recording = true;
+            }
+            return d;
+        }
+
+        case RepeatEvent::ReplaySessionEnded:
+        {
+            if (state != RepeatState::Replaying && state != RepeatState::FadingOut)
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+                return d;
+            }
+            d.kind = RepeatDecision::Kind::Apply;
+            // Single pending action, consulted AND CLEARED exactly once
+            // here, unconditionally, regardless of which of the three
+            // branches below fires -- matches the original code's snapshot-
+            // then-clear-then-branch order (on_replay_session_ended_locked_
+            // entry()'s comment above). See PendingAction's declaration
+            // comment for the full set/clear matrix.
+            d.set_pending_action = true;
+            d.pending_action = PendingAction::None;
+            d.set_pending_restorable = true;
+            d.pending_restorable = false;
+            if (pending_action == PendingAction::Discard)
+            {
+                d.do_free_recording = true;
+                d.log_tag = RepeatLogTag::ReplaySessionEndedDiscarded;
+            }
+            else if (pending_action == PendingAction::LiveInterrupt)
+            {
+                d.do_free_recording = true;
+                d.log_tag = RepeatLogTag::ReplaySessionEndedLiveInterruptFreed;
+                if (enabled_cfg)
+                {
+                    d.change_state = true;
+                    d.next_state = RepeatState::Pending;
+                    d.set_origin = true;
+                    d.origin_input = ctx.interrupting_input;
+                    d.do_request_pending_start = true;
+                }
+            }
+            else   // PendingAction::None
+            {
+                d.change_state = true;
+                d.next_state = RepeatState::Hold;
+                d.log_tag = RepeatLogTag::ReplaySessionEndedRetainedHold;
+                if (armed && enabled_cfg && ctx.has_hold_bytes)
+                    d.do_begin_replay = true;
+            }
+            return d;
+        }
+
+        case RepeatEvent::PendingStartSucceeded:
+        {
+            if (state != RepeatState::Pending)
+            {
+                d.kind = RepeatDecision::Kind::Impossible;
+                return d;
+            }
+            d.kind = RepeatDecision::Kind::Apply;
+            d.change_state = true;
+            d.next_state = RepeatState::Recording;
+            return d;
+        }
+
+        case RepeatEvent::PendingStartFailed:
+        {
+            if (state != RepeatState::Pending)
+            {
+                d.kind = RepeatDecision::Kind::Impossible;
+                return d;
+            }
+            d.kind = RepeatDecision::Kind::Apply;
+            d.change_state = true;
+            d.next_state = RepeatState::Idle;
+            d.set_origin = true;
+            d.origin_input = 0;
+            return d;
+        }
+    }
+
+    d.kind = RepeatDecision::Kind::Impossible;   // unreachable: all enumerators handled above
+    return d;
+}
+
 class RepeatController
 {
 public:
@@ -1192,7 +1828,7 @@ public:
     // only brief, non-nested critical sections in either, per the lock-order
     // note above and the extended proof comment in autostream_monitor_io.cpp.
     // output_processor: AudioMonitor's shared OutputProcessor -- replay
-    // runs the live DSP chain, so ReplayEngine calls output_processor.
+    // now runs the live DSP chain, so ReplayEngine calls output_processor.
     // apply() itself, under _fifo_mutex exactly as the live InputChannel path
     // does (never across the blocking write), immediately before quantising
     // to the pipe format.
@@ -1301,14 +1937,14 @@ public:
 
     // Called by InputChannel::process_thread_func at the should_capture
     // false->true / true->false edges -- already gated by _allow_capture via
-    // should_capture. notify_capture_stopped()
-    // is where the capture-stop -> replay-start transition happens, atomic
-    // within one _repeat_mutex critical section.
+    // should_capture. notify_capture_stopped() is where the capture-stop ->
+    // replay-start transition happens, atomic within one _repeat_mutex
+    // critical section.
     // While REPLAYING/FADING_OUT, a should_capture edge on
     // ANY input (the origin input resuming, or the other input going live)
     // is treated as the live-interrupt trigger -- transitions to
     // FADING_OUT(LiveInterrupt) (or upgrades an in-flight Disarm fade to
-    // LiveInterrupt).
+    // LiveInterrupt) rather than being ignored.
     void notify_capture_started(int input_index);
     void notify_capture_stopped(int input_index);
 
@@ -1358,7 +1994,7 @@ public:
     // path for offline verification (e.g. ffprobe/mpg123 decode of an MP2
     // capture). Compiled only when AUTOSTREAM_REPEAT_TEST_HOOKS is defined at
     // build time; autostream_install.sh's production build line never
-    // defines this macro, so it does not exist in the shipped binary.
+    // defines this macro, so it does not exist in the shipped binary
     // Returns "" on success or an error.
     std::string debug_dump_buffer(const std::string& path) const;
 #endif
@@ -1376,6 +2012,42 @@ private:
     // the lock is released.
     std::deque<RepeatBuffer::Chunk> free_recording_locked();
 
+    // Single mutation choke points: every direct write to the
+    // _state/_state_fast pair or the _origin_input/_origin_input_fast pair
+    // funnels through exactly one of these two, so the atomic-mirror
+    // invariant is enforced by construction instead of by convention -- see
+    // autostream_repeat.cpp for the grep proof (exactly one line writes
+    // _state_fast, one writes _origin_input_fast). Caller must already hold
+    // _repeat_mutex (same precondition as every other *_locked() helper in
+    // this class; this codebase has no "assert mutex held by this thread"
+    // idiom elsewhere, so this is documented, not asserted, consistent with
+    // free_recording_locked()/begin_replay_locked() above). Also logs the
+    // transition at LOG_DEBUG (the finest granularity already used for
+    // repeat's non-terminal events, e.g. the CaptureStarted "ignoring"
+    // messages below -- this codebase has no separate DIAG level).
+    void transition_locked(RepeatState next);
+    void set_origin_locked(int input_index);
+    void set_enabled_locked(bool enabled);
+
+    // Applies a RepeatDecision from decide_repeat_transition() --
+    // writes the mirror fields it flags (via the choke points above) and
+    // runs the flagged side-effect calls (free_recording_locked(),
+    // begin_replay_locked(), ReplayEngine commands,
+    // _recorder.request_pending_start()), plus the transition-specific
+    // LOG_INFO/LOG_DEBUG the original branch used to print (see
+    // RepeatLogTag). Does NOT touch _armed (no fast mirror; the six
+    // wrappers still write it directly, exactly where they do today) and
+    // does NOT do the drain-wait / unlock-relock choreography --
+    // callers keep doing that exactly where they do today, calling this
+    // only once a decision is ready to commit. Returns any chunks freed by
+    // a do_free_recording side effect (empty when none), so the caller
+    // can keep them alive in its own pre-lock_guard local until after the
+    // lock releases, exactly as free_recording_locked()'s direct callers do.
+    // See the state x event matrix comment above this function's definition
+    // in autostream_repeat.cpp.
+    std::deque<RepeatBuffer::Chunk> handle_event_locked(RepeatEvent event,
+                                                          const RepeatEventCtx& ctx = RepeatEventCtx{});
+
     // Begins replay from a HOLD recording. Caller holds _repeat_mutex. Used
     // by notify_capture_stopped() (armed at capture-stop), set_armed()
     // (arm-while-HOLD), and on_replay_session_ended_locked_entry()
@@ -1390,7 +2062,8 @@ private:
     // reacquiring it before committing (a stop/disable/teardown may have
     // superseded the pending start while this ran). On success, flips
     // _state to Recording; on refusal (insufficient memory / encoder init
-    // failure), flips back to Idle and records _unavailable_reason.
+    // failure), flips back to Idle and records _unavailable_reason, exactly
+    // matching what the old inline begin_session_locked() used to do.
     void perform_pending_start();
 
     // Flips FifoOwner under _fifo_mutex (briefly, never nested with
@@ -1404,7 +2077,7 @@ private:
     // outside the lock). Sheds oldest chunks until back above the floor.
     void apply_memory_guard_locked(const MemInfo& mem);
 
-    // Recording refused below this threshold regardless of pinned
+    // Recording is refused below this threshold regardless of pinned
     // codec (the pinned codec "skips the ladder" for quality-tier selection,
     // not for this base availability gate).
     static constexpr long   kMinAvailableMibForStart = 110;
@@ -1429,34 +2102,22 @@ private:
     bool         _enabled_cfg = false;
     bool         _armed       = false;
 
-    // Single pending post-fade action for ReplayEngine's terminal
-    // handler (on_replay_session_ended_locked_entry()). A single value
-    // (rather than a pair of independent flags) so there is always exactly
-    // one well-defined precedence between a pending discard and a pending
-    // live interrupt.
+    // Single pending post-fade action for ReplayEngine's terminal handler
+    // (on_replay_session_ended_locked_entry()). A single enum instead of a
+    // _pending_live_interrupt/_pending_discard_on_replay_end bool pair gives
+    // this a well-defined precedence: two independent booleans can both be
+    // true at once with no rule for which wins, whereas one enum can only
+    // hold one value. The PendingAction enum itself lives at namespace scope
+    // so decide_repeat_transition() can take it as a plain parameter -- see
+    // its declaration above class RepeatController for the full set/clear matrix
+    // writeup (moved verbatim from here).
     //
-    //   None         -- default. Terminal handler falls to "-> Hold" (a
-    //                    plain disarm fade completing, or a hard write
-    //                    error with nothing else in flight).
-    //   LiveInterrupt -- set by notify_capture_started() when a
-    //                    should_capture edge arrives during
-    //                    Replaying/FadingOut; also the "upgrade"
-    //                    target when a Disarm fade (_pending_action == None,
-    //                    state == FadingOut) is hit by a live interrupt.
-    //                    _pending_interrupt_input records which input
-    //                    triggered it.
-    //   Discard      -- set by set_enabled(false) or notify_input_stopped()
-    //                    while Replaying/FadingOut. ALWAYS overwrites a
-    //                    pending LiveInterrupt ("Discard wins" -- the
-    //                    feature going away, or the origin input being torn
-    //                    down, trumps starting a fresh recording).
-    //                    _pending_interrupt_input is deliberately left
-    //                    untouched (not zeroed) when this overwrite happens,
-    //                    purely so a set_enabled(true) arriving before the
-    //                    terminal handler runs can restore LiveInterrupt --
-    //                    see _pending_interrupt_restorable immediately below
-    //                    and set_enabled()'s implementation.
-    enum class PendingAction { None, Discard, LiveInterrupt };
+    //   _pending_interrupt_input records which input triggered a
+    //   LiveInterrupt. It is deliberately left untouched (not zeroed) when
+    //   Discard overwrites a pending LiveInterrupt, purely so a
+    //   set_enabled(true) arriving before the terminal handler runs can
+    //   restore LiveInterrupt -- see _pending_interrupt_restorable
+    //   immediately below and set_enabled()'s implementation.
     PendingAction _pending_action = PendingAction::None;
     int           _pending_interrupt_input = 0;
 
@@ -1468,11 +2129,11 @@ private:
     // (the fade has not yet reached the terminal handler), it flips
     // _pending_action back to LiveInterrupt instead of leaving Discard
     // armed, so the terminal handler starts the new recording for
-    // _pending_interrupt_input after freeing the old buffer. The decided
-    // behaviour is: "disable alone during a live-interrupt fade = discard
-    // and no new session, even though the fade was interrupt-triggered,
-    // UNLESS a re-enable arrives before the fade's terminal handler runs,
-    // in which case the interrupt is honoured after all."
+    // _pending_interrupt_input after freeing the old buffer. Decided
+    // behaviour: disable alone during a live-interrupt fade means discard +
+    // no new session, even though the fade was interrupt-triggered, UNLESS a
+    // re-enable arrives before the fade's terminal handler runs, in which
+    // case the interrupt is honoured after all.
     bool          _pending_interrupt_restorable = false;
 
     std::string  _codec_cfg   = "auto";
@@ -1624,7 +2285,7 @@ public:
         return _config.track_change_silence_seconds;
     }
 
-    // ── Live DSP pull-model accessors ────────────────────────────────────────
+    // ── Live DSP pull-model accessors ─────────────────────────────────────
     // ReplayEngine polls these (~1 s cadence, once per staging refill) instead
     // of caching gain/EQ at recording time, so a gain/EQ change made WHILE
     // replay is playing is heard during the loop, not just during the next
@@ -1634,8 +2295,8 @@ public:
     // the replay thread costs nothing measurable and never blocks the audio
     // process thread.  NOTE: this deliberately returns the CURRENT gain, not
     // the fade-in ramp multiplier (_ramp_frames_remaining) -- replay never
-    // re-plays the live fade-in: only the settled per-input gain applies
-    // during replay.
+    // re-plays the live fade-in: only the
+    // settled per-input gain applies during replay.
     float gain_linear() const
     {
         return _gain_linear.load(std::memory_order_relaxed);
@@ -1692,6 +2353,85 @@ private:
     void capture_thread_func();
     void process_thread_func();
 
+    // ── process_thread_func() stage helpers ─────────────────────────────────
+    // Extracted from the single ~745-line process_thread_func() loop body,
+    // preserving its exact per-iteration execution order. Each is private,
+    // defined in the same TU (autostream_monitor_io.cpp), non-virtual, and
+    // takes only the per-iteration values it needs as parameters/out-params
+    // rather than new members, keeping state ownership where it already was.
+    // See each
+    // definition for the stage's proof comments (moved with the stage) and
+    // process_thread_func()'s own comment for the call-order map.
+    //
+    // Runs unconditionally at the very top of each loop iteration (including
+    // idle iterations), closing any VU bins whose window has elapsed. Kept
+    // separate from update_metering() because it must run BEFORE the
+    // ring-drain wait/continue below, whereas update_metering()'s peak
+    // computation can only run AFTER data has been read -- folding both into
+    // one call would either skip VU-bin closing on idle iterations or require
+    // computing a peak over data that doesn't exist yet. See definition.
+    void close_elapsed_vu_bins();
+
+    // Waits (bounded, 5 ms) for at least MIN_SAMPLES to be available and, once
+    // available, reads one block from _ring_buf into _pcm_in. Returns false
+    // (having already performed the wait) when the caller should `continue`
+    // the loop without processing a block; true with frames_in set otherwise.
+    bool drain_capture_ring(int& frames_in);
+
+    // Peak-level metering for the block just read by drain_capture_ring():
+    // compute_peak_sample(), _current_peak_sample, the _poll_peak_sample CAS
+    // loop, and _session_raw_peak_sample. Returns the raw peak sample.
+    int update_metering(int frames_in);
+
+    // Silence/activity state machine: updates _last_above_threshold_time and
+    // derives is_above_threshold / should_capture (activity threshold x
+    // _allow_capture gate, unchanged). Also returns the config snapshot
+    // (silence_threshold_sample, track_change_silence_seconds) the caller and
+    // handle_session_edges() need, read exactly once per iteration as today.
+    bool update_silence_state(int     peak_sample,
+                               double  now,
+                               int&    silence_threshold_sample,
+                               bool&   is_above_threshold,
+                               float&  track_change_silence_seconds);
+
+    // Capture session start/stop transitions (SRC resets incl. the ID-tap
+    // reset, RepeatController notifications, ramp/pre-fill arming) and
+    // track-gap detection. TrackGapDetector::update() is folded in here
+    // (rather than into tap_for_id_and_repeat()) because it runs once per
+    // OUTER loop iteration, before the SRC loop -- not once per SRC output
+    // chunk like the ID/repeat taps; moving it into the per-chunk stage would
+    // change how often it fires whenever a block spans more than one
+    // src_process() call.
+    void handle_session_edges(bool   should_capture,
+                               int    peak_sample,
+                               int    silence_threshold_sample,
+                               double now,
+                               float  track_change_silence_seconds);
+
+    // Owns the main SRC loop (`while (frames_left > 0)`) and the periodic
+    // drift-diagnostics accumulation (_stats_in_frames/_stats_out_frames).
+    // For each produced output chunk, calls tap_for_id_and_repeat(),
+    // apply_output_chain(), and deliver_output() in that order -- identical
+    // to today's single nested block. Only called when _capturing and
+    // _src_state are both set, exactly as today.
+    void resample_block(int frames_in, int peak_sample, int silence_threshold_sample);
+
+    // Post-SRC, pre-gain, pre-EQ taps for one produced chunk: the shared
+    // IdTapResampler snapshot ring and the RepeatController recorder tap.
+    void tap_for_id_and_repeat(int out_frames, int peak_sample, int silence_threshold_sample);
+
+    // Per-input gain/fade-in ramp and EQ for one produced chunk (lock-free;
+    // runs before the _fifo_mutex section in deliver_output()).
+    void apply_output_chain(int out_frames);
+
+    // The _fifo_mutex critical section for one produced chunk: OutputProcessor
+    // apply() (output EQ/gain/auto-trim) gated by live_write_active, the
+    // capturing_live-gated VU-bin peak accumulation, the int16 cast, the
+    // engineering dump tap, and pre-fill buffering / FIFO write. This is ONE
+    // contiguous lock_guard<std::mutex> scope, unchanged from today -- see
+    // the ownership-flip visibility proof at this method's definition.
+    void deliver_output(int out_frames);
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     // Returns the peak absolute sample value (0..32768) across all channels.
@@ -1746,15 +2486,12 @@ private:
     RateEstimator _rate_estimator;
 
     // ── SPSC ring buffer between capture thread and process thread ────────────
-    // Stores interleaved stereo int16 samples.  Size is a power of two so that
-    // positions can be masked instead of divided.
-    // At 48000 Hz stereo, this holds approximately 2.7 seconds of audio.
-    static constexpr unsigned RING_BUF_SAMPLES = 1u << 18;  // 262144
-    static constexpr unsigned RING_BUF_MASK    = RING_BUF_SAMPLES - 1u;
+    // Stores interleaved stereo int16 samples. At 48000 Hz stereo, this holds
+    // approximately 2.7 seconds of audio. See autostream_spsc_ring.h for the
+    // SPSC proof this relies on.
+    static constexpr size_t RING_BUF_SAMPLES = 1u << 18;  // 262144
 
-    std::vector<int16_t>      _ring_buf;         // sized to RING_BUF_SAMPLES
-    std::atomic<unsigned int> _ring_write_pos{0}; // written only by capture thread
-    std::atomic<unsigned int> _ring_read_pos{0};  // written only by process thread
+    SpscRing<int16_t> _ring_buf{RING_BUF_SAMPLES};
 
     // Condition variable used by the process thread to sleep until data is
     // available without busy-waiting.  The capture thread calls notify_one()
@@ -1793,6 +2530,42 @@ private:
     // while it is > 0 we are in the accumulation phase.
     int                  _prefill_frames_remaining{0};
     std::vector<int16_t> _prefill_buf;
+
+    // ── process_thread_func() constants and scratch buffers ──────────────────
+    // Formerly local to process_thread_func(): a std::vector(size) local is
+    // constructed exactly once per thread lifetime (thread start, not per
+    // iteration), so promoting these to members sized once at the same point
+    // (top of process_thread_func(), before the loop) introduces no new
+    // allocation of any kind -- it only lets the stage methods above share
+    // them without passing four buffers around as parameters.
+    static constexpr int      MAX_FRAMES     = 2048;  // maximum input frames per loop iteration
+    static constexpr int      MAX_SRC_OUTPUT = 4096;   // maximum output frames from libsamplerate
+    static constexpr unsigned MIN_SAMPLES    = 512;    // minimum samples to accumulate before processing
+
+    std::vector<int16_t> _pcm_in;    // interleaved int16, sized MAX_FRAMES*2
+    std::vector<float>   _float_in;  // interleaved float, sized MAX_FRAMES*2
+    std::vector<float>   _float_out; // post-SRC float, sized MAX_SRC_OUTPUT*2
+    std::vector<int16_t> _pcm_out;   // final int16, sized MAX_SRC_OUTPUT*2
+
+    // Ramp/pre-fill DURATIONS (as opposed to _ramp_frames_remaining /
+    // _prefill_frames_remaining above, which count down within a session).
+    // Computed once at process_thread_func() entry (same point as today's
+    // local RAMP_DURATION_FRAMES / PREFILL_DURATION_FRAMES) because
+    // handle_session_edges() (arming) and apply_output_chain() (ramp math)
+    // are now separate methods and both need the same value.
+    int _ramp_duration_frames    = 0;
+    int _prefill_duration_frames = 0;
+
+    // Periodic (30 s) buffer/drift diagnostics accumulators. Formerly locals
+    // declared just above the while loop in process_thread_func(); now
+    // members because resample_block() (which accumulates into
+    // _stats_in_frames/_stats_out_frames on every src_process() call) and the
+    // periodic log-and-reset block (still inline at the top of
+    // process_thread_func(), see its definition) both need to observe and
+    // reset the same running totals across loop iterations.
+    double   _stats_last_log_time = 0.0;
+    uint64_t _stats_in_frames     = 0;
+    uint64_t _stats_out_frames    = 0;
 
     // ── Level metering ────────────────────────────────────────────────────────
     // Written by the process thread every block; read by get_status().
@@ -2038,7 +2811,7 @@ public:
     std::string api_start_output_dump(const std::string& path, bool overwrite);
     std::string api_stop_output_dump();
 
-    // Repeat feature: enabled/codec; codec
+    // Repeat feature: enabled/codec setting; codec
     // must be auto|mp2_160|mp2_192|mp2_224|pcm.
     std::string api_set_repeat_enabled(bool enabled, const std::string& codec);
 
@@ -2050,8 +2823,8 @@ public:
     // AUTOSTREAM_REPEAT_TEST_HOOKS block below which is a compile-time gate.
     // Makes input N's capture thread take the same exit path as a genuine
     // unrecoverable ALSA read error on its next loop iteration, so the
-    // watchdog auto-restart loop in run() can be exercised against a real
-    // self-stopped capture thread without kernel-level fault injection.
+    // watchdog auto-restart loop in run() can be exercised against a
+    // real self-stopped capture thread without kernel-level fault injection.
     // Returns an error ack if test hooks are not enabled or input is invalid.
     std::string api_debug_fail_input(int input_index);
 

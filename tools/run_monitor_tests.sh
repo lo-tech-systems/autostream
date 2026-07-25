@@ -53,6 +53,20 @@ g++ -std=c++17 -Wall -Wextra -O2 \
     -lsamplerate \
     -o "$BUILD_DIR/test_id_tap"
 
+echo "=== Building test_spsc_ring (header-only, no system libs needed) ==="
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$MONITOR_DIR" \
+    "$TEST_DIR/test_spsc_ring.cpp" \
+    -lpthread \
+    -o "$BUILD_DIR/test_spsc_ring"
+
+echo "=== Building test_repeat_transitions (header-only decide_repeat_transition(); requires libasound2-dev, libsamplerate0-dev for autostream_monitor.h, but NOT libtwolame-dev/libmpg123-dev) ==="
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$MONITOR_DIR" \
+    "$TEST_DIR/test_repeat_transitions.cpp" \
+    -lpthread \
+    -o "$BUILD_DIR/test_repeat_transitions"
+
 echo ""
 echo "=== Running test_control_protocol (from repo root) ==="
 (cd "$REPO_ROOT" && "$BUILD_DIR/test_control_protocol")
@@ -72,6 +86,14 @@ echo "=== Running test_repeat_buffer ==="
 echo ""
 echo "=== Running test_id_tap ==="
 "$BUILD_DIR/test_id_tap"
+
+echo ""
+echo "=== Running test_spsc_ring ==="
+"$BUILD_DIR/test_spsc_ring"
+
+echo ""
+echo "=== Running test_repeat_transitions ==="
+"$BUILD_DIR/test_repeat_transitions"
 
 echo ""
 echo "All native monitor tests passed."

@@ -499,7 +499,6 @@ static const uint8_t WAV_PLACEHOLDER_HEADER[44] = {
 };
 
 OutputDumpWriter::OutputDumpWriter()
-    : _ring(DUMP_RING_SAMPLES, 0)
 {
 }
 
@@ -542,8 +541,7 @@ std::string OutputDumpWriter::start(const std::string& path, bool overwrite)
     // cannot observe a stale read position.
     _file    = f;
     _path    = path;
-    _ring_write_pos.store(0, std::memory_order_relaxed);
-    _ring_read_pos.store(0,  std::memory_order_relaxed);
+    _ring.reset();
     _frames_written.store(0, std::memory_order_relaxed);
     _dropped_frames.store(0, std::memory_order_relaxed);
     _stop_requested.store(false, std::memory_order_relaxed);
@@ -626,37 +624,18 @@ void OutputDumpWriter::submit_block(const int16_t* samples, int out_frames)
     if (!_active.load(std::memory_order_relaxed))
         return;
 
-    uint32_t n_samples = static_cast<uint32_t>(out_frames) * 2u;
+    size_t n_samples = static_cast<size_t>(out_frames) * 2u;
 
-    // Check ring space.  _ring_read_pos is written only by the writer thread;
-    // acquire ordering synchronises with its release store so we see the most
-    // recently freed space.
-    uint32_t write_pos  = _ring_write_pos.load(std::memory_order_relaxed);
-    uint32_t read_pos   = _ring_read_pos.load(std::memory_order_acquire);
-    uint32_t used       = write_pos - read_pos;
-    uint32_t free_space = DUMP_RING_SAMPLES - used;
-
-    if (n_samples > free_space)
+    // Check ring space; drop and count the whole block if it doesn't fit
+    // rather than partially writing it.
+    if (n_samples > _ring.write_available())
     {
         _dropped_frames.fetch_add(static_cast<uint64_t>(out_frames),
                                    std::memory_order_relaxed);
         return;
     }
 
-    // Copy samples into the ring, handling the wrap-around boundary.
-    uint32_t write_idx    = write_pos & DUMP_RING_MASK;
-    uint32_t to_end       = DUMP_RING_SAMPLES - write_idx;
-    uint32_t first_chunk  = std::min(n_samples, to_end);
-    uint32_t second_chunk = n_samples - first_chunk;
-
-    memcpy(_ring.data() + write_idx, samples,
-           first_chunk * sizeof(int16_t));
-    if (second_chunk > 0)
-        memcpy(_ring.data(), samples + first_chunk,
-               second_chunk * sizeof(int16_t));
-
-    // Release store: makes the ring data visible to the writer thread.
-    _ring_write_pos.fetch_add(n_samples, std::memory_order_release);
+    _ring.write(samples, n_samples);
 
     // Wake the writer thread.  notify_one() is safe without holding _cv_mutex
     // (same pattern as InputChannel::capture_thread_func → _ring_cv.notify_one()).
@@ -675,47 +654,32 @@ void OutputDumpWriter::writer_thread_func()
             _cv.wait_for(lk, std::chrono::milliseconds(20),
                 [this]()
                 {
-                    uint32_t wp = _ring_write_pos.load(std::memory_order_acquire);
-                    uint32_t rp = _ring_read_pos.load(std::memory_order_relaxed);
-                    return (wp - rp) > 0u
+                    return _ring.read_available() > 0
                         || _stop_requested.load(std::memory_order_relaxed);
                 });
         }
 
         // Drain all available samples to disk.
-        uint32_t write_pos = _ring_write_pos.load(std::memory_order_acquire);
-        uint32_t read_pos  = _ring_read_pos.load(std::memory_order_relaxed);
-        uint32_t avail     = write_pos - read_pos;
+        size_t avail = _ring.read_available();
 
         if (avail > 0)
         {
-            uint32_t read_idx = read_pos & DUMP_RING_MASK;
-            uint32_t to_end   = DUMP_RING_SAMPLES - read_idx;
-            uint32_t first    = std::min(avail, to_end);
-            uint32_t second   = avail - first;
+            // read() into a pre-sized scratch buffer, then fwrite it. This is
+            // one memcpy more than a hand-rolled version that fwrote directly
+            // from the two ring segments would need, but that's an acceptable
+            // trade to share the SpscRing<T> read(T*, size_t) API -- this
+            // thread is a background disk writer, not on the live FIFO/audio
+            // hot path.
+            _ring.read(_read_scratch.data(), avail);
 
             bool write_ok = true;
-            size_t written = fwrite(_ring.data() + read_idx,
-                                    sizeof(int16_t), first, _file);
-            if (written < first)
-            {
+            size_t written = fwrite(_read_scratch.data(),
+                                    sizeof(int16_t), avail, _file);
+            if (written < avail)
                 write_ok = false;
-            }
-            else if (second > 0)
-            {
-                size_t written2 = fwrite(_ring.data(),
-                                          sizeof(int16_t), second, _file);
-                written += written2;
-                if (written2 < second)
-                    write_ok = false;
-            }
 
             // `written` is in int16 samples; stereo frames = samples / 2.
             _frames_written.fetch_add(written / 2u, std::memory_order_relaxed);
-
-            // Always advance the read position to consume the data, even on
-            // write error, so the audio thread is never blocked by a full ring.
-            _ring_read_pos.fetch_add(avail, std::memory_order_release);
 
             if (!write_ok)
             {
@@ -727,9 +691,7 @@ void OutputDumpWriter::writer_thread_func()
         // Exit only after stop has been requested and the ring is fully drained.
         if (_stop_requested.load(std::memory_order_relaxed))
         {
-            uint32_t wp = _ring_write_pos.load(std::memory_order_acquire);
-            uint32_t rp = _ring_read_pos.load(std::memory_order_relaxed);
-            if (wp - rp == 0u)
+            if (_ring.read_available() == 0)
                 break;
         }
     }
@@ -795,7 +757,6 @@ InputChannel::InputChannel(int               index,
     , _output_processor(output_processor)
     , _dump_writer(dump_writer)
     , _repeat_controller(repeat_controller)
-    , _ring_buf(RING_BUF_SAMPLES, 0)
 {
     _status.index = index;
 }
@@ -941,8 +902,7 @@ bool InputChannel::start(std::string* error_out)
     _session_effective_peak_linear.store(0.0f, std::memory_order_relaxed);
 
     // Clear ring buffer.
-    _ring_write_pos.store(0, std::memory_order_relaxed);
-    _ring_read_pos.store(0,  std::memory_order_relaxed);
+    _ring_buf.reset();
 
     // Allocate and reset the identification snapshot buffer.
     // Done here rather than in the constructor so the ~1 MB allocation only
@@ -1199,24 +1159,20 @@ void InputChannel::capture_thread_func()
             continue;
         }
 
-        int samples_to_write = frames_read * 2;  // stereo
+        size_t samples_to_write = static_cast<size_t>(frames_read) * 2;  // stereo
 
         // Check that there is space in the ring buffer.  If the process thread
-        // is falling behind, we drop the oldest data (overwrite) rather than
+        // is falling behind, we drop this incoming period rather than
         // blocking, which would cause an ALSA xrun.
-        unsigned write_pos = _ring_write_pos.load(std::memory_order_relaxed);
-        unsigned read_pos  = _ring_read_pos.load(std::memory_order_acquire);
-        unsigned used      = write_pos - read_pos;   // unsigned subtraction wraps correctly
-        unsigned free      = RING_BUF_SAMPLES - used;
-
-        if (static_cast<unsigned>(samples_to_write) > free)
+        if (samples_to_write > _ring_buf.write_available())
         {
             // Ring buffer is full — the process thread is falling behind.
-            // Drop this incoming period rather than advancing _ring_read_pos
-            // from the capture thread.  _ring_read_pos must only be written
-            // by the process thread to preserve the SPSC invariant; the
-            // capture thread writing it (even atomically) can race with the
-            // process thread's store and silently corrupt the read position.
+            // Drop this incoming period rather than advancing the read
+            // position from the capture thread.  The read position must only
+            // be written by the process thread to preserve the SPSC
+            // invariant; the capture thread writing it (even atomically) can
+            // race with the process thread's store and silently corrupt the
+            // read position.
             // Throttle the log to once every 5 seconds to avoid log spam
             // under sustained CPU load.
             {
@@ -1230,26 +1186,7 @@ void InputChannel::capture_thread_func()
             continue;
         }
 
-        // Write samples into the ring buffer, handling wrap-around with two copies.
-        unsigned write_idx     = write_pos & RING_BUF_MASK;
-        unsigned to_end        = RING_BUF_SAMPLES - write_idx;
-        unsigned first_chunk   = std::min(static_cast<unsigned>(samples_to_write), to_end);
-        unsigned second_chunk  = static_cast<unsigned>(samples_to_write) - first_chunk;
-
-        memcpy(&_ring_buf[write_idx],
-               period_buf.data(),
-               first_chunk * sizeof(int16_t));
-
-        if (second_chunk > 0)
-        {
-            memcpy(&_ring_buf[0],
-                   period_buf.data() + first_chunk,
-                   second_chunk * sizeof(int16_t));
-        }
-
-        // Update write position — this is the release point for the process thread.
-        _ring_write_pos.fetch_add(static_cast<unsigned>(samples_to_write),
-                                   std::memory_order_release);
+        _ring_buf.write(period_buf.data(), samples_to_write);
 
         // Wake the process thread if it is waiting for data.  notify_one() is
         // called without holding _ring_cv_mutex; this is safe — if the process
@@ -1271,31 +1208,27 @@ void InputChannel::capture_thread_func()
 //
 void InputChannel::process_thread_func()
 {
-    // Pre-allocate processing buffers.  Avoid heap allocation on the hot path.
-    const int MAX_FRAMES          = 2048;   // maximum input frames per loop iteration
-    const int MAX_SRC_OUTPUT      = 4096;   // maximum output frames from libsamplerate
+    // Pre-size processing scratch buffers (promoted from locals to members --
+    // see the members' declaration comment in autostream_monitor.h for why
+    // this introduces no new allocation). Sized once here, at thread entry,
+    // exactly like the local std::vectors they replaced.
+    _pcm_in.resize(static_cast<size_t>(MAX_FRAMES) * 2);           // interleaved int16
+    _float_in.resize(static_cast<size_t>(MAX_FRAMES) * 2);         // interleaved float
+    _float_out.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);    // post-SRC float
+    _pcm_out.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);      // final int16
+    // ID-tap scratch (downmix, resample, clamp) lives inside _id_tap
+    // (IdTapResampler) -- pre-sized in start() from this same MAX_SRC_OUTPUT
+    // bound.
 
     // Duration of the fade-in ramp in output frames (one second at 44100 Hz).
-    const int RAMP_DURATION_FRAMES = AudioMonitor::output_rate_hz();
+    _ramp_duration_frames = AudioMonitor::output_rate_hz();
 
     // Number of output frames to accumulate before the first FIFO write.
     // 0.5 s at 44100 Hz = 22050 frames = ~172 KB of int16 stereo data.
     // This gives OwnTone a full initial buffer so it can start streaming
     // without the starvation-induced skips that occur when the pipe is
     // cold and the first few writes are each only a single period (~1024 frames).
-    const int PREFILL_DURATION_FRAMES = AudioMonitor::output_rate_hz() / 2;
-
-    std::vector<int16_t> pcm_in(MAX_FRAMES * 2);          // interleaved int16
-    std::vector<float>   float_in(MAX_FRAMES * 2);        // interleaved float
-    std::vector<float>   float_out(MAX_SRC_OUTPUT * 2);   // post-SRC float
-    std::vector<int16_t> pcm_out(MAX_SRC_OUTPUT * 2);     // final int16
-    // ID-tap scratch (downmix, resample, clamp) lives inside _id_tap
-    // (IdTapResampler) -- pre-sized in start() from this same MAX_SRC_OUTPUT
-    // bound.
-
-    // Minimum number of samples to accumulate before processing.
-    // 512 samples = 256 stereo frames = ~5 ms at 48 kHz.
-    const unsigned MIN_SAMPLES = 512;
+    _prefill_duration_frames = AudioMonitor::output_rate_hz() / 2;
 
     // Anchor the first VU bin to the moment the process thread starts.
     _vu_bin_start_time = get_monotonic_time();
@@ -1304,21 +1237,29 @@ void InputChannel::process_thread_func()
     // Comparing SRC input vs output frame rates over time reveals whether the
     // drift-compensated FIFO output stays locked to the nominal output rate
     // across long playback, or slowly walks off (the suspected dropout cause).
-    double   stats_last_log_time = get_monotonic_time();
-    uint64_t stats_in_frames     = 0;   // SRC input frames consumed since last log
-    uint64_t stats_out_frames    = 0;   // SRC output frames produced since last log
+    _stats_last_log_time = get_monotonic_time();
+    _stats_in_frames     = 0;   // SRC input frames consumed since last log
+    _stats_out_frames    = 0;   // SRC output frames produced since last log
 
     while (_running.load(std::memory_order_relaxed))
     {
         // ── Periodic buffer/drift diagnostics (every 30 s) ───────────────────
+        // Kept inline here (not extracted into one of the named stage methods
+        // below) because it is a housekeeping concern independent of any
+        // single stage: it must run unconditionally, every iteration, before
+        // the ring-drain wait/continue, exactly like today. Its accumulators
+        // (_stats_in_frames/_stats_out_frames) are members because
+        // resample_block() -- a separate method -- adds to them on every
+        // src_process() call; this block only reads and periodically resets
+        // them.
         {
             double stats_now = get_monotonic_time();
-            double stats_dt  = stats_now - stats_last_log_time;
+            double stats_dt  = stats_now - _stats_last_log_time;
             if (stats_dt >= 30.0)
             {
                 double nominal_out = static_cast<double>(AudioMonitor::output_rate_hz());
-                double out_rate    = stats_out_frames / stats_dt;
-                double in_rate     = stats_in_frames  / stats_dt;
+                double out_rate    = _stats_out_frames / stats_dt;
+                double in_rate     = _stats_in_frames  / stats_dt;
                 double out_dev     = out_rate - nominal_out;
                 if (out_dev < 0.0) out_dev = -out_dev;
 
@@ -1331,7 +1272,7 @@ void InputChannel::process_thread_func()
                 // Guard on stats_out_frames > 0 so an idle/stopped window (nothing
                 // playing, out=0) is NOT a fault and stays at DEBUG; a capture-stop
                 // that lands mid-window still emits partial output and is caught.
-                if (stats_out_frames > 0 && out_dev > 0.005 * nominal_out)
+                if (_stats_out_frames > 0 && out_dev > 0.005 * nominal_out)
                     LOG_WARN("[stats] input%d est_in=%.2fHz ratio=%.6f in=%.1ff/s out=%.1ff/s nominal_out=%.0f over %.1fs  <-- OUT RATE OFF NOMINAL",
                              _index, _rate_estimator.estimated_input_rate(), _rate_estimator.src_ratio(),
                              in_rate, out_rate, nominal_out, stats_dt);
@@ -1340,633 +1281,41 @@ void InputChannel::process_thread_func()
                               _index, _rate_estimator.estimated_input_rate(), _rate_estimator.src_ratio(),
                               in_rate, out_rate, nominal_out, stats_dt);
 
-                stats_in_frames     = 0;
-                stats_out_frames    = 0;
-                stats_last_log_time = stats_now;
+                _stats_in_frames     = 0;
+                _stats_out_frames    = 0;
+                _stats_last_log_time = stats_now;
             }
         }
 
-        // ── Close any elapsed VU bins ─────────────────────────────────────────
-        // Runs every iteration (including idle iterations after the condition-
-        // variable sleep) so silence bins are produced even when the channel
-        // is not capturing.  A while loop catches up if multiple bins have
-        // elapsed since the last iteration (e.g. after a long OS sleep).
-        {
-            double now = get_monotonic_time();
-            while (now - _vu_bin_start_time >= VU_BIN_SECONDS)
-            {
-                VuBin bin;
-                bin.seq        = ++_vu_bin_seq;
-                bin.left_dbfs  = linear_to_dbfs(_vu_bin_left_peak);
-                bin.right_dbfs = linear_to_dbfs(_vu_bin_right_peak);
-                _vu_bin_left_peak  = 0.0f;
-                _vu_bin_right_peak = 0.0f;
-                _vu_bin_start_time += VU_BIN_SECONDS;
+        // Runs unconditionally, every iteration (including idle iterations
+        // that are about to `continue` below) -- see close_elapsed_vu_bins().
+        close_elapsed_vu_bins();
 
-                std::lock_guard<std::mutex> lk(_vu_history_mutex);
-                _vu_history[_vu_history_write_idx] = bin;
-                _vu_history_write_idx = (_vu_history_write_idx + 1) % VU_HISTORY_BINS;
-                if (_vu_history_count < VU_HISTORY_BINS)
-                    ++_vu_history_count;
-            }
-        }
-
-        // ── Wait for data ────────────────────────────────────────────────────
-        unsigned write_pos = _ring_write_pos.load(std::memory_order_acquire);
-        unsigned read_pos  = _ring_read_pos.load(std::memory_order_relaxed);
-        unsigned available = write_pos - read_pos;
-
-        if (available < MIN_SAMPLES)
-        {
-            // Sleep until the capture thread signals new data or up to 5 ms
-            // (the timeout handles the case where notify_one() was called just
-            // before we entered wait_for — at most one missed notification).
-            std::unique_lock<std::mutex> lk(_ring_cv_mutex);
-            _ring_cv.wait_for(lk, std::chrono::milliseconds(5),
-                [this, MIN_SAMPLES]()
-                {
-                    return !_running.load(std::memory_order_relaxed) ||
-                           (_ring_write_pos.load(std::memory_order_acquire) -
-                            _ring_read_pos.load(std::memory_order_relaxed)) >= MIN_SAMPLES;
-                });
+        // ── Wait for / read a block from the ring buffer ──────────────────────
+        int frames_in = 0;
+        if (!drain_capture_ring(frames_in))
             continue;
-        }
 
-        // ── Copy a block from the ring buffer ────────────────────────────────
-        unsigned samples_to_read = std::min(available,
-                                             static_cast<unsigned>(MAX_FRAMES * 2));
-        samples_to_read &= ~1u;  // ensure we read complete stereo frames
-
-        unsigned read_idx   = read_pos & RING_BUF_MASK;
-        unsigned to_end     = RING_BUF_SAMPLES - read_idx;
-        unsigned first_chunk  = std::min(samples_to_read, to_end);
-        unsigned second_chunk = samples_to_read - first_chunk;
-
-        memcpy(pcm_in.data(),
-               &_ring_buf[read_idx],
-               first_chunk * sizeof(int16_t));
-
-        if (second_chunk > 0)
-        {
-            memcpy(pcm_in.data() + first_chunk,
-                   &_ring_buf[0],
-                   second_chunk * sizeof(int16_t));
-        }
-
-        // Advance the read position to release space for the capture thread.
-        _ring_read_pos.store(read_pos + samples_to_read, std::memory_order_release);
-
-        int frames_in = static_cast<int>(samples_to_read / 2);
-
-        // ── Compute peak sample level (pure integer, no float) ───────────────
-        int peak_sample = compute_peak_sample(pcm_in.data(), frames_in, /*channels=*/2);
-        _current_peak_sample.store(peak_sample, std::memory_order_relaxed);
-
-        // Accumulate poll-window peak — reset by get_status() via exchange(0).
-        // Use CAS so that a concurrent exchange(0) in get_status() is never lost:
-        // if get_status() wins the exchange between our load and store, the CAS
-        // fails, prev is updated to 0, and we retry to set peak_sample.
-        {
-            int prev = _poll_peak_sample.load(std::memory_order_relaxed);
-            while (peak_sample > prev &&
-                   !_poll_peak_sample.compare_exchange_weak(
-                       prev, peak_sample, std::memory_order_relaxed))
-                ; // prev is updated on failure; retry with latest value
-        }
-
-        // Accumulate session raw peak (no float / log10 — integer compare only).
-        {
-            int prev = _session_raw_peak_sample.load(std::memory_order_relaxed);
-            if (peak_sample > prev)
-                _session_raw_peak_sample.store(peak_sample, std::memory_order_relaxed);
-        }
+        // ── Peak-level metering for the block just read ───────────────────────
+        int peak_sample = update_metering(frames_in);
 
         // ── Silence state machine ─────────────────────────────────────────────
         double now = get_monotonic_time();
+        int   silence_threshold_sample = 0;
+        bool  is_above_threshold = false;
+        float track_change_silence_seconds = 0.0f;
+        bool should_capture = update_silence_state(peak_sample, now,
+                                                     silence_threshold_sample,
+                                                     is_above_threshold,
+                                                     track_change_silence_seconds);
 
-        // _silence_threshold_sample is published atomically by configure(), so
-        // we only need to lock here to read silence_seconds and track_change_silence_seconds.
-        int   silence_seconds;
-        float track_change_silence_seconds;
-        {
-            std::lock_guard<std::mutex> lock(_config_mutex);
-            silence_seconds              = _config.silence_seconds;
-            track_change_silence_seconds = _config.track_change_silence_seconds;
-        }
-        int silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
-
-        // Integer comparison — no float arithmetic on the hot path.
-        if (peak_sample >= silence_threshold_sample)
-            _last_above_threshold_time = now;
-
-        bool is_above_threshold = (_last_above_threshold_time > 0.0)
-                               && ((now - _last_above_threshold_time)
-                                   < static_cast<double>(silence_seconds));
-
-        bool should_capture = is_above_threshold
-                           && _allow_capture.load(std::memory_order_relaxed);
-
-        // ── Start or stop the capture session ────────────────────────────────
-        if (should_capture && !_capturing.load())
-        {
-            if (_src_state)
-                src_reset(_src_state);
-            // Reset the ID-tap resampler alongside the main SRC state so a
-            // fresh capture session gets fresh interpolator state on BOTH
-            // paths -- otherwise only the main SRC gets reset here, letting
-            // the ID tap carry state across silence gaps.
-            if (_id_tap)
-                _id_tap->reset();
-            _ramp_frames_remaining    = RAMP_DURATION_FRAMES;
-            _prefill_frames_remaining = PREFILL_DURATION_FRAMES;
-            _prefill_buf.clear();
-            _prefill_buf.reserve(static_cast<size_t>(PREFILL_DURATION_FRAMES) * 2);
-            _capturing.store(true);
-            _repeat_controller.notify_capture_started(_index);
-            LOG_INFO("[input%d] Capture session started (peak=%d, threshold=%d)",
-                     _index, peak_sample, silence_threshold_sample);
-        }
-        else if (!should_capture && _capturing.load())
-        {
-            _repeat_controller.notify_capture_stopped(_index);
-            _capturing.store(false);
-            LOG_INFO("[input%d] Capture session stopped (silence=%.1f s)",
-                     _index, now - _last_above_threshold_time);
-        }
-
-        // ── Track-gap detection ───────────────────────────────────────────────
-        // Uses the raw per-block amplitude flag (not the debounced is_above_threshold)
-        // so a gap that starts within silence_seconds is detected precisely.
-        // Fires on the first above-threshold block after a qualifying gap.
-        {
-            // Discard any in-progress gap candidate when the threshold changes so
-            // a partial gap measured against the old value does not fire spuriously.
-            if (track_change_silence_seconds != _prev_track_change_silence_seconds)
-            {
-                _track_gap_detector.clear_candidate();
-                _prev_track_change_silence_seconds = track_change_silence_seconds;
-            }
-
-            bool raw_above = (peak_sample >= silence_threshold_sample);
-            if (_track_gap_detector.update(_capturing.load(), raw_above, now,
-                                           static_cast<double>(track_change_silence_seconds)))
-            {
-                uint32_t seq = _track_change_seq.fetch_add(1, std::memory_order_relaxed) + 1;
-                LOG_INFO("[input%d] Possible track change detected (gap=%.1f s, seq=%u)",
-                         _index, _track_gap_detector.last_gap_seconds(), seq);
-            }
-        }
+        // ── Capture session start/stop transitions + track-gap detection ─────
+        handle_session_edges(should_capture, peak_sample, silence_threshold_sample,
+                              now, track_change_silence_seconds);
 
         // ── Feed through SRC → EQ → FIFO when capturing ──────────────────────
         if (_capturing.load() && _src_state)
-        {
-            // Convert int16 to float in the range [-1.0, +1.0].
-            src_short_to_float_array(pcm_in.data(), float_in.data(), frames_in * 2);
-
-            // Resample in a loop.  libsamplerate may not consume all input frames
-            // in a single call if the output buffer would overflow (this can happen
-            // with high upsampling ratios, e.g. 8 kHz input → 44.1 kHz output).
-            // We iterate until all input frames are consumed, writing each chunk
-            // to the FIFO as it is produced.  src_ratio is read once per block
-            // so it is consistent across all iterations.
-            const float* in_ptr      = float_in.data();
-            int          frames_left = frames_in;
-            const double ratio       = _rate_estimator.src_ratio();
-
-            while (frames_left > 0)
-            {
-            SRC_DATA src_data;
-            memset(&src_data, 0, sizeof(src_data));
-            src_data.data_in       = in_ptr;
-            src_data.input_frames  = frames_left;
-            src_data.data_out      = float_out.data();
-            src_data.output_frames = MAX_SRC_OUTPUT;
-            src_data.src_ratio     = ratio;
-            src_data.end_of_input  = 0;
-
-            int src_err = src_process(_src_state, &src_data);
-            if (src_err != 0)
-            {
-                LOG_WARN("[input%d] libsamplerate error: %s",
-                         _index, src_strerror(src_err));
-                break;
-            }
-
-            in_ptr      += src_data.input_frames_used * 2;  // stereo
-            frames_left -= static_cast<int>(src_data.input_frames_used);
-
-            // Accumulate for the periodic [stats] diagnostics above.
-            stats_in_frames  += static_cast<uint64_t>(src_data.input_frames_used);
-            stats_out_frames += static_cast<uint64_t>(src_data.output_frames_gen > 0 ? src_data.output_frames_gen : 0);
-
-            if (src_data.output_frames_gen <= 0)
-                continue;   // no output this iteration; keep consuming input
-
-            {
-                int out_frames = static_cast<int>(src_data.output_frames_gen);
-
-                // ── ID snapshot tap (post-SRC, pre-gain, pre-EQ) ─────────
-                // Tap here to capture uncolored audio: gain and EQ reflect
-                // user preference and would skew Shazam's frequency-domain
-                // fingerprints if applied. Downmix, resample (44100 → 16000
-                // Hz, filtered SRC_SINC_FASTEST), and clamp are all done by
-                // _id_tap (IdTapResampler); this just writes its output into
-                // _id_buf under the ring's own lock.
-                if (!_id_buf.empty() && _id_tap)
-                {
-                    int id_count = 0;
-                    const int16_t* id_out = _id_tap->process(float_out.data(), out_frames, &id_count);
-                    if (id_out && id_count > 0)
-                    {
-                        std::lock_guard<std::mutex> id_lock(_id_mutex);
-                        unsigned wp = _id_write_pos;
-                        for (int i = 0; i < id_count; ++i)
-                            _id_buf[(wp + static_cast<unsigned>(i)) & ID_BUF_MASK] = id_out[i];
-                        _id_write_pos    = wp + static_cast<unsigned>(id_count);
-                        _id_frames_avail = std::min(
-                            _id_frames_avail + static_cast<unsigned>(id_count),
-                            ID_BUF_FRAMES);
-                    }
-                }
-
-                // ── Repeat-feature recorder tap -- POST-SRC / PRE-GAIN, ────
-                // immediately after the libsamplerate conversion to output
-                // rate and before the gain+fade-in section below.
-                //
-                // The recording must carry NO baked-in gain, fade-in ramp,
-                // input EQ, output EQ/gain, or auto-trim, so that replay can
-                // apply the ORIGIN INPUT'S CURRENT (live-pulled) gain/EQ plus
-                // the shared OutputProcessor at playback time instead of at
-                // record time. This tap point is float_out immediately after
-                // src_process() above and before any of gain/ramp/EQ/
-                // OutputProcessor::apply() run on it -- i.e. exactly the same
-                // stage as the ID tap just above (both explicitly documented
-                // as "post-SRC, pre-gain, pre-EQ" -- see the ID tap's own
-                // comment a few lines up and InputChannel::_id_buf's
-                // class-level comment, "Tap point: post-main-SRC (44100 Hz
-                // stereo float), pre-gain/pre-EQ"), so replay's own
-                // TrackGapDetector/ID tap (fed from the decoded recording,
-                // autostream_repeat.cpp) observes audio at the identical DSP
-                // stage as the live ID tap, without any further change
-                // needed on the replay side.
-                //
-                // The above-threshold flag passed to submit_float_block() is
-                // still the RAW per-block peak test computed at the TOP of
-                // this function (`peak_sample >= silence_threshold_sample`,
-                // ~line 1394/1428 above) on the int16 ring-buffer samples --
-                // i.e. BEFORE even this SRC step, let alone gain. That flag
-                // was already computed upstream of every DSP stage, so it
-                // remains the right "was this block loud" signal for
-                // SilenceTrimAccountant regardless of where the recorder's
-                // audio tap itself sits.
-                //
-                // Pre-fill gap-free capture: this tap fires for every
-                // processed block from the very first block of a capture
-                // session, completely independent of the FIFO pre-fill
-                // accumulator below (`_prefill_frames_remaining`), which only
-                // gates when accumulated int16 samples are flushed to the
-                // OUTPUT fifo, not whether this call site runs. This call
-                // site never sits inside the
-                // `if (_prefill_frames_remaining > 0) ... else ...` branch,
-                // so the recording is gap-free across the pre-fill window.
-                //
-                // Gating: recording_wanted() alone is sufficient here (no
-                // need to also check _allow_capture/is_fifo_owned_by_replay()
-                // as a post-OutputProcessor tap site would need for locality
-                // inside the live-write block) -- it already requires
-                // _state == Recording|Pending AND origin_input == this
-                // input's index, and _origin_input is only ever set to an
-                // input whose should_capture (hence _allow_capture) is true
-                // (RepeatController::notify_capture_started() is only called
-                // from inside `if (_capturing.load() && _src_state)`, itself
-                // gated by should_capture). A live-interrupt fade
-                // (FadingOut) leaves state neither Recording nor Pending, so
-                // the interrupting input's audio is correctly excluded here
-                // without any extra check.
-                if (_repeat_controller.recording_wanted(_index))
-                    _repeat_controller.submit_float_block(
-                        float_out.data(), out_frames,
-                        peak_sample >= silence_threshold_sample);
-
-                // ── Apply pre-amp gain and fade-in ramp ──────────────────
-                // Read gain once so it is consistent across the block.
-                // memory_order_relaxed is fine: a one-block lag is imperceptible.
-                float gain = _gain_linear.load(std::memory_order_relaxed);
-
-                if (_ramp_frames_remaining > 0)
-                {
-                    // Ramp is active.  Apply a per-frame multiplier that rises
-                    // linearly from 0.0 at session start to 1.0 at ramp end,
-                    // combined with _gain_linear in a single multiply per sample.
-                    //
-                    // ramp_pos is the frame index into the full ramp, counting
-                    // from 0 (session start) to RAMP_DURATION_FRAMES (ramp end).
-                    // Frames within this block that fall inside the ramp use the
-                    // interpolated gain; any frames after the ramp completes
-                    // within the same block receive the full gain.
-                    int frames_in_ramp = std::min(out_frames, _ramp_frames_remaining);
-                    int ramp_pos       = RAMP_DURATION_FRAMES - _ramp_frames_remaining;
-
-                    for (int f = 0; f < frames_in_ramp; ++f)
-                    {
-                        float ramp_gain = gain * static_cast<float>(ramp_pos + f)
-                                                / static_cast<float>(RAMP_DURATION_FRAMES);
-                        float_out[f * 2]     *= ramp_gain;
-                        float_out[f * 2 + 1] *= ramp_gain;
-                    }
-
-                    // Freeze the ramp's progress while
-                    // ReplayEngine owns the FIFO. This block's write-side
-                    // section below is skipped entirely whenever
-                    // is_fifo_owned_by_replay() is true, so these frames are
-                    // computed but never reach OwnTone -- decrementing the
-                    // counter anyway would let a ~1.5 s live-interrupt fade
-                    // silently exhaust the 1 s ramp before the FIFO ever
-                    // hands over, producing an abrupt full-volume jump the
-                    // instant ownership actually flips to Live instead of the
-                    // intended audible fade-in. Freezing here means the ramp
-                    // (armed fresh at notify_capture_started(), autostream_
-                    // monitor_io.cpp ~1446) has not consumed any of its span
-                    // by the handoff instant, so it plays out cleanly over the
-                    // first RAMP_DURATION_FRAMES of frames actually written
-                    // once is_fifo_owned_by_replay() goes false -- i.e. the
-                    // ramp is effectively re-armed AT the handoff instant
-                    // without needing a separate cross-object re-arm call.
-                    // recording_wanted()/is_fifo_owned_by_replay() are both
-                    // single relaxed atomic loads (cheap, lock-free), so this
-                    // extra read outside _fifo_mutex costs nothing measurable
-                    // and only ever causes a stale-by-one-block read, which is
-                    // harmless here (worst case: one extra block's worth of
-                    // ramp progress either frozen or advanced a moment early).
-                    if (!_repeat_controller.is_fifo_owned_by_replay())
-                        _ramp_frames_remaining -= frames_in_ramp;
-
-                    // Apply uniform gain to any remaining frames in this block
-                    // (those that fall after the ramp completes).
-                    if (gain != 1.0f)
-                    {
-                        for (int f = frames_in_ramp; f < out_frames; ++f)
-                        {
-                            float_out[f * 2]     *= gain;
-                            float_out[f * 2 + 1] *= gain;
-                        }
-                    }
-                }
-                else if (gain != 1.0f)
-                {
-                    // No ramp — apply uniform gain to the whole block.
-                    int total_samples = out_frames * 2;
-                    for (int s = 0; s < total_samples; ++s)
-                        float_out[s] *= gain;
-                }
-
-                // ── Apply per-channel EQ ──────────────────────────────────
-                // Check whether _eq_chain has published a new band list since
-                // the last block.  If so, rebuild local filters with freshly
-                // zeroed delay-line state.  The shared_ptr comparison is a
-                // pointer equality check — no allocation.
-                auto latest_bands = _eq_chain.get_bands();
-                if (latest_bands != _current_eq_bands)
-                {
-                    _current_eq_bands = latest_bands;
-                    _local_filters.clear();
-                    if (latest_bands)
-                    {
-                        float sr = _eq_chain.sample_rate();
-                        for (const auto& band : *latest_bands)
-                        {
-                            BiquadFilter f;
-                            f.configure(band, sr);
-                            _local_filters.push_back(f);
-                        }
-                    }
-                }
-                for (auto& filter : _local_filters)
-                    filter.process(float_out.data(), out_frames);
-
-                // ── Accumulate session effective peak ─────────────────────
-                // Scan the post-gain, post-input-EQ float samples.  Deferred
-                // to get_status() for the dBFS conversion (no log10 here).
-                // This measures the per-input signal level before output EQ.
-                {
-                    float eff_peak = 0.0f;
-                    int total_samples = out_frames * 2;
-                    for (int s = 0; s < total_samples; ++s)
-                    {
-                        float v = std::fabs(float_out[s]);
-                        if (v > eff_peak)
-                            eff_peak = v;
-                    }
-                    float prev = _session_effective_peak_linear.load(std::memory_order_relaxed);
-                    if (eff_peak > prev)
-                        _session_effective_peak_linear.store(eff_peak, std::memory_order_relaxed);
-                }
-
-                // ── Output processing and FIFO write (all under _fifo_mutex) ─
-                //
-                // apply() — which includes the auto-trim CAS update — and the
-                // FIFO write are both performed while holding _fifo_mutex.  This
-                // is the key structural invariant that makes auto-trim reset
-                // race-free:
-                //
-                //   Control thread (api_set_allow_capture handoff):
-                //     1. Stores _allow_capture = false on outgoing input.
-                //     2. Acquires _fifo_mutex.
-                //     3. Calls reset_auto_trim() (trim → 0).
-                //     4. Stores _allow_capture = true on incoming input.
-                //     5. Releases _fifo_mutex.
-                //
-                //   Process thread of outgoing input: either
-                //     A. Holds _fifo_mutex when the control thread tries step 2.
-                //        The outgoing thread's apply() and write complete, mutex
-                //        is released, then the control thread resets trim.  The
-                //        outgoing thread's NEXT iteration observes
-                //        _allow_capture = false and skips apply() entirely.
-                //     B. Does not hold _fifo_mutex when the control thread does
-                //        step 2.  The control thread acquires first; the outgoing
-                //        thread waits.  When it finally acquires, it reads
-                //        _allow_capture = false and skips both apply() and the
-                //        FIFO write — the trim is never touched.
-                //
-                // In both cases the trim is 0 before the incoming input's first
-                // apply() call, and the outgoing input cannot write a negative
-                // trim after the reset.
-                //
-                // ── Extended for the third writer: ReplayEngine ─────────────
-                //
-                // ReplayEngine writes to the SAME FIFO through its OWN
-                // blocking-paced fd (not this FifoWriter instance), so the
-                // two writers never contend for FifoWriter's internal state;
-                // what they DO need to arbitrate is which one is allowed to
-                // put bytes on the wire at all, via the FifoOwner flag
-                // (RepeatController::_fifo_owner_fast):
-                //
-                //   Writer                  | Flips FifoOwner under...
-                //   ------------------------|---------------------------------
-                //   Live (this file)        | never writes it, only reads it
-                //                           | (is_fifo_owned_by_replay()) --
-                //                           | already inside this _fifo_mutex
-                //                           | critical section.
-                //   ReplayEngine start/stop | RepeatController::set_fifo_owner()
-                //                           | (autostream_repeat.cpp), which
-                //                           | takes _fifo_mutex for exactly the
-                //                           | duration of the atomic store --
-                //                           | never across ReplayEngine's own
-                //                           | blocking/poll-gated write().
-                //
-                // Because the flip and this read are both done under
-                // _fifo_mutex, the same two-case argument as auto-trim above
-                // applies: either this thread holds _fifo_mutex when
-                // set_fifo_owner() is called (this iteration's write, if any,
-                // completes on the OLD owner value; the mutex is released,
-                // the owner flips, and this thread's NEXT iteration observes
-                // the new owner before deciding whether to write), or this
-                // thread is waiting when the owner flips (it then reads the
-                // NEW owner immediately). Either way, no iteration of this
-                // loop can observe a stale owner value and no two writers
-                // (live and replay) are ever both actively producing FIFO
-                // bytes at the same instant -- "sequential
-                // fade-out -> fade-in, no sample mixing" holds structurally,
-                // not just by convention.
-                //
-                // Lock order: RepeatController's
-                // _repeat_mutex may be taken while holding nothing, and may
-                // be held while subsequently taking _fifo_mutex (e.g.
-                // RepeatController::set_fifo_owner() called from inside a
-                // _repeat_mutex critical section in begin_replay_locked()/
-                // on_replay_session_ended_locked_entry()/stop()). The REVERSE
-                // order -- taking _repeat_mutex while already holding
-                // _fifo_mutex -- never happens anywhere in this codebase; this
-                // very _fifo_mutex critical section, for instance, only READS
-                // fast atomics (is_fifo_owned_by_replay(), recording_wanted())
-                // and never acquires _repeat_mutex. Neither mutex is ever held
-                // across a blocking/poll-gated write() on either the live path
-                // (this file) or ReplayEngine's own write loop
-                // (autostream_repeat.cpp's write_slice_blocking()).
-                {
-                    std::lock_guard<std::mutex> lock(_fifo_mutex);
-                    // Repeat-feature FIFO arbitration (extended proof comment
-                    // above): while ReplayEngine
-                    // owns the pipe, this input's output is discarded here --
-                    // it still runs everything ABOVE this _fifo_mutex block
-                    // (silence detection, track-gap detection, level
-                    // metering) unconditionally, which is what would drive a
-                    // live-interrupt trigger. Only the write-side work
-                    // (EQ/gain/recording-tap/dump-tap/FIFO write) is skipped.
-                    //
-                    // VU-bin peak accumulation below is intentionally
-                    // gated on `capturing_live` ALONE, not
-                    // `!is_fifo_owned_by_replay()` too, so the home-page VU
-                    // meter for the origin input keeps updating throughout a
-                    // replay session (level metering runs unconditionally as
-                    // stated above) while every write-side step (apply()'s
-                    // output EQ/gain/auto-trim, the recorder tap, the int16
-                    // cast, the dump tap, and the actual FIFO write) is still
-                    // skipped whenever replay owns the pipe.
-                    bool capturing_live = _allow_capture.load(std::memory_order_relaxed);
-                    bool live_write_active = capturing_live &&
-                        !_repeat_controller.is_fifo_owned_by_replay();
-
-                    if (live_write_active)
-                    {
-                        // Apply output EQ, output gain, and auto-trim in-place.
-                        // Must precede float→int16 so the clip scan sees the
-                        // true overshoot before clamping.
-                        //
-                        // The repeat-feature recorder tap sits POST-SRC/
-                        // PRE-GAIN, well above this _fifo_mutex block -- see
-                        // the tap call site's comment immediately after the
-                        // SRC/ID-tap section above for the full rationale.
-                        _output_processor.apply(float_out.data(), out_frames);
-                    }
-                    else
-                    {
-                        // This input is not the active FIFO writer
-                        // right now (not the capturing/allow_capture input,
-                        // or replay owns the pipe) -- FifoWriter::write()
-                        // below will not be called on its behalf this block,
-                        // so any stall streak left over from when it WAS
-                        // active must not linger and be reported as "still
-                        // stalled" during a period that is actually idle for
-                        // this writer. Cheap atomic reset, no lock.
-                        _shared_fifo.reset_stall();
-                    }
-
-                    // ── Accumulate stereo peak for the current VU bin ─────
-                    // Tap here: post all output processing (when the write
-                    // path actually ran this block; see live_write_active
-                    // above), pre int16 cast. Gated on capturing_live alone
-                    // so the meter keeps reflecting real input levels
-                    // during replay, not just during ordinary live capture.
-                    // Existing playback detection logic (_current_peak_sample,
-                    // _poll_peak_sample) is left completely untouched.
-                    if (capturing_live)
-                    {
-                        for (int f = 0; f < out_frames; ++f)
-                        {
-                            float l = std::fabs(float_out[f * 2]);
-                            float r = std::fabs(float_out[f * 2 + 1]);
-                            if (l > _vu_bin_left_peak)  _vu_bin_left_peak  = l;
-                            if (r > _vu_bin_right_peak) _vu_bin_right_peak = r;
-                        }
-                    }
-
-                    if (live_write_active)
-                    {
-                        // Convert to int16.
-                        src_float_to_short_array(float_out.data(), pcm_out.data(),
-                                                 out_frames * 2);
-
-                        // ── Engineering output dump tap ───────────────────────
-                        // First point where the signal is complete s16le after
-                        // all SRC, per-input gain/EQ, output EQ, output gain,
-                        // and auto-trim.  submit_block() is non-blocking: it
-                        // copies into a bounded SPSC ring or drops and counts
-                        // frames if the ring is full — never delays this thread.
-                        _dump_writer.submit_block(pcm_out.data(), out_frames);
-
-                        if (_prefill_frames_remaining > 0)
-                        {
-                            // Accumulation phase: append to the pre-fill buffer.
-                            // Do not write to the FIFO yet.
-                            const int16_t* src_ptr = pcm_out.data();
-                            int to_add = std::min(out_frames, _prefill_frames_remaining);
-                            _prefill_buf.insert(_prefill_buf.end(),
-                                                src_ptr,
-                                                src_ptr + static_cast<size_t>(to_add) * 2);
-                            _prefill_frames_remaining -= to_add;
-
-                            if (_prefill_frames_remaining == 0)
-                            {
-                                // Pre-fill complete: flush the whole buffer in one
-                                // write, then write any frames from this block that
-                                // came after the pre-fill threshold.
-                                _shared_fifo.write(_prefill_buf.data(),
-                                                   _prefill_buf.size() * sizeof(int16_t));
-                                _prefill_buf.clear();
-                                _prefill_buf.shrink_to_fit();
-
-                                int remainder = out_frames - to_add;
-                                if (remainder > 0)
-                                    _shared_fifo.write(src_ptr + static_cast<size_t>(to_add) * 2,
-                                                       static_cast<size_t>(remainder) * 2 * sizeof(int16_t));
-
-                                LOG_DEBUG("[input%d] Pre-fill complete; first FIFO write done",
-                                          _index);
-                            }
-                        }
-                        else
-                        {
-                            // Normal phase: write directly to the FIFO.
-                            _shared_fifo.write(pcm_out.data(),
-                                               static_cast<size_t>(out_frames) * 2 * sizeof(int16_t));
-                        }
-                    }
-                }
-            }   // gain/EQ/peak/FIFO block
-
-            }   // while (frames_left > 0)
-        }       // if (_capturing.load() && _src_state)
+            resample_block(frames_in, peak_sample, silence_threshold_sample);
 
         // ── Update the status snapshot ────────────────────────────────────────
         // level_dbfs is intentionally omitted here; get_status() converts
@@ -1977,6 +1326,717 @@ void InputChannel::process_thread_func()
             _status.is_capturing    = _capturing.load();
             _status.detected_hz     = _rate_estimator.estimated_input_rate();
             _status.track_change_seq = _track_change_seq.load(std::memory_order_relaxed);
+        }
+    }
+}
+
+
+// ── InputChannel::close_elapsed_vu_bins ───────────────────────────────────────
+//
+// Runs every process_thread_func() iteration (including idle iterations after
+// the condition-variable sleep) so silence bins are produced even when the
+// channel is not capturing.  A while loop catches up if multiple bins have
+// elapsed since the last iteration (e.g. after a long OS sleep).
+//
+void InputChannel::close_elapsed_vu_bins()
+{
+    double now = get_monotonic_time();
+    while (now - _vu_bin_start_time >= VU_BIN_SECONDS)
+    {
+        VuBin bin;
+        bin.seq        = ++_vu_bin_seq;
+        bin.left_dbfs  = linear_to_dbfs(_vu_bin_left_peak);
+        bin.right_dbfs = linear_to_dbfs(_vu_bin_right_peak);
+        _vu_bin_left_peak  = 0.0f;
+        _vu_bin_right_peak = 0.0f;
+        _vu_bin_start_time += VU_BIN_SECONDS;
+
+        std::lock_guard<std::mutex> lk(_vu_history_mutex);
+        _vu_history[_vu_history_write_idx] = bin;
+        _vu_history_write_idx = (_vu_history_write_idx + 1) % VU_HISTORY_BINS;
+        if (_vu_history_count < VU_HISTORY_BINS)
+            ++_vu_history_count;
+    }
+}
+
+
+// ── InputChannel::drain_capture_ring ──────────────────────────────────────────
+//
+// Waits (bounded, 5 ms) for at least MIN_SAMPLES to become available in
+// _ring_buf and, once available, reads one block into _pcm_in. Returns false
+// (having already performed the bounded wait) when the caller should
+// `continue` its loop without processing a block this iteration; true with
+// frames_in set to the number of stereo frames read otherwise.
+//
+bool InputChannel::drain_capture_ring(int& frames_in)
+{
+    // ── Wait for data ────────────────────────────────────────────────────
+    size_t available = _ring_buf.read_available();
+
+    if (available < MIN_SAMPLES)
+    {
+        // Sleep until the capture thread signals new data or up to 5 ms
+        // (the timeout handles the case where notify_one() was called just
+        // before we entered wait_for — at most one missed notification).
+        std::unique_lock<std::mutex> lk(_ring_cv_mutex);
+        _ring_cv.wait_for(lk, std::chrono::milliseconds(5),
+            [this]()
+            {
+                return !_running.load(std::memory_order_relaxed) ||
+                       _ring_buf.read_available() >= MIN_SAMPLES;
+            });
+        return false;
+    }
+
+    // ── Copy a block from the ring buffer ────────────────────────────────
+    size_t samples_to_read = std::min(available,
+                                       static_cast<size_t>(MAX_FRAMES * 2));
+    samples_to_read &= ~static_cast<size_t>(1);  // ensure we read complete stereo frames
+
+    _ring_buf.read(_pcm_in.data(), samples_to_read);
+
+    frames_in = static_cast<int>(samples_to_read / 2);
+    return true;
+}
+
+
+// ── InputChannel::update_metering ─────────────────────────────────────────────
+//
+// Peak-level metering for the block drain_capture_ring() just read into
+// _pcm_in: compute_peak_sample(), _current_peak_sample, the
+// _poll_peak_sample CAS loop, and _session_raw_peak_sample. Returns the raw
+// peak sample so callers (silence state, track-gap detection, the recorder
+// tap's above-threshold flag) can use the same value computed exactly once
+// per iteration, as today.
+//
+int InputChannel::update_metering(int frames_in)
+{
+    // ── Compute peak sample level (pure integer, no float) ───────────────
+    int peak_sample = compute_peak_sample(_pcm_in.data(), frames_in, /*channels=*/2);
+    _current_peak_sample.store(peak_sample, std::memory_order_relaxed);
+
+    // Accumulate poll-window peak — reset by get_status() via exchange(0).
+    // Use CAS so that a concurrent exchange(0) in get_status() is never lost:
+    // if get_status() wins the exchange between our load and store, the CAS
+    // fails, prev is updated to 0, and we retry to set peak_sample.
+    {
+        int prev = _poll_peak_sample.load(std::memory_order_relaxed);
+        while (peak_sample > prev &&
+               !_poll_peak_sample.compare_exchange_weak(
+                   prev, peak_sample, std::memory_order_relaxed))
+            ; // prev is updated on failure; retry with latest value
+    }
+
+    // Accumulate session raw peak (no float / log10 — integer compare only).
+    {
+        int prev = _session_raw_peak_sample.load(std::memory_order_relaxed);
+        if (peak_sample > prev)
+            _session_raw_peak_sample.store(peak_sample, std::memory_order_relaxed);
+    }
+
+    return peak_sample;
+}
+
+
+// ── InputChannel::update_silence_state ────────────────────────────────────────
+//
+// Silence/activity state machine (activity threshold x _allow_capture gate,
+// unchanged). Updates _last_above_threshold_time and returns should_capture;
+// also hands back the per-iteration config snapshot (silence_threshold_sample,
+// track_change_silence_seconds) and is_above_threshold that
+// handle_session_edges() and the status-snapshot update need, read exactly
+// once per iteration as today.
+//
+bool InputChannel::update_silence_state(int     peak_sample,
+                                         double  now,
+                                         int&    silence_threshold_sample,
+                                         bool&   is_above_threshold,
+                                         float&  track_change_silence_seconds)
+{
+    // _silence_threshold_sample is published atomically by configure(), so
+    // we only need to lock here to read silence_seconds and track_change_silence_seconds.
+    int silence_seconds;
+    {
+        std::lock_guard<std::mutex> lock(_config_mutex);
+        silence_seconds              = _config.silence_seconds;
+        track_change_silence_seconds = _config.track_change_silence_seconds;
+    }
+    silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
+
+    // Integer comparison — no float arithmetic on the hot path.
+    if (peak_sample >= silence_threshold_sample)
+        _last_above_threshold_time = now;
+
+    is_above_threshold = (_last_above_threshold_time > 0.0)
+                       && ((now - _last_above_threshold_time)
+                           < static_cast<double>(silence_seconds));
+
+    bool should_capture = is_above_threshold
+                       && _allow_capture.load(std::memory_order_relaxed);
+
+    return should_capture;
+}
+
+
+// ── InputChannel::handle_session_edges ────────────────────────────────────────
+//
+// Capture session start/stop transitions (SRC resets incl. the ID-tap
+// reset, RepeatController notifications, ramp/pre-fill arming) and
+// track-gap detection.
+//
+// TrackGapDetector::update() is folded in here -- NOT into
+// tap_for_id_and_repeat() -- because it runs once per OUTER
+// process_thread_func() loop iteration, before the SRC loop, using the raw
+// per-block peak computed once at the top of the iteration. The ID/repeat
+// taps in tap_for_id_and_repeat() instead run once per SRC output CHUNK,
+// and a single outer iteration's input can produce more than one chunk
+// (libsamplerate does not always consume all input in one src_process()
+// call). Detecting the gap once per outer iteration here, at the same
+// relative position as before, preserves its exact firing cadence.
+//
+void InputChannel::handle_session_edges(bool   should_capture,
+                                         int    peak_sample,
+                                         int    silence_threshold_sample,
+                                         double now,
+                                         float  track_change_silence_seconds)
+{
+    // ── Start or stop the capture session ────────────────────────────────
+    if (should_capture && !_capturing.load())
+    {
+        if (_src_state)
+            src_reset(_src_state);
+        // Reset the ID-tap resampler alongside the main SRC state so a
+        // fresh capture session gets fresh interpolator state on BOTH
+        // paths -- otherwise only the main SRC gets reset here, letting
+        // the ID tap carry state across silence gaps.
+        if (_id_tap)
+            _id_tap->reset();
+        _ramp_frames_remaining    = _ramp_duration_frames;
+        _prefill_frames_remaining = _prefill_duration_frames;
+        _prefill_buf.clear();
+        _prefill_buf.reserve(static_cast<size_t>(_prefill_duration_frames) * 2);
+        _capturing.store(true);
+        _repeat_controller.notify_capture_started(_index);
+        LOG_INFO("[input%d] Capture session started (peak=%d, threshold=%d)",
+                 _index, peak_sample, silence_threshold_sample);
+    }
+    else if (!should_capture && _capturing.load())
+    {
+        _repeat_controller.notify_capture_stopped(_index);
+        _capturing.store(false);
+        LOG_INFO("[input%d] Capture session stopped (silence=%.1f s)",
+                 _index, now - _last_above_threshold_time);
+    }
+
+    // ── Track-gap detection ───────────────────────────────────────────────
+    // Uses the raw per-block amplitude flag (not the debounced is_above_threshold)
+    // so a gap that starts within silence_seconds is detected precisely.
+    // Fires on the first above-threshold block after a qualifying gap.
+    {
+        // Discard any in-progress gap candidate when the threshold changes so
+        // a partial gap measured against the old value does not fire spuriously.
+        if (track_change_silence_seconds != _prev_track_change_silence_seconds)
+        {
+            _track_gap_detector.clear_candidate();
+            _prev_track_change_silence_seconds = track_change_silence_seconds;
+        }
+
+        bool raw_above = (peak_sample >= silence_threshold_sample);
+        if (_track_gap_detector.update(_capturing.load(), raw_above, now,
+                                       static_cast<double>(track_change_silence_seconds)))
+        {
+            uint32_t seq = _track_change_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+            LOG_INFO("[input%d] Possible track change detected (gap=%.1f s, seq=%u)",
+                     _index, _track_gap_detector.last_gap_seconds(), seq);
+        }
+    }
+}
+
+
+// ── InputChannel::resample_block ──────────────────────────────────────────────
+//
+// Owns the main SRC loop (`while (frames_left > 0)`) and the periodic
+// drift-diagnostics accumulation (_stats_in_frames/_stats_out_frames read by
+// the diagnostics block at the top of process_thread_func()'s loop). For
+// each output chunk src_process() produces, calls tap_for_id_and_repeat(),
+// apply_output_chain(), and deliver_output() in that order -- identical to
+// today's single nested per-chunk block. Only called when _capturing and
+// _src_state are both set (checked by the caller), exactly as today.
+//
+void InputChannel::resample_block(int frames_in, int peak_sample, int silence_threshold_sample)
+{
+    // Convert int16 to float in the range [-1.0, +1.0].
+    src_short_to_float_array(_pcm_in.data(), _float_in.data(), frames_in * 2);
+
+    // Resample in a loop.  libsamplerate may not consume all input frames
+    // in a single call if the output buffer would overflow (this can happen
+    // with high upsampling ratios, e.g. 8 kHz input → 44.1 kHz output).
+    // We iterate until all input frames are consumed, writing each chunk
+    // to the FIFO as it is produced.  src_ratio is read once per block
+    // so it is consistent across all iterations.
+    const float* in_ptr      = _float_in.data();
+    int          frames_left = frames_in;
+    const double ratio       = _rate_estimator.src_ratio();
+
+    while (frames_left > 0)
+    {
+        SRC_DATA src_data;
+        memset(&src_data, 0, sizeof(src_data));
+        src_data.data_in       = in_ptr;
+        src_data.input_frames  = frames_left;
+        src_data.data_out      = _float_out.data();
+        src_data.output_frames = MAX_SRC_OUTPUT;
+        src_data.src_ratio     = ratio;
+        src_data.end_of_input  = 0;
+
+        int src_err = src_process(_src_state, &src_data);
+        if (src_err != 0)
+        {
+            LOG_WARN("[input%d] libsamplerate error: %s",
+                     _index, src_strerror(src_err));
+            break;
+        }
+
+        in_ptr      += src_data.input_frames_used * 2;  // stereo
+        frames_left -= static_cast<int>(src_data.input_frames_used);
+
+        // Accumulate for the periodic [stats] diagnostics block at the top of
+        // process_thread_func()'s loop.
+        _stats_in_frames  += static_cast<uint64_t>(src_data.input_frames_used);
+        _stats_out_frames += static_cast<uint64_t>(src_data.output_frames_gen > 0 ? src_data.output_frames_gen : 0);
+
+        if (src_data.output_frames_gen <= 0)
+            continue;   // no output this iteration; keep consuming input
+
+        int out_frames = static_cast<int>(src_data.output_frames_gen);
+
+        tap_for_id_and_repeat(out_frames, peak_sample, silence_threshold_sample);
+        apply_output_chain(out_frames);
+        deliver_output(out_frames);
+    }   // while (frames_left > 0)
+}
+
+
+// ── InputChannel::tap_for_id_and_repeat ───────────────────────────────────────
+//
+// Post-SRC, pre-gain, pre-EQ taps for one produced chunk: the shared
+// IdTapResampler snapshot ring and the RepeatController recorder tap.
+//
+void InputChannel::tap_for_id_and_repeat(int out_frames, int peak_sample, int silence_threshold_sample)
+{
+    // ── ID snapshot tap (post-SRC, pre-gain, pre-EQ) ─────────
+    // Tap here to capture uncolored audio: gain and EQ reflect
+    // user preference and would skew Shazam's frequency-domain
+    // fingerprints if applied. Downmix, resample (44100 → 16000
+    // Hz, filtered SRC_SINC_FASTEST), and clamp are all done by
+    // _id_tap (IdTapResampler); this just writes its output into
+    // _id_buf under the ring's own lock.
+    if (!_id_buf.empty() && _id_tap)
+    {
+        int id_count = 0;
+        const int16_t* id_out = _id_tap->process(_float_out.data(), out_frames, &id_count);
+        if (id_out && id_count > 0)
+        {
+            std::lock_guard<std::mutex> id_lock(_id_mutex);
+            unsigned wp = _id_write_pos;
+            for (int i = 0; i < id_count; ++i)
+                _id_buf[(wp + static_cast<unsigned>(i)) & ID_BUF_MASK] = id_out[i];
+            _id_write_pos    = wp + static_cast<unsigned>(id_count);
+            _id_frames_avail = std::min(
+                _id_frames_avail + static_cast<unsigned>(id_count),
+                ID_BUF_FRAMES);
+        }
+    }
+
+    // ── Repeat-feature recorder tap -- POST-SRC / PRE-GAIN, immediately ────
+    // after the libsamplerate conversion to output rate and before the
+    // gain+fade-in section in apply_output_chain().
+    //
+    // The recording must carry NO baked-in gain, fade-in ramp, input EQ,
+    // output EQ/gain, or auto-trim, so that replay can apply the ORIGIN
+    // INPUT'S CURRENT (live-pulled) gain/EQ plus the shared OutputProcessor
+    // at playback time instead of at record time. This tap point is
+    // float_out immediately after src_process() in resample_block() and
+    // before any of gain/ramp/EQ/OutputProcessor::apply() run on it -- i.e.
+    // exactly the same stage as the ID tap just above (both explicitly
+    // documented as "post-SRC, pre-gain, pre-EQ" -- see the ID tap's own
+    // comment a few lines up and InputChannel::_id_buf's class-level
+    // comment, "Tap point: post-main-SRC (44100 Hz stereo float),
+    // pre-gain/pre-EQ"), so replay's own TrackGapDetector/ID tap (fed from
+    // the decoded recording, autostream_repeat.cpp) observes audio at the
+    // identical DSP stage as the live ID tap, without any further change
+    // needed on the replay side.
+    //
+    // The above-threshold flag passed to submit_float_block() is still the
+    // RAW per-block peak test computed once per outer process_thread_func()
+    // iteration (`peak_sample >= silence_threshold_sample`, passed down from
+    // update_metering()/update_silence_state() via resample_block()'s
+    // parameters) on the int16 ring-buffer samples -- i.e. BEFORE even this
+    // SRC step, let alone gain. That flag was already computed upstream of
+    // every DSP stage, so it remains the right "was this block loud" signal
+    // for SilenceTrimAccountant regardless of where the recorder's audio tap
+    // itself sits.
+    //
+    // Pre-fill gap-free capture: this tap fires for every processed block
+    // from the very first block of a capture session, completely
+    // independent of the FIFO pre-fill accumulator in deliver_output()
+    // (`_prefill_frames_remaining`), which only gates when accumulated int16
+    // samples are flushed to the OUTPUT fifo, not whether this call site
+    // runs. This call site never sits inside the
+    // `if (_prefill_frames_remaining > 0) ... else ...` branch, so the
+    // recording is gap-free across the pre-fill window.
+    //
+    // Gating: recording_wanted() alone is sufficient here (no need to also
+    // check _allow_capture/is_fifo_owned_by_replay() as a
+    // post-OutputProcessor tap site would need for locality inside the
+    // live-write block) -- it already requires _state == Recording|Pending
+    // AND origin_input == this input's index, and _origin_input is only
+    // ever set to an input whose should_capture (hence _allow_capture) is
+    // true (RepeatController::notify_capture_started() is only called from
+    // inside `if (_capturing.load() && _src_state)`, itself gated by
+    // should_capture). A live-interrupt fade (FadingOut) leaves state
+    // neither Recording nor Pending, so the interrupting input's audio is
+    // correctly excluded here without any extra check.
+    if (_repeat_controller.recording_wanted(_index))
+        _repeat_controller.submit_float_block(
+            _float_out.data(), out_frames,
+            peak_sample >= silence_threshold_sample);
+}
+
+
+// ── InputChannel::apply_output_chain ──────────────────────────────────────────
+//
+// Per-input gain/fade-in ramp and EQ for one produced chunk (lock-free; runs
+// before the _fifo_mutex section in deliver_output()). Also accumulates the
+// session effective peak. Operates on _float_out in place.
+//
+void InputChannel::apply_output_chain(int out_frames)
+{
+    // ── Apply pre-amp gain and fade-in ramp ──────────────────
+    // Read gain once so it is consistent across the block.
+    // memory_order_relaxed is fine: a one-block lag is imperceptible.
+    float gain = _gain_linear.load(std::memory_order_relaxed);
+
+    if (_ramp_frames_remaining > 0)
+    {
+        // Ramp is active.  Apply a per-frame multiplier that rises
+        // linearly from 0.0 at session start to 1.0 at ramp end,
+        // combined with _gain_linear in a single multiply per sample.
+        //
+        // ramp_pos is the frame index into the full ramp, counting
+        // from 0 (session start) to _ramp_duration_frames (ramp end).
+        // Frames within this block that fall inside the ramp use the
+        // interpolated gain; any frames after the ramp completes
+        // within the same block receive the full gain.
+        int frames_in_ramp = std::min(out_frames, _ramp_frames_remaining);
+        int ramp_pos       = _ramp_duration_frames - _ramp_frames_remaining;
+
+        for (int f = 0; f < frames_in_ramp; ++f)
+        {
+            float ramp_gain = gain * static_cast<float>(ramp_pos + f)
+                                    / static_cast<float>(_ramp_duration_frames);
+            _float_out[f * 2]     *= ramp_gain;
+            _float_out[f * 2 + 1] *= ramp_gain;
+        }
+
+        // Freeze the ramp's progress while ReplayEngine owns the FIFO.
+        // This block's write-side
+        // section in deliver_output() is skipped entirely whenever
+        // is_fifo_owned_by_replay() is true, so these frames are
+        // computed but never reach OwnTone -- decrementing the
+        // counter anyway would let a ~1.5 s live-interrupt fade
+        // silently exhaust the 1 s ramp before the FIFO ever
+        // hands over, producing an abrupt full-volume jump the
+        // instant ownership actually flips to Live instead of the
+        // intended audible fade-in. Freezing here means the ramp
+        // (armed fresh at notify_capture_started(), see
+        // handle_session_edges()) has not consumed any of its span
+        // by the handoff instant, so it plays out cleanly over the
+        // first _ramp_duration_frames of frames actually written
+        // once is_fifo_owned_by_replay() goes false -- i.e. the
+        // ramp is effectively re-armed AT the handoff instant
+        // without needing a separate cross-object re-arm call.
+        // recording_wanted()/is_fifo_owned_by_replay() are both
+        // single relaxed atomic loads (cheap, lock-free), so this
+        // extra read outside _fifo_mutex costs nothing measurable
+        // and only ever causes a stale-by-one-block read, which is
+        // harmless here (worst case: one extra block's worth of
+        // ramp progress either frozen or advanced a moment early).
+        if (!_repeat_controller.is_fifo_owned_by_replay())
+            _ramp_frames_remaining -= frames_in_ramp;
+
+        // Apply uniform gain to any remaining frames in this block
+        // (those that fall after the ramp completes).
+        if (gain != 1.0f)
+        {
+            for (int f = frames_in_ramp; f < out_frames; ++f)
+            {
+                _float_out[f * 2]     *= gain;
+                _float_out[f * 2 + 1] *= gain;
+            }
+        }
+    }
+    else if (gain != 1.0f)
+    {
+        // No ramp — apply uniform gain to the whole block.
+        int total_samples = out_frames * 2;
+        for (int s = 0; s < total_samples; ++s)
+            _float_out[s] *= gain;
+    }
+
+    // ── Apply per-channel EQ ──────────────────────────────────
+    // Check whether _eq_chain has published a new band list since
+    // the last block.  If so, rebuild local filters with freshly
+    // zeroed delay-line state.  The shared_ptr comparison is a
+    // pointer equality check — no allocation.
+    auto latest_bands = _eq_chain.get_bands();
+    if (latest_bands != _current_eq_bands)
+    {
+        _current_eq_bands = latest_bands;
+        _local_filters.clear();
+        if (latest_bands)
+        {
+            float sr = _eq_chain.sample_rate();
+            for (const auto& band : *latest_bands)
+            {
+                BiquadFilter f;
+                f.configure(band, sr);
+                _local_filters.push_back(f);
+            }
+        }
+    }
+    for (auto& filter : _local_filters)
+        filter.process(_float_out.data(), out_frames);
+
+    // ── Accumulate session effective peak ─────────────────────
+    // Scan the post-gain, post-input-EQ float samples.  Deferred
+    // to get_status() for the dBFS conversion (no log10 here).
+    // This measures the per-input signal level before output EQ.
+    {
+        float eff_peak = 0.0f;
+        int total_samples = out_frames * 2;
+        for (int s = 0; s < total_samples; ++s)
+        {
+            float v = std::fabs(_float_out[s]);
+            if (v > eff_peak)
+                eff_peak = v;
+        }
+        float prev = _session_effective_peak_linear.load(std::memory_order_relaxed);
+        if (eff_peak > prev)
+            _session_effective_peak_linear.store(eff_peak, std::memory_order_relaxed);
+    }
+}
+
+
+// ── InputChannel::deliver_output ──────────────────────────────────────────────
+//
+// The _fifo_mutex critical section for one produced chunk: OutputProcessor
+// apply() (output EQ/gain/auto-trim) gated by live_write_active, the
+// capturing_live-gated VU-bin peak accumulation, the int16 cast, the
+// engineering dump tap, and pre-fill buffering / FIFO write.
+//
+// apply() — which includes the auto-trim CAS update — and the
+// FIFO write are both performed while holding _fifo_mutex.  This
+// is the key structural invariant that makes auto-trim reset
+// race-free:
+//
+//   Control thread (api_set_allow_capture handoff):
+//     1. Stores _allow_capture = false on outgoing input.
+//     2. Acquires _fifo_mutex.
+//     3. Calls reset_auto_trim() (trim → 0).
+//     4. Stores _allow_capture = true on incoming input.
+//     5. Releases _fifo_mutex.
+//
+//   Process thread of outgoing input: either
+//     A. Holds _fifo_mutex when the control thread tries step 2.
+//        The outgoing thread's apply() and write complete, mutex
+//        is released, then the control thread resets trim.  The
+//        outgoing thread's NEXT iteration observes
+//        _allow_capture = false and skips apply() entirely.
+//     B. Does not hold _fifo_mutex when the control thread does
+//        step 2.  The control thread acquires first; the outgoing
+//        thread waits.  When it finally acquires, it reads
+//        _allow_capture = false and skips both apply() and the
+//        FIFO write — the trim is never touched.
+//
+// In both cases the trim is 0 before the incoming input's first
+// apply() call, and the outgoing input cannot write a negative
+// trim after the reset.
+//
+// ── Extended for the third writer: ReplayEngine ─────────────────────────────
+//
+// ReplayEngine writes to the SAME FIFO through its OWN
+// blocking-paced fd (not this FifoWriter instance), so the
+// two writers never contend for FifoWriter's internal state;
+// what they DO need to arbitrate is which one is allowed to
+// put bytes on the wire at all, via the FifoOwner flag
+// (RepeatController::_fifo_owner_fast):
+//
+//   Writer                  | Flips FifoOwner under...
+//   ------------------------|---------------------------------
+//   Live (this file)        | never writes it, only reads it
+//                           | (is_fifo_owned_by_replay()) --
+//                           | already inside this _fifo_mutex
+//                           | critical section.
+//   ReplayEngine start/stop | RepeatController::set_fifo_owner()
+//                           | (autostream_repeat.cpp), which
+//                           | takes _fifo_mutex for exactly the
+//                           | duration of the atomic store --
+//                           | never across ReplayEngine's own
+//                           | blocking/poll-gated write().
+//
+// Because the flip and this read are both done under
+// _fifo_mutex, the same two-case argument as auto-trim above
+// applies: either this thread holds _fifo_mutex when
+// set_fifo_owner() is called (this iteration's write, if any,
+// completes on the OLD owner value; the mutex is released,
+// the owner flips, and this thread's NEXT iteration observes
+// the new owner before deciding whether to write), or this
+// thread is waiting when the owner flips (it then reads the
+// NEW owner immediately). Either way, no iteration of this
+// loop can observe a stale owner value and no two writers
+// (live and replay) are ever both actively producing FIFO
+// bytes at the same instant -- "sequential fade-out -> fade-in,
+// no sample mixing" holds structurally, not just by convention.
+//
+// Lock order: RepeatController's
+// _repeat_mutex may be taken while holding nothing, and may
+// be held while subsequently taking _fifo_mutex (e.g.
+// RepeatController::set_fifo_owner() called from inside a
+// _repeat_mutex critical section in begin_replay_locked()/
+// on_replay_session_ended_locked_entry()/stop()). The REVERSE
+// order -- taking _repeat_mutex while already holding
+// _fifo_mutex -- never happens anywhere in this codebase; this
+// very _fifo_mutex critical section, for instance, only READS
+// fast atomics (is_fifo_owned_by_replay(), recording_wanted())
+// and never acquires _repeat_mutex. Neither mutex is ever held
+// across a blocking/poll-gated write() on either the live path
+// (this file) or ReplayEngine's own write loop
+// (autostream_repeat.cpp's write_slice_paced()).
+//
+// This entire critical section is ONE contiguous lock_guard<std::mutex>
+// scope, exactly as it was inside process_thread_func() before this method
+// was extracted -- see the deviation note at this method's call site in
+// resample_block() / the header declaration: the "-> OutputProcessor" step
+// conceptually belongs with apply_output_chain()'s gain/EQ chain, but
+// OutputProcessor::apply() is kept HERE, as the first step inside the lock,
+// so the lock scope is never split across a method boundary (if a clean
+// method boundary would split a lock scope, the method boundary loses).
+//
+void InputChannel::deliver_output(int out_frames)
+{
+    std::lock_guard<std::mutex> lock(_fifo_mutex);
+    // Repeat-feature FIFO arbitration (extended proof comment above): while
+    // ReplayEngine owns the pipe, this input's output is discarded here --
+    // it still runs everything ABOVE this _fifo_mutex block (silence
+    // detection, track-gap detection, level metering) unconditionally,
+    // which is what would drive a live-interrupt trigger. Only the
+    // write-side work (EQ/gain/recording-tap/dump-tap/FIFO write) is
+    // skipped.
+    //
+    // VU-bin peak accumulation below is intentionally gated on
+    // `capturing_live` ALONE, not `!is_fifo_owned_by_replay()` too, so the
+    // home-page VU meter for the origin input keeps updating throughout a
+    // replay session (level metering runs unconditionally as stated above)
+    // while every write-side step (apply()'s output EQ/gain/auto-trim, the
+    // recorder tap, the int16 cast, the dump tap, and the actual FIFO
+    // write) is still skipped whenever replay owns the pipe.
+    bool capturing_live = _allow_capture.load(std::memory_order_relaxed);
+    bool live_write_active = capturing_live &&
+        !_repeat_controller.is_fifo_owned_by_replay();
+
+    if (live_write_active)
+    {
+        // Apply output EQ, output gain, and auto-trim in-place.
+        // Must precede float→int16 so the clip scan sees the
+        // true overshoot before clamping.
+        //
+        // The repeat-feature recorder tap sits POST-SRC/PRE-GAIN, well above
+        // this _fifo_mutex block -- see tap_for_id_and_repeat()'s comment
+        // for the full rationale.
+        _output_processor.apply(_float_out.data(), out_frames);
+    }
+    else
+    {
+        // This input is not the active FIFO writer
+        // right now (not the capturing/allow_capture input,
+        // or replay owns the pipe) -- FifoWriter::write()
+        // below will not be called on its behalf this block,
+        // so any stall streak left over from when it WAS
+        // active must not linger and be reported as "still
+        // stalled" during a period that is actually idle for
+        // this writer. Cheap atomic reset, no lock.
+        _shared_fifo.reset_stall();
+    }
+
+    // ── Accumulate stereo peak for the current VU bin ─────
+    // Tap here: post all output processing (when the write
+    // path actually ran this block; see live_write_active
+    // above), pre int16 cast. Gated on capturing_live alone
+    // so the meter keeps reflecting real input levels
+    // during replay, not just during ordinary live capture.
+    // Existing playback detection logic (_current_peak_sample,
+    // _poll_peak_sample) is left completely untouched.
+    if (capturing_live)
+    {
+        for (int f = 0; f < out_frames; ++f)
+        {
+            float l = std::fabs(_float_out[f * 2]);
+            float r = std::fabs(_float_out[f * 2 + 1]);
+            if (l > _vu_bin_left_peak)  _vu_bin_left_peak  = l;
+            if (r > _vu_bin_right_peak) _vu_bin_right_peak = r;
+        }
+    }
+
+    if (live_write_active)
+    {
+        // Convert to int16.
+        src_float_to_short_array(_float_out.data(), _pcm_out.data(),
+                                 out_frames * 2);
+
+        // ── Engineering output dump tap ───────────────────────
+        // First point where the signal is complete s16le after
+        // all SRC, per-input gain/EQ, output EQ, output gain,
+        // and auto-trim.  submit_block() is non-blocking: it
+        // copies into a bounded SPSC ring or drops and counts
+        // frames if the ring is full — never delays this thread.
+        _dump_writer.submit_block(_pcm_out.data(), out_frames);
+
+        if (_prefill_frames_remaining > 0)
+        {
+            // Accumulation phase: append to the pre-fill buffer.
+            // Do not write to the FIFO yet.
+            const int16_t* src_ptr = _pcm_out.data();
+            int to_add = std::min(out_frames, _prefill_frames_remaining);
+            _prefill_buf.insert(_prefill_buf.end(),
+                                src_ptr,
+                                src_ptr + static_cast<size_t>(to_add) * 2);
+            _prefill_frames_remaining -= to_add;
+
+            if (_prefill_frames_remaining == 0)
+            {
+                // Pre-fill complete: flush the whole buffer in one
+                // write, then write any frames from this block that
+                // came after the pre-fill threshold.
+                _shared_fifo.write(_prefill_buf.data(),
+                                   _prefill_buf.size() * sizeof(int16_t));
+                _prefill_buf.clear();
+                _prefill_buf.shrink_to_fit();
+
+                int remainder = out_frames - to_add;
+                if (remainder > 0)
+                    _shared_fifo.write(src_ptr + static_cast<size_t>(to_add) * 2,
+                                       static_cast<size_t>(remainder) * 2 * sizeof(int16_t));
+
+                LOG_DEBUG("[input%d] Pre-fill complete; first FIFO write done",
+                          _index);
+            }
+        }
+        else
+        {
+            // Normal phase: write directly to the FIFO.
+            _shared_fifo.write(_pcm_out.data(),
+                               static_cast<size_t>(out_frames) * 2 * sizeof(int16_t));
         }
     }
 }
