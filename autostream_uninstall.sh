@@ -162,6 +162,8 @@ main() {
   stop_and_disable_service autostream_wifi_watcher.service
   stop_and_disable_service autostream_storage_guard.timer
   stop_and_disable_service autostream_storage_guard.service
+  stop_and_disable_service autostream_log_policy.timer
+  stop_and_disable_service autostream_log_policy.service
   stop_and_disable_service autostream_sdcardhealth.timer
   stop_and_disable_service autostream_sdcardhealth.service
   stop_and_disable_service autostream_dnsmasq.service
@@ -206,6 +208,8 @@ main() {
   remove_path /etc/systemd/system/autostream_sdcardhealth.timer
   remove_path /etc/systemd/system/autostream_storage_guard.service
   remove_path /etc/systemd/system/autostream_storage_guard.timer
+  remove_path /etc/systemd/system/autostream_log_policy.service
+  remove_path /etc/systemd/system/autostream_log_policy.timer
 
   info "Removing autostream sudoers snippets"
   remove_path /etc/sudoers.d/autostream_updater
@@ -226,6 +230,8 @@ main() {
   remove_path /etc/NetworkManager/conf.d/mdns.conf
   remove_path /etc/NetworkManager/conf.d/wifi-powersave.conf
   remove_path /etc/systemd/journald.conf.d/99-autostream-storage.conf
+  remove_path /etc/systemd/journald.conf.d/zz-autostream-diag-persistent.conf
+  remove_path /var/lib/autostream/journald-persistent.applied
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
   remove_path /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
   systemctl restart systemd-logind || warn "systemctl restart systemd-logind failed"

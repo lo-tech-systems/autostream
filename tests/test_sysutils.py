@@ -490,3 +490,61 @@ class TestParseSDCardHealthPercent:
         with patch.object(su, "SDCARD_HEALTH_JSON_FILE", health_file):
             result = su.get_sdcard_health_percent()
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# set_journald_persistent: DIAG-tier journald coupling
+# ---------------------------------------------------------------------------
+
+class TestSetJournaldPersistent:
+    """The success marker must reflect a FULLY successful admin call, so a
+    failed journald restart is retried on the next apply instead of being
+    masked by drop-in file existence."""
+
+    def _marker(self, tmp_path):
+        return tmp_path / "journald-persistent.applied"
+
+    def test_marker_match_skips_admin_call(self, tmp_path):
+        marker = self._marker(tmp_path)
+        marker.write_text("on\n", encoding="utf-8")
+        with patch.object(su, "_JOURNALD_STATE_MARKER", marker), \
+             patch.object(su, "run_admin_cmd") as m_admin:
+            assert su.set_journald_persistent(True) is True
+        m_admin.assert_not_called()
+
+    def test_no_marker_calls_admin_and_writes_marker_on_success(self, tmp_path):
+        marker = self._marker(tmp_path)
+        ok = MagicMock(returncode=0)
+        with patch.object(su, "_JOURNALD_STATE_MARKER", marker), \
+             patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            assert su.set_journald_persistent(True) is True
+        m_admin.assert_called_once_with(["set-journald-persistent", "on"], timeout=15.0)
+        assert marker.read_text(encoding="utf-8").strip() == "on"
+
+    def test_admin_failure_returns_false_and_writes_no_marker(self, tmp_path):
+        marker = self._marker(tmp_path)
+        fail = MagicMock(returncode=1)
+        with patch.object(su, "_JOURNALD_STATE_MARKER", marker), \
+             patch.object(su, "run_admin_cmd", return_value=fail):
+            assert su.set_journald_persistent(False) is False
+        assert not marker.exists()  # next apply must retry the admin call
+
+    def test_stale_marker_from_other_mode_calls_admin(self, tmp_path):
+        marker = self._marker(tmp_path)
+        marker.write_text("on\n", encoding="utf-8")
+        ok = MagicMock(returncode=0)
+        with patch.object(su, "_JOURNALD_STATE_MARKER", marker), \
+             patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            assert su.set_journald_persistent(False) is True
+        m_admin.assert_called_once_with(["set-journald-persistent", "off"], timeout=15.0)
+        assert marker.read_text(encoding="utf-8").strip() == "off"
+
+    def test_marker_write_failure_still_returns_true(self, tmp_path):
+        # Marker lives in a nonexistent dir -> write fails; the apply itself
+        # succeeded, so True is returned and the next call simply retries.
+        marker = tmp_path / "no-such-dir" / "journald-persistent.applied"
+        ok = MagicMock(returncode=0)
+        with patch.object(su, "_JOURNALD_STATE_MARKER", marker), \
+             patch.object(su, "run_admin_cmd", return_value=ok):
+            assert su.set_journald_persistent(True) is True
+        assert not marker.exists()

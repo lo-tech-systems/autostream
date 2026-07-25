@@ -2364,9 +2364,9 @@ def send_log_level_put_json(
             send_browser_api_error(handler, 500, "Configuration could not be saved")
         return
 
-    applied_level = result.get("level", requested_level)
-    result.setdefault("applied", {})["wifi_watcher"] = forward_log_level_to_watcher(applied_level)
-
+    # Note: watcher forwarding is now performed inside set_log_level itself
+    # (applied["wifi_watcher"]) so every caller stays in sync, not just this
+    # HTTP handler. Do not call forward_log_level_to_watcher again here.
     send_json(handler, 200, result)
 
 

@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 # Log levels that trigger verbose NGINX access logging
 _VERBOSE_NGINX_LEVELS = frozenset({"debug", "spam"})
 
+# Log levels that trigger persistent journald storage.
+# Journald rests at Storage=volatile (system/journald/99-autostream-storage.conf);
+# a drop-in flips it to persistent only while the platform level is in this tier.
+_PERSIST_JOURNAL_LEVELS = frozenset({"debug", "spam"})
+
+# Levels considered "elevated" for the first-boot changed_at seed.
+_ELEVATED_LEVELS = frozenset({"info", "debug", "spam"})
+
 
 def _utc_now_str(now: Optional[datetime] = None) -> str:
     """Return current UTC time as a canonical ISO timestamp string."""
@@ -82,7 +90,7 @@ def set_log_level(
 
     Returns a dict with:
         ok, level, changed_by, changed_at, changed (bool),
-        applied: {autostream, monitor, owntone, nginx}
+        applied: {autostream, monitor, owntone, nginx, wifi_watcher, journald}
     """
     # --- 1. Validate inputs (skip level check in startup mode; level comes from disk) ---
     if _startup:
@@ -113,11 +121,28 @@ def set_log_level(
             current_changed_at = parsed.general.log_level_changed_at
 
             if _startup:
-                # Startup: apply live, but do not change policy metadata.
+                # Startup: apply live, but do not change the level or changed_by.
                 new_level = current_level
                 new_changed_by = current_changed_by
                 new_changed_at = current_changed_at
-                # No persistence needed.
+
+                # A persisted elevated level with no changed_at has no clock for
+                # the de-escalation staircase to age it from (compute_expiry_target
+                # returns None when changed_at is missing). Seed it once, leaving the
+                # level and changed_by exactly as the user/system left them. A
+                # persisted warning/log/fatal level gets nothing.
+                if current_level in _ELEVATED_LEVELS and current_changed_at is None:
+                    new_changed_at = _utc_now_str(now)
+                    cfg.setdefault("general", {}).update({
+                        "log_level_changed_at": new_changed_at,
+                    })
+                    save_config(config_path, cfg)
+                    logger.info(
+                        "set_log_level: seeded missing log_level_changed_at=%s for "
+                        "persisted level=%s so the de-escalation staircase can age it",
+                        new_changed_at, current_level,
+                    )
+                # No further persistence needed.
             else:
                 # Determine whether policy state changed (Section 3.2).
                 level_changed = (level_str != current_level)
@@ -151,6 +176,8 @@ def set_log_level(
         "monitor": False,
         "owntone": None,
         "nginx": False,
+        "wifi_watcher": None,
+        "journald": None,
     }
 
     # Apply to Python logger.
@@ -197,6 +224,33 @@ def set_log_level(
     except Exception as e:
         logger.warning("set_log_level: NGINX apply failed: %s", e)
         applied["nginx"] = False
+
+    # Apply to the Wi-Fi watcher: folded into the shared fan-out so any caller
+    # of set_log_level, not just the HTTP PUT handler, keeps the watcher in sync;
+    # it force-TTLs a forwarded debug level to <=1h regardless).
+    try:
+        from autostream_webui_api import forward_log_level_to_watcher
+        applied["wifi_watcher"] = forward_log_level_to_watcher(new_level)
+    except Exception as e:
+        logger.warning("set_log_level: watcher forward failed: %s", e)
+        applied["wifi_watcher"] = False
+
+    # Apply journald persistence coupling to the DIAG tier. Reconciles
+    # to the desired state on every apply rather than only on tier transitions:
+    # set_journald_persistent pre-checks the drop-in and returns True without a
+    # sudo call or journald restart when already in the desired state, so
+    # routine INFO<->WARNING re-applies stay free -- while a previously FAILED
+    # toggle (e.g. journald mid-restart at the debug->info moment) self-heals on
+    # the next apply (including the storage guard's pending-reapply retry)
+    # instead of leaking persistent writes until the next reboot.
+    try:
+        from autostream_sysutils import set_journald_persistent
+        applied["journald"] = set_journald_persistent(
+            new_level in _PERSIST_JOURNAL_LEVELS
+        )
+    except Exception as e:
+        logger.warning("set_log_level: journald apply failed: %s", e)
+        applied["journald"] = False
 
     return {
         "ok": True,

@@ -3448,16 +3448,13 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     cfg = settings.snapshot()
     setup_logging(cfg.general.log_file, cfg.general.log_level)
     try:
+        # apply_startup_log_level drives set_log_level(_startup=True), whose
+        # fan-out already forwards the level to the Wi-Fi watcher -- no
+        # separate startup forward call is needed here.
         from autostream_log_policy import apply_startup_log_level as _apply_startup_log_level
         _apply_startup_log_level(config_path)
     except Exception:
         logging.warning("apply_startup_log_level: import or apply failed; continuing")
-    try:
-        from autostream_webui_api import forward_log_level_to_watcher as _forward_log_level_to_watcher
-        if not _forward_log_level_to_watcher(cfg.general.log_level):
-            logging.debug("forward_log_level_to_watcher: startup forward not accepted")
-    except Exception:
-        logging.debug("forward_log_level_to_watcher: startup import or forward failed; continuing")
     audit_static_system_facts()
     _ensure_playback_tracker(cfg)
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))

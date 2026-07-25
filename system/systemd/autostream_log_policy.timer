@@ -1,0 +1,15 @@
+# /etc/systemd/system/autostream_log_policy.timer
+#
+# This file is part of autostream.
+# Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+
+[Unit]
+Description=Autostream Log-Level Policy Timer
+
+[Timer]
+OnCalendar=*:0/30
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

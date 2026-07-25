@@ -110,12 +110,19 @@ def test_journald_dropin_journal_section():
     assert "[Journal]" in text
 
 
-def test_journald_dropin_storage_persistent():
-    # Raspberry Pi OS ships a vendor drop-in with Storage=volatile; without an
-    # explicit override the retention bounds below apply to a journal that is
-    # discarded on every reboot.
+def test_journald_dropin_storage_volatile():
+    # The baseline rests at Storage=volatile to avoid continuous SD-card
+    # journal writes; persistence is enabled only
+    # while the platform level is debug/spam, via the higher-priority
+    # zz-autostream-diag-persistent.conf drop-in written by autostream_admin.
     text = _read("system/journald/99-autostream-storage.conf")
-    assert "Storage=persistent" in text
+    config_lines = [
+        ln.strip() for ln in text.splitlines() if not ln.lstrip().startswith("#")
+    ]
+    assert "Storage=volatile" in config_lines
+    assert "Storage=persistent" not in config_lines
+    # The override design must be documented in the comment block.
+    assert "zz-autostream-diag-persistent" in text
 
 
 def test_journald_dropin_compress():

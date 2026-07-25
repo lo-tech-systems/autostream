@@ -627,3 +627,57 @@ def set_nginx_verbose_logging(enabled: bool) -> bool:
         "set_nginx_verbose_logging: admin call failed (rc=%s, mode=%s)", p.returncode, mode
     )
     return False
+
+
+# Success marker for the journald DIAG-tier toggle. Written ONLY after the
+# privileged admin call fully succeeded (drop-in written/removed AND journald
+# restarted). Deliberately NOT the drop-in file itself: the admin script can
+# write/remove the drop-in and then fail the journald restart, and inferring
+# state from the drop-in's existence would short-circuit every later call and
+# permanently mask the failed restart. Removed by the installer/uninstaller
+# alongside the zz- override so an upgrade reset cannot be masked either.
+_JOURNALD_STATE_MARKER = Path("/var/lib/autostream/journald-persistent.applied")
+
+
+def set_journald_persistent(enabled: bool) -> bool:
+    """Couple persistent journald storage to the DIAG (debug/spam) log tier.
+
+    When *enabled* is True, writes a higher-priority drop-in
+    (/etc/systemd/journald.conf.d/zz-autostream-diag-persistent.conf, sorting after
+    99-autostream-storage.conf) forcing Storage=persistent and restarts
+    systemd-journald. When False, removes the drop-in (falling back to the
+    volatile baseline), restarts journald, and best-effort reclaims the
+    persisted DIAG data.
+
+    Calls autostream_admin set-journald-persistent on|off via sudo, mirroring
+    set_nginx_verbose_logging's privilege mechanism. A success marker (see
+    _JOURNALD_STATE_MARKER) makes repeat calls with an unchanged desired state
+    free -- no sudo call, no journald restart -- while a failed or partial
+    apply leaves no marker, so the next apply (including the storage guard's
+    pending-reapply retry) re-drives the admin helper. Returns True on success
+    (including already-applied); False on any failure. Non-fatal: logs a
+    warning, never raises.
+    """
+    mode = "on" if enabled else "off"
+
+    try:
+        if _JOURNALD_STATE_MARKER.read_text(encoding="utf-8").strip() == mode:
+            return True  # last fully-successful apply matches; nothing to do
+    except OSError:
+        pass  # no marker (or unreadable): fall through to the admin helper
+
+    p = run_admin_cmd(["set-journald-persistent", mode], timeout=15.0)
+    if p.returncode == 0:
+        try:
+            _JOURNALD_STATE_MARKER.write_text(mode + "\n", encoding="utf-8")
+        except OSError as e:
+            # Marker write failure just means the next apply repeats the
+            # (idempotent) admin call; log and carry on.
+            logger.warning(
+                "set_journald_persistent: could not write state marker: %s", e
+            )
+        return True
+    logger.warning(
+        "set_journald_persistent: admin call failed (rc=%s, mode=%s)", p.returncode, mode
+    )
+    return False

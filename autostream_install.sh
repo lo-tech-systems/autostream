@@ -821,10 +821,17 @@ configure_phase() {
   nginx -t
   systemctl enable nginx
 
-  # journald storage drop-in (fixed appliance bounds; does not restrict log severity)
+  # journald storage drop-in (fixed appliance bounds; rests at volatile --
+  # persistence is coupled to the DIAG log tier, not to install-time configuration)
   mkdir -p /etc/systemd/journald.conf.d
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/journald/99-autostream-storage.conf" \
     /etc/systemd/journald.conf.d/99-autostream-storage.conf
+  # Remove any stale DIAG-tier persistent override from a previous build/session so an
+  # upgrading box resets to the volatile baseline instead of staying persistent forever.
+  rm -f /etc/systemd/journald.conf.d/zz-autostream-diag-persistent.conf
+  # Also drop the toggle's success marker so the next set_journald_persistent
+  # call re-drives the admin helper instead of trusting pre-upgrade state.
+  rm -f /var/lib/autostream/journald-persistent.applied
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
 
   # logind drop-in: suppress power-key events so USB enumeration cannot shut down the appliance
@@ -1012,6 +1019,8 @@ services_phase() {
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_updater.timer"        /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_storage_guard.service" /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_storage_guard.timer"   /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_log_policy.service"    /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_log_policy.timer"      /etc/systemd/system/
 
   systemctl daemon-reload
 
@@ -1027,6 +1036,7 @@ services_phase() {
   systemctl enable autostream.service
   systemctl enable autostream_wifi_watcher.service
   systemctl enable --now autostream_storage_guard.timer
+  systemctl enable --now autostream_log_policy.timer
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
     info "Restarting affected services"

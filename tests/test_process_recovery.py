@@ -346,8 +346,13 @@ class TestOutputUsageStartup:
 
 
 class TestStartupWifiWatcherForwarding:
-    def test_forwards_persisted_level_once(self):
-        """apply_startup_log_level's persisted level is forwarded to the watcher."""
+    """Watcher forwarding happens inside set_log_level's fan-out,
+    which apply_startup_log_level drives at boot. run_autostream must call
+    apply_startup_log_level once and must NOT forward to the watcher itself
+    (that would double-forward on every boot).
+    """
+
+    def test_startup_applies_policy_once_without_direct_forward(self):
         cfg = MagicMock()
         cfg.general.log_level = "debug"
         settings = MagicMock()
@@ -357,7 +362,7 @@ class TestStartupWifiWatcherForwarding:
         with patch.object(_core_mod, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
              patch.object(_core_mod, "setup_logging"), \
-             patch("autostream_log_policy.apply_startup_log_level"), \
+             patch("autostream_log_policy.apply_startup_log_level") as m_apply, \
              patch("autostream_webui_api.forward_log_level_to_watcher",
                    return_value=True) as m_forward, \
              patch.object(_core_mod, "audit_static_system_facts"), \
@@ -373,11 +378,12 @@ class TestStartupWifiWatcherForwarding:
 
             _core_mod.run_autostream("unused.json", settings=settings)
 
-        m_forward.assert_called_once_with("debug")
+        m_apply.assert_called_once_with("unused.json")
+        m_forward.assert_not_called()
         monitor_client.assert_not_called()
 
-    def test_forward_failure_does_not_raise(self):
-        """A forwarding failure at startup must not interrupt coordinator startup."""
+    def test_startup_policy_failure_does_not_raise(self):
+        """apply_startup_log_level failing must not interrupt coordinator startup."""
         cfg = MagicMock()
         cfg.general.log_level = "info"
         settings = MagicMock()
@@ -387,9 +393,8 @@ class TestStartupWifiWatcherForwarding:
         with patch.object(_core_mod, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
              patch.object(_core_mod, "setup_logging"), \
-             patch("autostream_log_policy.apply_startup_log_level"), \
-             patch("autostream_webui_api.forward_log_level_to_watcher",
-                   side_effect=RuntimeError("watcher down")), \
+             patch("autostream_log_policy.apply_startup_log_level",
+                   side_effect=RuntimeError("policy down")), \
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(_core_mod, "_ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \

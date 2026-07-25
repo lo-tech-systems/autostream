@@ -40,6 +40,10 @@ Cmnd_Alias AUTOSTREAM_ADMIN_TOGGLE_TIMER_DI = /usr/local/libexec/autostream/auto
 Cmnd_Alias AUTOSTREAM_ADMIN_NGINX_LOG_V = /usr/local/libexec/autostream/autostream_admin set-nginx-access-log verbose
 Cmnd_Alias AUTOSTREAM_ADMIN_NGINX_LOG_N = /usr/local/libexec/autostream/autostream_admin set-nginx-access-log normal
 
+# allow journald persistent-storage toggle for the DIAG (debug/spam) log tier
+Cmnd_Alias AUTOSTREAM_ADMIN_JOURNALD_ON  = /usr/local/libexec/autostream/autostream_admin set-journald-persistent on
+Cmnd_Alias AUTOSTREAM_ADMIN_JOURNALD_OFF = /usr/local/libexec/autostream/autostream_admin set-journald-persistent off
+
 # Full list of allowed actions for autostream user:
 Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URN,        \
@@ -56,7 +60,9 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_TOGGLE_TIMER_EN,   \
                               AUTOSTREAM_ADMIN_TOGGLE_TIMER_DI,   \
                               AUTOSTREAM_ADMIN_NGINX_LOG_V,       \
-                              AUTOSTREAM_ADMIN_NGINX_LOG_N
+                              AUTOSTREAM_ADMIN_NGINX_LOG_N,       \
+                              AUTOSTREAM_ADMIN_JOURNALD_ON,       \
+                              AUTOSTREAM_ADMIN_JOURNALD_OFF
 
 Defaults!AUTOSTREAM_ADMIN env_reset
 Defaults!AUTOSTREAM_ADMIN secure_path="/usr/sbin:/usr/bin:/sbin:/bin"

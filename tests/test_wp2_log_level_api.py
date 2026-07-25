@@ -282,37 +282,39 @@ class TestSendLogLevelPutJson:
 # ---------------------------------------------------------------------------
 
 class TestSendLogLevelPutJsonWatcherForwarding:
-    def _call(self, level: str, tmp_path, *, forward_return=False, forward_side_effect=None):
+    """Watcher forwarding happens inside set_log_level's own
+    fan-out (applied["wifi_watcher"]), not in the HTTP PUT handler. The handler
+    must pass the result through verbatim and must never call
+    forward_log_level_to_watcher itself (that would double-forward).
+    """
+
+    def _call(self, level: str, tmp_path, *, wifi_watcher=False):
         state = _make_state(str(tmp_path / "cfg.json"))
         h = _make_handler()
         sent = []
         set_result = {
             "ok": True, "level": level, "changed_by": "user",
-            "changed_at": None, "changed": True, "applied": {"nginx": True},
+            "changed_at": None, "changed": True,
+            "applied": {"nginx": True, "wifi_watcher": wifi_watcher},
         }
-
-        forward_kwargs = {}
-        if forward_side_effect is not None:
-            forward_kwargs["side_effect"] = forward_side_effect
-        else:
-            forward_kwargs["return_value"] = forward_return
 
         with patch("autostream_log_policy.set_log_level", return_value=set_result), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))), \
-             patch("autostream_webui_api.forward_log_level_to_watcher", **forward_kwargs) as m_forward:
+             patch("autostream_webui_api.forward_log_level_to_watcher") as m_forward:
             api_mod.send_log_level_put_json(h, state, {"level": level}, "user")
 
         return sent, m_forward
 
-    def test_forwards_normalized_level_on_success(self, tmp_path):
-        sent, m_forward = self._call("debug", tmp_path, forward_return=True)
-        m_forward.assert_called_once_with("debug")
+    def test_passes_through_watcher_result_from_set_log_level(self, tmp_path):
+        sent, m_forward = self._call("debug", tmp_path, wifi_watcher=True)
+        m_forward.assert_not_called()
         assert sent[0][1]["applied"]["wifi_watcher"] is True
-        # Existing applied entries are preserved alongside the new key.
+        # Existing applied entries are preserved alongside the watcher key.
         assert sent[0][1]["applied"]["nginx"] is True
 
     def test_forward_failure_still_returns_200(self, tmp_path):
-        sent, m_forward = self._call("info", tmp_path, forward_return=False)
+        sent, m_forward = self._call("info", tmp_path, wifi_watcher=False)
+        m_forward.assert_not_called()
         assert sent[0][0] == 200
         assert sent[0][1]["applied"]["wifi_watcher"] is False
 

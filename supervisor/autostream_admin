@@ -39,6 +39,7 @@ Exactly one of:
   run-updater
   toggle-dial-update-timer enable|disable
   toggle-update-timer enable|disable
+  set-journald-persistent on|off
 
 Notes:
   - [reason] is optional for reboot.
@@ -1390,6 +1391,93 @@ def _set_nginx_access_log(args) -> int:
     return 1
 
 
+# ---------------------------------------------------------------------------
+# journald persistent-storage coupling (DIAG tier)
+# ---------------------------------------------------------------------------
+
+_JOURNALD_DIAG_CONF = Path("/etc/systemd/journald.conf.d/zz-autostream-diag-persistent.conf")
+
+_JOURNALD_DIAG_HEADER = (
+    "# zz-autostream-diag-persistent.conf\n"
+    "#\n"
+    "# Written by autostream_admin (set-journald-persistent on) while the platform\n"
+    "# log level is debug/spam. The 'zz-' prefix sorts after\n"
+    "# 99-autostream-storage.conf (Storage=volatile baseline), so this override wins\n"
+    "# while present. Removed automatically (set-journald-persistent off) as soon as\n"
+    "# the level de-escalates below debug, reverting the journal to volatile.\n"
+)
+
+_JOURNALCTL_CANDIDATES = (
+    "/usr/bin/journalctl",
+    "/bin/journalctl",
+)
+
+
+def find_journalctl() -> Optional[str]:
+    for path in _JOURNALCTL_CANDIDATES:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    p = shutil.which("journalctl")
+    if p and os.path.isabs(p) and os.access(p, os.X_OK):
+        return p
+    return None
+
+
+def _restart_journald() -> bool:
+    systemctl = find_systemctl()
+    if not systemctl:
+        log("WARN", "set-journald-persistent: systemctl not found; cannot restart systemd-journald")
+        return False
+    rc, out, err = run_cmd([systemctl, "restart", "systemd-journald"])
+    if rc == 0:
+        log("INFO", "set-journald-persistent: restarted systemd-journald")
+        return True
+    log("WARN", f"set-journald-persistent: systemd-journald restart failed rc={rc} stderr='{err}'")
+    return False
+
+
+def _set_journald_persistent(args) -> int:
+    mode = args.mode  # "on" or "off"
+
+    if mode == "on":
+        try:
+            _JOURNALD_DIAG_CONF.parent.mkdir(parents=True, exist_ok=True)
+            content = _JOURNALD_DIAG_HEADER + "\n[Journal]\nStorage=persistent\n"
+            atomic_write_text(_JOURNALD_DIAG_CONF, content, mode=0o644)
+            log("INFO", f"set-journald-persistent: wrote {_JOURNALD_DIAG_CONF}")
+        except Exception as e:
+            log("ERROR", f"set-journald-persistent: failed writing config: {e!r}")
+            return 1
+        return 0 if _restart_journald() else 1
+
+    # mode == "off": remove the override, restart (falls back to volatile), and
+    # best-effort reclaim the persisted DIAG data now sitting on SD.
+    try:
+        if _JOURNALD_DIAG_CONF.exists():
+            _JOURNALD_DIAG_CONF.unlink()
+            log("INFO", f"set-journald-persistent: removed {_JOURNALD_DIAG_CONF}")
+        else:
+            log("INFO", "set-journald-persistent: override already absent")
+    except Exception as e:
+        log("ERROR", f"set-journald-persistent: failed removing config: {e!r}")
+        return 1
+
+    restarted = _restart_journald()
+
+    journalctl = find_journalctl()
+    if journalctl:
+        rc, out, err = run_cmd([journalctl, "--rotate"])
+        if rc != 0:
+            log("WARN", f"set-journald-persistent: journalctl --rotate failed rc={rc} stderr='{err}'")
+        rc, out, err = run_cmd([journalctl, "--vacuum-time=1s"])
+        if rc != 0:
+            log("WARN", f"set-journald-persistent: journalctl --vacuum-time=1s failed rc={rc} stderr='{err}'")
+    else:
+        log("WARN", "set-journald-persistent: journalctl not found; skipping vacuum of persisted DIAG data")
+
+    return 0 if restarted else 1
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AutoStream admin helper (run via sudo)."
@@ -1528,6 +1616,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p_nal.add_argument("mode", choices=["verbose", "normal"],
                        help="'verbose' enables full access logging; 'normal' suppresses 2xx.")
 
+    p_jp = subparsers.add_parser(
+        "set-journald-persistent",
+        help="Toggle persistent journald storage for the DIAG (debug/spam) log tier.",
+    )
+    p_jp.add_argument("mode", choices=["on", "off"],
+                       help="'on' forces persistent storage while DIAG is active; "
+                            "'off' reverts to volatile and reclaims persisted DIAG data.")
+
     args = parser.parse_args(argv)
     return args
 
@@ -1598,6 +1694,9 @@ def main(argv: list[str]) -> int:
 
         if args.command == "set-nginx-access-log":
             return _set_nginx_access_log(args)
+
+        if args.command == "set-journald-persistent":
+            return _set_journald_persistent(args)
 
         log("ERROR", "no action specified")
         return 2

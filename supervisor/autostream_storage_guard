@@ -8,6 +8,16 @@ Conservative storage-maintenance service for the Autostream appliance.
 Runs as root via a daily systemd timer (04:00 + up to 30 min random).
 Uses only the Python 3 standard library; no venv dependency.
 
+CLI modes:
+  (no args)            Full run: cleanup/logrotate/diagnostic scans, gated on
+                        the playing/update-lock checks (autostream_storage_guard.timer).
+  --log-policy-only     Lightweight run: storage-measure + SD-health + the
+                        log-level policy only. Ungated from playback and the
+                        update lock; never touches cleanup. Driven by the
+                        dedicated autostream_log_policy.timer (every 30 min)
+                        so the de-escalation expiry boundaries get crisp
+                        resolution regardless of playback.
+
 Exit codes:
   0  normal run, safe skip, or best-effort action failure
   1  guard-level failure preventing measurement or safe execution
@@ -75,6 +85,10 @@ VALID_LEVELS = frozenset(LEVEL_ORDER)
 DIAG_LEVELS = frozenset({"debug", "spam"})
 EXPIRY_TIER1_HOURS = 48
 EXPIRY_TIER2_HOURS = 168
+
+# Bounded retry backstop for a policy-initiated PUT that landed (ok:
+# true) but a target (monitor/owntone/journald) reported False (e.g. mid-restart).
+PENDING_REAPPLY_MAX_ATTEMPTS = 5
 
 SD_HEALTH_LOW_THRESHOLD = 20
 SD_HEALTH_RECOVER_THRESHOLD = 25
@@ -400,6 +414,49 @@ def _level_quieter_than(a: str, b: str) -> bool:
     """Return True if level `a` is quieter (less verbose) than `b`."""
     order = {lvl: i for i, lvl in enumerate(LEVEL_ORDER)}
     return order.get(a, 9999) < order.get(b, 9999)
+
+
+def _apply_targets_ok(applied: Optional[dict]) -> bool:
+    """Return True unless the applied dict shows monitor/owntone/journald False.
+
+    This is the "partial application" signal -- the PUT itself succeeded
+    (ok: true) and was persisted, but one live target didn't take (e.g.
+    mid-restart when the request landed). journald is included because
+    set_log_level reconciles the DIAG-tier storage coupling on every apply,
+    so a re-PUT retries a failed journald toggle too. wifi_watcher is
+    deliberately excluded: it reports False on boxes without a control token,
+    which would burn the retry budget on a permanent condition, and a
+    forwarded debug level is TTL-bounded on the watcher side regardless.
+    """
+    if not isinstance(applied, dict):
+        return True  # nothing to check; treat as fine
+    return (
+        applied.get("monitor") is not False
+        and applied.get("owntone") is not False
+        and applied.get("journald") is not False
+    )
+
+
+def _note_pending_reapply(log_policy: dict, level: str, result: Optional[dict]) -> None:
+    """Record or clear the bounded pending-reapply backstop for *level*.
+
+    Called after every policy-initiated PUT that returned ok:true (expiry,
+    ceiling, restore, or a retry itself). Keep this simple and defensive --
+    it's a backstop, not a state machine.
+    """
+    applied = result.get("applied") if isinstance(result, dict) else None
+    if applied is not None and not _apply_targets_ok(applied):
+        pending = log_policy.get("pending_reapply")
+        attempts = 1
+        if isinstance(pending, dict) and pending.get("level") == level:
+            attempts = int(pending.get("attempts") or 0) + 1
+        log_policy["pending_reapply"] = {"level": level, "attempts": attempts}
+    else:
+        # Applied cleanly everywhere (or nothing to check): drop any stale
+        # backstop for this level.
+        pending = log_policy.get("pending_reapply")
+        if isinstance(pending, dict) and pending.get("level") == level:
+            log_policy.pop("pending_reapply", None)
 
 
 def _sd_health_ceiling_applies(
@@ -994,6 +1051,40 @@ def run_log_level_policy(
     current_level = api_state["level"]
     current_changed_at = api_state.get("changed_at")
 
+    # Bounded retry backstop. If an earlier policy PUT landed but a
+    # target (monitor/owntone) didn't take, and nothing else has changed the
+    # level since, re-PUT the same level so it re-fans-out. Give up quietly
+    # after PENDING_REAPPLY_MAX_ATTEMPTS -- this is a backstop, not a state
+    # machine, and the target self-resyncs on its own reconnect anyway.
+    pending_reapply = log_policy.get("pending_reapply")
+    if isinstance(pending_reapply, dict):
+        pending_level = pending_reapply.get("level")
+        pending_attempts = int(pending_reapply.get("attempts") or 0)
+        if pending_level != current_level:
+            # Level moved on (user/staircase) since the partial failure; stale.
+            log_policy.pop("pending_reapply", None)
+        elif pending_attempts >= PENDING_REAPPLY_MAX_ATTEMPTS:
+            logging.warning(
+                "storage guard: giving up on pending log-level reapply for %s "
+                "after %d attempts", pending_level, pending_attempts,
+            )
+            log_policy.pop("pending_reapply", None)
+        else:
+            logging.info(
+                "storage guard: retrying partial log-level apply for %s (attempt %d)",
+                pending_level, pending_attempts + 1,
+            )
+            retry_result = _api_put_log_level(pending_level)
+            if retry_result and retry_result.get("ok"):
+                actions.append({"name": "log_level_reapply", "ok": True, "level": pending_level})
+                _note_pending_reapply(log_policy, pending_level, retry_result)
+                api_state = get_log_level_state() or api_state
+                current_level = api_state["level"]
+                current_changed_at = api_state.get("changed_at")
+            else:
+                actions.append({"name": "log_level_reapply", "ok": False, "level": pending_level})
+                log_policy["pending_reapply"] = {"level": pending_level, "attempts": pending_attempts + 1}
+
     # Track SD-health restriction timestamp for hysteresis / retention.
     sd_health_restricted_at: Optional[str] = log_policy.get("sd_health_restricted_at")
 
@@ -1061,6 +1152,7 @@ def run_log_level_policy(
             if result and result.get("ok"):
                 actions.append({"name": "log_level_expire", "ok": True,
                                 "from": current_level, "to": expiry_target, "reason": reason})
+                _note_pending_reapply(log_policy, expiry_target, result)
                 # Refresh API state after expiry change.
                 api_state = get_log_level_state() or api_state
                 current_level = api_state["level"]
@@ -1100,6 +1192,7 @@ def run_log_level_policy(
                 actions.append({"name": "log_level_ceiling", "ok": True,
                                 "ceiling": ceiling, "previous": current_level,
                                 "reasons": active_reasons})
+                _note_pending_reapply(log_policy, ceiling, result)
             else:
                 actions.append({"name": "log_level_ceiling", "ok": False,
                                 "ceiling": ceiling, "reasons": active_reasons})
@@ -1130,6 +1223,7 @@ def run_log_level_policy(
                         applied_level = None
                         actions.append({"name": "log_level_restore", "ok": True,
                                         "to": restore_target})
+                        _note_pending_reapply(log_policy, restore_target, result)
                     else:
                         actions.append({"name": "log_level_restore", "ok": False})
                 else:
@@ -1151,6 +1245,7 @@ def run_log_level_policy(
         "saved_level": saved_level,
         "saved_changed_at": saved_changed_at,
         "sd_health_restricted_at": sd_health_restricted_at,
+        "pending_reapply": log_policy.get("pending_reapply"),
     }
 
 
@@ -1280,6 +1375,78 @@ def run_cleanup(
 
 
 # ---------------------------------------------------------------------------
+# Log-policy-only mode
+# ---------------------------------------------------------------------------
+
+def _run_log_policy_only(guard_state: dict, now: datetime, started_at: str) -> int:
+    """Lightweight policy-only run: measure storage + SD health + log-level policy.
+
+    Driven by the dedicated autostream_log_policy.timer (every 30 min), fully
+    ungated from the playing/update-lock checks and never touching
+    logrotate/cleanup/diagnostic scans. Uses the same singleton guard
+    lock (nonblocking) as the full daily run so the two never execute
+    concurrently and never race on the state file; if the lock is held this
+    exits 0 quietly (the full run, or another policy tick, already owns it).
+
+    log_policy is read from and written back to the exact same guard-state key
+    ("log_policy") that the full run uses, and only that key (plus this run's
+    own timestamps) is touched in the persisted state -- unrelated guard-state
+    fields (storage history, sd_health, etc.) are left untouched so the two
+    run kinds interleave safely.
+    """
+    guard_fd = _acquire_lock(GUARD_LOCK_PATH, exclusive=True, nonblocking=True)
+    if guard_fd is None:
+        logging.info("storage guard: log-policy-only: another instance is running; exiting")
+        return 0
+
+    actions: list[dict] = []
+    log_policy: dict = dict(guard_state.get("log_policy") or {})
+
+    try:
+        try:
+            storage = measure_storage()
+            disk_state = classify_storage(storage)
+        except Exception as e:
+            logging.error("storage guard: log-policy-only: could not measure storage: %s", e)
+            return 1
+
+        sd_health = read_sdcard_health()
+
+        log_policy = run_log_level_policy(
+            disk_state=disk_state,
+            sd_health=sd_health,
+            guard_state=guard_state,
+            actions=actions,
+            now=now,
+        )
+
+        completed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        state_to_save = dict(guard_state)
+        state_to_save.update({
+            "schema_version": 1,
+            "last_log_policy_run_started_at": started_at,
+            "last_log_policy_run_completed_at": completed_at,
+            "log_policy": log_policy,
+        })
+        save_state(state_to_save)
+
+        logging.info(
+            "storage guard: log-policy-only run complete (%d actions)", len(actions),
+        )
+        return 0
+
+    except Exception as e:
+        logging.error("storage guard: log-policy-only: fatal: %s", e)
+        return 1
+    finally:
+        if guard_fd is not None:
+            try:
+                os.close(guard_fd)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1300,6 +1467,12 @@ def main() -> int:
     log_policy: dict = {}
 
     guard_state = load_state()
+
+    # --log-policy-only: dedicated 30-min timer mode. Runs only
+    # storage-measure + SD-health + run_log_level_policy, ungated from the
+    # playing/update-lock checks and skipping cleanup entirely.
+    if "--log-policy-only" in sys.argv[1:]:
+        return _run_log_policy_only(guard_state, now, started_at)
 
     # 1. Singleton guard lock.
     guard_fd = _acquire_lock(GUARD_LOCK_PATH, exclusive=True, nonblocking=True)
