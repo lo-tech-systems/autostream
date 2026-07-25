@@ -112,7 +112,6 @@ _PROTECTED = [
     ("/api/factory-reset",  "autostream_webui.handle_factory_reset_post"),
     ("/api/settings/mdns-grace-period", "autostream_webui.send_settings_mdns_grace_period_json"),
     ("/api/dial/authorize", "autostream_webui.dispatch_dial_management_post"),
-    ("/api/repeat",         "autostream_webui.send_repeat_post_json"),
 ]
 
 # Public: an unauthenticated request with a valid CSRF token MUST reach the
@@ -122,6 +121,11 @@ _PUBLIC = [
     ("/api/output",          "autostream_webui.handle_output_update"),
     ("/api/output_eq/reset", "autostream_webui.send_output_eq_reset_json"),
     ("/api/service/reset",   "autostream_webui.send_service_reset_json"),
+    # Home-page repeat button: playback action, same sensitivity class as
+    # /api/output's enable/volume -- must work without a PIN session (an
+    # in-memory-only session would otherwise 401 the button for anyone who
+    # hadn't opened the setup pages, and after every autostream restart).
+    ("/api/repeat",          "autostream_webui.send_repeat_post_json"),
 ]
 
 
@@ -160,6 +164,8 @@ class TestPostRouterAuthEnforcement:
 
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.is_commissioning_required",
+                   return_value=False), \
              patch(stub_target) as stub:
             handler.do_POST()
 

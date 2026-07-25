@@ -810,8 +810,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             handle_live_input_gain_update(self, STATE, body_str)
 
         elif path == "/api/repeat":
-            if not AUTH.require_authenticated_if_pin_enabled(self):
-                return
+            # Deliberately NOT auth-gated: the repeat button lives on the
+            # home page, which is public consumer surface (like /api/output's
+            # enable/volume controls just above). Arm/disarm is a playback
+            # action of the same sensitivity class as toggling an output --
+            # requiring a PIN here would make the button 401 for any visitor
+            # who had not opened the (gated) setup pages, and silently after
+            # every autostream restart (in-memory sessions).
             if not body_str:
                 self.send_error(400, "Missing request body")
                 return
