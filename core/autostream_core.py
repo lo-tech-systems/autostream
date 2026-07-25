@@ -18,6 +18,7 @@ import contextlib
 import os
 import json
 import logging
+import math
 import random
 import socket
 import sys
@@ -409,9 +410,22 @@ def _set_owntone_selfheal_state(**fields) -> None:
 
 
 def get_owntone_selfheal_state() -> dict:
-    """Return the latest reconcile/watchdog counters for /api/status passthrough."""
+    """Return the latest reconcile/watchdog counters for /api/status passthrough.
+
+    JSON boundary rule: the watchdog's internal "never restarted" sentinel is
+    float("-inf") (rate limit vacuously satisfied), but -Infinity is NOT
+    valid JSON -- Python's json.dumps emits it anyway (allow_nan defaults to
+    True) and Python's json.loads accepts it back, while every browser's
+    strict JSON.parse rejects the whole payload. Non-finite timestamps are
+    therefore mapped to None here, at the boundary; internal state keeps the
+    -inf sentinel.
+    """
     with _owntone_selfheal_state_lock:
-        return dict(_owntone_selfheal_state)
+        state = dict(_owntone_selfheal_state)
+    ts = state.get("watchdog_last_restart_at")
+    if isinstance(ts, float) and not math.isfinite(ts):
+        state["watchdog_last_restart_at"] = None
+    return state
 
 
 def _replay_origin_input(repeat_status: Optional[dict]) -> Optional[int]:

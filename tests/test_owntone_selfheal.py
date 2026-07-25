@@ -514,3 +514,65 @@ class TestStatusPassthrough:
             "watchdog_restart_count": 1,
             "watchdog_last_restart_at": 99.0,
         }
+
+    def test_never_fired_sentinel_yields_strict_json(self):
+        """Regression: the watchdog's float('-inf') "never restarted"
+        sentinel must not reach the JSON boundary. json.dumps emits
+        -Infinity (invalid JSON) which every browser's JSON.parse rejects
+        wholesale, silently breaking every /api/status consumer in the web
+        UI while all Python-side parsing accepted it."""
+        from autostream_webui_api import send_status_json
+
+        core._set_owntone_selfheal_state(
+            reconcile_fired_count=0, reconcile_last_fired_at=float("-inf"),
+            watchdog_armed=True, watchdog_restart_count=0,
+            watchdog_last_restart_at=float("-inf"),
+        )
+        handler = MagicMock()
+        handler.wfile = MagicMock()
+        sent = {}
+
+        def _wfile_write(data):
+            sent["raw"] = data
+
+        handler.wfile.write.side_effect = _wfile_write
+
+        with patch("autostream_webui_api.get_monitor_levels_dbfs", return_value=[]):
+            send_status_json(handler)
+
+        raw = sent["raw"].decode("utf-8")
+        assert "Infinity" not in raw and "NaN" not in raw
+
+        import json as _json
+
+        def _reject_constant(name):  # strict-parser stand-in for browsers
+            raise AssertionError(f"non-strict JSON constant emitted: {name}")
+
+        body = _json.loads(raw, parse_constant=_reject_constant)
+        assert body["owntone_selfheal"]["watchdog_last_restart_at"] is None
+
+    def test_send_json_sanitizes_unexpected_nonfinite(self):
+        """send_json's allow_nan=False + sanitizing fallback: an unexpected
+        nan/inf from any future producer must yield strict JSON with the
+        offending values nulled, never an -Infinity payload."""
+        from autostream_webui_api import send_json
+
+        handler = MagicMock()
+        handler.wfile = MagicMock()
+        sent = {}
+        handler.wfile.write.side_effect = lambda d: sent.__setitem__("raw", d)
+
+        send_json(handler, 200, {
+            "ok": True,
+            "nested": {"bad": float("inf"), "worse": float("nan"),
+                       "fine": 1.5, "list": [float("-inf"), 2]},
+        })
+
+        raw = sent["raw"].decode("utf-8")
+        assert "Infinity" not in raw and "NaN" not in raw
+        import json as _json
+        body = _json.loads(raw)
+        assert body["nested"]["bad"] is None
+        assert body["nested"]["worse"] is None
+        assert body["nested"]["fine"] == 1.5
+        assert body["nested"]["list"] == [None, 2]

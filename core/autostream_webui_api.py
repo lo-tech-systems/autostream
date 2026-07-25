@@ -171,8 +171,35 @@ def send_browser_api_error(
     send_json(handler, transport_status, payload)
 
 
+def _json_finite(value):
+    """Recursively replace non-finite floats (nan/inf/-inf) with None.
+
+    Fallback sanitizer for send_json(): Python's json.dumps emits NaN /
+    Infinity / -Infinity by default, which strict parsers (every browser's
+    JSON.parse) reject wholesale -- one stray sentinel invalidates the
+    entire payload.
+    """
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(value, dict):
+        return {k: _json_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_finite(v) for v in value]
+    return value
+
+
 def send_json(handler, code: int, payload: dict) -> None:
-    body = json.dumps(payload).encode("utf-8")
+    try:
+        # allow_nan=False makes a non-JSON-representable float a loud
+        # ValueError here instead of a silently-invalid payload that every
+        # browser rejects while every Python client accepts it.
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
+    except ValueError:
+        logging.exception(
+            "send_json: payload contains non-finite floats; sanitizing "
+            "(fix the producer - keys affected are being nulled)"
+        )
+        body = json.dumps(_json_finite(payload), allow_nan=False).encode("utf-8")
     try:
         handler.send_response(code)
         handler.send_header("Content-Type", "application/json; charset=utf-8")
