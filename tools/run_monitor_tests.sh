@@ -40,6 +40,12 @@ g++ -std=c++17 -O2 \
     -lpthread -lasound -lsamplerate -latomic \
     -o "$BUILD_DIR/test_monitor_dsp"
 
+echo "=== Building test_repeat_buffer (header-only, no system libs needed) ==="
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$MONITOR_DIR" \
+    "$TEST_DIR/test_repeat_buffer.cpp" \
+    -o "$BUILD_DIR/test_repeat_buffer"
+
 echo ""
 echo "=== Running test_control_protocol (from repo root) ==="
 (cd "$REPO_ROOT" && "$BUILD_DIR/test_control_protocol")
@@ -51,6 +57,10 @@ echo "=== Running test_monitor_utils ==="
 echo ""
 echo "=== Running test_monitor_dsp ==="
 "$BUILD_DIR/test_monitor_dsp"
+
+echo ""
+echo "=== Running test_repeat_buffer ==="
+"$BUILD_DIR/test_repeat_buffer"
 
 echo ""
 echo "All native monitor tests passed."

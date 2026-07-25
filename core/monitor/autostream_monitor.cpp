@@ -754,6 +754,24 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
     {
         return _monitor.api_stop_output_dump();
     }
+    else if (type == "set_repeat_enabled")
+    {
+        bool enabled = json_get_bool(json_command, "enabled", false);
+        std::string codec = json_get_string(json_command, "codec");
+        return _monitor.api_set_repeat_enabled(enabled, codec);
+    }
+    else if (type == "set_repeat_armed")
+    {
+        bool armed = json_get_bool(json_command, "armed", false);
+        return _monitor.api_set_repeat_armed(armed);
+    }
+#ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
+    else if (type == "debug_dump_repeat_buffer")
+    {
+        std::string path = json_get_string(json_command, "path");
+        return _monitor.api_debug_dump_repeat_buffer(path);
+    }
+#endif
     else
     {
         std::string escaped = json_escape(type.empty() ? json_command : type);
@@ -771,6 +789,7 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
 
 AudioMonitor::AudioMonitor(const std::string& socket_path)
     : _socket_path(socket_path)
+    , _repeat_controller(OUTPUT_RATE, _fifo_mutex, _output_processor)
     , _control_server(*this)
 {
     // Create the two InputChannel objects.  They are not started here;
@@ -782,9 +801,49 @@ AudioMonitor::AudioMonitor(const std::string& socket_path)
             _fifo_writer,
             _fifo_mutex,
             _output_processor,
-            _dump_writer
+            _dump_writer,
+            _repeat_controller
         );
     }
+
+    // Repeat feature: the values ReplayEngine needs to seed its own
+    // TrackGapDetector, snapshotted once at each recording's
+    // notify_capture_started() rather than read live during
+    // replay (the origin InputChannel may itself be stopped by then).
+    _repeat_controller.set_input_params_query([this](int input_index) -> RepeatController::InputParams
+    {
+        RepeatController::InputParams p;
+        InputChannel* ch = get_input(input_index);
+        if (ch)
+        {
+            p.silence_threshold_sample     = ch->silence_threshold_sample();
+            p.track_change_silence_seconds = ch->track_change_silence_seconds();
+        }
+        return p;
+    });
+
+    // Pull-model live DSP parameters -- ReplayEngine queries this every
+    // staging refill (~1 s) throughout a replay session, unlike InputParams
+    // above (snapshotted once at recording start). Returns flat/unity
+    // defaults if the origin input no longer exists (should not happen in
+    // practice: notify_input_stopped() aborts any active replay before an
+    // InputChannel is torn down).
+    _repeat_controller.set_live_dsp_query([this](int input_index) -> RepeatController::LiveDspParams
+    {
+        RepeatController::LiveDspParams p;
+        InputChannel* ch = get_input(input_index);
+        if (ch)
+        {
+            p.gain_linear    = ch->gain_linear();
+            p.eq_bands       = ch->eq_bands();
+            p.eq_sample_rate = ch->eq_sample_rate();
+        }
+        return p;
+    });
+
+    // Starts the recorder and replay worker threads; both park until the
+    // feature is enabled/armed.
+    _repeat_controller.start();
 }
 
 AudioMonitor::~AudioMonitor()
@@ -877,6 +936,10 @@ void AudioMonitor::stop()
     // no new frames will be submitted; the writer thread drains quickly.
     _dump_writer.stop();
 
+    // Stop the repeat feature's recorder worker thread and free any
+    // recording.  Inputs are already stopped so no new blocks are submitted.
+    _repeat_controller.stop();
+
     // Stop the control server (closes the socket).
     _control_server.stop();
 
@@ -937,6 +1000,48 @@ std::string AudioMonitor::api_get_status()
             << "\"dropped_frames\":" << ds.dropped_frames               << "}";
     }
 
+    {
+        // An owntone-hang watchdog signal for the Python side (docs/
+        // AUTOSTREAM-MONITOR.md) -- seconds the CURRENT active FIFO writer
+        // (live path or ReplayEngine, whichever owns the pipe right now) has
+        // been continuously failing/dropping writes. Deliberately picks only
+        // the currently-active writer's counter: the inactive one's value is
+        // stale by construction (see FifoWriter::stalled_seconds()'s and
+        // ReplayEngine::stalled_seconds()'s doc comments) and must never be
+        // surfaced.
+        double fifo_stalled_seconds = _repeat_controller.is_fifo_owned_by_replay()
+            ? _repeat_controller.replay_stalled_seconds()
+            : _fifo_writer.stalled_seconds();
+        oss << ",\"fifo\":{\"stalled_seconds\":" << fifo_stalled_seconds << "}";
+    }
+
+    {
+        RepeatStatus rs = _repeat_controller.get_status();
+        oss << ",\"repeat\":{"
+            << "\"enabled\":"              << (rs.enabled ? "true" : "false") << ","
+            << "\"armed\":"                << (rs.armed   ? "true" : "false") << ","
+            << "\"codec\":\""              << json_escape(rs.codec)           << "\","
+            << "\"max_recording_seconds\":" << rs.max_recording_seconds       << ","
+            << "\"recording\":{"
+            << "\"active\":"          << (rs.recording.active ? "true" : "false") << ","
+            << "\"seconds\":"         << rs.recording.seconds                     << ","
+            << "\"bytes\":"           << rs.recording.bytes                      << ","
+            << "\"truncated_head\":"  << (rs.recording.truncated_head ? "true" : "false") << ","
+            << "\"origin_input\":"    << rs.recording.origin_input               << ","
+            << "\"dropped_frames\":"  << rs.recording.dropped_frames             << ","
+            << "\"unavailable_reason\":"
+            << (rs.recording.unavailable_reason.empty()
+                    ? std::string("null")
+                    : ("\"" + json_escape(rs.recording.unavailable_reason) + "\""))
+            << "},"
+            << "\"replay\":{"
+            << "\"active\":"            << (rs.replay.active ? "true" : "false") << ","
+            << "\"position_seconds\":"  << rs.replay.position_seconds            << ","
+            << "\"duration_seconds\":"  << rs.replay.duration_seconds            << ","
+            << "\"loop_count\":"        << rs.replay.loop_count                  << "}"
+            << "}";
+    }
+
     oss << ",\"inputs\":[";
 
     for (int i = 0; i < NUM_INPUTS; ++i)
@@ -949,6 +1054,16 @@ std::string AudioMonitor::api_get_status()
         std::vector<VuBin> vu = _inputs[i]->get_vu_history();
         uint32_t latest_seq = vu.empty() ? 0u : vu.back().seq;
 
+        // Repeat-feature track-ID routing: while
+        // replay owns the FIFO for this input's recording, track_change_seq
+        // is served from ReplayEngine's own tap (the InputChannel's own
+        // detector is silent -- capture has stopped), not from the
+        // InputChannel's own counter. Python's track-ID scheduling keys on
+        // (input index, track_change_seq) unmodified.
+        uint32_t effective_track_change_seq = s.track_change_seq;
+        if (_repeat_controller.is_replay_sourcing_input(s.index))
+            effective_track_change_seq = _repeat_controller.replay_track_change_seq();
+
         oss << "{"
             << "\"index\":"               << s.index                << ","
             << "\"level_dbfs\":"          << s.level_dbfs            << ","
@@ -960,7 +1075,7 @@ std::string AudioMonitor::api_get_status()
             << "\"effective_peak_dbfs\":" << s.effective_peak_dbfs   << ","
             << "\"started\":"             << (s.is_started   ? "true" : "false") << ","
             << "\"running\":"             << (s.is_running   ? "true" : "false") << ","
-            << "\"track_change_seq\":"    << s.track_change_seq << ","
+            << "\"track_change_seq\":"    << effective_track_change_seq << ","
             << "\"vu_history\":{\"bin_ms\":100,\"latest_seq\":" << latest_seq << ",\"bins\":[";
 
         for (size_t j = 0; j < vu.size(); ++j)
@@ -1203,6 +1318,10 @@ std::string AudioMonitor::api_set_fifo(const std::string& path)
         _fifo_writer.set_path(path);
     }
 
+    // ReplayEngine opens its OWN fd on the same path at replay start;
+    // it needs to know the path independently of FifoWriter.
+    _repeat_controller.set_fifo_path(path);
+
     LOG_INFO("[monitor] FIFO path set to '%s'", path.c_str());
     return "{\"type\":\"ack\",\"command\":\"set_fifo\",\"ok\":true}";
 }
@@ -1274,6 +1393,12 @@ std::string AudioMonitor::api_stop_input(int input_index)
     // because doing so would discard the trim that was learned for the currently
     // active input's session — exactly the bug the fix is designed to prevent.
     const bool was_active = ch->allow_capture_enabled();
+
+    // D12: stop_input on the repeat feature's current origin
+    // input discards the buffer and cancels any active replay, belt and
+    // braces alongside Python's own reload-path disarm+discard. No-op if
+    // this input is not the origin (RepeatController checks internally).
+    _repeat_controller.notify_input_stopped(input_index);
 
     ch->stop();
 
@@ -1552,7 +1677,13 @@ std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
     unsigned max_frames = static_cast<unsigned>(max_seconds) * InputChannel::ID_BUF_RATE;
 
     binary_out->resize(max_frames);
-    unsigned frames = ch->get_id_snapshot(binary_out->data(), max_frames);
+    // Repeat-feature routing: while replay owns
+    // this input's origin recording, serve the snapshot from ReplayEngine's
+    // own 16 kHz tap instead of the (now-silent) InputChannel -- ID_BUF_RATE
+    // matches between the two so max_frames needs no adjustment.
+    unsigned frames = _repeat_controller.is_replay_sourcing_input(input_index)
+        ? _repeat_controller.replay_get_id_snapshot(binary_out->data(), max_frames)
+        : ch->get_id_snapshot(binary_out->data(), max_frames);
     binary_out->resize(frames);
 
     if (frames == 0)
@@ -1636,6 +1767,56 @@ std::string AudioMonitor::api_stop_output_dump()
 }
 
 
+// ── api_set_repeat_enabled ────────────────────────────────────────────────────
+//
+// Repeat feature global enable + codec policy.
+// A "live setter", not a debounced reload: takes effect immediately for the
+// disable/free path and at the next capture session for the enable path
+// (RepeatController::set_enabled()).
+//
+std::string AudioMonitor::api_set_repeat_enabled(bool enabled, const std::string& codec)
+{
+    std::string err = _repeat_controller.set_enabled(enabled, codec);
+    if (!err.empty())
+    {
+        LOG_WARN("[monitor] set_repeat_enabled rejected: %s", err.c_str());
+        std::ostringstream oss;
+        oss << "{\"type\":\"ack\",\"command\":\"set_repeat_enabled\","
+            << "\"ok\":false,\"error\":\"" << json_escape(err) << "\"}";
+        return oss.str();
+    }
+
+    LOG_INFO("[monitor] set_repeat_enabled(enabled=%s, codec=%s) applied",
+             enabled ? "true" : "false", codec.c_str());
+    return "{\"type\":\"ack\",\"command\":\"set_repeat_enabled\",\"ok\":true}";
+}
+
+std::string AudioMonitor::api_set_repeat_armed(bool armed)
+{
+    _repeat_controller.set_armed(armed);
+    LOG_INFO("[monitor] set_repeat_armed(armed=%s) applied", armed ? "true" : "false");
+    return "{\"type\":\"ack\",\"command\":\"set_repeat_armed\",\"ok\":true}";
+}
+
+#ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
+std::string AudioMonitor::api_debug_dump_repeat_buffer(const std::string& path)
+{
+    std::string err = _repeat_controller.debug_dump_buffer(path);
+    if (!err.empty())
+    {
+        std::ostringstream oss;
+        oss << "{\"type\":\"ack\",\"command\":\"debug_dump_repeat_buffer\","
+            << "\"ok\":false,\"error\":\"" << json_escape(err) << "\"}";
+        return oss.str();
+    }
+    std::ostringstream oss;
+    oss << "{\"type\":\"ack\",\"command\":\"debug_dump_repeat_buffer\","
+        << "\"ok\":true,\"path\":\"" << json_escape(path) << "\"}";
+    return oss.str();
+}
+#endif
+
+
 // =============================================================================
 // main
 // =============================================================================
@@ -1673,6 +1854,12 @@ int main(int argc, char* argv[])
         }
         else
         {
+            // Direct fprintf(stderr, ...) is fine here: this runs before
+            // logger_init() (no logging thread exists yet) and the process
+            // exits immediately after, so there is no daemon-lifetime lock
+            // contention risk (all logger_log()/LOG_* call sites during
+            // actual daemon operation route through the bounded queue
+            // instead).
             fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
             return 1;
         }
@@ -1683,6 +1870,8 @@ int main(int argc, char* argv[])
     {
         if (!parse_monitor_log_level(log_level_arg, &log_level))
         {
+            // Also pre-logger_init(); see comment above on the sibling
+            // fprintf(stderr, ...) a few lines up.
             fprintf(stderr, "Invalid --log-level value: %s\n", log_level_arg.c_str());
             return 1;
         }
@@ -1723,7 +1912,7 @@ int main(int argc, char* argv[])
 
     AudioMonitor monitor(socket_path);
     monitor.run();
-    logger_flush_repeats();
+    logger_shutdown();
 
     return 0;
 }

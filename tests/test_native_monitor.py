@@ -151,6 +151,8 @@ def test_monitor_utils(tmp_path):
 
 _have_alsa       = lambda: _have_header("alsa/asoundlib.h")
 _have_samplerate = lambda: _have_header("samplerate.h")
+_have_twolame    = lambda: _have_header("twolame.h")
+_have_mpg123     = lambda: _have_header("mpg123.h")
 
 @SKIP_PLATFORM
 @SKIP_NO_GPP
@@ -202,17 +204,22 @@ def test_monitor_dsp(tmp_path):
 @SKIP_PLATFORM
 @SKIP_NO_GPP
 def test_all_monitor_sources_compile(tmp_path):
-    """All four monitor translation units compile cleanly with C++17."""
+    """All five monitor translation units compile cleanly with C++17."""
     if not _have_alsa():
         pytest.skip("libasound2-dev not installed")
     if not _have_samplerate():
         pytest.skip("libsamplerate0-dev not installed")
+    if not _have_twolame():
+        pytest.skip("libtwolame-dev not installed")
+    if not _have_mpg123():
+        pytest.skip("libmpg123-dev not installed")
 
     sources = [
         MONITOR_DIR / "autostream_monitor.cpp",
         MONITOR_DIR / "autostream_monitor_dsp.cpp",
         MONITOR_DIR / "autostream_monitor_io.cpp",
         MONITOR_DIR / "autostream_monitor_utils.cpp",
+        MONITOR_DIR / "autostream_repeat.cpp",
     ]
     exe = tmp_path / "autostream_monitor_check"
     build = subprocess.run(
@@ -221,6 +228,7 @@ def test_all_monitor_sources_compile(tmp_path):
             "-I", str(MONITOR_DIR),
             *[str(s) for s in sources],
             "-lpthread", "-lasound", "-lsamplerate", "-latomic",
+            "-ltwolame", "-lmpg123",
             "-o", str(exe),
         ],
         capture_output=True,

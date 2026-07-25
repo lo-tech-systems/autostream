@@ -592,7 +592,8 @@ bootstrap_phase() {
   # runs directly via its shebang as a boot/recovery path and must not depend
   # on the application venv being present.
   apt_install git build-essential libffi-dev pkg-config fq \
-    libasound2-dev libsamplerate0-dev python3-dev python3-venv python3-pip python3-flask
+    libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev \
+    python3-dev python3-venv python3-pip python3-flask
 
   apt_install nginx watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
@@ -736,7 +737,8 @@ deploy_phase() {
     "${INSTALL_DIR}/monitor/autostream_monitor_dsp.cpp" \
     "${INSTALL_DIR}/monitor/autostream_monitor_io.cpp" \
     "${INSTALL_DIR}/monitor/autostream_monitor_utils.cpp" \
-    -lasound -lsamplerate -lpthread -latomic
+    "${INSTALL_DIR}/monitor/autostream_repeat.cpp" \
+    -lasound -lsamplerate -lpthread -latomic -ltwolame -lmpg123
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 
   update_progress "Building vibra-mini..." 55

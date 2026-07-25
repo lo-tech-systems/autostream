@@ -20,30 +20,35 @@
 //     document for commands, responses, examples, and integration behavior.
 //
 // Build dependencies:
-//   apt-get install libasound2-dev libsamplerate0-dev
+//   apt-get install libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev
 //   g++ -std=c++17 -O2 -o autostream_monitor \
 //       autostream_monitor.cpp \
 //       autostream_monitor_dsp.cpp \
 //       autostream_monitor_io.cpp \
 //       autostream_monitor_utils.cpp \
-//       -lasound -lsamplerate -lpthread
+//       autostream_repeat.cpp \
+//       -lasound -lsamplerate -lpthread -ltwolame -lmpg123
 // =============================================================================
 
 #pragma once
 
 #include "autostream_monitor_utils.h"
 #include "autostream_track_gap_detector.h"
+#include "autostream_repeat_buffer.h"
 
 #include <string>
 #include <vector>
 #include <array>
+#include <deque>
 #include <set>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <memory>
 #include <cstdint>
+#include <functional>
 #include <sys/time.h>      // struct timeval for SO_RCVTIMEO
 
 #include <alsa/asoundlib.h>
@@ -52,7 +57,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.2.1";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.5";
 
 
 // =============================================================================
@@ -515,12 +520,37 @@ public:
     bool is_open()             const { return _fd >= 0; }
     const std::string& path()  const { return _path; }
 
+    // Seconds this writer has been CONTINUOUSLY failing/dropping
+    // (ENXIO/EAGAIN/EPIPE/etc, see write()) since the last successful write,
+    // for get_status()'s top-level "fifo.stalled_seconds" (docs/AUTOSTREAM-
+    // MONITOR.md) -- an owntone-hang watchdog signal. 0.0 whenever the last
+    // write() succeeded, OR (via reset_stall()) whenever this writer is not
+    // currently the active FIFO writer at all (idle input / replay owns the
+    // pipe) -- a stall streak must never be reported as still-growing during
+    // a period this writer was not even being asked to write.
+    // Single relaxed atomic, no lock: called from the audio process thread's
+    // hot path (write()/the caller's inactive-branch reset) and read from the
+    // control thread (get_status()) -- staleness of a few blocks is fine,
+    // never a correctness issue for a monitoring-only signal.
+    double stalled_seconds() const
+    {
+        double since = _stall_since.load(std::memory_order_relaxed);
+        return since > 0.0 ? (get_monotonic_time() - since) : 0.0;
+    }
+
+    // Cheap: called by InputChannel::process_thread_func() whenever this
+    // input is NOT the active FIFO writer this block (see stalled_seconds()'s
+    // comment). A no-op once already 0.
+    void reset_stall() { _stall_since.store(0.0, std::memory_order_relaxed); }
+
 private:
     bool try_open();    // internal: attempt non-blocking open
+    bool write_impl(const void* data, size_t len);   // the actual write logic; write() wraps it with stall tracking
 
     int         _fd                  = -1;
     std::string _path;
     double      _stall_last_log_time = 0.0;   // for throttling EAGAIN warnings
+    std::atomic<double> _stall_since{0.0};    // monotonic start of the current failure streak; 0 = healthy/idle
 };
 
 
@@ -679,6 +709,810 @@ struct InputChannelStatus
 
 
 // =============================================================================
+// RepeatEncoder
+//
+// Pure abstract interface for the "repeat" feature's recording encode step.
+// Concrete implementations (Mp2Encoder via
+// libtwolame, PcmS16Encoder) are defined entirely inside autostream_repeat.cpp
+// so this shared header stays free of the twolame include -- mirroring the
+// pure/impure split already used for autostream_repeat_buffer.h. Obtain an
+// instance via make_repeat_encoder().
+// =============================================================================
+
+class RepeatEncoder
+{
+public:
+    virtual ~RepeatEncoder() = default;
+
+    // Encodes frames stereo interleaved float samples (frames*2 floats).
+    // Appends encoded bytes to out (out is cleared and resized by the
+    // implementation as needed) and returns the number of bytes appended.
+    // May return 0 if the encoder is still accumulating a partial frame
+    // internally (MP2 tier).
+    virtual size_t encode(const float* interleaved, int frames,
+                          std::vector<uint8_t>& out) = 0;
+
+    // Flushes any remaining buffered/partial output (end of recording).
+    // Appends to out and returns the number of bytes appended.
+    virtual size_t flush(std::vector<uint8_t>& out) = 0;
+
+    // Nominal per-call output granularity used for silence-trim alignment
+    // (SilenceTrimAccountant). Returns 1 when every encode() call
+    // already returns a whole number of self-contained frames (true for both
+    // implementations here), meaning no additional byte-rounding is needed
+    // beyond the per-append-call granularity RepeatController already uses.
+    virtual int frame_bytes() const = 0;
+};
+
+// Constructs the encoder implementation for the given codec tier. Returns
+// nullptr for CodecChoice::Unavailable (callers must not reach this case --
+// RepeatController::notify_capture_started() refuses to begin a session when
+// pick_codec()/the pinned codec resolves to Unavailable).
+std::unique_ptr<RepeatEncoder> make_repeat_encoder(CodecChoice codec, int sample_rate_hz);
+
+
+// =============================================================================
+// RepeatRecorder
+//
+// Tap + low-priority encode worker for the "repeat" feature's recording path.
+// Direct adaptation of OutputDumpWriter's
+// producer/consumer pattern (above): the audio process thread calls the
+// non-blocking submit_block() to copy a drained float block (plus its
+// above-threshold flag) into a bounded SPSC ring; a dedicated worker thread,
+// niced to +10, drains the ring and hands each block to
+// RepeatController::process_recorder_samples() for encoding and buffer
+// append. If the ring fills, the block is dropped and counted -- the audio
+// thread is never delayed.
+//
+// Unlike OutputDumpWriter, RepeatRecorder carries two parallel rings: one for
+// the float sample payload and one for small per-block metadata (frame count
+// + above-threshold flag), since a single submit_block() call corresponds to
+// one whole audio block with one above-threshold flag, not a per-sample flag.
+// =============================================================================
+
+class RepeatController;   // forward declaration; RepeatRecorder only stores a reference
+
+class RepeatRecorder
+{
+public:
+    explicit RepeatRecorder(RepeatController& owner);
+    ~RepeatRecorder();
+
+    // Starts the worker thread. Called once at daemon init (AudioMonitor
+    // construction); the thread runs for the daemon's lifetime, parked on a
+    // condition variable while no blocks are submitted (i.e. while the
+    // feature is disabled or between sessions).
+    void start();
+
+    // Signals the worker thread to exit and joins it. Called at daemon
+    // shutdown (AudioMonitor::stop()).
+    void stop();
+
+    // Non-blocking; called from the audio process thread (already gated by
+    // RepeatController::recording_wanted()). Copies frames*2 interleaved
+    // float samples plus above_threshold into the SPSC rings. Drops and
+    // counts the block if either ring is full.
+    void submit_block(const float* interleaved, int frames, bool above_threshold);
+
+    uint64_t dropped_frames() const { return _dropped_frames.load(std::memory_order_relaxed); }
+
+    // Wakes the worker thread to perform a deferred session start
+    // (RepeatController::perform_pending_start(), which does the meminfo
+    // read + encoder construction) instead of that work happening inline on
+    // the audio thread inside notify_capture_started(). Cheap: sets an
+    // atomic and notifies the same condition variable submit_block() already
+    // uses, so the worker wakes promptly even with the ring otherwise idle.
+    void request_pending_start()
+    {
+        _pending_start_requested.store(true, std::memory_order_release);
+        _cv.notify_one();
+    }
+
+    // Waits up to `timeout` for the SPSC ring to fully drain (i.e. the
+    // worker thread has consumed every block submitted so far), returning
+    // true if it drained within the timeout and false otherwise. Called by
+    // RepeatController::notify_capture_stopped() WITHOUT _repeat_mutex held
+    // (lock order: the worker thread's own drain loop takes _repeat_mutex
+    // per block via RepeatController::process_recorder_samples(), so
+    // waiting here while holding _repeat_mutex would deadlock the worker
+    // against itself via the caller). Uses a DEDICATED condition variable
+    // (_drain_cv), not the worker's own _cv, so a notify here can never
+    // steal a wakeup the worker thread's own wait loop was waiting for (or
+    // vice versa) -- the worker explicitly notifies _drain_cv only when its
+    // drain loop actually empties the ring (worker_thread_func()). Checking
+    // the ring position atomics directly (not a stored "drained" flag)
+    // means a notify racing just before this function starts waiting is
+    // never a lost wakeup -- the predicate is re-evaluated the instant the
+    // wait begins.
+    bool wait_for_drain(std::chrono::milliseconds timeout)
+    {
+        auto ring_empty = [this]()
+        {
+            uint32_t mw = _meta_write_pos.load(std::memory_order_acquire);
+            uint32_t mr = _meta_read_pos.load(std::memory_order_relaxed);
+            return (mw - mr) == 0u;
+        };
+        if (ring_empty())
+            return true;
+        std::unique_lock<std::mutex> lk(_cv_mutex);
+        return _drain_cv.wait_for(lk, timeout, ring_empty);
+    }
+
+    // Best-effort count of audio frames still queued in the sample ring
+    // (submitted but not yet drained by the worker), used to fold into the
+    // dropped-frames counter when wait_for_drain() times out rather than
+    // silently losing that tail. Exact regardless of block-size variation
+    // (derived from the sample-domain ring position delta, not a per-block
+    // frame sum). Never OVER-reports: the worker's own consumption only
+    // ever moves _ring_read_pos forward, so a concurrent drain can only
+    // shrink this value between the read here and the caller acting on it.
+    uint64_t queued_frames() const
+    {
+        uint32_t sw = _ring_write_pos.load(std::memory_order_acquire);
+        uint32_t sr = _ring_read_pos.load(std::memory_order_relaxed);
+        return static_cast<uint64_t>(sw - sr) / 2u;   // interleaved stereo floats -> frames
+    }
+
+    // Folds a drain-timeout's worth of still-queued frames into the
+    // same counter submit_block() itself uses for ring-full drops, so
+    // status.recording.dropped_frames stays an honest total regardless of
+    // which path lost the audio.
+    void add_dropped_frames(uint64_t n)
+    {
+        if (n > 0)
+            _dropped_frames.fetch_add(n, std::memory_order_relaxed);
+    }
+
+private:
+    void worker_thread_func();
+
+    struct BlockMeta
+    {
+        uint32_t frames          = 0;
+        bool     above_threshold = false;
+    };
+
+    RepeatController& _owner;
+
+    // Sample ring: interleaved stereo float samples. 1<<19 floats --
+    // double the dump ring's seconds to give the nice'd encoder headroom.
+    //
+    // AUTOSTREAM_REPEAT_TEST_RING_FLOATS (test-only, must be a power of two)
+    // overrides this to a tiny value so ring-overrun resilience can be
+    // force-tested deterministically -- in practice, MP2/PCM
+    // encoding is cheap enough that even heavy CPU contention rarely
+    // overflows the production-sized ring before the nice(+10) worker gets a
+    // CFS timeslice, so a real overrun needs either a much smaller ring or an
+    // actual thread suspension. Never defined by autostream_install.sh's
+    // production build.
+#ifdef AUTOSTREAM_REPEAT_TEST_RING_FLOATS
+    static constexpr uint32_t RING_FLOATS = AUTOSTREAM_REPEAT_TEST_RING_FLOATS;
+#else
+    static constexpr uint32_t RING_FLOATS = 1u << 19;   // 524288
+#endif
+    static constexpr uint32_t RING_MASK   = RING_FLOATS - 1u;
+    std::vector<float>    _ring;
+    std::atomic<uint32_t> _ring_write_pos{0};   // written only by the audio thread
+    std::atomic<uint32_t> _ring_read_pos{0};    // written only by the worker thread
+
+    // Metadata ring: one entry per submit_block() call. Sized generously
+    // relative to the sample ring's capacity in typical (small) audio blocks.
+    static constexpr uint32_t META_RING_SIZE = 4096;
+    static constexpr uint32_t META_RING_MASK = META_RING_SIZE - 1u;
+    std::vector<BlockMeta> _meta_ring;
+    std::atomic<uint32_t>  _meta_write_pos{0};
+    std::atomic<uint32_t>  _meta_read_pos{0};
+
+    std::thread             _worker_thread;
+    std::mutex               _cv_mutex;
+    std::condition_variable  _cv;
+    // Separate from _cv (see wait_for_drain()'s comment) so a drain
+    // waiter and the worker's own idle wait never steal each other's
+    // notifications; shares _cv_mutex since neither wait needs an
+    // independent mutex.
+    std::condition_variable  _drain_cv;
+
+    std::atomic<bool> _running{false};
+    std::atomic<bool> _stop_requested{false};
+
+    // Set by request_pending_start(), consumed once per outer loop
+    // iteration by worker_thread_func() BEFORE it drains any ring blocks --
+    // so RepeatController::perform_pending_start() (meminfo read + encoder
+    // construction) always runs before this thread hands any accumulated
+    // blocks to RepeatController::process_recorder_samples(), which drops
+    // blocks whenever the encoder is not ready yet.
+    std::atomic<bool> _pending_start_requested{false};
+
+    std::atomic<uint64_t> _dropped_frames{0};   // updated by the audio thread
+};
+
+
+// =============================================================================
+// ReplayEngine
+//
+// Dedicated thread that plays a finished RepeatBuffer recording back into the
+// shared FIFO, looping until stopped. Owns its
+// own BLOCKING O_WRONLY fd on the FIFO, opened at replay start and closed at
+// stop -- distinct from FifoWriter's O_NONBLOCK fd, which the live path keeps
+// using untouched. Never holds RepeatController::_repeat_mutex or
+// AudioMonitor::_fifo_mutex across a write; FifoOwner arbitration is a
+// separate, briefly-locked flag flip (see RepeatController).
+//
+// Pacing: rather than a purely blocking write() (which would hang
+// indefinitely if the reader stops draining without closing), each
+// slice write is preceded by a bounded poll(POLLOUT) so the abort/state flag
+// can be re-checked at least every ~100-200 ms even while nominally "blocked"
+// on the pipe. This still preserves the core pacing property of a literal
+// blocking write() (the kernel only reports writable once the reader has
+// drained space, so the reader's consumption clock still paces replay)
+// while keeping abort latency bounded.
+//
+// Decode: libmpg123 for the MP2 tier (mpg123_open_feed/mpg123_decode, forced
+// output format s16/output_rate/stereo); the PCM tier is a raw copy (no
+// decoder needed). Both tiers funnel through the same slice/fade/write loop.
+//
+// Track ID during replay: embeds its own TrackGapDetector and a
+// 16 kHz mono ID tap, fed from the decoded s16 blocks -- mirroring
+// InputChannel's own members so track-change events and Vibra snapshots work
+// identically while replay owns the FIFO.
+// =============================================================================
+
+class ReplayEngine
+{
+public:
+    explicit ReplayEngine(RepeatController& owner);
+    ~ReplayEngine();
+
+    // Starts the thread, parked until request_start(). Called once at daemon
+    // init (mirrors RepeatRecorder::start()).
+    void start_thread();
+
+    // Signals the thread to exit and joins it. Called at daemon shutdown.
+    void stop_thread();
+
+    // Both the disarm and live-interrupt triggers use the identical 1.5 s
+    // linear fade shape in the slice path below -- only RepeatController's
+    // POST-fade branching differs (autostream_repeat.cpp's single
+    // _pending_action, consulted by on_replay_session_ended_locked_entry()).
+    // request_fade_out() takes no reason parameter: the fade shape itself
+    // never varies by reason, so the distinction the controller cares about
+    // is entirely captured by its own PendingAction, set by the caller
+    // BEFORE calling this.
+    //
+    // All three request_*() calls are called by RepeatController under
+    // _repeat_mutex and only set atomics / notify a condition variable --
+    // they never block, so the caller's lock hold time stays short.
+    void request_start(CodecChoice codec, int sample_rate_hz,
+                        const RepeatBuffer* buffer,
+                        int origin_input,
+                        int origin_silence_threshold_sample,
+                        float origin_track_change_silence_seconds);
+    void request_fade_out();
+    void request_abort();   // hard stop, no fade (disable/reload/stop_input)
+
+    struct Snapshot
+    {
+        bool     active           = false;
+        double   position_seconds = 0.0;
+        double   duration_seconds = 0.0;
+        uint64_t loop_count       = 0;
+    };
+    Snapshot get_snapshot() const;
+
+    // Track-ID plumbing during replay, read by AudioMonitor's
+    // status/get_id_snapshot dispatch when routing the origin input's
+    // entries to the replay tap instead of the (now-silent) InputChannel.
+    uint32_t track_change_seq() const { return _track_change_seq.load(std::memory_order_relaxed); }
+    unsigned get_id_snapshot(int16_t* out, unsigned max_frames) const;
+
+    // Mirrors FifoWriter::stalled_seconds() (see its doc comment)
+    // for the replay path's own fd -- seconds since the last successful
+    // write_slice_blocking() call, 0.0 if healthy or no session has run yet.
+    // Reset to 0 at the start of every run_one_session() so a stall from a
+    // PRIOR session never leaks into this one's reading.
+    double stalled_seconds() const
+    {
+        double since = _stall_since.load(std::memory_order_relaxed);
+        return since > 0.0 ? (get_monotonic_time() - since) : 0.0;
+    }
+
+    static constexpr unsigned ID_BUF_RATE   = 16000;
+    // Matches InputChannel's own ID_BUF_FRAMES (autostream_monitor.h
+    // ~1420) rather than a smaller replay-side value -- there is no reason
+    // for the replay tap's track-ID lookback window to be shorter than the
+    // live tap's; both feed the same Vibra snapshot consumer, and giving
+    // replay a shorter history than live capture had is an inconsistency,
+    // not a deliberate saving (the added cost is ~1 MiB: (1<<19 - 1<<17) * 2
+    // bytes). ~32.8 s of 16 kHz mono s16 lookback.
+    static constexpr unsigned ID_BUF_FRAMES = 1u << 19;   // 524288 ~= 32.8 s
+
+private:
+    void thread_func();
+    void run_one_session();   // called on the replay thread once request_start() wakes it
+
+    // Writes data fully, in poll(POLLOUT)-gated chunks (see class comment
+    // above for why this is not a literal blocking write()). Returns false
+    // on any unrecoverable error (EPIPE/EBADF/POLLERR/POLLHUP) or if an
+    // abort/shutdown was observed while waiting.
+    bool write_slice_blocking(const std::vector<uint8_t>& data);
+
+    // Records a write_slice_blocking() outcome into _stall_since
+    // and returns `ok` unchanged, so call sites can wrap a return statement
+    // with it (see the call sites' comment).
+    bool track_stall_outcome(bool ok);
+
+    enum class Cmd { None, Start, FadeOut, Abort };
+
+    static constexpr int    kPollTimeoutMs = 100;    // abort-check granularity (~100 ms)
+    static constexpr size_t kSliceFrames   = 4096;   // 4096 stereo s16 frames = 16 KiB (8-16 KiB slices)
+    static constexpr double kFadeSeconds   = 1.5;    // disarm fade span
+
+    RepeatController& _owner;
+    std::thread       _thread;
+    std::atomic<bool> _running{false};        // thread alive
+    std::atomic<bool> _stop_requested{false};
+
+    std::mutex               _cmd_mutex;
+    std::condition_variable  _cmd_cv;
+    // Atomic (not just mutex-guarded) because run_one_session() polls/clears
+    // it directly from the replay thread without taking _cmd_mutex, for
+    // low-latency abort/fade-out checks between slices and inside
+    // write_slice_blocking()'s poll loop; request_*()/thread_func() still
+    // take _cmd_mutex around their read-modify-write + condition_variable
+    // signalling so the "wake the idle thread" path has no missed-wakeup race.
+    std::atomic<Cmd>         _pending_cmd{Cmd::None};
+
+    // Parameters captured by request_start(), read only by the replay thread
+    // after it wakes (no concurrent writer while a session is active, since
+    // RepeatController only calls request_start() from Hold/Idle).
+    CodecChoice          _session_codec = CodecChoice::Unavailable;
+    int                  _session_rate_hz = 44100;
+    const RepeatBuffer*  _session_buffer = nullptr;
+    int                  _session_origin_input = 0;
+    int                  _session_silence_threshold_sample = 0;
+    float                _session_track_change_silence_seconds = 1.25f;
+
+    // Live session state, updated by the replay thread, read by
+    // get_snapshot()/track_change_seq()/get_id_snapshot() from other threads.
+    std::atomic<bool>     _active{false};
+    std::atomic<double>   _position_seconds{0.0};
+    std::atomic<double>   _duration_seconds{0.0};
+    std::atomic<uint64_t> _loop_count{0};
+    std::atomic<uint32_t> _track_change_seq{0};
+
+    // ── ID tap (16 kHz mono), mirrors InputChannel's _id_buf/_id_mutex ──────
+    static constexpr unsigned ID_BUF_MASK = ID_BUF_FRAMES - 1u;
+    mutable std::mutex   _id_mutex;
+    std::vector<int16_t> _id_buf;
+    unsigned              _id_write_pos    = 0;
+    unsigned              _id_frames_avail = 0;
+
+    int _fd = -1;   // blocking O_WRONLY fd on the FIFO, owned solely by the replay thread
+
+    // Monotonic start of the current write-stall streak (poll
+    // timeout / EPIPE / etc, see write_slice_blocking()); 0 = healthy. Only
+    // ever written by the replay thread; read from the control thread by
+    // stalled_seconds().
+    std::atomic<double> _stall_since{0.0};
+};
+
+
+// =============================================================================
+// RepeatController
+//
+// State machine + owner of the "repeat" feature's recording buffer.
+// Implements the IDLE/RECORDING/HOLD/REPLAYING/FADING_OUT states plus
+// session-arm and the ReplayEngine, including the live-interrupt crossfade
+// trigger.
+//
+// Locking: all mutable state is protected by _repeat_mutex, EXCEPT the fast
+// atomic mirrors (_enabled_fast/_state_fast/_origin_input_fast) used by
+// recording_wanted(), which the audio thread calls on every processed block
+// and which must therefore never take a lock. recording_wanted() short-
+// circuits on a single relaxed load of _enabled_fast, so the feature is
+// provably inert (one atomic load, no further work) when disabled.
+//
+// Lock-order note: _repeat_mutex may be taken while holding nothing, and is
+// never taken while holding AudioMonitor::_fifo_mutex (the FIFO write path
+// only *reads* the fast atomics, so the two never need to nest).
+// =============================================================================
+
+// "Armed" (the session-arm concept) is NOT a RepeatState value -- it is the
+// orthogonal `_armed` bool tracked separately (a decision made on this flag,
+// not a state of its own; see RepeatController::set_armed()).
+//
+// Pending: a should_capture edge has been observed and _origin_input/
+// _origin_input_fast are already set, but the recorder worker thread has not
+// yet finished the deferred session-start work (meminfo read + encoder
+// construction -- RepeatController::perform_pending_start()). Audio-thread
+// blocks for the origin input ARE admitted (RepeatController::
+// recording_wanted() treats Pending like Recording) and buffered in
+// RepeatRecorder's SPSC ring while this is in flight, so no audio is lost
+// waiting for the worker to run; RepeatController::process_recorder_samples()
+// still requires _state == Recording before it will actually encode a
+// drained block, so anything buffered during Pending is encoded once the
+// worker flips the state, not dropped. Appended at the end (not inserted
+// between Idle and Recording) so existing numeric _state_fast values for
+// Idle/Recording/Hold/Replaying/FadingOut are unchanged.
+enum class RepeatState { Idle, Recording, Hold, Replaying, FadingOut, Pending };
+
+// Which writer currently owns the shared FIFO. Guarded by
+// AudioMonitor::_fifo_mutex: the live process threads already hold that
+// mutex around their write section (autostream_monitor_io.cpp), and
+// ReplayEngine's start/stop transitions take it briefly to flip ownership
+// (never across a blocking write) -- see RepeatController's lock-order note
+// below and the extended _fifo_mutex proof comment in autostream_monitor_io.cpp.
+enum class FifoOwner { Live, Replay };
+
+struct RepeatStatus
+{
+    bool        enabled              = false;
+    bool        armed                = false;    // session arm
+    std::string codec                = "auto";   // configured policy: auto|mp2_160|mp2_192|mp2_224|pcm
+    long        max_recording_seconds = 0;
+
+    struct Recording
+    {
+        bool        active           = false;
+        double      seconds          = 0.0;
+        uint64_t    bytes            = 0;
+        bool        truncated_head   = false;
+        int         origin_input     = 0;
+        uint64_t    dropped_frames   = 0;
+        std::string unavailable_reason;   // empty = none
+    } recording;
+
+    struct Replay
+    {
+        bool     active            = false;
+        double   position_seconds  = 0.0;
+        double   duration_seconds  = 0.0;
+        uint64_t loop_count        = 0;
+    } replay;
+};
+
+class RepeatController
+{
+public:
+    // fifo_mutex: AudioMonitor's shared FIFO mutex. RepeatController never
+    // holds it and _repeat_mutex simultaneously across a blocking call --
+    // only brief, non-nested critical sections in either, per the lock-order
+    // note above and the extended proof comment in autostream_monitor_io.cpp.
+    // output_processor: AudioMonitor's shared OutputProcessor -- replay
+    // runs the live DSP chain, so ReplayEngine calls output_processor.
+    // apply() itself, under _fifo_mutex exactly as the live InputChannel path
+    // does (never across the blocking write), immediately before quantising
+    // to the pipe format.
+    RepeatController(int sample_rate_hz, std::mutex& fifo_mutex, OutputProcessor& output_processor);
+    ~RepeatController();
+
+    // Starts the recorder and replay worker threads. Called once at daemon init.
+    void start();
+
+    // Stops both worker threads and frees any recording. Called at daemon shutdown.
+    void stop();
+
+    // Per-origin-input parameters ReplayEngine needs for its own
+    // TrackGapDetector: the pre-computed silence-threshold sample
+    // and the configured track-change gap duration. Queried once at
+    // notify_capture_started() and snapshotted for the recording/replay's
+    // lifetime -- replay never reaches back into a (possibly stopped)
+    // InputChannel.
+    struct InputParams
+    {
+        int   silence_threshold_sample        = 0;
+        float track_change_silence_seconds    = 1.25f;
+    };
+    void set_input_params_query(std::function<InputParams(int)> query)
+    {
+        _input_params_query = std::move(query);
+    }
+
+    // Live DSP parameters ReplayEngine pulls from the origin
+    // InputChannel each staging refill (~1 s cadence) so gain/EQ changes made
+    // WHILE replay is active are heard, unlike InputParams above (which is a
+    // one-shot snapshot taken at recording start). The origin InputChannel
+    // stays alive and queryable throughout a replay session -- capture
+    // stopping only clears _capturing/_allow_capture, it never destructs or
+    // stop()s the channel -- so reaching back into it here (unlike
+    // InputParams' snapshot-and-hold design) is safe for the whole replay
+    // lifetime; notify_input_stopped() (the one path that DOES tear the
+    // channel down) unconditionally aborts any active replay first.
+    struct LiveDspParams
+    {
+        float gain_linear = 1.0f;
+        std::shared_ptr<const std::vector<EqBand>> eq_bands;
+        float eq_sample_rate = 44100.0f;
+    };
+    void set_live_dsp_query(std::function<LiveDspParams(int)> query)
+    {
+        _live_dsp_query = std::move(query);
+    }
+
+    // Called by ReplayEngine (its own thread); never blocks beyond the cost
+    // of invoking the stored callback (a couple of atomic loads + a
+    // shared_ptr copy on the AudioMonitor side -- see the wiring in
+    // AudioMonitor's constructor). Returns flat/unity defaults if no query
+    // has been installed (never happens in production; defensive for tests).
+    LiveDspParams query_live_dsp_params(int input_index) const
+    {
+        return _live_dsp_query ? _live_dsp_query(input_index) : LiveDspParams{};
+    }
+
+    // Records the current FIFO path so ReplayEngine can open its own
+    // blocking fd on it at replay start. Called by AudioMonitor whenever
+    // api_set_fifo() changes FifoWriter's path.
+    void set_fifo_path(const std::string& path);
+
+    // {"type":"set_repeat_enabled",...} handler. codec_text must be one of
+    // auto|mp2_160|mp2_192|mp2_224|pcm ("" is treated as "auto"). Returns ""
+    // on success or a non-empty error string. Enabling takes effect
+    // at the next capture session (no special-casing needed -- begin_session
+    // only runs at a should_capture edge); disabling frees any recording
+    // (RECORDING or HOLD) immediately, and fades+frees an active replay.
+    std::string set_enabled(bool enabled, const std::string& codec_text);
+
+    // {"type":"set_repeat_armed",...} handler. Setting armed=true
+    // while HOLD (finished recording, idle) starts replay immediately.
+    // Setting armed=false while REPLAYING triggers the 1.5 s disarm fade
+    // (D5); the buffer is retained (HOLD) afterwards and remains re-armable.
+    // Returns "" always (no rejectable inputs beyond the bool itself).
+    std::string set_armed(bool armed);
+
+    // Fast, lock-free check for the audio-thread tap call site. Must stay
+    // cheap: a single relaxed atomic load in the common disabled case.
+    bool recording_wanted(int input_index) const;
+
+    // Fast, lock-free check for the live FIFO-write gate (autostream_monitor_
+    // io.cpp): true while ReplayEngine owns the pipe, meaning the live
+    // process threads must discard their output (detection/metering upstream
+    // of this check keeps running regardless).
+    bool is_fifo_owned_by_replay() const
+    {
+        return _fifo_owner_fast.load(std::memory_order_relaxed) == static_cast<int>(FifoOwner::Replay);
+    }
+
+    // Forwards to ReplayEngine's own stall tracker (see its doc
+    // comment) for get_status()'s top-level "fifo.stalled_seconds" -- only
+    // meaningful while is_fifo_owned_by_replay() is true; the caller picks
+    // between this and FifoWriter::stalled_seconds() based on that flag.
+    double replay_stalled_seconds() const { return _replay.stalled_seconds(); }
+
+    // Forwards to the recorder's non-blocking ring submit. Only meaningful
+    // immediately after recording_wanted(input_index) returned true (exactly
+    // one input is ever the recording's origin at a time).
+    void submit_float_block(const float* interleaved, int frames, bool above_threshold)
+    {
+        _recorder.submit_block(interleaved, frames, above_threshold);
+    }
+
+    // Called by InputChannel::process_thread_func at the should_capture
+    // false->true / true->false edges -- already gated by _allow_capture via
+    // should_capture. notify_capture_stopped()
+    // is where the capture-stop -> replay-start transition happens, atomic
+    // within one _repeat_mutex critical section.
+    // While REPLAYING/FADING_OUT, a should_capture edge on
+    // ANY input (the origin input resuming, or the other input going live)
+    // is treated as the live-interrupt trigger -- transitions to
+    // FADING_OUT(LiveInterrupt) (or upgrades an in-flight Disarm fade to
+    // LiveInterrupt).
+    void notify_capture_started(int input_index);
+    void notify_capture_stopped(int input_index);
+
+    // Called by InputChannel on stop_input() of the current origin input
+    // (reload/teardown path): discards the buffer and cancels any
+    // active replay unconditionally, no fade (D12).
+    void notify_input_stopped(int input_index);
+
+    // Called by RepeatRecorder's worker thread for each drained block.
+    void process_recorder_samples(const float* interleaved, int frames, bool above_threshold);
+
+    // Called by RepeatRecorder's worker thread once per outer loop iteration
+    // (~every 50 ms, regardless of ring activity) so a cached /proc/meminfo
+    // reading stays available for get_status()'s max_recording_seconds even
+    // while enabled-but-idle. Internally throttled to a real file
+    // read at most every kMemCheckIntervalSeconds; a no-op while disabled or
+    // while a session is Recording (that path maintains its own reading).
+    void maybe_refresh_idle_meminfo_cache();
+
+    // Whether replay is currently serving as the source of truth for
+    // input_index's track-ID/snapshot data -- true while REPLAYING
+    // or FADING_OUT and input_index == the recording's origin_input. Used by
+    // AudioMonitor to route get_status()'s per-input track_change_seq and
+    // get_id_snapshot() to the ReplayEngine tap instead of the InputChannel.
+    bool is_replay_sourcing_input(int input_index) const;
+
+    // Replay-routed accessors, valid only when is_replay_sourcing_input()
+    // is true for the same input_index; harmless (return 0-ish defaults)
+    // otherwise since the caller always checks is_replay_sourcing_input() first.
+    uint32_t replay_track_change_seq() const { return _replay.track_change_seq(); }
+    unsigned replay_get_id_snapshot(int16_t* out, unsigned max_frames) const
+    {
+        return _replay.get_id_snapshot(out, max_frames);
+    }
+
+    RepeatStatus get_status() const;
+
+    // ── Callbacks from ReplayEngine (its own thread); each takes _repeat_mutex ──
+    // Fade completed (disarm) or the write path hit a hard error: both
+    // land the controller back in HOLD with the buffer retained, flip
+    // FifoOwner back to Live, and close ReplayEngine's fd. Called by
+    // ReplayEngine's own thread once it has stopped writing.
+    void on_replay_session_ended_locked_entry();
+
+#ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
+    // Test-only: writes the current recording buffer's raw encoded bytes to
+    // path for offline verification (e.g. ffprobe/mpg123 decode of an MP2
+    // capture). Compiled only when AUTOSTREAM_REPEAT_TEST_HOOKS is defined at
+    // build time; autostream_install.sh's production build line never
+    // defines this macro, so it does not exist in the shipped binary.
+    // Returns "" on success or an error.
+    std::string debug_dump_buffer(const std::string& path) const;
+#endif
+
+private:
+    friend class ReplayEngine;
+    friend class RepeatRecorder;   // calls perform_pending_start()
+
+    // Detaches the current recording's chunks (cheap, under
+    // _repeat_mutex) and returns them for the CALLER to destroy after
+    // releasing the lock -- see RepeatBuffer::steal_chunks()'s comment for
+    // the exact declaration-order pattern every call site uses. Caller
+    // holds _repeat_mutex; the returned container must be kept alive (by a
+    // local variable declared BEFORE the caller's lock_guard) until after
+    // the lock is released.
+    std::deque<RepeatBuffer::Chunk> free_recording_locked();
+
+    // Begins replay from a HOLD recording. Caller holds _repeat_mutex. Used
+    // by notify_capture_stopped() (armed at capture-stop), set_armed()
+    // (arm-while-HOLD), and on_replay_session_ended_locked_entry()
+    // (re-arm-during-a-disarm-fade restart).
+    void begin_replay_locked();
+
+    // The deferred second half of a session start, run by
+    // RepeatRecorder's worker thread (never the audio thread) after
+    // notify_capture_started() has already moved _state to Pending and
+    // recorded _origin_input. Does the meminfo read + encoder construction
+    // OUTSIDE _repeat_mutex, then re-validates _state == Pending after
+    // reacquiring it before committing (a stop/disable/teardown may have
+    // superseded the pending start while this ran). On success, flips
+    // _state to Recording; on refusal (insufficient memory / encoder init
+    // failure), flips back to Idle and records _unavailable_reason.
+    void perform_pending_start();
+
+    // Flips FifoOwner under _fifo_mutex (briefly, never nested with
+    // _repeat_mutex held across the flip's own duration beyond this call).
+    void set_fifo_owner(FifoOwner owner);
+
+    // Applies the 64 MiB free-RAM floor using an
+    // ALREADY-FETCHED MemInfo -- this function itself never calls
+    // read_meminfo(), so it is safe to call while holding _repeat_mutex
+    // (the caller is responsible for having done the actual /proc read
+    // outside the lock). Sheds oldest chunks until back above the floor.
+    void apply_memory_guard_locked(const MemInfo& mem);
+
+    // Recording refused below this threshold regardless of pinned
+    // codec (the pinned codec "skips the ladder" for quality-tier selection,
+    // not for this base availability gate).
+    static constexpr long   kMinAvailableMibForStart = 110;
+    static constexpr double kMemCheckIntervalSeconds  = 30.0;
+    static constexpr double kSilenceTrimPadSeconds     = 1.0;
+    // Bounded drain wait in notify_capture_stopped() before finalizing;
+    // on timeout, whatever is still queued is counted into dropped_frames
+    // rather than silently lost.
+    static constexpr int    kDrainTimeoutMs            = 250;
+
+    int _sample_rate_hz;
+    std::mutex& _fifo_mutex;   // AudioMonitor's shared FIFO mutex (reference)
+    OutputProcessor& _output_processor;   // AudioMonitor's shared OutputProcessor
+    std::function<InputParams(int)> _input_params_query;
+    std::function<LiveDspParams(int)> _live_dsp_query;
+    std::string _fifo_path;   // guarded by _repeat_mutex
+
+    RepeatRecorder _recorder;
+    ReplayEngine   _replay;
+
+    mutable std::mutex _repeat_mutex;
+    bool         _enabled_cfg = false;
+    bool         _armed       = false;
+
+    // Single pending post-fade action for ReplayEngine's terminal
+    // handler (on_replay_session_ended_locked_entry()). A single value
+    // (rather than a pair of independent flags) so there is always exactly
+    // one well-defined precedence between a pending discard and a pending
+    // live interrupt.
+    //
+    //   None         -- default. Terminal handler falls to "-> Hold" (a
+    //                    plain disarm fade completing, or a hard write
+    //                    error with nothing else in flight).
+    //   LiveInterrupt -- set by notify_capture_started() when a
+    //                    should_capture edge arrives during
+    //                    Replaying/FadingOut; also the "upgrade"
+    //                    target when a Disarm fade (_pending_action == None,
+    //                    state == FadingOut) is hit by a live interrupt.
+    //                    _pending_interrupt_input records which input
+    //                    triggered it.
+    //   Discard      -- set by set_enabled(false) or notify_input_stopped()
+    //                    while Replaying/FadingOut. ALWAYS overwrites a
+    //                    pending LiveInterrupt ("Discard wins" -- the
+    //                    feature going away, or the origin input being torn
+    //                    down, trumps starting a fresh recording).
+    //                    _pending_interrupt_input is deliberately left
+    //                    untouched (not zeroed) when this overwrite happens,
+    //                    purely so a set_enabled(true) arriving before the
+    //                    terminal handler runs can restore LiveInterrupt --
+    //                    see _pending_interrupt_restorable immediately below
+    //                    and set_enabled()'s implementation.
+    enum class PendingAction { None, Discard, LiveInterrupt };
+    PendingAction _pending_action = PendingAction::None;
+    int           _pending_interrupt_input = 0;
+
+    // True only while _pending_action == Discard AND that Discard
+    // was produced by set_enabled(false) (never notify_input_stopped() --
+    // that is an unconditional teardown of the origin input itself, so
+    // there is nothing sensible to restore) overwriting an in-flight
+    // LiveInterrupt. set_enabled(true) checks this flag: if it is still set
+    // (the fade has not yet reached the terminal handler), it flips
+    // _pending_action back to LiveInterrupt instead of leaving Discard
+    // armed, so the terminal handler starts the new recording for
+    // _pending_interrupt_input after freeing the old buffer. The decided
+    // behaviour is: "disable alone during a live-interrupt fade = discard
+    // and no new session, even though the fade was interrupt-triggered,
+    // UNLESS a re-enable arrives before the fade's terminal handler runs,
+    // in which case the interrupt is honoured after all."
+    bool          _pending_interrupt_restorable = false;
+
+    std::string  _codec_cfg   = "auto";
+    RepeatState  _state       = RepeatState::Idle;
+    int          _origin_input = 0;
+    CodecChoice  _active_codec = CodecChoice::Unavailable;
+    long         _max_recording_seconds = 0;
+    std::string  _unavailable_reason;
+    // Snapshotted at notify_capture_started() via _input_params_query(); held
+    // for the recording/replay's lifetime so ReplayEngine's TrackGapDetector
+    // seed values never need to reach back into a possibly-stopped
+    // InputChannel.
+    int          _origin_silence_threshold_sample     = 0;
+    float        _origin_track_change_silence_seconds = 1.25f;
+#ifdef AUTOSTREAM_REPEAT_TEST_CHUNK_BYTES
+    // Test-only: overrides RepeatBuffer's default 16 MiB chunk size so
+    // memory-guard/sliding-window scenarios can be exercised
+    // in seconds instead of minutes. Only defined by a hand-invoked test
+    // build (never by autostream_install.sh's production g++ line), e.g.
+    // -DAUTOSTREAM_REPEAT_TEST_CHUNK_BYTES=1048576.
+    RepeatBuffer _buffer{static_cast<size_t>(AUTOSTREAM_REPEAT_TEST_CHUNK_BYTES)};
+#else
+    RepeatBuffer _buffer;
+#endif
+    SilenceTrimAccountant           _trim;
+    std::unique_ptr<RepeatEncoder>  _encoder;
+    double       _last_mem_check_time    = 0.0;
+    uint64_t     _dropped_frames_baseline = 0;
+    std::vector<uint8_t> _encode_scratch;
+
+    // Idle-status meminfo cache: maintained ONLY by
+    // maybe_refresh_idle_meminfo_cache(), called from RepeatRecorder's
+    // worker thread -- never read from /proc/meminfo on get_status()'s own
+    // call path. -1 means "no reading yet" (get_status() reports 0/
+    // unavailable in that window, e.g. briefly after daemon startup).
+    long         _cached_available_mib     = -1;
+    double       _last_idle_mem_check_time = 0.0;
+
+    // Fast lock-free mirrors of _enabled_cfg/_state/_origin_input, updated
+    // under _repeat_mutex whenever those change, read without a lock by
+    // recording_wanted() from the audio thread.
+    std::atomic<bool> _enabled_fast{false};
+    std::atomic<int>  _state_fast{0};          // mirrors RepeatState
+    std::atomic<int>  _origin_input_fast{0};
+
+    // Fast mirror of FifoOwner, flipped under _fifo_mutex by set_fifo_owner()
+    // and read (relaxed, no lock) by is_fifo_owned_by_replay() from inside
+    // the live path's own _fifo_mutex critical section.
+    std::atomic<int> _fifo_owner_fast{static_cast<int>(FifoOwner::Live)};
+};
+
+
+// =============================================================================
 // InputChannel
 //
 // Manages one audio input (one ALSA device).  Contains two threads:
@@ -702,11 +1536,15 @@ public:
     //                   on each block after per-input EQ, before float→int16
     // dump_writer:      the AudioMonitor's OutputDumpWriter; submit_block() is
     //                   called after int16 conversion, before the FIFO write
+    // repeat_controller: the AudioMonitor's RepeatController; recording_wanted()/
+    //                   submit_float_block() are called at the float stage,
+    //                   after apply() and before float->int16 conversion
     InputChannel(int               index,
                  FifoWriter&       shared_fifo,
                  std::mutex&       fifo_mutex,
                  OutputProcessor&  output_processor,
-                 OutputDumpWriter& dump_writer);
+                 OutputDumpWriter& dump_writer,
+                 RepeatController& repeat_controller);
 
     ~InputChannel();
 
@@ -753,6 +1591,51 @@ public:
     bool allow_capture_enabled() const
     {
         return _allow_capture.load(std::memory_order_relaxed);
+    }
+
+    // Snapshot of the two configuration values ReplayEngine needs to run its
+    // own TrackGapDetector during replay: the
+    // pre-computed silence-threshold sample (already an atomic on the hot
+    // path) and the configured track-change gap duration. Captured once by
+    // RepeatController::notify_capture_started() at the start of a recording
+    // session and held for the lifetime of that recording/replay, so replay
+    // never needs to reach back into a possibly-stopped InputChannel.
+    int silence_threshold_sample() const
+    {
+        return _silence_threshold_sample.load(std::memory_order_relaxed);
+    }
+
+    float track_change_silence_seconds() const
+    {
+        std::lock_guard<std::mutex> lock(_config_mutex);
+        return _config.track_change_silence_seconds;
+    }
+
+    // ── Live DSP pull-model accessors ────────────────────────────────────────
+    // ReplayEngine polls these (~1 s cadence, once per staging refill) instead
+    // of caching gain/EQ at recording time, so a gain/EQ change made WHILE
+    // replay is playing is heard during the loop, not just during the next
+    // recording. Both are already lock-free/cheap on this input's own hot
+    // path (_gain_linear is a relaxed atomic; EqChain::get_bands() is a
+    // shared_ptr copy under a brief mutex, no allocation) so polling them from
+    // the replay thread costs nothing measurable and never blocks the audio
+    // process thread.  NOTE: this deliberately returns the CURRENT gain, not
+    // the fade-in ramp multiplier (_ramp_frames_remaining) -- replay never
+    // re-plays the live fade-in: only the settled per-input gain applies
+    // during replay.
+    float gain_linear() const
+    {
+        return _gain_linear.load(std::memory_order_relaxed);
+    }
+
+    std::shared_ptr<const std::vector<EqBand>> eq_bands() const
+    {
+        return _eq_chain.get_bands();
+    }
+
+    float eq_sample_rate() const
+    {
+        return _eq_chain.sample_rate();
     }
 
     // Returns true if start() has been called and stop() has not yet completed
@@ -806,6 +1689,7 @@ private:
     std::mutex&       _fifo_mutex;
     OutputProcessor&  _output_processor;
     OutputDumpWriter& _dump_writer;
+    RepeatController& _repeat_controller;
 
     // ── Per-input EQ (owned by this channel) ─────────────────────────────────
     // set_eq() publishes new bands via EqChain::set_bands().  The process thread
@@ -1115,6 +1999,20 @@ public:
     std::string api_start_output_dump(const std::string& path, bool overwrite);
     std::string api_stop_output_dump();
 
+    // Repeat feature: enabled/codec; codec
+    // must be auto|mp2_160|mp2_192|mp2_224|pcm.
+    std::string api_set_repeat_enabled(bool enabled, const std::string& codec);
+
+    // Repeat feature: session arm/disarm.
+    std::string api_set_repeat_armed(bool armed);
+
+#ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
+    // Test-only socket command ({"type":"debug_dump_repeat_buffer","path":...});
+    // see RepeatController::debug_dump_buffer(). Never compiled into the
+    // production build.
+    std::string api_debug_dump_repeat_buffer(const std::string& path);
+#endif
+
 private:
     // Returns a pointer to the InputChannel for the given 1-based index,
     // or nullptr if the index is out of range.
@@ -1132,6 +2030,11 @@ private:
     OutputDumpWriter _dump_writer;
     std::mutex       _fifo_mutex;
     OutputProcessor  _output_processor;
+
+    // Repeat feature controller. Declared before _inputs
+    // so it is fully constructed before the InputChannels that hold a
+    // reference to it (member init order follows declaration order).
+    RepeatController _repeat_controller;
 
     // _inputs[0] is input 1, _inputs[1] is input 2.
     std::array<std::unique_ptr<InputChannel>, NUM_INPUTS> _inputs;

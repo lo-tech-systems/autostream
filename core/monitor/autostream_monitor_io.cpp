@@ -361,6 +361,29 @@ bool FifoWriter::try_open()
 
 bool FifoWriter::write(const void* data, size_t len)
 {
+    bool ok = write_impl(data, len);
+
+    // Cheap stall tracking for get_status()'s top-level
+    // "fifo.stalled_seconds" (single relaxed atomic; no new locks on this
+    // hot path -- see the member's doc comment). Every call here is already
+    // an attempt by an active writer (the caller only calls write() when it
+    // actually has data to deliver), so a false return is unambiguously a
+    // dropped/failed write, and a true return unambiguously clears any
+    // in-progress stall streak.
+    if (ok)
+    {
+        _stall_since.store(0.0, std::memory_order_relaxed);
+    }
+    else if (_stall_since.load(std::memory_order_relaxed) == 0.0)
+    {
+        _stall_since.store(get_monotonic_time(), std::memory_order_relaxed);
+    }
+
+    return ok;
+}
+
+bool FifoWriter::write_impl(const void* data, size_t len)
+{
     if (_fd < 0)
     {
         // Not yet open — try to open now.  If this fails (OwnTone not ready),
@@ -764,12 +787,14 @@ InputChannel::InputChannel(int               index,
                            FifoWriter&       shared_fifo,
                            std::mutex&       fifo_mutex,
                            OutputProcessor&  output_processor,
-                           OutputDumpWriter& dump_writer)
+                           OutputDumpWriter& dump_writer,
+                           RepeatController& repeat_controller)
     : _index(index)
     , _shared_fifo(shared_fifo)
     , _fifo_mutex(fifo_mutex)
     , _output_processor(output_processor)
     , _dump_writer(dump_writer)
+    , _repeat_controller(repeat_controller)
     , _ring_buf(RING_BUF_SAMPLES, 0)
 {
     _status.index = index;
@@ -1446,11 +1471,13 @@ void InputChannel::process_thread_func()
             _prefill_buf.clear();
             _prefill_buf.reserve(static_cast<size_t>(PREFILL_DURATION_FRAMES) * 2);
             _capturing.store(true);
+            _repeat_controller.notify_capture_started(_index);
             LOG_INFO("[input%d] Capture session started (peak=%d, threshold=%d)",
                      _index, peak_sample, silence_threshold_sample);
         }
         else if (!should_capture && _capturing.load())
         {
+            _repeat_controller.notify_capture_stopped(_index);
             _capturing.store(false);
             LOG_INFO("[input%d] Capture session stopped (silence=%.1f s)",
                      _index, now - _last_above_threshold_time);
@@ -1583,6 +1610,65 @@ void InputChannel::process_thread_func()
                     }
                 }
 
+                // ── Repeat-feature recorder tap -- POST-SRC / PRE-GAIN, ────
+                // immediately after the libsamplerate conversion to output
+                // rate and before the gain+fade-in section below.
+                //
+                // The recording must carry NO baked-in gain, fade-in ramp,
+                // input EQ, output EQ/gain, or auto-trim, so that replay can
+                // apply the ORIGIN INPUT'S CURRENT (live-pulled) gain/EQ plus
+                // the shared OutputProcessor at playback time instead of at
+                // record time. This tap point is float_out immediately after
+                // src_process() above and before any of gain/ramp/EQ/
+                // OutputProcessor::apply() run on it -- i.e. exactly the same
+                // stage as the ID tap just above (both explicitly documented
+                // as "post-SRC, pre-gain, pre-EQ" -- see the ID tap's own
+                // comment a few lines up and InputChannel::_id_buf's
+                // class-level comment, "Tap point: post-main-SRC (44100 Hz
+                // stereo float), pre-gain/pre-EQ"), so replay's own
+                // TrackGapDetector/ID tap (fed from the decoded recording,
+                // autostream_repeat.cpp) observes audio at the identical DSP
+                // stage as the live ID tap, without any further change
+                // needed on the replay side.
+                //
+                // The above-threshold flag passed to submit_float_block() is
+                // still the RAW per-block peak test computed at the TOP of
+                // this function (`peak_sample >= silence_threshold_sample`,
+                // ~line 1394/1428 above) on the int16 ring-buffer samples --
+                // i.e. BEFORE even this SRC step, let alone gain. That flag
+                // was already computed upstream of every DSP stage, so it
+                // remains the right "was this block loud" signal for
+                // SilenceTrimAccountant regardless of where the recorder's
+                // audio tap itself sits.
+                //
+                // Pre-fill gap-free capture: this tap fires for every
+                // processed block from the very first block of a capture
+                // session, completely independent of the FIFO pre-fill
+                // accumulator below (`_prefill_frames_remaining`), which only
+                // gates when accumulated int16 samples are flushed to the
+                // OUTPUT fifo, not whether this call site runs. This call
+                // site never sits inside the
+                // `if (_prefill_frames_remaining > 0) ... else ...` branch,
+                // so the recording is gap-free across the pre-fill window.
+                //
+                // Gating: recording_wanted() alone is sufficient here (no
+                // need to also check _allow_capture/is_fifo_owned_by_replay()
+                // as a post-OutputProcessor tap site would need for locality
+                // inside the live-write block) -- it already requires
+                // _state == Recording|Pending AND origin_input == this
+                // input's index, and _origin_input is only ever set to an
+                // input whose should_capture (hence _allow_capture) is true
+                // (RepeatController::notify_capture_started() is only called
+                // from inside `if (_capturing.load() && _src_state)`, itself
+                // gated by should_capture). A live-interrupt fade
+                // (FadingOut) leaves state neither Recording nor Pending, so
+                // the interrupting input's audio is correctly excluded here
+                // without any extra check.
+                if (_repeat_controller.recording_wanted(_index))
+                    _repeat_controller.submit_float_block(
+                        float_out.data(), out_frames,
+                        peak_sample >= silence_threshold_sample);
+
                 // ── Apply pre-amp gain and fade-in ramp ──────────────────
                 // Read gain once so it is consistent across the block.
                 // memory_order_relaxed is fine: a one-block lag is imperceptible.
@@ -1609,7 +1695,32 @@ void InputChannel::process_thread_func()
                         float_out[f * 2]     *= ramp_gain;
                         float_out[f * 2 + 1] *= ramp_gain;
                     }
-                    _ramp_frames_remaining -= frames_in_ramp;
+
+                    // Freeze the ramp's progress while
+                    // ReplayEngine owns the FIFO. This block's write-side
+                    // section below is skipped entirely whenever
+                    // is_fifo_owned_by_replay() is true, so these frames are
+                    // computed but never reach OwnTone -- decrementing the
+                    // counter anyway would let a ~1.5 s live-interrupt fade
+                    // silently exhaust the 1 s ramp before the FIFO ever
+                    // hands over, producing an abrupt full-volume jump the
+                    // instant ownership actually flips to Live instead of the
+                    // intended audible fade-in. Freezing here means the ramp
+                    // (armed fresh at notify_capture_started(), autostream_
+                    // monitor_io.cpp ~1446) has not consumed any of its span
+                    // by the handoff instant, so it plays out cleanly over the
+                    // first RAMP_DURATION_FRAMES of frames actually written
+                    // once is_fifo_owned_by_replay() goes false -- i.e. the
+                    // ramp is effectively re-armed AT the handoff instant
+                    // without needing a separate cross-object re-arm call.
+                    // recording_wanted()/is_fifo_owned_by_replay() are both
+                    // single relaxed atomic loads (cheap, lock-free), so this
+                    // extra read outside _fifo_mutex costs nothing measurable
+                    // and only ever causes a stale-by-one-block read, which is
+                    // harmless here (worst case: one extra block's worth of
+                    // ramp progress either frozen or advanced a moment early).
+                    if (!_repeat_controller.is_fifo_owned_by_replay())
+                        _ramp_frames_remaining -= frames_in_ramp;
 
                     // Apply uniform gain to any remaining frames in this block
                     // (those that fall after the ramp completes).
@@ -1701,19 +1812,117 @@ void InputChannel::process_thread_func()
                 // In both cases the trim is 0 before the incoming input's first
                 // apply() call, and the outgoing input cannot write a negative
                 // trim after the reset.
+                //
+                // ── Extended for the third writer: ReplayEngine ─────────────
+                //
+                // ReplayEngine writes to the SAME FIFO through its OWN
+                // blocking-paced fd (not this FifoWriter instance), so the
+                // two writers never contend for FifoWriter's internal state;
+                // what they DO need to arbitrate is which one is allowed to
+                // put bytes on the wire at all, via the FifoOwner flag
+                // (RepeatController::_fifo_owner_fast):
+                //
+                //   Writer                  | Flips FifoOwner under...
+                //   ------------------------|---------------------------------
+                //   Live (this file)        | never writes it, only reads it
+                //                           | (is_fifo_owned_by_replay()) --
+                //                           | already inside this _fifo_mutex
+                //                           | critical section.
+                //   ReplayEngine start/stop | RepeatController::set_fifo_owner()
+                //                           | (autostream_repeat.cpp), which
+                //                           | takes _fifo_mutex for exactly the
+                //                           | duration of the atomic store --
+                //                           | never across ReplayEngine's own
+                //                           | blocking/poll-gated write().
+                //
+                // Because the flip and this read are both done under
+                // _fifo_mutex, the same two-case argument as auto-trim above
+                // applies: either this thread holds _fifo_mutex when
+                // set_fifo_owner() is called (this iteration's write, if any,
+                // completes on the OLD owner value; the mutex is released,
+                // the owner flips, and this thread's NEXT iteration observes
+                // the new owner before deciding whether to write), or this
+                // thread is waiting when the owner flips (it then reads the
+                // NEW owner immediately). Either way, no iteration of this
+                // loop can observe a stale owner value and no two writers
+                // (live and replay) are ever both actively producing FIFO
+                // bytes at the same instant -- "sequential
+                // fade-out -> fade-in, no sample mixing" holds structurally,
+                // not just by convention.
+                //
+                // Lock order: RepeatController's
+                // _repeat_mutex may be taken while holding nothing, and may
+                // be held while subsequently taking _fifo_mutex (e.g.
+                // RepeatController::set_fifo_owner() called from inside a
+                // _repeat_mutex critical section in begin_replay_locked()/
+                // on_replay_session_ended_locked_entry()/stop()). The REVERSE
+                // order -- taking _repeat_mutex while already holding
+                // _fifo_mutex -- never happens anywhere in this codebase; this
+                // very _fifo_mutex critical section, for instance, only READS
+                // fast atomics (is_fifo_owned_by_replay(), recording_wanted())
+                // and never acquires _repeat_mutex. Neither mutex is ever held
+                // across a blocking/poll-gated write() on either the live path
+                // (this file) or ReplayEngine's own write loop
+                // (autostream_repeat.cpp's write_slice_blocking()).
                 {
                     std::lock_guard<std::mutex> lock(_fifo_mutex);
-                    if (_allow_capture.load(std::memory_order_relaxed))
+                    // Repeat-feature FIFO arbitration (extended proof comment
+                    // above): while ReplayEngine
+                    // owns the pipe, this input's output is discarded here --
+                    // it still runs everything ABOVE this _fifo_mutex block
+                    // (silence detection, track-gap detection, level
+                    // metering) unconditionally, which is what would drive a
+                    // live-interrupt trigger. Only the write-side work
+                    // (EQ/gain/recording-tap/dump-tap/FIFO write) is skipped.
+                    //
+                    // VU-bin peak accumulation below is intentionally
+                    // gated on `capturing_live` ALONE, not
+                    // `!is_fifo_owned_by_replay()` too, so the home-page VU
+                    // meter for the origin input keeps updating throughout a
+                    // replay session (level metering runs unconditionally as
+                    // stated above) while every write-side step (apply()'s
+                    // output EQ/gain/auto-trim, the recorder tap, the int16
+                    // cast, the dump tap, and the actual FIFO write) is still
+                    // skipped whenever replay owns the pipe.
+                    bool capturing_live = _allow_capture.load(std::memory_order_relaxed);
+                    bool live_write_active = capturing_live &&
+                        !_repeat_controller.is_fifo_owned_by_replay();
+
+                    if (live_write_active)
                     {
                         // Apply output EQ, output gain, and auto-trim in-place.
                         // Must precede float→int16 so the clip scan sees the
                         // true overshoot before clamping.
+                        //
+                        // The repeat-feature recorder tap sits POST-SRC/
+                        // PRE-GAIN, well above this _fifo_mutex block -- see
+                        // the tap call site's comment immediately after the
+                        // SRC/ID-tap section above for the full rationale.
                         _output_processor.apply(float_out.data(), out_frames);
+                    }
+                    else
+                    {
+                        // This input is not the active FIFO writer
+                        // right now (not the capturing/allow_capture input,
+                        // or replay owns the pipe) -- FifoWriter::write()
+                        // below will not be called on its behalf this block,
+                        // so any stall streak left over from when it WAS
+                        // active must not linger and be reported as "still
+                        // stalled" during a period that is actually idle for
+                        // this writer. Cheap atomic reset, no lock.
+                        _shared_fifo.reset_stall();
+                    }
 
-                        // ── Accumulate stereo peak for the current VU bin ─────
-                        // Tap here: post all output processing, pre int16 cast.
-                        // Existing playback detection logic (_current_peak_sample,
-                        // _poll_peak_sample) is left completely untouched.
+                    // ── Accumulate stereo peak for the current VU bin ─────
+                    // Tap here: post all output processing (when the write
+                    // path actually ran this block; see live_write_active
+                    // above), pre int16 cast. Gated on capturing_live alone
+                    // so the meter keeps reflecting real input levels
+                    // during replay, not just during ordinary live capture.
+                    // Existing playback detection logic (_current_peak_sample,
+                    // _poll_peak_sample) is left completely untouched.
+                    if (capturing_live)
+                    {
                         for (int f = 0; f < out_frames; ++f)
                         {
                             float l = std::fabs(float_out[f * 2]);
@@ -1721,7 +1930,10 @@ void InputChannel::process_thread_func()
                             if (l > _vu_bin_left_peak)  _vu_bin_left_peak  = l;
                             if (r > _vu_bin_right_peak) _vu_bin_right_peak = r;
                         }
+                    }
 
+                    if (live_write_active)
+                    {
                         // Convert to int16.
                         src_float_to_short_array(float_out.data(), pcm_out.data(),
                                                  out_frames * 2);
