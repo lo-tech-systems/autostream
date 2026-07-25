@@ -22,6 +22,15 @@ from typing import Any, Optional
 
 import requests
 
+# Single seam for HTTP calls to the playback backend (owntone / owntone-mini):
+# tests patch _session.get/_session.put at this one point. Deliberately the
+# plain requests module (a fresh connection per call) rather than a pooled
+# requests.Session -- owntone restarts are routine here (format reconciles
+# trigger them), and a pooled keep-alive socket would turn each restart into a
+# stale-connection error on the next call. The urllib3 connection-setup log
+# lines this would have avoided are already pinned to WARNING in setup_logging.
+_session = requests
+
 
 BACKEND_OWNTONE = "owntone"
 BACKEND_OWNTONE_MINI = "owntone-mini"
@@ -478,7 +487,7 @@ def detect_backend(
             detection.detail or "-",
         )
         if detection.matched:
-            logging.info(
+            logging.debug(
                 "Playback backend detection matched %s for %s",
                 backend_id,
                 base_url,
@@ -552,7 +561,7 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
         path: str,
     ) -> tuple[Optional[dict[str, Any]], Optional[requests.Response], str]:
         try:
-            resp = requests.get(self._url(path), timeout=self._timeout)
+            resp = _session.get(self._url(path), timeout=self._timeout)
         except requests.RequestException as exc:
             return None, None, str(exc)
         if not resp.content:
@@ -593,9 +602,9 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
     ) -> tuple[Optional[dict[str, Any]], Optional[requests.Response], str]:
         try:
             if payload is None:
-                resp = requests.put(self._url(path), timeout=self._timeout)
+                resp = _session.put(self._url(path), timeout=self._timeout)
             else:
-                resp = requests.put(self._url(path), json=payload, timeout=self._timeout)
+                resp = _session.put(self._url(path), json=payload, timeout=self._timeout)
         except requests.RequestException as exc:
             return None, None, str(exc)
 

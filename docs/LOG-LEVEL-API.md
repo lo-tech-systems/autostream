@@ -24,7 +24,7 @@ Returns the current log-level state. Browser callers do not need PIN authenticat
 | Field | Type | Description |
 |---|---|---|
 | `ok` | bool | Always `true` on success |
-| `level` | string | Active level: `spam`, `debug`, `info`, `warning`, `error` |
+| `level` | string | Active level: `fatal`, `log`, `warning`, `info`, `debug`, `spam` |
 | `changed_by` | string | `"user"` or `"system"` |
 | `changed_at` | string or null | UTC ISO-8601 timestamp with `Z` suffix, or `null` if never set |
 
@@ -40,7 +40,7 @@ Sets the active log level. Accepted from two caller classes with different authe
 { "level": "debug" }
 ```
 
-Valid levels (case-insensitive): `spam`, `debug`, `info`, `warning`, `error`.
+Valid levels (case-insensitive): `fatal`, `log`, `warning`, `info`, `debug`, `spam`.
 
 Only the `level` field is accepted. Any other field causes a 400 error.
 

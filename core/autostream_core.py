@@ -1267,6 +1267,23 @@ def _install_signal_handlers() -> None:
 
 _live_platform_log_level = normalize_log_level(DEFAULT_LOG_LEVEL)
 
+# Third-party libraries that are noisy at DEBUG (connection-pool churn,
+# per-request lines) but rarely useful outside deep diagnostics. Pinned to
+# WARNING unless the platform level is "spam".
+_THIRD_PARTY_NOISY = ("urllib3", "urllib3.connectionpool", "requests")
+
+
+def _pin_third_party_loggers(normalized_level: str) -> None:
+    """Cap noisy third-party loggers independently of the platform level.
+
+    Kept at WARNING even when the platform is at DEBUG, since urllib3/requests
+    debug output dominates DEBUG captures without adding diagnostic value.
+    Only relaxed to DEBUG at "spam", the deep-diagnostic tier.
+    """
+    lib_level = logging.DEBUG if normalized_level == "spam" else logging.WARNING
+    for name in _THIRD_PARTY_NOISY:
+        logging.getLogger(name).setLevel(lib_level)
+
 
 def setup_logging(log_file: str, log_level: str) -> None:
     global _live_platform_log_level
@@ -1303,6 +1320,7 @@ def setup_logging(log_file: str, log_level: str) -> None:
     import atexit
     atexit.register(listener.stop)
     _live_platform_log_level = normalized
+    _pin_third_party_loggers(normalized)
 
 
 def update_live_log_level(log_level: str) -> str:
@@ -1318,6 +1336,7 @@ def update_live_log_level(log_level: str) -> str:
         except Exception:
             pass
     _live_platform_log_level = normalized
+    _pin_third_party_loggers(normalized)
     return normalized
 
 
@@ -1777,7 +1796,7 @@ class MonitorClient:
             s.settimeout(self.COMMAND_TIMEOUT)
             self._sock = s
             self._recv_buf = b""
-            logging.info("MonitorClient: connected to %s", self._socket_path)
+            logging.debug("MonitorClient: connected to %s", self._socket_path)
             return True
         except OSError as e:
             logging.error("MonitorClient: connect failed: %s", e)

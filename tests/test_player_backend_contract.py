@@ -2,7 +2,7 @@
 
 Tests the registry, detection flow, output normalization, and both
 OwnToneBackend and OwnToneMiniBackend against the same normalized contract.
-Uses request fakes (patched requests.get/put) rather than mocking backend methods.
+Uses request fakes (patched _session.get/put — the shared requests.Session) rather than mocking backend methods.
 """
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ class TestDetectionOrder:
                 return _resp(json_data=settings_for_full)
             return _resp(status=404, content=b"")
 
-        with patch("autostream_players.requests.get", side_effect=fake_get):
+        with patch("autostream_players._session.get", side_effect=fake_get):
             ap.ensure_builtin_backends_registered()
             backend, detections = ap.detect_backend("http://localhost:3689")
 
@@ -122,7 +122,7 @@ class TestDetectionOrder:
         """Mini backend matches when product_name == 'owntone-mini'."""
         config_mini = {"version": "1.0", "product_name": "owntone-mini"}
 
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(json_data=config_mini)):
             ap.ensure_builtin_backends_registered()
             backend, detections = ap.detect_backend("http://localhost:3689")
@@ -139,7 +139,7 @@ class TestDetectionOrder:
                 return _resp(json_data=settings_no_category)
             return _resp(json_data=config_no_match)
 
-        with patch("autostream_players.requests.get", side_effect=fake_get):
+        with patch("autostream_players._session.get", side_effect=fake_get):
             ap.ensure_builtin_backends_registered()
             backend, detections = ap.detect_backend("http://localhost:3689")
 
@@ -207,7 +207,7 @@ class TestOwnToneDetection:
     def test_mini_matches_on_product_name(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
         config = {"version": "2.0", "product_name": "owntone-mini"}
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(json_data=config)):
             result = b.detect()
         assert result.matched is True
@@ -217,7 +217,7 @@ class TestOwnToneDetection:
     def test_mini_no_match_without_product_name(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
         config = {"version": "28.9"}
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(json_data=config)):
             result = b.detect()
         assert result.matched is False
@@ -227,7 +227,7 @@ class TestOwnToneDetection:
         config = {"version": "28.9"}
         settings = {"categories": [{"name": "misc", "options": []}]}
         responses = [_resp(json_data=config), _resp(json_data=settings)]
-        with patch("autostream_players.requests.get", side_effect=responses):
+        with patch("autostream_players._session.get", side_effect=responses):
             result = b.detect()
         assert result.matched is True
         assert result.version == "28.9"
@@ -237,13 +237,13 @@ class TestOwnToneDetection:
         config = {"version": "28.9"}
         settings = {"other": "value"}
         responses = [_resp(json_data=config), _resp(json_data=settings)]
-        with patch("autostream_players.requests.get", side_effect=responses):
+        with patch("autostream_players._session.get", side_effect=responses):
             result = b.detect()
         assert result.matched is False
 
     def test_network_error_returns_unmatched(self):
         b = OwnToneBackend(base_url="http://localhost:3689")
-        with patch("autostream_players.requests.get", side_effect=_req_exc()):
+        with patch("autostream_players._session.get", side_effect=_req_exc()):
             result = b.detect()
         assert result.matched is False
 
@@ -284,7 +284,7 @@ class TestGetJsonErrorHandling:
 
     def test_network_error_returns_error_string(self):
         b = self._b()
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    side_effect=_req_exc()):
             payload, resp, err = b._get_json("/api/test")
         assert payload is None
@@ -293,7 +293,7 @@ class TestGetJsonErrorHandling:
 
     def test_invalid_json_returns_error(self):
         b = self._b()
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(raise_for_json=True)):
             payload, resp, err = b._get_json("/api/test")
         assert payload is None
@@ -303,7 +303,7 @@ class TestGetJsonErrorHandling:
         b = self._b()
         r = _resp()
         r.json.return_value = [1, 2, 3]
-        with patch("autostream_players.requests.get", return_value=r):
+        with patch("autostream_players._session.get", return_value=r):
             payload, resp, err = b._get_json("/api/test")
         assert payload is None
         assert err != ""
@@ -311,7 +311,7 @@ class TestGetJsonErrorHandling:
     def test_empty_body_returns_empty_dict(self):
         b = self._b()
         r = _resp(content=b"")
-        with patch("autostream_players.requests.get", return_value=r):
+        with patch("autostream_players._session.get", return_value=r):
             payload, resp, err = b._get_json("/api/test")
         assert payload == {}
         assert err == ""
@@ -328,7 +328,7 @@ class TestPutOutputFields:
     def test_success_204(self):
         b = self._b()
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players._session.put", return_value=r):
             result = b._put_output_fields("abc", {"selected": True},
                                           allow_pin_required=True)
         assert result.ok is True
@@ -337,7 +337,7 @@ class TestPutOutputFields:
         b = self._b()
         r = _resp(status=400, content=b"pin required")
         r.text = "pin required"
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players._session.put", return_value=r):
             result = b._put_output_fields("abc", {"selected": True},
                                           allow_pin_required=True)
         assert result.ok is False
@@ -347,7 +347,7 @@ class TestPutOutputFields:
         b = self._b()
         r = _resp(status=400, content=b"bad pin")
         r.text = "bad pin"
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players._session.put", return_value=r):
             result = b._put_output_fields("abc", {"pin": "0000"},
                                           allow_pin_invalid=True)
         assert result.ok is False
@@ -357,7 +357,7 @@ class TestPutOutputFields:
         b = self._b()
         r = _resp(status=503, content=b'{"error":"encoder_capacity"}')
         r.text = '{"error":"encoder_capacity"}'
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players._session.put", return_value=r):
             result = b._put_output_fields("abc", {"selected": True})
         assert result.ok is False
         assert result.error_code == "encoder_capacity"
@@ -366,7 +366,7 @@ class TestPutOutputFields:
         b = self._b()
         r = _resp(status=503, content=b"upstream unavailable")
         r.text = "upstream unavailable"
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players._session.put", return_value=r):
             result = b._put_output_fields("abc", {"selected": True})
         assert result.ok is False
         assert result.error_code == "http_error"
@@ -379,7 +379,7 @@ class TestPutOutputFields:
 
     def test_network_error_returns_request_failed(self):
         b = self._b()
-        with patch("autostream_players.requests.put",
+        with patch("autostream_players._session.put",
                    side_effect=_req_exc()):
             result = b._put_output_fields("abc", {"selected": True})
         assert result.ok is False
@@ -394,7 +394,7 @@ class TestMiniListOutputs:
     def test_success(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
         payload = {"outputs": [{"id": "1", "name": "Speaker", "volume": 50, "selected": True}]}
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(json_data=payload)):
             result = b.list_outputs()
         assert result.ok is True
@@ -405,14 +405,14 @@ class TestMiniListOutputs:
     def test_network_error_returns_failure(self):
         import requests as rq
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    side_effect=rq.RequestException("refused")):
             result = b.list_outputs()
         assert result.ok is False
 
     def test_non_200_returns_failure(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(status=503)):
             result = b.list_outputs()
         assert result.ok is False
@@ -458,7 +458,7 @@ _OUTPUT_PAYLOAD = {
 class TestListOutputsContract:
     def test_success_returns_ok_with_outputs(self, backend):
         payload = {"outputs": [_OUTPUT_PAYLOAD]}
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(json_data=payload)):
             result = backend.list_outputs()
         assert result.ok is True
@@ -469,20 +469,20 @@ class TestListOutputsContract:
         assert out.offset_ms == 100
 
     def test_network_error_returns_failure(self, backend):
-        with patch("autostream_players.requests.get", side_effect=_req_exc()):
+        with patch("autostream_players._session.get", side_effect=_req_exc()):
             result = backend.list_outputs()
         assert result.ok is False
         assert result.error_code in ("request_failed", "http_error", "")
 
     def test_http_error_returns_failure(self, backend):
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(status=503)):
             result = backend.list_outputs()
         assert result.ok is False
 
     def test_empty_outputs_list_returns_ok(self, backend):
         payload = {"outputs": []}
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(json_data=payload)):
             result = backend.list_outputs()
         assert result.ok is True
@@ -491,7 +491,7 @@ class TestListOutputsContract:
 
 class TestGetOutputContract:
     def test_success_returns_ok_with_output(self, backend):
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_resp(json_data=_OUTPUT_PAYLOAD)):
             result = backend.get_output("1")
         assert result.ok is True
@@ -505,13 +505,13 @@ class TestGetOutputContract:
     def test_404_returns_not_found(self, backend):
         r = _resp(status=404)
         r.content = b""
-        with patch("autostream_players.requests.get", return_value=r):
+        with patch("autostream_players._session.get", return_value=r):
             result = backend.get_output("99")
         assert result.ok is False
         assert result.error_code == "not_found"
 
     def test_network_error_returns_failure(self, backend):
-        with patch("autostream_players.requests.get", side_effect=_req_exc()):
+        with patch("autostream_players._session.get", side_effect=_req_exc()):
             result = backend.get_output("1")
         assert result.ok is False
 
@@ -519,12 +519,12 @@ class TestGetOutputContract:
 class TestStopContract:
     def test_stop_success_returns_ok(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r):
+        with patch("autostream_players._session.put", return_value=r):
             result = backend.stop()
         assert result.ok is True
 
     def test_stop_network_error_returns_failure(self, backend):
-        with patch("autostream_players.requests.put", side_effect=_req_exc()):
+        with patch("autostream_players._session.put", side_effect=_req_exc()):
             result = backend.stop()
         assert result.ok is False
 
@@ -532,7 +532,7 @@ class TestStopContract:
 class TestSetVolumeContract:
     def test_volume_clamped_to_100(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_output_volume("1", 9999)
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
@@ -540,7 +540,7 @@ class TestSetVolumeContract:
 
     def test_volume_clamped_to_0(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_output_volume("1", -100)
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
@@ -548,7 +548,7 @@ class TestSetVolumeContract:
 
     def test_non_numeric_volume_defaults_to_0(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_output_volume("1", "bad")
         assert result.ok is True
         assert mock_put.call_args[1].get("json") == {"volume": 0}
@@ -557,7 +557,7 @@ class TestSetVolumeContract:
 class TestSetOffsetContract:
     def test_offset_clamped_high(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_output_offset("1", 99999)
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
@@ -565,7 +565,7 @@ class TestSetOffsetContract:
 
     def test_offset_clamped_low(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_output_offset("1", -99999)
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
@@ -580,7 +580,7 @@ class TestSubmitPinContract:
 
     def test_valid_pin_sends_exact_payload(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.submit_output_pin("1", "1234")
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
@@ -590,7 +590,7 @@ class TestSubmitPinContract:
 class TestSetOutputEnabledContract:
     def test_enable_sends_selected_true(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_output_enabled("1", True)
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
@@ -598,7 +598,7 @@ class TestSetOutputEnabledContract:
 
     def test_disable_sends_selected_false(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_output_enabled("1", False)
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
@@ -608,7 +608,7 @@ class TestSetOutputEnabledContract:
 class TestSetSelectedOutputsContract:
     def test_selected_outputs_sends_ids_list(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_selected_outputs(["id1", "id2"])
         assert result.ok is True
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/set"
@@ -616,7 +616,7 @@ class TestSetSelectedOutputsContract:
 
     def test_empty_ids_sends_empty_list(self, backend):
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             result = backend.set_selected_outputs([])
         assert result.ok is True
         assert mock_put.call_args[1].get("json") == {"outputs": []}
@@ -630,7 +630,7 @@ class TestMiniOutputModeTranslation:
     def test_airplay1_translated_to_raop(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             b.update_output("1", enabled=True, mode="airplay1")
         call_json = mock_put.call_args[1].get("json")
         assert call_json.get("mode") == "raop"
@@ -638,7 +638,7 @@ class TestMiniOutputModeTranslation:
     def test_airplay2_passed_through(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             b.update_output("1", enabled=True, mode="airplay2")
         call_json = mock_put.call_args[1].get("json")
         assert call_json.get("mode") == "airplay2"
@@ -646,7 +646,7 @@ class TestMiniOutputModeTranslation:
     def test_auto_passed_through(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             b.update_output("1", enabled=True, mode="auto")
         call_json = mock_put.call_args[1].get("json")
         assert call_json.get("mode") == "auto"
@@ -654,7 +654,7 @@ class TestMiniOutputModeTranslation:
     def test_unknown_mode_omitted_from_payload(self):
         b = OwnToneMiniBackend(base_url="http://localhost:3689")
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             b.update_output("1", enabled=True, mode="legacy")
         call_json = mock_put.call_args[1].get("json")
         assert "mode" not in call_json
@@ -662,7 +662,7 @@ class TestMiniOutputModeTranslation:
     def test_full_owntone_ignores_mode(self):
         b = OwnToneBackend(base_url="http://localhost:3689")
         r = _resp(status=204, content=b"")
-        with patch("autostream_players.requests.put", return_value=r) as mock_put:
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
             b.update_output("1", enabled=True, mode="airplay1")
         call_json = mock_put.call_args[1].get("json")
         assert "mode" not in call_json
@@ -687,7 +687,7 @@ class TestMiniGetSetting:
         b = self._backend()
         payload = {"value": "/tmp/audio.fifo"}
         r = _resp(json_data=payload)
-        with patch("autostream_players.requests.get", return_value=r):
+        with patch("autostream_players._session.get", return_value=r):
             result = b.get_setting(ap.SETTING_PIPE_PATH)
         assert result.ok is True
         assert result.value == "/tmp/audio.fifo"
@@ -696,7 +696,7 @@ class TestMiniGetSetting:
         b = self._backend()
         r = _resp(status=404)
         r.content = b""
-        with patch("autostream_players.requests.get", return_value=r):
+        with patch("autostream_players._session.get", return_value=r):
             result = b.get_setting(ap.SETTING_PIPE_PATH)
         assert result.ok is False
         assert result.unsupported is True
@@ -705,7 +705,7 @@ class TestMiniGetSetting:
         b = self._backend()
         payload = {"value": 1}  # numeric true from server
         r = _resp(json_data=payload)
-        with patch("autostream_players.requests.get", return_value=r):
+        with patch("autostream_players._session.get", return_value=r):
             result = b.get_setting(ap.SETTING_PIPE_AUTOSTART)
         assert result.ok is True
         assert result.value is True
@@ -714,7 +714,7 @@ class TestMiniGetSetting:
         b = self._backend()
         payload = {"value": 2250}
         r = _resp(json_data=payload)
-        with patch("autostream_players.requests.get", return_value=r):
+        with patch("autostream_players._session.get", return_value=r):
             result = b.get_setting(ap.SETTING_START_BUFFER_MS)
         assert result.ok is True
         assert result.value == 2250
@@ -736,7 +736,7 @@ class TestMiniSaveSetting:
 
     def test_bool_sent_as_bool_to_backend(self):
         b = self._backend()
-        with patch("autostream_players.requests.put",
+        with patch("autostream_players._session.put",
                    return_value=self._ok_resp()) as mock_put:
             b.save_setting(ap.SETTING_PIPE_AUTOSTART, True)
         call_json = mock_put.call_args[1].get("json")
@@ -744,7 +744,7 @@ class TestMiniSaveSetting:
 
     def test_int_clamped_to_min(self):
         b = self._backend()
-        with patch("autostream_players.requests.put",
+        with patch("autostream_players._session.put",
                    return_value=self._ok_resp()) as mock_put:
             b.save_setting(ap.SETTING_START_BUFFER_MS, 0)  # below min (300)
         call_json = mock_put.call_args[1].get("json")
@@ -752,7 +752,7 @@ class TestMiniSaveSetting:
 
     def test_int_clamped_to_max(self):
         b = self._backend()
-        with patch("autostream_players.requests.put",
+        with patch("autostream_players._session.put",
                    return_value=self._ok_resp()) as mock_put:
             b.save_setting(ap.SETTING_START_BUFFER_MS, 99999)  # above max (3500)
         call_json = mock_put.call_args[1].get("json")
@@ -760,7 +760,7 @@ class TestMiniSaveSetting:
 
     def test_device_removal_grace_period_clamped_to_min(self):
         b = self._backend()
-        with patch("autostream_players.requests.put",
+        with patch("autostream_players._session.put",
                    return_value=self._ok_resp()) as mock_put:
             b.save_setting(ap.SETTING_DEVICE_REMOVAL_GRACE_PERIOD, 0)  # below min (60 s)
         call_json = mock_put.call_args[1].get("json")
@@ -768,7 +768,7 @@ class TestMiniSaveSetting:
 
     def test_device_removal_grace_period_clamped_to_max(self):
         b = self._backend()
-        with patch("autostream_players.requests.put",
+        with patch("autostream_players._session.put",
                    return_value=self._ok_resp()) as mock_put:
             b.save_setting(ap.SETTING_DEVICE_REMOVAL_GRACE_PERIOD, 99999)
         call_json = mock_put.call_args[1].get("json")
@@ -776,7 +776,7 @@ class TestMiniSaveSetting:
 
     def test_restart_required_propagated(self):
         b = self._backend()
-        with patch("autostream_players.requests.put",
+        with patch("autostream_players._session.put",
                    return_value=self._ok_resp(restart_required=True)):
             result = b.save_setting(ap.SETTING_START_BUFFER_MS, 300)
         assert result.ok is True
@@ -784,7 +784,7 @@ class TestMiniSaveSetting:
 
     def test_network_error_returns_failure(self):
         b = self._backend()
-        with patch("autostream_players.requests.put", side_effect=_req_exc()):
+        with patch("autostream_players._session.put", side_effect=_req_exc()):
             result = b.save_setting(ap.SETTING_PIPE_PATH, "/tmp/audio.fifo")
         assert result.ok is False
         assert result.error_code == "request_failed"

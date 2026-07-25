@@ -125,7 +125,8 @@ class TestSaveState:
 class TestParseConfigDefaults:
     def test_empty_dict_returns_defaults(self):
         cfg = c.parse_config({})
-        assert cfg.general.log_level == "info"
+        # Resting log level defaults to "warning".
+        assert cfg.general.log_level == "warning"
         assert cfg.general.silence_seconds == 30
         assert cfg.general.fifo_path == c.FIFO_PATH
         assert cfg.owntone.base_url == "http://localhost:3689"
@@ -217,9 +218,11 @@ class TestParseConfigDefaults:
         cfg = c.parse_config({"general": {"log_level": "DEBUG"}})
         assert cfg.general.log_level == "debug"
 
-    def test_log_level_invalid_falls_back_to_info(self):
+    def test_log_level_invalid_falls_back_to_default(self):
+        # Default resting level is "warning".
         cfg = c.parse_config({"general": {"log_level": "verbose"}})
-        assert cfg.general.log_level == "info"
+        assert cfg.general.log_level == "warning"
+        assert cfg.general.log_level == c.DEFAULT_LOG_LEVEL
 
 
 class TestParseConfigAudio:

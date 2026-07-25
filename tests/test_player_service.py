@@ -53,12 +53,12 @@ class TestResolveBackendCache:
         _clear_cache()
 
     def test_cache_hit_returns_same_backend_id(self):
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_mini_config_resp()):
             r1 = svc.resolve_backend("http://localhost:3689")
 
         # Second call should hit cache without making network requests
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    side_effect=Exception("must not call")) as mock_get:
             r2 = svc.resolve_backend("http://localhost:3689")
             mock_get.assert_not_called()
@@ -66,7 +66,7 @@ class TestResolveBackendCache:
         assert r1.backend_id == r2.backend_id
 
     def test_different_urls_have_isolated_cache_entries(self):
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_mini_config_resp()):
             r_a = svc.resolve_backend("http://host-a:3689")
 
@@ -80,7 +80,7 @@ class TestResolveBackendCache:
             _resp(json_data=config_full),   # full probe /api/config
             _resp(json_data=settings_full), # full probe /api/settings
         ]
-        with patch("autostream_players.requests.get", side_effect=responses):
+        with patch("autostream_players._session.get", side_effect=responses):
             r_b = svc.resolve_backend("http://host-b:3689")
 
         assert r_a.backend_id == ap.BACKEND_OWNTONE_MINI
@@ -89,7 +89,7 @@ class TestResolveBackendCache:
     def test_failed_detection_falls_back_to_owntone(self):
         import requests as rq
         exc = rq.RequestException("refused")
-        with patch("autostream_players.requests.get", side_effect=exc):
+        with patch("autostream_players._session.get", side_effect=exc):
             result = svc.resolve_backend("http://down:3689")
         assert result.backend_id == ap.BACKEND_OWNTONE
 
@@ -100,12 +100,12 @@ class TestResolveBackendCache:
         backend identity."""
         import requests as rq
         exc = rq.RequestException("refused")
-        with patch("autostream_players.requests.get", side_effect=exc):
+        with patch("autostream_players._session.get", side_effect=exc):
             result = svc.resolve_backend("http://down:3689")
         assert result.detection_confident is False
 
     def test_positive_match_is_confident(self):
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_mini_config_resp()):
             result = svc.resolve_backend("http://localhost:3689")
         assert result.backend_id == ap.BACKEND_OWNTONE_MINI
@@ -114,7 +114,7 @@ class TestResolveBackendCache:
     def test_cache_hit_preserves_confidence_flag(self):
         import requests as rq
         exc = rq.RequestException("refused")
-        with patch("autostream_players.requests.get", side_effect=exc):
+        with patch("autostream_players._session.get", side_effect=exc):
             r1 = svc.resolve_backend("http://down:3689")
         assert r1.detection_confident is False
 
@@ -124,7 +124,7 @@ class TestResolveBackendCache:
         assert r2.detection_confident is False
 
     def test_cache_ttl_expired_triggers_re_probe(self):
-        with patch("autostream_players.requests.get",
+        with patch("autostream_players._session.get",
                    return_value=_mini_config_resp()):
             svc.resolve_backend("http://localhost:3689")
 
@@ -142,7 +142,7 @@ class TestResolveBackendCache:
             probe_called["n"] += 1
             return _mini_config_resp()
 
-        with patch("autostream_players.requests.get", side_effect=counting_get):
+        with patch("autostream_players._session.get", side_effect=counting_get):
             svc.resolve_backend("http://localhost:3689")
 
         assert probe_called["n"] > 0

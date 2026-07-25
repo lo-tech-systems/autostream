@@ -149,6 +149,20 @@ _REMOTE_PAGE_PREFIX = "/a/"
 _APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 _FEDERATION_BODY_MAX = 4096  # bytes
 
+# High-frequency polling endpoints. Access-log lines for these are demoted to
+# DEBUG (see ConfigWebHandler.log_message) since they dominate the resting
+# INFO log volume without carrying diagnostic value.
+_POLLING_LOG_PATHS = (
+    "/api/status",
+    "/api/audio/status",
+    "/api/owntone/outputs_state",
+    "/api/owntone/outputs",
+    "/api/appliances",
+    "/api/network/status",
+    "/api/playing-status",
+    "/api/log-level",
+)
+
 
 def _settings_save_barrier(state) -> bool:
     """Flush dirty SettingsStore to disk before a destructive operation.
@@ -302,7 +316,18 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         logging.error("%s - - [%s] %s", self._get_client_ip(), self.log_date_time_string(), msg)
 
     def log_message(self, format, *args):
-        logging.info("%s - - [%s] %s", self._get_client_ip(), self.log_date_time_string(), format % args)
+        line = "%s - - [%s] %s" % (self._get_client_ip(), self.log_date_time_string(), format % args)
+        path = getattr(self, "path", "") or ""
+        method = getattr(self, "command", "") or ""
+        # /api/log-level is only high-frequency on GET (UI polling); a PUT is a
+        # rare state change worth keeping visible at INFO.
+        is_polling = any(path.startswith(p) for p in _POLLING_LOG_PATHS) and (
+            not path.startswith("/api/log-level") or method == "GET"
+        )
+        if is_polling:
+            logging.debug(line)
+        else:
+            logging.info(line)
 
     def end_headers(self) -> None:
         """

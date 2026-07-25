@@ -34,7 +34,7 @@ STATE_PATH = "/var/lib/autostream/autostream-state.json"
 # /run/autostream-pipes is created at boot by system/tmpfiles.d/autostream.conf.
 FIFO_PATH = "/run/autostream-pipes/autostream.fifo"
 
-DEFAULT_LOG_LEVEL = "info"
+DEFAULT_LOG_LEVEL = "warning"
 VALID_LOG_LEVELS = ("fatal", "log", "warning", "info", "debug", "spam")
 DEFAULT_MDNS_GRACE_PERIOD_SECONDS = 120
 MIN_MDNS_GRACE_PERIOD_SECONDS = 60

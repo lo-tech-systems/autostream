@@ -40,7 +40,7 @@ from autostream_sysutils import run_admin_cmd
 
 
 _CACHE_LOCK = threading.Lock()
-_DETECTION_CACHE_SECONDS = 5.0
+_DETECTION_CACHE_SECONDS = 120.0
 # (cached_at_monotonic, backend_id, version, last_seen_at, detection_confident)
 _DETECTION_CACHE: dict[str, tuple[float, str, str, float, bool]] = {}
 LOG = logging.getLogger(__name__)
