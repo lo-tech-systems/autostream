@@ -572,6 +572,17 @@ handle_pin() {
 # Install phases
 #############################################
 
+# ensure_build_deps: build/runtime packages needed by deploy_phase's compiles
+# (monitor g++, venv). Idempotent (apt_install skips present packages) and
+# called from BOTH bootstrap_phase (fresh install) and run_update: an
+# appliance installed before a dependency joined this list must acquire it on
+# its next update, or deploy_phase's monitor build fails with missing headers.
+ensure_build_deps() {
+  apt_install git build-essential libffi-dev pkg-config fq \
+    libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev \
+    python3-dev python3-venv python3-pip python3-flask
+}
+
 # bootstrap_phase: first-time-only setup — users, groups, directories, base packages.
 bootstrap_phase() {
   info "=== Phase: bootstrap ==="
@@ -591,9 +602,7 @@ bootstrap_phase() {
   # Note: Flask is installed at system level because autostream_wifi_watcher
   # runs directly via its shebang as a boot/recovery path and must not depend
   # on the application venv being present.
-  apt_install git build-essential libffi-dev pkg-config fq \
-    libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev \
-    python3-dev python3-venv python3-pip python3-flask
+  ensure_build_deps
 
   apt_install nginx watchdog dnsmasq fcgiwrap avahi-daemon avahi-utils
 
@@ -1300,6 +1309,11 @@ run_update() {
 
   info "Setting working directory to original user's home: ${ORIG_HOME}"
   cd "${ORIG_HOME}"
+
+  # Dependencies that joined the list since this appliance was installed
+  # must be acquired before deploy_phase compiles against them (idempotent;
+  # see ensure_build_deps above).
+  ensure_build_deps
 
   fetch_phase
   sdmon_phase
