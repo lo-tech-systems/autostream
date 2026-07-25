@@ -1132,6 +1132,28 @@ This ordering matters:
   `accept()`. Without this, a SIGTERM stop hangs until systemd escalates to
   SIGKILL after its stop timeout.
 
+### `--test-pin-src-ratio` (test-only)
+
+Requires `--test-hooks`; rejected at startup otherwise. Pins the SRC ratio to
+the nominal value published at capture start (exactly 1.0 on a loopback whose
+capture rate equals the 44100 Hz output rate), disabling rate-drift
+correction entirely. This makes the whole audio pipeline a pure function of
+the input samples, which golden-reference byte-compare testing depends on —
+without it, the `RateEstimator`'s timing-adaptive ratio makes output
+non-deterministic run-to-run (first divergence roughly 0.5 s into otherwise
+identical runs). Never set in production: drift correction is a core product
+function.
+
+### Test-hooks device-string relaxation
+
+When the daemon is started with `--test-hooks`, `configure_input` accepts any
+non-empty ALSA device string, not just `hw:*`. Golden-reference runs capture
+from a named ALSA `file`-plugin PCM (which replays a fixed raw file into the
+capture stream, making content position-locked and byte-deterministic); such
+a PCM cannot be spelled with an `hw:` prefix because ALSA's resolver
+intercepts `hw:*` before consulting named `pcm.*` definitions. Production
+(no `--test-hooks`) keeps the strict `hw:*` validation.
+
 ### Atomics and lock-freedom
 
 The daemon uses `std::atomic<double>` in hot paths: the `RateEstimator`'s

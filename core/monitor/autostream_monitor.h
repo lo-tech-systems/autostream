@@ -58,7 +58,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.8";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.10";
 
 
 // =============================================================================
@@ -366,6 +366,12 @@ private:
 // libsamplerate conversion ratio so that long-term clock drift between the
 // source device and the Pi is corrected without audible pitch artefacts.
 // =============================================================================
+
+// Test-only (--test-pin-src-ratio, gated behind --test-hooks): pins the SRC
+// ratio to the nominal reset() value so golden-reference runs are
+// byte-deterministic. Defined in autostream_monitor_dsp.cpp (see the full
+// rationale there); written once by main() before any thread starts.
+extern bool g_test_pin_src_ratio;
 
 class RateEstimator
 {

@@ -1154,16 +1154,24 @@ std::string AudioMonitor::api_get_status()
 // ── Validation helpers ────────────────────────────────────────────────────────
 
 // Return an error string describing why cfg is invalid, or "" if it is valid.
-static std::string validate_input_config(const InputConfig& cfg)
+static std::string validate_input_config(const InputConfig& cfg,
+                                          bool allow_any_device)
 {
     // Device name must begin with "hw:" and be at least 5 characters
     // (e.g. "hw:1,0" or "hw:CARD=CODEC,DEV=0"). Full hw:* validation is
     // left to ALSA, which will return a clear error when open() is called.
+    //
+    // allow_any_device (--test-hooks only): golden-reference runs capture
+    // from a named ALSA `file`-plugin PCM (e.g. "golden_file" in
+    // ~/.asoundrc), which cannot be spelled with an hw: prefix -- ALSA's
+    // resolver intercepts hw:* as the built-in hw plugin before consulting
+    // named pcm.* definitions. Production keeps the strict check.
     if (cfg.alsa_device.empty())
         return "device is empty";
 
-    if (cfg.alsa_device.size() < 5
-        || cfg.alsa_device.substr(0, 3) != "hw:")
+    if (!allow_any_device
+        && (cfg.alsa_device.size() < 5
+            || cfg.alsa_device.substr(0, 3) != "hw:"))
     {
         return "device must be in ALSA hw:* format (e.g. hw:1,0)";
     }
@@ -1327,7 +1335,8 @@ std::string AudioMonitor::api_configure_input(int input_index, const InputConfig
     }
 
     // Validate all supplied values before touching any channel state.
-    std::string validation_error = validate_input_config(cfg);
+    std::string validation_error =
+        validate_input_config(cfg, /*allow_any_device=*/_test_hooks_enabled);
     if (!validation_error.empty())
     {
         LOG_WARN("[monitor] configure_input(%d) rejected: %s",
@@ -1891,6 +1900,7 @@ int main(int argc, char* argv[])
     std::string socket_path = "/tmp/autostream_monitor.sock";
     std::string log_level_arg;
     bool test_hooks_enabled = false;
+    bool pin_src_ratio      = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1910,6 +1920,15 @@ int main(int argc, char* argv[])
             // dev/test harnesses running a standalone daemon instance.
             test_hooks_enabled = true;
         }
+        else if (strcmp(argv[i], "--test-pin-src-ratio") == 0)
+        {
+            // Test-only (requires --test-hooks, enforced below): pins the SRC
+            // ratio to the nominal value so the audio pipeline is a pure
+            // function of the input samples -- the determinism the
+            // golden-reference byte-compare gate depends on (see
+            // g_test_pin_src_ratio in autostream_monitor_dsp.cpp).
+            pin_src_ratio = true;
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
             fprintf(stdout,
@@ -1919,6 +1938,10 @@ int main(int argc, char* argv[])
                     "  --log-level L   Override log level: warn|warning|info|debug|spam\n"
                     "  --test-hooks    Enable test-only socket commands (debug_fail_input).\n"
                     "                  Never used in production; dev/test harnesses only.\n"
+                    "  --test-pin-src-ratio\n"
+                    "                  Pin the SRC ratio to nominal (disables rate-drift\n"
+                    "                  correction) for deterministic golden-reference runs.\n"
+                    "                  Requires --test-hooks. Never used in production.\n"
                     "\n"
                     "The monitor starts with no audio device connected.\n"
                     "Configure it via the socket using JSON commands.\n"
@@ -1986,6 +2009,26 @@ int main(int argc, char* argv[])
 
     if (test_hooks_enabled)
         LOG_WARN("[monitor] --test-hooks enabled: debug_fail_input is active (dev/test only)");
+
+    if (pin_src_ratio)
+    {
+        if (!test_hooks_enabled)
+        {
+            fprintf(stderr, "--test-pin-src-ratio requires --test-hooks\n");
+            // The async logger thread is already running by this point;
+            // shut it down before returning or its joinable
+            // std::thread member terminates the process from a global
+            // destructor.
+            logger_shutdown();
+            return 1;
+        }
+        // Set before AudioMonitor exists (so before any thread can call
+        // RateEstimator::feed()); read-only from here on.
+        g_test_pin_src_ratio = true;
+        LOG_WARN("[monitor] --test-pin-src-ratio enabled: rate-drift correction "
+                 "is OFF, SRC ratio pinned to nominal (golden-run determinism, "
+                 "dev/test only)");
+    }
 
     AudioMonitor monitor(socket_path, test_hooks_enabled);
     monitor.run();

@@ -410,11 +410,27 @@ void RateEstimator::reset(int input_rate, int output_rate)
     _published_rate.store(static_cast<double>(input_rate), std::memory_order_relaxed);
 }
 
+// Test-only (--test-pin-src-ratio, gated behind --test-hooks): when set,
+// feed() never publishes a measured rate, so the SRC ratio stays at the
+// nominal value reset() published (exactly 1.0 on a loopback where the
+// capture rate equals OUTPUT_RATE). This makes the entire audio pipeline a
+// pure function of the input samples — the property golden-reference
+// byte-compare testing depends on. Written once by main() before any
+// thread starts, read-only
+// thereafter (plain bool is sufficient; no concurrent writes exist).
+// Never set in production: rate-drift correction is a core product function.
+bool g_test_pin_src_ratio = false;
+
 void RateEstimator::feed(int n_frames, double wall_time)
 {
     // This method is called only from the capture thread.
     // All reads and writes to _smoothed_rate, _window_* and _initialised are
     // safe without locks.  Only the final atomic stores cross thread boundaries.
+
+    // Test-only determinism pin: leave the reset()-published nominal ratio in
+    // place and do no measurement at all (see g_test_pin_src_ratio above).
+    if (g_test_pin_src_ratio)
+        return;
 
     if (!_initialised)
     {
