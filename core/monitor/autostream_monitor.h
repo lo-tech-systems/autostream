@@ -61,7 +61,7 @@
 // Build identifier compiled into the monitor binary and reported via the
 // socket API.  This is intentionally maintained in source so an older running
 // binary can be detected after an update if the monitor rebuild failed.
-inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.18";
+inline constexpr char AUTOSTREAM_MONITOR_BUILD[] = "0.5.20";
 
 
 // =============================================================================
@@ -648,8 +648,10 @@ public:
     ~OutputDumpWriter();
 
     // Open path and begin recording.  Writes a 44-byte WAV header built from
-    // AudioMonitor::OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS via the shared
-    // build_wav_header() helper (sizes are placeholders, patched on stop()).
+    // AudioMonitor::output_rate_hz()/output_bits_per_sample()/output_channels()
+    // (reads the process-wide g_output_format descriptor) via the shared
+    // build_wav_header() helper (sizes are placeholders, patched on
+    // stop()).
     // Returns "" on success or a non-empty error string on failure.  Must
     // not be called while a dump is already active.
     // overwrite: if false, rejects the call when a file already exists at path.
@@ -2603,6 +2605,22 @@ private:
     // subsequent blocks are written directly.
     // _prefill_frames_remaining counts down from PREFILL_DURATION_FRAMES to 0;
     // while it is > 0 we are in the accumulation phase.
+    //
+    // This buffer STAYS int32_t in BOTH output modes -- it is filled straight from
+    // _pcm_out (deliver_output() always produces that conversion, needed for
+    // the dump tap regardless of wire mode; see that method's dataflow
+    // note), so accumulation itself needs no per-mode branch at all. Only
+    // the FLUSH write is mode-conditional: native writes the accumulated
+    // int32 bytes as-is; compatible narrows them to int16 first (a plain
+    // >>16, the exact inverse of widen_s16_to_s32()) into a small on-stack
+    // scratch at the flush call site. This was chosen over the alternative
+    // of accumulating wire-format bytes directly because the per-sample
+    // float source for each already-buffered block is gone by the time a
+    // later block triggers the flush -- narrowing the retained int32 values
+    // is the only option there, and reusing that same narrowing for the
+    // whole flushed buffer (rather than also branching the accumulation
+    // step) is the smaller, safer diff that leaves this member's type and
+    // the insert() call in deliver_output() completely untouched.
     int                  _prefill_frames_remaining{0};
     std::vector<int32_t> _prefill_buf;
 
@@ -2623,6 +2641,20 @@ private:
     std::vector<float>   _float_in;  // interleaved float, sized MAX_FRAMES*2
     std::vector<float>   _float_out; // post-SRC float, sized MAX_SRC_OUTPUT*2
     std::vector<int32_t> _pcm_out;   // final int32, sized MAX_SRC_OUTPUT*2
+
+    // Compatible-mode wire scratch.
+    // _pcm_out (above) is ALWAYS produced every block regardless of output
+    // mode -- it feeds the dump tap (OutputDumpWriter::submit_block(), which
+    // documents the internal 32-bit representation in both modes, see the
+    // dump-tap dataflow note at deliver_output()'s definition) and, in
+    // native mode, the wire itself. _pcm_out16 is the ADDITIONAL conversion
+    // deliver_output() only performs when g_output_format.mode ==
+    // OutputFormatMode::Compatible: float -> int16 via
+    // src_float_to_short_array (the pre-48k-migration path resurrected),
+    // written to the FIFO instead of _pcm_out in that mode. Sized once at
+    // process_thread_func() entry alongside _pcm_out, same MAX_SRC_OUTPUT*2
+    // bound, so this introduces no new allocation on the hot path.
+    std::vector<int16_t> _pcm_out16; // compatible-mode final int16, sized MAX_SRC_OUTPUT*2
 
     // Ramp/pre-fill DURATIONS (as opposed to _ramp_frames_remaining /
     // _prefill_frames_remaining above, which count down within a session).
@@ -2824,28 +2856,38 @@ public:
     explicit AudioMonitor(const std::string& socket_path, bool test_hooks_enabled = false);
     ~AudioMonitor();
 
-    static constexpr int output_rate_hz() { return OUTPUT_RATE; }
+    // These read the process-wide g_output_format descriptor
+    // (autostream_monitor_utils.h), so they cannot be constexpr (the
+    // descriptor is a runtime value, set once in main() -- see
+    // g_output_format's doc comment for the publication argument). The
+    // names and call sites are unchanged: every existing
+    // AudioMonitor::output_rate_hz()-style call across the codebase keeps
+    // compiling and behaving identically under the default (native) mode.
+    static int output_rate_hz() { return g_output_format.rate; }
 
     // Bits per sample / channel count for the output pipe wire format.
     // Public for the same reason as output_rate_hz()/output_bytes_per_frame()
     // above: OutputDumpWriter's WAV header builder and both FIFO
     // writers need these without becoming AudioMonitor members.
-    static constexpr int output_bits_per_sample() { return OUTPUT_BITS; }
-    static constexpr int output_channels() { return OUTPUT_CHANNELS; }
+    static int output_bits_per_sample() { return g_output_format.bits; }
+    static int output_channels() { return g_output_format.channels; }
 
     // Bytes per interleaved output frame (all channels), derived from the
-    // OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS descriptor. Public (unlike the
-    // descriptor constants themselves) so both FIFO writers -- the live
+    // g_output_format descriptor. Public so both FIFO writers -- the live
     // path's FifoWriter (InputChannel, this file) and the replay path's
     // ReplayEngine (autostream_repeat.cpp), neither of which is a member of
     // AudioMonitor -- share this single source of truth for the wire
     // format's byte width, instead of hand-rolling
-    // "* 2 * sizeof(int16_t)"-style literals that silently go stale if
-    // OUTPUT_BITS changes.
-    static constexpr int output_bytes_per_frame()
+    // "* 2 * sizeof(int16_t)"-style literals that silently go stale if the
+    // format changes.
+    static int output_bytes_per_frame()
     {
-        return OUTPUT_CHANNELS * (OUTPUT_BITS / 8);
+        return g_output_format.bytes_per_frame();
     }
+
+    // The active output format's mode tag ("native"/"compatible" via
+    // output_format_mode_name()), for status JSON's "output_format" field.
+    static OutputFormatMode output_format_mode() { return g_output_format.mode; }
 
     // Test-only: true when the daemon was launched with --test-hooks.
     bool test_hooks_enabled() const { return _test_hooks_enabled; }
@@ -2953,24 +2995,17 @@ private:
 
     static constexpr int NUM_INPUTS  = 2;
 
-    // Output pipe format descriptor. This is the compile-time source of
-    // truth for the FIFO wire format written by both FifoWriter (live path)
-    // and ReplayEngine (replay path, see autostream_repeat.cpp). Reported at
-    // runtime via api_get_status() so the Python layer reads it instead of
-    // assuming it.
-    //
-    // OUTPUT_RATE is 48000 and OUTPUT_BITS is 32; the two are independently
-    // revertable descriptor fields. output_bytes_per_frame() itself lives in
-    // the public section above (next to output_rate_hz()) so both live-path
-    // (FifoWriter) and
-    // replay-path (ReplayEngine, autostream_repeat.cpp) FIFO writers, which
-    // are not members of AudioMonitor, can call it as the one shared source
-    // of truth instead of hand-rolling "* 2 * sizeof(int16_t)"-style
-    // literals -- being a member function, it still has access to these
-    // private constants regardless of declaration order within the class.
-    static constexpr int OUTPUT_RATE     = 48000;
-    static constexpr int OUTPUT_BITS     = 32;
-    static constexpr int OUTPUT_CHANNELS = 2;
+    // Output pipe format descriptor. The process-wide g_output_format
+    // runtime descriptor (autostream_monitor_utils.h) is set once in
+    // main() before any thread starts, so the same binary can run in either
+    // native (default, 48000/32/2) or compatible (--compatible, 44100/16/2)
+    // mode. This class no longer holds its own copy of the format --
+    // output_rate_hz() and friends above simply read g_output_format
+    // directly. It is the FIFO wire format written by both FifoWriter (live
+    // path) and ReplayEngine (replay path, see autostream_repeat.cpp);
+    // reported at runtime via api_get_status() so the Python layer reads it
+    // instead of assuming it -- including "output_format" so the mode
+    // itself, not just the numbers, is legible.
 
     // Back-off interval (seconds) before retrying a failed auto-restart.
     static constexpr double RESTART_BACKOFF_SECONDS = 5.0;

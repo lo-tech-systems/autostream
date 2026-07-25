@@ -801,7 +801,7 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
 AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabled)
     : _socket_path(socket_path)
     , _test_hooks_enabled(test_hooks_enabled)
-    , _repeat_controller(OUTPUT_RATE, _fifo_mutex, _output_processor)
+    , _repeat_controller(g_output_format.rate, _fifo_mutex, _output_processor)
     , _control_server(*this)
 {
     // Create the two InputChannel objects.  They are not started here;
@@ -1042,12 +1042,14 @@ std::string AudioMonitor::api_get_status()
         << json_escape(AUTOSTREAM_MONITOR_BUILD)
         << "\",\"log_level\":\""
         << protocol_log_level_name(logger_get_level())
-        // 48k/32-bit IPC design decision 3: the output pipe format is
-        // compile-time but reported at runtime so the Python layer reads it
-        // instead of assuming it (see docs/AUTOSTREAM-MONITOR.md).
-        << "\",\"output_rate\":"                << OUTPUT_RATE
-        << ",\"output_bits\":"                  << OUTPUT_BITS
-        << ",\"output_channels\":"              << OUTPUT_CHANNELS
+        // The output pipe format is set at startup (native by default, or
+        // 44100/16/2 via --compatible) and reported at runtime so the
+        // Python layer reads it instead of assuming it (see
+        // docs/AUTOSTREAM-MONITOR.md).
+        << "\",\"output_rate\":"                << g_output_format.rate
+        << ",\"output_bits\":"                  << g_output_format.bits
+        << ",\"output_channels\":"              << g_output_format.channels
+        << ",\"output_format\":\""              << output_format_mode_name(g_output_format.mode) << "\""
         << ",\"output_clip_dbfs\":"           << clip_dbfs
         << ",\"output_gain_db\":"               << gs.manual_gain_db
         << ",\"output_auto_trim_enabled\":"     << (gs.auto_trim_enabled ? "true" : "false")
@@ -1597,7 +1599,7 @@ std::string AudioMonitor::api_set_output_eq(const std::vector<EqBand>& bands)
         return oss.str();
     }
 
-    _output_processor.set_bands(bands, static_cast<float>(OUTPUT_RATE));
+    _output_processor.set_bands(bands, static_cast<float>(g_output_format.rate));
     LOG_DEBUG("[monitor] set_output_eq applied %zu band(s)", bands.size());
 
     std::ostringstream oss;
@@ -1907,6 +1909,7 @@ int main(int argc, char* argv[])
     std::string log_level_arg;
     bool test_hooks_enabled = false;
     bool pin_src_ratio      = false;
+    bool compatible_mode    = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1935,10 +1938,19 @@ int main(int argc, char* argv[])
             // g_test_pin_src_ratio in autostream_monitor_dsp.cpp).
             pin_src_ratio = true;
         }
+        else if (strcmp(argv[i], "--compatible") == 0)
+        {
+            // Output the FIFO as 44.1kHz/16-bit stereo instead of the native
+            // 48kHz/32-bit stream, for stock (upstream) OwnTone and pre-48k
+            // owntone-mini builds whose named-pipe input is fixed at 44.1k/16
+            // and cannot be reconfigured. See the interim-guard note below.
+            compatible_mode = true;
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
             fprintf(stdout,
                     "Usage: autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]\n"
+                    "                           [--compatible]\n"
                     "\n"
                     "  --socket PATH   Unix domain socket path (default: %s)\n"
                     "  --log-level L   Override log level: warn|warning|info|debug|spam\n"
@@ -1948,6 +1960,10 @@ int main(int argc, char* argv[])
                     "                  Pin the SRC ratio to nominal (disables rate-drift\n"
                     "                  correction) for deterministic golden-reference runs.\n"
                     "                  Requires --test-hooks. Never used in production.\n"
+                    "  --compatible    Output the FIFO as 44.1kHz/16-bit stereo, for stock\n"
+                    "                  (upstream) OwnTone or a pre-48k owntone-mini -- both\n"
+                    "                  have a named-pipe input fixed at 44.1kHz/16-bit.\n"
+                    "                  Default (this flag absent) is native 48kHz/32-bit.\n"
                     "\n"
                     "The monitor starts with no audio device connected.\n"
                     "Configure it via the socket using JSON commands.\n"
@@ -2034,6 +2050,24 @@ int main(int argc, char* argv[])
         LOG_WARN("[monitor] --test-pin-src-ratio enabled: rate-drift correction "
                  "is OFF, SRC ratio pinned to nominal (golden-run determinism, "
                  "dev/test only)");
+    }
+
+    // Publish the process-wide output format descriptor. Written here,
+    // strictly before AudioMonitor (and therefore every capture/process/
+    // control/repeat thread) is constructed below -- the same publication
+    // argument as g_test_pin_src_ratio above (see g_output_format's doc
+    // comment in autostream_monitor_utils.h). Default-constructed
+    // g_output_format is already native (48000/32/2), so the else branch is
+    // a no-op left implicit.
+    if (compatible_mode)
+    {
+        g_output_format.rate     = 44100;
+        g_output_format.bits     = 16;
+        g_output_format.channels = 2;
+        g_output_format.mode     = OutputFormatMode::Compatible;
+        LOG_WARN("[monitor] --compatible enabled: FIFO output format is "
+                 "44100 Hz / 16-bit / stereo (native default is 48000 Hz / "
+                 "32-bit)");
     }
 
     AudioMonitor monitor(socket_path, test_hooks_enabled);

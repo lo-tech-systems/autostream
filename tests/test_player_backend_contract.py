@@ -806,3 +806,134 @@ class TestFullOwnToneSettingsUnsupported:
         result = b.save_setting(ap.SETTING_PIPE_PATH, "/tmp/audio.fifo")
         assert result.ok is False
         assert result.unsupported is True
+
+
+# ---------------------------------------------------------------------------
+# required_monitor_format() contract (FIFO format-switch): PlayerBackend's
+# own default, and both concrete adapters.
+# ---------------------------------------------------------------------------
+
+def _make_stub_backend_cls():
+    """A minimal concrete PlayerBackend subclass that stubs out every other
+    abstract method with a no-op, so PlayerBackend's own (non-abstract)
+    required_monitor_format() default can be exercised in isolation --
+    neither shipped adapter (OwnToneBackend/OwnToneMiniBackend) uses the
+    base default; both override it.
+    """
+    namespace: dict = {}
+    for name in ap.PlayerBackend.__abstractmethods__:
+        if name == "backend_id_cls":
+            namespace[name] = classmethod(lambda cls: "stub-backend")
+        else:
+            namespace[name] = lambda self, *a, **k: None
+    return type("StubBackend", (ap.PlayerBackend,), namespace)
+
+
+class TestRequiredMonitorFormatDefault:
+    def test_base_default_is_compatible(self):
+        backend = _make_stub_backend_cls()()
+        assert backend.required_monitor_format() == "compatible"
+
+
+class TestRequiredMonitorFormatFullOwnTone:
+    def test_always_compatible(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        assert b.required_monitor_format() == "compatible"
+
+    def test_compatible_regardless_of_base_url(self):
+        # No probe/HTTP traffic involved -- a constant, not a lookup.
+        b = OwnToneBackend(base_url="http://elsewhere:3689")
+        with patch("autostream_players.requests.get") as mock_get:
+            result = b.required_monitor_format()
+        assert result == "compatible"
+        mock_get.assert_not_called()
+
+
+class TestMiniRequiredMonitorFormatProbe:
+    """owntone-mini's required_monitor_format(): a dynamic probe of
+    SETTING_PIPE_SAMPLE_RATE via get_setting(), cached module-level by
+    base_url (see autostream_owntone_mini._monitor_format_probe_cache)."""
+
+    def setup_method(self):
+        import autostream_owntone_mini as om
+        om._monitor_format_probe_cache.clear()
+
+    def _mini(self, base_url="http://mini1:3689"):
+        return OwnToneMiniBackend(base_url=base_url)
+
+    def test_settable_key_returns_native(self):
+        b = self._mini()
+        settable = MagicMock(unsupported=False, ok=True, value=48000)
+        with patch.object(b, "get_setting", return_value=settable) as gs:
+            result = b.required_monitor_format()
+        assert result == "native"
+        gs.assert_called_once_with(ap.SETTING_PIPE_SAMPLE_RATE)
+
+    def test_unsupported_key_returns_compatible(self):
+        b = self._mini()
+        unsupported = MagicMock(unsupported=True, ok=False, value=None)
+        with patch.object(b, "get_setting", return_value=unsupported):
+            result = b.required_monitor_format()
+        assert result == "compatible"
+
+    def test_transport_failure_returns_none(self):
+        b = self._mini()
+        down = MagicMock(unsupported=False, ok=False, value=None)
+        with patch.object(b, "get_setting", return_value=down):
+            result = b.required_monitor_format()
+        assert result is None
+
+    def test_result_is_cached_across_calls(self):
+        b = self._mini()
+        settable = MagicMock(unsupported=False, ok=True, value=48000)
+        with patch.object(b, "get_setting", return_value=settable) as gs:
+            first = b.required_monitor_format()
+            second = b.required_monitor_format()
+        assert (first, second) == ("native", "native")
+        gs.assert_called_once()  # second call served from cache
+
+    def test_unknown_transport_failure_is_never_cached(self):
+        b = self._mini()
+        down = MagicMock(unsupported=False, ok=False, value=None)
+        settable = MagicMock(unsupported=False, ok=True, value=48000)
+        with patch.object(b, "get_setting", side_effect=[down, settable]) as gs:
+            first = b.required_monitor_format()
+            second = b.required_monitor_format()
+        assert first is None
+        assert second == "native"
+        assert gs.call_count == 2
+
+    def test_different_base_urls_have_isolated_cache_entries(self):
+        b1 = self._mini("http://mini-a:3689")
+        b2 = self._mini("http://mini-b:3689")
+        settable = MagicMock(unsupported=False, ok=True, value=48000)
+        unsupported = MagicMock(unsupported=True, ok=False, value=None)
+        with patch.object(b1, "get_setting", return_value=settable):
+            r1 = b1.required_monitor_format()
+        with patch.object(b2, "get_setting", return_value=unsupported):
+            r2 = b2.required_monitor_format()
+        assert r1 == "native"
+        assert r2 == "compatible"
+
+    def test_cache_expires_after_ttl_and_reprobes(self):
+        import autostream_owntone_mini as om
+        b = self._mini()
+        settable = MagicMock(unsupported=False, ok=True, value=48000)
+        with patch.object(b, "get_setting", return_value=settable):
+            first = b.required_monitor_format()
+        assert first == "native"
+
+        # Rewind the cached timestamp past the TTL to simulate staleness
+        # (e.g. a firmware upgrade that made the key unsupported again)
+        # without sleeping in the test.
+        key = b._base_url
+        ts, cached_value = om._monitor_format_probe_cache[key]
+        om._monitor_format_probe_cache[key] = (
+            ts - om._MONITOR_FORMAT_PROBE_CACHE_SECONDS - 1.0, cached_value,
+        )
+
+        unsupported = MagicMock(unsupported=True, ok=False, value=None)
+        with patch.object(b, "get_setting", return_value=unsupported) as gs:
+            second = b.required_monitor_format()
+        assert second == "compatible"
+        gs.assert_called_once()

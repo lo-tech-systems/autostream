@@ -41,7 +41,8 @@ from autostream_sysutils import run_admin_cmd
 
 _CACHE_LOCK = threading.Lock()
 _DETECTION_CACHE_SECONDS = 5.0
-_DETECTION_CACHE: dict[str, tuple[float, str, str, float]] = {}
+# (cached_at_monotonic, backend_id, version, last_seen_at, detection_confident)
+_DETECTION_CACHE: dict[str, tuple[float, str, str, float, bool]] = {}
 LOG = logging.getLogger(__name__)
 
 
@@ -49,6 +50,18 @@ LOG = logging.getLogger(__name__)
 class ResolvedBackend:
     backend_id: str
     backend: Any
+    # True when this backend_id came from a POSITIVE detection match (a
+    # probe in detect_backend() actually confirmed it); False when
+    # detect_backend() matched nothing and resolve_backend() fell back to
+    # the generic BACKEND_OWNTONE adapter as a guess (see resolve_backend()
+    # "No playback backend probe matched" branch). Callers that enforce
+    # backend-declared policy (e.g. reconcile_monitor_format(),
+    # reconcile_pipe_format_with_backend()) MUST gate enforcement on this
+    # flag being True -- a fallback guess is not evidence about what the
+    # real backend (if any, e.g. a crashed owntone-mini) actually needs.
+    # Defaults True so the many existing call sites/tests that construct a
+    # ResolvedBackend directly for a known-good backend need no changes.
+    detection_confident: bool = True
 
 
 @dataclass(frozen=True)
@@ -601,6 +614,26 @@ def reconcile_pipe_format_with_backend(
     resolved = resolve_backend(base_url_text, timeout=timeout)
     backend = resolved.backend
 
+    if not resolved.detection_confident:
+        # Same detection-confidence gate as reconcile_monitor_format() above
+        # (see ResolvedBackend.detection_confident) -- pushing pipe settings
+        # to a fallback-guessed backend is less catastrophic than the
+        # monitor-format case (a wrong guess is validation-rejected or a
+        # no-op rather than actively destructive), but the underlying
+        # backend identity is just as unconfirmed, so apply the same no-op
+        # deferral rather than acting on a guess.
+        with _format_reconcile_state_lock:
+            already_logged = state.get("last_logged_reject") == "unconfirmed"
+            state["last_logged_reject"] = "unconfirmed"
+        if not already_logged:
+            LOG.warning(
+                "Pipe-format reconcile: backend identity unconfirmed for %s "
+                "(detection fell back to a default); format enforcement "
+                "deferred.",
+                base_url_text,
+            )
+        return FormatReconcileResult(ok=True)
+
     rate_result = backend.get_setting(SETTING_PIPE_SAMPLE_RATE)
     bits_result = backend.get_setting(SETTING_PIPE_BITS_PER_SAMPLE)
 
@@ -789,6 +822,270 @@ def retry_pending_format_reconcile(
     )
 
 
+# ---------------------------------------------------------------------------
+# reconcile_monitor_format() -- the monitor-*side* enforcement half of the
+# FIFO format-switch design. reconcile_pipe_format_with_backend()
+# above reconciles owntone-mini's persisted pipe-format settings to follow
+# whatever the monitor is REPORTING; this reconciles the monitor's own
+# startup args -- whether it runs with --compatible or not -- against what
+# the active backend adapter DECLARES it needs
+# (PlayerBackend.required_monitor_format()). The two are deliberately
+# sequenced monitor-format-first at both call sites in autostream_core.py:
+# a monitor restart here changes what it reports, which the FIFO-path
+# reconcile above then follows on the very next resync it triggers.
+#
+# Provisioning: the monitor's systemd unit
+# (system/systemd/autostream_monitor.service) sources
+# MONITOR_ARGS_ENV_PATH via `EnvironmentFile=-...` (the leading `-` makes a
+# missing file non-fatal, so a fresh install with no file yet still starts
+# the monitor in native mode) and appends $AUTOSTREAM_MONITOR_ARGS to
+# ExecStart. Python (this module) owns writing that file; actually
+# restarting the systemd unit requires root, so this reuses the
+# restart-owntone admin pattern above: a new "restart-monitor" verb on
+# supervisor/autostream_admin, invoked via run_admin_cmd(), authorized by a
+# new Cmnd_Alias in system/sudoers/autostream_admin modeled on
+# AUTOSTREAM_ADMIN_OWNTONE.
+_monitor_format_reconcile_state_lock = threading.Lock()
+_monitor_format_reconcile_state: dict[str, dict[str, Any]] = {}
+
+# Written by Python (as the "autostream" user -- /etc/autostream is owned by
+# autostream:autostream, see bootstrap_phase() in autostream_install.sh),
+# read by the monitor's systemd unit via EnvironmentFile=-. Module-level so
+# tests can monkeypatch it to a temp path.
+MONITOR_ARGS_ENV_PATH = "/etc/autostream/monitor_args.env"
+
+
+def _monitor_format_reconcile_state_for(base_url: str) -> dict[str, Any]:
+    with _monitor_format_reconcile_state_lock:
+        state = _monitor_format_reconcile_state.get(base_url)
+        if state is None:
+            state = {
+                # Throttles the mismatch/failure WARNING to once per distinct
+                # (desired, reported) pair, mirroring
+                # _format_reconcile_state's "last_logged_reject" above --
+                # never suppresses the retry itself.
+                "last_logged_state": None,
+                "needs_retry": False,
+            }
+            _monitor_format_reconcile_state[base_url] = state
+        return state
+
+
+def _extract_reported_monitor_format(monitor_status: Optional[dict]) -> Optional[str]:
+    """Return "native"/"compatible" as reported by the monitor, or None.
+
+    Prefers the explicit "output_format" status field. Falls back to
+    interpreting the numeric output_rate/output_bits pair for older
+    monitor binaries, which report those two fields but not output_format
+    yet -- those builds predate
+    --compatible entirely, so a numeric report is always native
+    (48000/32); anything else (including a --compatible-shaped 44100/16
+    pair, which cannot come from those builds) is treated as unrecognised
+    rather than guessed at.
+    """
+    if not isinstance(monitor_status, dict):
+        return None
+
+    reported = monitor_status.get("output_format")
+    if isinstance(reported, str) and reported in ("native", "compatible"):
+        return reported
+
+    rate, bits = _extract_monitor_output_format(monitor_status)
+    if rate is None or bits is None:
+        return None
+    if rate == 48000 and bits == 32:
+        return "native"
+    if rate == 44100 and bits == 16:
+        return "compatible"
+    return None
+
+
+def _monitor_args_for_format(desired_format: str) -> str:
+    return "--compatible" if desired_format == "compatible" else ""
+
+
+def _write_monitor_args_env_file(desired_format: str) -> bool:
+    from autostream_sysutils import atomic_write_file
+
+    args = _monitor_args_for_format(desired_format)
+    try:
+        atomic_write_file(
+            MONITOR_ARGS_ENV_PATH,
+            lambda f: f.write(f"AUTOSTREAM_MONITOR_ARGS={args}\n"),
+            preserve_mode=False,
+        )
+    except Exception:
+        LOG.exception(
+            "Monitor-format reconcile: failed writing %s", MONITOR_ARGS_ENV_PATH,
+        )
+        return False
+    try:
+        os.chmod(MONITOR_ARGS_ENV_PATH, 0o644)
+    except OSError:
+        LOG.debug(
+            "Monitor-format reconcile: could not chmod %s", MONITOR_ARGS_ENV_PATH,
+        )
+    return True
+
+
+def _restart_monitor_async(desired_format: str, reported_format: str) -> None:
+    """Fire-and-forget monitor restart request, mirroring
+    _restart_owntone_backend_async() above (same run_admin_cmd() /
+    "sudo -n autostream_admin <verb>" pattern, new "restart-monitor" verb).
+    """
+    def _worker() -> None:
+        try:
+            p = run_admin_cmd(["restart-monitor"], timeout=20.0)
+            if p.returncode != 0:
+                LOG.error(
+                    "Monitor-format reconcile: restart-monitor failed (rc=%s): %s",
+                    p.returncode, (p.stderr or "").strip(),
+                )
+            else:
+                LOG.warning(
+                    "Monitor-format reconcile: restart-monitor requested "
+                    "(%s -> %s).",
+                    reported_format, desired_format,
+                )
+        except Exception:
+            LOG.exception("Monitor-format reconcile: restart-monitor raised")
+
+    threading.Thread(
+        target=_worker, name="monitor-format-reconcile-restart", daemon=True,
+    ).start()
+
+
+def reconcile_monitor_format(
+    base_url: str,
+    monitor_status: Optional[dict],
+    *,
+    timeout: float = 3.0,
+) -> FormatReconcileResult:
+    """Align the monitor's --compatible startup arg with what the active
+    playback backend declares it needs.
+
+    desired = resolve_backend(base_url).backend.required_monitor_format()
+    reported = _extract_reported_monitor_format(monitor_status)
+
+    Guarantees (mirrors reconcile_pipe_format_with_backend()'s above):
+      - Idempotent: a matching pass never writes the env file or restarts.
+      - desired is None (backend unreachable/undecided) => no-op.
+      - monitor_status is falsy/malformed, or reported comes back None
+        (monitor down, or too old to report a format at all) => no-op --
+        there is nothing to compare against yet.
+      - Throttled logging: one WARNING per distinct (desired, reported)
+        state, not once per poll/call.
+      - An env-file write failure is logged (also throttled) and never
+        triggers a restart (nothing would have changed on disk yet); the
+        pending state is left set so the next reconcile pass -- run from
+        the same call sites as reconcile_pipe_format_with_backend(), i.e.
+        every startup/resync -- retries automatically.
+      - A restart is only ever requested after the env file write itself
+        has been confirmed to succeed.
+    """
+    base_url_text = str(base_url or "").strip()
+    if not base_url_text:
+        return FormatReconcileResult(ok=True)
+
+    state = _monitor_format_reconcile_state_for(base_url_text)
+
+    if not isinstance(monitor_status, dict) or not monitor_status:
+        # Monitor down / no status yet -- nothing to reconcile against this
+        # pass. Deliberately not treated as an error (same convention as
+        # reconcile_pipe_format_with_backend()'s no-monitor-info path).
+        return FormatReconcileResult(ok=True)
+
+    resolved = resolve_backend(base_url_text, timeout=timeout)
+    backend = resolved.backend
+
+    if not resolved.detection_confident:
+        # detect_backend() matched nothing this pass and resolve_backend()
+        # guessed BACKEND_OWNTONE as a fallback default (e.g. owntone-mini
+        # crashed/unreachable) -- see ResolvedBackend.detection_confident.
+        # The fallback adapter's required_monitor_format() answer is not
+        # evidence of what the real backend needs, so treat desired as
+        # UNKNOWN: no env write, no restart. Trusting a fallback guess here
+        # can flip a healthy native appliance into --compatible mode and
+        # wipe the monitor's in-RAM repeat buffer while owntone-mini is
+        # merely unreachable rather than genuinely reconfigured.
+        with _monitor_format_reconcile_state_lock:
+            already_logged = state.get("last_logged_state") == "unconfirmed"
+            state["last_logged_state"] = "unconfirmed"
+        if not already_logged:
+            LOG.warning(
+                "Monitor-format reconcile: backend identity unconfirmed for "
+                "%s (detection fell back to a default); format enforcement "
+                "deferred.",
+                base_url_text,
+            )
+        return FormatReconcileResult(ok=True)
+
+    try:
+        desired_format = backend.required_monitor_format()
+    except Exception:
+        LOG.exception(
+            "Monitor-format reconcile: required_monitor_format() raised for "
+            "backend %s at %s",
+            resolved.backend_id, base_url_text,
+        )
+        return FormatReconcileResult(
+            ok=True, error="required_monitor_format() raised", error_code="probe_error",
+        )
+
+    if desired_format not in ("native", "compatible"):
+        # None: backend unreachable or otherwise unable to answer right now.
+        # Take no enforcement action -- do not guess, do not clear pending
+        # retry state (a real answer may already be pending resolution).
+        return FormatReconcileResult(ok=True)
+
+    reported_format = _extract_reported_monitor_format(monitor_status)
+    if reported_format is None:
+        # Monitor status doesn't (yet) carry a usable format signal -- an
+        # older monitor build, or an unrecognised numeric pair.
+        return FormatReconcileResult(ok=True)
+
+    log_key = (desired_format, reported_format)
+
+    if desired_format == reported_format:
+        with _monitor_format_reconcile_state_lock:
+            state["last_logged_state"] = None
+            state["needs_retry"] = False
+        return FormatReconcileResult(ok=True)
+
+    if not _write_monitor_args_env_file(desired_format):
+        with _monitor_format_reconcile_state_lock:
+            already_logged = state.get("last_logged_state") == log_key
+            state["last_logged_state"] = log_key
+            state["needs_retry"] = True
+        if not already_logged:
+            LOG.warning(
+                "Monitor-format reconcile: backend %s requires %r but monitor "
+                "reports %r at %s; failed to write %s (will retry next pass).",
+                resolved.backend_id, desired_format, reported_format,
+                base_url_text, MONITOR_ARGS_ENV_PATH,
+            )
+        return FormatReconcileResult(
+            ok=True,
+            error="failed to write monitor args env file",
+            error_code="env_write_failed",
+        )
+
+    with _monitor_format_reconcile_state_lock:
+        already_logged = state.get("last_logged_state") == log_key
+        state["last_logged_state"] = log_key
+        state["needs_retry"] = False
+
+    if not already_logged:
+        LOG.warning(
+            "Monitor-format reconcile: backend %s requires %r but monitor "
+            "reports %r at %s; wrote %s and requesting a monitor restart.",
+            resolved.backend_id, desired_format, reported_format,
+            base_url_text, MONITOR_ARGS_ENV_PATH,
+        )
+    _restart_monitor_async(desired_format, reported_format)
+    return FormatReconcileResult(ok=True, changed=True, restart_requested=True)
+
+
 def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
     normalized_base_url = _normalize_base_url(base_url)
 
@@ -798,6 +1095,7 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
             backend_id = cached[1]
             version = cached[2]
             last_seen_at = cached[3]
+            detection_confident = cached[4] if len(cached) > 4 else True
             LOG.debug(
                 "Playback backend cache hit for %s: backend=%s age=%.2fs",
                 normalized_base_url,
@@ -814,6 +1112,7 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
             return ResolvedBackend(
                 backend_id=backend_id,
                 backend=create_backend(backend_id, base_url=normalized_base_url, timeout=timeout),
+                detection_confident=detection_confident,
             )
 
     LOG.debug(
@@ -830,6 +1129,12 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
             detection.matched,
             detection.detail or "-",
         )
+    # Whether *this* resolution came from a probe that actually matched
+    # (True) vs. detect_backend() finding nothing and resolve_backend()
+    # guessing BACKEND_OWNTONE as a default (False). See ResolvedBackend.
+    # detection_confident's docstring -- enforcement callers must not treat
+    # a fallback guess as evidence of what the real backend needs.
+    detection_confident = backend is not None
     if backend is None:
         LOG.info(
             "No playback backend probe matched for %s; falling back to backend=%s",
@@ -861,12 +1166,14 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
             backend_id,
             detected_version,
             detected_at,
+            detection_confident,
         )
         LOG.debug(
-            "Cached playback backend selection for %s: backend=%s ttl=%.1fs",
+            "Cached playback backend selection for %s: backend=%s ttl=%.1fs confident=%s",
             normalized_base_url,
             backend_id,
             _DETECTION_CACHE_SECONDS,
+            detection_confident,
         )
 
     if selected_detection is not None:
@@ -884,7 +1191,7 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
             connected=False,
         )
 
-    return ResolvedBackend(backend_id=backend_id, backend=backend)
+    return ResolvedBackend(backend_id=backend_id, backend=backend, detection_confident=detection_confident)
 
 
 def list_outputs(base_url: str, *, timeout: float = 3.0) -> ListOutputsResult:

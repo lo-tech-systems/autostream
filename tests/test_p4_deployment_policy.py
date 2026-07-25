@@ -225,17 +225,39 @@ class TestWifiWatcherProcessRecovery:
 class TestSystemdDependencyOrdering:
     """Critical ordering and dependency relationships between units."""
 
-    def test_autostream_requires_monitor(self):
+    def test_autostream_does_not_require_monitor(self):
+        """autostream.service must NOT hard-Require= autostream_monitor.service.
+
+        With a hard Requires=, `systemctl restart autostream_monitor`
+        (routine -- fired by reconcile_monitor_format()'s "restart-monitor"
+        admin verb) stops-then-starts the monitor unit, and systemd
+        propagates that stop to every unit that Requires= it -- taking
+        autostream.service down with it, killing the very admin call that
+        requested the restart. autostream's MonitorClient already has
+        reconnect/resync machinery built to ride out exactly this kind of
+        monitor restart, so the hard dependency is unnecessary and actively
+        harmful. Wants= (see test_autostream_wants_monitor below) plus
+        After= still give correct boot ordering without coupling the two
+        services' running state.
+        """
         unit = SYSTEMD_DIR / "autostream.service"
         requires = _unit_field(unit, "Unit", "Requires")
-        assert "autostream_monitor.service" in requires, (
-            "autostream.service must Require= autostream_monitor.service"
+        assert "autostream_monitor.service" not in requires, (
+            "autostream.service must not Require= autostream_monitor.service "
+            "-- a monitor restart/stop must not take autostream down with it"
         )
 
     def test_autostream_wants_monitor(self):
         unit = SYSTEMD_DIR / "autostream.service"
         wants = _unit_field(unit, "Unit", "Wants")
         assert "autostream_monitor.service" in wants
+
+    def test_autostream_after_monitor(self):
+        """After= (boot ordering only, no running-state coupling) must still
+        be present so autostream starts after the monitor at boot."""
+        unit = SYSTEMD_DIR / "autostream.service"
+        after = _unit_field(unit, "Unit", "After")
+        assert "autostream_monitor.service" in after
 
     def test_update_retry_before_monitor(self):
         """autostream_update_retry must finish before monitor starts (ordering invariant)."""

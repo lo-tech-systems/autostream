@@ -364,6 +364,11 @@ class TestRunAutostreamStartupFormatReconcile:
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_core.setup_logging"),
             patch("autostream_core.reconcile_fifo_with_backend") as rf,
+            # Not under test here, but must still be patched: real
+            # reconcile_monitor_format() would otherwise make a live HTTP
+            # probe to base_url (see TestRunAutostreamStartupMonitorFormatReconcile
+            # below for its own dedicated coverage).
+            patch("autostream_core.reconcile_monitor_format") as monfmt,
             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt,
             patch("autostream_core.ensure_pipe_source_ready") as pipe_ready,
             patch("autostream_core._configure_startup_monitors", return_value=[]),
@@ -371,6 +376,7 @@ class TestRunAutostreamStartupFormatReconcile:
             sf.is_set.side_effect = _is_set
             sf.wait.return_value = True
             rf.return_value = MagicMock(ok=True, message="")
+            monfmt.return_value = MagicMock(ok=True, error="", error_code="")
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
             pipe_ready.return_value = MagicMock(ok=True, message="")
 
@@ -405,3 +411,84 @@ class TestRunAutostreamStartupFormatReconcile:
             tmp_path, get_status_return=None,
         )
         fmt.assert_called_once_with("http://localhost:3689", None, timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# reconcile_monitor_format() (FIFO format-switch) is sequenced BEFORE
+# reconcile_pipe_format_with_backend() in the startup phase
+# -- a monitor restart it triggers re-enters this same startup loop via the
+# client.connect() retry, and the pipe-format (owntone-mini-side) reconcile
+# naturally re-runs against the post-restart report on that next lap.
+
+class TestRunAutostreamStartupMonitorFormatReconcile:
+    def _run_to_first_startup_iteration(self, tmp_path, *, get_status_return):
+        cfg = _minimal_cfg(tmp_path)
+        from autostream_settings import SettingsStore
+        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
+
+        _call_count = [0]
+
+        def _is_set():
+            _call_count[0] += 1
+            return _call_count[0] > 2
+
+        mock_client = MagicMock()
+        mock_client.get_status.return_value = get_status_return
+
+        manager = MagicMock()
+
+        with (
+            patch("autostream_core.stop_flag") as sf,
+            patch("autostream_core.unconfigured", return_value=False),
+            patch("autostream_core.MonitorClient", return_value=mock_client),
+            patch("autostream_core._install_signal_handlers"),
+            patch("autostream_core.get_install_state", return_value={}),
+            patch("autostream_core._ensure_playback_tracker"),
+            patch("autostream_core._start_output_usage_poller"),
+            patch("autostream_log_policy.apply_startup_log_level"),
+            patch("autostream_core.setup_logging"),
+            patch("autostream_core.reconcile_fifo_with_backend") as rf,
+            patch("autostream_core.reconcile_monitor_format") as monfmt,
+            patch("autostream_core.reconcile_pipe_format_with_backend") as fmt,
+            patch("autostream_core.ensure_pipe_source_ready") as pipe_ready,
+            patch("autostream_core._configure_startup_monitors", return_value=[]),
+        ):
+            sf.is_set.side_effect = _is_set
+            sf.wait.return_value = True
+            rf.return_value = MagicMock(ok=True, message="")
+            monfmt.return_value = MagicMock(ok=True, error="", error_code="")
+            fmt.return_value = MagicMock(ok=True, error="", error_code="")
+            pipe_ready.return_value = MagicMock(ok=True, message="")
+            manager.attach_mock(monfmt, "monitor_format")
+            manager.attach_mock(fmt, "pipe_format")
+
+            from autostream_core import run_autostream
+            run_autostream(str(cfg), settings=store)
+
+        store.close(save=False)
+        return monfmt, fmt, manager
+
+    def test_startup_calls_monitor_format_reconcile_with_status(self, tmp_path):
+        monfmt, fmt, manager = self._run_to_first_startup_iteration(
+            tmp_path, get_status_return={"output_format": "native"},
+        )
+        monfmt.assert_called_once_with(
+            "http://localhost:3689",
+            {"output_format": "native"},
+            timeout=3.0,
+        )
+
+    def test_startup_monitor_format_reconcile_runs_before_pipe_format_reconcile(self, tmp_path):
+        monfmt, fmt, manager = self._run_to_first_startup_iteration(
+            tmp_path, get_status_return={"output_format": "native"},
+        )
+        call_names = [c[0] for c in manager.mock_calls]
+        assert "monitor_format" in call_names
+        assert "pipe_format" in call_names
+        assert call_names.index("monitor_format") < call_names.index("pipe_format")
+
+    def test_startup_monitor_format_reconcile_passes_through_when_status_unavailable(self, tmp_path):
+        monfmt, fmt, manager = self._run_to_first_startup_iteration(
+            tmp_path, get_status_return=None,
+        )
+        monfmt.assert_called_once_with("http://localhost:3689", None, timeout=3.0)

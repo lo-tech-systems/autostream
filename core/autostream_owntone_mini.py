@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import logging
+import threading
 import time
 from typing import Any, Optional
 
@@ -47,6 +48,24 @@ from autostream_players import (
 
 
 LOG = logging.getLogger(__name__)
+
+# required_monitor_format() probe cache (FIFO format-switch). Keyed by
+# base_url rather than by backend instance: resolve_backend()
+# in autostream_player_service constructs a brand-new OwnToneMiniBackend on
+# every call (its own detection cache only remembers backend_id/version, not
+# the instance -- see its docstring), so an instance-attribute cache would
+# never actually be hit across calls. base_url is the closest available proxy
+# for "per resolved backend lifetime": it re-probes automatically, bounded by
+# the TTL below, after a mini restart/firmware upgrade changes whether the
+# pipe-format keys are API-settable, without needing an explicit invalidation
+# hook wired through resolve_backend's own cache.
+#
+# Only definitive answers ("native"/"compatible") are cached; a transport
+# failure (backend down) is never cached, so the very next call re-probes
+# instead of sitting on "unknown" for the full TTL once the backend recovers.
+_MONITOR_FORMAT_PROBE_CACHE_SECONDS = 60.0
+_monitor_format_probe_lock = threading.Lock()
+_monitor_format_probe_cache: dict[str, tuple[float, str]] = {}
 
 # Maps owntone-mini server mode values to normalized internal mode constants.
 # "auto" is always a valid PUT value but is intentionally omitted from the
@@ -559,6 +578,49 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             )
             for key, spec in _SETTING_SPECS.items()
         ]
+
+    def required_monitor_format(self) -> Optional[str]:
+        """Dynamic probe (FIFO format-switch): the deployed mini supports
+        "native" iff its pipe-format settings are API-settable.
+
+        Outcomes:
+          - SETTING_PIPE_SAMPLE_RATE reads successfully  -> "native" (a
+            pipe-48k-era build; the format reconcile (see
+            reconcile_pipe_format_with_backend in autostream_player_service)
+            can push whatever the monitor is actually outputting).
+          - the setting is unsupported (404)             -> "compatible"
+            (a pre-pipe-48k build). Its self-healed config defaults are
+            already 44100 Hz / 16-bit -- exactly what a --compatible monitor
+            writes to the FIFO -- so nothing needs pushing and, since the
+            key isn't settable, nothing could be pushed anyway.
+          - a transport failure / no response             -> None (unknown;
+            the backend is unreachable right now, so no enforcement
+            decision can be made this pass).
+
+        See the module-level _monitor_format_probe_cache comment above for
+        the caching rationale and TTL.
+        """
+        cache_key = self._base_url
+        now = time.monotonic()
+        with _monitor_format_probe_lock:
+            cached = _monitor_format_probe_cache.get(cache_key)
+            if cached is not None and (now - cached[0]) <= _MONITOR_FORMAT_PROBE_CACHE_SECONDS:
+                return cached[1]
+
+        probe_result = self.get_setting(SETTING_PIPE_SAMPLE_RATE)
+        if probe_result.unsupported:
+            probed_format = "compatible"
+        elif probe_result.ok:
+            probed_format = "native"
+        else:
+            # Transport failure / backend down: unknown, and deliberately
+            # not cached so the next call re-probes rather than sitting on
+            # "unknown" for the full TTL once the backend is back.
+            return None
+
+        with _monitor_format_probe_lock:
+            _monitor_format_probe_cache[cache_key] = (now, probed_format)
+        return probed_format
 
     def _normalize_setting_value_from_backend(self, spec: _MiniSettingSpec, value: Any) -> Any:
         if spec.option == "loglevel":

@@ -106,7 +106,7 @@ The daemon listens on a Unix domain socket and speaks newline-delimited JSON.
 The daemon binary supports:
 
 ```text
-autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]
+autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks] [--compatible]
 ```
 
 - `--socket PATH`
@@ -118,6 +118,17 @@ autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]
     `debug_fail_input` socket command (see below). Intended for a standalone
     test-instance daemon driven by `tools/dev/repeat_test_driver.py`, never
     the live daemon.
+- `--compatible`
+  - output the FIFO as 44.1kHz/16-bit stereo instead of the native
+    48kHz/32-bit stream, for stock (upstream) OwnTone or a pre-48k
+    owntone-mini -- both have a named-pipe input fixed at 44.1kHz/16-bit and
+    no way to accept a different format. Default (this flag absent) is
+    native 48kHz/32-bit.
+  - The daemon narrows the wire itself (not just the reported format) at
+    both producer edges -- the live path's `deliver_output()` and the
+    repeat/replay path's pipe-format conversion -- so `--compatible` is a
+    complete, byte-correct 44.1kHz/16-bit wire, safe to run against stock
+    OwnTone or a pre-48k owntone-mini.
 
 ## General Response Shape
 
@@ -600,8 +611,17 @@ Behavior:
 
 - the WAV file is opened immediately and a 44-byte placeholder header is written
 - audio frames are tapped after all processing (SRC, per-input gain/EQ, output
-  EQ, output gain, auto-trim) and after float-to-`int16` conversion — the same
-  final signal written to the FIFO
+  EQ, output gain, auto-trim) and after float-to-`int32` conversion — the same
+  32-bit internal representation `deliver_output()` also feeds to the FIFO in
+  native mode
+- **the dump always records this 32-bit representation, in BOTH `--compatible`
+  and native mode** — it documents the internal DSP output, not the wire. In
+  `--compatible` mode the FIFO itself is narrowed to 16-bit, but the dump tap
+  sits upstream of that narrowing, so the WAV file stays a 32-bit container
+  and the sample RATE follows the active output descriptor: `48000` Hz / 2ch /
+  32-bit in native mode, `44100` Hz / 2ch / 32-bit in `--compatible` mode (the
+  internal DSP chain, including the resampler and EQ, runs at that same
+  descriptor rate in both modes)
 - the tap is gated by `allow_capture`: only the input that is currently allowed
   to feed the FIFO contributes frames; monitoring-only inputs are not recorded
 - pre-fill frames (the initial 0.5 s buffer accumulated before the first FIFO
@@ -612,7 +632,9 @@ Behavior:
   if the ring fills (e.g. a sustained disk stall), frames are dropped and counted
   in `dropped_frames` rather than blocking audio delivery
 
-Output format: PCM WAV, 44100 Hz, 2 channels, signed 16-bit little-endian.
+Output format: PCM WAV, always a 32-bit integer container / 2 channels; sample
+rate matches the active output descriptor (`44100` Hz with `--compatible`,
+`48000` Hz otherwise) -- see the always-32-bit note above.
 
 Success response:
 
@@ -839,6 +861,7 @@ Success response:
   "output_rate":48000,
   "output_bits":32,
   "output_channels":2,
+  "output_format":"native",
   "output_clip_dbfs":0.0,
   "output_gain_db":0.0,
   "output_auto_trim_enabled":true,
@@ -908,15 +931,21 @@ Top-level fields:
 - `log_level`
   - current runtime log level
 - `output_rate` / `output_bits` / `output_channels`
-  - the wire format of the PCM stream written to the FIFO, compiled into the
-    monitor binary (`AudioMonitor::OUTPUT_RATE` / `OUTPUT_BITS` /
-    `OUTPUT_CHANNELS`) and reported here at runtime rather than assumed by
-    the Python layer
+  - the wire format of the PCM stream written to the FIFO. Selected once at
+    daemon startup (`--compatible`, see Command-Line Options above) and
+    reported here at runtime rather than assumed by the Python layer
   - same format for both FIFO writers (the live `FifoWriter` path and the
-    `ReplayEngine` replay path) -- they share one compile-time source of
-    truth
-  - `48000` / `32` / `2`; samples are a 32-bit left-justified container -- an
-    s16 source occupies the top 16 bits
+    `ReplayEngine` replay path) -- they share one runtime descriptor
+    (`g_output_format`, set once in `main()` before any thread starts)
+  - default (native, `--compatible` absent): `48000` / `32` / `2`; samples
+    are a 32-bit left-justified container -- an s16 source occupies the top
+    16 bits
+  - with `--compatible`: `44100` / `16` / `2` -- both FIFO writers (live and
+    replay) actually narrow the wire to match these numbers, not just
+    report them
+- `output_format`
+  - `"native"` or `"compatible"` -- a readable label for the same choice the
+    three numeric fields above encode
 - `output_clip_dbfs`
   - maximum post-EQ, post-gain overshoot above 0 dBFS since the previous
     `get_status` call

@@ -93,6 +93,36 @@ class TestResolveBackendCache:
             result = svc.resolve_backend("http://down:3689")
         assert result.backend_id == ap.BACKEND_OWNTONE
 
+    def test_failed_detection_fallback_is_not_confident(self):
+        """A fallback selection carries detection_confident=False so
+        enforcement callers (reconcile_monitor_format/
+        reconcile_pipe_format_with_backend) know not to trust it as a real
+        backend identity."""
+        import requests as rq
+        exc = rq.RequestException("refused")
+        with patch("autostream_players.requests.get", side_effect=exc):
+            result = svc.resolve_backend("http://down:3689")
+        assert result.detection_confident is False
+
+    def test_positive_match_is_confident(self):
+        with patch("autostream_players.requests.get",
+                   return_value=_mini_config_resp()):
+            result = svc.resolve_backend("http://localhost:3689")
+        assert result.backend_id == ap.BACKEND_OWNTONE_MINI
+        assert result.detection_confident is True
+
+    def test_cache_hit_preserves_confidence_flag(self):
+        import requests as rq
+        exc = rq.RequestException("refused")
+        with patch("autostream_players.requests.get", side_effect=exc):
+            r1 = svc.resolve_backend("http://down:3689")
+        assert r1.detection_confident is False
+
+        with patch("autostream_players.requests.get",
+                   side_effect=Exception("must not call")):
+            r2 = svc.resolve_backend("http://down:3689")
+        assert r2.detection_confident is False
+
     def test_cache_ttl_expired_triggers_re_probe(self):
         with patch("autostream_players.requests.get",
                    return_value=_mini_config_resp()):
@@ -334,8 +364,10 @@ class _FormatReconcileTestHelpers:
         _clear_cache()
         svc._format_reconcile_state.clear()
 
-    def _resolved(self, backend):
-        return svc.ResolvedBackend(backend_id="owntone-mini", backend=backend)
+    def _resolved(self, backend, *, confident=True):
+        return svc.ResolvedBackend(
+            backend_id="owntone-mini", backend=backend, detection_confident=confident,
+        )
 
     def _setting_result(self, *, ok=True, unsupported=False, value=None, error_code=""):
         r = MagicMock()
@@ -600,6 +632,62 @@ class TestReconcilePipeFormatWithBackend(_FormatReconcileTestHelpers):
         mock_restart.assert_not_called()
 
 
+class TestReconcilePipeFormatDetectionConfidence(_FormatReconcileTestHelpers):
+    """Detection-confidence gate (see TestReconcileMonitorFormatDetectionConfidence
+    for the monitor-side counterpart): pushing pipe settings to a fallback-guessed
+    backend is less catastrophic (validation-rejected or a no-op) than the
+    monitor-format case, but the same detection-confidence gate applies."""
+
+    def _resolved_unconfident(self, backend):
+        return svc.ResolvedBackend(
+            backend_id="owntone", backend=backend, detection_confident=False,
+        )
+
+    def test_fallback_resolution_defers_no_get_no_save(self):
+        b = self._make_backend(backend_rate=44100, backend_bits=16)
+        with patch.object(svc, "resolve_backend", return_value=self._resolved_unconfident(b)):
+            result = svc.reconcile_pipe_format_with_backend(
+                "http://localhost:3689", {"output_rate": 48000, "output_bits": 32}
+            )
+        assert result.ok is True
+        assert result.changed is False
+        b.get_setting.assert_not_called()
+        b.save_setting.assert_not_called()
+
+    def test_fallback_resolution_logs_once_per_state(self, caplog):
+        b = self._make_backend(backend_rate=44100, backend_bits=16)
+        with patch.object(svc, "resolve_backend", return_value=self._resolved_unconfident(b)):
+            with caplog.at_level("WARNING", logger=svc.LOG.name):
+                for _ in range(3):
+                    svc.reconcile_pipe_format_with_backend(
+                        "http://localhost:3689", {"output_rate": 48000, "output_bits": 32}
+                    )
+        matches = [
+            r for r in caplog.records
+            if "backend identity unconfirmed" in r.getMessage()
+        ]
+        assert len(matches) == 1
+
+    def test_recovery_to_confident_backend_resumes_enforcement(self):
+        b = self._make_backend(backend_rate=44100, backend_bits=16)
+        with patch.object(svc, "resolve_backend", return_value=self._resolved_unconfident(b)):
+            deferred = svc.reconcile_pipe_format_with_backend(
+                "http://localhost:3689", {"output_rate": 48000, "output_bits": 32}
+            )
+        assert deferred.ok is True
+        b.get_setting.assert_not_called()
+
+        with patch.object(svc, "resolve_backend", return_value=self._resolved(b)), \
+             patch.object(svc, "_restart_owntone_backend_async") as mock_restart:
+            result = svc.reconcile_pipe_format_with_backend(
+                "http://localhost:3689", {"output_rate": 48000, "output_bits": 32}
+            )
+        assert result.ok is True
+        assert result.changed is True
+        assert result.restart_requested is True
+        mock_restart.assert_called_once_with("http://localhost:3689")
+
+
 # ---------------------------------------------------------------------------
 # retry_pending_format_reconcile
 # ---------------------------------------------------------------------------
@@ -732,3 +820,343 @@ class TestRetryPendingFormatReconcile(_FormatReconcileTestHelpers):
     def test_empty_base_url_is_noop(self):
         result = svc.retry_pending_format_reconcile("", {"output_rate": 48000, "output_bits": 32})
         assert result.ok is True
+
+
+# ---------------------------------------------------------------------------
+# reconcile_monitor_format() (FIFO format-switch)
+#
+# The monitor-*side* half of the format enforcement: compares the active
+# backend's required_monitor_format() (desired) against what the monitor's
+# status reports it is currently running as (reported), and on a definite
+# mismatch rewrites MONITOR_ARGS_ENV_PATH and requests a monitor restart via
+# the "restart-monitor" admin verb. Deliberately sequenced BEFORE
+# reconcile_pipe_format_with_backend() at both autostream_core.py call sites
+# (see tests/test_wp2_settings_ownership.py and tests/test_repeat_api.py
+# for the ordering proof).
+
+class _MonitorFormatReconcileTestHelpers:
+    def setup_method(self):
+        _clear_cache()
+        svc._monitor_format_reconcile_state.clear()
+
+    def _resolved(self, desired_format, *, backend_id="owntone-mini", confident=True):
+        """desired_format may be "native"/"compatible"/None, or an
+        Exception instance to make required_monitor_format() raise."""
+        b = MagicMock()
+        b.backend_id = backend_id
+        if isinstance(desired_format, BaseException):
+            b.required_monitor_format.side_effect = desired_format
+        else:
+            b.required_monitor_format.return_value = desired_format
+        return svc.ResolvedBackend(
+            backend_id=backend_id, backend=b, detection_confident=confident,
+        )
+
+
+class TestReconcileMonitorFormat(_MonitorFormatReconcileTestHelpers):
+    def test_empty_base_url_is_noop(self):
+        result = svc.reconcile_monitor_format("", {"output_format": "native"})
+        assert result.ok is True
+
+    def test_monitor_status_none_is_noop_no_backend_traffic(self):
+        with patch.object(svc, "resolve_backend") as resolve_mock:
+            result = svc.reconcile_monitor_format("http://localhost:3689", None)
+        assert result.ok is True
+        resolve_mock.assert_not_called()
+
+    def test_monitor_status_empty_dict_is_noop_no_backend_traffic(self):
+        with patch.object(svc, "resolve_backend") as resolve_mock:
+            result = svc.reconcile_monitor_format("http://localhost:3689", {})
+        assert result.ok is True
+        resolve_mock.assert_not_called()
+
+    def test_desired_none_is_noop(self):
+        """required_monitor_format() returning None (backend unreachable /
+        undecided) must never write the env file or request a restart."""
+        resolved = self._resolved(None)
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result.ok is True
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+
+    def test_matching_format_is_noop(self):
+        resolved = self._resolved("native")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result.ok is True
+        assert result.changed is False
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+
+    def test_matching_format_is_idempotent_across_repeated_polls(self):
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            for _ in range(5):
+                result = svc.reconcile_monitor_format(
+                    "http://localhost:3689", {"output_format": "compatible"},
+                )
+                assert result.ok is True
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+
+    def test_mismatch_writes_env_file_and_restarts(self):
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=True) as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result.ok is True
+        assert result.changed is True
+        assert result.restart_requested is True
+        write_mock.assert_called_once_with("compatible")
+        restart_mock.assert_called_once_with("compatible", "native")
+
+    def test_env_write_failure_no_restart_and_retried_next_pass(self):
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=False), \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result.ok is True
+        assert result.changed is False
+        assert result.error_code == "env_write_failed"
+        restart_mock.assert_not_called()
+        state = svc._monitor_format_reconcile_state_for("http://localhost:3689")
+        assert state["needs_retry"] is True
+
+        # Next reconcile pass: the transient write failure clears and a
+        # restart is (only now) requested -- automatic retry, no special
+        # caller action needed.
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=True), \
+             patch.object(svc, "_restart_monitor_async") as restart_mock2:
+            result2 = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result2.changed is True
+        assert result2.restart_requested is True
+        restart_mock2.assert_called_once()
+        state2 = svc._monitor_format_reconcile_state_for("http://localhost:3689")
+        assert state2["needs_retry"] is False
+
+    def test_mismatch_warning_logged_once_per_distinct_state(self, caplog):
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=True), \
+             patch.object(svc, "_restart_monitor_async"):
+            with caplog.at_level("WARNING", logger=svc.LOG.name):
+                svc.reconcile_monitor_format("http://localhost:3689", {"output_format": "native"})
+                svc.reconcile_monitor_format("http://localhost:3689", {"output_format": "native"})
+                svc.reconcile_monitor_format("http://localhost:3689", {"output_format": "native"})
+        matches = [
+            r for r in caplog.records
+            if "requesting a monitor restart" in r.getMessage()
+        ]
+        assert len(matches) == 1
+
+    def test_env_write_failure_warning_logged_once_per_distinct_state(self, caplog):
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=False), \
+             patch.object(svc, "_restart_monitor_async"):
+            with caplog.at_level("WARNING", logger=svc.LOG.name):
+                svc.reconcile_monitor_format("http://localhost:3689", {"output_format": "native"})
+                svc.reconcile_monitor_format("http://localhost:3689", {"output_format": "native"})
+        matches = [r for r in caplog.records if "will retry next pass" in r.getMessage()]
+        assert len(matches) == 1
+
+    def test_required_monitor_format_raising_is_noop_never_writes(self):
+        resolved = self._resolved(RuntimeError("boom"))
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result.ok is True
+        assert result.error_code == "probe_error"
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+
+    def test_fallback_to_numeric_native_when_output_format_field_absent(self):
+        """Older monitor binaries report output_rate/output_bits but not
+        output_format yet; those builds predate --compatible entirely, so a
+        numeric report is always native."""
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=True), \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_rate": 48000, "output_bits": 32},
+            )
+        assert result.changed is True
+        restart_mock.assert_called_once_with("compatible", "native")
+
+    def test_ambiguous_numeric_pair_is_noop(self):
+        """A numeric pair that cannot come from a pre-output_format monitor
+        build (e.g. 44100/32) is treated as unrecognised, not guessed at."""
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_rate": 44100, "output_bits": 32},
+            )
+        assert result.ok is True
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+
+    def test_old_monitor_build_missing_format_fields_is_noop(self):
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"some_other_field": 1},
+            )
+        assert result.ok is True
+        write_mock.assert_not_called()
+
+
+class TestReconcileMonitorFormatDetectionConfidence(_MonitorFormatReconcileTestHelpers):
+    """Gate contract: if owntone-mini is unreachable, detect_backend() finds
+    no match and resolve_backend() falls back to the generic full-OwnTone
+    adapter, whose required_monitor_format() is a static "compatible".
+    Trusting that fallback guess would write --compatible to the monitor's
+    env file and request a restart -- flipping a healthy native appliance
+    into compatible mode and wiping the monitor's in-RAM repeat buffer.
+    Enforcement must require a *confident* detection, not just any resolved
+    backend_id.
+    """
+
+    def test_fallback_resolution_defers_no_write_no_restart(self):
+        resolved = self._resolved("compatible", backend_id="owntone", confident=False)
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result.ok is True
+        assert result.changed is False
+        assert result.restart_requested is False
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+        # required_monitor_format() must not even be consulted -- the
+        # fallback's answer is not evidence of anything.
+        resolved.backend.required_monitor_format.assert_not_called()
+
+    def test_fallback_resolution_logs_once_per_state(self, caplog):
+        resolved = self._resolved("compatible", backend_id="owntone", confident=False)
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            with caplog.at_level("WARNING", logger=svc.LOG.name):
+                for _ in range(4):
+                    svc.reconcile_monitor_format(
+                        "http://localhost:3689", {"output_format": "native"},
+                    )
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+        matches = [
+            r for r in caplog.records
+            if "backend identity unconfirmed" in r.getMessage()
+        ]
+        assert len(matches) == 1
+
+    def test_recovery_to_confident_mini_resumes_native_enforcement(self):
+        """Backend comes back (owntone-mini detected again, native format
+        required); enforcement must resume normally once detection is
+        confident again."""
+        unconfident = self._resolved("compatible", backend_id="owntone", confident=False)
+        with patch.object(svc, "resolve_backend", return_value=unconfident), \
+             patch.object(svc, "_write_monitor_args_env_file") as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            deferred = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "compatible"},
+            )
+        assert deferred.ok is True
+        write_mock.assert_not_called()
+        restart_mock.assert_not_called()
+
+        confident = self._resolved("native", backend_id="owntone-mini", confident=True)
+        with patch.object(svc, "resolve_backend", return_value=confident), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=True) as write_mock2, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock2:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "compatible"},
+            )
+        assert result.changed is True
+        assert result.restart_requested is True
+        write_mock2.assert_called_once_with("native")
+        restart_mock2.assert_called_once_with("native", "compatible")
+
+    def test_confident_full_owntone_still_enforces_compatible(self):
+        """The gate is detection confidence, not adapter identity: a
+        POSITIVELY-detected full-OwnTone backend must still enforce its
+        static "compatible" requirement."""
+        resolved = self._resolved("compatible", backend_id="owntone", confident=True)
+        with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_write_monitor_args_env_file", return_value=True) as write_mock, \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"},
+            )
+        assert result.changed is True
+        assert result.restart_requested is True
+        write_mock.assert_called_once_with("compatible")
+        restart_mock.assert_called_once_with("compatible", "native")
+
+
+class TestWriteMonitorArgsEnvFile:
+    def test_writes_compatible_args(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            ok = svc._write_monitor_args_env_file("compatible")
+        assert ok is True
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--compatible\n"
+
+    def test_writes_empty_args_for_native(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            ok = svc._write_monitor_args_env_file("native")
+        assert ok is True
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=\n"
+
+    def test_write_failure_returns_false(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)), \
+             patch("autostream_sysutils.atomic_write_file", side_effect=OSError("disk full")):
+            ok = svc._write_monitor_args_env_file("compatible")
+        assert ok is False
+
+
+class TestRestartMonitorAsync:
+    def test_fires_restart_monitor_admin_verb_in_background(self):
+        import threading as _threading
+
+        done = _threading.Event()
+
+        def _fake_run_admin_cmd(args, timeout=20.0):
+            done.set()
+            return MagicMock(returncode=0, stderr="")
+
+        with patch.object(svc, "run_admin_cmd", side_effect=_fake_run_admin_cmd) as run_mock:
+            svc._restart_monitor_async("compatible", "native")
+            assert done.wait(timeout=5.0), "restart-monitor worker thread never ran"
+
+        run_mock.assert_called_once_with(["restart-monitor"], timeout=20.0)

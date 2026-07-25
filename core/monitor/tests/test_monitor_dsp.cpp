@@ -472,12 +472,58 @@ static void test_eq_chain_sample_rate_change_recomputes_coefficients()
 
 static void test_output_bytes_per_frame_current_format()
 {
-    // Current compile-time format: 48000 Hz / 32-bit / stereo.
+    // Default (native) runtime format: 48000 Hz / 32-bit / stereo. The
+    // format is runtime-selectable (g_output_format), but no test here
+    // calls main(), so it is still at its default-constructed value.
     CHECK(AudioMonitor::output_rate_hz() == 48000, "output_rate_hz() is 48000");
     CHECK(AudioMonitor::output_bits_per_sample() == 32, "output_bits_per_sample() is 32");
     CHECK(AudioMonitor::output_channels() == 2, "output_channels() is 2");
     CHECK(AudioMonitor::output_bytes_per_frame() == 8,
           "32-bit stereo is 8 bytes/frame (2 channels * 4 bytes)");
+    CHECK(AudioMonitor::output_format_mode() == OutputFormatMode::Native,
+          "output_format_mode() defaults to Native");
+    CHECK(std::string(output_format_mode_name(AudioMonitor::output_format_mode())) == "native",
+          "output_format_mode_name() reports \"native\" for the default descriptor");
+}
+
+// ---------------------------------------------------------------------------
+// g_output_format descriptor -- default (native) and a --compatible-
+// equivalent configuration. Tests the OutputFormatDescriptor
+// struct directly (constructing a local instance) rather than mutating the
+// shared g_output_format global, so this test can't leak state into any
+// test that runs after it in the same binary (test_monitor_dsp's main()
+// below runs everything in one process).
+// ---------------------------------------------------------------------------
+
+static void test_output_format_descriptor_defaults_are_native()
+{
+    OutputFormatDescriptor d;   // default-constructed, same as g_output_format at process start
+    CHECK(d.rate == 48000, "default descriptor rate is 48000");
+    CHECK(d.bits == 32, "default descriptor bits is 32");
+    CHECK(d.channels == 2, "default descriptor channels is 2");
+    CHECK(d.bytes_per_frame() == 8, "default descriptor is 8 bytes/frame");
+    CHECK(d.mode == OutputFormatMode::Native, "default descriptor mode is Native");
+}
+
+static void test_output_format_descriptor_compatible_configuration()
+{
+    // Mirrors exactly what main() sets when --compatible is given
+    // (autostream_monitor.cpp), constructed here as a standalone value so
+    // this test needs no daemon/global-state setup.
+    OutputFormatDescriptor d;
+    d.rate     = 44100;
+    d.bits     = 16;
+    d.channels = 2;
+    d.mode     = OutputFormatMode::Compatible;
+
+    CHECK(d.rate == 44100, "compatible descriptor rate is 44100");
+    CHECK(d.bits == 16, "compatible descriptor bits is 16");
+    CHECK(d.channels == 2, "compatible descriptor channels is 2");
+    CHECK(d.bytes_per_frame() == 4,
+          "compatible (16-bit stereo) descriptor is 4 bytes/frame (2 channels * 2 bytes)");
+    CHECK(d.mode == OutputFormatMode::Compatible, "compatible descriptor mode is Compatible");
+    CHECK(std::string(output_format_mode_name(d.mode)) == "compatible",
+          "output_format_mode_name() reports \"compatible\"");
 }
 
 static void test_output_bytes_per_frame_arithmetic_for_16bit_stereo()
@@ -493,6 +539,59 @@ static void test_output_bytes_per_frame_arithmetic_for_16bit_stereo()
     CHECK(bytes_per_frame_16bit == 4, "16-bit stereo is 4 bytes/frame");
     CHECK(bytes_per_frame_16bit == static_cast<int>(2 * sizeof(int16_t)),
           "matches the 2 * sizeof(int16_t) literal for 16-bit stereo");
+}
+
+// ---------------------------------------------------------------------------
+// Scaling equivalence between the two wire-edge narrowing paths
+// deliver_output() can take for the SAME source
+// float samples --
+//   (a) native:     src_float_to_int_array()  (float -> s32)
+//   (b) compatible: src_float_to_short_array() (float -> s16)
+// deliver_output() itself always runs (a) (needed for the dump tap/prefill
+// buffer regardless of mode) and, in compatible mode, ALSO runs (b) for the
+// wire. The prefill-flush path, however, cannot re-run (b) for
+// already-buffered blocks (the float source is gone by flush time -- see
+// _prefill_buf's declaration comment in autostream_monitor.h) and instead
+// narrows the RETAINED s32 buffer with a plain >>16. This test is the
+// justification for that substitution: it confirms >>16 of libsamplerate's
+// float->s32 output agrees with a direct float->s16 conversion of the same
+// source samples to within 1 LSB, for a representative set of amplitudes
+// (silence, near-full-scale, negative, small, mid-scale, a swept ramp).
+// ---------------------------------------------------------------------------
+
+static void test_float_to_s16_vs_float_to_s32_shifted_scaling_equivalence()
+{
+    std::vector<float> samples = {
+        0.0f, -0.0f,
+        1.0f, -1.0f,
+        0.999f, -0.999f,
+        0.5f, -0.5f,
+        0.1f, -0.1f,
+        0.0001f, -0.0001f,
+        0.7071f, -0.7071f,   // -3 dBFS-ish
+    };
+    // A swept ramp adds broad coverage beyond the hand-picked points above.
+    for (int i = -100; i <= 100; ++i)
+        samples.push_back(static_cast<float>(i) / 100.0f);
+
+    int n = static_cast<int>(samples.size());
+    std::vector<int32_t> as_s32(n);
+    std::vector<int16_t> as_s16(n);
+
+    src_float_to_int_array(samples.data(), as_s32.data(), n);
+    src_float_to_short_array(samples.data(), as_s16.data(), n);
+
+    int max_abs_diff = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        int16_t narrowed = static_cast<int16_t>(as_s32[i] >> 16);
+        int diff = static_cast<int>(narrowed) - static_cast<int>(as_s16[i]);
+        if (diff < 0) diff = -diff;
+        if (diff > max_abs_diff) max_abs_diff = diff;
+    }
+
+    CHECK(max_abs_diff <= 1,
+          "float->s32>>16 agrees with direct float->s16 within 1 LSB across the sample set");
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +639,9 @@ int main()
     // AudioMonitor output format descriptor
     test_output_bytes_per_frame_current_format();
     test_output_bytes_per_frame_arithmetic_for_16bit_stereo();
+    test_float_to_s16_vs_float_to_s32_shifted_scaling_equivalence();
+    test_output_format_descriptor_defaults_are_native();
+    test_output_format_descriptor_compatible_configuration();
 
     // logger_init() above started the dedicated logging thread;
     // it must be stopped before main() returns or the std::thread

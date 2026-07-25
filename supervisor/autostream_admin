@@ -26,6 +26,7 @@ COMMANDS
 Exactly one of:
   reboot [--delay SECONDS] [reason]
   restart-owntone
+  restart-monitor
   update-status
   version-info
   sethostname HOSTNAME
@@ -642,6 +643,30 @@ def restart_owntone() -> bool:
         return True
 
     log("ERROR", f"restart-owntone: failed rc={rc} stderr='{err}' stdout='{out}'")
+    return False
+
+
+def restart_monitor() -> bool:
+    """Restart autostream_monitor.service (FIFO format-switch).
+
+    Invoked by core/autostream_player_service.py's reconcile_monitor_format()
+    after it rewrites /etc/autostream/monitor_args.env, so the new
+    AUTOSTREAM_MONITOR_ARGS (EnvironmentFile=- in
+    system/systemd/autostream_monitor.service) takes effect. Modeled
+    directly on restart_owntone() above.
+    """
+    log("INFO", "restart-monitor: received request")
+    systemctl = find_systemctl()
+    if not systemctl:
+        log("ERROR", "restart-monitor: systemctl not found")
+        return False
+
+    rc, out, err = run_cmd([str(systemctl), "restart", "autostream_monitor"])
+    if rc == 0:
+        log("INFO", "restart-monitor: success")
+        return True
+
+    log("ERROR", f"restart-monitor: failed rc={rc} stderr='{err}' stdout='{out}'")
     return False
 
 
@@ -1402,6 +1427,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
 
     subparsers.add_parser(
+        "restart-monitor",
+        help="Restart the autostream_monitor service.",
+    )
+
+    subparsers.add_parser(
         "update-status",
         help="Print the latest installer update status as JSON.",
     )
@@ -1518,6 +1548,10 @@ def main(argv: list[str]) -> int:
 
         if args.command == "restart-owntone":
             ok = restart_owntone()
+            return 0 if ok else 1
+
+        if args.command == "restart-monitor":
+            ok = restart_monitor()
             return 0 if ok else 1
 
         if args.command == "update-status":

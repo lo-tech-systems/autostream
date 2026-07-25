@@ -52,11 +52,34 @@ float linear_to_dbfs(float peak_linear)
     return std::max(-90.0f, 20.0f * std::log10(peak_linear));
 }
 
+// =============================================================================
+// Output format descriptor
+//
+// See the class/global doc comments in autostream_monitor_utils.h for the
+// full design and publication argument. Default-constructed to native
+// (48000/32/2), so any translation unit that never calls main() (every test
+// binary) observes the native constants unchanged.
+// =============================================================================
+
+OutputFormatDescriptor g_output_format;
+
+const char* output_format_mode_name(OutputFormatMode mode)
+{
+    switch (mode)
+    {
+        case OutputFormatMode::Native:     return "native";
+        case OutputFormatMode::Compatible: return "compatible";
+    }
+    return "native";   // unreachable; keeps -Wreturn-type happy on all compilers
+}
+
 // Replaces OutputDumpWriter's hardcoded 44.1 kHz/16-bit WAV_PLACEHOLDER_HEADER
 // byte array (autostream_monitor_io.cpp)
 // with a header derived from the monitor's actual output format descriptor
-// (AudioMonitor::OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS). Pure function of
-// its arguments so it can be unit-tested without any monitor/ALSA state.
+// (g_output_format, autostream_monitor_utils.h -- formerly the compile-time
+// AudioMonitor::OUTPUT_RATE/OUTPUT_BITS/OUTPUT_CHANNELS). Pure
+// function of its arguments so it can be unit-tested without any
+// monitor/ALSA state.
 std::array<std::uint8_t, 44> build_wav_header(int rate,
                                                int bits,
                                                int channels,

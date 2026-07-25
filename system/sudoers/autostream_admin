@@ -19,6 +19,9 @@ Cmnd_Alias AUTOSTREAM_ADMIN_REBOOT_ND         = /usr/local/libexec/autostream/au
 # allow owntone service restart
 Cmnd_Alias AUTOSTREAM_ADMIN_OWNTONE     = /usr/local/libexec/autostream/autostream_admin restart-owntone
 
+# allow autostream_monitor service restart (FIFO format-switch)
+Cmnd_Alias AUTOSTREAM_ADMIN_MONITOR     = /usr/local/libexec/autostream/autostream_admin restart-monitor
+
 # allow read-only access to update status for offline nginx pages
 Cmnd_Alias AUTOSTREAM_ADMIN_UPDATE_STATUS = /usr/local/libexec/autostream/autostream_admin update-status
 Cmnd_Alias AUTOSTREAM_ADMIN_VERSION_INFO  = /usr/local/libexec/autostream/autostream_admin version-info
@@ -45,6 +48,7 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URSE_DELAY, \
                               AUTOSTREAM_ADMIN_REBOOT_ND,         \
                               AUTOSTREAM_ADMIN_OWNTONE,           \
+                              AUTOSTREAM_ADMIN_MONITOR,           \
                               AUTOSTREAM_ADMIN_UPDATE_STATUS,     \
                               AUTOSTREAM_ADMIN_VERSION_INFO,      \
                               AUTOSTREAM_ADMIN_HOST,              \

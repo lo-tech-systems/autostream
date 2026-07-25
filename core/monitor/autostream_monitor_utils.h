@@ -65,6 +65,69 @@ inline constexpr std::int32_t widen_s16_to_s32(std::int16_t sample)
 
 
 // =============================================================================
+// Output format descriptor
+//
+// Replaces the compile-time AudioMonitor::OUTPUT_RATE/OUTPUT_BITS/
+// OUTPUT_CHANNELS constexprs with a process-wide runtime descriptor, so a
+// single binary can serve either wire format:
+//
+//   - "native"     48000 Hz / 32-bit / 2ch -- the default.
+//   - "compatible" 44100 Hz / 16-bit / 2ch -- for stock (upstream) OwnTone and
+//                  pre-48k owntone-mini builds, whose named-pipe input is
+//                  fixed at 44.1k/16 and cannot be reconfigured.
+//
+// The wire-edge narrowing happens at both producer edges: deliver_output()
+// (autostream_monitor_io.cpp) branches once per block between float -> int32
+// (native) and float -> int16 (compatible, src_float_to_short_array), and
+// ReplayEngine's convert_to_pipe_format() (autostream_repeat.cpp) branches
+// the same way between <<16 widening (native) and s16 passthrough
+// (compatible). Both modes are fully functional -- --compatible starts and
+// produces a byte-correct 44.1kHz/16-bit wire.
+// =============================================================================
+
+enum class OutputFormatMode
+{
+    Native,      // 48000 Hz / 32-bit / 2ch (default)
+    Compatible,  // 44100 Hz / 16-bit / 2ch (--compatible)
+};
+
+// Human-readable mode name used both in the "output_format" status JSON
+// field and in log lines ("native" / "compatible").
+const char* output_format_mode_name(OutputFormatMode mode);
+
+struct OutputFormatDescriptor
+{
+    int rate     = 48000;
+    int bits     = 32;
+    int channels = 2;
+    OutputFormatMode mode = OutputFormatMode::Native;
+
+    // Bytes per interleaved output frame (all channels). Derived, never
+    // hand-rolled, so a future format never drifts from this single source
+    // of truth (mirrors the historical AudioMonitor::output_bytes_per_frame()
+    // rationale).
+    int bytes_per_frame() const { return channels * (bits / 8); }
+};
+
+// Process-wide output format descriptor. Default-constructed to native
+// (48000/32/2), matching the native compile-time constants exactly so every
+// consumer that never calls main() (i.e. every test binary) sees the
+// defaults unchanged.
+//
+// Publication argument (same as g_test_pin_src_ratio in
+// autostream_monitor_dsp.cpp): main() writes this exactly once, from
+// command-line parsing, strictly before AudioMonitor is constructed and
+// therefore strictly before any capture/process/control/repeat thread is
+// started. From that point on it is read-only for the remainder of the
+// process. A plain global with no atomics/locking is therefore sufficient --
+// there is no concurrent writer, and every reader thread's first read
+// happens-after main()'s write via the thread-creation calls that precede it
+// (the same happens-before argument the C++ standard gives std::thread
+// construction). Defined in autostream_monitor_utils.cpp.
+extern OutputFormatDescriptor g_output_format;
+
+
+// =============================================================================
 // Timing
 // =============================================================================
 

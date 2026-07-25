@@ -1274,6 +1274,7 @@ void InputChannel::process_thread_func()
     _float_in.resize(static_cast<size_t>(MAX_FRAMES) * 2);         // interleaved float
     _float_out.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);    // post-SRC float
     _pcm_out.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);      // final int32
+    _pcm_out16.resize(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);    // compatible-mode int16
     // ID-tap scratch (downmix, resample, clamp) lives inside _id_tap
     // (IdTapResampler) -- pre-sized in start() from this same MAX_SRC_OUTPUT
     // bound.
@@ -2061,8 +2062,30 @@ void InputChannel::deliver_output(int out_frames)
         // container representation. src_float_to_int_array is libsamplerate's
         // full-32-bit-scale counterpart to src_float_to_short_array -- see
         // resample_block()'s matching src_int_to_float_array comment.
+        //
+        // This conversion runs UNCONDITIONALLY, in both output modes, not
+        // just native: the dump tap below always wants the internal 32-bit
+        // representation regardless of wire mode (see its comment), and the
+        // pre-fill accumulator also always stays int32 (see _prefill_buf's
+        // declaration comment in autostream_monitor.h). It is therefore
+        // "needed anyway" per the dataflow note there -- compatible mode
+        // does NOT skip it, it only does the ADDITIONAL float -> int16
+        // conversion below for the wire itself.
         src_float_to_int_array(_float_out.data(), _pcm_out.data(),
                                 out_frames * 2);
+
+        // Compatible-mode wire scratch: the ADDITIONAL float -> int16
+        // conversion (src_float_to_short_array, the pre-48k-migration path
+        // resurrected), computed only when the wire itself is narrower than
+        // the internal representation. Native mode never touches
+        // _pcm_out16 and pays no cost for it beyond the one-time resize at
+        // thread entry.
+        bool compatible = AudioMonitor::output_format_mode() == OutputFormatMode::Compatible;
+        if (compatible)
+        {
+            src_float_to_short_array(_float_out.data(), _pcm_out16.data(),
+                                      out_frames * 2);
+        }
 
         // ── Engineering output dump tap ───────────────────────
         // First point where the signal is complete (32-bit container)
@@ -2070,12 +2093,37 @@ void InputChannel::deliver_output(int out_frames)
         // and auto-trim.  submit_block() is non-blocking: it
         // copies into a bounded SPSC ring or drops and counts
         // frames if the ring is full — never delays this thread.
+        //
+        // Tapped from _pcm_out (int32) in BOTH modes, unconditionally --
+        // the dump documents the internal DSP output, not the wire (see
+        // OutputDumpWriter's class comment), so it must never depend on
+        // which wire-edge branch below actually ran. Tapping here, before
+        // the wire narrowing, is also the cheapest correct dataflow: it
+        // reuses the int32 conversion above (already "needed anyway") rather
+        // than re-deriving int32 from a narrower wire buffer.
         _dump_writer.submit_block(_pcm_out.data(), out_frames);
+
+        // Format-agnostic wire pointer: native points at _pcm_out (int32),
+        // compatible at _pcm_out16 (int16). AudioMonitor::
+        // output_bytes_per_frame() already returns the correct per-frame
+        // byte count for whichever mode is active (8 native, 4 compatible),
+        // so every write() call below just multiplies a FRAME count by that
+        // single source of truth -- no other byte math changes between
+        // modes.
+        const void* wire_ptr = compatible
+            ? static_cast<const void*>(_pcm_out16.data())
+            : static_cast<const void*>(_pcm_out.data());
+        const size_t wire_sample_size = compatible ? sizeof(int16_t) : sizeof(int32_t);
 
         if (_prefill_frames_remaining > 0)
         {
             // Accumulation phase: append to the pre-fill buffer.
             // Do not write to the FIFO yet.
+            //
+            // Always accumulates from _pcm_out (int32) regardless of wire
+            // mode -- see _prefill_buf's declaration comment in
+            // autostream_monitor.h for why the buffer itself stays int32 in
+            // both modes and the narrowing is deferred to the flush below.
             const int32_t* src_ptr = _pcm_out.data();
             int to_add = std::min(out_frames, _prefill_frames_remaining);
             _prefill_buf.insert(_prefill_buf.end(),
@@ -2099,15 +2147,43 @@ void InputChannel::deliver_output(int out_frames)
                 // "stereo" comment) -- AudioMonitor::OUTPUT_CHANNELS itself
                 // is private and not reachable from InputChannel.
                 size_t prefill_frames = _prefill_buf.size() / 2;
-                _shared_fifo.write(_prefill_buf.data(),
-                                   prefill_frames * AudioMonitor::output_bytes_per_frame());
+
+                if (compatible)
+                {
+                    // Narrow the retained int32 pre-fill buffer to int16 for
+                    // the wire. A plain >>16 (the exact inverse of
+                    // widen_s16_to_s32()), not a fresh float->int16 pass:
+                    // the per-sample float source for the already-buffered
+                    // blocks is gone by now, and test_monitor_dsp's
+                    // scaling-equivalence coverage confirms this narrowing
+                    // agrees with a direct float->s16 conversion to within
+                    // 1 LSB, so the two paths are interchangeable.
+                    std::vector<int16_t> prefill16(prefill_frames * 2);
+                    for (size_t i = 0; i < prefill16.size(); ++i)
+                        prefill16[i] = static_cast<int16_t>(_prefill_buf[i] >> 16);
+                    _shared_fifo.write(prefill16.data(),
+                                       prefill_frames * AudioMonitor::output_bytes_per_frame());
+                }
+                else
+                {
+                    _shared_fifo.write(_prefill_buf.data(),
+                                       prefill_frames * AudioMonitor::output_bytes_per_frame());
+                }
                 _prefill_buf.clear();
                 _prefill_buf.shrink_to_fit();
 
                 int remainder = out_frames - to_add;
                 if (remainder > 0)
-                    _shared_fifo.write(src_ptr + static_cast<size_t>(to_add) * 2,
+                {
+                    // The remainder is still part of THIS block, so (in
+                    // compatible mode) _pcm_out16 -- already computed above
+                    // from the live float source -- covers it exactly; no
+                    // narrowing needed here, unlike the buffered part.
+                    const uint8_t* remainder_ptr = static_cast<const uint8_t*>(wire_ptr)
+                        + static_cast<size_t>(to_add) * 2 * wire_sample_size;
+                    _shared_fifo.write(remainder_ptr,
                                        static_cast<size_t>(remainder) * AudioMonitor::output_bytes_per_frame());
+                }
 
                 LOG_DEBUG("[input%d] Pre-fill complete; first FIFO write done",
                           _index);
@@ -2116,7 +2192,7 @@ void InputChannel::deliver_output(int out_frames)
         else
         {
             // Normal phase: write directly to the FIFO.
-            _shared_fifo.write(_pcm_out.data(),
+            _shared_fifo.write(wire_ptr,
                                static_cast<size_t>(out_frames) * AudioMonitor::output_bytes_per_frame());
         }
     }

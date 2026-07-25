@@ -284,4 +284,12 @@ class OwnToneBackend(OwnToneHttpBackendBase):
     def list_supported_settings(self) -> list[SettingDescriptor]:
         return []
 
+    def required_monitor_format(self) -> Optional[str]:
+        """Always "compatible": upstream OwnTone's named-pipe input is fixed
+        at 44100 Hz / 16-bit / 2ch, with no settings surface to change it
+        (see get_setting()/save_setting() above -- normalized settings are
+        entirely unsupported by this adapter). There is nothing to probe.
+        """
+        return "compatible"
+
 REGISTRY.register(OwnToneBackend)

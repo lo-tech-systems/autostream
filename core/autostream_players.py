@@ -352,6 +352,35 @@ class PlayerBackend(ABC):
     def list_supported_settings(self) -> list[SettingDescriptor]:
         """Return normalized settings that this backend supports."""
 
+    def required_monitor_format(self) -> Optional[str]:
+        """Return the monitor pipe-input format this backend expects.
+
+        One of:
+          - ``"native"``     -- 48000 Hz / 32-bit / 2ch (autostream_monitor's
+            default, no ``--compatible`` flag).
+          - ``"compatible"`` -- 44100 Hz / 16-bit / 2ch (monitor started with
+            ``--compatible``).
+          - ``None``         -- unknown right now (e.g. the backend is
+            unreachable). Callers MUST treat ``None`` as "take no
+            enforcement action this pass", never as either concrete format.
+
+        This is a concrete (non-abstract) method with a deliberate default
+        of ``"compatible"``, not ``"native"``. That default is the safe
+        answer for any backend that does not override it -- including
+        third-party backends added after this contract existed (see
+        docs/ADDING-AUDIO-BACKEND.md) and any adapter that has not been
+        taught the native/compatible distinction. A compatible-mode
+        monitor's 44.1kHz/16-bit wire format is what a fixed, un-configurable
+        pipe input already expects (that is exactly the official OwnTone
+        adapter's situation below), so it is universally consumable;
+        defaulting to "native" instead would silently start feeding a
+        48kHz/32-bit stream to a backend that never declared it could
+        accept one. Backends that actually support/require the native
+        format (e.g. a probed owntone-mini build with settable pipe-format
+        keys) must override this method to say so.
+        """
+        return "compatible"
+
 
 class PlayerBackendRegistry:
     """Simple registry for backend implementations."""

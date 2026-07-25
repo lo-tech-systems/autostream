@@ -51,6 +51,7 @@ from autostream_player_service import (
     ensure_pipe_source_ready,
     list_outputs,
     reconcile_fifo_with_backend,
+    reconcile_monitor_format,
     reconcile_pipe_format_with_backend,
     refresh_runtime_state,
     retry_pending_format_reconcile,
@@ -3071,6 +3072,32 @@ def _resync_monitor_daemon(
         client.close()
         return False
 
+    # Monitor-format reconcile: sequenced BEFORE the pipe-format
+    # (owntone-mini-side) reconcile below, deliberately. If the active
+    # backend's required_monitor_format() disagrees with what the monitor is
+    # currently running as, this rewrites the monitor's env-file arg and
+    # requests a monitor restart -- which tears down this very connection and
+    # re-enters this function via the reconnect path, so the pipe-format
+    # reconcile immediately below would otherwise chase a monitor report that
+    # is about to change out from under it. Running monitor-format first
+    # means: on the pass where a restart is requested, the pipe-format
+    # reconcile below still runs against the (about-to-be-stale) pre-restart
+    # report -- harmless, since it is idempotent and simply gets superseded
+    # by the reconcile that naturally happens once the daemon reconnects
+    # post-restart -- but on every subsequent pass (once the monitor is
+    # already running the format the backend wants), it is a same-order
+    # no-op ahead of a real pipe-format sync. Never fails the caller (see
+    # docstring above).
+    format_status = client.get_status()
+    monitor_format_result = reconcile_monitor_format(
+        owntone_base_url, format_status, timeout=3.0,
+    )
+    if monitor_format_result.error or monitor_format_result.error_code:
+        logging.debug(
+            "Monitor-format reconcile during monitor-daemon reconnect: %s",
+            monitor_format_result.message,
+        )
+
     # Format reconcile: sequenced
     # after the FIFO-path reconcile above, not before, because a monitor
     # reconnect is exactly the moment the daemon's (compile-time) output
@@ -3084,7 +3111,6 @@ def _resync_monitor_daemon(
     # HTTP call, already complete by the time we get here -- it never invokes
     # restart-owntone, so there is nothing in flight for the format reconcile's
     # (possible) real process restart to race with.
-    format_status = client.get_status()
     format_result = reconcile_pipe_format_with_backend(
         owntone_base_url, format_status, timeout=3.0,
     )
@@ -3444,6 +3470,23 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 time.sleep(5.0)
                 continue
 
+            # Monitor-format reconcile, same placement logic as the reconnect
+            # path in _resync_monitor_daemon: sequenced BEFORE the
+            # pipe-format (owntone-mini-side) reconcile below, since a
+            # monitor restart requested here re-enters this startup loop via
+            # the `client.connect()` retry above and the pipe-format
+            # reconcile naturally re-runs against the post-restart report on
+            # that next lap. Unconditionally non-fatal to startup.
+            format_status = client.get_status()
+            monitor_format_result = reconcile_monitor_format(
+                cfg.owntone.base_url, format_status, timeout=3.0,
+            )
+            if monitor_format_result.error or monitor_format_result.error_code:
+                logging.debug(
+                    "Monitor-format reconcile during startup: %s",
+                    monitor_format_result.message,
+                )
+
             # Format reconcile, same
             # placement logic as the reconnect path in _resync_monitor_daemon:
             # sequenced after the FIFO-path reconcile (whose own restart-
@@ -3451,7 +3494,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             # finished by now -- nothing for a real process restart to race
             # with), and unconditionally non-fatal to startup, mirroring
             # fifo_result's own soft-failure-tolerant siblings below.
-            format_status = client.get_status()
             format_result = reconcile_pipe_format_with_backend(
                 cfg.owntone.base_url, format_status, timeout=3.0,
             )

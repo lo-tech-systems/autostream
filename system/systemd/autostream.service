@@ -2,7 +2,20 @@
 Description=Autostream audio coordinator
 After=sound.target autostream_monitor.service vibra-mini.service
 Wants=autostream_monitor.service vibra-mini.service
-Requires=autostream_monitor.service
+# Deliberately NOT Requires=autostream_monitor.service: a hard Requires=
+# means systemd stops autostream.service whenever autostream_monitor.service
+# is stopped for ANY reason -- including a plain `systemctl restart
+# autostream_monitor` (stop-then-start), which propagates a SIGTERM to this
+# unit too, killing the very admin call that requested the monitor restart.
+# That restart is routine: core/autostream_player_service.py's
+# reconcile_monitor_format() fires it via the "restart-monitor" admin
+# verb whenever the monitor's --compatible arg needs to change, and
+# autostream's own MonitorClient already has reconnect/resync machinery
+# built specifically to ride out a monitor restart or crash -- so autostream
+# does not need, and must not take, a hard dependency on the monitor's
+# lifecycle. Wants= (above) plus After= still give correct boot-time
+# ordering (start the monitor first, but don't fail/stop autostream if it
+# isn't up) without coupling the two services' running state together.
 
 [Service]
 # Run as the autostream user

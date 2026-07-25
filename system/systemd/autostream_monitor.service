@@ -16,8 +16,16 @@ Group=autostream
 UMask=022
 WorkingDirectory=/opt/autostream
 
+# FIFO format-switch: optional file supplying AUTOSTREAM_MONITOR_ARGS
+# (currently only ever "--compatible" or empty). The leading "-" makes a
+# missing file non-fatal, so a fresh install with no file yet still starts
+# the monitor in native (default) mode. Written by autostream_player_service
+# (core/autostream_player_service.py, reconcile_monitor_format()) as the
+# autostream user -- /etc/autostream is owned by autostream:autostream.
+EnvironmentFile=-/etc/autostream/monitor_args.env
+
 # Long-lived audio capture daemon used by autostream_core.py
-ExecStart=/opt/autostream/monitor/autostream_monitor
+ExecStart=/opt/autostream/monitor/autostream_monitor $AUTOSTREAM_MONITOR_ARGS
 
 Restart=on-failure
 RestartSec=5
