@@ -153,9 +153,16 @@ class TestSessionActiveGatesNowPlayingCard:
 
 class TestReplayHeading:
     def test_heading_source_gate_present(self, home_html):
+        # The local page leaves window.__REMOTE_HOSTNAME unset, so hdrSuffix
+        # resolves to '' and the local heading renders with no hostname
+        # suffix.
         assert (
-            "hdrEl.textContent = active ? (sessionSource === 'replay' ? "
-            "'REPEAT PLAYBACK' : 'Now Playing') : 'Ready';" in home_html
+            "hdrEl.textContent = (active ? (sessionSource === 'replay' ? "
+            "'REPEAT PLAYBACK' : 'Now Playing') : 'Ready') + hdrSuffix;" in home_html
+        )
+        assert (
+            "var hdrSuffix = window.__REMOTE_HOSTNAME ? (' · ' + window.__REMOTE_HOSTNAME) : '';"
+            in home_html
         )
 
     def test_session_source_read_as_string_with_type_guard(self, home_html):
@@ -220,7 +227,7 @@ class TestOptimisticClickState:
         # refreshStatus()/updateRepeatButton() poll cycle already wired at
         # DOMContentLoaded.
         opt_block = home_html.split("var __repeatOptimistic = null;", 1)[1]
-        opt_block = opt_block.split("function isActiveControl", 1)[0]
+        opt_block = opt_block.split("function getOutputIdKey", 1)[0]
         assert "setTimeout" not in opt_block
         assert "setInterval" not in opt_block
 
@@ -345,18 +352,23 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
 
 # ---------------------------------------------------------------------------
 # Client-side fix 2: track-ID render reachable during replay without a live
-# activeLevel, in both the pretty (updateNowPlayingCard) and minified
-# (renderHomeState) copies.
+# activeLevel. The now-playing/session logic (formerly duplicated as
+# updateNowPlayingCard on the local page and an inline copy inside the
+# remote page's renderHomeState) now lives in a single shared function,
+# renderNowPlayingCard (core/autostream_webui_assets.py::HOME_CARDS_SCRIPT),
+# embedded byte-for-byte on both pages -- so these assertions are checked
+# once against home_html and, separately, that the remote page's own
+# renderHomeState delegates to it rather than re-implementing it.
 # ---------------------------------------------------------------------------
 
-class TestClientRendersTrackIdDuringReplayPrettyCopy:
+class TestClientRendersTrackIdDuringReplay:
     def test_replay_origin_resolved_before_arbitrary_levels_zero_fallback(self, home_html):
         # The origin-input resolution block must appear, and appear textually
         # before the pre-existing "pick levels[0]" fallback so it takes
         # priority when both could apply.
-        pretty_src = home_html.split("function updateNowPlayingCard(data)", 1)[1]
-        origin_idx = pretty_src.index("sessionSource === 'replay'")
-        fallback_idx = pretty_src.index(
+        src = home_html.split("function renderNowPlayingCard(data)", 1)[1]
+        origin_idx = src.index("sessionSource === 'replay'")
+        fallback_idx = src.index(
             "if (!activeLevel && levels.length > 0) { activeLevel = levels[0]; activeIdx = 0; }"
         )
         assert origin_idx < fallback_idx
@@ -372,7 +384,7 @@ class TestClientRendersTrackIdDuringReplayPrettyCopy:
         assert "var recording = repeat.recording || {};" in home_html
         assert (
             "var originInput = Number.isFinite(Number(recording.origin_input))\n"
-            "              ? Number(recording.origin_input) : null;" in home_html
+            "        ? Number(recording.origin_input) : null;" in home_html
         )
 
     def test_vu_ingest_skipped_for_replay_origin_fallback(self, home_html):
@@ -384,10 +396,7 @@ class TestClientRendersTrackIdDuringReplayPrettyCopy:
 
 
 def _render_remote_home_page() -> str:
-    """Render send_remote_home_page's markup -- the only place _REMOTE_HOME_SCRIPT
-    (the minified renderHomeState copy) is emitted; send_airplay_page (used by
-    home_html above) never includes it.
-    """
+    """Render send_remote_home_page's markup."""
     from autostream_webui_page_airplay import send_remote_home_page
 
     handler = MagicMock()
@@ -419,29 +428,21 @@ def remote_home_html() -> str:
     return _render_remote_home_page()
 
 
-class TestClientRendersTrackIdDuringReplayMinifiedCopy:
-    def test_render_home_state_gains_session_active_flag(self, remote_home_html):
-        # This copy must carry a session-derived `active` flag: without it,
-        # replay (isPlaying always false) skips the whole else-branch
-        # containing the track-ID render logic.
-        assert (
-            "var session=(data&&data.session)||null;"
-            "var sessionActive=(session&&typeof session.active==='boolean')?!!session.active:null;"
-            "var sessionSource=(session&&typeof session.source==='string')?session.source:null;"
-            "var active=(sessionActive!==null)?sessionActive:isPlaying;" in remote_home_html
-        )
+class TestRemoteHomeDelegatesToSharedNowPlayingRenderer:
+    def test_remote_render_home_state_calls_shared_renderer(self, remote_home_html):
+        # renderHomeState (remote-only output/warnings orchestration) must
+        # delegate the now-playing/session/track-ID logic to the shared
+        # renderNowPlayingCard rather than re-implementing it inline.
+        assert "function renderHomeState(data){\n  renderNowPlayingCard(data);" in remote_home_html
 
-    def test_render_home_state_gates_on_active_not_is_playing(self, remote_home_html):
-        assert "if(card)card.classList.toggle('np-ready',!active);" in remote_home_html
-        assert "if(!active){_vuActiveIdx=-1;_vuQueue={};updateVuBars(-90,-90);}else{" in remote_home_html
+    def test_remote_page_embeds_shared_now_playing_renderer(self, remote_home_html):
+        assert "function renderNowPlayingCard(data)" in remote_home_html
 
-    def test_render_home_state_resolves_replay_origin_before_levels_zero_fallback(self, remote_home_html):
-        minified_src = remote_home_html.split("function renderHomeState(data){", 1)[1]
-        origin_idx = minified_src.index("sessionSource==='replay'")
-        fallback_idx = minified_src.index(
-            "if(!activeLevel&&levels.length>0){activeLevel=levels[0];activeIdx=0;}"
-        )
-        assert origin_idx < fallback_idx
+    def test_shared_script_is_byte_identical_on_both_pages(self, home_html, remote_home_html):
+        # Regression guard for the refactor itself: both pages must embed
+        # the exact same HOME_CARDS_SCRIPT text, not independently
+        # hand-maintained copies that can drift apart again.
+        from autostream_webui_assets import HOME_CARDS_SCRIPT
 
-    def test_render_home_state_vu_ingest_skipped_for_replay_origin(self, remote_home_html):
-        assert "if(!usingReplayOrigin)vuIngestHistory(activeIdx,activeLevel.vu_history);" in remote_home_html
+        assert HOME_CARDS_SCRIPT in home_html
+        assert HOME_CARDS_SCRIPT in remote_home_html

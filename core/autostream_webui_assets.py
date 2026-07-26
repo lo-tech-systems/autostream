@@ -1285,6 +1285,765 @@ APPLIANCE_SELECTOR_CSS = """
 """
 
 
+# Card/now-playing rendering shared by the local Home page
+# (send_airplay_page) and the remote-control Home shell
+# (send_remote_home_page). Both pages embed this once and layer their own
+# page-specific polling loop (local: /api/status + /api/owntone/outputs_state;
+# remote: /api/appliances/<id>/home) on top of it.
+#
+# Parameterization points read from page-specific `window.*` globals set in
+# each page's own inline <script> block before this one runs:
+#   window.__OUTPUT_URL           -- output POST endpoint (defaults to
+#                                     '/api/output' for the local page)
+#   window.__PIN_PROMPT_FALLBACK  -- native window.prompt() label used only
+#                                     if the PIN modal DOM is missing
+#                                     (defaults to 'Enter PIN')
+#   window.__REMOTE_HOSTNAME      -- when set, appended to the Now Playing
+#                                     header as ' · <hostname>'; the local
+#                                     page leaves this unset so its header
+#                                     carries no suffix
+#   window.__SELECTOR_CURRENT_ID  -- appliance id considered "current" by
+#                                     the appliance-selector widget
+HOME_CARDS_SCRIPT = """
+<script>
+  function normalizeVolume(v){
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(100, Math.round(n)));
+  }
+  function formatVolume(v){
+    return String(normalizeVolume(v)) + '%';
+  }
+  function updateVolumeLabel(id,v){var s=document.getElementById('vol_label_'+id);if(s)s.textContent=formatVolume(v);}
+  function isActiveControl(el) {
+    return el && document.activeElement === el;
+  }
+  function reorderOutputCards(){
+    const list = document.getElementById('outputs-list');
+    if (!list) return;
+    const cards = Array.from(list.querySelectorAll('.output-card'));
+    cards.sort((a, b) => {
+      const da = a.getAttribute('data-is-default') === '1' ? 1 : 0;
+      const db = b.getAttribute('data-is-default') === '1' ? 1 : 0;
+      if (db !== da) return db - da;
+      const la = a.querySelector('.output-card-name');
+      const lb = b.querySelector('.output-card-name');
+      const na = ((la && la.textContent) || '').trim().toLowerCase();
+      const nb = ((lb && lb.textContent) || '').trim().toLowerCase();
+      return na.localeCompare(nb);
+    });
+    cards.forEach(card => list.appendChild(card));
+  }
+  function updateOutputStateVisual(id, selected){
+    const cb = document.getElementById('output_enabled_' + id);
+    if (cb && cb.disabled) return;
+    const chip = document.getElementById('output_state_' + id);
+    const card = document.getElementById('output_card_' + id);
+    const wrap = document.getElementById('output_slider_wrap_' + id);
+    if (chip) {
+      chip.textContent = selected ? 'On' : 'Off';
+      chip.classList.toggle('on', !!selected);
+      chip.classList.toggle('off', !selected);
+    }
+    if (card) {
+      card.classList.toggle('output-card-on', !!selected);
+      card.classList.toggle('output-card-off', !selected);
+    }
+    if (wrap) {
+      wrap.hidden = !selected;
+    }
+  }
+
+  function showPinModal(outputName){
+    return new Promise((resolve) => {
+      const m = document.getElementById('pinModal');
+      const title = document.getElementById('pinModalTitle');
+      const input = document.getElementById('pinModalInput');
+      const btnOk = document.getElementById('pinModalOk');
+      const btnCancel = document.getElementById('pinModalCancel');
+      if (!m || !input || !btnOk || !btnCancel) {
+        // Fallback to native prompt if our modal is missing for any reason.
+        const fallbackLabel = window.__PIN_PROMPT_FALLBACK || 'Enter PIN';
+        const v = window.prompt(fallbackLabel + (outputName ? ' ('+outputName+')' : '') + ':', '');
+        resolve(v && String(v).trim() ? String(v).trim() : null);
+        return;
+      }
+      title.textContent = outputName ? ('Enter PIN for ' + outputName) : 'Enter PIN';
+      input.value = '';
+      m.classList.add('show');
+      // iOS: defer focus slightly so the keyboard reliably appears.
+      setTimeout(() => { try { input.focus(); } catch (e) {} }, 60);
+
+      const cleanup = (val) => {
+        m.classList.remove('show');
+        btnOk.onclick = null;
+        btnCancel.onclick = null;
+        input.onkeydown = null;
+        resolve(val);
+      };
+      btnCancel.onclick = () => cleanup(null);
+      btnOk.onclick = () => {
+        const v = (input.value || '').trim();
+        cleanup(v ? v : null);
+      };
+      input.onkeydown = (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); btnOk.click(); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); btnCancel.click(); }
+      };
+    });
+  }
+
+  function showInfoModal(title, message){
+    return new Promise((resolve) => {
+      const m = document.getElementById('infoModal');
+      const titleEl = document.getElementById('infoModalTitle');
+      const msgEl = document.getElementById('infoModalMessage');
+      const btnOk = document.getElementById('infoModalOk');
+      if (!m || !titleEl || !msgEl || !btnOk) {
+        // Fallback to native alert if our modal is missing for any reason.
+        window.alert(title + ': ' + message);
+        resolve();
+        return;
+      }
+      titleEl.textContent = title;
+      msgEl.textContent = message;
+      m.classList.add('show');
+
+      const cleanup = () => {
+        m.classList.remove('show');
+        btnOk.onclick = null;
+        document.removeEventListener('keydown', onKey);
+        resolve();
+      };
+      const onKey = (ev) => {
+        if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); }
+      };
+      btnOk.onclick = () => cleanup();
+      document.addEventListener('keydown', onKey);
+    });
+  }
+
+  function computeMasterVolume(){
+    var sum=0, count=0;
+    document.querySelectorAll('.output-card').forEach(function(card){
+      var id=card.getAttribute('data-output-id');
+      if(!id) return;
+      var cb=document.getElementById('output_enabled_'+id);
+      var sl=document.getElementById('vol_slider_'+id);
+      if(cb && cb.checked && sl){sum+=normalizeVolume(sl.value);count++;}
+    });
+    return count>0 ? Math.round(sum/count) : null;
+  }
+  function updateMasterVolumeCard(){
+    var card=document.getElementById('master-volume-card');
+    var sl=document.getElementById('master_vol_slider');
+    if(!card||!sl) return;
+    var v=computeMasterVolume();
+    var inactive=(v===null);
+    var val=inactive?(window.__PRESET_VOLUME||20):v;
+    card.classList.toggle('master-volume-inactive',inactive);
+    sl.disabled=inactive;
+    if(String(sl.value)!==String(val)) sl.value=String(val);
+  }
+  function onMasterVolumeDragStart(){
+    var sl=document.getElementById('master_vol_slider');
+    if(!sl||sl.disabled) return;
+    var snaps={};
+    document.querySelectorAll('.output-card').forEach(function(card){
+      var id=card.getAttribute('data-output-id');
+      if(!id) return;
+      var cb=document.getElementById('output_enabled_'+id);
+      var vs=document.getElementById('vol_slider_'+id);
+      if(cb&&cb.checked&&vs) snaps[id]=normalizeVolume(vs.value);
+    });
+    window.__MASTER_DRAG_SNAPSHOTS=snaps;
+    window.__MASTER_DRAG_BASE=normalizeVolume(sl.value);
+  }
+  function _applyMasterScale(newMaster){
+    var snaps=window.__MASTER_DRAG_SNAPSHOTS||{};
+    var base=typeof window.__MASTER_DRAG_BASE==='number'?window.__MASTER_DRAG_BASE:0;
+    var nm=normalizeVolume(newMaster);
+    Object.keys(snaps).forEach(function(id){
+      var sl=document.getElementById('vol_slider_'+id);
+      if(!sl) return;
+      var nv=base>0?Math.round(snaps[id]*nm/base):nm;
+      nv=Math.max(0,Math.min(100,nv));
+      sl.value=String(nv);
+      updateVolumeLabel(id,nv);
+    });
+  }
+  function onMasterVolumeInput(v){
+    _applyMasterScale(v);
+  }
+  function onMasterVolumeChange(v){
+    _applyMasterScale(v);
+    var snaps=window.__MASTER_DRAG_SNAPSHOTS||{};
+    Object.keys(snaps).forEach(function(id){ sendUpdate(id); });
+    window.__MASTER_DRAG_SNAPSHOTS={};
+  }
+
+  function handleHomeSessionRejected(response){
+    const status = Number(response && response.status);
+    if (status !== 401 && status !== 403) return false;
+    if (window.__HOME_SESSION_REFRESHING) return true;
+    window.__HOME_SESSION_REFRESHING = true;
+    window.location.reload();
+    return true;
+  }
+
+  async function postOutputUpdate(id, selected, volume){
+    const r = await fetch(window.__OUTPUT_URL || '/api/output',{
+      method:'POST',
+      credentials:'same-origin',
+      signal: AbortSignal.timeout(5000),
+      headers:{
+        'Content-Type':'application/json',
+        'X-CSRF-Token':window.__CSRF||''
+      },
+      body:JSON.stringify({
+        id:id,
+        selected:!!selected,
+        volume:parseInt(volume||0,10)||0,
+        csrf_token: window.__CSRF||''
+      })
+    });
+    if (handleHomeSessionRejected(r)) return { ok:false, _http:r.status, session_rejected:true };
+    // Server replies JSON for this endpoint (including failures)
+    let j = null;
+    try { j = await r.json(); } catch (e) { j = { ok: r.ok }; }
+    j._http = r.status;
+    return j;
+  }
+
+  async function postPinOnly(id, pin) {
+    const r = await fetch(window.__OUTPUT_URL || '/api/output', {
+      method:'POST',
+      credentials:'same-origin',
+      signal: AbortSignal.timeout(5000),
+      headers:{
+        'Content-Type':'application/json',
+        'X-CSRF-Token':window.__CSRF||''
+      },
+      body:JSON.stringify({
+        op:'pin',
+        id:id,
+        pin: String(pin||'').trim(),
+        csrf_token: window.__CSRF||''
+      })
+    });
+    if (handleHomeSessionRejected(r)) return { ok:false, _http:r.status, session_rejected:true };
+    let j = null;
+    try { j = await r.json(); } catch (e) { j = { ok: r.ok }; }
+    j._http = r.status;
+    return j;
+  }
+
+  async function sendUpdate(id){
+    const c=document.getElementById('output_enabled_'+id), s=document.getElementById('vol_slider_'+id);
+    if (c && c.disabled) return;
+    const selected = c?c.checked:false;
+    const volume = s?normalizeVolume(parseInt(s.value,10)):0;
+    window.__PENDING_OUTPUTS.add(String(id));
+    try {
+      let j = null;
+      try {
+        j = await postOutputUpdate(id, selected, volume);
+      } catch (e) {
+        // Network error or 5 s abort -> let periodic refresh reconcile UI.
+        return;
+      }
+
+      if (selected && j && j.error === 'output_in_use') {
+        if (c) { c.checked = false; updateOutputStateVisual(String(id), false); }
+        return;
+      }
+
+      // Output card name, shared by the encoder-capacity and PIN branches below.
+      let nm = '';
+      try {
+        const card = c ? c.closest('.output-card') : null;
+        const label = card ? card.querySelector('.output-card-name') : null;
+        nm = label ? (label.textContent || '').trim() : '';
+      } catch (e) {}
+
+      if (selected && j && j.error === 'encoder_capacity') {
+        if (c) { c.checked = false; updateOutputStateVisual(String(id), false); }
+        showInfoModal('CPU limit reached',
+          'Unable to enable ' + (nm || 'this output') + ': the appliance\\'s CPU cannot encode another stream at the selected quality. Disable another output or choose a lighter audio mode.');
+        return;
+      }
+
+      // If OwnTone requires a PIN, prompt and do PIN-only verification.
+      // On wrong PIN (still 400), re-prompt; on success, retry the original enable.
+      if (selected && j && j.pin_required) {
+        // Temporarily revert the toggle until fully enabled.
+        if (c) {
+          c.checked = false;
+          updateOutputStateVisual(String(id), false);
+        }
+
+        while (true) {
+          const pin = await showPinModal(nm || 'this speaker');
+          if (!pin) return; // user cancelled
+
+          let jpin = null;
+          try {
+            jpin = await postPinOnly(id, pin);
+          } catch (e) {
+            // treat as failure; keep disabled
+            if (c) {
+              c.checked = false;
+              updateOutputStateVisual(String(id), false);
+            }
+            return;
+          }
+
+          if (jpin && jpin.ok) {
+            // PIN accepted -> retry the original enable request (without pin)
+            try {
+              const jen = await postOutputUpdate(id, true, volume);
+              if (jen && jen.ok) {
+                if (c) {
+                  c.checked = true;
+                  updateOutputStateVisual(String(id), true);
+                }
+                return;
+              }
+              // If it still asks for PIN, loop again.
+              if (jen && jen.pin_required) {
+                if (c) {
+                  c.checked = false;
+                  updateOutputStateVisual(String(id), false);
+                }
+                continue;
+              }
+            } catch (e) {
+              if (c) {
+                c.checked = false;
+                updateOutputStateVisual(String(id), false);
+              }
+            }
+            return;
+          }
+
+          // Wrong PIN -> re-prompt
+          if (jpin && jpin.pin_invalid) {
+            continue;
+          }
+
+          // Other error -> stop
+          return;
+        }
+      }
+    } finally {
+      window.__PENDING_OUTPUTS.delete(String(id));
+    }
+  }
+
+  function onToggleOutput(id){
+    const cb = document.getElementById('output_enabled_' + id);
+    if (cb && cb.disabled) return;
+    if (cb) updateOutputStateVisual(String(id), !!cb.checked);
+    if (cb && cb.checked) {
+      const sl = document.getElementById('vol_slider_' + id);
+      if (sl) { sl.value = String(window.__PRESET_VOLUME || 20); updateVolumeLabel(id, sl.value); }
+    }
+    reorderOutputCards();
+    updateMasterVolumeCard();
+    sendUpdate(id);
+  }
+  function onVolumeChange(id,v){
+    updateVolumeLabel(id,v);
+    if(!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
+    sendUpdate(id);
+  }
+  var VU_THRESHOLDS = [-60, -48, -36, -24, -12, -6, -3];
+  var VU_COLORS = ['#2196F3','#2196F3','#2196F3','#2196F3','#f0ad4e','#fd7e14','#dc3545'];
+  var VU_BIN_MS = 100;
+  var VU_DELAY_BINS = Math.max(1, Math.round((window.__VU_DELAY_MS || 2250) / VU_BIN_MS));
+
+  // Per-input VU queue state.
+  var _vuQueue = {};         // inputIdx -> Array of pending bins
+  var _vuLastSeq = {};       // inputIdx -> last seq appended to queue
+  var _vuActiveIdx = -1;      // currently displayed input index (-1 = none)
+
+  function updateVuBars(left_dbfs, right_dbfs){
+    var lBars = document.querySelectorAll('#np-vu-l .vu-bar');
+    var rBars = document.querySelectorAll('#np-vu-r .vu-bar');
+    lBars.forEach(function(bar, i){
+      var lit = Number.isFinite(Number(left_dbfs)) && Number(left_dbfs) >= VU_THRESHOLDS[i];
+      bar.style.background = lit ? VU_COLORS[i] : '';
+    });
+    rBars.forEach(function(bar, i){
+      var lit = Number.isFinite(Number(right_dbfs)) && Number(right_dbfs) >= VU_THRESHOLDS[i];
+      bar.style.background = lit ? VU_COLORS[i] : '';
+    });
+  }
+
+  function vuIngestHistory(activeIdx, vu_history){
+    // If the active input changed, clear all queues immediately.
+    if (activeIdx !== _vuActiveIdx) {
+      _vuQueue = {};
+      _vuLastSeq = {};
+      _vuActiveIdx = activeIdx;
+    }
+    if (!vu_history || !Array.isArray(vu_history.bins) || vu_history.bins.length === 0)
+      return;
+    var bins = vu_history.bins;
+    var latestSeq = vu_history.latest_seq || 0;
+    // Only show bins that are VU_DELAY_BINS steps behind the latest
+    // so the display lags the signal by approximately __VU_DELAY_MS.
+    var cutoffSeq = latestSeq - VU_DELAY_BINS;
+    if (cutoffSeq < 0) return;
+    if (!_vuQueue[activeIdx]) _vuQueue[activeIdx] = [];
+    if (!_vuLastSeq[activeIdx]) _vuLastSeq[activeIdx] = 0;
+    var lastSeen = _vuLastSeq[activeIdx];
+    // Detect seq reset (daemon restart): clear and resync.
+    if (latestSeq < lastSeen && lastSeen > 0) {
+      _vuQueue[activeIdx] = [];
+      _vuLastSeq[activeIdx] = 0;
+      lastSeen = 0;
+    }
+    var added = 0;
+    for (var i = 0; i < bins.length; i++) {
+      var b = bins[i];
+      if (b.seq > lastSeen && b.seq <= cutoffSeq) {
+        _vuQueue[activeIdx].push(b);
+        added++;
+      }
+    }
+    if (added > 0)
+      _vuLastSeq[activeIdx] = cutoffSeq;
+    // Bound queue to 2x the delay window to guard against extreme fetch jitter.
+    var maxQ = VU_DELAY_BINS * 2;
+    var q = _vuQueue[activeIdx];
+    if (q.length > maxQ)
+      _vuQueue[activeIdx] = q.slice(q.length - maxQ);
+  }
+
+  function vuRenderTick(){
+    var q = _vuQueue[_vuActiveIdx];
+    var bin = (q && q.length > 0) ? q.shift() : null;
+    updateVuBars(bin ? bin.l : -90, bin ? bin.r : -90);
+  }
+
+  function renderNowPlayingCard(data){
+    var levels = (data && data.input_levels) || [];
+    var inputs = (data && data.playback && data.playback.inputs) || {};
+    var isPlaying = false, activeLevel = null, activeIdx = 0;
+    for (var i = 0; i < levels.length; i++) {
+      if (levels[i] && levels[i].is_above_threshold) {
+        isPlaying = true; activeLevel = levels[i]; activeIdx = i; break;
+      }
+    }
+    // Authoritative playing/active state: prefer d.session.active (the
+    // coordinator's unified session flag -- true during buffered
+    // AirPlay/AAC playback AND repeat replay, neither of which trips
+    // the input-level threshold above); fall back to the legacy
+    // level-based isPlaying when talking to an older backend with no
+    // session block.
+    var session = (data && data.session) || null;
+    var sessionActive = (session && typeof session.active === 'boolean') ? !!session.active : null;
+    var sessionSource = (session && typeof session.source === 'string') ? session.source : null;
+    var active = (sessionActive !== null) ? sessionActive : isPlaying;
+    var card = document.getElementById('now-playing-card');
+    var hdrEl = document.getElementById('np-hdr');
+    if (card) card.classList.toggle('np-ready', !active);
+    // Remote-shell pages set window.__REMOTE_HOSTNAME so the header also
+    // identifies which appliance is being viewed; the local page leaves it
+    // unset so its own header carries no suffix.
+    var hdrSuffix = window.__REMOTE_HOSTNAME ? (' · ' + window.__REMOTE_HOSTNAME) : '';
+    if (hdrEl) hdrEl.textContent = (active ? (sessionSource === 'replay' ? 'REPEAT PLAYBACK' : 'Now Playing') : 'Ready') + hdrSuffix;
+    if (!active) {
+      _vuActiveIdx = -1;
+      _vuQueue = {};
+      updateVuBars(-90, -90);
+      return;
+    }
+    // During replay no input trips the live-level threshold (the
+    // origin input is not "capturing"), so activeLevel is still null
+    // here even though session.active is true and the origin monitor's
+    // track-identification snapshot is live (server-side fix in
+    // get_active_track_identification_snapshot). Resolve the origin
+    // input from repeat.recording.origin_input -- present verbatim
+    // whenever sessionSource === 'replay' -- so the icon/label reflect
+    // the actual replaying input rather than an arbitrary levels[0]
+    // guess. Not a genuine live level, so vuIngestHistory is skipped
+    // for it below.
+    var usingReplayOrigin = false;
+    if (!activeLevel && sessionSource === 'replay') {
+      var repeat = (data && data.repeat) || {};
+      var recording = repeat.recording || {};
+      var originInput = Number.isFinite(Number(recording.origin_input))
+        ? Number(recording.origin_input) : null;
+      if (originInput !== null) {
+        var originIdx = originInput - 1;
+        activeLevel = levels[originIdx] || {
+          label: 'Input ' + originInput, dbfs: -90, detected_hz: 0, is_above_threshold: false,
+        };
+        activeIdx = originIdx;
+        usingReplayOrigin = true;
+      }
+    }
+    if (!activeLevel && levels.length > 0) { activeLevel = levels[0]; activeIdx = 0; }
+    if (!activeLevel) return;
+    var inputSnap = inputs[String(activeIdx + 1)] || {};
+    var isTurntable = !!inputSnap.is_turntable;
+    var label = String(activeLevel.label || ('Input ' + (activeIdx + 1)));
+    var signalParts = [];
+    if (window.__SHOW_INPUT_DETAIL) {
+      var hz = Number(activeLevel.detected_hz || 0);
+      if (Number.isFinite(hz) && hz > 0) {
+        signalParts.push('Locked');
+        signalParts.push(Math.round(hz / 1000) + ' kHz');
+      }
+    }
+    var nameEl = document.getElementById('np-name');
+    var signalEl = document.getElementById('np-signal');
+    var iconEl = document.getElementById('np-icon');
+    var ti = (data && data.track_identification) || {};
+    var tiEnabled = !!(ti && ti.enabled);
+    var tiState = String((ti && ti.state) || '');
+    var tiIdentified = tiEnabled && tiState === 'identified';
+    var tiTitle = String((ti && ti.title) || '');
+    var tiArtist = String((ti && ti.artist) || '');
+    var tiArtUrl = String((ti && ti.artwork_url) || '');
+    if (tiIdentified) {
+      if (nameEl) nameEl.textContent = tiTitle || 'Unknown';
+      if (signalEl) signalEl.textContent = tiArtist;
+      if (iconEl) {
+        var artKey = 'art:' + tiArtUrl;
+        if (iconEl.getAttribute('data-np-icon-key') !== artKey) {
+          iconEl.setAttribute('data-np-icon-key', artKey);
+          if (tiArtUrl) {
+            var artImg = new Image();
+            artImg.onload = function() {
+              if (iconEl.getAttribute('data-np-icon-key') === artKey) {
+                iconEl.textContent = '';
+                var img = document.createElement('img');
+                img.src = tiArtUrl;
+                img.alt = '';
+                iconEl.appendChild(img);
+                iconEl.classList.add('np-icon-art');
+              }
+            };
+            artImg.src = tiArtUrl;
+          } else {
+            iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+            iconEl.classList.remove('np-icon-art');
+          }
+        }
+      }
+    } else if (tiEnabled) {
+      var inputPrefix = isTurntable ? 'Vinyl' : 'Line In';
+      var suffix;
+      if (tiState === 'error') { suffix = 'Track ID function not available'; }
+      else if (tiState === 'not_found') { suffix = 'Unknown track'; }
+      else { suffix = 'Identifying Track…'; }
+      if (nameEl) nameEl.textContent = inputPrefix + ' – ' + suffix;
+      if (signalEl) signalEl.textContent = '';
+      var svgKey = 'svg:' + String(isTurntable);
+      if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey) {
+        iconEl.setAttribute('data-np-icon-key', svgKey);
+        iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+        iconEl.classList.remove('np-icon-art');
+      }
+    } else {
+      if (nameEl) nameEl.textContent = label + ' · ' + (isTurntable ? 'Turntable' : 'Line Level');
+      if (signalEl) signalEl.textContent = signalParts.join(' · ');
+      var svgKey2 = 'svg:' + String(isTurntable);
+      if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey2) {
+        iconEl.setAttribute('data-np-icon-key', svgKey2);
+        iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+        iconEl.classList.remove('np-icon-art');
+      }
+    }
+    if (!usingReplayOrigin) vuIngestHistory(activeIdx, activeLevel.vu_history);
+  }
+
+  function buildOutputCardElement(o) {
+    var id = String(o.id || '');
+    var name = String(o.name || ('Output ' + id));
+    var selected = !!o.selected;
+    var volume = normalizeVolume(o.volume);
+    var isDefault = !!o.is_default;
+    var remoteInUse = !!o.remote_in_use;
+    var remoteOwner = String(o.remote_owner || '');
+
+    var card = document.createElement('div');
+    card.className = 'output-card ' + (remoteInUse ? 'output-card-in-use' : (selected ? 'output-card-on' : 'output-card-off'));
+    card.id = 'output_card_' + id;
+    card.setAttribute('data-output-id', id);
+    card.setAttribute('data-is-default', isDefault ? '1' : '0');
+    card.setAttribute('data-remote-in-use', remoteInUse ? '1' : '0');
+    card.setAttribute('data-remote-owner', remoteOwner);
+
+    var head = document.createElement('div');
+    head.className = 'output-card-head';
+
+    var meta = document.createElement('div');
+    meta.className = 'output-card-meta';
+    var nameDiv = document.createElement('div');
+    nameDiv.className = 'output-card-name';
+    nameDiv.textContent = name;
+    meta.appendChild(nameDiv);
+    if (isDefault) {
+      var badge = document.createElement('span');
+      badge.className = 'output-card-default';
+      badge.textContent = 'Default';
+      meta.appendChild(badge);
+    }
+    var chip = document.createElement('span');
+    chip.className = 'output-state-chip ' + (remoteInUse ? 'in-use' : (selected ? 'on' : 'off'));
+    chip.id = 'output_state_' + id;
+    chip.textContent = remoteInUse ? ('In Use by ' + (remoteOwner || 'another appliance')) : (selected ? 'On' : 'Off');
+    meta.appendChild(chip);
+    head.appendChild(meta);
+
+    var toggle = document.createElement('label');
+    toggle.className = 'output-toggle';
+    toggle.addEventListener('click', function(e) { e.stopPropagation(); });
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = 'output_enabled_' + id;
+    cb.checked = selected;
+    if (remoteInUse) cb.disabled = true;
+    cb.addEventListener('change', function() { onToggleOutput(id); });
+    toggle.appendChild(cb);
+    var sw = document.createElement('span');
+    sw.className = 'switch';
+    sw.setAttribute('aria-hidden', 'true');
+    toggle.appendChild(sw);
+    head.appendChild(toggle);
+    card.appendChild(head);
+
+    var wrap = document.createElement('div');
+    wrap.className = 'output-slider-wrap';
+    wrap.id = 'output_slider_wrap_' + id;
+    wrap.addEventListener('click', function(e) { e.stopPropagation(); });
+    if (!selected) wrap.hidden = true;
+    var sliderHdr = document.createElement('div');
+    sliderHdr.className = 'slider-header';
+    var volText = document.createElement('span');
+    volText.textContent = 'Volume:';
+    sliderHdr.appendChild(volText);
+    var volLbl = document.createElement('span');
+    volLbl.id = 'vol_label_' + id;
+    volLbl.setAttribute('data-volume-label-for', id);
+    sliderHdr.appendChild(volLbl);
+    wrap.appendChild(sliderHdr);
+    var sl = document.createElement('input');
+    sl.type = 'range';
+    sl.id = 'vol_slider_' + id;
+    sl.min = 0; sl.max = 100; sl.step = 1; sl.value = volume;
+    sl.addEventListener('input', function() { updateVolumeLabel(id, this.value); });
+    sl.addEventListener('change', function() { onVolumeChange(id, this.value); });
+    wrap.appendChild(sl);
+    card.appendChild(wrap);
+
+    return card;
+  }
+
+  function setOutputsPlaceholder(state) {
+    var el = document.getElementById('outputs-placeholder');
+    if (!el) return;
+    if (state === 'hidden') {
+      el.hidden = true;
+      el.textContent = '';
+    } else if (state === 'unreachable') {
+      el.hidden = false;
+      el.textContent = 'Waiting for owntone';
+    } else {
+      el.hidden = false;
+      el.textContent = 'Waiting for device discovery';
+    }
+  }
+  function renderOutputList(outputs) {
+    var list = document.getElementById('outputs-list');
+    if (!list) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    for (var i = 0; i < outputs.length; i++) { list.appendChild(buildOutputCardElement(outputs[i])); }
+    list.querySelectorAll('[data-volume-label-for]').forEach(function(s) {
+      var id = s.getAttribute('data-volume-label-for');
+      var sl = document.getElementById('vol_slider_' + id);
+      if (sl) updateVolumeLabel(id, sl.value);
+      var cb = document.getElementById('output_enabled_' + id);
+      if (cb) updateOutputStateVisual(String(id), !!cb.checked);
+    });
+    reorderOutputCards();
+    updateMasterVolumeCard();
+    setOutputsPlaceholder(outputs.length > 0 ? 'hidden' : 'empty');
+  }
+
+  function initApplianceSelector(){
+    var btn=document.getElementById('appliance-selector-btn');
+    var dd=document.getElementById('appliance-selector-dropdown');
+    if(!btn||!dd) return;
+    btn.addEventListener('click',function(e){
+      e.stopPropagation();
+      var open=!dd.hidden;
+      dd.hidden=open;
+      btn.setAttribute('aria-expanded',String(!open));
+      if(!open) refreshApplianceSelector();
+    });
+    document.addEventListener('click',function(){
+      if(!dd.hidden){dd.hidden=true;btn.setAttribute('aria-expanded','false');}
+    });
+    dd.addEventListener('keydown',function(e){
+      var opts=Array.from(dd.querySelectorAll('.appliance-selector-option'));
+      var idx=opts.indexOf(document.activeElement);
+      if(e.key==='ArrowDown'){e.preventDefault();var n=opts[idx+1]||opts[0];if(n)n.focus();}
+      else if(e.key==='ArrowUp'){e.preventDefault();var p=opts[idx-1]||opts[opts.length-1];if(p)p.focus();}
+      else if(e.key==='Escape'){dd.hidden=true;btn.setAttribute('aria-expanded','false');btn.focus();}
+    });
+  }
+  function updateSelectorFromAppliances(appliances,currentId,currentPage){
+    var dd=document.getElementById('appliance-selector-dropdown');
+    var nameEl=document.getElementById('appliance-selector-current');
+    if(!dd) return;
+    dd.innerHTML='';
+    var dividerAdded=false;
+    appliances.forEach(function(a){
+      var isBound=!!a.is_bound;
+      if(!isBound&&!dividerAdded){
+        dividerAdded=true;
+        var divEl=document.createElement('div');
+        divEl.className='appliance-selector-divider';
+        divEl.setAttribute('role','separator');
+        divEl.setAttribute('aria-hidden','true');
+        dd.appendChild(divEl);
+      }
+      var href=currentPage==='equaliser'
+        ?(a.equaliser_path||'/a/'+a.id+'/equaliser')
+        :(a.home_path||(isBound?'/':'/a/'+a.id+'/'));
+      var opt=document.createElement('a');
+      opt.href=href;
+      opt.setAttribute('role','option');
+      opt.setAttribute('aria-selected',a.id===currentId?'true':'false');
+      opt.className='appliance-selector-option'+(a.id===currentId?' appliance-selector-option-active':'');
+      if(isBound) opt.style.fontWeight='700';
+      opt.textContent=String(a.hostname||'autostream');
+      dd.appendChild(opt);
+    });
+    var cur=appliances.find(function(a){return a.id===currentId;});
+    if(nameEl&&cur) nameEl.textContent=String(cur.hostname||'autostream');
+  }
+  function refreshApplianceSelector(){
+    fetch('/api/appliances',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(data){
+        if(!data||!data.ok||!Array.isArray(data.appliances)) return;
+        var el=document.getElementById('appliance-selector');
+        var currentId=el?(el.getAttribute('data-current-id')||window.__SELECTOR_CURRENT_ID||''):(window.__SELECTOR_CURRENT_ID||'');
+        var currentPage=el?(el.getAttribute('data-current-page')||'home'):'home';
+        updateSelectorFromAppliances(data.appliances,currentId,currentPage);
+      })
+      .catch(function(){});
+  }
+</script>
+"""
+
+
 A2HS_PROMPT_HTML = """
   <div id="a2hs-prompt" style="display:none;">
     <div id="a2hs-inner">
