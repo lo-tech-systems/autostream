@@ -138,7 +138,9 @@ class TestSetupCustomiseRepeatControls:
 
     def test_enable_checkbox_wired_to_settings_save_field(self, tmp_path):
         html = _render_setup_page(tmp_path)
-        assert "settingsSaveField('repeat.enabled', this.checked)" in html
+        assert 'onchange="onRepeatEnabledToggle(this.checked)"' in html
+        assert "function onRepeatEnabledToggle(checked)" in html
+        assert "settingsSaveField('repeat.enabled', checked)" in html
 
     def test_enable_checkbox_label_is_repeat_playback(self, tmp_path):
         html = _render_setup_page(tmp_path)
@@ -156,8 +158,27 @@ class TestSetupCustomiseRepeatControls:
         html = _render_setup_page(tmp_path)
         assert 'id="repeat_codec"' not in html
         assert "settingsSaveField('repeat.codec'" not in html
-        assert "onRepeatEnabledToggle" not in html
         assert 'id="repeat-codec-row"' not in html
+
+    def test_enable_toggle_wrapper_retries_and_clears_on_disable(self, tmp_path):
+        html = _render_setup_page(tmp_path)
+        # Retry loop: bounded attempts, stopping early once the note populates.
+        assert "maxAttempts" in html
+        assert "refreshRepeatSetupNote().then(function(ok)" in html
+        # Overlapping-toggle guard.
+        assert "_repeatToggleToken" in html
+        # Disable path clears both notes rather than leaving a stale value.
+        assert "if (!checked) {" in html
+        assert "function onRepeatEnabledToggle(checked)" in html
+        toggle_start = html.find("function onRepeatEnabledToggle(checked)")
+        toggle_body = html[toggle_start:toggle_start + 800]
+        assert "noteEl.textContent = ''" in toggle_body
+        assert "unavailEl.style.display = 'none'" in toggle_body
+
+    def test_refresh_note_returns_populated_flag(self, tmp_path):
+        html = _render_setup_page(tmp_path)
+        assert "return false" in html
+        assert "return populated" in html
 
     def test_max_recording_time_note_hook_present(self, tmp_path):
         html = _render_setup_page(tmp_path)

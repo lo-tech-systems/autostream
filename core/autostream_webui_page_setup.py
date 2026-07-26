@@ -675,7 +675,7 @@ def send_setup_page(
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
           <div class="setup-customise-row" style="margin-top:0.75rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="repeat_enabled" id="repeat_enabled"{'  checked' if parsed.repeat.enabled else ''} onchange="settingsSaveField('repeat.enabled', this.checked)">
+              <input type="checkbox" name="repeat_enabled" id="repeat_enabled"{'  checked' if parsed.repeat.enabled else ''} onchange="onRepeatEnabledToggle(this.checked)">
               <span class="switch"></span>
             </label>
             <span>Enable repeat playback</span>
@@ -1852,11 +1852,12 @@ def send_setup_page(
         async function refreshRepeatSetupNote() {{
           var noteEl = document.getElementById('repeat-max-time-note');
           var unavailEl = document.getElementById('repeat-unavailable-note');
+          var populated = false;
           try {{
             var r = await fetch('/api/status', {{ cache: 'no-store' }});
             var d = await r.json();
             var repeat = (d && d.repeat) || null;
-            if (!repeat) return;  // absent on old monitor binaries -- feature unsupported
+            if (!repeat) return false;  // absent on old monitor binaries -- feature unsupported
             var maxSecs = Number(repeat.max_recording_seconds);
             if (noteEl && Number.isFinite(maxSecs) && maxSecs > 0) {{
               // effective_codec: the tier the estimate assumes (monitor
@@ -1865,6 +1866,7 @@ def send_setup_page(
               var codecLabel = _repeatCodecLabel(repeat.effective_codec);
               noteEl.textContent = 'Buffer: ' + Math.round(maxSecs / 60) + ' mins'
                                    + (codecLabel ? ' (' + codecLabel + ')' : '');
+              populated = true;
             }}
             var reason = repeat.recording && repeat.recording.unavailable_reason;
             if (unavailEl) {{
@@ -1876,7 +1878,37 @@ def send_setup_page(
                 unavailEl.textContent = '';
               }}
             }}
-          }} catch (e) {{}}
+          }} catch (e) {{ return false; }}
+          return populated;
+        }}
+        var _repeatToggleToken = 0;
+        function onRepeatEnabledToggle(checked) {{
+          settingsSaveField('repeat.enabled', checked);
+          var myToken = ++_repeatToggleToken;
+          if (!checked) {{
+            var noteEl = document.getElementById('repeat-max-time-note');
+            var unavailEl = document.getElementById('repeat-unavailable-note');
+            if (noteEl) noteEl.textContent = '';
+            if (unavailEl) {{
+              unavailEl.textContent = '';
+              unavailEl.style.display = 'none';
+            }}
+            return;
+          }}
+          // The daemon takes a few seconds to compute the buffer estimate
+          // after enabling, and the status cache backing /api/status only
+          // refreshes on its own ~1-2s poll -- retry briefly rather than
+          // leaving the note empty until the panel is reopened.
+          var attempts = 0;
+          var maxAttempts = 8;
+          (function poll() {{
+            if (myToken !== _repeatToggleToken) return;  // superseded by a later toggle
+            attempts++;
+            refreshRepeatSetupNote().then(function(ok) {{
+              if (ok || myToken !== _repeatToggleToken || attempts >= maxAttempts) return;
+              setTimeout(poll, 1000);
+            }});
+          }})();
         }}
         function onHostnameToggle(checked) {{
           var cb = document.getElementById('webui_control_other_appliances');
