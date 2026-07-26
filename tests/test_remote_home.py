@@ -298,3 +298,13 @@ class TestRemoteHomePageContent:
         """__CONTROL_OTHER_APPLIANCES JS global must be emitted in the page head."""
         html = self._render()
         assert "__CONTROL_OTHER_APPLIANCES" in html
+
+    def test_page_contains_info_modal(self):
+        html = self._render()
+        assert html.count('id="infoModal"') == 1
+        assert "function showInfoModal" in html
+
+    def test_common_modal_css_has_scroll_rule(self):
+        from autostream_webui_assets import COMMON_MODAL_CSS
+
+        assert ".modal-bd-scroll" in COMMON_MODAL_CSS

@@ -1292,10 +1292,63 @@ COMMON_MODAL_CSS = """
   .modal-btn-primary{background:var(--modal-primary-bg);color:var(--modal-primary-text);}
   .modal-btn-secondary{background:var(--modal-secondary-bg);color:var(--modal-secondary-text);}
   .modal-btn-danger{background:var(--color-status-danger);color:#fff;}
+  .modal-bd-scroll{max-height:min(60vh,30rem);overflow-y:auto;}
 """
 
 PIN_MODAL_CSS = """
   #pinModal .modal-panel{--modal-width:22rem;}
+"""
+
+# Single-OK-button info modal, shared by every page that needs to surface a
+# dismissable notice. Pair with INFO_MODAL_SCRIPT, which defines the
+# showInfoModal(title, message, isHtml) function driving this markup.
+INFO_MODAL_HTML = """
+<div id="infoModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="infoModalTitle">Notice</div>
+    <div class="bd modal-bd modal-bd-scroll">
+      <div id="infoModalMessage"></div>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-primary" id="infoModalOk">OK</button>
+    </div>
+  </div>
+</div>"""
+
+INFO_MODAL_SCRIPT = """
+<script>
+  function showInfoModal(title, message, isHtml){
+    return new Promise((resolve) => {
+      const m = document.getElementById('infoModal');
+      const titleEl = document.getElementById('infoModalTitle');
+      const msgEl = document.getElementById('infoModalMessage');
+      const btnOk = document.getElementById('infoModalOk');
+      if (!m || !titleEl || !msgEl || !btnOk) {
+        // Fallback to native alert if our modal is missing for any reason.
+        // HTML messages are not safe/meaningful in a plain alert, so only
+        // the title is shown in that case.
+        window.alert(isHtml ? title : (title + ': ' + message));
+        resolve();
+        return;
+      }
+      titleEl.textContent = title;
+      if (isHtml) { msgEl.innerHTML = message; } else { msgEl.textContent = message; }
+      m.classList.add('show');
+
+      const cleanup = () => {
+        m.classList.remove('show');
+        btnOk.onclick = null;
+        document.removeEventListener('keydown', onKey);
+        resolve();
+      };
+      const onKey = (ev) => {
+        if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); }
+      };
+      btnOk.onclick = () => cleanup();
+      document.addEventListener('keydown', onKey);
+    });
+  }
+</script>
 """
 
 APPLIANCE_SELECTOR_CSS = """
@@ -1426,36 +1479,6 @@ HOME_CARDS_SCRIPT = """
         if (ev.key === 'Enter') { ev.preventDefault(); btnOk.click(); }
         else if (ev.key === 'Escape') { ev.preventDefault(); btnCancel.click(); }
       };
-    });
-  }
-
-  function showInfoModal(title, message){
-    return new Promise((resolve) => {
-      const m = document.getElementById('infoModal');
-      const titleEl = document.getElementById('infoModalTitle');
-      const msgEl = document.getElementById('infoModalMessage');
-      const btnOk = document.getElementById('infoModalOk');
-      if (!m || !titleEl || !msgEl || !btnOk) {
-        // Fallback to native alert if our modal is missing for any reason.
-        window.alert(title + ': ' + message);
-        resolve();
-        return;
-      }
-      titleEl.textContent = title;
-      msgEl.textContent = message;
-      m.classList.add('show');
-
-      const cleanup = () => {
-        m.classList.remove('show');
-        btnOk.onclick = null;
-        document.removeEventListener('keydown', onKey);
-        resolve();
-      };
-      const onKey = (ev) => {
-        if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); }
-      };
-      btnOk.onclick = () => cleanup();
-      document.addEventListener('keydown', onKey);
     });
   }
 

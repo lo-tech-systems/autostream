@@ -34,6 +34,8 @@ from autostream_webui_assets import (
     HOME_CARDS_SCRIPT,
     ICON_LINE_LEVEL,
     ICON_TURNTABLE,
+    INFO_MODAL_HTML,
+    INFO_MODAL_SCRIPT,
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
@@ -416,7 +418,7 @@ def send_airplay_page(
     )
     _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_vu_stereo_css}\n{_NP_ART_CSS}"
     _head_extra = f"""{csrf_meta}
-""" + HOME_CARDS_SCRIPT + f"""
+""" + HOME_CARDS_SCRIPT + INFO_MODAL_SCRIPT + f"""
       <script>
         function refreshStatus(){{
           fetch('/api/status', {{ cache: 'no-store' }}).then(r=>r.json()).then(d=>{{
@@ -559,18 +561,7 @@ def send_airplay_page(
       <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">OK</button>
     </div>
   </div>
-</div>
-<div id="infoModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
-  <div class="panel modal-panel">
-    <div class="hdr modal-hdr" id="infoModalTitle">Notice</div>
-    <div class="bd modal-bd">
-      <p id="infoModalMessage"></p>
-    </div>
-    <div class="ft modal-ft">
-      <button type="button" class="btn modal-btn modal-btn-primary" id="infoModalOk">OK</button>
-    </div>
-  </div>
-</div>"""
+</div>""" + INFO_MODAL_HTML
 
     # Repeat control -- small pill-style button rendered only when repeat.enabled,
     # styled like the appliance-selector button. Wired into
@@ -781,6 +772,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
         + HOME_CARDS_SCRIPT
+        + INFO_MODAL_SCRIPT
         + _REMOTE_HOME_SCRIPT
         + _NAVIGATE_SCRIPT
     )
@@ -798,18 +790,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
       <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">OK</button>
     </div>
   </div>
-</div>
-<div id="infoModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
-  <div class="panel modal-panel">
-    <div class="hdr modal-hdr" id="infoModalTitle">Notice</div>
-    <div class="bd modal-bd">
-      <p id="infoModalMessage"></p>
-    </div>
-    <div class="ft modal-ft">
-      <button type="button" class="btn modal-btn modal-btn-primary" id="infoModalOk">OK</button>
-    </div>
-  </div>
-</div>"""
+</div>""" + INFO_MODAL_HTML
 
     _np_icon_svg = ICON_LINE_LEVEL
 

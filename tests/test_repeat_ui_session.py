@@ -447,6 +447,20 @@ class TestRemoteHomeDelegatesToSharedNowPlayingRenderer:
         assert HOME_CARDS_SCRIPT in home_html
         assert HOME_CARDS_SCRIPT in remote_home_html
 
+    def test_info_modal_shared_across_both_pages(self, home_html, remote_home_html):
+        # Regression guard for the info-modal extraction: both pages must
+        # embed exactly one copy of the modal markup and the function that
+        # drives it, sourced from the same shared constants.
+        from autostream_webui_assets import COMMON_MODAL_CSS, INFO_MODAL_SCRIPT
+
+        assert home_html.count('id="infoModal"') == 1
+        assert remote_home_html.count('id="infoModal"') == 1
+        assert "function showInfoModal" in home_html
+        assert "function showInfoModal" in remote_home_html
+        assert INFO_MODAL_SCRIPT in home_html
+        assert INFO_MODAL_SCRIPT in remote_home_html
+        assert ".modal-bd-scroll" in COMMON_MODAL_CSS
+
 
 # ---------------------------------------------------------------------------
 # Remote shell: repeat pill replaces the "<- Home" button; logo is the new
