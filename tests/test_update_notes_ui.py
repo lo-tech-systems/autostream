@@ -123,23 +123,22 @@ class TestCheckButtonInfoModeSwitch:
 
     def test_check_label_restored_on_no_update(self):
         block = _updates_iife(_setup_page_src())
-        # No-update branch resets the button back to "Check".
+        # No-update branch resets via the shared helper (which relabels
+        # the button back to "Check") before setting its own message.
         idx = block.find('msg(j.ok?"No updates available.":"Check failed.");')
         assert idx >= 0
         preceding = block[:idx]
-        # The most recent bCheck.textContent assignment before this branch
-        # must be the reset to "Check".
-        reset_idx = preceding.rfind('bCheck.textContent = "Check";')
+        reset_call_idx = preceding.rfind('resetUpdateCheckState();')
         info_idx = preceding.rfind('bCheck.textContent = "Info";')
-        assert reset_idx >= 0
-        assert reset_idx > info_idx
+        assert reset_call_idx >= 0
+        assert reset_call_idx > info_idx
 
     def test_check_label_restored_on_check_failure(self):
         block = _updates_iife(_setup_page_src())
         idx = block.find('catch(e) {{')
         assert idx >= 0
         tail = block[idx:]
-        assert 'bCheck.textContent = "Check";' in tail
+        assert 'resetUpdateCheckState();' in tail
         assert 'msg("Check failed.");' in tail
 
     def test_info_mode_click_opens_modal_instead_of_rechecking(self):
@@ -165,8 +164,55 @@ class TestCheckButtonInfoModeSwitch:
 
     def test_notes_state_cleared_on_reset(self):
         block = _updates_iife(_setup_page_src())
-        # Both the no-update and error paths must clear stored notes.
-        assert block.count('notesHtml = ""; notesText = "";') >= 2
+        # Notes are cleared once, inside the shared reset helper.
+        assert block.count('notesHtml = ""; notesText = "";') == 1
+        # Both the no-update and error paths route through that helper.
+        assert block.count('resetUpdateCheckState();') >= 2
+
+
+class TestResetUpdateCheckState:
+    """window.resetUpdateCheckState is exposed so the pre-release channel
+    toggle can invalidate a stale candidate/notes from the other channel."""
+
+    def test_reset_function_exposed_on_window(self):
+        block = _updates_iife(_setup_page_src())
+        assert "window.resetUpdateCheckState = resetUpdateCheckState;" in block
+
+    def test_reset_function_relabels_check_button_and_clears_candidate(self):
+        block = _updates_iife(_setup_page_src())
+        start = block.find("function resetUpdateCheckState()")
+        assert start >= 0
+        end = block.find("window.resetUpdateCheckState", start)
+        body = block[start:end]
+        assert 'bCheck.textContent = "Check";' in body
+        assert "cand = null;" in body
+        assert "infoMode = false;" in body
+        assert 'notesHtml = ""; notesText = "";' in body
+
+    def test_reset_function_disables_install_button(self):
+        block = _updates_iife(_setup_page_src())
+        start = block.find("function resetUpdateCheckState()")
+        end = block.find("window.resetUpdateCheckState", start)
+        body = block[start:end]
+        assert "bInst.disabled = true;" in body
+
+    def test_reset_function_clears_upd_msg(self):
+        block = _updates_iife(_setup_page_src())
+        start = block.find("function resetUpdateCheckState()")
+        end = block.find("window.resetUpdateCheckState", start)
+        body = block[start:end]
+        assert 'msg("");' in body
+
+    def test_prerelease_checkbox_calls_reset_on_toggle(self):
+        src = _setup_page_src()
+        idx = src.find('id="updates_prerelease_channel"')
+        assert idx >= 0
+        onchange_start = src.find('onchange="', idx)
+        onchange_end = src.find('"', onchange_start + len('onchange="'))
+        onchange = src[onchange_start:onchange_end]
+        assert "resetUpdateCheckState()" in onchange
+        assert "refreshSystemCardSub()" in onchange
+        assert "settingsSaveField('updates.update_channel'" in onchange
 
 
 class TestUpdNotesRemoved:

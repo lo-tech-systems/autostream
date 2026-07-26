@@ -392,6 +392,41 @@ class TestUpdateCheckJson:
             send_update_check_json(MagicMock())
         assert sent[0][1] == ["not", "a", "dict"]
 
+    def test_pending_settings_flushed_before_updater_runs(self):
+        # The updater reads the update channel from the config file on disk;
+        # a debounced settings write (e.g. the pre-release channel toggle)
+        # must be flushed before the check subprocess runs.
+        order = []
+        state = MagicMock()
+        state.settings.save_now = MagicMock(side_effect=lambda **kw: order.append("flush"))
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: None), \
+             patch("autostream_webui_api.run_updater",
+                   side_effect=lambda *a, **kw: (order.append("check"), (0, '{"ok": true}', ""))[1]):
+            send_update_check_json(MagicMock(), state)
+        assert order == ["flush", "check"]
+        state.settings.save_now.assert_called_once()
+
+    def test_settings_flush_failure_does_not_break_check(self):
+        sent = []
+        state = MagicMock()
+        state.settings.save_now = MagicMock(side_effect=RuntimeError("flush failed"))
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.run_updater",
+                   return_value=(0, '{"ok": true}', "")):
+            send_update_check_json(MagicMock(), state)
+        assert sent[0][1]["ok"] is True
+
+    def test_no_state_runs_check_without_flush(self):
+        sent = []
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.run_updater",
+                   return_value=(0, '{"ok": true}', "")):
+            send_update_check_json(MagicMock(), None)
+        assert sent[0][1]["ok"] is True
+
 
 # ---------------------------------------------------------------------------
 # send_update_status_json

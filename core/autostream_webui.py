@@ -709,7 +709,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/status":
             send_status_json(self)
         elif path == "/api/update/check":
-            send_update_check_json(self)
+            send_update_check_json(self, STATE)
         elif path == "/api/update/status":
             send_update_status_json(self)
         elif path == "/api/owntone/outputs":

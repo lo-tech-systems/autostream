@@ -553,7 +553,17 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     send_json(handler, 200, response)
 
 
-def send_update_check_json(handler) -> None:
+def send_update_check_json(handler, state=None) -> None:
+    # The updater subprocess reads the update channel from the config file on
+    # disk, while settings changes (e.g. the pre-release channel toggle) are
+    # flushed to disk on a debounced interval -- force the flush first so a
+    # check issued right after a toggle cannot run against the old channel.
+    settings = getattr(state, "settings", None)
+    if settings is not None:
+        try:
+            settings.save_now(timeout=5.0)
+        except Exception:
+            pass  # best effort; the check still runs against current disk state
     rc, out, err = run_updater(["check"], timeout=60)
     if rc != 0:
         send_json(handler, 200, {"ok": False, "error": "check failed"})

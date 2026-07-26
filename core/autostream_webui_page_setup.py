@@ -364,7 +364,7 @@ def send_setup_page(
           </div>
           <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked} onchange="refreshSystemCardSub(); settingsSaveField('updates.update_channel', this.checked ? 'dev' : 'stable')">
+              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked} onchange="if(window.resetUpdateCheckState)resetUpdateCheckState(); refreshSystemCardSub(); settingsSaveField('updates.update_channel', this.checked ? 'dev' : 'stable')">
               <span class="switch"></span>
             </label>
             <span>Enable pre-release updates</span>
@@ -1660,6 +1660,18 @@ def send_setup_page(
           let infoMode = false;
           let notesHtml = "";
           let notesText = "";
+          // Shared reset: also invoked from outside this IIFE (channel
+          // toggle) since switching channels invalidates any candidate
+          // found under the previous channel.
+          function resetUpdateCheckState(){{
+            infoMode = false;
+            notesHtml = ""; notesText = "";
+            cand = null;
+            bCheck.textContent = "Check";
+            bInst.disabled = true;
+            msg("");
+          }}
+          window.resetUpdateCheckState = resetUpdateCheckState;
           // On page load, check persisted update status so any recent result is visible.
           async function checkPersistedStatus(){{
             try {{
@@ -1702,15 +1714,11 @@ def send_setup_page(
                 bCheck.textContent = "Info";
                 bInst.disabled=false;
               }} else {{
-                infoMode = false;
-                notesHtml = ""; notesText = "";
-                bCheck.textContent = "Check";
+                resetUpdateCheckState();
                 msg(j.ok?"No updates available.":"Check failed.");
               }}
             }} catch(e) {{
-              infoMode = false;
-              notesHtml = ""; notesText = "";
-              bCheck.textContent = "Check";
+              resetUpdateCheckState();
               msg("Check failed.");
             }}
           }};
