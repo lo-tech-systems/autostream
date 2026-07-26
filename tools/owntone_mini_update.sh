@@ -7,7 +7,8 @@
 # owntone-mini builds without running a full autostream install/update.
 #
 # Mirrors install_owntone_mini_from_source() in installer/lib/owntone.sh,
-# but targets a remote host via SSH and lets you pick the source branch.
+# but targets a remote host via SSH and lets you pick the source ref
+# (defaults to the pinned owntone-mini release).
 #
 # Usage:
 #   tools/owntone_mini_update.sh [--branch BRANCH] [--user USER] HOST
@@ -29,7 +30,10 @@ error() { echo "[ERROR] $*" >&2; }
 #############################################
 # Defaults
 #############################################
-BRANCH="minimal"
+# The pinned owntone-mini release this autostream release is built against;
+# keep in sync with OWNTONE_MINI_VERSION in installer/lib/owntone.sh.
+DEFAULT_REF="1.1.0"
+BRANCH="${DEFAULT_REF}"
 SSH_USER="pi"
 HOST=""
 
@@ -51,7 +55,8 @@ Arguments:
   HOST                    Hostname or IP of the appliance (required).
 
 Options:
-  --branch BRANCH         owntone-mini branch to build (default: minimal).
+  --branch REF            owntone-mini git ref to build: a tag or branch
+                           (default: the pinned release, ${DEFAULT_REF}).
                            Use this to test an unreleased branch.
   --user USER             SSH user on the appliance (default: pi).
   --help, -h              Show this help.
@@ -64,9 +69,11 @@ Note:
   The remote build (autoreconf/configure/make) can take around 10 minutes
   on a Raspberry Pi.
 
-  If --branch is not "minimal", a future full autostream update will
-  rebuild owntone-mini from the "minimal" branch and revert this test
-  build.
+  If --branch is not the pinned release, note that a future full
+  autostream update rebuilds owntone-mini only when the appliance's
+  running owntone-mini reports a version other than the pinned release --
+  a test build that still reports the pinned version number will NOT be
+  reverted automatically.
 EOF
 }
 
@@ -121,13 +128,14 @@ if [[ -z "${HOST}" ]]; then
   exit 1
 fi
 
-if [[ "${BRANCH}" != "minimal" ]]; then
-  warn "Building non-default branch '${BRANCH}'. A future full autostream" \
-       "update will rebuild owntone-mini from 'minimal' and revert this test build."
+if [[ "${BRANCH}" != "${DEFAULT_REF}" ]]; then
+  warn "Building non-default ref '${BRANCH}'. A future full autostream update" \
+       "rebuilds owntone-mini only if its reported version differs from the" \
+       "pinned release; a test build reporting the pinned version persists."
 fi
 
 info "Target appliance: ${SSH_USER}@${HOST}"
-info "owntone-mini branch: ${BRANCH}"
+info "owntone-mini ref: ${BRANCH}"
 info "This can take around 10 minutes to build on a Raspberry Pi..."
 
 #############################################
@@ -167,7 +175,7 @@ TMPDIR_BUILD="\$(mktemp -d)"
 echo "[REMOTE] Building in \${TMPDIR_BUILD}..."
 
 cd "\${TMPDIR_BUILD}"
-echo "[REMOTE] Cloning \${OWNTONE_REPO} (branch \${BRANCH})..."
+echo "[REMOTE] Cloning \${OWNTONE_REPO} (ref \${BRANCH})..."
 git clone --branch "\${BRANCH}" --single-branch "\${OWNTONE_REPO}" owntone-mini
 cd owntone-mini
 echo "[REMOTE] autoreconf..."
@@ -217,9 +225,10 @@ else
   info "Reported version: ${VERSION}"
 fi
 
-if [[ "${BRANCH}" != "minimal" ]]; then
-  warn "Built from non-default branch '${BRANCH}'. A future full autostream" \
-       "update will rebuild owntone-mini from 'minimal' and revert this test build."
+if [[ "${BRANCH}" != "${DEFAULT_REF}" ]]; then
+  warn "Built from non-default ref '${BRANCH}'. A future full autostream update" \
+       "rebuilds owntone-mini only if its reported version differs from the" \
+       "pinned release; a test build reporting the pinned version persists."
 fi
 
 info "Done."

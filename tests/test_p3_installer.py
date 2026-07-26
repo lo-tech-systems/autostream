@@ -128,6 +128,51 @@ class TestVibraMiniInstallContract:
         ) in installer
 
 
+class TestOwntoneMiniPinnedRelease:
+    """The owntone-mini build is bound to a tagged release, for installs and
+    updates alike, mirroring the vibra-mini pin."""
+
+    def _installer_text(self) -> str:
+        return (
+            REPO_ROOT / "installer" / "lib" / "owntone.sh"
+        ).read_text(encoding="utf-8")
+
+    def test_owntone_mini_release_is_pinned(self):
+        installer = self._installer_text()
+        assert re.search(r'^OWNTONE_MINI_VERSION="\d+\.\d+\.\d+"', installer, re.M)
+        assert '--branch "${OWNTONE_MINI_VERSION}"' in installer
+        assert "--depth 1" in installer
+        assert "--branch minimal" not in installer
+
+    def test_exact_tag_verified_after_clone(self):
+        installer = self._installer_text()
+        assert "describe --tags --exact-match" in installer
+        assert 'checked_out_tag}" != "${OWNTONE_MINI_VERSION}"' in installer
+
+    def test_skip_fast_path_keyed_on_product_and_pinned_version(self):
+        # An appliance already running the pinned release must not pay the
+        # ~10-minute source rebuild on update; the probe must match both the
+        # product name (stock OwnTone is not a match) and the exact version.
+        installer = self._installer_text()
+        assert '"owntone-mini ${OWNTONE_MINI_VERSION}"' in installer
+
+    def test_update_tool_default_matches_installer_pin(self):
+        installer = self._installer_text()
+        pin = re.search(r'^OWNTONE_MINI_VERSION="([^"]+)"', installer, re.M)
+        assert pin is not None
+        tool = (
+            REPO_ROOT / "tools" / "owntone_mini_update.sh"
+        ).read_text(encoding="utf-8")
+        default = re.search(r'^DEFAULT_REF="([^"]+)"', tool, re.M)
+        assert default is not None, (
+            "tools/owntone_mini_update.sh must declare DEFAULT_REF"
+        )
+        assert default.group(1) == pin.group(1), (
+            "tools/owntone_mini_update.sh DEFAULT_REF must match "
+            "installer/lib/owntone.sh OWNTONE_MINI_VERSION"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Uninstaller hands Wi-Fi profiles back to NetworkManager
 # ---------------------------------------------------------------------------

@@ -2,11 +2,17 @@
 #
 # installer/lib/owntone.sh
 #
-# OwnTone provisioning: mini (lo-tech source build), full (packaged), skip.
-# Also manages /etc/owntone.conf for pipe playback.
+# OwnTone provisioning: mini (lo-tech source build, pinned release), full
+# (packaged), skip. Also manages /etc/owntone.conf for pipe playback.
 # Sourced by autostream_install.sh; not executed directly.
 #
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+OWNTONE_MINI_REPO="https://github.com/lo-tech-systems/owntone-mini.git"
+# The owntone-mini release this autostream release is built against. Both
+# fresh installs and updates build exactly this tag; keep in sync with the
+# default ref in tools/owntone_mini_update.sh.
+OWNTONE_MINI_VERSION="1.1.0"
 
 configure_owntone_apt_repo() {
   info "Configuring OwnTone APT repository"
@@ -43,8 +49,29 @@ install_packaged_owntone() {
   systemctl enable owntone
 }
 
+owntone_mini_reported_identity() {
+  # Print "<product_name> <version>" of the owntone instance answering on
+  # localhost, or nothing if none answers / the reply is malformed.
+  curl -fsS --max-time 5 http://localhost:3689/api/config 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("product_name",""), d.get("version",""))' 2>/dev/null \
+    || true
+}
+
 install_owntone_mini_from_source() {
-  info "Installing OwnTone Mini from lo-tech-systems source repository"
+  # Fast path: the running owntone-mini already reports the pinned release,
+  # so there is nothing to rebuild (a source build costs ~10 minutes on
+  # Pi-class hardware). Any probe failure -- service down, stock OwnTone,
+  # an older mini -- falls through to the full pinned-source build.
+  local reported
+  reported="$(owntone_mini_reported_identity)"
+  if [[ "${reported}" == "owntone-mini ${OWNTONE_MINI_VERSION}" ]]; then
+    info "OwnTone Mini ${OWNTONE_MINI_VERSION} already installed; skipping source rebuild"
+    systemctl enable avahi-daemon
+    systemctl enable owntone
+    return 0
+  fi
+
+  info "Installing OwnTone Mini ${OWNTONE_MINI_VERSION} from lo-tech-systems source repository"
   update_progress "Installing OwnTone dependencies..." 65
   apt_install nginx autotools-dev autoconf automake libtool gettext gawk \
     gperf bison flex libconfuse-dev libunistring-dev libsqlite3-dev \
@@ -64,7 +91,20 @@ install_owntone_mini_from_source() {
 
   local tmpdir
   tmpdir="$(mktemp -d)"
-  git clone --branch minimal --single-branch https://github.com/lo-tech-systems/owntone-mini.git "${tmpdir}/owntone-mini"
+  info "Fetching owntone-mini ${OWNTONE_MINI_VERSION}"
+  git clone \
+    --branch "${OWNTONE_MINI_VERSION}" \
+    --depth 1 \
+    --single-branch \
+    "${OWNTONE_MINI_REPO}" \
+    "${tmpdir}/owntone-mini"
+
+  local checked_out_tag
+  checked_out_tag="$(git -C "${tmpdir}/owntone-mini" describe --tags --exact-match HEAD)"
+  if [[ "${checked_out_tag}" != "${OWNTONE_MINI_VERSION}" ]]; then
+    error "Expected owntone-mini ${OWNTONE_MINI_VERSION}, checked out ${checked_out_tag:-unknown}"
+    return 1
+  fi
   (
     cd "${tmpdir}/owntone-mini"
     autoreconf -i
