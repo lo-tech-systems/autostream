@@ -303,6 +303,37 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+class TestTopControlsCssRegressions:
+    """Two CSS regressions in the top controls row.
+
+    1. .pill-btn { display: inline-block } is an author-origin rule, which
+       beats the UA stylesheet's [hidden] { display: none } regardless of
+       specificity -- so without an explicit [hidden] override the remote
+       repeat pill (shown/hidden purely via the hidden attribute) can never
+       be hidden.
+    2. The appliance selector's right-justification must not depend on
+       justify-content: space-between having a second flex item: with the
+       repeat pill omitted (local, repeat disabled) or hidden (remote),
+       a lone item is placed at main-start, i.e. flush left.
+    """
+
+    def test_hidden_pill_btn_has_display_none_override(self):
+        html = _render_airplay_page(repeat_enabled=True)
+        assert ".pill-btn[hidden]" in html
+        override = html.split(".pill-btn[hidden]", 1)[1].split("}", 1)[0]
+        assert "display: none" in override
+
+    def test_appliance_selector_right_anchored_independently(self):
+        html = _render_airplay_page(repeat_enabled=False)
+        assert ".airplay-top-controls > .appliance-selector" in html
+        rule = html.split(
+            ".airplay-top-controls > .appliance-selector", 1
+        )[1].split("}", 1)[0]
+        # Must cover the display-only span fallback root as well.
+        assert ".airplay-top-controls > .appliance-selector-btn" in rule
+        assert "margin-left: auto" in rule
+
+
 class TestHomeRefreshButtonRemoved:
     """A dedicated Refresh button would only reload the page, redundant with the
     1.5 s poll -- there is no such button, regardless of repeat.enabled."""

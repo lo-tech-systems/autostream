@@ -256,6 +256,30 @@ class TestRemoteHomePageContent:
         html = self._render()
         assert "pollHomeState" in html
 
+    def test_repeat_pill_starts_hidden_and_hidden_is_effective(self):
+        """The remote repeat pill is rendered with the hidden attribute and
+        shown only when the polled feed reports repeat.enabled. The hidden
+        attribute only works if no author display rule defeats the UA
+        stylesheet's [hidden] { display: none } -- .pill-btn sets
+        display: inline-block, so the page must carry the override."""
+        html = self._render()
+        pill_tag = html.split('id="repeat-btn"', 1)
+        assert len(pill_tag) == 2
+        assert "hidden" in pill_tag[1].split(">", 1)[0]
+        assert ".pill-btn[hidden]" in html
+        override = html.split(".pill-btn[hidden]", 1)[1].split("}", 1)[0]
+        assert "display: none" in override
+
+    def test_appliance_selector_right_anchor_rule_present(self):
+        """With the repeat pill hidden, the selector is the row's only flex
+        item; space-between alone would place it flush left."""
+        html = self._render()
+        assert ".airplay-top-controls > .appliance-selector" in html
+        rule = html.split(
+            ".airplay-top-controls > .appliance-selector", 1
+        )[1].split("}", 1)[0]
+        assert "margin-left: auto" in rule
+
     def test_page_has_remote_nav(self):
         """Remote Home page nav should have disabled Service/Setup/Info tabs."""
         html = self._render()

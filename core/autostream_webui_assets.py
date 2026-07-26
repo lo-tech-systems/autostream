@@ -513,6 +513,15 @@ button[type=submit]:active {
   box-shadow: none;
 }
 
+/* .pill-btn's author-origin display rule beats the UA stylesheet's
+   [hidden] { display: none } regardless of specificity, so without this
+   override a hidden pill (e.g. the remote repeat pill, which is shown and
+   hidden purely via the hidden attribute) stays visible. Same trap as the
+   .banner-logo display note above. */
+.pill-btn[hidden] {
+  display: none;
+}
+
 .pill-row {
   display: flex;
   align-items: center;
@@ -577,6 +586,16 @@ button[type=submit]:active {
 
 .airplay-top-controls .status-pill {
   flex: 0 0 auto;
+}
+
+/* The appliance selector must stay right-anchored even when it is the row's
+   only in-flow flex item (repeat pill omitted server-side, or hidden at
+   runtime): justify-content: space-between places a lone item at main-start.
+   Covers both selector roots -- the interactive div.appliance-selector and
+   the display-only span.appliance-selector-btn fallback. */
+.airplay-top-controls > .appliance-selector,
+.airplay-top-controls > .appliance-selector-btn {
+  margin-left: auto;
 }
 
 /* ── Now Playing card ────────────────────────────────────────────────────── */
