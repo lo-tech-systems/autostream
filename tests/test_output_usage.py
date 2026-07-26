@@ -1022,3 +1022,42 @@ class TestShutdownAwareness:
 
         ou.stop(timeout=1.0)
         assert thread_done.is_set(), "poll thread must have exited after stop()"
+
+
+# ---------------------------------------------------------------------------
+# Server side: GET /api/audio/status "playing" comes from the unified
+# session state, so neighbours see a repeat-replay session as occupancy.
+# ---------------------------------------------------------------------------
+
+class TestAudioStatusPlayingFromSession:
+    def _invoke(self, session_state):
+        import io
+        import json as _json
+        import autostream_webui_api as api_mod
+        from autostream_players import ListOutputsResult, OutputInfo
+        from autostream_webui_state import WebUIState
+
+        handler = MagicMock()
+        handler.wfile = io.BytesIO()
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        parsed = MagicMock()
+        parsed.owntone.base_url = "http://localhost:3689"
+        outputs = ListOutputsResult(
+            ok=True,
+            outputs=(OutputInfo(id="a", name="Kitchen", selected=True, volume_percent=40),),
+        )
+        with patch("autostream_webui_api._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_api.list_outputs", return_value=outputs), \
+             patch("autostream_webui_api.get_session_state", return_value=session_state), \
+             patch("autostream_webui_api.any_monitor_capturing", return_value=False):
+            api_mod.send_audio_status_json(handler, state)
+        return _json.loads(handler.wfile.getvalue())
+
+    def test_replay_session_reports_playing_with_outputs(self):
+        body = self._invoke({"active": True, "source": "replay"})
+        assert body["playing"] is True
+        assert body["outputs"] == ["Kitchen"]
+
+    def test_idle_session_reports_not_playing(self):
+        body = self._invoke({"active": False, "source": None})
+        assert body["playing"] is False

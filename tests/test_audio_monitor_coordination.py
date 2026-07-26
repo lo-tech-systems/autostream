@@ -978,7 +978,9 @@ class TestCaptureStopOrdering:
 
 
 # ---------------------------------------------------------------------------
-# _sync_playing_announcement: mDNS zero-to-one and one-to-zero transitions
+# _sync_playing_announcement: mDNS zero-to-one and one-to-zero transitions.
+# The predicate is the unified session-active flag, so a repeat-replay
+# session announces exactly like a live-capture one.
 # ---------------------------------------------------------------------------
 
 class TestSyncPlayingAnnouncement:
@@ -989,49 +991,51 @@ class TestSyncPlayingAnnouncement:
         core._playing_announced = False
 
     def test_zero_to_one_writes_avahi_service(self):
-        mon = _make_monitor()
-        mon.is_capturing = True
         with patch.object(core, "write_avahi_playing_service", return_value=True) as mock_write:
-            core._sync_playing_announcement([mon], "v1")
+            core._sync_playing_announcement(True, "v1")
         mock_write.assert_called_once_with("v1")
         assert core._playing_announced is True
 
     def test_write_failure_leaves_announced_false(self):
-        mon = _make_monitor()
-        mon.is_capturing = True
         with patch.object(core, "write_avahi_playing_service", return_value=False):
-            core._sync_playing_announcement([mon], "v1")
+            core._sync_playing_announcement(True, "v1")
         assert core._playing_announced is False
 
     def test_one_to_zero_removes_avahi_service(self):
         core._playing_announced = True
-        mon = _make_monitor()
-        mon.is_capturing = False
         with patch.object(core, "remove_avahi_playing_service", return_value=True) as mock_remove:
-            core._sync_playing_announcement([mon], "v1")
+            core._sync_playing_announcement(False, "v1")
         mock_remove.assert_called_once()
         assert core._playing_announced is False
 
     def test_remove_failure_leaves_announced_true(self):
         core._playing_announced = True
-        mon = _make_monitor()
-        mon.is_capturing = False
         with patch.object(core, "remove_avahi_playing_service", return_value=False):
-            core._sync_playing_announcement([mon], "v1")
+            core._sync_playing_announcement(False, "v1")
         assert core._playing_announced is True
 
     def test_already_announced_skips_write(self):
         core._playing_announced = True
-        mon = _make_monitor()
-        mon.is_capturing = True
         with patch.object(core, "write_avahi_playing_service") as mock_write:
-            core._sync_playing_announcement([mon], "v1")
+            core._sync_playing_announcement(True, "v1")
         mock_write.assert_not_called()
 
-    def test_not_announced_and_not_capturing_skips_remove(self):
+    def test_not_announced_and_not_active_skips_remove(self):
         core._playing_announced = False
-        mon = _make_monitor()
-        mon.is_capturing = False
         with patch.object(core, "remove_avahi_playing_service") as mock_remove:
-            core._sync_playing_announcement([mon], "v1")
+            core._sync_playing_announcement(False, "v1")
         mock_remove.assert_not_called()
+
+    def test_reconciliation_reads_session_state_not_capture_flags(self):
+        # A replay session (no monitor capturing) must still re-announce:
+        # the reconcile tick derives its predicate from get_session_state().
+        core._set_session_state(True, "replay")
+        try:
+            with patch.object(core, "write_avahi_playing_service", return_value=True) as mock_write:
+                core._sync_playing_announcement(
+                    core.get_session_state()["active"], "v1"
+                )
+            mock_write.assert_called_once_with("v1")
+            assert core._playing_announced is True
+        finally:
+            core._set_session_state(False, None)

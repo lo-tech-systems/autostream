@@ -664,6 +664,20 @@ def send_output_eq_status_json(handler) -> None:
 _audio_status_fail_count = 0
 
 
+def _session_playing() -> bool:
+    """Whether a playback session is active (live input or repeat replay).
+
+    The outward-facing "is this appliance playing" answer for neighbours,
+    dials, and local automation: reads the unified session state so repeat
+    replay counts, falling back to the raw capture flag only if the session
+    cache is unavailable.
+    """
+    try:
+        return bool(get_session_state()["active"])
+    except Exception:
+        return any_monitor_capturing()
+
+
 def send_audio_status_json(handler, state: WebUIState) -> None:
     """GET /api/audio/status — unauthenticated, read-only.
 
@@ -673,7 +687,7 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
     and every 10th failure; DEBUG between.
     """
     global _audio_status_fail_count
-    playing = any_monitor_capturing()
+    playing = _session_playing()
     try:
         parsed = _config_snapshot(state)
     except Exception as e:
@@ -830,7 +844,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         send_json(handler, 403, {})
         return
 
-    playing = any_monitor_capturing()
+    playing = _session_playing()
 
     try:
         parsed = _config_snapshot(state)
@@ -2904,7 +2918,7 @@ def send_playing_status_json(handler) -> None:
     automation conservatively treats the state as unknown (Section 8.3).
     """
     try:
-        playing = any_monitor_capturing()
+        playing = _session_playing()
     except Exception:
         logging.warning("playing status unavailable (monitor query failed)")
         send_json(handler, 200, {"ok": False, "error": "playing status unavailable"})

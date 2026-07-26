@@ -230,35 +230,37 @@ _playing_announced: bool = False
 _reconcile_started: bool = False
 
 
-def _sync_playing_announcement(monitors: list, version: str) -> None:
+def _sync_playing_announcement(active: bool, version: str) -> None:
     """Idempotently sync the _autostream-playing._tcp mDNS announcement.
 
-    Writes the avahi service file when any monitor is capturing and the
-    service is not yet announced; removes it when no monitor is capturing
-    and the service is currently announced.  Updates _playing_announced only
-    after a successful admin call.  Thread-safe; never raises.
+    *active* is the unified playback-session flag (live input or repeat
+    replay -- see get_session_state()): writes the avahi service file when a
+    session is active and the service is not yet announced; removes it when
+    no session is active and the service is currently announced.  Updates
+    _playing_announced only after a successful admin call.  Thread-safe;
+    never raises.
     """
     global _playing_announced
-    is_any = any(m.is_capturing for m in monitors)
+    active = bool(active)
     with _playing_lock:
-        if is_any and not _playing_announced:
+        if active and not _playing_announced:
             if write_avahi_playing_service(version):
                 _playing_announced = True
-        elif not is_any and _playing_announced:
+        elif not active and _playing_announced:
             if remove_avahi_playing_service():
                 _playing_announced = False
 
 
-def _start_playing_reconciliation(get_monitors_fn, version: str) -> None:
+def _start_playing_reconciliation(version: str) -> None:
     """Start a daemon thread that periodically re-syncs the playing announcement.
 
-    Recovers from transient admin failures and reflects config reloads that
-    rebuild the monitor list.  get_monitors_fn() is called fresh each tick.
+    Recovers from transient admin failures by re-driving the idempotent sync
+    from the current session state each tick.
     """
     def _reconcile() -> None:
         while True:
             time.sleep(60)
-            _sync_playing_announcement(get_monitors_fn(), version)
+            _sync_playing_announcement(get_session_state()["active"], version)
 
     threading.Thread(target=_reconcile, daemon=True, name="playing-reconcile").start()
 
@@ -3598,10 +3600,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         )
 
         if not _reconcile_started:
-            def _get_current_monitors() -> list:
-                with _monitors_lock:
-                    return list(all_monitors)
-            _start_playing_reconciliation(_get_current_monitors, version)
+            _start_playing_reconciliation(version)
             _reconcile_started = True
 
         _start_output_usage_poller(cfg)
@@ -3759,9 +3758,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 for m in started:
                     m._on_capture_started()
 
-                if started or stopped:
-                    _sync_playing_announcement(monitors, version)
-
                 # ── Unified playback-session tracker ───────────────────────────
                 # Single call site: derives the {input1, input2, replay}
                 # source vector from this SAME snapshot and fires exactly one
@@ -3779,6 +3775,11 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     cfg.owntone.base_url, new_source=session_source,
                 )
                 _set_session_state(session_source is not None, session_source)
+
+                # The LAN "playing" announcement is a consumer of the session
+                # state (so repeat replay counts, not just live capture); the
+                # sync is idempotent and only touches avahi on a transition.
+                _sync_playing_announcement(session_source is not None, version)
 
                 # ── OwnTone-restart reconcile + hang watchdog ──────────────────
                 # Both run every cycle (not gated on started/stopped/session
@@ -3893,7 +3894,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 tracker.save()
             with _monitors_lock:
                 all_monitors.clear()
-            _sync_playing_announcement([], version)
+            _sync_playing_announcement(False, version)
             client.close()
             if not _reloading:
                 logging.info("Stopped cleanly.")

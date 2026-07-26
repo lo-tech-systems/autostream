@@ -12,7 +12,8 @@ Covers:
 8.  Tie cases [40, 61] and [41, 62] match Python round().
 9.  No selected outputs → master_volume:null, selected_output_count:0.
 10. Unselected outputs excluded from master calculation.
-11. playing comes from any_monitor_capturing(), independent of output selection.
+11. playing comes from the unified session state (live input or repeat
+    replay), independent of output selection.
 12. Config failure → config_error.
 13. Backend exception → backend_unavailable.
 14. Backend not-ok → backend_unavailable.
@@ -114,7 +115,8 @@ def _invoke(
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_webui_api.update_output", update_mock),
-        patch("autostream_webui_api.any_monitor_capturing", return_value=playing),
+        patch("autostream_webui_api.get_session_state",
+              return_value={"active": playing, "source": "input1" if playing else None}),
         patch("autostream_core.get_active_track_identification_snapshot",
               return_value=track_id_snapshot),
     ):
@@ -207,16 +209,37 @@ class TestMasterVolumeResponse:
 # ---------------------------------------------------------------------------
 
 class TestPlayingField:
-    def test_playing_true_when_monitor_capturing(self):
+    def test_playing_true_when_session_active(self):
         code, body, _ = _invoke({"dial_id": DIAL_ID}, playing=True)
         assert body["playing"] is True
 
-    def test_playing_false_when_not_capturing(self):
+    def test_playing_false_when_session_inactive(self):
         code, body, _ = _invoke({"dial_id": DIAL_ID}, playing=False)
         assert body["playing"] is False
 
+    def test_playing_true_during_replay_session(self):
+        """A repeat-replay session counts as playing even though no monitor
+        is capturing."""
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        handler = _make_handler()
+        parsed = MagicMock()
+        parsed.owntone.base_url = BASE_URL
+        with (
+            patch("autostream_webui_api.is_dial_authorized", return_value=True),
+            patch("autostream_webui_api._config_snapshot", return_value=parsed),
+            patch("autostream_webui_api.list_outputs", return_value=_ok_list()),
+            patch("autostream_webui_api.get_session_state",
+                  return_value={"active": True, "source": "replay"}),
+            patch("autostream_webui_api.any_monitor_capturing", return_value=False),
+            patch("autostream_core.get_active_track_identification_snapshot",
+                  return_value=disabled_snapshot()),
+        ):
+            send_dial_status_post_json(handler, state, {"dial_id": DIAL_ID})
+        code, body = _response(handler)
+        assert body["playing"] is True
+
     def test_playing_independent_of_outputs(self):
-        """playing reflects monitor state, not output selection."""
+        """playing reflects session state, not output selection."""
         code, body, _ = _invoke(
             {"dial_id": DIAL_ID},
             list_result=_ok_list(_output("a", 70)),
@@ -336,7 +359,8 @@ class TestFailurePaths:
         handler = _make_handler()
         with (
             patch("autostream_webui_api.is_dial_authorized", return_value=True),
-            patch("autostream_webui_api.any_monitor_capturing", return_value=False),
+            patch("autostream_webui_api.get_session_state",
+                  return_value={"active": False, "source": None}),
             patch("autostream_webui_api._config_snapshot",
                   side_effect=OSError("disk full")),
         ):
@@ -360,7 +384,8 @@ class TestFailurePaths:
         parsed.owntone.base_url = BASE_URL
         with (
             patch("autostream_webui_api.is_dial_authorized", return_value=True),
-            patch("autostream_webui_api.any_monitor_capturing", return_value=False),
+            patch("autostream_webui_api.get_session_state",
+                  return_value={"active": False, "source": None}),
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
             patch("autostream_webui_api.list_outputs",
                   side_effect=ConnectionRefusedError("refused")),

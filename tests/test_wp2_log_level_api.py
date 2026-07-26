@@ -442,11 +442,12 @@ class TestLogLevelPutRouting:
 # ---------------------------------------------------------------------------
 
 class TestSendPlayingStatusJson:
-    def test_playing_true_when_capturing(self, tmp_path):
+    def test_playing_true_when_session_active(self, tmp_path):
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api.any_monitor_capturing", return_value=True), \
+        with patch("autostream_webui_api.get_session_state",
+                   return_value={"active": True, "source": "input1"}), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
@@ -454,15 +455,44 @@ class TestSendPlayingStatusJson:
         assert sent[0][1]["ok"] is True
         assert sent[0][1]["playing"] is True
 
+    def test_playing_true_during_replay_session(self, tmp_path):
+        """A repeat-replay session reports playing even with no monitor
+        capturing -- local automation must not treat replay as idle."""
+        h = _make_handler()
+        sent = []
+
+        with patch("autostream_webui_api.get_session_state",
+                   return_value={"active": True, "source": "replay"}), \
+             patch("autostream_webui_api.any_monitor_capturing", return_value=False), \
+             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
+            api_mod.send_playing_status_json(h)
+
+        assert sent[0][1]["playing"] is True
+
     def test_playing_false_when_idle(self, tmp_path):
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api.any_monitor_capturing", return_value=False), \
+        with patch("autostream_webui_api.get_session_state",
+                   return_value={"active": False, "source": None}), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
         assert sent[0][1]["playing"] is False
+
+    def test_session_failure_falls_back_to_capture_flag(self, tmp_path):
+        """If the session cache is unavailable, the raw capture flag still
+        answers rather than reporting uncertainty."""
+        h = _make_handler()
+        sent = []
+
+        with patch("autostream_webui_api.get_session_state", side_effect=RuntimeError("oops")), \
+             patch("autostream_webui_api.any_monitor_capturing", return_value=True), \
+             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
+            api_mod.send_playing_status_json(h)
+
+        assert sent[0][1]["ok"] is True
+        assert sent[0][1]["playing"] is True
 
     def test_exception_returns_explicit_uncertainty(self, tmp_path):
         """Monitor-query failure returns explicit uncertainty (ok:false), never
@@ -470,7 +500,8 @@ class TestSendPlayingStatusJson:
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api.any_monitor_capturing", side_effect=RuntimeError("oops")), \
+        with patch("autostream_webui_api.get_session_state", side_effect=RuntimeError("oops")), \
+             patch("autostream_webui_api.any_monitor_capturing", side_effect=RuntimeError("oops")), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
