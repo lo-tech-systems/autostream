@@ -341,6 +341,57 @@ class TestUpdateCheckJson:
             send_update_check_json(MagicMock())
         assert sent[0][1]["ok"] is False
 
+    def test_release_notes_adds_rendered_html(self):
+        sent = []
+        payload = json.dumps({"ok": True, "tag": "v2.0.0", "release_notes": "- a\n- b"})
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+            send_update_check_json(MagicMock())
+        data = sent[0][1]
+        assert data["ok"] is True
+        assert data["release_notes"] == "- a\n- b"
+        assert "release_notes_html" in data
+        assert "<ul>" in data["release_notes_html"]
+
+    def test_hostile_release_notes_are_escaped_in_html(self):
+        sent = []
+        payload = json.dumps({"ok": True, "release_notes": "<script>alert(1)</script>"})
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+            send_update_check_json(MagicMock())
+        html_out = sent[0][1]["release_notes_html"]
+        assert "<script>" not in html_out
+        assert "&lt;script&gt;" in html_out
+
+    def test_no_release_notes_key_means_no_html_field(self):
+        sent = []
+        payload = json.dumps({"ok": True, "tag": "v2.0.0"})
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+            send_update_check_json(MagicMock())
+        assert "release_notes_html" not in sent[0][1]
+
+    def test_empty_release_notes_means_no_html_field(self):
+        sent = []
+        payload = json.dumps({"ok": True, "release_notes": ""})
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+            send_update_check_json(MagicMock())
+        assert "release_notes_html" not in sent[0][1]
+
+    def test_non_dict_stdout_passes_through_unchanged(self):
+        sent = []
+        payload = json.dumps(["not", "a", "dict"])
+        with patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+            send_update_check_json(MagicMock())
+        assert sent[0][1] == ["not", "a", "dict"]
+
 
 # ---------------------------------------------------------------------------
 # send_update_status_json

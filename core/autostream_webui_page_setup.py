@@ -51,6 +51,8 @@ from autostream_webui_assets import (
     DIAL_LOCKED_SECTION_CSS,
     ICON_PADLOCK_LOCKED,
     ICON_PADLOCK_UNLOCKED,
+    INFO_MODAL_HTML,
+    INFO_MODAL_SCRIPT,
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
@@ -352,7 +354,6 @@ def send_setup_page(
               <button type="button" class="pill-btn small" style="margin-left:auto" onclick="requestReboot()">Reboot</button>
             </div>
             <div id="updMsg" style="font-size:0.8rem;margin-top:0.3rem;"></div>
-            <div id="updNotes" style="font-size:0.75rem;color:#888;margin-top:0.2rem;font-style:italic;"></div>
           </div>
           <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem;">
             <label class="output-toggle" style="margin:0;">
@@ -1224,7 +1225,8 @@ def send_setup_page(
 </div>"""
     _body_prefix = (
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_hostname_modal_div}\n"
-        f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_wifi_hotspot_modal_div}"
+        f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_wifi_hotspot_modal_div}\n"
+        f"{INFO_MODAL_HTML}"
     )
     _body_html = (
         (f"<p style='color:var(--color-status-success);'>Saved</p>" if saved_ok else "")
@@ -1233,6 +1235,7 @@ def send_setup_page(
     )
     _body_suffix = f"""{A2HS_SCRIPT}
       {AUTOSAVE_JS}
+      {INFO_MODAL_SCRIPT}
       <script>
         const pinChangeState = {{
           busy: false,
@@ -1649,9 +1652,14 @@ def send_setup_page(
         }}
         (async function(){{
           const msg = (t) => {{ document.getElementById("updMsg").textContent = t; }};
-          const notes = (t) => {{ document.getElementById("updNotes").textContent = t || ""; }};
           const bCheck = document.getElementById("btnCheck"), bInst = document.getElementById("btnInst");
           let cand = null;
+          // Info mode: a check found an update, so the button now opens the
+          // release-notes modal instead of re-checking. Cleared back to the
+          // default checking behaviour whenever a check finds no update.
+          let infoMode = false;
+          let notesHtml = "";
+          let notesText = "";
           // On page load, check persisted update status so any recent result is visible.
           async function checkPersistedStatus(){{
             try {{
@@ -1676,16 +1684,35 @@ def send_setup_page(
             }} catch(e) {{ /* ignore — no persisted status yet */ }}
           }}
           bCheck.onclick = async () => {{
-            msg("Checking..."); notes(""); bInst.disabled=true;
+            if (infoMode) {{
+              var infoMsg = notesHtml || notesText || "No release notes provided.";
+              showInfoModal("Release Notes", infoMsg, !!notesHtml);
+              return;
+            }}
+            msg("Checking..."); bInst.disabled=true;
             try {{
               const r = await fetch("/api/update/check"); const j = await r.json();
               if(j.ok && j.update_available){{
                 cand=j.candidate;
                 var chanNote = j.channel === "dev" ? " (pre-release channel)" : "";
                 msg("Update available: " + j.candidate + chanNote);
-                notes(j.release_notes||""); bInst.disabled=false;
-              }} else {{ msg(j.ok?"No updates available.":"Check failed."); }}
-            }} catch(e) {{ msg("Check failed."); }}
+                notesHtml = j.release_notes_html || "";
+                notesText = j.release_notes || "";
+                infoMode = true;
+                bCheck.textContent = "Info";
+                bInst.disabled=false;
+              }} else {{
+                infoMode = false;
+                notesHtml = ""; notesText = "";
+                bCheck.textContent = "Check";
+                msg(j.ok?"No updates available.":"Check failed.");
+              }}
+            }} catch(e) {{
+              infoMode = false;
+              notesHtml = ""; notesText = "";
+              bCheck.textContent = "Check";
+              msg("Check failed.");
+            }}
           }};
           bInst.onclick = async () => {{
             if(!cand) return;

@@ -543,6 +543,12 @@ def _format_reset_date(raw: Optional[str]) -> str:
 # -----------------------------------------------------------------------------
 
 _URL_RE = re.compile(r'(https?://[^\s<>"]+)')
+# Matches an already html.escape()-d "[text](url)" span. The label may
+# contain any escaped text except a literal ']'; the URL must be http(s)
+# and may not contain whitespace or ')' (so the closing paren is unambiguous).
+_MD_LINK_RE = re.compile(r'\[([^\]]+)\]\((https?://[^\s)]+)\)')
+# Placeholder used to shield emitted anchors from the bare-URL autolink pass.
+_LINK_PLACEHOLDER = "\x00LINK%d\x00"
 
 
 def load_license_text() -> str:
@@ -572,12 +578,30 @@ def render_license_md(text: str) -> str:
         s = html.escape(s)
         s = _BOLD_RE.sub(r'<strong>\1</strong>', s)
         s = _ITALIC_RE.sub(r'<em>\1</em>', s)
-        return _URL_RE.sub(
+
+        # [text](url) markdown links first, each replaced with a placeholder
+        # token so the bare-URL autolink pass below cannot re-process the
+        # URL already consumed inside the emitted <a> tag.
+        emitted_links: list[str] = []
+
+        def _md_link_sub(m: "re.Match[str]") -> str:
+            link_text, url = m.group(1), m.group(2)
+            emitted_links.append(
+                f'<a href="{url}" target="_blank" rel="noopener noreferrer">'
+                f'{link_text}</a>'
+            )
+            return _LINK_PLACEHOLDER % (len(emitted_links) - 1)
+
+        s = _MD_LINK_RE.sub(_md_link_sub, s)
+        s = _URL_RE.sub(
             lambda m: (
                 f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">'
                 f'{m.group(1)}</a>'
             ), s
         )
+        for i, link_html in enumerate(emitted_links):
+            s = s.replace(_LINK_PLACEHOLDER % i, link_html)
+        return s
 
     lines = text.splitlines()
     out: list[str] = []

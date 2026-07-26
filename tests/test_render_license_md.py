@@ -153,16 +153,58 @@ class TestEscaping:
         assert "&lt;script&gt;" in out
 
 
-class TestMarkdownLinkNotConverted:
-    def test_markdown_link_syntax_not_recognised_as_a_link(self):
-        # Documents current behaviour: [text](url) markdown-link syntax is
-        # not specifically recognised. The leading "[text](" is left as
-        # plain text; the bare-URL autolinker still matches the URL run
-        # inside the parens (including the trailing ")"), since it has no
-        # concept of markdown-link syntax.
+class TestMarkdownLink:
+    def test_markdown_link_becomes_anchor(self):
         out = render_license_md("[click here](https://example.com)")
-        assert "[click here](" in out
-        assert '<a href="https://example.com)"' in out
+        assert (
+            '<a href="https://example.com" target="_blank" '
+            'rel="noopener noreferrer">click here</a>' in out
+        )
+        assert "[click here](" not in out
+
+    def test_markdown_link_inside_bullet(self):
+        out = render_license_md("- see [the docs](https://example.com/docs) for details")
+        assert out == (
+            "<ul>\n<li>see <a href=\"https://example.com/docs\" target=\"_blank\" "
+            "rel=\"noopener noreferrer\">the docs</a> for details</li>\n</ul>"
+        )
+
+    def test_bare_url_still_autolinks_alongside_markdown_link_support(self):
+        out = render_license_md("See https://example.com/path for details")
+        assert (
+            '<a href="https://example.com/path" target="_blank" '
+            'rel="noopener noreferrer">https://example.com/path</a>' in out
+        )
+
+    def test_markdown_link_and_bare_url_on_same_line(self):
+        out = render_license_md(
+            "[docs](https://example.com/docs) and also https://example.org/bare"
+        )
+        assert (
+            '<a href="https://example.com/docs" target="_blank" '
+            'rel="noopener noreferrer">docs</a>' in out
+        )
+        assert (
+            '<a href="https://example.org/bare" target="_blank" '
+            'rel="noopener noreferrer">https://example.org/bare</a>' in out
+        )
+        # Only two anchors should be present -- the bare-URL pass must not
+        # re-process text already emitted inside the markdown-link anchor.
+        assert out.count("<a href=") == 2
+
+    def test_hostile_link_label_stays_escaped(self):
+        out = render_license_md('[<script>alert(1)</script>](https://example.com)')
+        assert "<script>" not in out
+        assert "&lt;script&gt;" in out
+        assert (
+            '<a href="https://example.com" target="_blank" '
+            'rel="noopener noreferrer">&lt;script&gt;alert(1)&lt;/script&gt;</a>' in out
+        )
+
+    def test_non_http_scheme_not_linkified(self):
+        out = render_license_md('[click me](javascript:alert(1))')
+        assert "<a href" not in out
+        assert "[click me](javascript:alert(1))" in out
 
 
 class TestEdgeCases:

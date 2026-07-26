@@ -305,7 +305,8 @@ class TestVersionOrdering:
 # ---------------------------------------------------------------------------
 
 class TestReleaseNotesSanitization:
-    """_sanitise_release_notes must strip control chars and cap length."""
+    """_sanitise_release_notes must strip control chars, preserve newlines,
+    collapse excess blank lines/intra-line whitespace, and cap length."""
 
     def test_plain_text_is_returned(self):
         assert _sanitise_release_notes("Hello world") == "Hello world"
@@ -328,12 +329,63 @@ class TestReleaseNotesSanitization:
 
     def test_markdown_markers_pass_through(self):
         result = _sanitise_release_notes("- Fix bug #123\n- Add feature")
-        assert "Fix bug" in result
-        assert "Add feature" in result
+        assert result == "- Fix bug #123\n- Add feature"
 
     def test_whitespace_collapsed(self):
         result = _sanitise_release_notes("a   b   c")
         assert result == "a b c"
+
+    def test_newlines_preserved(self):
+        result = _sanitise_release_notes("line one\nline two\nline three")
+        assert result == "line one\nline two\nline three"
+
+    def test_crlf_normalised_to_lf(self):
+        result = _sanitise_release_notes("line one\r\nline two\rline three")
+        assert result == "line one\nline two\nline three"
+
+    def test_intra_line_whitespace_collapsed_and_trailing_stripped(self):
+        result = _sanitise_release_notes("a\t\tb   \nc  ")
+        assert result == "a b\nc"
+
+    def test_blank_line_runs_collapsed_to_two(self):
+        result = _sanitise_release_notes("first\n\n\n\n\nsecond")
+        # 4 blank lines collapse to 2 (represented as 3 newlines between text).
+        assert result == "first\n\n\nsecond"
+
+    def test_two_blank_lines_preserved(self):
+        result = _sanitise_release_notes("first\n\nsecond")
+        assert result == "first\n\nsecond"
+
+    def test_default_cap_is_4000(self):
+        long = "A" * 5000
+        result = _sanitise_release_notes(long)
+        assert len(result) <= 4000
+
+    def test_truncation_cuts_at_line_boundary_near_limit(self):
+        # Build text so a newline falls within the final 20% of the kept
+        # 100-char window; truncation should prefer that boundary over a
+        # mid-line cut.
+        head = "x" * 85
+        tail = "y" * 40
+        text = f"{head}\n{tail}"
+        result = _sanitise_release_notes(text, max_len=100)
+        assert result == head
+        assert "y" not in result
+
+    def test_truncation_without_nearby_boundary_hard_cuts(self):
+        long = "A" * 300
+        result = _sanitise_release_notes(long, max_len=100)
+        assert result == "A" * 100
+
+    def test_non_ascii_stripped(self):
+        result = _sanitise_release_notes("café naïve — dash")
+        assert "é" not in result
+        assert "ï" not in result
+        assert "—" not in result
+
+    def test_leading_trailing_blank_lines_stripped(self):
+        result = _sanitise_release_notes("\n\n\nbody text\n\n\n")
+        assert result == "body text"
 
 
 # ---------------------------------------------------------------------------

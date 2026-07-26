@@ -92,7 +92,7 @@ from autostream_appliance_models import (
 from autostream_player_service import list_outputs, save_setting, update_output
 from autostream_sysutils import get_system_hostname, run_admin_cmd, set_system_hostname
 from urllib.parse import urlparse as _urlparse
-from autostream_webui_common import _config_snapshot, _fallback_input_snapshot
+from autostream_webui_common import _config_snapshot, _fallback_input_snapshot, render_license_md
 from autostream_webui_service_schema import (
     _SERVICE_ITEMS,
     _card_display,
@@ -559,9 +559,15 @@ def send_update_check_json(handler) -> None:
         send_json(handler, 200, {"ok": False, "error": "check failed"})
         return
     try:
-        send_json(handler, 200, json.loads(out))
+        payload = json.loads(out)
     except Exception:
         send_json(handler, 200, {"ok": False})
+        return
+    if isinstance(payload, dict):
+        notes = payload.get("release_notes")
+        if isinstance(notes, str) and notes:
+            payload = {**payload, "release_notes_html": render_license_md(notes)}
+    send_json(handler, 200, payload)
 
 
 def send_update_status_json(handler) -> None:

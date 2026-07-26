@@ -118,11 +118,49 @@ def _version_key(v: str) -> Tuple[int, int, int, int, int, int, str]:
     return (major, minor, patch, 0, label_rank, pre_n, norm_suffix)
 
 
-def _sanitise_release_notes(text: str, max_len: int = 200) -> str:
-    """Return a sanitised plain-text summary from a GitHub release body."""
-    cleaned = "".join(ch for ch in text if 0x20 <= ord(ch) <= 0x7E)
-    cleaned = " ".join(cleaned.split())
-    return cleaned[:max_len].strip()
+def _sanitise_release_notes(text: str, max_len: int = 4000) -> str:
+    """Return a sanitised, newline-preserving summary from a GitHub release body.
+
+    - Normalises \\r\\n and \\r line endings to \\n.
+    - Keeps only printable ASCII (0x20-0x7E) plus newline; all other
+      characters (including non-ASCII and control characters) are dropped.
+    - Collapses runs of spaces/tabs within a line to a single space and
+      strips trailing whitespace from each line.
+    - Collapses runs of 3+ consecutive blank lines down to 2, preserving
+      paragraph breaks without allowing unbounded vertical whitespace.
+    - Truncates to max_len; when truncation is needed, prefers cutting at
+      the last newline within the final 20% of the kept text so lines are
+      not split mid-way when a cheap, nearby boundary is available.
+    - Strips leading/trailing blank lines from the final result.
+    """
+    normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Tabs are kept through this pass (despite being outside the 0x20-0x7E
+    # whitelist) purely so the per-line collapse below can fold them into a
+    # single space along with runs of spaces; no literal tab survives.
+    kept = "".join(ch for ch in normalised if ch in ("\n", "\t") or 0x20 <= ord(ch) <= 0x7E)
+
+    lines = [re.sub(r"[ \t]+", " ", line).rstrip() for line in kept.split("\n")]
+    collapsed_lines: list = []
+    blank_run = 0
+    for line in lines:
+        if line == "":
+            blank_run += 1
+            if blank_run <= 2:
+                collapsed_lines.append(line)
+        else:
+            blank_run = 0
+            collapsed_lines.append(line)
+    cleaned = "\n".join(collapsed_lines)
+
+    if len(cleaned) > max_len:
+        truncated = cleaned[:max_len]
+        boundary = int(max_len * 0.8)
+        cut = truncated.rfind("\n")
+        if cut >= boundary:
+            truncated = truncated[:cut]
+        cleaned = truncated
+
+    return cleaned.strip("\n")
 
 
 def _parse_release_object(
