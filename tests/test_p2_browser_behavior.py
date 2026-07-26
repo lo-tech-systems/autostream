@@ -585,6 +585,31 @@ class TestSetupPageDialResponseParser:
         assert "Dial did not respond in time" in self._src()
 
 
+class TestSetupPageUpdateApplyResponseHandling:
+    """Source-contract tests: the update-apply button navigates on the async
+    accept response rather than the old synchronous success shape."""
+
+    def _src(self) -> str:
+        return _setup_page_src()
+
+    def test_navigates_on_accepted(self):
+        src = self._src()
+        idx = src.find('fetch("/api/update/apply"')
+        assert idx >= 0
+        end_idx = src.find("};", idx)
+        block = src[idx:end_idx] if end_idx > 0 else src[idx:idx + 800]
+        assert "if(j.accepted){{" in block
+        assert 'window.location.replace("/offline/updating");' in block
+
+    def test_no_longer_branches_on_bare_ok(self):
+        src = self._src()
+        idx = src.find('fetch("/api/update/apply"')
+        assert idx >= 0
+        end_idx = src.find("};", idx)
+        block = src[idx:end_idx] if end_idx > 0 else src[idx:idx + 800]
+        assert "if(j.ok){{" not in block
+
+
 def _render_setup_page() -> str:
     """Render the full setup page HTML with all external dependencies mocked.
 

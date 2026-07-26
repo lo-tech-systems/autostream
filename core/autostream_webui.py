@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, unquote, quote
@@ -34,6 +37,7 @@ from autostream_core import (
 )
 
 from autostream_sysutils import (
+    atomic_write_file,
     reboot_system,
 )
 
@@ -201,6 +205,114 @@ def _effective_control_other_appliances(state) -> bool:
 STATE: Optional[WebUIState] = None
 AUTH: Optional[AuthManager] = None
 
+# -----------------------------------------------------------------------------
+# Background update-apply state
+# -----------------------------------------------------------------------------
+
+# Guards against a second POST /api/update/apply starting a concurrent
+# staging run while one is already in flight. The installer itself is
+# flock-protected once scheduled, so this only needs to cover the staging
+# window that now runs off the request thread.
+_update_apply_lock = threading.Lock()
+_update_apply_in_progress = False
+
+# Where the installer (autostream_install.sh) persists apply progress/result;
+# read by autostream_admin's "update-status" command for the /offline/updating
+# page. Owned by the "autostream" user (same as this process), so it can be
+# written directly without going through sudo.
+_UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
+
+
+def _update_apply_mark_finished() -> None:
+    global _update_apply_in_progress
+    with _update_apply_lock:
+        _update_apply_in_progress = False
+
+
+def _write_update_apply_result(status: str, message: str) -> None:
+    """Best-effort write of a webui-observed apply outcome into update-result.env.
+
+    Only used for failures that happen before the installer itself has a
+    chance to write anything (e.g. release staging failing, or the apply
+    subprocess never returning). Once the installer is actually scheduled and
+    starts, it immediately overwrites this file with STATUS=in_progress and
+    then its own final result, so a write made here can only ever be visible
+    for the (bounded) window before that happens — it can never mask a
+    success that has already completed, because that success write always
+    comes after and last.
+    """
+    run_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    safe_message = message.replace('"', "'")
+
+    def _writer(fh) -> None:
+        fh.write(f'LAST_RUN_AT="{run_at}"\n')
+        fh.write(f'STATUS="{status}"\n')
+        fh.write(f'MESSAGE="{safe_message}"\n')
+        fh.write('PERCENT_COMPLETE=""\n')
+
+    try:
+        atomic_write_file(_UPDATE_RESULT_FILE, _writer)
+    except Exception:
+        logging.exception(
+            "update apply: failed to write %s result to %s", status, _UPDATE_RESULT_FILE
+        )
+
+
+def _run_update_apply_background() -> None:
+    """Run the updater's apply step off the request thread.
+
+    Started as a daemon thread by _start_update_apply once the response has
+    already been sent to the client. Always clears the in-flight guard on
+    the way out, regardless of outcome.
+    """
+    try:
+        try:
+            rc, out, err = run_updater(["apply"], timeout=180)
+        except subprocess.TimeoutExpired:
+            # The updater subprocess (invoked via sudo) is not guaranteed to
+            # die with its parent, so a timeout here does not mean the apply
+            # itself failed — staging or the installer hand-off may still be
+            # under way. Record "error" rather than "failure" to avoid
+            # asserting a failure that may not have happened; if the apply
+            # does go on to schedule the installer, that installer's first
+            # write (STATUS=in_progress) supersedes this one, and this entry
+            # is only ever visible for the window until it does.
+            logging.error("update apply: timed out waiting for updater subprocess")
+            _write_update_apply_result(
+                "error",
+                "Update status could not be confirmed after a timeout. "
+                "Check back shortly before retrying.",
+            )
+            return
+        except Exception as e:
+            logging.error("update apply: background apply raised: %s", e)
+            _write_update_apply_result("failure", f"Update failed to start: {e}")
+            return
+
+        if rc == 0:
+            try:
+                result = json.loads(out or "{}")
+            except Exception:
+                result = {"ok": True}
+            if not result.get("ok", True):
+                logging.error("update apply: updater reported failure: %s", result)
+                _write_update_apply_result(
+                    "failure", str(result.get("error") or "Update failed")
+                )
+            return
+
+        try:
+            result = json.loads(out or "{}")
+            message = str(result.get("error") or "Update failed")
+        except Exception:
+            message = "Update failed"
+        if err.strip():
+            message = f"{message}: {err.strip()}"
+        logging.error("update apply: updater exited rc=%s: %s", rc, message)
+        _write_update_apply_result("failure", message)
+    finally:
+        _update_apply_mark_finished()
+
 
 
 
@@ -281,33 +393,43 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         return path
 
     def _start_update_apply(self) -> None:
-        """Stage the latest release and schedule the installer.
+        """Accept an update-apply request and run it in the background.
 
-        Runs run_updater("apply") in the handler's own thread (ThreadingHTTPServer
-        gives each request its own thread). The updater downloads and extracts the
-        release tarball, schedules autostream_install.sh --update via systemd-run,
-        and returns a JSON result. On success the JS client redirects to
-        /offline/updating; on failure the error is shown on the page.
+        Staging the release tarball can take long enough on slow hardware to
+        exceed the reverse proxy's read timeout, so this no longer blocks the
+        request: it starts run_updater("apply") on a daemon thread and
+        responds immediately with {ok: True, accepted: True}. The JS client
+        treats "accepted" the same way it used to treat a synchronous
+        success and navigates to /offline/updating, which polls the update
+        status the installer (and, for failures before the installer takes
+        over, this background thread) writes to update-result.env.
+
+        A second POST while an apply is already in flight does not start a
+        concurrent run — it returns already_in_progress=True instead. The
+        installer itself is flock-protected once scheduled; this guard only
+        needs to cover the staging window that now runs here.
         """
+        global _update_apply_in_progress
+        with _update_apply_lock:
+            if _update_apply_in_progress:
+                send_json(self, 200, {"ok": True, "accepted": True, "already_in_progress": True})
+                return
+            _update_apply_in_progress = True
+
         try:
-            rc, out, err = run_updater(["apply"], timeout=180)
-            if rc == 0:
-                try:
-                    result = json.loads(out or "{}")
-                    result.setdefault("ok", True)
-                except Exception:
-                    result = {"ok": True}
-            else:
-                try:
-                    result = json.loads(out or "{}")
-                    result.setdefault("ok", False)
-                except Exception:
-                    result = {"ok": False, "error": "apply failed"}
-                if not result.get("ok") and err.strip():
-                    result.setdefault("details", err.strip())
+            threading.Thread(
+                target=_run_update_apply_background,
+                name="update-apply",
+                daemon=True,
+            ).start()
         except Exception as e:
-            result = {"ok": False, "error": "apply failed", "details": str(e)}
-        send_json(self, 200, result)
+            # The guard must never outlive a run that was never started, or
+            # every later apply would be refused as already_in_progress.
+            _update_apply_mark_finished()
+            logging.error("update apply: could not start background thread: %s", e)
+            send_json(self, 200, {"ok": False, "error": "Could not start update"})
+            return
+        send_json(self, 200, {"ok": True, "accepted": True})
 
     # Reduce noisy TLS/HTTPS probes hitting this plain-HTTP server
     def log_error(self, format, *args):  # noqa: A003

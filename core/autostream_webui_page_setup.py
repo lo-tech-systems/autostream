@@ -1707,7 +1707,7 @@ def send_setup_page(
             try {{
               const r = await fetch("/api/update/apply",{{method:"POST",headers:{{"X-CSRF-Token":window.__CSRF||""}}}});
               const j = await r.json().catch(()=>({{ok:false}}));
-              if(j.ok){{
+              if(j.accepted){{
                 window.location.replace("/offline/updating");
               }} else {{
                 msg("Failed to start update: " + (j.error || "unknown error"));
