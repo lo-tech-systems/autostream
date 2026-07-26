@@ -19,7 +19,7 @@ logic itself is caught.
 Covers:
   1. Master-volume-card enable + now-playing/track-ID visibility rebased on
      d.session.active, with legacy (no session block) fallback.
-  2. "REPEAT PLAYBACK" heading swap while d.session.source === 'replay'.
+  2. "Repeat Play" heading swap while d.session.source === 'replay'.
   3. Repeat button never shows "Replay Last" while d.session.active.
   4. Optimistic click state (immediate class/title, hold-until-agree-or-5s).
 """
@@ -148,7 +148,7 @@ class TestSessionActiveGatesNowPlayingCard:
 
 
 # ---------------------------------------------------------------------------
-# Symptom 5: "REPEAT PLAYBACK" heading while session.source === 'replay'
+# Symptom 5: "Repeat Play" heading while session.source === 'replay'
 # ---------------------------------------------------------------------------
 
 class TestReplayHeading:
@@ -158,7 +158,7 @@ class TestReplayHeading:
         # suffix.
         assert (
             "hdrEl.textContent = (active ? (sessionSource === 'replay' ? "
-            "'REPEAT PLAYBACK' : 'Now Playing') : 'Ready') + hdrSuffix;" in home_html
+            "'Repeat Play' : 'Now Playing') : 'Ready') + hdrSuffix;" in home_html
         )
         assert (
             "var hdrSuffix = window.__REMOTE_HOSTNAME ? (' · ' + window.__REMOTE_HOSTNAME) : '';"
@@ -180,8 +180,8 @@ class TestReplayLastNeverWhileSessionActive:
     def test_show_replay_last_gated_on_session_active_with_legacy_fallback(self, home_html):
         assert (
             "var showReplayLast = (sessionActive === null)\n"
-            "            ? (!on && hasBuffer)\n"
-            "            : (!sessionActive && !on && hasBuffer && !armed && !replaying);"
+            "      ? (!on && hasBuffer)\n"
+            "      : (!sessionActive && !on && hasBuffer && !armed && !replaying);"
             in home_html
         )
 
@@ -202,7 +202,7 @@ class TestOptimisticClickState:
         # Class + transient title applied synchronously, before fetch() below.
         click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
         opt_idx = click_src.index("__repeatOptimistic = { active: newArmed")
-        fetch_idx = click_src.index("fetch('/api/repeat'")
+        fetch_idx = click_src.index("fetch(window.__REPEAT_URL || '/api/repeat'")
         assert opt_idx < fetch_idx
         assert "btn.classList.toggle('active', newArmed);" in click_src[opt_idx:fetch_idx]
         assert "btn.title = newArmed ? 'Starting…' : 'Stopping…';" in click_src[opt_idx:fetch_idx]
@@ -218,8 +218,8 @@ class TestOptimisticClickState:
     def test_post_failure_reverts_optimistic_override(self, home_html):
         # Both the explicit {ok:false} branch and the network-error catch()
         # clear the override AND restore the pre-click class.
-        assert "if (!d || !d.ok) {\n              __repeatOptimistic = null;\n              btn.classList.toggle('active', wasActive);\n            }" in home_html
-        assert "}).catch(function(){\n            __repeatOptimistic = null;\n            btn.classList.toggle('active', wasActive);\n          });" in home_html
+        assert "if (!d || !d.ok) {\n        __repeatOptimistic = null;\n        btn.classList.toggle('active', wasActive);\n      }" in home_html
+        assert "}).catch(function(){\n      __repeatOptimistic = null;\n      btn.classList.toggle('active', wasActive);\n    });" in home_html
 
     def test_no_new_timers_beyond_existing_poll(self, home_html):
         # The optimistic mechanism must not introduce its own setTimeout/
@@ -446,3 +446,48 @@ class TestRemoteHomeDelegatesToSharedNowPlayingRenderer:
 
         assert HOME_CARDS_SCRIPT in home_html
         assert HOME_CARDS_SCRIPT in remote_home_html
+
+
+# ---------------------------------------------------------------------------
+# Remote shell: repeat pill replaces the "<- Home" button; logo is the new
+# home-navigation affordance; __REPEAT_URL is parameterized per page.
+# ---------------------------------------------------------------------------
+
+class TestRemoteShellTopControls:
+    def test_no_return_home_button(self, remote_home_html):
+        assert "← Home" not in remote_home_html
+        assert "Return to this appliance" not in remote_home_html
+
+    def test_repeat_pill_present_and_hidden_by_default(self, remote_home_html):
+        assert 'id="repeat-btn"' in remote_home_html
+        btn_tag = remote_home_html.split('id="repeat-btn"', 1)[1].split(">", 1)[0]
+        assert "hidden" in btn_tag
+
+    def test_repeat_pill_wired_to_click_handler(self, remote_home_html):
+        assert "onRepeatButtonClick()" in remote_home_html
+
+    def test_remote_render_home_state_calls_update_repeat_button(self, remote_home_html):
+        assert "updateRepeatButton(data);" in remote_home_html
+
+
+class TestRepeatUrlParameterization:
+    def test_local_page_sets_repeat_url_to_api_repeat(self, home_html):
+        assert "window.__REPEAT_URL='/api/repeat';" in home_html
+
+    def test_remote_page_sets_repeat_url_to_gateway_path(self, remote_home_html):
+        assert "window.__REPEAT_URL='/api/appliances/some-remote-appliance-id/repeat';" in remote_home_html
+
+
+class TestLogoIsHomeLink:
+    def test_banner_logo_html_wraps_images_in_home_link(self):
+        from autostream_webui_assets import BANNER_LOGO_HTML
+
+        assert '<a href="/"' in BANNER_LOGO_HTML
+        # Both theme badges must be inside the link, not siblings of it.
+        link_and_after = BANNER_LOGO_HTML.split('<a href="/"', 1)[1]
+        assert "autostream-badge.png" in link_and_after
+        assert "autostream-badge-dark.png" in link_and_after
+
+    def test_local_and_remote_pages_embed_home_link_logo(self, home_html, remote_home_html):
+        assert '<a href="/"' in home_html
+        assert '<a href="/"' in remote_home_html

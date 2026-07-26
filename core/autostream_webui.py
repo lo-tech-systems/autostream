@@ -59,6 +59,7 @@ from autostream_webui_api import (
     send_federation_equaliser_json,
     send_federation_home_json,
     send_federation_output_json,
+    send_federation_repeat_json,
     send_federation_session_json,
     send_json,
     send_output_eq_config_json,
@@ -141,6 +142,7 @@ from autostream_appliance_gateway import (
     send_gateway_equaliser_json,
     send_gateway_home_json,
     send_gateway_output_json,
+    send_gateway_repeat_json,
 )
 
 _FEDERATION_PREFIX = "/api/federation/v1"
@@ -434,6 +436,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 send_federation_eq_config_json(self, STATE, body_str)
             elif path == f"{_FEDERATION_PREFIX}/equaliser/reset":
                 send_federation_eq_reset_json(self, STATE)
+            elif path == f"{_FEDERATION_PREFIX}/repeat":
+                if not body_str:
+                    send_json(self, 400, {"ok": False, "error": "missing_body"})
+                    return
+                send_federation_repeat_json(self, STATE, body_str)
             else:
                 send_json(self, 400, {"ok": False, "error": "invalid_endpoint"})
             return
@@ -808,6 +815,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 send_gateway_eq_config_json(self, STATE, aid, body_str)
             elif sub == "equaliser/reset":
                 send_gateway_eq_reset_json(self, STATE, aid)
+            elif sub == "repeat":
+                if not body_str:
+                    self.send_error(400, "Missing request body")
+                    return
+                send_gateway_repeat_json(self, STATE, aid, body_str)
             else:
                 self.send_error(404, "Not found")
 

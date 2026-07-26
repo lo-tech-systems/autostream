@@ -163,6 +163,14 @@ Authorization: Bearer <token>
 | `POST` | `/api/federation/v1/equaliser/config` | Apply one EQ band or gain field |
 | `POST` | `/api/federation/v1/equaliser/reset` | Zero all EQ fields |
 | `GET` | `/api/federation/v1/equaliser/status` | Read live auto-trim state |
+| `POST` | `/api/federation/v1/repeat` | Arm or disarm repeat-buffer replay |
+
+The **home** response additionally carries `session` (the unified playback-session
+flag/source, always present) and `repeat` (the daemon's repeat-buffer status block,
+present only when the target's repeat feature has ever reported one). Both fields
+are additive within v1: a target running an older release simply omits them, and a
+gateway UI that does not recognise them hides the corresponding control rather than
+erroring.
 
 The **session** response (`POST /api/federation/v1/session`) includes `"federation_version": 1`
 and `"expires_in": 600`. The gateway validates that both values match these exact constants

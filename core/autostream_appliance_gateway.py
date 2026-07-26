@@ -3,7 +3,7 @@
 Provides:
   - /api/appliances (appliance list with bound-first ordering)
   - /api/appliances/<id>/{home, equaliser, equaliser/status, output,
-                          equaliser/config, equaliser/reset}
+                          equaliser/config, equaliser/reset, repeat}
 
 Remote dispatch uses the live mDNS registry only; no browser-supplied
 addresses are ever accepted.  Token caching, per-endpoint exponential
@@ -62,7 +62,7 @@ from autostream_config import DEFAULT_AIRPLAY_MODE, parse_config
 from autostream_core import get_live_output_eq_status
 from autostream_player_service import config_airplay_mode_to_backend
 from autostream_rpi import get_appliance_id
-from autostream_webui_api import send_browser_api_error, send_json
+from autostream_webui_api import apply_repeat_arm_request, send_browser_api_error, send_json
 from autostream_webui_common import locked_load_config
 
 # ---------------------------------------------------------------------------
@@ -924,6 +924,45 @@ def send_gateway_eq_reset_json(handler, state, appliance_id: str) -> None:
         return
     status, data = _remote_request(
         appliance_id, sighting, "POST", "/api/federation/v1/equaliser/reset", body={},
+    )
+    _update_backoff((appliance_id, "*write*"), status, data, sighting.ip)
+    _handle_remote_response(handler, appliance_id, status, data)
+
+
+# ---------------------------------------------------------------------------
+# Public: gateway repeat arm/disarm
+# ---------------------------------------------------------------------------
+
+def send_gateway_repeat_json(handler, state, appliance_id: str, body_str: str) -> None:  # noqa: ARG001
+    """POST /api/appliances/<id>/repeat (browser CSRF already validated by caller).
+
+    Same {"armed": bool} request/response contract as POST /api/repeat --
+    see autostream_webui_api.apply_repeat_arm_request().
+    """
+    resolution, sighting = resolve_appliance(appliance_id)
+    if resolution not in ("bound", "remote"):
+        _gateway_error_to_browser(handler, resolution)
+        return
+
+    if resolution == "bound":
+        status, resp = apply_repeat_arm_request(body_str)
+        send_json(handler, status, resp)
+        return
+
+    try:
+        body = json.loads(body_str) if body_str else {}
+    except (json.JSONDecodeError, ValueError):
+        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        return
+    if not isinstance(body, dict) or "armed" not in body or not isinstance(body.get("armed"), bool):
+        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        return
+
+    if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
+        return
+    sanitized = {"armed": bool(body["armed"])}
+    status, data = _remote_request(
+        appliance_id, sighting, "POST", "/api/federation/v1/repeat", body=sanitized,
     )
     _update_backoff((appliance_id, "*write*"), status, data, sighting.ip)
     _handle_remote_response(handler, appliance_id, status, data)

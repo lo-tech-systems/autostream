@@ -1601,45 +1601,66 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
     send_json(handler, 200, resp)
 
 
-def send_repeat_post_json(handler, state, body: str) -> None:
-    """POST /api/repeat — arm/disarm repeat-recording replay.
+def apply_repeat_arm_request(body: str) -> tuple[int, dict]:
+    """Validate and apply an {"armed": bool} repeat arm/disarm request.
 
-    Request: {"armed": bool}
+    Shared core logic for POST /api/repeat (below), POST
+    /api/federation/v1/repeat (send_federation_repeat_json), and the
+    bound-appliance path of POST /api/appliances/<id>/repeat
+    (autostream_appliance_gateway.send_gateway_repeat_json) -- all three
+    apply to this same appliance's daemon, so the validation and
+    response-shape contract lives in one place rather than three.
 
     Session arm is runtime-only: no settings write accompanies
     this call, and current armed/replay state is read back from /api/status
     (the daemon is the single source of truth -- no WebUIState mirror).
 
-    Success (HTTP 200):  {"ok": true, "armed": <bool>}
-    Validation failure (HTTP 400): {"ok": false, "error": "..."}
-    Live-apply failure (HTTP 200, ok:false): daemon rejected/unreachable
+    Returns (http_status, response_dict):
+      Success (200):            {"ok": true, "armed": <bool>}
+      Validation failure (400): {"ok": false, "error": "..."}
+      Live-apply failure (200, ok:false): daemon rejected/unreachable
         (e.g. an older monitor binary that does not support the command).
     """
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
-        return
+        return 400, {"ok": False, "error": "Invalid JSON"}
 
     if not isinstance(payload, dict):
-        send_json(handler, 400, {"ok": False, "error": "JSON object required"})
-        return
+        return 400, {"ok": False, "error": "JSON object required"}
 
     if "armed" not in payload:
-        send_json(handler, 400, {"ok": False, "error": "armed is required"})
-        return
+        return 400, {"ok": False, "error": "armed is required"}
 
     armed = payload["armed"]
     if not isinstance(armed, bool):
-        send_json(handler, 400, {"ok": False, "error": "armed must be true or false"})
-        return
+        return 400, {"ok": False, "error": "armed must be true or false"}
 
     ok = bool(set_live_repeat_armed(armed))
     if not ok:
-        send_json(handler, 200, {"ok": False, "armed": armed, "error": "Could not update repeat arm state"})
-        return
+        return 200, {"ok": False, "armed": armed, "error": "Could not update repeat arm state"}
 
-    send_json(handler, 200, {"ok": True, "armed": armed})
+    return 200, {"ok": True, "armed": armed}
+
+
+def send_repeat_post_json(handler, state, body: str) -> None:
+    """POST /api/repeat — arm/disarm repeat-recording replay.
+
+    Request: {"armed": bool}
+
+    See apply_repeat_arm_request() for the full validation/response contract.
+    """
+    status, resp = apply_repeat_arm_request(body)
+    send_json(handler, status, resp)
+
+
+def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> None:  # noqa: ARG001
+    """POST /api/federation/v1/repeat — arm/disarm repeat replay on the local
+    appliance.  Same request/response contract as POST /api/repeat -- see
+    apply_repeat_arm_request().
+    """
+    status, resp = apply_repeat_arm_request(body_str)
+    send_json(handler, status, resp)
 
 
 # -----------------------------------------------------------------------------

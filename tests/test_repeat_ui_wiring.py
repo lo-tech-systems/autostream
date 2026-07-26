@@ -361,7 +361,7 @@ class TestHomeRepeatButton:
     def test_button_click_wired_to_post_api_repeat(self):
         html = _render_airplay_page(repeat_enabled=True)
         assert "onRepeatButtonClick()" in html
-        assert "fetch('/api/repeat'" in html
+        assert "fetch(window.__REPEAT_URL || '/api/repeat'" in html
         assert "armed: newArmed" in html
 
     def test_refresh_status_calls_update_repeat_button(self):

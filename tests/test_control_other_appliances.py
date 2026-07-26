@@ -582,6 +582,27 @@ class TestGatewayPostGuard:
 
         assert any(code == 403 for code, _ in sent_json_calls)
 
+    def test_disabled_post_returns_403_for_repeat(self):
+        mgr = _make_auth(pin=None)
+        body = b'{"armed": true}'
+        handler = _make_post(f"/api/appliances/{_REMOTE_ID}/repeat", body)
+        handler.headers["Content-Type"] = "application/json"
+        sent_json_calls = []
+
+        def fake_send_json(h, code, data):
+            sent_json_calls.append((code, data))
+
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
+             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_webui._effective_control_other_appliances", return_value=False), \
+             patch("autostream_webui.send_json", side_effect=fake_send_json):
+            mgr.validate_csrf = MagicMock(return_value=True)
+            handler.do_POST()
+
+        assert any(code == 403 for code, _ in sent_json_calls)
+
 
 # ---------------------------------------------------------------------------
 # 7. Remote Home: Master Volume label includes remote hostname

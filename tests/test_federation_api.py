@@ -427,6 +427,76 @@ class TestFederationEqReset:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/federation/v1/repeat
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestFederationRepeat:
+    def _call_repeat(self, tmp_path, body_bytes: bytes, *, bearer: str | None = None):
+        state = _fake_state(tmp_path)
+        if bearer is None:
+            bearer = _get_bearer()
+        h = _make_handler("POST", "/api/federation/v1/repeat",
+                          body=body_bytes,
+                          headers={"Authorization": bearer})
+        return _call(h, state)
+
+    def test_missing_bearer_returns_401(self, tmp_path):
+        state = _fake_state(tmp_path)
+        h = _make_handler("POST", "/api/federation/v1/repeat",
+                          body=json.dumps({"armed": True}).encode())
+        code, data = _call(h, state)
+        assert code == 401
+        assert data["ok"] is False
+
+    def test_valid_armed_true_applies_and_returns_ok(self, tmp_path):
+        with patch("autostream_webui_api.set_live_repeat_armed", return_value=True) as m:
+            code, data = self._call_repeat(tmp_path, json.dumps({"armed": True}).encode())
+        m.assert_called_once_with(True)
+        assert code == 200
+        assert data == {"ok": True, "armed": True}
+
+    def test_valid_armed_false_applies_and_returns_ok(self, tmp_path):
+        with patch("autostream_webui_api.set_live_repeat_armed", return_value=True) as m:
+            code, data = self._call_repeat(tmp_path, json.dumps({"armed": False}).encode())
+        m.assert_called_once_with(False)
+        assert code == 200
+        assert data["ok"] is True
+
+    def test_invalid_body_missing_armed_returns_400(self, tmp_path):
+        code, data = self._call_repeat(tmp_path, json.dumps({}).encode())
+        assert code == 400
+        assert data["ok"] is False
+
+    def test_invalid_body_non_bool_armed_returns_400(self, tmp_path):
+        code, data = self._call_repeat(tmp_path, json.dumps({"armed": "yes"}).encode())
+        assert code == 400
+        assert data["ok"] is False
+
+    def test_missing_body_returns_400(self, tmp_path):
+        code, data = self._call_repeat(tmp_path, b"")
+        assert code == 400
+        assert data["ok"] is False
+
+    def test_daemon_rejection_returns_ok_false_200(self, tmp_path):
+        with patch("autostream_webui_api.set_live_repeat_armed", return_value=False):
+            code, data = self._call_repeat(tmp_path, json.dumps({"armed": True}).encode())
+        assert code == 200
+        assert data["ok"] is False
+
+    def test_unknown_federation_post_route_still_returns_400_invalid_endpoint(self, tmp_path):
+        # Regression guard: adding /repeat must not disturb the closed
+        # if/elif fallthrough for genuinely unknown POST routes.
+        state = _fake_state(tmp_path)
+        bearer = _get_bearer()
+        h = _make_handler("POST", "/api/federation/v1/repeatxyz",
+                          body=b"{}", headers={"Authorization": bearer})
+        code, data = _call(h, state)
+        assert code == 400
+        assert data["error"] == "invalid_endpoint"
+
+
+# ---------------------------------------------------------------------------
 # POST /api/federation/v1/output
 # ---------------------------------------------------------------------------
 

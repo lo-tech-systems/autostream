@@ -1138,6 +1138,92 @@ class TestSendGatewayHomeJson:
 
 
 # ---------------------------------------------------------------------------
+# send_gateway_repeat_json — POST /api/appliances/<id>/repeat
+# ---------------------------------------------------------------------------
+
+class TestSendGatewayRepeatJson:
+    def _run(self, aid, resolution, body_str, *, sighting=None,
+              apply_result=(200, {"ok": True, "armed": True}),
+              remote_result=(200, {"ok": True, "armed": True})):
+        handler = _make_handler()
+        sent_codes = []
+        sent_data = []
+        sent_browser_errors = []
+
+        def fake_send_json(h, code, data):
+            sent_codes.append(code)
+            sent_data.append(data)
+
+        def fake_browser_err(h, code, error, *, retryable=None, extra=None):
+            sent_browser_errors.append((code, error))
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+
+        with patch("autostream_appliance_gateway.resolve_appliance",
+                   return_value=(resolution, sighting)), \
+             patch("autostream_appliance_gateway.apply_repeat_arm_request",
+                   return_value=apply_result) as apply_mock, \
+             patch.object(gw, "_remote_request", return_value=remote_result) as remote_mock, \
+             patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json), \
+             patch("autostream_appliance_gateway.send_browser_api_error",
+                   side_effect=fake_browser_err):
+            gw.send_gateway_repeat_json(handler, state, aid, body_str)
+
+        return sent_codes, sent_data, sent_browser_errors, apply_mock, remote_mock
+
+    def test_invalid_id_returns_404(self):
+        _, _, errs, _, _ = self._run("bad-id", "invalid", '{"armed": true}')
+        assert errs and errs[0][0] == 404
+
+    def test_offline_returns_503(self):
+        _, _, errs, _, _ = self._run("a" * 20, "offline", '{"armed": true}')
+        assert errs and errs[0][0] == 503
+
+    def test_bound_applies_locally_via_shared_helper(self):
+        codes, data, _, apply_mock, remote_mock = self._run(
+            "a" * 20, "bound", '{"armed": true}',
+        )
+        apply_mock.assert_called_once_with('{"armed": true}')
+        remote_mock.assert_not_called()
+        assert codes == [200]
+        assert data[0] == {"ok": True, "armed": True}
+
+    def test_remote_relays_to_federation_repeat_endpoint(self):
+        sighting = _make_sighting()
+        codes, data, _, apply_mock, remote_mock = self._run(
+            "a" * 20, "remote", '{"armed": false}', sighting=sighting,
+            remote_result=(200, {"ok": True, "armed": False}),
+        )
+        apply_mock.assert_not_called()
+        assert remote_mock.call_count == 1
+        args, kwargs = remote_mock.call_args
+        assert args[:4] == ("a" * 20, sighting, "POST", "/api/federation/v1/repeat")
+        assert kwargs.get("body") == {"armed": False}
+        assert codes == [200]
+        assert data[0]["ok"] is True
+
+    def test_remote_invalid_body_returns_400_without_remote_call(self):
+        sighting = _make_sighting()
+        codes, data, _, apply_mock, remote_mock = self._run(
+            "a" * 20, "remote", '{"notarmed": 1}', sighting=sighting,
+        )
+        apply_mock.assert_not_called()
+        remote_mock.assert_not_called()
+        assert codes == [400]
+        assert data[0]["ok"] is False
+
+    def test_remote_missing_body_returns_400(self):
+        sighting = _make_sighting()
+        codes, data, _, apply_mock, remote_mock = self._run(
+            "a" * 20, "remote", "", sighting=sighting,
+        )
+        remote_mock.assert_not_called()
+        assert codes == [400]
+        assert data[0]["ok"] is False
+
+
+# ---------------------------------------------------------------------------
 # _handle_remote_response — error normalization
 # ---------------------------------------------------------------------------
 

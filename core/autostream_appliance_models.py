@@ -26,6 +26,8 @@ from autostream_core import (
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
+    get_repeat_status,
+    get_session_state,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
@@ -211,6 +213,7 @@ def build_home_state(
             "outputs": [],
             "vu_delay_ms": SETTING_START_BUFFER_MS_DEFAULT,
             "track_identification": disabled_snapshot().to_public_dict(),
+            **_session_and_repeat_fields(),
         }
 
     try:
@@ -290,7 +293,32 @@ def build_home_state(
         "outputs": outputs,
         "vu_delay_ms": int(vu_delay_ms),
         "track_identification": ti_dict,
+        **_session_and_repeat_fields(),
     }
+
+
+def _session_and_repeat_fields() -> dict:
+    """Return the "session" (always present) and "repeat" (present only when
+    the daemon has reported one) fields for build_home_state()'s dict.
+
+    Sourced identically to send_status_json (autostream_webui_api.py): the
+    session cache falls back to any_monitor_capturing() if unavailable, and
+    the repeat block is passed through verbatim when present -- omitted
+    entirely (not a KeyError) when the daemon has never reported one, so an
+    older backend degrades by absence rather than by error.
+    """
+    try:
+        session_state = get_session_state()
+    except Exception:
+        session_state = {"active": any_monitor_capturing(), "source": None}
+    fields: dict = {"session": session_state}
+    try:
+        repeat_status = get_repeat_status()
+    except Exception:
+        repeat_status = None
+    if repeat_status is not None:
+        fields["repeat"] = repeat_status
+    return fields
 
 
 def _safe_get_setting(base_url: str, timeout: float) -> int:

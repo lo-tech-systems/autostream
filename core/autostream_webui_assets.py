@@ -527,6 +527,12 @@ button[type=submit]:active {
   margin-bottom: 1rem;
 }
 
+.banner-logo-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
 .banner-logo {
   width: 100%;
   max-width: 100%;
@@ -1208,8 +1214,10 @@ body.has-bottom-nav .container {
 
 BANNER_LOGO_HTML = """
   <div class="banner-logo-wrap">
-    <img src="/autostream-badge.png" alt="AutoStream" class="banner-logo banner-logo-light">
-    <img src="/autostream-badge-dark.png" alt="AutoStream" class="banner-logo banner-logo-dark">
+    <a href="/" title="autostream Home" aria-label="autostream Home" class="banner-logo-link">
+      <img src="/autostream-badge.png" alt="AutoStream" class="banner-logo banner-logo-light">
+      <img src="/autostream-badge-dark.png" alt="AutoStream" class="banner-logo banner-logo-dark">
+    </a>
   </div>
 """
 
@@ -1295,6 +1303,10 @@ APPLIANCE_SELECTOR_CSS = """
 # each page's own inline <script> block before this one runs:
 #   window.__OUTPUT_URL           -- output POST endpoint (defaults to
 #                                     '/api/output' for the local page)
+#   window.__REPEAT_URL           -- repeat arm/disarm POST endpoint
+#                                     (defaults to '/api/repeat' for the
+#                                     local page; the remote shell sets
+#                                     '/api/appliances/<id>/repeat')
 #   window.__PIN_PROMPT_FALLBACK  -- native window.prompt() label used only
 #                                     if the PIN modal DOM is missing
 #                                     (defaults to 'Enter PIN')
@@ -1304,6 +1316,11 @@ APPLIANCE_SELECTOR_CSS = """
 #                                     carries no suffix
 #   window.__SELECTOR_CURRENT_ID  -- appliance id considered "current" by
 #                                     the appliance-selector widget
+#
+# updateRepeatButton(d) must be called by each page's own poll cycle
+# (local: refreshStatus(); remote: renderHomeState()) with the polled
+# status/home dict so the repeat pill (#repeat-btn, rendered by the page
+# itself -- hidden by default on the remote shell) stays in sync.
 HOME_CARDS_SCRIPT = """
 <script>
   function normalizeVolume(v){
@@ -1753,7 +1770,7 @@ HOME_CARDS_SCRIPT = """
     // identifies which appliance is being viewed; the local page leaves it
     // unset so its own header carries no suffix.
     var hdrSuffix = window.__REMOTE_HOSTNAME ? (' · ' + window.__REMOTE_HOSTNAME) : '';
-    if (hdrEl) hdrEl.textContent = (active ? (sessionSource === 'replay' ? 'REPEAT PLAYBACK' : 'Now Playing') : 'Ready') + hdrSuffix;
+    if (hdrEl) hdrEl.textContent = (active ? (sessionSource === 'replay' ? 'Repeat Play' : 'Now Playing') : 'Ready') + hdrSuffix;
     if (!active) {
       _vuActiveIdx = -1;
       _vuQueue = {};
@@ -1859,6 +1876,101 @@ HOME_CARDS_SCRIPT = """
       }
     }
     if (!usingReplayOrigin) vuIngestHistory(activeIdx, activeLevel.vu_history);
+  }
+
+  function _fmtRepeatTime(s){
+    s = Math.max(0, Math.round(Number(s) || 0));
+    var m = Math.floor(s / 60), r = s % 60;
+    return m + ':' + (r < 10 ? '0' : '') + r;
+  }
+  var __repeatOptimistic = null;
+  function updateRepeatButton(d){
+    var btn = document.getElementById('repeat-btn');
+    if (!btn) return;
+    var repeat = (d && d.repeat) || null;
+    if (!repeat || !repeat.enabled) { btn.hidden = true; return; }
+    btn.hidden = false;
+    var recording = repeat.recording || {};
+    var replay = repeat.replay || {};
+    var armed = !!repeat.armed;
+    var replaying = !!replay.active;
+    var hasBuffer = Number(recording.bytes || 0) > 0;
+    var polledOn = replaying || armed;
+    var session = (d && d.session) || null;
+    var sessionActive = (session && typeof session.active === 'boolean') ? !!session.active : null;
+
+    // Optimistic-click reconciliation: hold the click's immediate
+    // visual state until the polled truth agrees with it, or ~5 s
+    // elapse -- the 1.5 s stop/start fade means polled state lags the
+    // click, and without this the button would flicker back mid-fade.
+    var on = polledOn;
+    var state = replaying ? 'repeating' : (armed ? 'armed' : 'off');
+    if (__repeatOptimistic) {
+      var agrees = (__repeatOptimistic.active === polledOn);
+      var expired = (Date.now() - __repeatOptimistic.ts) >= 5000;
+      if (agrees || expired) {
+        __repeatOptimistic = null;
+      } else {
+        on = __repeatOptimistic.active;
+        state = on ? (replaying ? 'repeating' : 'armed') : 'off';
+      }
+    }
+    btn.setAttribute('data-state', state);
+    btn.classList.toggle('active', on);
+    btn.disabled = (!hasBuffer && !replaying && !on);
+
+    // 'Replay Last' only makes sense when nothing is authoritatively
+    // playing right now: with a session block, gate it on
+    // !sessionActive too so it never flashes while a live source (e.g.
+    // a CD) is already playing at start-up. Legacy backends with no
+    // session block keep the pre-existing gating.
+    var showReplayLast = (sessionActive === null)
+      ? (!on && hasBuffer)
+      : (!sessionActive && !on && hasBuffer && !armed && !replaying);
+    btn.textContent = showReplayLast ? '↻ Replay Last' : '↻ Repeat Play';
+
+    if (!__repeatOptimistic) {
+      var title = '';
+      if (replaying) {
+        var pos = _fmtRepeatTime(replay.position_seconds), dur = _fmtRepeatTime(replay.duration_seconds);
+        title = pos + ' / ' + dur;
+        if (recording.truncated_head) title += ' · tail only';
+      } else if (armed) {
+        title = recording.active ? 'Buffering…' : 'Waiting for playback';
+      }
+      btn.title = title;
+    }
+  }
+  function onRepeatButtonClick(){
+    var btn = document.getElementById('repeat-btn');
+    if (!btn || btn.disabled) return;
+    var wasActive = btn.classList.contains('active');
+    var state = btn.getAttribute('data-state');
+    // repeating -> stop replay; armed -> disarm; off -> arm (starts replay
+    // immediately if idle with a buffer, or arms for stream-end if playing live).
+    var newArmed = (state === 'repeating' || state === 'armed') ? false : true;
+    // Apply the optimistic visual state immediately: don't wait for the
+    // POST to resolve before flipping the class/title, so the click
+    // feels instant even though the 1.5 s fade means the polled truth
+    // will lag behind for a while.
+    __repeatOptimistic = { active: newArmed, ts: Date.now() };
+    btn.classList.toggle('active', newArmed);
+    btn.setAttribute('data-state', newArmed ? 'armed' : 'off');
+    btn.title = newArmed ? 'Starting…' : 'Stopping…';
+    fetch(window.__REPEAT_URL || '/api/repeat', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.__CSRF || '' },
+      body: JSON.stringify({ armed: newArmed })
+    }).then(function(r){ return r.json(); }).then(function(d){
+      if (!d || !d.ok) {
+        __repeatOptimistic = null;
+        btn.classList.toggle('active', wasActive);
+      }
+    }).catch(function(){
+      __repeatOptimistic = null;
+      btn.classList.toggle('active', wasActive);
+    });
   }
 
   function buildOutputCardElement(o) {

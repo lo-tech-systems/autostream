@@ -448,6 +448,63 @@ class TestBuildHomeStateLocal:
             result = models.build_home_state(str(cfg_path))
         assert result["ok"] is False
 
+    def test_session_key_always_present(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        patches = self._patch_home(cfg_path)
+        session = {"active": True, "source": "replay"}
+        with patches[0], patches[1], patches[2], patches[3], \
+             patches[4], patches[5], patches[6], \
+             patch("autostream_appliance_models.get_session_state", return_value=session), \
+             patch("autostream_appliance_models.get_repeat_status", return_value=None):
+            result = models.build_home_state(str(cfg_path))
+        assert result["session"] == session
+
+    def test_repeat_key_present_when_daemon_reports_it(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        patches = self._patch_home(cfg_path)
+        repeat_block = {"enabled": True, "armed": False}
+        with patches[0], patches[1], patches[2], patches[3], \
+             patches[4], patches[5], patches[6], \
+             patch("autostream_appliance_models.get_session_state",
+                   return_value={"active": False, "source": None}), \
+             patch("autostream_appliance_models.get_repeat_status", return_value=repeat_block):
+            result = models.build_home_state(str(cfg_path))
+        assert result["repeat"] == repeat_block
+
+    def test_repeat_key_absent_when_daemon_never_reported(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        patches = self._patch_home(cfg_path)
+        with patches[0], patches[1], patches[2], patches[3], \
+             patches[4], patches[5], patches[6], \
+             patch("autostream_appliance_models.get_session_state",
+                   return_value={"active": False, "source": None}), \
+             patch("autostream_appliance_models.get_repeat_status", return_value=None):
+            result = models.build_home_state(str(cfg_path))
+        assert "repeat" not in result
+
+    def test_session_falls_back_to_any_monitor_capturing_on_exception(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        patches = self._patch_home(cfg_path)
+        with patches[0], patches[1], patches[2], patches[3], \
+             patches[4], patches[5], patches[6], \
+             patch("autostream_appliance_models.get_session_state",
+                   side_effect=RuntimeError("cache unavailable")), \
+             patch("autostream_appliance_models.any_monitor_capturing", return_value=True):
+            result = models.build_home_state(str(cfg_path))
+        assert result["session"] == {"active": True, "source": None}
+
+    def test_config_load_failure_still_includes_session_key(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        with patch("autostream_appliance_models.locked_load_config",
+                   side_effect=OSError("read error")), \
+             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
+             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
+             patch("autostream_appliance_models.get_app_version", return_value=""), \
+             patch("autostream_appliance_models.get_session_state",
+                   return_value={"active": False, "source": None}):
+            result = models.build_home_state(str(cfg_path))
+        assert "session" in result
+
 
 # ---------------------------------------------------------------------------
 # build_home_state — federation deadline mode

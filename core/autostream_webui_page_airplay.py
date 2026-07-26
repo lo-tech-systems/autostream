@@ -54,6 +54,7 @@ _NP_ART_CSS = (
 _REMOTE_HOME_SCRIPT = """<script>
 function renderHomeState(data){
   renderNowPlayingCard(data);
+  updateRepeatButton(data);
   var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
   var outputs=Array.isArray(data.outputs)?data.outputs:[];
   if(outputs.length===0){var _ol=document.getElementById('outputs-list');if(_ol)while(_ol.firstChild)_ol.removeChild(_ol.firstChild);__lastOutputsShape='';setOutputsPlaceholder('empty');}else{
@@ -402,6 +403,7 @@ def send_airplay_page(
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"window.__SELECTOR_CURRENT_ID='{html.escape(_local_id)}';"
         f"window.__OUTPUT_URL='/api/output';"
+        f"window.__REPEAT_URL='/api/repeat';"
         f"window.__PIN_PROMPT_FALLBACK='Enter PIN shown on your device';"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>"
@@ -428,100 +430,6 @@ def send_airplay_page(
               el.style.display = txt ? 'block' : 'none';
               el.textContent = txt;
             }});
-          }});
-        }}
-        function _fmtRepeatTime(s){{
-          s = Math.max(0, Math.round(Number(s) || 0));
-          var m = Math.floor(s / 60), r = s % 60;
-          return m + ':' + (r < 10 ? '0' : '') + r;
-        }}
-        var __repeatOptimistic = null;
-        function updateRepeatButton(d){{
-          var btn = document.getElementById('repeat-btn');
-          if (!btn) return;
-          var repeat = (d && d.repeat) || null;
-          if (!repeat || !repeat.enabled) {{ btn.hidden = true; return; }}
-          btn.hidden = false;
-          var recording = repeat.recording || {{}};
-          var replay = repeat.replay || {{}};
-          var armed = !!repeat.armed;
-          var replaying = !!replay.active;
-          var hasBuffer = Number(recording.bytes || 0) > 0;
-          var polledOn = replaying || armed;
-          var session = (d && d.session) || null;
-          var sessionActive = (session && typeof session.active === 'boolean') ? !!session.active : null;
-
-          // Optimistic-click reconciliation: hold the click's immediate
-          // visual state until the polled truth agrees with it, or ~5 s
-          // elapse -- the 1.5 s stop/start fade means polled state lags the
-          // click, and without this the button would flicker back mid-fade.
-          var on = polledOn;
-          var state = replaying ? 'repeating' : (armed ? 'armed' : 'off');
-          if (__repeatOptimistic) {{
-            var agrees = (__repeatOptimistic.active === polledOn);
-            var expired = (Date.now() - __repeatOptimistic.ts) >= 5000;
-            if (agrees || expired) {{
-              __repeatOptimistic = null;
-            }} else {{
-              on = __repeatOptimistic.active;
-              state = on ? (replaying ? 'repeating' : 'armed') : 'off';
-            }}
-          }}
-          btn.setAttribute('data-state', state);
-          btn.classList.toggle('active', on);
-          btn.disabled = (!hasBuffer && !replaying && !on);
-
-          // 'Replay Last' only makes sense when nothing is authoritatively
-          // playing right now: with a session block, gate it on
-          // !sessionActive too so it never flashes while a live source (e.g.
-          // a CD) is already playing at start-up. Legacy backends with no
-          // session block keep the pre-existing gating.
-          var showReplayLast = (sessionActive === null)
-            ? (!on && hasBuffer)
-            : (!sessionActive && !on && hasBuffer && !armed && !replaying);
-          btn.textContent = showReplayLast ? '↻ Replay Last' : '↻ Repeat Play';
-
-          if (!__repeatOptimistic) {{
-            var title = '';
-            if (replaying) {{
-              var pos = _fmtRepeatTime(replay.position_seconds), dur = _fmtRepeatTime(replay.duration_seconds);
-              title = pos + ' / ' + dur;
-              if (recording.truncated_head) title += ' · tail only';
-            }} else if (armed) {{
-              title = recording.active ? 'Buffering…' : 'Waiting for playback';
-            }}
-            btn.title = title;
-          }}
-        }}
-        function onRepeatButtonClick(){{
-          var btn = document.getElementById('repeat-btn');
-          if (!btn || btn.disabled) return;
-          var wasActive = btn.classList.contains('active');
-          var state = btn.getAttribute('data-state');
-          // repeating -> stop replay; armed -> disarm; off -> arm (starts replay
-          // immediately if idle with a buffer, or arms for stream-end if playing live).
-          var newArmed = (state === 'repeating' || state === 'armed') ? false : true;
-          // Apply the optimistic visual state immediately: don't wait for the
-          // POST to resolve before flipping the class/title, so the click
-          // feels instant even though the 1.5 s fade means the polled truth
-          // will lag behind for a while.
-          __repeatOptimistic = {{ active: newArmed, ts: Date.now() }};
-          btn.classList.toggle('active', newArmed);
-          btn.setAttribute('data-state', newArmed ? 'armed' : 'off');
-          btn.title = newArmed ? 'Starting…' : 'Stopping…';
-          fetch('/api/repeat', {{
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {{ 'Content-Type': 'application/json', 'X-CSRF-Token': window.__CSRF || '' }},
-            body: JSON.stringify({{ armed: newArmed }})
-          }}).then(function(r){{ return r.json(); }}).then(function(d){{
-            if (!d || !d.ok) {{
-              __repeatOptimistic = null;
-              btn.classList.toggle('active', wasActive);
-            }}
-          }}).catch(function(){{
-            __repeatOptimistic = null;
-            btn.classList.toggle('active', wasActive);
           }});
         }}
         function getOutputIdKey(outputs) {{
@@ -826,6 +734,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
 
     poll_url = f"/api/appliances/{appliance_id}/home"
     output_url = f"/api/appliances/{appliance_id}/output"
+    repeat_url = f"/api/appliances/{appliance_id}/repeat"
 
     _selector_html = build_appliance_selector_html(appliances, appliance_id, "home")
 
@@ -868,6 +777,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__SELECTOR_CURRENT_ID='{html.escape(appliance_id)}';"
         f"window.__POLL_URL='{html.escape(poll_url)}';"
         f"window.__OUTPUT_URL='{html.escape(output_url)}';"
+        f"window.__REPEAT_URL='{html.escape(repeat_url)}';"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
         + HOME_CARDS_SCRIPT
@@ -903,10 +813,23 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
 
     _np_icon_svg = ICON_LINE_LEVEL
 
+    # Repeat control -- same small pill-style button as the local page, but
+    # hidden until the polled home feed's "repeat" block confirms the remote
+    # appliance actually has the feature enabled (updateRepeatButton, shared
+    # via HOME_CARDS_SCRIPT, un-hides it from renderHomeState). An older
+    # remote appliance that never reports a "repeat" block simply leaves the
+    # pill hidden -- no error shown. Navigation back to the bound appliance
+    # is via the logo (BANNER_LOGO_HTML links to "/"), so this slot no longer
+    # needs a dedicated "Home" button.
+    _repeat_btn_html = (
+        '<button type="button" class="pill-btn small repeat-btn" id="repeat-btn"'
+        ' data-state="off" disabled hidden'
+        ' onclick="onRepeatButtonClick()">↻ Repeat Play</button>'
+    )
+
     _top_controls_html = (
         f"<div class='airplay-top-controls'>"
-        f"<button type='button' class='pill-btn small' onclick='location.href=\"/\"'"
-        f" title='Return to this appliance'>← Home</button>"
+        f"{_repeat_btn_html}"
         f"{_selector_html}"
         f"</div>"
     )
