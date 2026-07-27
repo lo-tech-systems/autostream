@@ -1247,6 +1247,19 @@ class TestBtServicesEnable:
         result, calls = self._run()
         assert result is True
 
+    def test_enable_attempts_rfkill_unblock_before_service_work(self):
+        """A persisted type-level rfkill soft-block must be cleared before
+        the service set is brought up, or a blocked adapter can never be
+        powered by bluetoothd."""
+        result, calls = self._run()
+        joined = [" ".join(c) for c in calls]
+        unblock_idx = next(
+            (i for i, j in enumerate(joined) if "unblock" in j and "bluetooth" in j), None
+        )
+        unmask_idx = next((i for i, j in enumerate(joined) if "unmask" in j), None)
+        assert unblock_idx is not None
+        assert unmask_idx is not None and unblock_idx < unmask_idx
+
     def test_calls_unmask_then_enable_bluetooth(self):
         _, calls = self._run()
         joined = [" ".join(c) for c in calls]
@@ -1499,6 +1512,18 @@ class TestBtOnboardSetConfig:
 # ---------------------------------------------------------------------------
 
 class TestBtOnboardVerbs:
+    def test_bt_onboard_on_attempts_rfkill_unblock(self, tmp_path):
+        """Enabling the onboard radio clears any persisted type-level rfkill
+        block, otherwise the radio stays powered off after the reboot."""
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_AND_BT, encoding="utf-8")
+        calls = []
+        with patch.object(m, "FIRMWARE_CONFIG_PATH", cfg), \
+             patch.object(m, "run_cmd", side_effect=lambda c: (calls.append(c), (0, "", ""))[1]):
+            rc = m._bt_onboard_on(MagicMock())
+        assert rc == 0
+        assert any("unblock" in " ".join(c) and "bluetooth" in " ".join(c) for c in calls)
+
     def test_bt_onboard_on_prints_reboot_required_when_changed(self, tmp_path, capsys):
         cfg = tmp_path / "config.txt"
         cfg.write_text(_CONFIG_WITH_ALL_AND_BT, encoding="utf-8")

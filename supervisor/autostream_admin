@@ -1506,6 +1506,29 @@ def _find_first_existing_unit(systemctl: str, candidates: tuple[str, ...]) -> Op
     return None
 
 
+def _rfkill_unblock_bluetooth() -> None:
+    """Best-effort `rfkill unblock bluetooth`.
+
+    systemd-rfkill persists soft-block state per device type and restores it
+    onto newly attached adapters, so a block left over from an earlier
+    configuration (for example while the onboard radio was disabled) can keep
+    a brand-new USB adapter powered off indefinitely: bluetoothd's
+    Powered=True then fails and no Bluetooth function is possible. Clearing
+    the type-level block whenever Bluetooth is being brought up makes the
+    service set immune to that stale state. Failure is non-fatal and logged.
+    """
+    try:
+        rfkill = shutil.which("rfkill") or "/usr/sbin/rfkill"
+        rc, out, err = run_cmd([rfkill, "unblock", "bluetooth"])
+        if rc == 0:
+            log("INFO", "bluetooth: rfkill unblock succeeded")
+        else:
+            log("WARN", f"bluetooth: rfkill unblock failed rc={rc} "
+                         f"stderr='{err}' stdout='{out}' (non-fatal)")
+    except Exception as e:
+        log("WARN", f"bluetooth: rfkill unblock unavailable: {e!r} (non-fatal)")
+
+
 def bt_services_enable() -> bool:
     """Unmask, enable, and start the Bluetooth service set.
 
@@ -1513,6 +1536,7 @@ def bt_services_enable() -> bool:
     autostream_bluetooth itself causes this to return False.
     """
     log("INFO", "bt-services-enable: received request")
+    _rfkill_unblock_bluetooth()
     systemctl = find_systemctl()
     if not systemctl:
         log("ERROR", "bt-services-enable: systemctl not found")
@@ -1691,6 +1715,10 @@ def bt_onboard_set_config(cfg_path: Path, enable_onboard: bool) -> Tuple[bool, b
 
 
 def _bt_onboard_on(_args) -> int:
+    # Enabling the onboard radio must also clear any persisted type-level
+    # rfkill block, or the radio (and any future adapter) stays powered off
+    # after the reboot despite the firmware change.
+    _rfkill_unblock_bluetooth()
     ok, changed = bt_onboard_set_config(FIRMWARE_CONFIG_PATH, enable_onboard=True)
     if not ok:
         return 1
