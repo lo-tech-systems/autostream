@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 0.5.0-alpha.4
 
 - new: direct Bluetooth turntable input — pair a Bluetooth-equipped turntable and
   stream its audio straight into an input, no USB adapter needed
@@ -12,7 +12,7 @@
 - fix: a Bluetooth device (or any device) selected on one input can no longer also
   be selected on the other input at the same time
 
-## Version 0.6.0-alpha.1
+## Version 0.5.0-alpha.2
 
 - new: "Repeat" — buffers the current source into RAM and loops it back
   seamlessly once the source stops, with a codec ladder (MP2/PCM) sized to
