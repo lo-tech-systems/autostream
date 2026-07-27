@@ -85,7 +85,7 @@ Pairing is done from the Setup page, either from the Bluetooth card or from an i
 5. Your turntable should appear in the list within a few seconds. Tap it.
 6. Once pairing completes, you're done — the device is remembered and ready to use.
 
-If your Bluetooth source is a record player, tick **"this is a turntable"** on that
+If your Bluetooth source is a record player, tick the **Turntable** toggle on that
 input — it tunes the silence detection correctly. autostream doesn't guess this for
 you, so it's worth doing right after pairing.
 

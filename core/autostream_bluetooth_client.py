@@ -306,7 +306,7 @@ class BluetoothClient:
             return None
         except OSError as e:
             # Includes "no such file" (daemon/socket absent) -- expected and
-            # quiet when BLUETOOTH_MODE is off or the service isn't running.
+            # quiet whenever the Bluetooth service isn't running.
             logger.debug("BluetoothClient: command %r failed: %s", cmd_name, e)
             return None
         except (json.JSONDecodeError, ValueError) as e:
