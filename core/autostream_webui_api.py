@@ -27,12 +27,23 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
 
 from typing import Optional
 
+from autostream_bluetooth_client import (
+    BluetoothClient,
+    bluetooth_card_summary,
+    bluetooth_input_fragment_text,
+    bluetooth_installed,
+    bluetooth_onboard_enabled,
+    bluetooth_paired_row_text,
+    bluetooth_services_enabled,
+    is_loopback_playback,
+)
 from autostream_config import (
     BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
@@ -90,7 +101,14 @@ from autostream_appliance_models import (
     build_home_state,
 )
 from autostream_player_service import list_outputs, save_setting, update_output
-from autostream_sysutils import get_system_hostname, run_admin_cmd, set_system_hostname
+from autostream_sysutils import (
+    bt_onboard_set,
+    bt_services_disable,
+    bt_services_enable,
+    get_system_hostname,
+    run_admin_cmd,
+    set_system_hostname,
+)
 from urllib.parse import urlparse as _urlparse
 from autostream_webui_common import _config_snapshot, _fallback_input_snapshot, render_license_md
 from autostream_webui_service_schema import (
@@ -1353,6 +1371,17 @@ def _validate_capture_device(value: object) -> str:
     v = value.strip()
     if not v:
         raise ValueError("Value must be a non-empty string")
+    # Reject the ASBT loopback's PLAYBACK side: it is an internal device the
+    # pump feeds, never a valid capture-device value -- a stale saved value
+    # or a hand-crafted request could otherwise resurface it (see the Setup
+    # page's synthetic "(not currently detected)" option, build_opts in
+    # autostream_webui_page_setup.py). Only rejected when the Bluetooth-input
+    # subsystem is installed, so appliances without it see byte-identical
+    # validator behaviour.
+    if bluetooth_installed() and is_loopback_playback(v):
+        raise ValueError(
+            "That is the internal Bluetooth loopback device; select the Bluetooth input entry instead"
+        )
     return v
 
 
@@ -1496,6 +1525,19 @@ def _live_track_id(state: object, value: object) -> bool:
     return True
 
 
+class _DuplicateCaptureDeviceError(Exception):
+    """Raised by ``send_settings_post_json``'s mutator to signal, atomically
+    under ``SettingsStore._lock``, that the capture device being assigned is
+    already assigned to the other audio input.
+
+    Applies to any device, not just the Bluetooth loopback: the same
+    physical/ALSA device must never be attached to both inputs at once.
+    Caught specifically by the caller so the request fails with a 400 error
+    message rather than falling through to the generic "Internal error" 200
+    response used for unexpected mutator failures.
+    """
+
+
 # Maps public dotted field name → (section, key, validator, live_fn_or_None)
 _SETTINGS_FIELDS: dict = {
     # WP3 — personalisation (no live effect)
@@ -1602,7 +1644,41 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         send_json(handler, 200, {"ok": False, "field": field, "error": "Settings store unavailable"})
         return
 
+    # Cross-input exclusivity guard: the same capture device must never be
+    # assigned to both inputs at once (generalised from the Bluetooth-only
+    # guard -- applies to any device, not just the loopback). This is a
+    # fast-path check against the live snapshot (not authoritative — see
+    # the equivalent check inside _mutator below, which runs atomically
+    # under the store lock and is what actually prevents two concurrent
+    # requests both racing past this early check and both committing).
+    if field in ("audio1.capture_device", "audio2.capture_device") and normalized:
+        other_section = "audio2" if field == "audio1.capture_device" else "audio1"
+        try:
+            other_value = str(getattr(settings.snapshot(), other_section).capture_device or "").strip()
+        except Exception:
+            other_value = ""
+        if other_value == normalized:
+            send_json(handler, 400, {
+                "ok": False,
+                "field": field,
+                "error": "That device is already assigned to the other input; choose a different device or reassign it first",
+            })
+            return
+
     def _mutator(raw: dict) -> None:
+        # Authoritative cross-input exclusivity check: re-checked here,
+        # against the raw copy the store is about to commit, so it is
+        # atomic under SettingsStore._lock — this is what actually closes
+        # the TOCTOU window the fast-path check above can't close on its
+        # own (two concurrent POSTs could otherwise both pass the snapshot
+        # check before either commits).
+        if field in ("audio1.capture_device", "audio2.capture_device") and normalized:
+            other_section = "audio2" if field == "audio1.capture_device" else "audio1"
+            other_value = str(raw.get(other_section, {}).get("capture_device") or "").strip()
+            if other_value == normalized:
+                raise _DuplicateCaptureDeviceError(
+                    "That device is already assigned to the other input; choose a different device or reassign it first"
+                )
         if field in ("audio1.turntable", "audio2.turntable"):
             set_input_mode(raw, int(section[-1]), bool(normalized))
             return
@@ -1613,6 +1689,9 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
 
     try:
         settings.update(_mutator)
+    except _DuplicateCaptureDeviceError as e:
+        send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
+        return
     except Exception:
         logging.exception("send_settings_post_json: store update failed")
         send_json(handler, 200, {"ok": False, "field": field, "error": "Internal error"})
@@ -2922,6 +3001,267 @@ def send_network_roaming_json(handler, json_obj: dict) -> None:
         send_json(handler, 200, {"ok": True, "managed": managed})
         return
     send_browser_api_error(handler, 503, "Network service unavailable")
+
+
+# -----------------------------------------------------------------------------
+# Bluetooth input — thin translations onto BluetoothClient plus the
+# sysutils enable/disable/onboard wrappers.  The pairing/scan/forget
+# handlers below return {"ok": false, "error": "bluetooth_unavailable"}
+# (tunneled through send_browser_api_error as a semantic 503, following the
+# same pattern as send_network_status_json) when the subsystem isn't
+# installed, the daemon socket is absent, or the daemon reply is malformed
+# -- callers never see a bare exception.
+# -----------------------------------------------------------------------------
+
+_BLUETOOTH_SCAN_ALLOWED_ACTIONS = frozenset({"start", "stop"})
+_BLUETOOTH_MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+_BLUETOOTH_SERVICES_ALLOWED_ACTIONS = frozenset({"enable", "disable"})
+_BLUETOOTH_BUFFER_MS_MIN = 100
+_BLUETOOTH_BUFFER_MS_MAX = 500
+
+
+def send_bluetooth_status_json(handler, state) -> None:
+    """GET /api/bluetooth/status — install/enable/onboard flags + daemon status.
+
+    Always returns HTTP 200 with ``ok: true`` -- the daemon being down
+    (expected whenever services are disabled) is reported as ``daemon:
+    null``, not as a request failure, so the Bluetooth card can render its
+    disabled state from a single successful poll rather than special-casing
+    an error response.
+
+    When installed, attempts a live daemon query first (freshest); falls
+    back to the cache populated by the webui's background scan loop
+    (``WebUIState.get_bluetooth_status``) if the live query fails.
+
+    Also returns a ``ui`` object -- ``card_summary``, ``paired_text``,
+    ``bt_input_text`` -- computed from the same ``services_enabled``/
+    ``daemon`` data by the single shared presentation-string implementation
+    also used by the Setup page's server render, so the card's summary line
+    can never disagree between the initial render and this poll.
+    """
+    installed = bluetooth_installed()
+    services_enabled = bluetooth_services_enabled() if installed else False
+    onboard_enabled = bluetooth_onboard_enabled() if installed else False
+
+    daemon = None
+    if installed:
+        try:
+            daemon = BluetoothClient().status()
+        except Exception:
+            daemon = None
+        if not isinstance(daemon, dict) or daemon.get("ok") is not True:
+            cached = state.get_bluetooth_status() if state is not None else None
+            daemon = cached if isinstance(cached, dict) and cached.get("ok") is True else None
+
+    send_json(handler, 200, {
+        "ok": True,
+        "installed": installed,
+        "services_enabled": services_enabled,
+        "onboard_enabled": onboard_enabled,
+        "daemon": daemon,
+        "ui": {
+            "card_summary": bluetooth_card_summary(services_enabled, daemon),
+            "paired_text": bluetooth_paired_row_text(daemon),
+            "bt_input_text": bluetooth_input_fragment_text(daemon),
+        },
+    })
+
+
+def send_bluetooth_scan_results_json(handler) -> None:
+    """GET /api/bluetooth/scan_results — live device list from the daemon."""
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    result = BluetoothClient().scan_results()
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    send_json(handler, 200, result)
+
+
+def send_bluetooth_pair_status_json(handler) -> None:
+    """GET /api/bluetooth/pair_status — live pairing-attempt state from the daemon."""
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    result = BluetoothClient().pair_status()
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    send_json(handler, 200, result)
+
+
+def send_bluetooth_scan_post_json(handler, json_obj) -> None:
+    """POST /api/bluetooth/scan {"action": "start"|"stop"} — closed action set.
+
+    Mirrors ``send_network_setup_json``'s ``_NETWORK_SETUP_ALLOWED_ACTIONS``
+    rejection style: unknown actions or extra keys are rejected before ever
+    touching the daemon.  A daemon reply of ``{"ok": false, "error":
+    "scan_in_progress"}`` (another scan already active) is surfaced as a 409,
+    mirroring ``send_network_setup_json``'s watcher-busy 409; any other
+    non-ok reply stays a 503 ``bluetooth_unavailable``.
+    """
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    action = json_obj.get("action")
+    extra = set(json_obj.keys()) - {"action", "csrf_token"}
+    if action not in _BLUETOOTH_SCAN_ALLOWED_ACTIONS or extra:
+        send_browser_api_error(handler, 400, "Invalid action")
+        return
+
+    client = BluetoothClient()
+    result = client.scan_start() if action == "start" else client.scan_stop()
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        if isinstance(result, dict) and result.get("error") == "scan_in_progress":
+            send_browser_api_error(handler, 409, "scan_in_progress")
+            return
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    send_json(handler, 200, {"ok": True, "action": action})
+
+
+def send_bluetooth_pair_post_json(handler, json_obj) -> None:
+    """POST /api/bluetooth/pair {"address": <mac>} — server-side MAC validation.
+
+    A daemon reply of ``{"ok": false, "error": "pair_in_progress"}`` (a
+    pairing attempt already active) is surfaced as a 409, mirroring
+    ``send_network_setup_json``'s watcher-busy 409; any other non-ok reply
+    stays a 503 ``bluetooth_unavailable``.
+    """
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    address = json_obj.get("address")
+    extra = set(json_obj.keys()) - {"address", "csrf_token"}
+    if not isinstance(address, str) or not _BLUETOOTH_MAC_RE.match(address) or extra:
+        send_browser_api_error(handler, 400, "Invalid address")
+        return
+
+    result = BluetoothClient().pair(address)
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        if isinstance(result, dict) and result.get("error") == "pair_in_progress":
+            send_browser_api_error(handler, 409, "pair_in_progress")
+            return
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    send_json(handler, 200, {"ok": True})
+
+
+def send_bluetooth_forget_post_json(handler) -> None:
+    """POST /api/bluetooth/forget — RemoveDevice + clear daemon state."""
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    result = BluetoothClient().forget()
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    send_json(handler, 200, {"ok": True})
+
+
+def send_bluetooth_services_post_json(handler, json_obj) -> None:
+    """POST /api/bluetooth/services {"action": "enable"|"disable"}.
+
+    Thin wrapper over the ``autostream_sysutils`` privileged-path
+    functions, which each return ``(ok, message)``. Disabling implicitly
+    stops any active stream -- that is handled inside the systemd unit
+    stop, not here. Closed action set, extra keys rejected.
+    """
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    action = json_obj.get("action")
+    extra = set(json_obj.keys()) - {"action", "csrf_token"}
+    if action not in _BLUETOOTH_SERVICES_ALLOWED_ACTIONS or extra:
+        send_browser_api_error(handler, 400, "Invalid action")
+        return
+
+    try:
+        ok, message = bt_services_enable() if action == "enable" else bt_services_disable()
+    except Exception as e:
+        logging.exception("send_bluetooth_services_post_json: %s failed", action)
+        send_json(handler, 200, {"ok": False, "message": str(e)})
+        return
+    send_json(handler, 200, {"ok": bool(ok), "message": str(message)})
+
+
+def send_bluetooth_onboard_post_json(handler, json_obj) -> None:
+    """POST /api/bluetooth/onboard {"enabled": bool}.
+
+    Edits ``dtoverlay=disable-bt`` in config.txt via ``bt_onboard_set()``.
+    On success, ``reboot_required: true`` tells the frontend to drive the
+    existing reboot holding-page flow -- this handler does not reboot.
+    """
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    enabled = json_obj.get("enabled")
+    extra = set(json_obj.keys()) - {"enabled", "csrf_token"}
+    if not isinstance(enabled, bool) or extra:
+        send_browser_api_error(handler, 400, "Invalid enabled value")
+        return
+
+    try:
+        ok, message = bt_onboard_set(enabled)
+    except Exception as e:
+        logging.exception("send_bluetooth_onboard_post_json: bt_onboard_set failed")
+        send_json(handler, 200, {"ok": False, "message": str(e)})
+        return
+    resp: dict = {"ok": bool(ok), "message": str(message)}
+    if ok:
+        resp["reboot_required"] = True
+    send_json(handler, 200, resp)
+
+
+def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
+    """POST /api/bluetooth/buffer {"buffer_ms": int} — daemon configure passthrough.
+
+    Server-side range validation (100-500 ms, matching the card's slider)
+    happens before ever touching the daemon; the daemon's own
+    ``invalid_buffer_ms`` rejection (defence in depth) is surfaced as 400
+    too. An unreachable daemon is a 503 ``bluetooth_unavailable``.
+    """
+    if not bluetooth_installed():
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    buffer_ms = json_obj.get("buffer_ms")
+    extra = set(json_obj.keys()) - {"buffer_ms", "csrf_token"}
+    if (
+        isinstance(buffer_ms, bool)
+        or not isinstance(buffer_ms, int)
+        or not (_BLUETOOTH_BUFFER_MS_MIN <= buffer_ms <= _BLUETOOTH_BUFFER_MS_MAX)
+        or extra
+    ):
+        send_browser_api_error(handler, 400, "invalid_buffer_ms")
+        return
+
+    result = BluetoothClient().configure(buffer_ms)
+    if not isinstance(result, dict):
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    if result.get("ok") is not True:
+        if result.get("error") == "invalid_buffer_ms":
+            send_browser_api_error(handler, 400, "invalid_buffer_ms")
+            return
+        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    send_json(handler, 200, {"ok": True, "buffer_ms": buffer_ms})
 
 
 def send_playing_status_json(handler) -> None:

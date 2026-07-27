@@ -10,8 +10,19 @@
 #############################################
 # Firmware / watchdog helpers
 #############################################
+
+# update_pi_firmware_config: idempotent strip-then-insert of the watchdog and
+# disable-bt lines in /boot/firmware/config.txt. dtoverlay=disable-bt is
+# always written -- the onboard Bluetooth radio stays disabled by default on
+# every appliance; enabling it is a separate, later, opt-in runtime action
+# and is not part of installation.
+#
+# Accepts an optional path argument overriding the config.txt location, used
+# only by tests/test_bluetooth_installer.py to exercise this exact function
+# against a temp file; all production callsites pass no argument and keep
+# today's hardcoded /boot/firmware/config.txt.
 update_pi_firmware_config() {
-  local cfg="/boot/firmware/config.txt"
+  local cfg="${1:-/boot/firmware/config.txt}"
   if [[ ! -f "${cfg}" ]]; then
     warn "${cfg} not found; skipping firmware settings update."
     return 0
@@ -21,8 +32,10 @@ update_pi_firmware_config() {
   local tmp
   tmp="$(mktemp)"
 
+  local bt_line="dtoverlay=disable-bt"
+
   if grep -qE '^\s*\[all\]\s*$' "${cfg}"; then
-    awk '
+    awk -v bt_line="${bt_line}" '
       BEGIN { inserted=0 }
       /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }
       /^[[:space:]]*dtoverlay=disable-bt([[:space:]]*|,.*)$/ { next }
@@ -30,7 +43,7 @@ update_pi_firmware_config() {
         print
         if (!inserted && $0 ~ /^[[:space:]]*\[all\][[:space:]]*$/) {
           print "dtparam=watchdog=on"
-          print "dtoverlay=disable-bt"
+          print bt_line
           inserted=1
         }
       }
@@ -39,7 +52,7 @@ update_pi_firmware_config() {
     {
       echo "[all]"
       echo "dtparam=watchdog=on"
-      echo "dtoverlay=disable-bt"
+      echo "${bt_line}"
       echo
       awk '
         /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }

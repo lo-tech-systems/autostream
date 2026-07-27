@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- new: direct Bluetooth turntable input — pair a Bluetooth-equipped turntable and
+  stream its audio straight into an input, no USB adapter needed
+- new: Bluetooth card on the Setup page — enable/disable the feature, pair or
+  forget a device, and see connection status, all in one place; a USB Bluetooth
+  adapter is recommended, with the Pi's onboard radio available as a toggle
+- new: Bluetooth Audio Buffer control — adjust how much audio is held in reserve
+  to trade off dropout resistance against start-up delay
+- fix: a Bluetooth device (or any device) selected on one input can no longer also
+  be selected on the other input at the same time
+
 ## Version 0.6.0-alpha.1
 
 - new: "Repeat" — buffers the current source into RAM and loops it back

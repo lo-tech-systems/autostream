@@ -23,6 +23,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 ## Features
 
 * Streams vinyl, CDs, tape decks, and other line-level sources to AirPlay speakers
+* Optional Bluetooth input — pair a Bluetooth-equipped turntable directly, no USB audio adapter needed
 * Detects audio automatically - starts and stops the stream without any interaction
 * Supports HomePods and Stereo Paired HomePods, as well as third-party AirPlay and AirPlay 2 compatible speakers
 * iPhone-friendly web app for volume control and speaker selection, with PIN-protected setup

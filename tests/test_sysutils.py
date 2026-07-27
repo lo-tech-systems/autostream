@@ -548,3 +548,72 @@ class TestSetJournaldPersistent:
              patch.object(su, "run_admin_cmd", return_value=ok):
             assert su.set_journald_persistent(True) is True
         assert not marker.exists()
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth privileged wrappers: bt_services_enable/disable, bt_onboard_set
+# ---------------------------------------------------------------------------
+
+class TestBtServicesEnableDisable:
+    def test_bt_services_enable_success(self):
+        ok = MagicMock(returncode=0)
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            result, msg = su.bt_services_enable()
+        m_admin.assert_called_once_with(["bt-services-enable"], timeout=30.0)
+        assert result is True
+        assert "enabled" in msg.lower()
+
+    def test_bt_services_enable_failure(self):
+        fail = MagicMock(returncode=1)
+        with patch.object(su, "run_admin_cmd", return_value=fail):
+            result, msg = su.bt_services_enable()
+        assert result is False
+        assert "fail" in msg.lower()
+
+    def test_bt_services_disable_success(self):
+        ok = MagicMock(returncode=0)
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            result, msg = su.bt_services_disable()
+        m_admin.assert_called_once_with(["bt-services-disable"], timeout=30.0)
+        assert result is True
+        assert "disabled" in msg.lower()
+
+    def test_bt_services_disable_failure(self):
+        fail = MagicMock(returncode=1)
+        with patch.object(su, "run_admin_cmd", return_value=fail):
+            result, msg = su.bt_services_disable()
+        assert result is False
+        assert "fail" in msg.lower()
+
+
+class TestBtOnboardSet:
+    def test_enable_calls_bt_onboard_on_verb(self):
+        ok = MagicMock(returncode=0, stdout="reboot-required\n")
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            result, msg = su.bt_onboard_set(True)
+        m_admin.assert_called_once_with(["bt-onboard-on"], timeout=30.0)
+        assert result is True
+        assert "reboot" in msg.lower()
+
+    def test_disable_calls_bt_onboard_off_verb(self):
+        ok = MagicMock(returncode=0, stdout="reboot-required\n")
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            result, msg = su.bt_onboard_set(False)
+        m_admin.assert_called_once_with(["bt-onboard-off"], timeout=30.0)
+        assert result is True
+        assert "reboot" in msg.lower()
+
+    def test_no_change_omits_reboot_language(self):
+        ok = MagicMock(returncode=0, stdout="no-change\n")
+        with patch.object(su, "run_admin_cmd", return_value=ok):
+            result, msg = su.bt_onboard_set(True)
+        assert result is True
+        assert "reboot" not in msg.lower()
+        assert "already" in msg.lower()
+
+    def test_admin_failure_returns_false(self):
+        fail = MagicMock(returncode=1, stdout="")
+        with patch.object(su, "run_admin_cmd", return_value=fail):
+            result, msg = su.bt_onboard_set(True)
+        assert result is False
+        assert "fail" in msg.lower()

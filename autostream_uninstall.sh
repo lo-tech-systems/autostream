@@ -16,6 +16,34 @@ info()  { echo "[INFO] $*"; }
 warn()  { echo "[WARN] $*"; }
 error() { echo "[ERROR] $*"; }
 
+# Bluetooth input subsystem removal (installer/lib/bluetooth.sh). Sourced
+# from the checkout the uninstaller is run from -- if this is a standalone
+# copy without that library, removal just falls back to leaving the
+# Bluetooth-specific files/units in place (they are also covered
+# individually below where identifiable). The subsystem is always present
+# (installed unconditionally, disabled), so removal is always attempted.
+INSTALLER_LIB_DIR="$(cd "$(dirname "$0")/installer/lib" 2>/dev/null && pwd || true)"
+if [[ -n "${INSTALLER_LIB_DIR}" && -f "${INSTALLER_LIB_DIR}/hardware.sh" && -f "${INSTALLER_LIB_DIR}/bluetooth.sh" ]]; then
+  # shellcheck source=installer/lib/hardware.sh
+  source "${INSTALLER_LIB_DIR}/hardware.sh"
+  # shellcheck source=installer/lib/bluetooth.sh
+  source "${INSTALLER_LIB_DIR}/bluetooth.sh"
+fi
+
+# remove_bluetooth_if_enabled: call remove_bluetooth_stack (disable/remove
+# the unit, module config, bluez fragment). Apt packages are kept, matching
+# this uninstaller's existing light-touch stance. Must run before
+# /var/lib/autostream is removed below.
+remove_bluetooth_if_enabled() {
+  if ! command -v remove_bluetooth_stack >/dev/null 2>&1; then
+    warn "installer/lib/bluetooth.sh is unavailable; the Bluetooth unit/module"
+    warn "config/bluez fragment will need to be removed manually."
+    return 0
+  fi
+  info "Removing Bluetooth input subsystem"
+  remove_bluetooth_stack
+}
+
 require_sudo() {
   if [[ ${EUID} -ne 0 ]]; then
     error "This script must be run as root (e.g. sudo ./${SCRIPT_NAME})."
@@ -167,10 +195,12 @@ main() {
   stop_and_disable_service autostream_sdcardhealth.timer
   stop_and_disable_service autostream_sdcardhealth.service
   stop_and_disable_service autostream_dnsmasq.service
+  stop_and_disable_service autostream_bluetooth.service
   stop_and_disable_service owntone.service
   stop_and_disable_service nginx.service
 
   restore_wifi_profiles
+  remove_bluetooth_if_enabled
 
   info "Removing autostream application files"
   remove_path /opt/autostream
@@ -210,6 +240,7 @@ main() {
   remove_path /etc/systemd/system/autostream_storage_guard.timer
   remove_path /etc/systemd/system/autostream_log_policy.service
   remove_path /etc/systemd/system/autostream_log_policy.timer
+  remove_path /etc/systemd/system/autostream_bluetooth.service
 
   info "Removing autostream sudoers snippets"
   remove_path /etc/sudoers.d/autostream_updater
@@ -235,6 +266,13 @@ main() {
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
   remove_path /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
   systemctl restart systemd-logind || warn "systemctl restart systemd-logind failed"
+
+  # Bluetooth input subsystem leftovers, as a fallback in case
+  # remove_bluetooth_if_enabled (above) could not source installer/lib/bluetooth.sh.
+  # Idempotent no-ops if remove_bluetooth_stack already removed them.
+  remove_path /etc/modules-load.d/autostream-bluetooth.conf
+  remove_path /etc/modprobe.d/autostream-bluetooth.conf
+  remove_path /etc/bluetooth/main.conf.d/autostream.conf
 
   info "Reloading systemd manager configuration"
   systemctl daemon-reload || warn "systemctl daemon-reload failed"
