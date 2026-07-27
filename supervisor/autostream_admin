@@ -40,6 +40,10 @@ Exactly one of:
   toggle-dial-update-timer enable|disable
   toggle-update-timer enable|disable
   set-journald-persistent on|off
+  bt-services-enable
+  bt-services-disable
+  bt-onboard-on
+  bt-onboard-off
 
 Notes:
   - [reason] is optional for reboot.
@@ -1478,6 +1482,240 @@ def _set_journald_persistent(args) -> int:
     return 0 if restarted else 1
 
 
+# ---------------------------------------------------------------------------
+# Bluetooth service enable/disable
+# ---------------------------------------------------------------------------
+
+# The bluez-alsa daemon's unit name differs across distro/package versions;
+# probe candidates in order and use whichever is actually installed.
+_BLUEALSA_UNIT_CANDIDATES = ("bluealsad.service", "bluealsa.service")
+
+
+def _unit_load_state(systemctl: str, unit: str) -> str:
+    """Return systemd's LoadState for *unit* (e.g. 'loaded', 'not-found')."""
+    rc, out, err = run_cmd([systemctl, "show", "-p", "LoadState", "--value", unit])
+    return out.strip() if rc == 0 else ""
+
+
+def _find_first_existing_unit(systemctl: str, candidates: tuple[str, ...]) -> Optional[str]:
+    """Return the first unit name in *candidates* that has a loaded unit file."""
+    for unit in candidates:
+        state = _unit_load_state(systemctl, unit)
+        if state and state != "not-found":
+            return unit
+    return None
+
+
+def bt_services_enable() -> bool:
+    """Unmask, enable, and start the Bluetooth service set.
+
+    Each step is best-effort and logged; only failure to enable+start
+    autostream_bluetooth itself causes this to return False.
+    """
+    log("INFO", "bt-services-enable: received request")
+    systemctl = find_systemctl()
+    if not systemctl:
+        log("ERROR", "bt-services-enable: systemctl not found")
+        return False
+
+    rc, out, err = run_cmd([systemctl, "unmask", "bluetooth.service"])
+    if rc == 0:
+        log("INFO", "bt-services-enable: unmask bluetooth.service succeeded")
+    else:
+        log("WARN", f"bt-services-enable: unmask bluetooth.service failed "
+                     f"rc={rc} stderr='{err}' stdout='{out}' (likely already unmasked; non-fatal)")
+
+    rc, out, err = run_cmd([systemctl, "enable", "--now", "bluetooth.service"])
+    if rc == 0:
+        log("INFO", "bt-services-enable: enable --now bluetooth.service succeeded")
+    else:
+        log("WARN", f"bt-services-enable: enable --now bluetooth.service failed "
+                     f"rc={rc} stderr='{err}' stdout='{out}'")
+
+    bluealsa_unit = _find_first_existing_unit(systemctl, _BLUEALSA_UNIT_CANDIDATES)
+    if bluealsa_unit:
+        rc, out, err = run_cmd([systemctl, "enable", "--now", bluealsa_unit])
+        if rc == 0:
+            log("INFO", f"bt-services-enable: enable --now {bluealsa_unit} succeeded")
+        else:
+            log("WARN", f"bt-services-enable: enable --now {bluealsa_unit} failed "
+                         f"rc={rc} stderr='{err}' stdout='{out}'")
+    else:
+        log("WARN", "bt-services-enable: no bluealsa unit found "
+                     f"(tried {', '.join(_BLUEALSA_UNIT_CANDIDATES)})")
+
+    # bluealsa-aplay auto-plays incoming A2DP streams to a local output device,
+    # which conflicts with our own capture pump; keep it stopped and disabled.
+    rc, out, err = run_cmd([systemctl, "disable", "--now", "bluealsa-aplay.service"])
+    if rc == 0:
+        log("INFO", "bt-services-enable: disable --now bluealsa-aplay.service succeeded")
+    else:
+        log("WARN", f"bt-services-enable: disable --now bluealsa-aplay.service failed "
+                     f"rc={rc} stderr='{err}' stdout='{out}' (likely absent; non-fatal)")
+
+    rc, out, err = run_cmd([systemctl, "enable", "--now", "autostream_bluetooth.service"])
+    if rc == 0:
+        log("INFO", "bt-services-enable: enable --now autostream_bluetooth.service succeeded")
+        return True
+    log("ERROR", f"bt-services-enable: enable --now autostream_bluetooth.service failed "
+                 f"rc={rc} stderr='{err}' stdout='{out}'")
+    return False
+
+
+def bt_services_disable() -> bool:
+    """Disable and stop the Bluetooth service set.
+
+    Stopping bluetooth.service (bluetoothd) guarantees any active A2DP stream
+    or connection drops immediately. Pairing bonds are preserved on disk and
+    are unaffected by this. Tolerant of already-stopped/absent units.
+    """
+    log("INFO", "bt-services-disable: received request")
+    systemctl = find_systemctl()
+    if not systemctl:
+        log("ERROR", "bt-services-disable: systemctl not found")
+        return False
+
+    rc, out, err = run_cmd([systemctl, "disable", "--now", "autostream_bluetooth.service"])
+    if rc == 0:
+        log("INFO", "bt-services-disable: disable --now autostream_bluetooth.service succeeded")
+    else:
+        log("WARN", f"bt-services-disable: disable --now autostream_bluetooth.service failed "
+                     f"rc={rc} stderr='{err}' stdout='{out}'")
+
+    bluealsa_unit = _find_first_existing_unit(systemctl, _BLUEALSA_UNIT_CANDIDATES)
+    if bluealsa_unit:
+        rc, out, err = run_cmd([systemctl, "disable", "--now", bluealsa_unit])
+        if rc == 0:
+            log("INFO", f"bt-services-disable: disable --now {bluealsa_unit} succeeded")
+        else:
+            log("WARN", f"bt-services-disable: disable --now {bluealsa_unit} failed "
+                         f"rc={rc} stderr='{err}' stdout='{out}'")
+    else:
+        log("WARN", "bt-services-disable: no bluealsa unit found "
+                     f"(tried {', '.join(_BLUEALSA_UNIT_CANDIDATES)})")
+
+    # Stopping bluetoothd is what actually drops any live A2DP connection.
+    rc, out, err = run_cmd([systemctl, "disable", "--now", "bluetooth.service"])
+    if rc == 0:
+        log("INFO", "bt-services-disable: disable --now bluetooth.service succeeded")
+    else:
+        log("WARN", f"bt-services-disable: disable --now bluetooth.service failed "
+                     f"rc={rc} stderr='{err}' stdout='{out}'")
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Onboard Bluetooth radio: /boot/firmware/config.txt dtoverlay=disable-bt
+# ---------------------------------------------------------------------------
+#
+# Self-contained (no sourcing of installer shell libraries at runtime).
+# Mirrors the strip-then-insert shape of installer/lib/hardware.sh's
+# update_pi_firmware_config(), scoped to only the disable-bt line: this
+# script must never touch the watchdog line or any other config.txt content.
+
+FIRMWARE_CONFIG_PATH = Path("/boot/firmware/config.txt")
+
+_DISABLE_BT_LINE_RE = re.compile(r"^[ \t]*dtoverlay=disable-bt([ \t]*|,.*)$")
+_ALL_SECTION_RE = re.compile(r"^[ \t]*\[all\][ \t]*$")
+
+
+def _strip_disable_bt(text: str) -> Tuple[str, bool]:
+    """Remove every dtoverlay=disable-bt line from *text*, byte-for-byte otherwise.
+
+    Returns (new_text, changed).
+    """
+    lines = text.splitlines(keepends=True)
+    kept: list[str] = []
+    changed = False
+    for line in lines:
+        stripped = line.rstrip("\r\n")
+        if _DISABLE_BT_LINE_RE.match(stripped):
+            changed = True
+            continue
+        kept.append(line)
+    return "".join(kept), changed
+
+
+def _insert_disable_bt(text: str) -> str:
+    """Insert dtoverlay=disable-bt under the first [all] section (creating one at
+    the top if absent), assuming *text* has already been stripped of any
+    existing occurrence.
+    """
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if _ALL_SECTION_RE.match(line.rstrip("\r\n")):
+            lines.insert(i + 1, "dtoverlay=disable-bt\n")
+            return "".join(lines)
+    # No [all] section: create one at the top, mirroring hardware.sh's shape.
+    return "[all]\ndtoverlay=disable-bt\n\n" + text
+
+
+def bt_onboard_set_config(cfg_path: Path, enable_onboard: bool) -> Tuple[bool, bool]:
+    """Idempotently strip (enable_onboard=True) or strip-then-reinsert
+    (enable_onboard=False) the disable-bt overlay line in *cfg_path*.
+
+    Returns (ok, changed).
+    """
+    try:
+        text = cfg_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        log("ERROR", f"bt-onboard: {cfg_path} not found")
+        return False, False
+    except Exception as e:
+        log("ERROR", f"bt-onboard: could not read {cfg_path}: {e!r}")
+        return False, False
+
+    try:
+        mode = cfg_path.stat().st_mode & 0o777
+    except Exception:
+        mode = 0o644
+
+    if enable_onboard:
+        new_text, changed = _strip_disable_bt(text)
+    else:
+        stripped_text, _ = _strip_disable_bt(text)
+        new_text = _insert_disable_bt(stripped_text)
+        changed = new_text != text
+
+    if not changed:
+        return True, False
+
+    try:
+        atomic_write_text(cfg_path, new_text, mode=mode)
+    except Exception as e:
+        log("ERROR", f"bt-onboard: could not write {cfg_path}: {e!r}")
+        return False, False
+
+    return True, True
+
+
+def _bt_onboard_on(_args) -> int:
+    ok, changed = bt_onboard_set_config(FIRMWARE_CONFIG_PATH, enable_onboard=True)
+    if not ok:
+        return 1
+    if changed:
+        log("INFO", "bt-onboard-on: removed dtoverlay=disable-bt")
+        print("reboot-required")
+    else:
+        log("INFO", "bt-onboard-on: dtoverlay=disable-bt already absent (no change)")
+        print("no-change")
+    return 0
+
+
+def _bt_onboard_off(_args) -> int:
+    ok, changed = bt_onboard_set_config(FIRMWARE_CONFIG_PATH, enable_onboard=False)
+    if not ok:
+        return 1
+    if changed:
+        log("INFO", "bt-onboard-off: restored dtoverlay=disable-bt")
+        print("reboot-required")
+    else:
+        log("INFO", "bt-onboard-off: dtoverlay=disable-bt already present (no change)")
+        print("no-change")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AutoStream admin helper (run via sudo)."
@@ -1624,6 +1862,28 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                        help="'on' forces persistent storage while DIAG is active; "
                             "'off' reverts to volatile and reclaims persisted DIAG data.")
 
+    subparsers.add_parser(
+        "bt-services-enable",
+        help="Unmask, enable, and start the Bluetooth service set.",
+    )
+
+    subparsers.add_parser(
+        "bt-services-disable",
+        help="Disable and stop the Bluetooth service set (drops any active stream).",
+    )
+
+    subparsers.add_parser(
+        "bt-onboard-on",
+        help="Remove dtoverlay=disable-bt from config.txt (enable onboard radio). "
+             "Prints 'reboot-required' or 'no-change'; does not reboot.",
+    )
+
+    subparsers.add_parser(
+        "bt-onboard-off",
+        help="Restore dtoverlay=disable-bt in config.txt (disable onboard radio). "
+             "Prints 'reboot-required' or 'no-change'; does not reboot.",
+    )
+
     args = parser.parse_args(argv)
     return args
 
@@ -1697,6 +1957,18 @@ def main(argv: list[str]) -> int:
 
         if args.command == "set-journald-persistent":
             return _set_journald_persistent(args)
+
+        if args.command == "bt-services-enable":
+            return 0 if bt_services_enable() else 1
+
+        if args.command == "bt-services-disable":
+            return 0 if bt_services_disable() else 1
+
+        if args.command == "bt-onboard-on":
+            return _bt_onboard_on(args)
+
+        if args.command == "bt-onboard-off":
+            return _bt_onboard_off(args)
 
         log("ERROR", "no action specified")
         return 2

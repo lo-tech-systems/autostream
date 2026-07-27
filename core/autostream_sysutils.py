@@ -681,3 +681,58 @@ def set_journald_persistent(enabled: bool) -> bool:
         "set_journald_persistent: admin call failed (rc=%s, mode=%s)", p.returncode, mode
     )
     return False
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth privileged actions
+# ---------------------------------------------------------------------------
+
+def bt_services_enable() -> tuple[bool, str]:
+    """Unmask, enable, and start the Bluetooth service set via autostream_admin.
+
+    Calls `sudo autostream_admin bt-services-enable`, which unmasks/enables
+    bluetooth.service, enables the bluealsa unit, disables bluealsa-aplay
+    (it conflicts with our own capture pump), and enables+starts
+    autostream_bluetooth.service. Returns (ok, human-readable message).
+    """
+    p = run_admin_cmd(["bt-services-enable"], timeout=30.0)
+    if p.returncode == 0:
+        return True, "Bluetooth services enabled."
+    logger.warning("bt_services_enable: admin call failed (rc=%s)", p.returncode)
+    return False, "Failed to enable Bluetooth services."
+
+
+def bt_services_disable() -> tuple[bool, str]:
+    """Disable and stop the Bluetooth service set via autostream_admin.
+
+    Calls `sudo autostream_admin bt-services-disable`. Stopping
+    bluetooth.service drops any active A2DP stream immediately; pairing
+    bonds are preserved for re-enable. Returns (ok, human-readable message).
+    """
+    p = run_admin_cmd(["bt-services-disable"], timeout=30.0)
+    if p.returncode == 0:
+        return True, "Bluetooth services disabled."
+    logger.warning("bt_services_disable: admin call failed (rc=%s)", p.returncode)
+    return False, "Failed to disable Bluetooth services."
+
+
+def bt_onboard_set(enabled: bool) -> tuple[bool, str]:
+    """Toggle the onboard Bluetooth radio (config.txt dtoverlay=disable-bt).
+
+    Calls `sudo autostream_admin bt-onboard-on|bt-onboard-off`. The change
+    only takes effect after a reboot, which this function does not perform
+    -- the caller drives the existing reboot holding-page flow. Returns
+    (ok, human-readable message); the message notes whether a reboot is
+    actually required (idempotent calls that changed nothing do not need one).
+    """
+    verb = "bt-onboard-on" if enabled else "bt-onboard-off"
+    state = "enabled" if enabled else "disabled"
+    p = run_admin_cmd([verb], timeout=30.0)
+    if p.returncode != 0:
+        logger.warning("bt_onboard_set: admin call failed (rc=%s, verb=%s)", p.returncode, verb)
+        return False, f"Failed to set onboard Bluetooth ({state})."
+
+    out = (p.stdout or "").strip()
+    if out == "reboot-required":
+        return True, f"Onboard Bluetooth {state}; a reboot is required to take effect."
+    return True, f"Onboard Bluetooth already {state}."

@@ -44,6 +44,15 @@ Cmnd_Alias AUTOSTREAM_ADMIN_NGINX_LOG_N = /usr/local/libexec/autostream/autostre
 Cmnd_Alias AUTOSTREAM_ADMIN_JOURNALD_ON  = /usr/local/libexec/autostream/autostream_admin set-journald-persistent on
 Cmnd_Alias AUTOSTREAM_ADMIN_JOURNALD_OFF = /usr/local/libexec/autostream/autostream_admin set-journald-persistent off
 
+# allow enabling/disabling the Bluetooth service set (bluetooth.service,
+# bluealsa unit, autostream_bluetooth.service)
+Cmnd_Alias AUTOSTREAM_ADMIN_BT_SVC_ENABLE  = /usr/local/libexec/autostream/autostream_admin bt-services-enable
+Cmnd_Alias AUTOSTREAM_ADMIN_BT_SVC_DISABLE = /usr/local/libexec/autostream/autostream_admin bt-services-disable
+
+# allow toggling the onboard Bluetooth radio (config.txt dtoverlay=disable-bt)
+Cmnd_Alias AUTOSTREAM_ADMIN_BT_ONBOARD_ON  = /usr/local/libexec/autostream/autostream_admin bt-onboard-on
+Cmnd_Alias AUTOSTREAM_ADMIN_BT_ONBOARD_OFF = /usr/local/libexec/autostream/autostream_admin bt-onboard-off
+
 # Full list of allowed actions for autostream user:
 Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URN,        \
@@ -62,7 +71,11 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_NGINX_LOG_V,       \
                               AUTOSTREAM_ADMIN_NGINX_LOG_N,       \
                               AUTOSTREAM_ADMIN_JOURNALD_ON,       \
-                              AUTOSTREAM_ADMIN_JOURNALD_OFF
+                              AUTOSTREAM_ADMIN_JOURNALD_OFF,      \
+                              AUTOSTREAM_ADMIN_BT_SVC_ENABLE,     \
+                              AUTOSTREAM_ADMIN_BT_SVC_DISABLE,    \
+                              AUTOSTREAM_ADMIN_BT_ONBOARD_ON,     \
+                              AUTOSTREAM_ADMIN_BT_ONBOARD_OFF
 
 Defaults!AUTOSTREAM_ADMIN env_reset
 Defaults!AUTOSTREAM_ADMIN secure_path="/usr/sbin:/usr/bin:/sbin:/bin"

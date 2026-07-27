@@ -1160,3 +1160,462 @@ class TestApplianceService:
             rc = m._remove_appliance_service(MagicMock())
 
         assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth: unit discovery
+# ---------------------------------------------------------------------------
+
+class TestFindFirstExistingUnit:
+    def test_returns_first_loaded_candidate(self):
+        def fake_run_cmd(cmd):
+            unit = cmd[-1]
+            if unit == "bluealsad.service":
+                return (0, "loaded", "")
+            return (0, "not-found", "")
+
+        with patch.object(m, "run_cmd", side_effect=fake_run_cmd):
+            result = m._find_first_existing_unit(
+                "/bin/systemctl", ("bluealsad.service", "bluealsa.service")
+            )
+        assert result == "bluealsad.service"
+
+    def test_falls_through_to_second_candidate(self):
+        def fake_run_cmd(cmd):
+            unit = cmd[-1]
+            if unit == "bluealsa.service":
+                return (0, "loaded", "")
+            return (0, "not-found", "")
+
+        with patch.object(m, "run_cmd", side_effect=fake_run_cmd):
+            result = m._find_first_existing_unit(
+                "/bin/systemctl", ("bluealsad.service", "bluealsa.service")
+            )
+        assert result == "bluealsa.service"
+
+    def test_returns_none_if_neither_found(self):
+        with patch.object(m, "run_cmd", return_value=(0, "not-found", "")):
+            result = m._find_first_existing_unit(
+                "/bin/systemctl", ("bluealsad.service", "bluealsa.service")
+            )
+        assert result is None
+
+    def test_returns_none_on_command_failure(self):
+        with patch.object(m, "run_cmd", return_value=(1, "", "error")):
+            result = m._find_first_existing_unit(
+                "/bin/systemctl", ("bluealsad.service",)
+            )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth: bt-services-enable / bt-services-disable
+# ---------------------------------------------------------------------------
+
+class TestBtServicesEnable:
+    def _run(self, bluealsa_state="loaded", rc_map=None):
+        """Run bt_services_enable() with systemctl calls stubbed.
+
+        rc_map maps a substring of the argv (joined) to an rc; defaults to 0.
+        """
+        rc_map = rc_map or {}
+        calls = []
+
+        def fake_run_cmd(cmd):
+            calls.append(cmd)
+            joined = " ".join(cmd)
+            if "show" in cmd and "LoadState" in cmd:
+                unit = cmd[-1]
+                if unit.startswith("bluealsa"):
+                    return (0, bluealsa_state, "")
+                return (0, "not-found", "")
+            for key, rc in rc_map.items():
+                if key in joined:
+                    return (rc, "", "boom" if rc else "")
+            return (0, "", "")
+
+        with patch.object(m, "find_systemctl", return_value="/bin/systemctl"), \
+             patch.object(m, "run_cmd", side_effect=fake_run_cmd):
+            result = m.bt_services_enable()
+        return result, calls
+
+    def test_no_systemctl_returns_false(self):
+        with patch.object(m, "find_systemctl", return_value=None):
+            assert m.bt_services_enable() is False
+
+    def test_happy_path_returns_true(self):
+        result, calls = self._run()
+        assert result is True
+
+    def test_calls_unmask_then_enable_bluetooth(self):
+        _, calls = self._run()
+        joined = [" ".join(c) for c in calls]
+        unmask_idx = next(i for i, c in enumerate(joined) if "unmask" in c)
+        enable_bt_idx = next(
+            i for i, c in enumerate(joined)
+            if "enable" in c and "--now" in c and c.endswith("bluetooth.service")
+        )
+        assert unmask_idx < enable_bt_idx
+
+    def test_enables_discovered_bluealsa_unit(self):
+        _, calls = self._run(bluealsa_state="loaded")
+        joined = [" ".join(c) for c in calls]
+        assert any("enable --now bluealsad.service" in c for c in joined)
+
+    def test_disables_bluealsa_aplay(self):
+        _, calls = self._run()
+        joined = [" ".join(c) for c in calls]
+        assert any("disable --now bluealsa-aplay.service" in c for c in joined)
+
+    def test_enables_autostream_bluetooth_last(self):
+        _, calls = self._run()
+        joined = [" ".join(c) for c in calls]
+        assert joined[-1] == "/bin/systemctl enable --now autostream_bluetooth.service"
+
+    def test_missing_bluealsa_unit_tolerated(self):
+        result, calls = self._run(bluealsa_state="not-found")
+        assert result is True  # non-fatal
+
+    def test_unmask_failure_tolerated(self):
+        result, _ = self._run(rc_map={"unmask": 1})
+        assert result is True
+
+    def test_bluetooth_enable_failure_tolerated(self):
+        result, _ = self._run(rc_map={"enable --now bluetooth.service": 1})
+        assert result is True
+
+    def test_bluealsa_aplay_disable_failure_tolerated(self):
+        result, _ = self._run(rc_map={"bluealsa-aplay": 1})
+        assert result is True
+
+    def test_autostream_bluetooth_failure_is_fatal(self):
+        result, _ = self._run(rc_map={"autostream_bluetooth.service": 1})
+        assert result is False
+
+
+class TestBtServicesDisable:
+    def _run(self, bluealsa_state="loaded", rc_map=None):
+        rc_map = rc_map or {}
+        calls = []
+
+        def fake_run_cmd(cmd):
+            calls.append(cmd)
+            joined = " ".join(cmd)
+            if "show" in cmd and "LoadState" in cmd:
+                unit = cmd[-1]
+                if unit.startswith("bluealsa"):
+                    return (0, bluealsa_state, "")
+                return (0, "not-found", "")
+            for key, rc in rc_map.items():
+                if key in joined:
+                    return (rc, "", "boom" if rc else "")
+            return (0, "", "")
+
+        with patch.object(m, "find_systemctl", return_value="/bin/systemctl"), \
+             patch.object(m, "run_cmd", side_effect=fake_run_cmd):
+            result = m.bt_services_disable()
+        return result, calls
+
+    def test_no_systemctl_returns_false(self):
+        with patch.object(m, "find_systemctl", return_value=None):
+            assert m.bt_services_disable() is False
+
+    def test_happy_path_returns_true(self):
+        result, _ = self._run()
+        assert result is True
+
+    def test_disables_autostream_bluetooth_first(self):
+        _, calls = self._run()
+        joined = [" ".join(c) for c in calls if "show" not in c]
+        assert joined[0] == "/bin/systemctl disable --now autostream_bluetooth.service"
+
+    def test_disables_bluetooth_service(self):
+        _, calls = self._run()
+        joined = [" ".join(c) for c in calls]
+        assert any(c == "/bin/systemctl disable --now bluetooth.service" for c in joined)
+
+    def test_disables_discovered_bluealsa_unit(self):
+        _, calls = self._run(bluealsa_state="loaded")
+        joined = [" ".join(c) for c in calls]
+        assert any("disable --now bluealsad.service" in c for c in joined)
+
+    def test_all_failures_tolerated(self):
+        result, _ = self._run(rc_map={
+            "autostream_bluetooth.service": 1,
+            "bluealsad.service": 1,
+            "bluetooth.service": 1,
+        })
+        assert result is True  # disable is entirely best-effort/tolerant
+
+    def test_missing_bluealsa_unit_tolerated(self):
+        result, _ = self._run(bluealsa_state="not-found")
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth: onboard radio config.txt strip/insert
+# ---------------------------------------------------------------------------
+
+_CONFIG_WITH_ALL_AND_BT = (
+    "# comment\n"
+    "[all]\n"
+    "dtparam=watchdog=on\n"
+    "dtoverlay=disable-bt\n"
+    "gpu_mem=128\n"
+)
+
+_CONFIG_WITH_ALL_NO_BT = (
+    "# comment\n"
+    "[all]\n"
+    "dtparam=watchdog=on\n"
+    "gpu_mem=128\n"
+)
+
+_CONFIG_NO_ALL_SECTION = (
+    "dtparam=watchdog=on\n"
+    "gpu_mem=128\n"
+)
+
+
+class TestBtOnboardSetConfig:
+    def test_enable_onboard_strips_disable_bt_line(self, tmp_path):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_AND_BT, encoding="utf-8")
+
+        ok, changed = m.bt_onboard_set_config(cfg, enable_onboard=True)
+
+        assert ok is True
+        assert changed is True
+        result = cfg.read_text(encoding="utf-8")
+        assert "disable-bt" not in result
+        assert "dtparam=watchdog=on" in result
+        assert "gpu_mem=128" in result
+        assert "# comment" in result
+
+    def test_enable_onboard_idempotent_when_already_absent(self, tmp_path):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_NO_BT, encoding="utf-8")
+
+        ok, changed = m.bt_onboard_set_config(cfg, enable_onboard=True)
+
+        assert ok is True
+        assert changed is False
+        assert cfg.read_text(encoding="utf-8") == _CONFIG_WITH_ALL_NO_BT
+
+    def test_disable_onboard_inserts_after_all_header(self, tmp_path):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_NO_BT, encoding="utf-8")
+
+        ok, changed = m.bt_onboard_set_config(cfg, enable_onboard=False)
+
+        assert ok is True
+        assert changed is True
+        result = cfg.read_text(encoding="utf-8")
+        lines = result.splitlines()
+        all_idx = lines.index("[all]")
+        assert lines[all_idx + 1] == "dtoverlay=disable-bt"
+        assert "dtparam=watchdog=on" in result
+        assert "gpu_mem=128" in result
+
+    def test_disable_onboard_idempotent_on_repeated_call(self, tmp_path):
+        """A second consecutive bt-onboard-off call is a true no-op.
+
+        The verb's contract is "strip any existing occurrence, then insert
+        after [all]" (always normalising position), so idempotency is
+        guaranteed from the *second* call onward, not from an arbitrary
+        starting position where the line might sit elsewhere in the file.
+        """
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_AND_BT, encoding="utf-8")
+
+        ok1, changed1 = m.bt_onboard_set_config(cfg, enable_onboard=False)
+        assert ok1 is True
+
+        after_first = cfg.read_text(encoding="utf-8")
+        ok2, changed2 = m.bt_onboard_set_config(cfg, enable_onboard=False)
+
+        assert ok2 is True
+        assert changed2 is False
+        assert cfg.read_text(encoding="utf-8") == after_first
+
+    def test_disable_onboard_dedupes_multiple_existing_lines(self, tmp_path):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(
+            "[all]\ndtoverlay=disable-bt\ndtparam=watchdog=on\ndtoverlay=disable-bt\n",
+            encoding="utf-8",
+        )
+
+        ok, changed = m.bt_onboard_set_config(cfg, enable_onboard=False)
+
+        assert ok is True
+        assert changed is True
+        result = cfg.read_text(encoding="utf-8")
+        assert result.count("dtoverlay=disable-bt") == 1
+
+    def test_disable_onboard_creates_all_section_if_absent(self, tmp_path):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_NO_ALL_SECTION, encoding="utf-8")
+
+        ok, changed = m.bt_onboard_set_config(cfg, enable_onboard=False)
+
+        assert ok is True
+        assert changed is True
+        result = cfg.read_text(encoding="utf-8")
+        lines = result.splitlines()
+        assert lines[0] == "[all]"
+        assert lines[1] == "dtoverlay=disable-bt"
+        assert "dtparam=watchdog=on" in result
+        assert "gpu_mem=128" in result
+
+    def test_preserves_watchdog_line_byte_for_byte(self, tmp_path):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_AND_BT, encoding="utf-8")
+
+        m.bt_onboard_set_config(cfg, enable_onboard=True)
+
+        result = cfg.read_text(encoding="utf-8")
+        assert "dtparam=watchdog=on\n" in result
+
+    def test_missing_file_returns_false(self, tmp_path):
+        cfg = tmp_path / "does-not-exist.txt"
+        ok, changed = m.bt_onboard_set_config(cfg, enable_onboard=True)
+        assert ok is False
+        assert changed is False
+
+    def test_comma_suffixed_disable_bt_line_stripped(self, tmp_path):
+        """Some overlays allow parameterised dtoverlay lines (e.g. disable-bt,foo)."""
+        cfg = tmp_path / "config.txt"
+        cfg.write_text("[all]\ndtoverlay=disable-bt,extra-param\n", encoding="utf-8")
+
+        ok, changed = m.bt_onboard_set_config(cfg, enable_onboard=True)
+
+        assert ok is True
+        assert changed is True
+        assert "disable-bt" not in cfg.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth: onboard verb dispatch (marker printing)
+# ---------------------------------------------------------------------------
+
+class TestBtOnboardVerbs:
+    def test_bt_onboard_on_prints_reboot_required_when_changed(self, tmp_path, capsys):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_AND_BT, encoding="utf-8")
+        with patch.object(m, "FIRMWARE_CONFIG_PATH", cfg):
+            rc = m._bt_onboard_on(MagicMock())
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "reboot-required" in out
+
+    def test_bt_onboard_on_prints_no_change_when_already_absent(self, tmp_path, capsys):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_NO_BT, encoding="utf-8")
+        with patch.object(m, "FIRMWARE_CONFIG_PATH", cfg):
+            rc = m._bt_onboard_on(MagicMock())
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "no-change" in out
+
+    def test_bt_onboard_off_prints_reboot_required_when_changed(self, tmp_path, capsys):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_NO_BT, encoding="utf-8")
+        with patch.object(m, "FIRMWARE_CONFIG_PATH", cfg):
+            rc = m._bt_onboard_off(MagicMock())
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "reboot-required" in out
+
+    def test_bt_onboard_off_prints_no_change_on_repeated_call(self, tmp_path, capsys):
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(_CONFIG_WITH_ALL_AND_BT, encoding="utf-8")
+        with patch.object(m, "FIRMWARE_CONFIG_PATH", cfg):
+            m._bt_onboard_off(MagicMock())
+            capsys.readouterr()  # discard first call's output
+            rc = m._bt_onboard_off(MagicMock())
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "no-change" in out
+
+    def test_bt_onboard_on_missing_file_returns_error(self, tmp_path, capsys):
+        with patch.object(m, "FIRMWARE_CONFIG_PATH", tmp_path / "missing.txt"):
+            rc = m._bt_onboard_on(MagicMock())
+        assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Bluetooth: sudoers verb dispatch presence
+# ---------------------------------------------------------------------------
+
+class TestBtVerbDispatch:
+    """Verify all four Bluetooth verbs parse and route in main()/parse_args()."""
+
+    @pytest.mark.parametrize("verb", [
+        "bt-services-enable", "bt-services-disable",
+        "bt-onboard-on", "bt-onboard-off",
+    ])
+    def test_verb_parses(self, verb):
+        args = m.parse_args([verb])
+        assert args.command == verb
+
+    def test_bt_services_enable_dispatches(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "bt_services_enable", return_value=True) as mock_fn:
+            rc = m.main(["bt-services-enable"])
+        mock_fn.assert_called_once()
+        assert rc == 0
+
+    def test_bt_services_disable_dispatches(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "bt_services_disable", return_value=True) as mock_fn:
+            rc = m.main(["bt-services-disable"])
+        mock_fn.assert_called_once()
+        assert rc == 0
+
+    def test_bt_onboard_on_dispatches(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_bt_onboard_on", return_value=0) as mock_fn:
+            rc = m.main(["bt-onboard-on"])
+        mock_fn.assert_called_once()
+        assert rc == 0
+
+    def test_bt_onboard_off_dispatches(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_bt_onboard_off", return_value=0) as mock_fn:
+            rc = m.main(["bt-onboard-off"])
+        mock_fn.assert_called_once()
+        assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Sudoers: new Bluetooth Cmnd_Alias entries present
+# ---------------------------------------------------------------------------
+
+class TestBtSudoersEntries:
+    SUDOERS_PATH = Path(__file__).parent.parent / "system" / "sudoers" / "autostream_admin"
+
+    def test_sudoers_file_exists(self):
+        assert self.SUDOERS_PATH.exists()
+
+    def test_contains_bt_services_enable_alias(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "autostream_admin bt-services-enable" in text
+
+    def test_contains_bt_services_disable_alias(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "autostream_admin bt-services-disable" in text
+
+    def test_contains_bt_onboard_on_alias(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "autostream_admin bt-onboard-on" in text
+
+    def test_contains_bt_onboard_off_alias(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "autostream_admin bt-onboard-off" in text
+
+    def test_new_aliases_included_in_full_admin_list(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "AUTOSTREAM_ADMIN_BT_SVC_ENABLE" in text
+        assert "AUTOSTREAM_ADMIN_BT_SVC_DISABLE" in text
+        assert "AUTOSTREAM_ADMIN_BT_ONBOARD_ON" in text
+        assert "AUTOSTREAM_ADMIN_BT_ONBOARD_OFF" in text
