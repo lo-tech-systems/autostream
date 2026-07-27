@@ -1,0 +1,54 @@
+# /etc/systemd/system/autostream_bluetooth.service
+#
+# This file is part of autostream.
+# Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
+#
+# Always installed, but disabled and not started until the Bluetooth input
+# subsystem is enabled through a separate, later, privileged action.
+
+[Unit]
+Description=Autostream Bluetooth input service
+After=bluetooth.service bluealsa.service bluealsad.service sound.target
+Wants=bluetooth.service bluealsa.service bluealsad.service
+# Deliberately NOT Requires=: family convention (see autostream.service) is
+# loose coupling -- the coordinator/monitor must not be taken down by this
+# optional peer service restarting or crashing, and vice versa.
+
+[Service]
+Type=simple
+User=autostream
+SupplementaryGroups=bluetooth audio
+WorkingDirectory=/opt/autostream
+
+# python3-dbus, python3-gi and python3-alsaaudio are installed as apt
+# packages; the application venv is created with --system-site-packages
+# (autostream_install.sh deploy_phase), so the venv interpreter sees them.
+ExecStart=/opt/autostream/venv/bin/python /opt/autostream/platform/bluetooth_service.py
+# Python block-buffers stdout when it isn't a tty; without this, log lines
+# sit in the buffer and journalctl shows nothing.
+Environment=PYTHONUNBUFFERED=1
+
+Restart=on-failure
+RestartSec=3
+
+# /run/autostream-bluetooth/bluetooth.sock -- the control socket consumed by
+# the webui (core/autostream_bluetooth_client.py), filesystem-permission
+# gated like the monitor's control socket.
+#
+# Dedicated RuntimeDirectory (NOT the shared /run/autostream): that directory
+# is root-owned and its ownership is trusted by wifi-control.token; systemd
+# recursively chowns RuntimeDirectory to this unit's User/Group on start,
+# which would silently reassign ownership of the shared directory to
+# autostream. A private directory sidesteps that and needs no
+# RuntimeDirectoryPreserve (that was only protecting the shared dir's
+# lifetime/ownership; a dedicated dir has nothing else to protect).
+RuntimeDirectory=autostream-bluetooth
+RuntimeDirectoryMode=0750
+
+StandardOutput=journal
+StandardError=journal
+
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

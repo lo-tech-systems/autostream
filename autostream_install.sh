@@ -44,6 +44,13 @@
 #     skip: do not install or build OwnTone; only reuse an existing installation
 #           and update /etc/owntone.conf when present
 #
+# The Bluetooth input subsystem (bluez, bluez-alsa-utils, snd-aloop config,
+# and the autostream_bluetooth service) is always installed, letting the
+# appliance pair with a Bluetooth (A2DP) turntable and present it as an
+# ordinary capture device. The service is installed disabled; enabling it
+# (and, separately, the onboard Bluetooth radio, which stays disabled by
+# default) is a later, opt-in runtime action and is not part of installation.
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 set -Eeuo pipefail
@@ -61,6 +68,8 @@ source "${INSTALLER_LIB}/owntone.sh"
 source "${INSTALLER_LIB}/vibra.sh"
 # shellcheck source=installer/lib/hardware.sh
 source "${INSTALLER_LIB}/hardware.sh"
+# shellcheck source=installer/lib/bluetooth.sh
+source "${INSTALLER_LIB}/bluetooth.sh"
 
 #############################################
 # Globals
@@ -464,6 +473,8 @@ This script will:
 - Install OS packages (nginx, watchdog, dnsmasq, build tools, etc.)
 - Provision OwnTone according to the selected mode (mini by default)
 - Build and install vibra-mini ${VIBRA_VERSION} for optional track identification
+- Install the Bluetooth input subsystem (bluez, bluez-alsa-utils), disabled
+  until enabled later
 - Enable/disable systemd services
 - Create system users/groups and modify permissions
 - Modify /boot/firmware/config.txt to enable the hardware watchdog and disable Bluetooth
@@ -871,7 +882,10 @@ configure_phase() {
   configure_cloud_init
 
   # Firmware / watchdog
+  # update_pi_firmware_config always writes dtoverlay=disable-bt; the onboard
+  # radio is opt-in via a later, separate runtime action.
   update_pi_firmware_config
+  install_bluetooth_stack
   cp -a "${AUTOSTREAM_DIR}/system/watchdog/watchdog.conf" /etc/watchdog.conf
   systemctl enable watchdog
 
