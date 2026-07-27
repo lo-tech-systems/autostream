@@ -13,6 +13,7 @@ Contents:
 from __future__ import annotations
 
 import html
+import json
 import logging
 
 from datetime import datetime, timezone
@@ -64,6 +65,107 @@ from autostream_webui_common import (
     settings_card_html,
 )
 from autostream_webui_state import WebUIState
+
+
+# -----------------------------------------------------------------------------
+# Bluetooth input — Setup page surface (the always-rendered Bluetooth card,
+# plus the Input cards' dropdown/pairing-modal wiring).
+#
+# Three independent gates:
+#   - installed:        the Bluetooth-input subsystem's unit file exists.
+#                        Drives the dropdown/relabel/pairing-modal surface
+#                        (the loopback card exists once installed, whether
+#                        or not the service itself is enabled).
+#   - services_enabled:  the systemd unit is enabled/running. Drives the
+#                        Bluetooth card's enabled-vs-disabled body.
+#   - onboard_enabled:   the onboard radio (vs. a USB adapter) is in use.
+#
+# All three lookups are defensive (getattr + try/except) so this page keeps
+# rendering identically wherever the helper module is absent.
+# -----------------------------------------------------------------------------
+
+BLUETOOTH_LOOPBACK_HW = "hw:CARD=ASBT,DEV=1"
+BLUETOOTH_BUFFER_MS_DEFAULT = 200
+BLUETOOTH_BUFFER_MS_MIN = 100
+BLUETOOTH_BUFFER_MS_MAX = 500
+
+
+def _bluetooth_installed() -> bool:
+    """Whether the optional Bluetooth-input subsystem is installed."""
+    try:
+        from autostream_bluetooth_client import bluetooth_installed as _real_check
+    except ImportError:
+        return False
+    try:
+        return bool(_real_check())
+    except Exception:
+        return False
+
+
+def _bluetooth_services_enabled() -> bool:
+    """Whether the Bluetooth-input systemd unit is enabled/running."""
+    try:
+        from autostream_bluetooth_client import bluetooth_services_enabled as _real_check
+    except ImportError:
+        return False
+    try:
+        return bool(_real_check())
+    except Exception:
+        return False
+
+
+def _bluetooth_onboard_enabled() -> bool:
+    """Whether the onboard Bluetooth radio (vs. a USB adapter) is in use."""
+    try:
+        from autostream_bluetooth_client import bluetooth_onboard_enabled as _real_check
+    except ImportError:
+        return False
+    try:
+        return bool(_real_check())
+    except Exception:
+        return False
+
+
+def _bluetooth_status_from_state(state: WebUIState) -> Optional[dict]:
+    """Fetch the cached Bluetooth status dict from WebUIState, defensively.
+
+    Returns None if the helper is absent or raises -- the caller treats that
+    the same as "no Bluetooth device paired / status unknown".
+    """
+    getter = getattr(state, "get_bluetooth_status", None)
+    if not callable(getter):
+        return None
+    try:
+        status = getter()
+    except Exception:
+        return None
+    return status if isinstance(status, dict) else None
+
+
+def _bluetooth_card_summary(
+    services_enabled: bool, bt_status: Optional[dict], bt_paired: bool,
+) -> str:
+    """Bluetooth card summary line, per the four pinned states."""
+    if not services_enabled:
+        return "Disabled"
+    adapter_present = bool(bt_status and bt_status.get("adapter_present"))
+    if not adapter_present:
+        return "Enabled · No adapter found"
+    if not bt_paired:
+        return "Enabled · Not paired"
+    name = str(((bt_status or {}).get("paired") or {}).get("name") or "device")
+    return f"Enabled · {name} connected"
+
+
+def _bluetooth_paired_row_text(bt_status: Optional[dict]) -> str:
+    """Card 'Paired' row text: '<name> · Connected/Not Connected' or 'No device paired'."""
+    paired = (bt_status or {}).get("paired") if bt_status else None
+    if not isinstance(paired, dict) or not str(paired.get("name") or "").strip():
+        return "No device paired"
+    name = str(paired.get("name")).strip()
+    link = str((bt_status or {}).get("link") or "disconnected")
+    state = "Connected" if link == "connected" else "Not Connected"
+    return f"{name} · {state}"
 
 
 # -----------------------------------------------------------------------------
@@ -374,13 +476,57 @@ def send_setup_page(
 
     monitor_devices = state.get_monitor_devices()
 
-    def build_opts(cur):
+    bt_enabled = _bluetooth_installed()
+    bt_status = _bluetooth_status_from_state(state) if bt_enabled else None
+    bt_paired = bool(bt_status and bt_status.get("paired"))
+    bt_services_on = _bluetooth_services_enabled() if bt_enabled else False
+    bt_onboard_on = _bluetooth_onboard_enabled() if bt_enabled else False
+    bt_buffer_ms = BLUETOOTH_BUFFER_MS_DEFAULT
+    try:
+        if isinstance(bt_status, dict) and isinstance(bt_status.get("buffer_ms"), int):
+            bt_buffer_ms = max(
+                BLUETOOTH_BUFFER_MS_MIN, min(BLUETOOTH_BUFFER_MS_MAX, int(bt_status["buffer_ms"]))
+            )
+    except Exception:
+        bt_buffer_ms = BLUETOOTH_BUFFER_MS_DEFAULT
+    bt_card_summary = _bluetooth_card_summary(bt_services_on, bt_status, bt_paired)
+    bt_paired_row_text = _bluetooth_paired_row_text(bt_status)
+
+    def _is_bt_loopback_playback_value(value: str) -> bool:
+        """True when ``value`` is the ASBT loopback's PLAYBACK side.
+
+        Guarded the same way as ``_bluetooth_installed()`` elsewhere on
+        this page: defensive import, quiet fallback to False so the page
+        keeps rendering identically wherever the Bluetooth helper module or
+        the feature itself is absent.
+        """
+        if not bt_enabled:
+            return False
+        try:
+            from autostream_bluetooth_client import is_loopback_playback
+        except ImportError:
+            return False
+        try:
+            return bool(is_loopback_playback(value))
+        except Exception:
+            return False
+
+    def build_opts(cur, other_value: Optional[str] = None):
         opts = ""
         found = False
         cur_str = str(cur).strip()
+        other_str = str(other_value or "").strip()
         for dev in monitor_devices:
             hw = str(dev.get("hw") or "").strip()
             if not hw:
+                continue
+            if other_str and hw == other_str and hw != cur_str:
+                # Cross-input exclusivity (server render): a device already
+                # selected on the other input is not offered here, so the
+                # same physical device can never be attached to both inputs.
+                # This input's own current selection always still renders,
+                # even if it happens to equal the other input's value (a
+                # pre-existing duplicate from before this guard existed).
                 continue
             label = str(dev.get("label") or hw).strip()
             card = str(dev.get("card") or "").strip()
@@ -388,11 +534,20 @@ def send_setup_page(
             sel = " selected" if hw == cur_str else ""
             if sel:
                 found = True
+            bt_attr = " data-bt='1'" if hw == BLUETOOTH_LOOPBACK_HW else ""
             opts += (
-                f"<option value='{html.escape(hw)}' data-card='{html.escape(card_short)}'{sel}>"
+                f"<option value='{html.escape(hw)}' data-card='{html.escape(card_short)}'{bt_attr}{sel}>"
                 f"{html.escape(label)}</option>"
             )
-        if not found and cur:
+        if not found and cur and not _is_bt_loopback_playback_value(cur_str):
+            # A stale saved capture_device pointing at the loopback PLAYBACK side (an
+            # internal device the pump feeds, never a valid input) must not
+            # resurface as a bare "hw:CARD=ASBT,DEV=0 (not currently
+            # detected)" option -- the normalize relabel hook already
+            # correctly drops that side from monitor_devices, so injecting it
+            # back here via the synthetic-fallback path would defeat that.
+            # Genuinely-missing real devices are unaffected and still get the
+            # synthetic option below.
             missing = html.escape(cur_str)
             opts = (
                 f"<option value='{missing}' selected>"
@@ -410,6 +565,8 @@ def send_setup_page(
         turntable_name: str,
         enabled: bool = True,
         enabled_name: Optional[str] = None,
+        bt_enabled: bool = False,
+        other_capture_device: Optional[str] = None,
     ) -> str:
         prefix = "audio1" if input_index == 1 else "audio2"
         threshold_id = "audio_silence_threshold" if input_index == 1 else "audio2_silence_threshold"
@@ -434,10 +591,25 @@ def send_setup_page(
         settings_open = "" if enabled_name is None else f"<div id=\"{settings_wrap_id}\" style=\"display:{wrap_style};\">"
         settings_close = "" if enabled_name is None else "</div>"
 
+        if bt_enabled:
+            capture_onchange = (
+                f"if (isBluetoothDevice(this.value) && !btPaired) {{ openBtPairingModal({input_index}, this); return; }} "
+                f"if(liveEnabled) settingsSaveField('audio{input_index}.capture_device', this.value); "
+                f"this.dataset.prev = this.value; syncInputExclusivity({input_index}, this.value);"
+            )
+        else:
+            capture_onchange = (
+                f"if(liveEnabled) settingsSaveField('audio{input_index}.capture_device', this.value); "
+                f"syncInputExclusivity({input_index}, this.value);"
+            )
+
+        data_prev_attr = (
+            f" data-prev='{html.escape(str(parsed_input.capture_device or '').strip())}'" if bt_enabled else ""
+        )
         inner_html = f"""
           {enabled_html}
           {settings_open}
-            <label>Input device: <select name="{capture_name}" onchange="if(liveEnabled) settingsSaveField('audio{input_index}.capture_device', this.value);">{build_opts(parsed_input.capture_device)}</select></label>
+            <label>Input device: <select name="{capture_name}" id="{capture_name}_select" data-input-index="{input_index}"{data_prev_attr} onchange="{capture_onchange}">{build_opts(parsed_input.capture_device, other_capture_device)}</select></label>
             <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
               <label class="output-toggle" style="margin:0;">
                 <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncInputUi({input_index}); if(liveEnabled) settingsSaveField('audio{input_index}.turntable', this.checked);">
@@ -646,6 +818,8 @@ def send_setup_page(
         capture_name="audio_capture_device",
         threshold_name="audio_silence_threshold",
         turntable_name="audio_turntable",
+        bt_enabled=bt_enabled,
+        other_capture_device=parsed.audio2.capture_device,
     )
     input2_html = input_fieldset_html(
         input_index=2,
@@ -656,6 +830,8 @@ def send_setup_page(
         turntable_name="audio2_turntable",
         enabled=parsed.audio2_enabled,
         enabled_name="audio2_enabled",
+        bt_enabled=bt_enabled,
+        other_capture_device=parsed.audio1.capture_device,
     )
 
     # Fieldset fragments shared by both layout paths
@@ -769,19 +945,98 @@ def send_setup_page(
                 return c.split(", ")[0].strip() if c else str(hw)
         return str(hw) if hw else "Not configured"
 
-    dev1 = _friendly(parsed.audio1.capture_device)
-    mode1 = "Turntable" if parsed.audio1.is_turntable else "Line In"
-    gain1 = int(parsed.audio1.gain_db)
-    gain1_str = f"{gain1:+d} dB" if gain1 != 0 else "0 dB"
-    input1_summary = html.escape(f"{dev1} \u00b7 {mode1} \u00b7 {gain1_str}")
+    def _input_card_summary(parsed_input) -> str:
+        dev = _friendly(parsed_input.capture_device)
+        mode = "Turntable" if parsed_input.is_turntable else "Line In"
+        if bt_enabled and parsed_input.capture_device == BLUETOOTH_LOOPBACK_HW:
+            # Bluetooth input: the ALSA card name ("Loopback") and the
+            # turntable flag are implementation detail here \u2014 show the
+            # connected device's name (or the connection state) instead.
+            dev = "Bluetooth"
+            _paired = (bt_status or {}).get("paired") or {}
+            if (bt_status or {}).get("link") == "connected":
+                mode = str(_paired.get("name") or "Connected")
+            else:
+                mode = "Not Connected"
+        gain = int(parsed_input.gain_db)
+        gain_str = f"{gain:+d} dB" if gain != 0 else "0 dB"
+        return html.escape(f"{dev} \u00b7 {mode} \u00b7 {gain_str}")
+
+    input1_summary = _input_card_summary(parsed.audio1)
     if not parsed.audio2_enabled:
         input2_summary = "Disabled"
     else:
-        dev2 = _friendly(parsed.audio2.capture_device)
-        mode2 = "Turntable" if parsed.audio2.is_turntable else "Line In"
-        gain2 = int(parsed.audio2.gain_db)
-        gain2_str = f"{gain2:+d} dB" if gain2 != 0 else "0 dB"
-        input2_summary = html.escape(f"{dev2} \u00b7 {mode2} \u00b7 {gain2_str}")
+        input2_summary = _input_card_summary(parsed.audio2)
+
+    # ── Bluetooth card (setup page §2) ──────────────────────────────────────
+    _bt_adapter_present = bool(bt_status and bt_status.get("adapter_present"))
+    _bt_adapter_kind = str((bt_status or {}).get("adapter_kind") or "") if bt_status else ""
+    if not _bt_adapter_present:
+        _bt_adapter_text = "No Bluetooth adapter found — plug in a USB adapter, or enable the onboard device below."
+    elif _bt_adapter_kind == "usb":
+        _bt_adapter_text = "USB adapter"
+    elif _bt_adapter_kind == "onboard":
+        _bt_adapter_text = "Onboard"
+    else:
+        _bt_adapter_text = "Detected"
+    _bt_no_adapter_grey = "" if _bt_adapter_present else "opacity:0.4;pointer-events:none;"
+    _bt_onboard_disabled_attr = "" if bt_services_on else " disabled"
+    _bt_forget_style = "" if bt_paired else "display:none;"
+    # The enabled-body's interactive rows (Forget/Pair/Buffer) reference JS
+    # functions (openBtPairingModal, _btPost, ...) that only exist when the
+    # subsystem is installed -- bt_services_on can only be True when
+    # bt_enabled is also True, so this body is otherwise unreachable, but it
+    # is only emitted at all when installed to avoid dead references to
+    # functions that were never rendered.
+    _bt_enabled_body = ""
+    if bt_enabled:
+        _bt_enabled_body = f"""
+          <div id="btEnabledBody" style="display:{'block' if bt_services_on else 'none'};">
+            <div style="display:flex;align-items:center;gap:.75rem;">
+              <span>Bluetooth services: Enabled</span>
+              <button type="button" id="btnBtDisableServices" class="pill-btn small" style="margin-left:auto;"
+                onclick="btDisableServices()">Disable</button>
+            </div>
+            <p id="btAdapterRow" style="margin:0.5rem 0;font-size:0.9rem;">Adapter: {html.escape(_bt_adapter_text)}</p>
+            <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
+              <label class="output-toggle" style="margin:0;">
+                <input type="checkbox" id="btOnboardToggle"{' checked' if bt_onboard_on else ''}{_bt_onboard_disabled_attr}
+                  onchange="btOnboardToggleChanged(this.checked)">
+                <span class="switch"></span>
+              </label>
+              <span>Use onboard bluetooth device</span>
+            </div>
+            <div style="font-size:0.75rem;color:#888;margin-top:0.25rem;">
+              A USB Bluetooth adapter is strongly recommended. Changing this restarts the appliance.
+            </div>
+            <div id="btAdapterGatedRow" style="margin-top:0.75rem;{_bt_no_adapter_grey}">
+              <p id="btPairedRow" style="margin:0 0 0.5rem;">{html.escape(bt_paired_row_text)}</p>
+              <button type="button" id="btnBtForget" class="pill-btn small" style="width:100%;{_bt_forget_style}"
+                onclick="btForgetFromCard()">Forget</button>
+              <button type="button" id="btnBtPairNew" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
+                onclick="openBtPairingModal(null, null)">Pair new device…</button>
+              <label style="display:block;margin-top:0.75rem;">
+                <div class="slider-header"><span>Bluetooth Audio Buffer:</span><span id="btBufferVal">{bt_buffer_ms} ms</span></div>
+                <input type="range" id="btBufferRange" min="{BLUETOOTH_BUFFER_MS_MIN}" max="{BLUETOOTH_BUFFER_MS_MAX}"
+                  step="10" value="{bt_buffer_ms}" oninput="btBufferInput(this.value)">
+                <div class="helptext">Larger values ride out wireless glitches; smaller values reduce the
+                  delay before you hear the needle drop.</div>
+              </label>
+            </div>
+          </div>
+        """
+    bluetooth_card_inner_html = f"""
+          <input type="hidden" name="bluetooth_present" value="1">
+          <div id="btDisabledBody" style="display:{'none' if bt_services_on else 'block'};">
+            <p style="margin:0 0 0.5rem;">Connect a Bluetooth device (such as a turntable with Bluetooth
+              output) as an audio input.</p>
+            <button type="button" id="btnBtEnableServices" class="pill-btn small" style="width:100%;"
+              onclick="btEnableServices()">Enable Bluetooth Services</button>
+          </div>
+          {_bt_enabled_body}
+        """
+    bluetooth_card_html = settings_card_html(bluetooth_card_inner_html, margin_top="0")
+
     speaker = str(parsed.owntone.output_name or "No speaker selected")
     playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
     _au_state = "Auto-update: On" if parsed.updates.auto_update else "Auto-update: Off"
@@ -987,6 +1242,13 @@ def send_setup_page(
         </div>
         <span class="setup-list-chevron">\u203a</span>
       </div>
+      <div class="setup-list-card" onclick="openPanel('bluetooth')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Bluetooth</span>
+          <span class="setup-list-card-sub" id="bluetooth-card-sub">{bt_card_summary}</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
       <div class="setup-list-card" onclick="openPanel('playback')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Playback</span>
@@ -1061,6 +1323,13 @@ def send_setup_page(
           )}
         </div>
       </div>
+      <div class="setup-detail-panel" id="panel-bluetooth">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
+        </div>
+        {_setup_detail_header("Bluetooth")}
+        {bluetooth_card_html}
+      </div>
       <div class="setup-detail-panel" id="panel-playback">
         <div class="setup-detail-back">
           <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
@@ -1115,9 +1384,19 @@ def send_setup_page(
 .dial-card-title{font-weight:600;font-size:0.9rem;}
 .dial-card-msg{font-size:0.8rem;}
 """
+    _bt_pairing_modal_css = ""
+    if bt_enabled:
+        _bt_pairing_modal_css = """
+      .bt-device-list{margin-top:0.5rem;max-height:14rem;overflow-y:auto;}
+      .bt-scan-row{padding:0.5rem 0.6rem;border:1px solid var(--color-border-nav);
+        border-radius:6px;margin-bottom:0.4rem;cursor:pointer;}
+      .bt-scan-row:hover{background:var(--color-surface-raised);}
+      .bt-scan-empty{color:var(--color-text-muted,#888);font-style:italic;}
+    """
     _extra_css = (
         f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}"
         f"\n{factory_reset_modal_css}\n{_dial_badge_css}\n{DIAL_LOCKED_SECTION_CSS}"
+        f"\n{_bt_pairing_modal_css}"
     )
     _pin_modal_div = """\
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
@@ -1223,9 +1502,42 @@ def send_setup_page(
     </div>
   </div>
 </div>"""
+    _bt_pairing_modal_div = ""
+    if bt_enabled:
+        _bt_pairing_modal_div = """\
+<div id="btPairingModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="btPairingModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="btPairingModalTitle">Pair Bluetooth Turntable</div>
+    <div class="bd modal-bd">
+      <div id="btScanPanel">
+        <p>Put your turntable in pairing mode. Available devices:</p>
+        <div id="btScanDeviceList" class="bt-device-list">
+          <p class="bt-scan-empty">Scanning…</p>
+        </div>
+      </div>
+      <div id="btConfirmPanel" style="display:none;">
+        <p>Pair with <strong id="btConfirmDeviceName"></strong>?</p>
+        <p id="btConfirmWarning" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
+      </div>
+      <div id="btPairingPanel" style="display:none;">
+        <p id="btPairingStatusMsg">Pairing…</p>
+      </div>
+      <div id="btResultPanel" style="display:none;">
+        <p id="btResultMsg"></p>
+        <p id="btResultError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
+      </div>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="btPairingForget" style="display:none;">Forget</button>
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="btPairingCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="btPairingOk" style="display:none;">Pair</button>
+    </div>
+  </div>
+</div>"""
     _body_prefix = (
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_hostname_modal_div}\n"
         f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_wifi_hotspot_modal_div}\n"
+        f"{_bt_pairing_modal_div}\n"
         f"{INFO_MODAL_HTML}"
     )
     _body_html = (
@@ -1233,6 +1545,406 @@ def send_setup_page(
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + form_content_html
     )
+    _bt_pairing_js = ""
+    if bt_enabled:
+        _bt_link_state_initial = str((bt_status or {}).get("link") or "disconnected")
+        _bt_paired_js = "true" if bt_paired else "false"
+        _bt_pairing_js = f"""
+      <script>
+        // ── Bluetooth input pairing ──────────────────────────────────────
+        var BT_LOOPBACK_HW = {BLUETOOTH_LOOPBACK_HW!r};
+        var btPaired = {_bt_paired_js};
+        var _btLinkState = {_bt_link_state_initial!r};
+        var _btScanTimer = null;
+        var _btPairTimer = null;
+        var _btInputIndex = null;
+        var _btSelectEl = null;
+        var _btSelectedMac = null;
+        var _btSelectedName = null;
+        var _btPriorSelectValue = null;
+        var _btPairSucceeded = false;
+
+        function isBluetoothDevice(value) {{ return value === BT_LOOPBACK_HW; }}
+
+        async function _btFetch(path, opts) {{
+          opts = opts || {{}};
+          var headers = Object.assign({{'X-CSRF-Token': window.__CSRF || ''}}, (opts.headers || {{}}));
+          try {{
+            var r = await fetch(path, Object.assign({{cache: 'no-store'}}, opts, {{headers: headers}}));
+            var body = null;
+            try {{ body = await r.json(); }} catch (e) {{}}
+            return {{status: r.status, body: body}};
+          }} catch (e) {{
+            return {{status: 0, body: null}};
+          }}
+        }}
+
+        function _btPost(path, payload) {{
+          return _btFetch(path, {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify(payload || {{}})
+          }});
+        }}
+
+        function _btShowPanel(name) {{
+          ['Scan', 'Confirm', 'Pairing', 'Result'].forEach(function(p) {{
+            var el = document.getElementById('bt' + p + 'Panel');
+            if (el) el.style.display = (p === name) ? '' : 'none';
+          }});
+        }}
+
+        async function btForgetFromCard() {{
+          if (!window.confirm('Forget the currently paired Bluetooth device?')) return;
+          await _btPost('/api/bluetooth/forget', {{}});
+          _btRefreshLinkStatus();
+        }}
+
+        function _btStopScan() {{
+          if (_btScanTimer) {{ clearInterval(_btScanTimer); _btScanTimer = null; }}
+          _btPost('/api/bluetooth/scan', {{action: 'stop'}});
+        }}
+
+        function _btRenderScanList(devices) {{
+          var list = document.getElementById('btScanDeviceList');
+          if (!list) return;
+          if (!devices || !devices.length) {{
+            list.innerHTML = '<p class="bt-scan-empty">Scanning…</p>';
+            return;
+          }}
+          list.innerHTML = '';
+          devices.forEach(function(d) {{
+            var row = document.createElement('div');
+            row.className = 'bt-scan-row';
+            var label = (d.name || d.mac || 'Unknown device');
+            row.textContent = d.paired ? (label + ' (paired)') : label;
+            row.addEventListener('click', function() {{ _btSelectDevice(d.mac, d.name || d.mac); }});
+            list.appendChild(row);
+          }});
+        }}
+
+        async function _btPollScan() {{
+          var res = await _btFetch('/api/bluetooth/scan_results', {{}});
+          var body = res.body;
+          if (!body || body.ok === false) return;
+          _btRenderScanList(body.devices || []);
+        }}
+
+        async function _btStartScan() {{
+          _btShowPanel('Scan');
+          var list = document.getElementById('btScanDeviceList');
+          if (list) list.innerHTML = '<p class="bt-scan-empty">Scanning…</p>';
+          await _btPost('/api/bluetooth/scan', {{action: 'start'}});
+          _btPollScan();
+          if (_btScanTimer) {{ clearInterval(_btScanTimer); _btScanTimer = null; }}
+          _btScanTimer = setInterval(_btPollScan, 2000);
+        }}
+
+        function _btSelectDevice(mac, name) {{
+          _btStopScan();
+          _btSelectedMac = mac;
+          _btSelectedName = name;
+          var nameEl = document.getElementById('btConfirmDeviceName');
+          if (nameEl) nameEl.textContent = name;
+          var warnEl = document.getElementById('btConfirmWarning');
+          if (warnEl) {{
+            if (btPaired) {{
+              warnEl.textContent = 'The currently paired device will be forgotten.';
+              warnEl.style.display = '';
+            }} else {{
+              warnEl.style.display = 'none';
+            }}
+          }}
+          var okBtn = document.getElementById('btPairingOk');
+          if (okBtn) {{ okBtn.style.display = ''; okBtn.textContent = 'Pair'; okBtn.onclick = _btConfirmPair; }}
+          var forgetBtn = document.getElementById('btPairingForget');
+          if (forgetBtn) forgetBtn.style.display = 'none';
+          var titleEl = document.getElementById('btPairingModalTitle');
+          if (titleEl) titleEl.textContent = 'Confirm Pairing';
+          _btShowPanel('Confirm');
+        }}
+
+        async function _btConfirmPair() {{
+          _btShowPanel('Pairing');
+          var titleEl = document.getElementById('btPairingModalTitle');
+          if (titleEl) titleEl.textContent = 'Pairing…';
+          var okBtn = document.getElementById('btPairingOk');
+          if (okBtn) okBtn.style.display = 'none';
+          var res = await _btPost('/api/bluetooth/pair', {{address: _btSelectedMac}});
+          if (res.status === 409) {{
+            _btShowResult(false, 'Pairing already in progress.');
+            return;
+          }}
+          if (res.status === 0 || (res.body && res.body.ok === false && res.status >= 400)) {{
+            _btShowResult(false, (res.body && res.body.error) || 'Unable to start pairing.');
+            return;
+          }}
+          if (_btPairTimer) {{ clearInterval(_btPairTimer); _btPairTimer = null; }}
+          _btPairTimer = setInterval(_btPollPairStatus, 2000);
+        }}
+
+        async function _btPollPairStatus() {{
+          var res = await _btFetch('/api/bluetooth/pair_status', {{}});
+          var body = res.body;
+          if (!body || body.ok === false) return;
+          if (body.state === 'done') {{
+            clearInterval(_btPairTimer); _btPairTimer = null;
+            _btShowResult(true, 'Paired with ' + (_btSelectedName || 'device') + '.');
+          }} else if (body.state === 'failed') {{
+            clearInterval(_btPairTimer); _btPairTimer = null;
+            _btShowResult(false, body.error || 'Pairing failed.');
+          }}
+        }}
+
+        function _btShowResult(success, message) {{
+          _btShowPanel('Result');
+          var titleEl = document.getElementById('btPairingModalTitle');
+          var msgEl = document.getElementById('btResultMsg');
+          var errEl = document.getElementById('btResultError');
+          var okBtn = document.getElementById('btPairingOk');
+          if (success) {{
+            if (titleEl) titleEl.textContent = 'Paired';
+            if (msgEl) msgEl.textContent = message;
+            if (errEl) errEl.style.display = 'none';
+            btPaired = true;
+            _btPairSucceeded = true;
+            _btLinkState = 'connected';
+            if (_btSelectEl && _btInputIndex) {{
+              _btSelectEl.value = BT_LOOPBACK_HW;
+              _btSelectEl.dataset.prev = BT_LOOPBACK_HW;
+              if (liveEnabled) {{
+                settingsSaveField('audio' + _btInputIndex + '.capture_device', BT_LOOPBACK_HW);
+              }}
+              syncInputExclusivity(_btInputIndex, BT_LOOPBACK_HW);
+            }}
+            _btRefreshLinkStatus();
+            if (okBtn) {{ okBtn.style.display = ''; okBtn.textContent = 'Done'; okBtn.onclick = closeBtPairingModal; }}
+          }} else {{
+            if (titleEl) titleEl.textContent = 'Pairing Failed';
+            if (msgEl) msgEl.textContent = '';
+            if (errEl) {{ errEl.textContent = message; errEl.style.display = ''; }}
+            if (_btSelectEl && _btPriorSelectValue !== null) {{
+              _btSelectEl.value = _btPriorSelectValue;
+            }}
+            if (okBtn) {{
+              okBtn.style.display = '';
+              okBtn.textContent = 'Retry';
+              okBtn.onclick = function() {{ _btStartScan(); }};
+            }}
+          }}
+        }}
+
+        async function _btForgetCurrent() {{
+          if (!window.confirm('Forget the currently paired Bluetooth device?')) return;
+          await _btPost('/api/bluetooth/forget', {{}});
+          btPaired = false;
+          _btLinkState = 'disconnected';
+          _btRefreshLinkStatus();
+          closeBtPairingModal();
+        }}
+
+        function openBtPairingModal(inputIndex, selectEl) {{
+          _btInputIndex = inputIndex;
+          _btSelectEl = selectEl || null;
+          // Revert target is the last known-committed value (data-prev), not
+          // .value -- by the time this fires the onchange event has already
+          // set .value to the newly-selected (Bluetooth) option.
+          _btPriorSelectValue = selectEl && selectEl.dataset.prev !== undefined ? selectEl.dataset.prev : null;
+          _btPairSucceeded = false;
+          _btSelectedMac = null;
+          _btSelectedName = null;
+          var modal = document.getElementById('btPairingModal');
+          if (!modal) return;
+          var titleEl = document.getElementById('btPairingModalTitle');
+          if (titleEl) titleEl.textContent = 'Pair Bluetooth Turntable';
+          var okBtn = document.getElementById('btPairingOk');
+          if (okBtn) okBtn.style.display = 'none';
+          var forgetBtn = document.getElementById('btPairingForget');
+          if (forgetBtn) {{
+            forgetBtn.style.display = btPaired ? '' : 'none';
+            forgetBtn.onclick = _btForgetCurrent;
+          }}
+          modal.classList.add('show');
+          _btStartScan();
+        }}
+
+        function closeBtPairingModal() {{
+          _btStopScan();
+          if (_btPairTimer) {{ clearInterval(_btPairTimer); _btPairTimer = null; }}
+          // Cancel/dismiss without a successful pairing in this session: undo
+          // the onchange event's already-committed selection change.  A no-op
+          // when the select's value/data-prev already match (e.g. opening the
+          // modal from the card's "Pair new device…" button, which has no
+          // associated select, or after a failed pairing already reverted it
+          // below in _btShowResult).
+          if (_btSelectEl && !_btPairSucceeded && _btPriorSelectValue !== null) {{
+            _btSelectEl.value = _btPriorSelectValue;
+            _btSelectEl.dataset.prev = _btPriorSelectValue;
+          }}
+          var modal = document.getElementById('btPairingModal');
+          if (modal) modal.classList.remove('show');
+        }}
+
+        document.addEventListener('DOMContentLoaded', function() {{
+          var cancelBtn = document.getElementById('btPairingCancel');
+          if (cancelBtn) cancelBtn.addEventListener('click', closeBtPairingModal);
+          document.addEventListener('keydown', function(ev) {{
+            var m = document.getElementById('btPairingModal');
+            if (ev.key === 'Escape' && m && m.classList.contains('show')) closeBtPairingModal();
+          }});
+        }});
+      </script>
+    """
+
+    # ── Bluetooth card + cross-input exclusivity JS ─────────────────────────
+    # Unconditional (rendered regardless of bt_enabled/installed): the card
+    # itself is always present per the Setup page's Bluetooth card contract,
+    # and the same-device exclusivity guard between Input 1/2 applies to any
+    # device, not just Bluetooth.
+    _bt_status_json = json.dumps(bt_status) if isinstance(bt_status, dict) else "null"
+    _bt_card_js = f"""
+      <script>
+        var btServicesEnabled = {"true" if bt_services_on else "false"};
+        var btOnboardEnabled = {"true" if bt_onboard_on else "false"};
+        if (typeof btPaired === 'undefined') var btPaired = {"true" if bt_paired else "false"};
+        if (typeof _btLinkState === 'undefined') var _btLinkState = {str((bt_status or {}).get("link") or "disconnected")!r};
+        window._btLastStatus = {_bt_status_json};
+
+        function refreshExclusivityOptions() {{
+          var sel1 = document.getElementById('audio_capture_device_select');
+          var sel2 = document.getElementById('audio2_capture_device_select');
+          if (!sel1 || !sel2) return;
+          [[sel1, sel2], [sel2, sel1]].forEach(function(pair) {{
+            var self = pair[0], other = pair[1];
+            var otherVal = other.value;
+            Array.prototype.forEach.call(self.options, function(opt) {{
+              var conflict = otherVal && opt.value === otherVal && opt.value !== self.value;
+              opt.disabled = !!conflict;
+              opt.hidden = !!conflict;
+            }});
+          }});
+        }}
+
+        function syncInputExclusivity(changedIndex, value) {{
+          refreshExclusivityOptions();
+        }}
+
+        function btEnableServices() {{
+          settingsTransact('/api/bluetooth/services', {{action: 'enable'}}, {{
+            onSuccess: function() {{ window.location.reload(); }}
+          }});
+        }}
+
+        function btDisableServices() {{
+          if (!window.confirm('Disable Bluetooth services? Any active Bluetooth stream will stop immediately.')) return;
+          settingsTransact('/api/bluetooth/services', {{action: 'disable'}}, {{
+            onSuccess: function() {{ window.location.reload(); }}
+          }});
+        }}
+
+        function btOnboardToggleChanged(checked) {{
+          if (!window.confirm('Changing this restarts the appliance. Continue?')) {{
+            var t = document.getElementById('btOnboardToggle');
+            if (t) t.checked = !checked;
+            return;
+          }}
+          settingsTransact('/api/bluetooth/onboard', {{enabled: checked}}, {{
+            onSuccess: function(d) {{
+              if (d && d.reboot_required) {{ window.location.href = '/rebooting'; }}
+            }},
+            onError: function() {{
+              var t = document.getElementById('btOnboardToggle');
+              if (t) t.checked = !checked;
+            }}
+          }});
+        }}
+
+        var _btBufferTimer = null;
+        function btBufferInput(value) {{
+          var lbl = document.getElementById('btBufferVal');
+          if (lbl) lbl.textContent = value + ' ms';
+          if (_btBufferTimer) clearTimeout(_btBufferTimer);
+          _btBufferTimer = setTimeout(function() {{
+            settingsTransact('/api/bluetooth/buffer', {{buffer_ms: parseInt(value, 10)}});
+          }}, 500);
+        }}
+
+        function _btApplyStatus(body) {{
+          if (!body) return;
+          btServicesEnabled = !!body.services_enabled;
+          btOnboardEnabled = !!body.onboard_enabled;
+          var daemon = body.daemon || null;
+          window._btLastStatus = daemon;
+          btPaired = !!(daemon && daemon.paired);
+          _btLinkState = (daemon && daemon.link) || 'disconnected';
+          var adapterPresent = !!(daemon && daemon.adapter_present);
+          var pairedName = (daemon && daemon.paired && daemon.paired.name) || '';
+
+          var dis = document.getElementById('btDisabledBody');
+          var en = document.getElementById('btEnabledBody');
+          if (dis) dis.style.display = btServicesEnabled ? 'none' : 'block';
+          if (en) en.style.display = btServicesEnabled ? 'block' : 'none';
+
+          var adapterRow = document.getElementById('btAdapterRow');
+          if (adapterRow) {{
+            var kind = daemon && daemon.adapter_kind;
+            var text = !adapterPresent
+              ? 'No Bluetooth adapter found — plug in a USB adapter, or enable the onboard device below.'
+              : (kind === 'usb' ? 'USB adapter' : (kind === 'onboard' ? 'Onboard' : 'Detected'));
+            adapterRow.textContent = 'Adapter: ' + text;
+          }}
+          var onboardToggle = document.getElementById('btOnboardToggle');
+          if (onboardToggle) {{
+            onboardToggle.checked = btOnboardEnabled;
+            onboardToggle.disabled = !btServicesEnabled;
+          }}
+          var gatedRow = document.getElementById('btAdapterGatedRow');
+          if (gatedRow) {{
+            gatedRow.style.opacity = adapterPresent ? '' : '0.4';
+            gatedRow.style.pointerEvents = adapterPresent ? '' : 'none';
+          }}
+          var pairedRow = document.getElementById('btPairedRow');
+          if (pairedRow) {{
+            pairedRow.textContent = pairedName
+              ? (pairedName + ' · ' + (_btLinkState === 'connected' ? 'Connected' : 'Not Connected'))
+              : 'No device paired';
+          }}
+          var forgetBtn = document.getElementById('btnBtForget');
+          if (forgetBtn) forgetBtn.style.display = btPaired ? '' : 'none';
+
+          var sub = document.getElementById('bluetooth-card-sub');
+          if (sub) {{
+            if (!btServicesEnabled) sub.textContent = 'Disabled';
+            else if (!adapterPresent) sub.textContent = 'Enabled · No adapter found';
+            else if (!btPaired) sub.textContent = 'Enabled · Not paired';
+            else sub.textContent = 'Enabled · ' + (pairedName || 'device') + ' connected';
+          }}
+          if (typeof refreshInputCardSubs === 'function') refreshInputCardSubs();
+        }}
+
+        async function _btRefreshLinkStatus() {{
+          var res, body = null;
+          try {{
+            res = await fetch('/api/bluetooth/status', {{
+              cache: 'no-store',
+              headers: {{'X-CSRF-Token': window.__CSRF || ''}}
+            }});
+            body = await res.json();
+          }} catch (e) {{
+            return;
+          }}
+          if (!body || body.ok !== true) return;
+          _btApplyStatus(body);
+        }}
+
+        document.addEventListener('DOMContentLoaded', function() {{
+          refreshExclusivityOptions();
+        }});
+        _btRefreshLinkStatus();
+        setInterval(_btRefreshLinkStatus, 5000);
+      </script>
+    """
+
     _body_suffix = f"""{A2HS_SCRIPT}
       {AUTOSAVE_JS}
       {INFO_MODAL_SCRIPT}
@@ -1822,6 +2534,15 @@ def send_setup_page(
           var dev = (opt && opt.dataset.card) ? opt.dataset.card : (sel && sel.value ? sel.value : 'Not configured');
           var turntable = document.querySelector('input[name="' + turntableName + '"]');
           var mode = (turntable && turntable.checked) ? 'Turntable' : 'Line In';
+          if (opt && opt.dataset.bt === '1') {{
+            // Bluetooth input: show the connected device name (or connection
+            // state) instead of the ALSA card name and turntable flag.
+            dev = 'Bluetooth';
+            var bst = window._btLastStatus || null;
+            mode = (bst && bst.link === 'connected')
+              ? ((bst.paired && bst.paired.name) || 'Connected')
+              : 'Not Connected';
+          }}
           var gainEl = document.getElementById(gainId);
           var gain = gainEl ? parseInt(gainEl.value, 10) : 0;
           var gainStr = gain > 0 ? '+' + gain + ' dB' : (gain < 0 ? gain + ' dB' : '0 dB');
@@ -2826,7 +3547,9 @@ def send_setup_page(
           }}
         }}
       </script>
-      {factory_reset_js}"""
+      {factory_reset_js}
+      {_bt_pairing_js}
+      {_bt_card_js}"""
     html_body = build_page_html(
         "autostream",
         _body_html,

@@ -25,6 +25,7 @@ import math
 import subprocess
 from typing import Optional
 
+from autostream_bluetooth_client import bluetooth_installed
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_temperature_c
@@ -60,6 +61,23 @@ _SERVICES = (
     ("vibra-mini.service",              "Vibra Mini"),
     ("nginx.service",                   "NGINX"),
 )
+
+# The one genuinely optional in-family service: appended to _SERVICES only
+# when the Bluetooth-input subsystem is installed on this appliance.
+# _SERVICES itself stays a fixed 6-tuple so existing call sites/tests that
+# assume a static list are unaffected when the feature isn't installed
+# (the common case today).
+_BLUETOOTH_SERVICE_ROW = ("autostream_bluetooth.service", "Bluetooth input")
+
+
+def _effective_services() -> tuple:
+    """Return _SERVICES, plus the Bluetooth row when the subsystem is installed."""
+    try:
+        if bluetooth_installed():
+            return _SERVICES + (_BLUETOOTH_SERVICE_ROW,)
+    except Exception:
+        pass
+    return _SERVICES
 
 
 def _about_detail_header(title: str) -> str:
@@ -102,7 +120,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"<span class='about-svc-label'>{html.escape(label if label is not None else 'OwnTone')}</span>"
         f"<span class='about-svc-state about-svc-loading'>Loading...</span>"
         f"</div>"
-        for unit, label in _SERVICES
+        for unit, label in _effective_services()
     )
 
     # System Info panel: static placeholders with stable DOM IDs.
@@ -572,8 +590,14 @@ def _collect_system_info() -> dict:
 
 
 def _collect_service_states(owntone_backend_id: str, service_versions: dict) -> list:
-    """Query systemd for the six fixed service units and return state list."""
-    unit_names = [unit for unit, _ in _SERVICES]
+    """Query systemd for the fixed service units and return state list.
+
+    Units queried are _SERVICES plus the Bluetooth row when the subsystem is
+    installed (_effective_services()); the six-unit case is unchanged from
+    before this feature existed.
+    """
+    services_list = _effective_services()
+    unit_names = [unit for unit, _ in services_list]
     parsed: dict = {}
     try:
         result = subprocess.run(
@@ -592,7 +616,7 @@ def _collect_service_states(owntone_backend_id: str, service_versions: dict) -> 
         _log.debug("about/system: systemctl query failed", exc_info=True)
 
     services = []
-    for unit, label in _SERVICES:
+    for unit, label in services_list:
         if label is None:
             label = "OwnTone Mini" if owntone_backend_id == "owntone-mini" else "OwnTone"
         block = parsed.get(unit, {})

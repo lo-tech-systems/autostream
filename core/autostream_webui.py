@@ -36,6 +36,8 @@ from autostream_core import (
     stop_flag,
 )
 
+from autostream_bluetooth_client import BluetoothClient, bluetooth_installed
+
 from autostream_sysutils import (
     atomic_write_file,
     reboot_system,
@@ -97,6 +99,15 @@ from autostream_webui_api import (
     send_network_roaming_json,
     send_playing_status_json,
     send_repeat_post_json,
+    send_bluetooth_status_json,
+    send_bluetooth_scan_results_json,
+    send_bluetooth_pair_status_json,
+    send_bluetooth_scan_post_json,
+    send_bluetooth_pair_post_json,
+    send_bluetooth_forget_post_json,
+    send_bluetooth_services_post_json,
+    send_bluetooth_onboard_post_json,
+    send_bluetooth_buffer_post_json,
 )
 import autostream_federation
 from autostream_webui_dials import (
@@ -736,6 +747,18 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             send_settings_get_json(self, STATE)
+        elif path == "/api/bluetooth/status":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_status_json(self, STATE)
+        elif path == "/api/bluetooth/scan_results":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_scan_results_json(self)
+        elif path == "/api/bluetooth/pair_status":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_pair_status_json(self)
         elif path == _GATEWAY_PREFIX:
             send_appliances_json(self, STATE)
         elif path.startswith(_GATEWAY_PREFIX + "/"):
@@ -1139,6 +1162,36 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 return
             send_network_roaming_json(self, json_obj)
 
+        elif path == "/api/bluetooth/scan":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_scan_post_json(self, json_obj)
+
+        elif path == "/api/bluetooth/pair":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_pair_post_json(self, json_obj)
+
+        elif path == "/api/bluetooth/forget":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_forget_post_json(self)
+
+        elif path == "/api/bluetooth/services":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_services_post_json(self, json_obj)
+
+        elif path == "/api/bluetooth/onboard":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_onboard_post_json(self, json_obj)
+
+        elif path == "/api/bluetooth/buffer":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_bluetooth_buffer_post_json(self, json_obj)
+
         else:
             self.send_error(404, "Not found")
 
@@ -1197,10 +1250,23 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
 
 def _scan_monitor_devices_loop() -> None:
-    """Background loop: refresh the list of visible ALSA capture devices every 15 s."""
+    """Background loop: refresh visible ALSA capture devices (and, when
+    the Bluetooth-input subsystem is installed, the autostream_bluetooth
+    daemon status) every 15 s.
+    """
     while not stop_flag.is_set():
+        bluetooth_status: Optional[dict] = None
+        if bluetooth_installed():
+            try:
+                bluetooth_status = BluetoothClient().status()
+            except Exception as e:
+                logging.error(
+                    "Web UI: error querying autostream_bluetooth status: %s", e,
+                )
+                bluetooth_status = None
+
         try:
-            devices = get_available_monitor_devices()
+            devices = get_available_monitor_devices(bluetooth_status=bluetooth_status)
         except Exception as e:
             logging.error(
                 "Web UI: error scanning autostream_monitor devices: %s", e,
@@ -1211,6 +1277,7 @@ def _scan_monitor_devices_loop() -> None:
         if state is None:
             return
         state.set_monitor_devices(devices)
+        state.set_bluetooth_status(bluetooth_status)
         time.sleep(15)
 
 

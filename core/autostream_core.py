@@ -39,6 +39,11 @@ from autostream_config import (
     unconfigured,
 )
 from autostream_artwork import ArtworkFileCache
+from autostream_bluetooth_client import (
+    bluetooth_capture_label,
+    bluetooth_installed,
+    classify_loopback_hw,
+)
 from autostream_nowplaying import (
     MAX_PICTURE_BYTES,
     NowPlayingMetadata,
@@ -1407,7 +1412,12 @@ def _connected_monitor(socket_path: Optional[str] = None):
         client.close()
 
 
-def normalize_monitor_devices(devices: Optional[list[dict]]) -> list[dict]:
+def normalize_monitor_devices(
+    devices: Optional[list[dict]],
+    bluetooth_status: Optional[dict] = None,
+    *,
+    bluetooth_enabled: Optional[bool] = None,
+) -> list[dict]:
     """Normalize list_devices() results into a stable Web UI-friendly shape.
 
     Each returned dict contains:
@@ -1415,12 +1425,34 @@ def normalize_monitor_devices(devices: Optional[list[dict]]) -> list[dict]:
       - card: ALSA card description (may be empty)
       - name: ALSA device description (may be empty)
       - label: user-facing text combining card/device/hw
+
+    Bluetooth relabel hook, active only when the Bluetooth-input subsystem
+    is installed on this appliance: the loopback
+    playback side (``CARD=ASBT,DEV=0``) is dropped entirely (it is not a
+    selectable input), and the capture side (``CARD=ASBT,DEV=1``) is
+    relabelled to "Bluetooth: <name>" / "Bluetooth (not paired)" /
+    "Bluetooth (service unavailable)" using ``bluetooth_status`` (the
+    cached-or-live daemon status; None is treated as "service
+    unavailable").  ``bluetooth_enabled`` lets callers (tests) force the
+    on/off branch explicitly; when omitted it is resolved from whether the
+    Bluetooth-input subsystem is installed via ``bluetooth_installed()``
+    (the relabel applies whenever the loopback card can exist, regardless
+    of whether the service is currently enabled/running).  When the
+    subsystem isn't installed, behaviour is byte-identical to before this
+    hook existed -- the ASBT card cannot exist on such an appliance in any
+    case.
     """
+    bt_on = bluetooth_enabled if bluetooth_enabled is not None else bluetooth_installed()
+
     normalized: list[dict] = []
 
     for dev in devices or []:
         hw = str(dev.get("hw") or "").strip()
         if not hw:
+            continue
+
+        loopback_kind = classify_loopback_hw(hw) if bt_on else None
+        if loopback_kind == "playback":
             continue
 
         card = str(dev.get("card") or "").strip()
@@ -1430,6 +1462,9 @@ def normalize_monitor_devices(devices: Optional[list[dict]]) -> list[dict]:
         label = " - ".join(label_parts) if label_parts else hw
         if hw not in label:
             label = f"{label} ({hw})"
+
+        if loopback_kind == "capture":
+            label = bluetooth_capture_label(bluetooth_status)
 
         normalized.append({
             "hw": hw,
@@ -1444,18 +1479,22 @@ def normalize_monitor_devices(devices: Optional[list[dict]]) -> list[dict]:
 
 def get_available_monitor_devices(
     socket_path: Optional[str] = None,
+    bluetooth_status: Optional[dict] = None,
 ) -> list[dict]:
     """Return currently visible monitor devices from autostream_monitor.
 
     Uses a short-lived MonitorClient connection so callers outside the main
     coordinator loop can safely query available ALSA capture devices.
     Returns an empty list if the daemon is unavailable or the command fails.
+    ``bluetooth_status`` is threaded through to ``normalize_monitor_devices()``
+    for the Bluetooth relabel hook (see there); callers that don't pass it
+    get the "service unavailable" label whenever Bluetooth mode is on.
     """
     try:
         with _connected_monitor(socket_path) as client:
             if client is None:
                 return []
-            return normalize_monitor_devices(client.list_devices())
+            return normalize_monitor_devices(client.list_devices(), bluetooth_status)
     except Exception as e:
         logging.warning("Could not query autostream_monitor devices: %s", e)
         return []
