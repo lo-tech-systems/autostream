@@ -369,6 +369,42 @@ class BluezClient:
             if "DoesNotExist" not in str(e).replace(" ", ""):
                 raise
 
+    def remove_cached_devices(self, keep_macs) -> int:
+        """Remove every cached, non-paired Device1 object BlueZ already
+        knows about, except those in *keep_macs*. Returns the count removed.
+
+        BlueZ only emits InterfacesAdded for a device object it has never
+        seen before; anything already cached from an earlier discovery
+        session sits there silently on later scans, with no signal ever
+        firing for it again. Calling this immediately before StartDiscovery
+        clears that cache so every nearby device re-arrives through the
+        normal InterfacesAdded path.
+
+        One bounded GetManagedObjects enumeration finds the candidates;
+        each RemoveDevice call is independently bounded, and a per-device
+        failure is logged and skipped rather than aborting the purge.
+        """
+        keep = {str(m).upper() for m in (keep_macs or ())}
+        objects = self._object_manager().GetManagedObjects(
+            dbus_interface=OBJECT_MANAGER_IFACE, timeout=self._call_timeout
+        )
+        removed = 0
+        for path, ifaces in objects.items():
+            if DEVICE_IFACE not in ifaces:
+                continue
+            props = ifaces[DEVICE_IFACE]
+            mac = str(props.get("Address") or _mac_from_path(str(path)) or "").upper()
+            if mac and mac in keep:
+                continue
+            if bool(props.get("Paired", False)):
+                continue
+            try:
+                self._adapter_iface().RemoveDevice(str(path), timeout=self._call_timeout)
+                removed += 1
+            except self._dbus.exceptions.DBusException as e:
+                logger.debug("remove_cached_devices: failed to remove %s: %s", path, e)
+        return removed
+
     def set_trusted(self, mac: str, trusted: bool = True) -> None:
         self._props_iface(self._device_path(mac)).Set(
             DEVICE_IFACE, "Trusted", bool(trusted), timeout=self._call_timeout

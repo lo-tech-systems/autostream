@@ -51,6 +51,16 @@ class FakeOps:
         self.fail_connect: Exception | None = None
         self.pairable_state: bool | None = None
         self.connected_macs: set[str] = set()
+        self.purge_keep_macs: set[str] | None = None
+        self.purge_result: int = 0
+        self.purge_error: Exception | None = None
+
+    def purge_cached_devices(self, keep_macs: set) -> int:
+        self.calls.append(("purge_cached_devices", frozenset(keep_macs)))
+        self.purge_keep_macs = set(keep_macs)
+        if self.purge_error is not None:
+            raise self.purge_error
+        return self.purge_result
 
     def start_discovery(self) -> None:
         self.calls.append(("start_discovery",))
@@ -164,6 +174,26 @@ class TestScan:
         machine.stop_scan()
         machine.start_scan()
         assert machine.get_scan_results() == []
+
+    def test_start_scan_purges_cached_devices_keeping_paired_mac(self, tmp_path):
+        machine, ops, _ = _make_machine(tmp_path)
+        machine.start_pairing(MAC_A)  # sync resolution -> MAC_A trusted
+        ops.calls.clear()
+
+        assert machine.start_scan() is True
+        assert ops.purge_keep_macs == {MAC_A}
+        purge_idx = ops.calls.index(("purge_cached_devices", frozenset({MAC_A})))
+        discovery_idx = ops.calls.index(("start_discovery",))
+        assert purge_idx < discovery_idx
+
+    def test_start_scan_purge_failure_does_not_block_discovery(self, tmp_path):
+        ops = FakeOps()
+        ops.purge_error = RuntimeError("dbus timeout")
+        machine, ops, _ = _make_machine(tmp_path, ops=ops)
+
+        assert machine.start_scan() is True
+        assert machine.mode == svc.MODE_SCANNING
+        assert ("start_discovery",) in ops.calls
 
     def test_scan_results_flag_paired_device(self, tmp_path):
         machine, ops, _ = _make_machine(tmp_path)
@@ -390,6 +420,21 @@ class TestForget:
         machine, ops, _ = _make_machine(tmp_path)
         machine.forget()
         assert ops.calls == []
+
+    def test_forget_logs_and_does_not_raise_when_remove_device_fails(self, tmp_path, caplog):
+        class RaisingOps(FakeOps):
+            def remove_device(self, mac):
+                super().remove_device(mac)
+                raise RuntimeError("dbus timeout")
+
+        ops = RaisingOps()
+        machine, ops, _ = _make_machine(tmp_path, ops=ops)
+        machine.start_pairing(MAC_A)
+
+        with caplog.at_level("WARNING"):
+            machine.forget()  # must not raise
+        assert machine.trusted_mac() is None
+        assert any("forget" in r.message and MAC_A in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +729,12 @@ class FakeBluezClient:
     def remove_device(self, mac):
         self.calls.append(("remove_device", mac))
 
+    def remove_cached_devices(self, keep_macs):
+        self.calls.append(("remove_cached_devices", frozenset(keep_macs)))
+        return self.remove_cached_devices_result
+
+    remove_cached_devices_result = 0
+
     def is_connected(self, mac):
         self.calls.append(("is_connected", mac))
         return self.is_connected_result
@@ -752,6 +803,18 @@ class TestBluetoothOps:
     def test_adapter_kind_none_when_bluez_unbound(self):
         ops = svc.BluetoothOps()
         assert ops.adapter_kind is None
+
+    def test_purge_cached_devices_dispatches_to_client(self):
+        client = FakeBluezClient()
+        client.remove_cached_devices_result = 3
+        ops = svc.BluetoothOps(client)
+        assert ops.purge_cached_devices({MAC_A}) == 3
+        assert ("remove_cached_devices", frozenset({MAC_A})) in client.calls
+
+    def test_purge_cached_devices_raises_when_bluez_unbound(self):
+        ops = svc.BluetoothOps()
+        with pytest.raises(RuntimeError):
+            ops.purge_cached_devices(set())
 
 
 # ---------------------------------------------------------------------------
@@ -990,7 +1053,7 @@ class TestGetStatusWrapsPumpState:
         service, _ = _make_service(tmp_path)
         base_keys = set(service.state_machine.get_status().keys())
         wrapped = service._get_status()
-        assert set(wrapped.keys()) == base_keys | {"pump_source_active"}
+        assert set(wrapped.keys()) == base_keys | {"pump_source_active", "adapter_blocked"}
 
 
 # ---------------------------------------------------------------------------
@@ -1118,3 +1181,89 @@ class TestAdapterAbsentDegradation:
         service._last_adapter_retry -= svc.ADAPTER_RETRY_INTERVAL_SECONDS
         service._maybe_retry_adapter()
         assert attempts["n"] == 2
+
+    def test_start_survives_adapter_power_on_failure_then_recovers(self, tmp_path, monkeypatch):
+        """An adapter that exists but cannot be powered (e.g. an rfkill
+        soft-block) must not crash the attach attempt: it must be treated
+        like the adapter-absent case for retry purposes, with the degraded
+        state visible via adapter_blocked, and must clear once a later
+        retry succeeds."""
+        attempts = {"n": 0}
+
+        class RfkillBlockedThenOkClient:
+            def __init__(self, call_timeout=10.0) -> None:
+                self.adapter_present = False
+                self.adapter_kind = None
+                self.subscribed = False
+
+            def connect(self) -> None:
+                self.adapter_present = True
+                self.adapter_kind = "usb"
+
+            def power_on(self) -> None:
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise RuntimeError("rfkill: Operation not permitted")
+
+            def ensure_not_discoverable(self) -> None:
+                pass
+
+            def subscribe(self, *args, **kwargs) -> None:
+                self.subscribed = True
+
+            def find_existing_state(self) -> dict:
+                return {"devices": {}, "transport_active": False, "transport_rate": None}
+
+        monkeypatch.setattr(svc.bluez_mod, "BluezClient", RfkillBlockedThenOkClient)
+        monkeypatch.setattr(svc.agent_mod, "build_agent_class", lambda dbus: _DummyAgent)
+
+        service = svc.BluetoothService(state_path=str(tmp_path / "bt.json"))
+        service._dbus = _FakeDbusModule()
+        service._ops = svc.BluetoothOps()
+        service.state_machine = svc.BluetoothStateMachine(
+            ops=service._ops, state_path=str(tmp_path / "bt.json"),
+        )
+        service.pump = FakePump()
+
+        # First attach attempt: adapter found but power-on fails -> degrades
+        # rather than raising, and adapter_blocked reflects the failure.
+        assert service._try_connect_bluez() is False
+        assert service._bluez_ready is False
+        status = service._get_status()
+        assert status["adapter_present"] is False
+        assert status["adapter_blocked"] is True
+
+        # Retry succeeds -> flag clears and adapter attaches normally.
+        assert service._try_connect_bluez() is True
+        assert service._bluez_ready is True
+        status = service._get_status()
+        assert status["adapter_present"] is True
+        assert status["adapter_blocked"] is False
+
+    def test_adapter_blocked_false_by_default(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        assert service._get_status()["adapter_blocked"] is False
+
+    def test_adapter_absent_at_startup_leaves_adapter_blocked_false(self, tmp_path, monkeypatch):
+        """Distinguish the two degraded states: no adapter at all must not
+        report adapter_blocked True (that flag is reserved for "adapter
+        present but could not be powered")."""
+        class NoAdapterClient:
+            def __init__(self, call_timeout=10.0) -> None:
+                pass
+
+            def connect(self) -> None:
+                raise svc.bluez_mod.BluezUnavailable("no adapter found")
+
+        monkeypatch.setattr(svc.bluez_mod, "BluezClient", NoAdapterClient)
+
+        service = svc.BluetoothService(state_path=str(tmp_path / "bt.json"))
+        service._dbus = _FakeDbusModule()
+        service._ops = svc.BluetoothOps()
+        service.state_machine = svc.BluetoothStateMachine(
+            ops=service._ops, state_path=str(tmp_path / "bt.json"),
+        )
+        service.pump = FakePump()
+
+        assert service._try_connect_bluez() is False
+        assert service._get_status()["adapter_blocked"] is False

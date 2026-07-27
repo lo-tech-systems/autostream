@@ -204,6 +204,10 @@ class BluetoothOps:
     def remove_device(self, mac: str) -> None:
         self._require_bluez().remove_device(mac)
 
+    def purge_cached_devices(self, keep_macs: set) -> int:
+        """See ``bluetooth_bluez.BluezClient.remove_cached_devices``."""
+        return self._require_bluez().remove_cached_devices(keep_macs)
+
     @property
     def adapter_kind(self) -> Optional[str]:
         """``"usb"`` / ``"onboard"`` / ``"unknown"``, or ``None`` when no
@@ -357,6 +361,17 @@ class BluetoothStateMachine:
             self.mode = MODE_SCANNING
             self._scan_started_at = self._clock()
             self._scan_results = {}
+            keep_macs = {m for m in (self._paired_mac, self._pairing_target_mac) if m}
+        # Purge BlueZ's own device cache before (re)starting discovery: a
+        # device it already saw in an earlier session never fires
+        # InterfacesAdded again, so without this later scans would show
+        # nothing for anything already seen once. Best-effort — a purge
+        # failure must not prevent the scan itself from starting.
+        try:
+            removed = self._ops.purge_cached_devices(keep_macs)
+            logger.info("scan: purged %d cached device entries", removed)
+        except Exception as e:
+            logger.warning("scan: failed to purge cached device entries: %s", e)
         self._ops.start_discovery()
         return True
 
@@ -523,7 +538,10 @@ class BluetoothStateMachine:
             self._ops.set_pairable(False)
         if mac is None:
             return
-        self._ops.remove_device(mac)
+        try:
+            self._ops.remove_device(mac)
+        except Exception as e:
+            logger.warning("forget: failed to remove device %s from BlueZ: %s", mac, e)
         if self._on_link_change:
             self._on_link_change(LINK_DISCONNECTED)
 
@@ -659,6 +677,9 @@ class BluetoothService:
         self._bluez_ready = False
         self._last_adapter_retry: Optional[float] = None
         self._agent = None
+        # True when the most recent attach attempt found an adapter it could
+        # not power on/prepare (distinct from no adapter being found at all).
+        self._adapter_blocked = False
 
         self._tick_stop = threading.Event()
         self._tick_thread: Optional[threading.Thread] = None
@@ -747,12 +768,16 @@ class BluetoothService:
             self._on_transport_changed(True, snapshot.get("transport_rate"))
 
     def _get_status(self) -> dict:
-        """Wraps the state machine's status with the pump's actual state:
-        the state machine's inferred ``streaming`` flag alone can be
-        true while the pump itself never got armed — this additive key lets
-        callers tell the two apart without guessing."""
+        """Wraps the state machine's status with the pump's actual state and
+        the adapter-power-blocked flag: the state machine's inferred
+        ``streaming`` flag alone can be true while the pump itself never got
+        armed — ``pump_source_active`` lets callers tell the two apart
+        without guessing — and ``adapter_present`` alone cannot distinguish
+        "no adapter" from "adapter found but could not be powered on"; the
+        additive ``adapter_blocked`` key carries that distinction."""
         status = self.state_machine.get_status()
         status["pump_source_active"] = self.pump.is_streaming() if self.pump is not None else False
+        status["adapter_blocked"] = self._adapter_blocked
         return status
 
     def _on_props_changed(self, mac: str, changed: dict) -> None:
@@ -802,8 +827,27 @@ class BluetoothService:
                 "bluetooth service: BlueZ adapter not available yet (%s); will retry every %ds",
                 e, ADAPTER_RETRY_INTERVAL_SECONDS,
             )
+            self._adapter_blocked = False
+            return False
+        except Exception as e:
+            # An adapter was found (connect() succeeded) but a later step in
+            # this sequence raised — most commonly a plain D-Bus exception
+            # from Powered=True (an rfkill soft-block or similar adapter
+            # fault). This must degrade exactly like the adapter-absent case
+            # above rather than propagate: the 30s retry this method is
+            # already called from owns recovery, and the caller (including
+            # the very first attach attempt made from start()) must never be
+            # allowed to crash the process over an adapter that exists but
+            # cannot currently be used.
+            logger.warning(
+                "bluetooth service: BlueZ adapter present but could not be powered/prepared "
+                "(rfkill block?): %s; will retry every %ds",
+                e, ADAPTER_RETRY_INTERVAL_SECONDS,
+            )
+            self._adapter_blocked = True
             return False
 
+        self._adapter_blocked = False
         self._bluez = bluez
         self._ops.set_bluez(bluez)
 

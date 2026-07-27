@@ -201,6 +201,7 @@ def _handle_status(server: "BluetoothControlServer") -> dict:
         pump_source_active=bool(st.get("pump_source_active", False)),
         buffer_ms=int(st.get("buffer_ms", _DEFAULT_BUFFER_MS)),
         adapter_kind=st.get("adapter_kind"),
+        adapter_blocked=bool(st.get("adapter_blocked", False)),
     )
 
 

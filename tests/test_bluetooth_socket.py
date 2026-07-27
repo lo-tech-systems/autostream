@@ -113,7 +113,14 @@ class TestDispatchStatus:
             "pump_source_active": False,
             "buffer_ms": 200,
             "adapter_kind": "usb",
+            "adapter_blocked": False,
         }
+
+    def test_status_adapter_blocked_passthrough(self):
+        srv = FakeServer()
+        srv._status["adapter_blocked"] = True
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r["adapter_blocked"] is True
 
     def test_status_reflects_buffer_ms_and_adapter_kind(self):
         srv = FakeServer()

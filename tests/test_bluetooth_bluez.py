@@ -131,3 +131,118 @@ class TestBluezClientAdapterKindWiring:
     def test_adapter_kind_none_before_connect(self):
         client = bluez_mod.BluezClient()
         assert client.adapter_kind is None
+
+
+MAC_A = "AA:BB:CC:DD:EE:01"
+MAC_B = "AA:BB:CC:DD:EE:02"
+MAC_C = "AA:BB:CC:DD:EE:03"
+
+
+class _FakeDbusExceptionsModule:
+    class DBusException(Exception):
+        pass
+
+
+class _FakeDbusModuleForRemove:
+    exceptions = _FakeDbusExceptionsModule
+
+
+class TestRemoveCachedDevices:
+    """bluetooth_bluez.BluezClient.remove_cached_devices(): purges every
+    cached, non-paired Device1 object BlueZ already knows about (except
+    keep_macs) ahead of a fresh discovery session, so devices seen in an
+    earlier session re-arrive via InterfacesAdded instead of staying
+    silently cached."""
+
+    def _client_with_objects(self, objects: dict, removed: list):
+        client = bluez_mod.BluezClient()
+        client._dbus = _FakeDbusModuleForRemove
+        client._adapter_path = "/org/bluez/hci0"
+
+        class _FakeObjectManager:
+            def GetManagedObjects(self, dbus_interface=None, timeout=None):
+                return objects
+
+        class _FakeAdapterIface:
+            def RemoveDevice(self, path, timeout=None):
+                removed.append(path)
+
+        client._object_manager = lambda: _FakeObjectManager()
+        client._adapter_iface = lambda: _FakeAdapterIface()
+        return client
+
+    def _device_object(self, mac: str, paired: bool = False) -> dict:
+        return {bluez_mod.DEVICE_IFACE: {"Address": mac, "Paired": paired}}
+
+    def test_removes_unpaired_devices_not_in_keep_set(self):
+        objects = {
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01": self._device_object(MAC_A),
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02": self._device_object(MAC_B),
+        }
+        removed_paths: list = []
+        client = self._client_with_objects(objects, removed_paths)
+
+        count = client.remove_cached_devices(keep_macs=set())
+        assert count == 2
+        assert len(removed_paths) == 2
+
+    def test_keeps_macs_in_keep_set(self):
+        objects = {
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01": self._device_object(MAC_A),
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02": self._device_object(MAC_B),
+        }
+        removed_paths: list = []
+        client = self._client_with_objects(objects, removed_paths)
+
+        count = client.remove_cached_devices(keep_macs={MAC_A})
+        assert count == 1
+        assert removed_paths == ["/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02"]
+
+    def test_keeps_paired_devices_regardless_of_keep_set(self):
+        objects = {
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01": self._device_object(MAC_A, paired=True),
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03": self._device_object(MAC_C),
+        }
+        removed_paths: list = []
+        client = self._client_with_objects(objects, removed_paths)
+
+        count = client.remove_cached_devices(keep_macs=set())
+        assert count == 1
+        assert removed_paths == ["/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03"]
+
+    def test_ignores_non_device_objects(self):
+        objects = {
+            "/org/bluez/hci0": {bluez_mod.ADAPTER_IFACE: {}},
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01": self._device_object(MAC_A),
+        }
+        removed_paths: list = []
+        client = self._client_with_objects(objects, removed_paths)
+
+        count = client.remove_cached_devices(keep_macs=set())
+        assert count == 1
+
+    def test_per_device_failure_logged_and_skipped(self):
+        objects = {
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01": self._device_object(MAC_A),
+            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02": self._device_object(MAC_B),
+        }
+        client = self._client_with_objects(objects, removed=[])
+        client._dbus = _FakeDbusModuleForRemove
+
+        calls: list = []
+
+        class _FailingThenOkAdapterIface:
+            def RemoveDevice(self, path, timeout=None):
+                calls.append(path)
+                if len(calls) == 1:
+                    raise _FakeDbusExceptionsModule.DBusException("org.bluez.Error.Failed")
+
+        client._adapter_iface = lambda: _FailingThenOkAdapterIface()
+
+        count = client.remove_cached_devices(keep_macs=set())
+        assert count == 1  # one failed, one succeeded
+        assert len(calls) == 2
+
+    def test_empty_result_when_no_cached_devices(self):
+        client = self._client_with_objects({}, removed=[])
+        assert client.remove_cached_devices(keep_macs=set()) == 0
