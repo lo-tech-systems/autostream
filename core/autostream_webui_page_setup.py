@@ -142,30 +142,46 @@ def _bluetooth_status_from_state(state: WebUIState) -> Optional[dict]:
     return status if isinstance(status, dict) else None
 
 
-def _bluetooth_card_summary(
-    services_enabled: bool, bt_status: Optional[dict], bt_paired: bool,
-) -> str:
-    """Bluetooth card summary line, per the four pinned states."""
-    if not services_enabled:
-        return "Disabled"
-    adapter_present = bool(bt_status and bt_status.get("adapter_present"))
-    if not adapter_present:
-        return "Enabled · No adapter found"
-    if not bt_paired:
-        return "Enabled · Not paired"
-    name = str(((bt_status or {}).get("paired") or {}).get("name") or "device")
-    return f"Enabled · {name} connected"
+def _bluetooth_card_summary(services_enabled: bool, bt_status: Optional[dict]) -> str:
+    """Bluetooth card summary line -- delegates to the single shared implementation.
+
+    Defensive-import wrapper, same pattern as the gate checks above: falls
+    back to a state derivable from ``services_enabled`` alone wherever the
+    helper module is absent, so this page keeps rendering wherever the
+    Bluetooth subsystem isn't installed at all.
+    """
+    try:
+        from autostream_bluetooth_client import bluetooth_card_summary as _real
+    except ImportError:
+        return "Disabled" if not services_enabled else "Enabled · No adapter found"
+    try:
+        return _real(services_enabled, bt_status)
+    except Exception:
+        return "Disabled" if not services_enabled else "Enabled · No adapter found"
 
 
 def _bluetooth_paired_row_text(bt_status: Optional[dict]) -> str:
-    """Card 'Paired' row text: '<name> · Connected/Not Connected' or 'No device paired'."""
-    paired = (bt_status or {}).get("paired") if bt_status else None
-    if not isinstance(paired, dict) or not str(paired.get("name") or "").strip():
+    """Card 'Paired' row text -- delegates to the single shared implementation."""
+    try:
+        from autostream_bluetooth_client import bluetooth_paired_row_text as _real
+    except ImportError:
         return "No device paired"
-    name = str(paired.get("name")).strip()
-    link = str((bt_status or {}).get("link") or "disconnected")
-    state = "Connected" if link == "connected" else "Not Connected"
-    return f"{name} · {state}"
+    try:
+        return _real(bt_status)
+    except Exception:
+        return "No device paired"
+
+
+def _bluetooth_input_fragment_text(bt_status: Optional[dict]) -> str:
+    """Input-card Bluetooth fragment text -- delegates to the single shared implementation."""
+    try:
+        from autostream_bluetooth_client import bluetooth_input_fragment_text as _real
+    except ImportError:
+        return "Not Connected"
+    try:
+        return _real(bt_status)
+    except Exception:
+        return "Not Connected"
 
 
 # -----------------------------------------------------------------------------
@@ -489,7 +505,7 @@ def send_setup_page(
             )
     except Exception:
         bt_buffer_ms = BLUETOOTH_BUFFER_MS_DEFAULT
-    bt_card_summary = _bluetooth_card_summary(bt_services_on, bt_status, bt_paired)
+    bt_card_summary = _bluetooth_card_summary(bt_services_on, bt_status)
     bt_paired_row_text = _bluetooth_paired_row_text(bt_status)
 
     def _is_bt_loopback_playback_value(value: str) -> bool:
@@ -953,11 +969,7 @@ def send_setup_page(
             # turntable flag are implementation detail here \u2014 show the
             # connected device's name (or the connection state) instead.
             dev = "Bluetooth"
-            _paired = (bt_status or {}).get("paired") or {}
-            if (bt_status or {}).get("link") == "connected":
-                mode = str(_paired.get("name") or "Connected")
-            else:
-                mode = "Not Connected"
+            mode = _bluetooth_input_fragment_text(bt_status)
         gain = int(parsed_input.gain_db)
         gain_str = f"{gain:+d} dB" if gain != 0 else "0 dB"
         return html.escape(f"{dev} \u00b7 {mode} \u00b7 {gain_str}")
@@ -1809,6 +1821,7 @@ def send_setup_page(
         if (typeof btPaired === 'undefined') var btPaired = {"true" if bt_paired else "false"};
         if (typeof _btLinkState === 'undefined') var _btLinkState = {str((bt_status or {}).get("link") or "disconnected")!r};
         window._btLastStatus = {_bt_status_json};
+        window._btUiText = {json.dumps(_bluetooth_input_fragment_text(bt_status))};
 
         function refreshExclusivityOptions() {{
           var sel1 = document.getElementById('audio_capture_device_select');
@@ -1875,10 +1888,11 @@ def send_setup_page(
           btOnboardEnabled = !!body.onboard_enabled;
           var daemon = body.daemon || null;
           window._btLastStatus = daemon;
+          var ui = body.ui || null;
+          window._btUiText = (ui && ui.bt_input_text) || 'Not Connected';
           btPaired = !!(daemon && daemon.paired);
           _btLinkState = (daemon && daemon.link) || 'disconnected';
           var adapterPresent = !!(daemon && daemon.adapter_present);
-          var pairedName = (daemon && daemon.paired && daemon.paired.name) || '';
 
           var dis = document.getElementById('btDisabledBody');
           var en = document.getElementById('btEnabledBody');
@@ -1904,21 +1918,12 @@ def send_setup_page(
             gatedRow.style.pointerEvents = adapterPresent ? '' : 'none';
           }}
           var pairedRow = document.getElementById('btPairedRow');
-          if (pairedRow) {{
-            pairedRow.textContent = pairedName
-              ? (pairedName + ' · ' + (_btLinkState === 'connected' ? 'Connected' : 'Not Connected'))
-              : 'No device paired';
-          }}
+          if (pairedRow) pairedRow.textContent = (ui && ui.paired_text) || 'No device paired';
           var forgetBtn = document.getElementById('btnBtForget');
           if (forgetBtn) forgetBtn.style.display = btPaired ? '' : 'none';
 
           var sub = document.getElementById('bluetooth-card-sub');
-          if (sub) {{
-            if (!btServicesEnabled) sub.textContent = 'Disabled';
-            else if (!adapterPresent) sub.textContent = 'Enabled · No adapter found';
-            else if (!btPaired) sub.textContent = 'Enabled · Not paired';
-            else sub.textContent = 'Enabled · ' + (pairedName || 'device') + ' connected';
-          }}
+          if (sub) sub.textContent = (ui && ui.card_summary) || 'Disabled';
           if (typeof refreshInputCardSubs === 'function') refreshInputCardSubs();
         }}
 
@@ -2536,12 +2541,12 @@ def send_setup_page(
           var mode = (turntable && turntable.checked) ? 'Turntable' : 'Line In';
           if (opt && opt.dataset.bt === '1') {{
             // Bluetooth input: show the connected device name (or connection
-            // state) instead of the ALSA card name and turntable flag.
+            // state) instead of the ALSA card name and turntable flag. The
+            // string itself comes verbatim from the status poll's server-
+            // computed ui.bt_input_text -- never re-derived from link/paired
+            // here, so it can't drift from the card summary's own state.
             dev = 'Bluetooth';
-            var bst = window._btLastStatus || null;
-            mode = (bst && bst.link === 'connected')
-              ? ((bst.paired && bst.paired.name) || 'Connected')
-              : 'Not Connected';
+            mode = window._btUiText || 'Not Connected';
           }}
           var gainEl = document.getElementById(gainId);
           var gain = gainEl ? parseInt(gainEl.value, 10) : 0;

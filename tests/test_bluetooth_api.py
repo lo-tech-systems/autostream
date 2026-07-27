@@ -91,6 +91,11 @@ class TestBluetoothStatusJson:
         assert body == {
             "ok": True, "installed": False, "services_enabled": False,
             "onboard_enabled": False, "daemon": None,
+            "ui": {
+                "card_summary": "Disabled",
+                "paired_text": "No device paired",
+                "bt_input_text": "Not Connected",
+            },
         }
 
     def test_installed_live_status_returned(self, tmp_path):
@@ -115,6 +120,81 @@ class TestBluetoothStatusJson:
         assert body["services_enabled"] is True
         assert body["onboard_enabled"] is False
         assert body["daemon"] == live
+        assert body["ui"] == {
+            "card_summary": "Enabled · Not paired",
+            "paired_text": "No device paired",
+            "bt_input_text": "Not Connected",
+        }
+
+    def test_ui_enabled_not_paired(self, tmp_path):
+        from autostream_webui_api import send_bluetooth_status_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        live = {"ok": True, "adapter_present": True, "paired": None, "link": "disconnected",
+                "streaming": False, "scanning": False}
+        try:
+            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
+                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
+                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
+                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+                m_cls.return_value.status.return_value = live
+                send_bluetooth_status_json(handler, state)
+        finally:
+            store.close(save=False)
+        _, body = _response(handler)
+        assert body["ui"] == {
+            "card_summary": "Enabled · Not paired",
+            "paired_text": "No device paired",
+            "bt_input_text": "Not Connected",
+        }
+
+    def test_ui_paired_and_connected(self, tmp_path):
+        from autostream_webui_api import send_bluetooth_status_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        live = {"ok": True, "adapter_present": True,
+                "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
+                "link": "connected", "streaming": True, "scanning": False}
+        try:
+            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
+                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
+                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
+                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+                m_cls.return_value.status.return_value = live
+                send_bluetooth_status_json(handler, state)
+        finally:
+            store.close(save=False)
+        _, body = _response(handler)
+        assert body["ui"] == {
+            "card_summary": "Enabled · BT-Turntable connected",
+            "paired_text": "BT-Turntable · Connected",
+            "bt_input_text": "BT-Turntable",
+        }
+
+    def test_ui_paired_but_disconnected(self, tmp_path):
+        """The fifth state: paired device present but the link is down --
+        must not be reported as 'connected'."""
+        from autostream_webui_api import send_bluetooth_status_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        live = {"ok": True, "adapter_present": True,
+                "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
+                "link": "disconnected", "streaming": False, "scanning": False}
+        try:
+            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
+                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
+                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
+                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+                m_cls.return_value.status.return_value = live
+                send_bluetooth_status_json(handler, state)
+        finally:
+            store.close(save=False)
+        _, body = _response(handler)
+        assert body["ui"] == {
+            "card_summary": "Enabled · BT-Turntable (not connected)",
+            "paired_text": "BT-Turntable · Not Connected",
+            "bt_input_text": "Not Connected",
+        }
 
     def test_installed_live_fails_falls_back_to_cache(self, tmp_path):
         from autostream_webui_api import send_bluetooth_status_json

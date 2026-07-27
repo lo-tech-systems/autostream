@@ -36,8 +36,11 @@ from typing import Optional
 
 from autostream_bluetooth_client import (
     BluetoothClient,
+    bluetooth_card_summary,
+    bluetooth_input_fragment_text,
     bluetooth_installed,
     bluetooth_onboard_enabled,
+    bluetooth_paired_row_text,
     bluetooth_services_enabled,
     is_loopback_playback,
 )
@@ -3029,6 +3032,12 @@ def send_bluetooth_status_json(handler, state) -> None:
     When installed, attempts a live daemon query first (freshest); falls
     back to the cache populated by the webui's background scan loop
     (``WebUIState.get_bluetooth_status``) if the live query fails.
+
+    Also returns a ``ui`` object -- ``card_summary``, ``paired_text``,
+    ``bt_input_text`` -- computed from the same ``services_enabled``/
+    ``daemon`` data by the single shared presentation-string implementation
+    also used by the Setup page's server render, so the card's summary line
+    can never disagree between the initial render and this poll.
     """
     installed = bluetooth_installed()
     services_enabled = bluetooth_services_enabled() if installed else False
@@ -3050,6 +3059,11 @@ def send_bluetooth_status_json(handler, state) -> None:
         "services_enabled": services_enabled,
         "onboard_enabled": onboard_enabled,
         "daemon": daemon,
+        "ui": {
+            "card_summary": bluetooth_card_summary(services_enabled, daemon),
+            "paired_text": bluetooth_paired_row_text(daemon),
+            "bt_input_text": bluetooth_input_fragment_text(daemon),
+        },
     })
 
 

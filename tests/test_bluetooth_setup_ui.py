@@ -412,6 +412,9 @@ class TestBluetoothEnabledPaired:
     def test_paired_row_shows_connected(self, html):
         assert "My Turntable · Connected" in html
 
+    def test_card_summary_shows_connected(self, html):
+        assert 'id="bluetooth-card-sub">Enabled · My Turntable connected<' in html
+
     def test_option_carries_bt_data_attr(self, html):
         assert "data-bt='1'" in html
 
@@ -420,6 +423,73 @@ class TestBluetoothEnabledPaired:
         m = re.search(r'<button[^>]*id="btnBtForget"[^>]*>', html)
         assert m, "Forget button not found"
         assert "display:none" not in m.group(0)
+
+
+# ---------------------------------------------------------------------------
+# Enabled, paired, link down -- the fifth summary state: distinct from both
+# "not paired" and "connected", omitted by the pre-fix implementation.
+# ---------------------------------------------------------------------------
+
+class TestBluetoothEnabledPairedDisconnected:
+    @pytest.fixture
+    def html(self, tmp_path: Path) -> str:
+        return _SetupRenderer().render(
+            tmp_path,
+            bt_enabled=True,
+            bt_services_on=True,
+            bt_status={"adapter_present": True,
+                       "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
+                       "link": "disconnected", "streaming": False, "scanning": False},
+            monitor_devices=[
+                {"hw": BT_LOOPBACK_HW, "card": "Loopback", "name": "BT-Turntable",
+                 "label": "Bluetooth: BT-Turntable"},
+            ],
+        )
+
+    def test_card_summary_shows_not_connected_state(self, html):
+        assert 'id="bluetooth-card-sub">Enabled · BT-Turntable (not connected)<' in html
+
+    def test_paired_row_shows_not_connected(self, html):
+        assert "BT-Turntable · Not Connected" in html
+
+    def test_forget_button_still_visible(self, html):
+        # Forgetting a paired-but-disconnected device must still be offered.
+        import re
+        m = re.search(r'<button[^>]*id="btnBtForget"[^>]*>', html)
+        assert m, "Forget button not found"
+        assert "display:none" not in m.group(0)
+
+
+# ---------------------------------------------------------------------------
+# JS status poll (_btApplyStatus): the card summary and paired-row strings
+# must be assigned verbatim from the server-computed `ui` object -- no
+# duplicated conditional logic re-deriving them from link/paired client-side.
+# ---------------------------------------------------------------------------
+
+class TestBluetoothStatusPollJsIsServerAuthored:
+    @pytest.fixture
+    def html(self, tmp_path: Path) -> str:
+        return _SetupRenderer().render(tmp_path, bt_enabled=True)
+
+    def test_no_duplicated_summary_conditional(self, html):
+        # The old per-branch "Enabled · ' connected'" string-building logic
+        # must be gone entirely -- only the shared Python implementation may
+        # construct this string now.
+        assert "' connected';" not in html
+        assert "sub.textContent = 'Enabled" not in html
+
+    def test_no_duplicated_paired_row_conditional(self, html):
+        assert "_btLinkState === 'connected' ? 'Connected' : 'Not Connected'" not in html
+
+    def test_card_summary_assigned_verbatim_from_ui(self, html):
+        assert "sub.textContent = (ui && ui.card_summary) || 'Disabled';" in html
+
+    def test_paired_row_assigned_verbatim_from_ui(self, html):
+        assert "pairedRow.textContent = (ui && ui.paired_text) || 'No device paired';" in html
+
+    def test_input_card_fragment_uses_server_text(self, html):
+        assert "mode = window._btUiText || 'Not Connected';" in html
+        assert "bst.link === 'connected'" not in html
 
 
 # ---------------------------------------------------------------------------

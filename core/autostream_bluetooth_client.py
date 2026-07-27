@@ -30,6 +30,11 @@ constants:
     onboard radio (as opposed to a USB adapter) is in use.
   - ``classify_loopback_hw()`` / ``bluetooth_capture_label()`` -- the small
     amount of logic the device-list relabel hook needs.
+  - ``bluetooth_card_summary()`` / ``bluetooth_paired_row_text()`` /
+    ``bluetooth_input_fragment_text()`` -- the single source of truth for
+    the Bluetooth card's and input card's presentation strings, shared
+    between the Setup page's server render, the status JSON API's ``ui``
+    payload, and the JS poll that refreshes the card in place.
 """
 
 from __future__ import annotations
@@ -198,6 +203,56 @@ def bluetooth_capture_label(status: Optional[dict]) -> str:
         if name:
             return f"Bluetooth: {name}"
     return _LABEL_UNPAIRED
+
+
+def bluetooth_card_summary(services_enabled: bool, status: Optional[dict]) -> str:
+    """Bluetooth card summary line, per the five pinned states.
+
+    ``status`` is the cached/live daemon ``status`` reply (or None when the
+    service is absent/unreachable). This is the single source of truth for
+    the string -- shared between the Setup page's server render, the status
+    JSON API's ``ui`` payload, and (via that payload) the JS poll that
+    refreshes the card without a full page reload, so the "paired but link
+    down" case can't be computed one way in one place and another way
+    elsewhere.
+    """
+    if not services_enabled:
+        return "Disabled"
+    if not isinstance(status, dict) or not status.get("adapter_present"):
+        return "Enabled · No adapter found"
+    paired = status.get("paired")
+    if not isinstance(paired, dict) or not str(paired.get("name") or "").strip():
+        return "Enabled · Not paired"
+    name = str(paired.get("name")).strip()
+    if str(status.get("link") or "disconnected") == "connected":
+        return f"Enabled · {name} connected"
+    return f"Enabled · {name} (not connected)"
+
+
+def bluetooth_paired_row_text(status: Optional[dict]) -> str:
+    """Card 'Paired' row text: '<name> · Connected/Not Connected', or 'No device paired'."""
+    paired = status.get("paired") if isinstance(status, dict) else None
+    if not isinstance(paired, dict) or not str(paired.get("name") or "").strip():
+        return "No device paired"
+    name = str(paired.get("name")).strip()
+    link = str(status.get("link") or "disconnected") if isinstance(status, dict) else "disconnected"
+    state = "Connected" if link == "connected" else "Not Connected"
+    return f"{name} · {state}"
+
+
+def bluetooth_input_fragment_text(status: Optional[dict]) -> str:
+    """Input-card Bluetooth fragment: the paired device's name when linked, else 'Not Connected'.
+
+    Used as the middle segment of an input card's 'Bluetooth · <X> · <gain>'
+    summary, in place of the ALSA card name and turntable flag a non-Bluetooth
+    input would show there.
+    """
+    link = str(status.get("link") or "disconnected") if isinstance(status, dict) else "disconnected"
+    if link != "connected":
+        return "Not Connected"
+    paired = status.get("paired") if isinstance(status, dict) else None
+    name = str(paired.get("name") or "").strip() if isinstance(paired, dict) else ""
+    return name or "Connected"
 
 
 class BluetoothClient:
