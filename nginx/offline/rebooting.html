@@ -43,9 +43,9 @@
   </div>
 
   <script>
-    // Wait at least 30 s before attempting to return to '/'.
-    // The reboot API schedules with a 3 s delay; shutdown + boot takes longer on older Pi hardware.
-    var MIN_WAIT_MS = 30000;
+    // Wait at least 90 s before attempting to return to '/'.
+    // The reboot API schedules with a 3 s delay; shutdown + boot takes longer on slower hardware.
+    var MIN_WAIT_MS = 90000;
     var startedAt = Date.now();
     var statusEl = document.getElementById('status');
 

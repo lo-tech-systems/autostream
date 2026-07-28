@@ -1842,16 +1842,34 @@ def send_setup_page(
           refreshExclusivityOptions();
         }}
 
+        function _btSetBusy(btn, busyLabel) {{
+          if (!btn) return null;
+          var prevLabel = btn.textContent;
+          var prevDisabled = btn.disabled;
+          btn.disabled = true;
+          btn.textContent = busyLabel;
+          return function _btRestore() {{
+            btn.disabled = prevDisabled;
+            btn.textContent = prevLabel;
+          }};
+        }}
+
         function btEnableServices() {{
+          var btn = document.getElementById('btnBtEnableServices');
+          var restore = _btSetBusy(btn, 'Enabling…');
           settingsTransact('/api/bluetooth/services', {{action: 'enable'}}, {{
-            onSuccess: function() {{ window.location.reload(); }}
+            onSuccess: function() {{ window.location.reload(); }},
+            onError: function() {{ if (restore) restore(); }}
           }});
         }}
 
         function btDisableServices() {{
           if (!window.confirm('Disable Bluetooth services? Any active Bluetooth stream will stop immediately.')) return;
+          var btn = document.getElementById('btnBtDisableServices');
+          var restore = _btSetBusy(btn, 'Disabling…');
           settingsTransact('/api/bluetooth/services', {{action: 'disable'}}, {{
-            onSuccess: function() {{ window.location.reload(); }}
+            onSuccess: function() {{ window.location.reload(); }},
+            onError: function() {{ if (restore) restore(); }}
           }});
         }}
 

@@ -701,3 +701,69 @@ class TestBluetoothInputCardSummary:
         html_out = _SetupRenderer().render(tmp_path, bt_enabled=True, audio1_capture_device=self.BT_HW)
         assert "dataset.bt === '1'" in html_out
         assert "window._btLastStatus" in html_out
+
+
+# ---------------------------------------------------------------------------
+# Enable/Disable services buttons: immediate busy feedback on click, with
+# restore-on-failure so a slow request doesn't leave the button looking
+# unresponsive or permanently stuck in its busy state.
+# ---------------------------------------------------------------------------
+
+class TestBluetoothServicesButtonFeedback:
+    @pytest.fixture
+    def html(self, tmp_path: Path) -> str:
+        return _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
+
+    def test_enable_sets_disabled_before_fetch(self, html):
+        # The busy-state helper (which sets disabled=true) must run before
+        # settingsTransact performs the fetch.
+        idx_fn = html.index("function btEnableServices()")
+        idx_busy_call = html.index("_btSetBusy(btn,", idx_fn)
+        idx_transact = html.index("settingsTransact(", idx_fn)
+        assert idx_fn < idx_busy_call < idx_transact
+        assert "btn.disabled = true;" in html
+
+    def test_disable_sets_disabled_before_fetch(self, html):
+        idx_fn = html.index("function btDisableServices()")
+        idx_busy_call = html.index("_btSetBusy(btn,", idx_fn)
+        idx_transact = html.index("settingsTransact(", idx_fn)
+        assert idx_fn < idx_busy_call < idx_transact
+        assert "btn.disabled = true;" in html
+
+    def test_enabling_busy_label_present(self, html):
+        assert "Enabling…" in html
+
+    def test_disabling_busy_label_present(self, html):
+        assert "Disabling…" in html
+
+    def test_enable_restores_on_error(self, html):
+        idx_fn = html.index("function btEnableServices()")
+        idx_end = html.index("function btDisableServices()")
+        segment = html[idx_fn:idx_end]
+        assert "onError:" in segment
+        assert "restore()" in segment
+
+    def test_disable_restores_on_error(self, html):
+        idx_fn = html.index("function btDisableServices()")
+        idx_end = html.index("function btOnboardToggleChanged", idx_fn)
+        segment = html[idx_fn:idx_end]
+        assert "onError:" in segment
+        assert "restore()" in segment
+
+    def test_disable_confirm_precedes_busy_state_change(self, html):
+        # The confirm() gate must run before the button is touched, so a
+        # cancelled confirm leaves the button completely untouched.
+        idx_fn = html.index("function btDisableServices()")
+        idx_confirm = html.index("window.confirm(", idx_fn)
+        idx_busy_call = html.index("_btSetBusy(btn,", idx_fn)
+        assert idx_confirm < idx_busy_call
+
+    def test_success_path_reloads_without_manual_restore(self, html):
+        idx_fn = html.index("function btEnableServices()")
+        idx_end = html.index("function btDisableServices()")
+        segment = html[idx_fn:idx_end]
+        assert "onSuccess: function() { window.location.reload(); }" in segment
+
+    def test_button_ids_referenced_for_lookup(self, html):
+        assert "getElementById('btnBtEnableServices')" in html
+        assert "getElementById('btnBtDisableServices')" in html

@@ -23,8 +23,9 @@ from autostream_webui_state import WebUIState
 def send_rebooting_page(handler, state: WebUIState, auth) -> None:
     """Render the reboot holding page."""
     # Minimum time (ms) before we even attempt to return to '/'.
-    # The reboot API schedules with a 3 s delay; shutdown takes time on older Pi.
-    min_wait_ms = 30000
+    # The reboot API schedules with a 3 s delay; shutdown and boot take time on
+    # slower hardware.
+    min_wait_ms = 90000
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=None)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
