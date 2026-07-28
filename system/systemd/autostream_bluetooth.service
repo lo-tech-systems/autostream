@@ -23,6 +23,14 @@ WorkingDirectory=/opt/autostream
 # python3-dbus, python3-gi and python3-alsaaudio are installed as apt
 # packages; the application venv is created with --system-site-packages
 # (autostream_install.sh deploy_phase), so the venv interpreter sees them.
+# Clear any persisted rfkill soft-block before the daemon starts. systemd-rfkill
+# restores saved per-device block state at boot, and a stale "blocked" entry
+# (saved while the radio was previously disabled) would otherwise leave a
+# freshly-created adapter powered off with no code path ever clearing it — the
+# runtime unblock in the enable verbs cannot help because it runs before the
+# reboot that creates the adapter. "+" runs as root despite User=; "-" makes
+# failure (rfkill absent, nothing to unblock) non-fatal.
+ExecStartPre=-+/usr/sbin/rfkill unblock bluetooth
 ExecStart=/opt/autostream/venv/bin/python /opt/autostream/platform/bluetooth_service.py
 # Python block-buffers stdout when it isn't a tty; without this, log lines
 # sit in the buffer and journalctl shows nothing.

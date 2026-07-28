@@ -381,6 +381,14 @@ class TestBluetoothUnit:
         unit = self._unit()
         assert "ExecStart=/opt/autostream/venv/bin/python /opt/autostream/platform/bluetooth_service.py" in unit
 
+    def test_unit_clears_rfkill_block_before_start(self):
+        """systemd-rfkill restores persisted per-device block state at boot;
+        a stale blocked entry would leave a freshly-created adapter powered
+        off with nothing to clear it, so the unit unblocks (as root,
+        failure-tolerant) before every daemon start."""
+        unit = _src(UNIT_FILE)
+        assert "ExecStartPre=-+/usr/sbin/rfkill unblock bluetooth" in unit
+
     def test_runs_as_autostream_user(self):
         unit = self._unit()
         assert "User=autostream" in unit
