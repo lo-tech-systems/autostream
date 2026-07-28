@@ -1053,7 +1053,11 @@ class TestGetStatusWrapsPumpState:
         service, _ = _make_service(tmp_path)
         base_keys = set(service.state_machine.get_status().keys())
         wrapped = service._get_status()
-        assert set(wrapped.keys()) == base_keys | {"pump_source_active", "adapter_blocked"}
+        assert set(wrapped.keys()) == base_keys | {"pump_source_active", "adapter_blocked", "version"}
+
+    def test_get_status_reports_service_version(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        assert service._get_status()["version"] == svc.BLUETOOTH_SERVICE_VERSION
 
 
 # ---------------------------------------------------------------------------

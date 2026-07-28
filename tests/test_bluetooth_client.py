@@ -27,6 +27,7 @@ if _core not in sys.path:
 from autostream_bluetooth_client import (
     BLUETOOTH_CAPTURE_DEVICE,
     BLUETOOTH_PLAYBACK_DEVICE,
+    BLUETOOTH_SERVICE_VERSION,
     BluetoothClient,
     bluetooth_capture_label,
     bluetooth_installed,
@@ -250,6 +251,22 @@ class TestQuietFailures:
         c = BluetoothClient(str(tmp_path / "gone.sock"))
         for _ in range(3):
             assert c.status() is None
+
+
+# ---------------------------------------------------------------------------
+# BLUETOOTH_SERVICE_VERSION — client-side fallback constant
+# ---------------------------------------------------------------------------
+
+class TestBluetoothServiceVersionConstant:
+    def test_pinned_value(self):
+        """Must stay in lock-step with platform/bluetooth_service.py's own
+        BLUETOOTH_SERVICE_VERSION copy -- this pins the current value so an
+        accidental one-sided bump is caught here rather than only surfacing
+        as a stale About-page version after the daemon is upgraded."""
+        assert BLUETOOTH_SERVICE_VERSION == "0.5.1"
+
+    def test_is_a_string(self):
+        assert isinstance(BLUETOOTH_SERVICE_VERSION, str)
 
 
 # ---------------------------------------------------------------------------

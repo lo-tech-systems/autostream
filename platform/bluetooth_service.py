@@ -47,7 +47,11 @@ import bluetooth_socket as socket_mod
 
 logger = logging.getLogger(__name__)
 
-BLUETOOTH_SERVICE_VERSION = "1.0.0"
+# Kept in sync with the client-side copy (core/autostream_bluetooth_client.py's
+# BLUETOOTH_SERVICE_VERSION) -- both must be bumped together whenever this
+# daemon changes, since the client falls back to its own constant whenever
+# the daemon is unreachable to query directly.
+BLUETOOTH_SERVICE_VERSION = "0.5.1"
 
 DEFAULT_STATE_PATH = "/var/lib/autostream/bluetooth.json"
 
@@ -778,6 +782,7 @@ class BluetoothService:
         status = self.state_machine.get_status()
         status["pump_source_active"] = self.pump.is_streaming() if self.pump is not None else False
         status["adapter_blocked"] = self._adapter_blocked
+        status["version"] = BLUETOOTH_SERVICE_VERSION
         return status
 
     def _on_props_changed(self, mac: str, changed: dict) -> None:

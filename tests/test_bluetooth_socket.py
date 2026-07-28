@@ -64,6 +64,7 @@ class FakeServer:
             "pump_source_active": False,
             "buffer_ms": 200,
             "adapter_kind": "usb",
+            "version": "0.5.1",
         }
         self._scan_results = []
         self._pair_status = {"state": "idle"}
@@ -114,7 +115,22 @@ class TestDispatchStatus:
             "buffer_ms": 200,
             "adapter_kind": "usb",
             "adapter_blocked": False,
+            "version": "0.5.1",
         }
+
+    def test_status_version_passthrough(self):
+        srv = FakeServer()
+        srv._status["version"] = "9.9.9"
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r["version"] == "9.9.9"
+
+    def test_status_version_defaults_when_absent(self):
+        """A server implementation predating the version key must still
+        surface a usable string rather than None/omitting the key."""
+        srv = FakeServer()
+        del srv._status["version"]
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r["version"] == "0.5.1"
 
     def test_status_adapter_blocked_passthrough(self):
         srv = FakeServer()

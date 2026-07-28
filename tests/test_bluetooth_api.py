@@ -1136,7 +1136,7 @@ class TestAboutPageBluetoothRow:
             html = self._render()
         assert "data-service-unit='autostream_bluetooth.service'" in html or \
                'data-service-unit="autostream_bluetooth.service"' in html
-        assert "Bluetooth input" in html
+        assert "Bluetooth Service" in html
 
     def test_collect_service_states_includes_row_when_enabled(self):
         import autostream_webui_page_about as _about

@@ -365,6 +365,95 @@ class TestServiceStateMapping:
 
 
 # ---------------------------------------------------------------------------
+# Test 6b — Bluetooth service row: three-way state mapping, version, label,
+# and NGINX-last ordering
+# ---------------------------------------------------------------------------
+
+class TestBluetoothServiceRow:
+
+    def _collect(
+        self,
+        *,
+        installed=True,
+        enabled=True,
+        active_state="active",
+        client_status=None,
+    ):
+        stdout = (
+            "Id=autostream.service\nActiveState=active\n\n"
+            "Id=autostream_monitor.service\nActiveState=active\n\n"
+            "Id=autostream_wifi_watcher.service\nActiveState=active\n\n"
+            "Id=owntone.service\nActiveState=active\n\n"
+            "Id=vibra-mini.service\nActiveState=active\n\n"
+            f"Id=autostream_bluetooth.service\nActiveState={active_state}\n\n"
+            "Id=nginx.service\nActiveState=active\n\n"
+        )
+        mock_client = MagicMock()
+        mock_client.status.return_value = client_status
+        with patch("autostream_webui_page_about.bluetooth_installed", return_value=installed), \
+             patch("autostream_webui_page_about.bluetooth_services_enabled", return_value=enabled), \
+             patch("autostream_webui_page_about.BluetoothClient", return_value=mock_client):
+            return _collect_with_mocks(systemctl_stdout=stdout)
+
+    def _bt_row(self, result):
+        return next(s for s in result["services"] if s["unit"] == "autostream_bluetooth.service")
+
+    def test_disabled_maps_to_disabled_state(self):
+        result = self._collect(enabled=False, active_state="inactive")
+        assert self._bt_row(result)["state"] == "disabled"
+
+    def test_disabled_still_active_state_active_maps_to_disabled(self):
+        """bluetooth_services_enabled() gates the row before ActiveState is
+        even consulted -- a stray 'active' unit that was never enabled
+        (e.g. started by hand for debugging) must still read 'disabled'."""
+        result = self._collect(enabled=False, active_state="active")
+        assert self._bt_row(result)["state"] == "disabled"
+
+    def test_disabled_shows_fallback_version(self):
+        result = self._collect(enabled=False, active_state="inactive")
+        assert self._bt_row(result)["version"] == "0.5.1"
+
+    def test_disabled_uses_bluetooth_service_label(self):
+        result = self._collect(enabled=False, active_state="inactive")
+        assert self._bt_row(result)["label"] == "Bluetooth Service"
+
+    def test_nginx_is_last_when_bluetooth_row_present(self):
+        result = self._collect(enabled=False, active_state="inactive")
+        units = [s["unit"] for s in result["services"]]
+        assert units[-1] == "nginx.service"
+        assert units.index("autostream_bluetooth.service") < units.index("nginx.service")
+
+    def test_enabled_but_inactive_maps_to_failed(self):
+        result = self._collect(enabled=True, active_state="inactive")
+        assert self._bt_row(result)["state"] == "failed"
+
+    def test_enabled_and_active_maps_to_ok(self):
+        result = self._collect(
+            enabled=True, active_state="active",
+            client_status={"ok": True, "version": "0.5.1"},
+        )
+        assert self._bt_row(result)["state"] == "ok"
+
+    def test_enabled_and_active_uses_live_version_from_daemon(self):
+        result = self._collect(
+            enabled=True, active_state="active",
+            client_status={"ok": True, "version": "9.9.9"},
+        )
+        assert self._bt_row(result)["version"] == "9.9.9"
+
+    def test_enabled_and_active_falls_back_when_daemon_unreachable(self):
+        result = self._collect(enabled=True, active_state="active", client_status=None)
+        assert self._bt_row(result)["version"] == "0.5.1"
+
+    def test_row_absent_when_not_installed(self):
+        result = self._collect(installed=False)
+        units = [s["unit"] for s in result["services"]]
+        assert "autostream_bluetooth.service" not in units
+        assert units[-1] == "nginx.service"
+        assert len(result["services"]) == 6
+
+
+# ---------------------------------------------------------------------------
 # Test 7 — systemd parsing maps blocks by Id, not position
 # ---------------------------------------------------------------------------
 

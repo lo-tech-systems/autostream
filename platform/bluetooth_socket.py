@@ -70,6 +70,11 @@ _ALLOWED_KEYS: dict[str, frozenset] = {
 # cycle — this module has no dependency on the state-machine layer).
 _DEFAULT_BUFFER_MS = 200
 
+# Default surfaced when a server implementation predates the version key
+# (kept in sync with bluetooth_service.BLUETOOTH_SERVICE_VERSION; not
+# imported for the same reason as _DEFAULT_BUFFER_MS above).
+_DEFAULT_VERSION = "0.5.1"
+
 
 def _ok(**kwargs) -> dict:
     return {"ok": True, **kwargs}
@@ -202,6 +207,7 @@ def _handle_status(server: "BluetoothControlServer") -> dict:
         buffer_ms=int(st.get("buffer_ms", _DEFAULT_BUFFER_MS)),
         adapter_kind=st.get("adapter_kind"),
         adapter_blocked=bool(st.get("adapter_blocked", False)),
+        version=str(st.get("version") or _DEFAULT_VERSION),
     )
 
 
@@ -251,7 +257,8 @@ class BluetoothControlServer:
     ----------
     get_status: () -> dict with adapter_present, paired ({mac,name}|None),
         link, streaming, scanning, pump_source_active, buffer_ms,
-        adapter_kind ("usb"|"onboard"|"unknown"|None).
+        adapter_kind ("usb"|"onboard"|"unknown"|None), version (daemon
+        version string).
     scan_start: () -> bool — False when a pairing attempt is already in
         flight (reported to the client as {"ok":false,"error":"scan_in_progress"}).
     scan_stop: () -> None.

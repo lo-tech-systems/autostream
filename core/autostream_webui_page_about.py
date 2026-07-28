@@ -25,7 +25,12 @@ import math
 import subprocess
 from typing import Optional
 
-from autostream_bluetooth_client import bluetooth_installed
+from autostream_bluetooth_client import (
+    BLUETOOTH_SERVICE_VERSION,
+    BluetoothClient,
+    bluetooth_installed,
+    bluetooth_services_enabled,
+)
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_temperature_c
@@ -62,19 +67,21 @@ _SERVICES = (
     ("nginx.service",                   "NGINX"),
 )
 
-# The one genuinely optional in-family service: appended to _SERVICES only
-# when the Bluetooth-input subsystem is installed on this appliance.
+# The one genuinely optional in-family service: spliced into _SERVICES only
+# when the Bluetooth-input subsystem is installed on this appliance, always
+# immediately before the NGINX row (NGINX is the fixed last entry).
 # _SERVICES itself stays a fixed 6-tuple so existing call sites/tests that
 # assume a static list are unaffected when the feature isn't installed
 # (the common case today).
-_BLUETOOTH_SERVICE_ROW = ("autostream_bluetooth.service", "Bluetooth input")
+_BLUETOOTH_SERVICE_ROW = ("autostream_bluetooth.service", "Bluetooth Service")
 
 
 def _effective_services() -> tuple:
-    """Return _SERVICES, plus the Bluetooth row when the subsystem is installed."""
+    """Return _SERVICES, with the Bluetooth row spliced in before the
+    trailing NGINX entry when the subsystem is installed."""
     try:
         if bluetooth_installed():
-            return _SERVICES + (_BLUETOOTH_SERVICE_ROW,)
+            return _SERVICES[:-1] + (_BLUETOOTH_SERVICE_ROW,) + _SERVICES[-1:]
     except Exception:
         pass
     return _SERVICES
@@ -194,6 +201,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         ".about-svc-state { font-size:0.8rem; font-weight:600; padding:0.15rem 0.5rem; border-radius:4px; }\n"
         ".about-svc-state[data-state='ok'] { color:var(--color-status-success); background:color-mix(in srgb,var(--color-status-success) 15%,transparent); }\n"
         ".about-svc-state[data-state='failed'] { color:var(--color-status-danger); background:color-mix(in srgb,var(--color-status-danger) 15%,transparent); }\n"
+        ".about-svc-state[data-state='disabled'] { color:var(--color-text-secondary); background:color-mix(in srgb,var(--color-text-secondary) 12%,transparent); }\n"
         ".about-svc-loading { color:var(--color-text-secondary); font-weight:400; font-size:0.85rem; }\n"
     )
 
@@ -258,9 +266,12 @@ def send_about_page(handler, state: WebUIState) -> None:
         "var lbl=row.querySelector('.about-svc-label');"
         "if(lbl&&svc.label)lbl.textContent=String(svc.label);"
         "var st=row.querySelector('.about-svc-state');"
-        "if(st){var ok=svc.state==='ok';"
-        "st.textContent=ok?(svc.version?String(svc.version)+' - OK':'OK'):'Failed';"
-        "st.setAttribute('data-state',ok?'ok':'failed');"
+        "if(st){var state=svc.state;var suffix=state==='ok'?' - OK':"
+        "(state==='disabled'?' - Disabled':' - Failed');"
+        "var base=state==='ok'?'OK':(state==='disabled'?'Disabled':'Failed');"
+        "st.textContent=svc.version?String(svc.version)+suffix:base;"
+        "st.setAttribute('data-state',"
+        "(state==='ok'||state==='disabled')?state:'failed');"
         "st.classList.remove('about-svc-loading');}});})"
         ".catch(function(){_fail();});"
         "});"
@@ -450,6 +461,26 @@ def _get_wifi_watcher_version() -> str:
         return "unknown"
 
 
+def _get_bluetooth_version() -> str:
+    """Bounded control-socket probe for the running daemon's version.
+
+    ``BluetoothClient`` already swallows every failure mode (socket absent,
+    daemon down, timeout, malformed reply) and returns ``None`` quietly, so
+    this simply falls back to the pinned client-side constant whenever the
+    live query didn't yield a usable version -- callers never need to check
+    whether the service is installed/enabled/running first.
+    """
+    try:
+        status = BluetoothClient().status()
+    except Exception:
+        status = None
+    if isinstance(status, dict):
+        version = str(status.get("version") or "").strip()
+        if version:
+            return version
+    return BLUETOOTH_SERVICE_VERSION
+
+
 def _collect_system_info() -> dict:
     """Collect all System Info fields.  Partial failures degrade individual fields."""
     # 1. Autostream version (cached, immutable for process lifetime)
@@ -487,6 +518,15 @@ def _collect_system_info() -> dict:
         wifi_watcher_build = _get_wifi_watcher_version()
     except Exception:
         wifi_watcher_build = "unknown"
+
+    # Bluetooth service build - cheap, bounded control-socket probe when the
+    # daemon is reachable; falls back to the pinned client-side constant
+    # otherwise (disabled/stopped/never started), so the row always has a
+    # version even when the daemon can't be asked directly.
+    try:
+        bluetooth_build = _get_bluetooth_version()
+    except Exception:
+        bluetooth_build = BLUETOOTH_SERVICE_VERSION
 
     # 5. Playback totals across inputs 1 and 2
     playback_hours = 0.0
@@ -560,6 +600,7 @@ def _collect_system_info() -> dict:
         "autostream_wifi_watcher.service": wifi_watcher_build,
         "owntone.service": owntone_build,
         "vibra-mini.service": vibra_build,
+        "autostream_bluetooth.service": bluetooth_build,
         "nginx.service": facts.nginx_version,
     }
     services = _collect_service_states(owntone_backend_id, _service_versions)
@@ -621,13 +662,36 @@ def _collect_service_states(owntone_backend_id: str, service_versions: dict) -> 
             label = "OwnTone Mini" if owntone_backend_id == "owntone-mini" else "OwnTone"
         block = parsed.get(unit, {})
         active_state = block.get("ActiveState", "")
-        state = "ok" if active_state == "active" else "failed"
+        if unit == _BLUETOOTH_SERVICE_ROW[0]:
+            state = _bluetooth_row_state(active_state)
+        else:
+            state = "ok" if active_state == "active" else "failed"
         entry: dict = {"unit": unit, "label": label, "state": state}
         version = service_versions.get(unit)
         if version and version not in ("unknown", ""):
             entry["version"] = version
         services.append(entry)
     return services
+
+
+def _bluetooth_row_state(active_state: str) -> str:
+    """Bluetooth row's three-way state, distinct from every other row's
+    plain ok/failed mapping.
+
+    systemd reports the same ActiveState ("inactive") for "unit never
+    enabled" and "enabled but not currently running", so the row would
+    otherwise render a never-installed-in-anger service as "Failed".
+    ``bluetooth_services_enabled()`` disambiguates the two: a disabled unit
+    reads "disabled" regardless of ActiveState; only once enabled does the
+    ordinary active/not-active check (mirroring every other row) apply.
+    """
+    try:
+        enabled = bluetooth_services_enabled()
+    except Exception:
+        enabled = False
+    if not enabled:
+        return "disabled"
+    return "ok" if active_state == "active" else "failed"
 
 
 def _parse_systemctl_output(stdout: str) -> dict:

@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SOCKET_PATH = "/run/autostream-bluetooth/bluetooth.sock"
 
+# Client-side fallback for the About page's per-service version display,
+# used whenever the daemon can't be queried directly (disabled/stopped/never
+# started). Kept in sync with the daemon's own copy
+# (platform/bluetooth_service.py's BLUETOOTH_SERVICE_VERSION) -- both must
+# be bumped together.
+BLUETOOTH_SERVICE_VERSION = "0.5.1"
+
 # ALSA loopback card id, fixed at install time via modprobe.d.
 BLUETOOTH_CARD_ID = "ASBT"
 
