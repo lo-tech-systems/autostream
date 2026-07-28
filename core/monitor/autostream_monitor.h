@@ -1122,7 +1122,9 @@ private:
     enum class SliceBatchOutcome
     {
         Ready,        // ctx.pcm_staging holds a non-empty decoded batch to slice/write
-        Retry,        // nothing to write yet (buffer-end wrap); loop again
+        Retry,        // nothing to write yet (decoder still accumulating); loop again
+        Wrapped,      // buffer-end loop wrap just happened; caller must write the
+                      // inter-loop gap (write_loop_gap()) before looping again
         Aborted,      // Abort/stop observed; end the session
         DecodeError,  // codec decode failed; end the session (treated as Aborted)
     };
@@ -1168,6 +1170,19 @@ private:
     // if an abort/shutdown was observed while waiting.
     bool write_slice_paced(ReplaySessionCtx& ctx);
 
+    // Writes kLoopGapSeconds of silence to the FIFO at a loop wrap
+    // paced identically to real content via write_slice_paced()
+    // so the gap consumes real time at the reader's actual drain rate. Not
+    // run through process_slice() -- no DSP, no fade envelope, no ID tap, no
+    // TrackGapDetector update -- it is not recorded content, so none of
+    // those must observe it. _position_seconds is left untouched by this
+    // call (see decode_next_slice()'s wrap-point comment: it stays frozen at
+    // the just-finished loop's duration for the whole gap, then resets to 0
+    // as an ordinary side effect of the first real post-gap slice). Returns
+    // false if an abort/write error interrupts the gap early (same contract
+    // as write_slice_paced()).
+    bool write_loop_gap(ReplaySessionCtx& ctx, int rate_hz);
+
     // Records a write_slice_paced() outcome into _stall_since
     // and returns `ok` unchanged, so call sites can wrap a return statement
     // with it (see the call sites' comment).
@@ -1175,9 +1190,10 @@ private:
 
     enum class Cmd { None, Start, FadeOut, Abort };
 
-    static constexpr int    kPollTimeoutMs = 100;    // abort-check granularity (~100 ms)
-    static constexpr size_t kSliceFrames   = 4096;   // 4096 stereo s16 frames = 16 KiB (8-16 KiB slices)
-    static constexpr double kFadeSeconds   = 1.5;    // disarm fade span
+    static constexpr int    kPollTimeoutMs   = 100;    // abort-check granularity (~100 ms)
+    static constexpr size_t kSliceFrames     = 4096;   // 4096 stereo s16 frames = 16 KiB (8-16 KiB slices)
+    static constexpr double kFadeSeconds     = 1.5;    // disarm fade span
+    static constexpr double kLoopGapSeconds  = 1.5;    // inter-loop silence gap
 
     RepeatController& _owner;
     std::thread       _thread;
@@ -2211,6 +2227,21 @@ private:
     // outside the lock). Sheds oldest chunks until back above the floor.
     void apply_memory_guard_locked(const MemInfo& mem);
 
+    // One raw block's worth of encode()+chunk-alloc+append+trim-accounting,
+    // factored out of process_recorder_samples() so the same logic serves
+    // both a live recorder block and a block drained from the pre-roll ring
+    // after onset confirms. Caller holds `lock` (== _repeat_mutex)
+    // and has already verified _state == Recording && _encoder; this
+    // function may unlock/relock `lock` internally (chunk preallocation / a
+    // periodic meminfo read), exactly as the pre-extraction body did, and
+    // re-validates after reacquiring -- becomes a no-op if the session ended
+    // while unlocked. Caller must re-check _state/_encoder itself before any
+    // further call in the same outer iteration (see process_recorder_
+    // samples()'s ring-drain loop).
+    void encode_and_append_locked(std::unique_lock<std::mutex>& lock,
+                                   const float* interleaved, int frames,
+                                   bool above_threshold);
+
     // Recording is refused below this threshold regardless of pinned
     // codec (the pinned codec "skips the ladder" for quality-tier selection,
     // not for this base availability gate).
@@ -2221,6 +2252,24 @@ private:
     // on timeout, whatever is still queued is counted into dropped_frames
     // rather than silently lost.
     static constexpr int    kDrainTimeoutMs            = 250;
+
+    // Onset-gated recording: once OnsetGate confirms, the pre-roll
+    // ring built up while onset was pending is drained into the normal
+    // encode/append path a bounded number of blocks per
+    // process_recorder_samples() call, rather than in one single burst. A
+    // full 5 s burst is not expensive CPU-wise (twolame/PCM encode is fast
+    // relative to real time), but process_recorder_samples() holds
+    // _repeat_mutex across each encode()+append() call, and this function is
+    // called from the audio-adjacent recorder worker thread while other
+    // callers (get_status(), notify_capture_started/stopped() -- the latter
+    // on the real audio thread) block on the same mutex; encoding ~5 s of
+    // backlog in one uninterrupted critical section would hold the lock far
+    // longer than any other call on this path ever does. Amortizing over a
+    // handful of blocks per call keeps every single call's lock-hold time in
+    // the same ballpark as ordinary live-block processing, while still
+    // draining a multi-second ring within a couple of seconds of real time
+    // (recorder blocks arrive well under a second apart).
+    static constexpr int    kOnsetRingDrainBlocksPerCall = 8;
 
     int _sample_rate_hz;
     std::mutex& _fifo_mutex;   // AudioMonitor's shared FIFO mutex (reference)
@@ -2303,6 +2352,15 @@ private:
     RepeatBuffer _buffer;
 #endif
     SilenceTrimAccountant           _trim;
+    // Onset-gated recording: OnsetGate decides when the recorder
+    // may start committing audio; PreRollRing holds the raw backlog while
+    // onset is still pending so nothing is lost once it confirms. Both are
+    // (re)initialised at session start (perform_pending_start()) and cleared
+    // at session end/discard (free_recording_locked(), notify_capture_
+    // stopped()) -- see process_recorder_samples()'s implementation comment
+    // for the full state machine.
+    OnsetGate    _onset;
+    PreRollRing  _preroll_ring;
     std::unique_ptr<RepeatEncoder>  _encoder;
     double       _last_mem_check_time    = 0.0;
     // Monotonic timestamp set at begin_replay_locked(); 0.0 when no replay

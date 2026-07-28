@@ -33,6 +33,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // =============================================================================
 // RepeatBuffer — chunked heap store for the in-RAM recording
@@ -677,4 +678,188 @@ public:
 
 private:
     size_t _bytes_since_last_loud = 0;
+};
+
+
+// =============================================================================
+// OnsetGate — pure onset-sustain decision core
+//
+// The SESSION starts on the first above-threshold transient, exactly as
+// before (see the minimum playback hold); this gate decides when the
+// RECORDER may start committing audio.
+// A mechanical start thump cannot sustain kOnsetSustainSeconds continuous
+// above-threshold audio, so it never confirms on its own; a CD player's
+// music sustains from its first note, so it confirms almost immediately
+// once its own first note has run long enough.
+//
+// Driven in the audio-block domain (block_seconds = frames / sample_rate_hz)
+// rather than wall-clock time, matching SilenceTrimAccountant's own
+// per-appended-block accounting style -- both are fed once per recorder
+// block, in order, and both are pure so they are testable without a running
+// capture channel or a real clock.
+// =============================================================================
+
+class OnsetGate
+{
+public:
+    // Sustained above-threshold duration required before the recorder starts
+    // committing audio. Internal constant, not user-configurable.
+    static constexpr double kOnsetSustainSeconds = 2.5;
+
+    void reset()
+    {
+        _confirmed      = false;
+        _above_seconds  = 0.0;
+    }
+
+    // Called once per raw, pre-encode recorder block, in the order the
+    // blocks arrive. above_threshold is the block's own peak test against
+    // the origin input's snapshotted silence threshold (the same value
+    // already computed for the recorder's above_threshold flag -- this
+    // reuses it rather than re-testing samples). block_seconds is the
+    // block's duration.
+    //
+    // Reset semantics: any block whose above_threshold is false drops the
+    // continuous-above-threshold accumulator back to zero -- the sustain
+    // window must be UNBROKEN. A single below-threshold block anywhere
+    // inside an otherwise-sustained run restarts the count from that
+    // block's own (zero) contribution, not from whatever had already
+    // accumulated before it.
+    //
+    // Returns true exactly once: on the call whose block_seconds pushes the
+    // accumulated continuous-above-threshold duration to
+    // >= kOnsetSustainSeconds (the confirming edge). Returns false on every
+    // other call, including every call after confirmation (is_confirmed()
+    // latches permanently until reset()).
+    bool on_block(bool above_threshold, double block_seconds)
+    {
+        if (_confirmed)
+            return false;
+
+        if (above_threshold)
+            _above_seconds += block_seconds;
+        else
+            _above_seconds = 0.0;
+
+        if (_above_seconds >= kOnsetSustainSeconds)
+        {
+            _confirmed = true;
+            return true;
+        }
+        return false;
+    }
+
+    bool is_confirmed() const { return _confirmed; }
+
+private:
+    bool   _confirmed     = false;
+    double _above_seconds = 0.0;
+};
+
+
+// =============================================================================
+// PreRollRing — bounded pre-onset backlog of raw (pre-encode) recorder blocks
+//
+// While a recording session is active but OnsetGate has not yet confirmed,
+// raw audio must not be lost (the onset's own lead-in -- the first notes, or
+// the moment the sustained signal actually starts -- must still make it into
+// the buffer once onset confirms) but must not be committed either (a thump
+// that never sustains must leave nothing behind). This ring holds the most
+// recent kPreRollSeconds of raw blocks, in order, dropping the oldest block
+// once the held duration exceeds capacity -- a plain sliding window, no
+// signal processing.
+//
+// Stores whole blocks (not a flat sample ring) so push()/pop_front() are O(1)
+// amortized and so each block's own above_threshold flag survives the ring
+// for correct SilenceTrimAccountant bookkeeping if the recording ends soon
+// after the ring is spliced into the buffer. Typical recorder blocks are a
+// few thousand frames, so a 5 s ring holds on the order of dozens of blocks
+// -- a std::deque of small vectors is simple and entirely adequate; there is
+// no need for a manually managed circular byte buffer here.
+// =============================================================================
+
+// Pre-roll window: sustain window (kOnsetSustainSeconds) plus margin, so a
+// recording whose very first block is already above threshold (immediate
+// onset -- the CD-player case, or a turntable thump that happens to sustain)
+// still has the ring cover everything back to session start once onset
+// confirms at kOnsetSustainSeconds in.
+inline constexpr double kPreRollSeconds = 5.0;
+
+class PreRollRing
+{
+public:
+    struct Block
+    {
+        std::vector<float> samples;          // interleaved stereo, pre-encode
+        bool                above_threshold = false;
+    };
+
+    PreRollRing() = default;
+
+    // capacity_frames == 0 disables the ring: push() becomes a no-op and the
+    // ring stays permanently empty. Also clears any existing content, so
+    // this doubles as the per-session (re)initialisation call.
+    void set_capacity_frames(size_t capacity_frames)
+    {
+        _capacity_frames = capacity_frames;
+        clear();
+    }
+
+    // Appends one block to the tail (frames stereo-interleaved samples
+    // starting at `interleaved`), then drops whole blocks from the head
+    // until the total held duration is back within capacity. A single block
+    // larger than the entire capacity is still kept whole rather than split
+    // -- recorder blocks are always far smaller than the multi-second
+    // capacity in practice, so this never actually leaves the ring over
+    // capacity for long.
+    void push(const float* interleaved, int frames, bool above_threshold)
+    {
+        if (_capacity_frames == 0 || frames <= 0)
+            return;
+
+        Block b;
+        b.samples.assign(interleaved, interleaved + static_cast<size_t>(frames) * 2u);
+        b.above_threshold = above_threshold;
+        _total_frames += static_cast<size_t>(frames);
+        _blocks.push_back(std::move(b));
+
+        while (_total_frames > _capacity_frames && _blocks.size() > 1)
+        {
+            _total_frames -= _blocks.front().samples.size() / 2u;
+            _blocks.pop_front();
+        }
+    }
+
+    bool   empty() const       { return _blocks.empty(); }
+    size_t block_count() const { return _blocks.size(); }
+    size_t total_frames() const { return _total_frames; }
+
+    // Removes and returns the oldest held block (FIFO / chronological
+    // order), for draining the ring into the normal write path once onset
+    // confirms -- either all at once or amortized across several calls (the
+    // caller decides the pacing; this is just the queue). Returns false
+    // (out left untouched) if the ring is empty.
+    bool pop_front(Block& out)
+    {
+        if (_blocks.empty())
+            return false;
+        out = std::move(_blocks.front());
+        _total_frames -= out.samples.size() / 2u;
+        _blocks.pop_front();
+        return true;
+    }
+
+    // Frees all held blocks. Called at session start (before the first
+    // push) and at session end/discard, so a stale backlog from a prior
+    // session's thump never lingers in memory once that session is gone.
+    void clear()
+    {
+        _blocks.clear();
+        _total_frames = 0;
+    }
+
+private:
+    size_t _capacity_frames = 0;
+    std::deque<Block> _blocks;
+    size_t _total_frames = 0;
 };

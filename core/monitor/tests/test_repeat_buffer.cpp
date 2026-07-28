@@ -5,10 +5,12 @@
 //
 // Unit tests for the header-only, pure repeat-feature core:
 // autostream_repeat_buffer.h (RepeatBuffer/Reader, codec ladder,
-// max_recording_seconds, /proc/meminfo parse, silence-trim accounting).
+// max_recording_seconds, /proc/meminfo parse, silence-trim accounting,
+// onset-gated recording's OnsetGate/PreRollRing).
 //
 // Test IDs correspond to the repeat feature's unit-test numbering (U1-U9,
-// U12-U14).
+// U12-U16). U15/U16 plus the unnumbered onset-gated-recording composition
+// test cover onset-gated recording (OnsetGate + PreRollRing + splice).
 // No ALSA / libsamplerate / link deps — this is a pure C++17 standard-library
 // test, buildable with a bare g++.
 //
@@ -761,6 +763,385 @@ static void test_u13_total_bytes_invariant()
 }
 
 // ---------------------------------------------------------------------------
+// U15 — OnsetGate (onset-sustain decision core)
+// ---------------------------------------------------------------------------
+
+static void test_u15_onset_gate()
+{
+    // Confirms at exactly kOnsetSustainSeconds of continuous above-threshold
+    // blocks, not before.
+    {
+        OnsetGate gate;
+        CHECK(!gate.is_confirmed(), "U15: fresh gate is not confirmed");
+
+        CHECK(!gate.on_block(true, 1.0), "U15: 1.0 s of 2.5 s -> not yet confirmed");
+        CHECK(!gate.is_confirmed(), "U15: is_confirmed() agrees at 1.0 s");
+
+        CHECK(!gate.on_block(true, 1.4), "U15: 2.4 s of 2.5 s -> still not confirmed");
+        CHECK(!gate.is_confirmed(), "U15: is_confirmed() agrees at 2.4 s");
+
+        // The block that pushes accumulated duration to exactly 2.5 s is the
+        // confirming edge -- on_block() returns true exactly once, here.
+        CHECK(gate.on_block(true, 0.1), "U15: block reaching exactly 2.5 s confirms");
+        CHECK(gate.is_confirmed(), "U15: is_confirmed() true immediately after");
+
+        // Latches: further above-threshold blocks never re-report the edge.
+        CHECK(!gate.on_block(true, 1.0), "U15: no second confirming edge after latch");
+        CHECK(gate.is_confirmed(), "U15: stays confirmed");
+    }
+
+    // Reset semantics: a single below-threshold block anywhere in an
+    // otherwise-sustained run drops the accumulator back to zero, so the
+    // sustain window must be genuinely unbroken.
+    {
+        OnsetGate gate;
+        CHECK(!gate.on_block(true, 2.4), "U15: 2.4 s accumulated");
+        CHECK(!gate.on_block(false, 0.1), "U15: a single below-threshold block resets, not confirms");
+        CHECK(!gate.is_confirmed(), "U15: not confirmed after the reset");
+
+        // Immediately following with 2.5 s more must confirm again from
+        // zero -- the reset really did drop the whole prior 2.4 s, not just
+        // decrement it.
+        CHECK(!gate.on_block(true, 2.4), "U15: re-accumulating 2.4 s post-reset -> not yet");
+        CHECK(gate.on_block(true, 0.1), "U15: full 2.5 s post-reset confirms");
+        CHECK(gate.is_confirmed(), "U15: confirmed after the second run completes");
+    }
+
+    // Never confirms during continuous silence, however many blocks arrive.
+    {
+        OnsetGate gate;
+        for (int i = 0; i < 100; ++i)
+            CHECK(!gate.on_block(false, 1.0), "U15: silent blocks never confirm");
+        CHECK(!gate.is_confirmed(), "U15: still not confirmed after 100 s of silence");
+    }
+
+    // A thump that cannot sustain the window: one loud block far short of
+    // 2.5 s, then silence, then more loud blocks that individually never
+    // reach 2.5 s unbroken -- must never confirm (the turntable-thump case).
+    {
+        OnsetGate gate;
+        CHECK(!gate.on_block(true, 0.2), "U15: thump: short loud burst");
+        CHECK(!gate.on_block(false, 20.0), "U15: thump: long spin-up quiet resets");
+        CHECK(!gate.on_block(true, 0.3), "U15: thump: another short burst");
+        CHECK(!gate.is_confirmed(), "U15: thump-only sequence never confirms onset");
+    }
+
+    // reset() returns a confirmed gate to the fresh state (new session reuse).
+    {
+        OnsetGate gate;
+        gate.on_block(true, OnsetGate::kOnsetSustainSeconds);
+        CHECK(gate.is_confirmed(), "U15: sanity -- confirmed before reset()");
+        gate.reset();
+        CHECK(!gate.is_confirmed(), "U15: reset() clears is_confirmed()");
+        CHECK(!gate.on_block(true, 1.0), "U15: reset() clears the accumulator too (not still >= sustain)");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// U16 — PreRollRing (pre-onset backlog)
+// ---------------------------------------------------------------------------
+
+// Builds an interleaved-stereo float block of `frames` frames, every sample
+// set to `value` so a drained block's identity/order is trivial to check.
+static std::vector<float> make_float_block(int frames, float value)
+{
+    return std::vector<float>(static_cast<size_t>(frames) * 2u, value);
+}
+
+static void test_u16_preroll_ring()
+{
+    // Disabled ring (capacity 0, the default-constructed state): push() is a
+    // no-op, pop_front() always fails.
+    {
+        PreRollRing ring;
+        auto blk = make_float_block(100, 1.0f);
+        ring.push(blk.data(), 100, true);
+        CHECK(ring.empty(), "U16: zero-capacity ring stays empty across push()");
+
+        PreRollRing::Block out;
+        CHECK(!ring.pop_front(out), "U16: pop_front on an empty/disabled ring returns false");
+    }
+
+    // Content preserved, splice order correct: push several distinguishable
+    // blocks (well within capacity) and drain them in the same order.
+    {
+        PreRollRing ring;
+        ring.set_capacity_frames(1000);
+
+        auto a = make_float_block(10, 1.0f);
+        auto b = make_float_block(20, 2.0f);
+        auto c = make_float_block(30, 3.0f);
+        ring.push(a.data(), 10, false);
+        ring.push(b.data(), 20, false);
+        ring.push(c.data(), 30, true);
+
+        CHECK(ring.block_count() == 3, "U16: three blocks held");
+        CHECK(ring.total_frames() == 60, "U16: total_frames sums held blocks exactly");
+
+        PreRollRing::Block out;
+        CHECK(ring.pop_front(out), "U16: first pop succeeds");
+        CHECK(out.samples.size() == 20 && out.samples[0] == 1.0f && !out.above_threshold,
+              "U16: drain order is chronological (a first), content and above_threshold preserved");
+
+        CHECK(ring.pop_front(out), "U16: second pop succeeds");
+        CHECK(out.samples.size() == 40 && out.samples[0] == 2.0f && !out.above_threshold,
+              "U16: second drained block is b, in order");
+
+        CHECK(ring.pop_front(out), "U16: third pop succeeds");
+        CHECK(out.samples.size() == 60 && out.samples[0] == 3.0f && out.above_threshold,
+              "U16: third drained block is c, above_threshold preserved true");
+
+        CHECK(ring.empty(), "U16: ring empty after draining every pushed block");
+        CHECK(!ring.pop_front(out), "U16: further pop_front on an empty ring returns false");
+    }
+
+    // Ring shorter than session start-to-onset: pushing more total duration
+    // than capacity keeps only the most recent content (oldest blocks
+    // dropped whole), proving the sliding-window behaviour the pre-roll
+    // window relies on when a thump-then-quiet spin-up runs longer than
+    // kPreRollSeconds before onset confirms.
+    {
+        PreRollRing ring;
+        ring.set_capacity_frames(50);   // small capacity for the test
+
+        auto a = make_float_block(20, 1.0f);   // oldest -- must be evicted
+        auto b = make_float_block(20, 2.0f);
+        auto c = make_float_block(20, 3.0f);   // newest
+        ring.push(a.data(), 20, false);
+        ring.push(b.data(), 20, false);
+        ring.push(c.data(), 20, false);   // total 60 frames > capacity 50 -> a dropped
+
+        CHECK(ring.total_frames() == 40, "U16: over-capacity push drops exactly the oldest block");
+        CHECK(ring.block_count() == 2, "U16: only the two most recent blocks remain");
+
+        PreRollRing::Block out;
+        CHECK(ring.pop_front(out) && out.samples[0] == 2.0f,
+              "U16: surviving oldest block is b, not the evicted a");
+        CHECK(ring.pop_front(out) && out.samples[0] == 3.0f,
+              "U16: surviving newest block is c");
+    }
+
+    // set_capacity_frames() also clears any existing content (used as the
+    // per-session (re)initialisation call).
+    {
+        PreRollRing ring;
+        ring.set_capacity_frames(1000);
+        auto a = make_float_block(10, 1.0f);
+        ring.push(a.data(), 10, true);
+        CHECK(!ring.empty(), "U16: sanity -- ring non-empty before re-init");
+
+        ring.set_capacity_frames(1000);   // simulates a fresh session start
+        CHECK(ring.empty(), "U16: set_capacity_frames() clears prior content");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Onset-gated recording, composed end-to-end — OnsetGate + PreRollRing +
+// RepeatBuffer + SilenceTrimAccountant wired together the same way
+// RepeatController::process_recorder_samples() (autostream_repeat.cpp) uses
+// them: while onset is unconfirmed, raw blocks go only into the ring; once
+// confirmed, the ring is drained (chronological order) into the buffer via a
+// trivial stand-in "encoder" (this pure test binary has no link dependency
+// on libtwolame/libmpg123, so the stand-in just copies frames*frame_bytes of
+// arbitrary content -- what matters here is COMMIT/NO-COMMIT and ordering,
+// not real encoded bytes). U15/U16 above test each piece in isolation; this
+// exercises the composition, matching the "tail trim end-to-end" test above.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// Stand-in "encoder": one output byte per sample (2 bytes/frame * frames),
+// content = `tag`, a caller-chosen marker byte identifying which logical
+// source segment (thump/quiet/music) a committed byte came from -- lets the
+// tests assert exactly which segments reached the buffer, not merely
+// "some bytes exist", without decoding anything real (this pure test binary
+// has no link dependency on libtwolame/libmpg123).
+std::vector<uint8_t> fake_encode(int frames, uint8_t tag)
+{
+    return std::vector<uint8_t>(static_cast<size_t>(frames) * 2u, tag);
+}
+
+// Drives one raw block through the onset-gated recording algorithm exactly
+// as process_recorder_samples() does: push-to-ring while pending, drain the
+// full ring plus this block once/after confirmed. No amortization cap here
+// (draining is not itself the object under test in this composition -- U16
+// already proves drain order/content in isolation) -- this always drains the
+// whole ring in one call, which is a legal (if unlikely in production)
+// degenerate case of "drain up to N blocks per call" with N == infinite.
+// `tag` identifies this block's content for the test's own assertions (see
+// fake_encode()); `above_threshold` drives the real onset/ring/trim logic
+// exactly as it would for a genuine recorder block, independently of `tag`.
+void feed_block(OnsetGate& onset, PreRollRing& ring, RepeatBuffer& buf,
+                SilenceTrimAccountant& trim, int frames, bool above_threshold,
+                uint8_t tag, double sample_rate_hz)
+{
+    bool block_in_ring = false;
+
+    if (!onset.is_confirmed())
+    {
+        // The ring only needs to carry enough per-block identity for this
+        // test's own bookkeeping; PreRollRing::Block itself only stores raw
+        // samples + above_threshold (no tag field), so the tag is recovered
+        // from the block's sample value below via encode_ring_block().
+        std::vector<float> raw(static_cast<size_t>(frames) * 2u, static_cast<float>(tag));
+        ring.push(raw.data(), frames, above_threshold);
+        block_in_ring = true;
+        onset.on_block(above_threshold, static_cast<double>(frames) / sample_rate_hz);
+        if (!onset.is_confirmed())
+            return;
+    }
+
+    PreRollRing::Block blk;
+    while (ring.pop_front(blk))
+    {
+        int blk_frames = static_cast<int>(blk.samples.size() / 2u);
+        uint8_t blk_tag = static_cast<uint8_t>(blk.samples[0]);   // recovers the tag stashed above
+        auto encoded = fake_encode(blk_frames, blk_tag);
+        buf.append(encoded.data(), encoded.size());
+        trim.on_block_appended(blk.above_threshold, encoded.size());
+    }
+
+    if (block_in_ring)
+        return;   // already committed via the ring drain above
+
+    // Steady state (onset was already confirmed before this call): commit
+    // this call's own live block directly, exactly matching process_
+    // recorder_samples()'s post-onset behaviour.
+    auto encoded = fake_encode(frames, tag);
+    buf.append(encoded.data(), encoded.size());
+    trim.on_block_appended(above_threshold, encoded.size());
+}
+
+}   // namespace
+
+// Counts committed bytes tagged `tag` in a RepeatBuffer, via a fresh Reader.
+static size_t count_tag_bytes(const RepeatBuffer& buf, uint8_t tag)
+{
+    RepeatBuffer::Reader reader(buf);
+    std::vector<uint8_t> out(buf.total_bytes());
+    size_t n = reader.next(out.data(), out.size());
+    size_t count = 0;
+    for (size_t i = 0; i < n; ++i)
+        if (out[i] == tag)
+            ++count;
+    return count;
+}
+
+static const uint8_t kTagThump = 0x11;
+static const uint8_t kTagQuiet = 0x22;
+static const uint8_t kTagMusic = 0xAA;
+
+static void test_onset_gated_recording_end_to_end()
+{
+    const double kRate = 48000.0;
+    const int    kBlockFrames = static_cast<int>(kRate / 10.0);   // 100 ms blocks
+    const size_t kBlockBytes  = static_cast<size_t>(kBlockFrames) * 2u;   // fake encoder: 2 bytes/frame
+
+    // Thump-then-silence session: a short above-threshold burst that never
+    // sustains 2.5 s, followed by silence for the rest of the (short) test
+    // session -- the buffer must stay completely empty (property required
+    // for "session ends before onset confirms -> nothing was committed",
+    // which is what makes has_hold_bytes-gated replay correctly play
+    // nothing).
+    {
+        OnsetGate onset;
+        PreRollRing ring;
+        ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));
+        RepeatBuffer buf(1024);
+        SilenceTrimAccountant trim;
+
+        feed_block(onset, ring, buf, trim, kBlockFrames, true, kTagThump, kRate);   // 100 ms thump
+        for (int i = 0; i < 20; ++i)                                               // 2 s silence
+            feed_block(onset, ring, buf, trim, kBlockFrames, false, kTagQuiet, kRate); // (never reaches 2.5 s)
+
+        CHECK(!onset.is_confirmed(), "onset e2e (thump-only): onset never confirms");
+        CHECK(buf.total_bytes() == 0, "onset e2e (thump-only): buffer stays empty");
+    }
+
+    // Thump -> quiet spin-up -> sustained music: the session-start transient
+    // (the thump) must NOT appear in the committed buffer -- it is pushed
+    // out of the pre-roll ring long before onset confirms, since the 10 s
+    // spin-up quiet that follows it far exceeds the ring's 5 s capacity.
+    // Some trailing quiet immediately before the music DOES survive (it is
+    // still within the ring when onset confirms -- see the byte-count math
+    // below), which is the intended pre-roll padding, not a defect: onset
+    // takes 2.5 s of sustained music to confirm, and the ring holds 5 s, so
+    // at most half the ring can have been overwritten by music by
+    // confirmation time, leaving >=2.5 s of whatever preceded it (quiet,
+    // here) still inside.
+    {
+        OnsetGate onset;
+        PreRollRing ring;
+        ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));   // 50 blocks @ 100 ms
+        RepeatBuffer buf(1u << 20);
+        SilenceTrimAccountant trim;
+
+        feed_block(onset, ring, buf, trim, kBlockFrames, true, kTagThump, kRate);   // 100 ms thump
+        for (int i = 0; i < 100; ++i)                                              // 10 s spin-up quiet
+            feed_block(onset, ring, buf, trim, kBlockFrames, false, kTagQuiet, kRate);
+        CHECK(buf.total_bytes() == 0, "onset e2e (thump+quiet+music): still nothing committed pre-onset");
+
+        // Sustained music: 30 blocks of 100 ms = 3 s. Onset confirms on the
+        // 25th music block (25 * 100 ms == 2.5 s exactly).
+        for (int i = 0; i < 30; ++i)
+            feed_block(onset, ring, buf, trim, kBlockFrames, true, kTagMusic, kRate);
+
+        CHECK(onset.is_confirmed(), "onset e2e (thump+quiet+music): onset confirms on sustained music");
+
+        // Thump is long gone (1 block, 101 pushes before the ring's 50-block
+        // capacity was last exceeded on the thump's account) -- zero thump
+        // bytes ever reach the buffer.
+        CHECK(count_tag_bytes(buf, kTagThump) == 0,
+              "onset e2e (thump+quiet+music): the session-start thump never reaches the buffer");
+
+        // Exactly 25 quiet blocks (2.5 s) remain in the ring at confirm time
+        // (50-block ring, 25 of them overwritten by the 25 music blocks
+        // pushed before confirmation) -- the pre-roll pad.
+        CHECK(count_tag_bytes(buf, kTagQuiet) == 25 * kBlockBytes,
+              "onset e2e (thump+quiet+music): exactly the ring's surviving pre-roll quiet is committed");
+
+        // All 30 music blocks are committed: 25 via the ring splice (the
+        // ones pushed while onset was still pending) plus 5 more via the
+        // ordinary post-confirmation live path -- none lost, none doubled.
+        CHECK(count_tag_bytes(buf, kTagMusic) == 30 * kBlockBytes,
+              "onset e2e (thump+quiet+music): every music block is committed exactly once");
+
+        CHECK(buf.total_bytes() == 25 * kBlockBytes + 30 * kBlockBytes,
+              "onset e2e (thump+quiet+music): total committed is pre-roll quiet + all music, nothing else");
+    }
+
+    // CD-style immediate music: no thump, no quiet gap -- music from the
+    // very first block. Onset confirms ~2.5 s in via the ring (which by
+    // then holds everything back to session start, since kPreRollSeconds >
+    // kOnsetSustainSeconds and the ring never even filled), so the FIRST
+    // notes are present in the committed buffer, not just audio starting at
+    // the 2.5 s mark.
+    {
+        OnsetGate onset;
+        PreRollRing ring;
+        ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));
+        RepeatBuffer buf(1u << 20);
+        SilenceTrimAccountant trim;
+
+        const int kTotalBlocks = 30;   // 3 s of continuous music
+        for (int i = 0; i < kTotalBlocks; ++i)
+            feed_block(onset, ring, buf, trim, kBlockFrames, true, kTagMusic, kRate);
+
+        CHECK(onset.is_confirmed(), "onset e2e (CD-style): onset confirms on continuous music");
+
+        // Every frame since session start is committed -- the ring never
+        // exceeded its 5 s capacity in only 3 s of content, so nothing
+        // (including the very first notes) was ever evicted before the
+        // splice.
+        CHECK(count_tag_bytes(buf, kTagMusic) == static_cast<size_t>(kTotalBlocks) * kBlockBytes,
+              "onset e2e (CD-style): every frame since session start is committed, first notes included");
+        CHECK(buf.total_bytes() == static_cast<size_t>(kTotalBlocks) * kBlockBytes,
+              "onset e2e (CD-style): nothing beyond the music itself is in the buffer");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -779,6 +1160,9 @@ int main()
     test_tail_trim_end_to_end();
     test_u12_steal_chunks();
     test_u13_total_bytes_invariant();
+    test_u15_onset_gate();
+    test_u16_preroll_ring();
+    test_onset_gated_recording_end_to_end();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);

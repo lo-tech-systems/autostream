@@ -606,6 +606,8 @@ std::deque<RepeatBuffer::Chunk> RepeatController::free_recording_locked()
     _encoder.reset();
     std::deque<RepeatBuffer::Chunk> stolen = _buffer.steal_chunks();
     _trim.reset();
+    _onset.reset();
+    _preroll_ring.clear();
     transition_locked(RepeatState::Idle);
     set_origin_locked(0);
     _active_codec = CodecChoice::Unavailable;
@@ -1005,6 +1007,13 @@ void RepeatController::perform_pending_start()
     _max_recording_seconds = max_recording_seconds(codec, mem.available_mib, 0, _sample_rate_hz);
     _buffer.clear();
     _trim.reset();
+    // Onset gate: fresh per session. The ring is sized from this
+    // session's own recording-path sample format -- always stereo float at
+    // _sample_rate_hz on this (pre-DSP) tap, regardless of which codec was
+    // just chosen above for the eventual encoded output.
+    _onset.reset();
+    _preroll_ring.set_capacity_frames(
+        static_cast<size_t>(kPreRollSeconds * static_cast<double>(_sample_rate_hz)));
     _encoder = std::move(encoder);
     _dropped_frames_baseline = _recorder.dropped_frames();
     _last_mem_check_time = get_monotonic_time();
@@ -1160,6 +1169,16 @@ void RepeatController::notify_capture_stopped(int input_index)
     _buffer.truncate_tail(trim_bytes);
 
     _encoder.reset();
+    // Onset gate: the session is over either way -- if onset never
+    // confirmed, _buffer is empty by construction (nothing was ever spliced
+    // in) and any thump/spin-up audio still sitting in the ring is discarded
+    // here rather than lingering in memory into HOLD; if onset did confirm,
+    // the ring was already fully drained during the recording (see
+    // process_recorder_samples()) and is empty already. Either way, the next
+    // session's perform_pending_start() would re-initialise both anyway --
+    // this is purely prompt cleanup, not a correctness requirement.
+    _onset.reset();
+    _preroll_ring.clear();
     // Recording -> Hold decision (CaptureStopped cell); _origin_input
     // / _origin_input_fast are left as-is by that cell (not one of the
     // fields it writes) -- the HOLD recording's origin_input is still
@@ -1339,7 +1358,9 @@ void RepeatController::on_replay_session_ended_locked_entry()
     freed_chunks = handle_event_locked(RepeatEvent::ReplaySessionEnded, ctx);
 }
 
-void RepeatController::process_recorder_samples(const float* interleaved, int frames, bool above_threshold)
+void RepeatController::encode_and_append_locked(std::unique_lock<std::mutex>& lock,
+                                                  const float* interleaved, int frames,
+                                                  bool above_threshold)
 {
     // encode() is fast, purely CPU-bound work against the one encoder
     // object this worker thread owns exclusively while Recording, so it
@@ -1347,13 +1368,7 @@ void RepeatController::process_recorder_samples(const float* interleaved, int fr
     // read) and the chunk allocation a predicted new-chunk append needs must
     // NOT happen while _repeat_mutex is held, or every other caller
     // (get_status(), set_enabled(), notify_capture_stopped(), ...) stalls
-    // for the duration. unique_lock (not lock_guard) so this function can
-    // unlock/relock around that work.
-    std::unique_lock<std::mutex> lock(_repeat_mutex);
-
-    if (_state != RepeatState::Recording || !_encoder)
-        return;
-
+    // for the duration.
     size_t n = _encoder->encode(interleaved, frames, _encode_scratch);
     if (n == 0)
         return;
@@ -1417,6 +1432,83 @@ void RepeatController::process_recorder_samples(const float* interleaved, int fr
         _buffer.append(_encode_scratch.data(), n);
     }
     _trim.on_block_appended(above_threshold, n);
+}
+
+void RepeatController::process_recorder_samples(const float* interleaved, int frames, bool above_threshold)
+{
+    // unique_lock (not lock_guard): encode_and_append_locked() may unlock/
+    // relock around chunk preallocation / a periodic meminfo read.
+    std::unique_lock<std::mutex> lock(_repeat_mutex);
+
+    if (_state != RepeatState::Recording || !_encoder)
+        return;
+
+    // ── Onset gate ─────────────────────────────────────────────────────────
+    // The SESSION already started (this function only runs while Recording);
+    // the RECORDER additionally waits for sustained above-threshold audio
+    // before committing anything. While onset is not yet confirmed, this
+    // block goes ONLY into the pre-roll ring -- never into the encoder/
+    // buffer -- so a session that ends before onset confirms leaves the
+    // buffer untouched (empty), and has_hold_bytes-gated replay naturally
+    // has nothing to play.
+    //
+    // block_in_ring tracks whether THIS call's own block was pushed into the
+    // ring below, so the tail of this function knows whether the block still
+    // needs writing directly (steady state, onset long since confirmed) or
+    // has already been folded into the ring-drain loop's backlog (onset
+    // pending, or just confirmed on this very call -- either way this call's
+    // block is the ring's newest entry, and the drain loop below walks the
+    // ring oldest-first, so it is written in its correct chronological
+    // position, not duplicated).
+    bool block_in_ring = false;
+
+    if (!_onset.is_confirmed())
+    {
+        _preroll_ring.push(interleaved, frames, above_threshold);
+        block_in_ring = true;
+
+        bool just_confirmed = _onset.on_block(
+            above_threshold, static_cast<double>(frames) / static_cast<double>(_sample_rate_hz));
+        if (!just_confirmed)
+            return;   // still filling the ring; nothing committed yet
+
+        // Onset just confirmed: fall through to drain the ring (amortized
+        // below), which now includes this call's own block as its newest
+        // entry.
+    }
+
+    // ── Amortized pre-roll splice ────────────────────────────────────────
+    // Once onset has confirmed (this call or a previous one), drain up to
+    // kOnsetRingDrainBlocksPerCall ring blocks (oldest first, i.e.
+    // chronological order) through the normal encode/append/trim path
+    // before this call's own live block -- see kOnsetRingDrainBlocksPerCall's
+    // declaration for why this is amortized rather than one single burst
+    // call. A session whose first live block already confirmed onset (ring
+    // holds everything back to session start, since kPreRollSeconds >=
+    // kOnsetSustainSeconds) drains its entire backlog this way over the next
+    // few calls; a session that never buffered a ring beyond a block or two
+    // drains trivially, within this same call.
+    for (int i = 0; i < kOnsetRingDrainBlocksPerCall && !_preroll_ring.empty(); ++i)
+    {
+        PreRollRing::Block blk;
+        if (!_preroll_ring.pop_front(blk))
+            break;
+        encode_and_append_locked(lock, blk.samples.data(),
+                                  static_cast<int>(blk.samples.size() / 2u), blk.above_threshold);
+        if (_state != RepeatState::Recording || !_encoder)
+            return;   // session ended while encode_and_append_locked() was unlocked
+    }
+
+    if (block_in_ring)
+        return;   // this call's block was handled via the ring above (now,
+                   // or -- if the drain cap was hit first -- in a future
+                   // call's drain, since it is still safely queued)
+
+    // Steady state: onset was already confirmed before this call started,
+    // and the ring played no part in this call at all -- write the live
+    // block directly, exactly as process_recorder_samples() always did
+    // before onset gating existed.
+    encode_and_append_locked(lock, interleaved, frames, above_threshold);
 }
 
 void RepeatController::apply_memory_guard_locked(const MemInfo& mem)
@@ -1911,14 +2003,19 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
         _loop_count.fetch_add(1, std::memory_order_relaxed);
         ctx.reader->rewind();
         ctx.frames_played = 0.0;
-        _position_seconds.store(0.0, std::memory_order_relaxed);
+        // _position_seconds is deliberately left untouched here:
+        // it stays frozen at the just-finished loop's duration for the
+        // whole inter-loop gap (write_loop_gap(), called by the caller in
+        // response to the Wrapped outcome below), then resets to 0 as an
+        // ordinary side effect of the first real post-gap slice's own
+        // position update in run_one_session()'s write loop.
 
         // Reset the replay-owned EQ filter state at the loop seam
         // so no delay-line history carries from the end of the
         // recording into its own beginning.
         ctx.replay_filters.clear();
         ctx.replay_eq_bands_cache.reset();
-        return SliceBatchOutcome::Retry;
+        return SliceBatchOutcome::Wrapped;
     }
 
     // Pull the origin input's current gain/EQ once per staging refill
@@ -2127,6 +2224,15 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
             reason = SessionEndReason::Aborted;
             break;
         }
+        if (outcome == SliceBatchOutcome::Wrapped)
+        {
+            if (!write_loop_gap(ctx, rate_hz))
+            {
+                reason = SessionEndReason::Aborted;   // reader absent / pipe error mid-gap
+                break;
+            }
+            continue;
+        }
         if (outcome == SliceBatchOutcome::Retry)
             continue;
 
@@ -2229,6 +2335,35 @@ bool ReplayEngine::write_slice_paced(ReplaySessionCtx& ctx)
         written += static_cast<size_t>(n);
     }
     return track_stall_outcome(true);
+}
+
+bool ReplayEngine::write_loop_gap(ReplaySessionCtx& ctx, int rate_hz)
+{
+    // Silence, generated directly (no decode, no DSP chain, no fade, no ID
+    // tap, no TrackGapDetector update -- see this method's declaration
+    // comment) -- reuses ctx.pipe_bytes as scratch exactly like
+    // process_slice() does, and paces through the same write_slice_paced()
+    // so an abort/write-error/stall observed mid-gap behaves identically to
+    // one observed mid-content.
+    size_t gap_frames  = static_cast<size_t>(kLoopGapSeconds * rate_hz);
+    size_t gap_samples = gap_frames * 2u;   // stereo
+
+    std::vector<int16_t> silence(std::min(kSliceFrames * 2, gap_samples), 0);
+
+    size_t written_samples = 0;
+    while (written_samples < gap_samples)
+    {
+        if (_pending_cmd.load(std::memory_order_relaxed) == Cmd::Abort ||
+            _stop_requested.load(std::memory_order_relaxed))
+            return false;
+
+        size_t slice_samples = std::min(silence.size(), gap_samples - written_samples);
+        convert_to_pipe_format(silence.data(), slice_samples, ctx.pipe_bytes);
+        if (!write_slice_paced(ctx))
+            return false;
+        written_samples += slice_samples;
+    }
+    return true;
 }
 
 bool ReplayEngine::track_stall_outcome(bool ok)

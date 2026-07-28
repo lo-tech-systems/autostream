@@ -372,6 +372,49 @@ reflect the trimmed length. The trim is chunk-based (whole buffer chunks
 removed from the tail, with the final partial chunk truncated to its exact
 byte boundary) so it is byte-exact, not merely chunk-granular.
 
+### Onset-gated recording and the inter-loop gap
+
+Two further refinements on top of the tail trim above, separating the
+repeat-feature SESSION (still starts on the first above-threshold transient,
+pre-warming the streaming pipeline during spin-up) from what the RECORDER
+actually commits to the RAM buffer:
+
+- **Onset gate.** The recorder does not commit any audio to the buffer until
+  onset is confirmed: 2.5 s of continuous above-threshold signal, measured
+  against the same per-input silence threshold used elsewhere. A mechanical
+  start thump cannot sustain 2.5 s, so it is never committed; spin-up rumble
+  that sits below the threshold does not advance the count either. A single
+  below-threshold block anywhere in an otherwise-sustained run resets the
+  count to zero -- the window must be unbroken. A CD player (or any source
+  with no start transient) confirms onset the same way, roughly 2.5 s after
+  its first note.
+- **Pre-roll ring.** While onset is unconfirmed, raw audio is held in a
+  rolling ~5 s ring instead of being discarded outright. Once onset confirms,
+  the ring's contents are spliced into the buffer (in original order) ahead
+  of ongoing live audio, so the confirmed onset's own lead-in is not lost.
+  Because the ring holds at least as long as the sustain window, a recording
+  whose first block is already above threshold (the CD-player case) still
+  has its first notes preserved once onset confirms a couple of seconds in.
+  A session that ends before onset ever confirms (a thump with no following
+  music) commits nothing at all: the buffer stays empty and there is nothing
+  to replay.
+- **Inter-loop gap.** Since a repeat recording no longer contains its own
+  start transient (onset gate) or its own trailing silence (tail trim,
+  above), consecutive replay loops would otherwise wrap directly from the
+  last note back into the first with no separation. Each loop wrap inserts a
+  fixed 1.5 s silence gap before resuming from the start. The gap is not
+  recorded content: `replay.position_seconds` holds steady at the
+  just-finished loop's `duration_seconds` for the length of the gap, then
+  resets to (approximately) zero once real audio resumes; `duration_seconds`
+  itself (computed once, from the recording's own size) is unaffected by the
+  gap either way.
+
+None of this affects the minimum playback hold, track-change detection, or
+the memory-guard/head-truncation machinery, which all continue to operate
+exactly as described above -- a session held open by the minimum-playback
+hold with no onset ever reached simply commits nothing, the same as any
+other pre-onset session end.
+
 ### `set_fifo`
 
 Sets the named pipe path used for output.
